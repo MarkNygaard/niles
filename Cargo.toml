@@ -14,3 +14,4 @@ unused_must_use = "deny"
 [workspace.dependencies]
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
+regex = "1"
