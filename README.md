@@ -9,7 +9,9 @@ It runs locally on small hardware (a Linux host or Kubernetes cluster), bridges 
 ## Documentation
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architectural spec: hardware, voice pipeline, lighting model, scenes, timers, integrations, permissions, deployment.
-- **[TASKS.md](TASKS.md)** — initial-setup checklist for the repo.
+- **[ROADMAP.md](ROADMAP.md)** — phase-by-phase build status. What's done, what's in flight, what's blocked.
+- **[CLAUDE.md](CLAUDE.md)** — project orientation for Claude Code and other AI coding agents.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
 - `MANIFEST.md` — LLM-facing capability manifest (generated; not yet present, see Phase 11).
 
 ## License
