@@ -1,0 +1,16 @@
+[package]
+name = "niles-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "niles"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }

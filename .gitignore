@@ -1,0 +1,33 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# Claude Code per-user state
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Niles runtime data (local Compose/dev volumes)
+/niles-data
+/mosquitto-data
+/z2m-data
+
+# mdBook output
+/docs/book
+
+# Logs
+*.log
