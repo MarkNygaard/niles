@@ -9,3 +9,5 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+thiserror.workspace = true
+tokio.workspace = true
