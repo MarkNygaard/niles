@@ -7,13 +7,12 @@ use std::time::Duration;
 
 /// Tier 0 intent router. Cheap to construct; regexes are compiled
 /// lazily on first use and reused across all subsequent `parse` calls.
-pub struct IntentRouter {
-    _private: (),
-}
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IntentRouter;
 
 impl IntentRouter {
     pub fn new() -> Self {
-        Self { _private: () }
+        Self
     }
 
     /// Try every Tier 0 pattern against the normalized transcript.
@@ -32,12 +31,6 @@ impl IntentRouter {
             return Some(intent);
         }
         None
-    }
-}
-
-impl Default for IntentRouter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -81,6 +74,12 @@ fn match_light(t: &str) -> Option<Intent> {
     } else {
         (caps.name("state2")?.as_str(), caps.name("room2")?.as_str())
     };
+    // "turn on the lights" would otherwise capture room="the" because the
+    // optional `the` group can decline to match. Reject so the caller can
+    // escalate to Tier 1 instead of producing a bogus room.
+    if room == "the" {
+        return None;
+    }
     Some(Intent::LightSet {
         room: room.to_string(),
         on: state == "on",
@@ -103,7 +102,7 @@ fn timer_regex() -> &'static Regex {
                 (?:set\s+a\s+)?timer\s+for\s+(?P<n1>\d+)\s+(?P<unit1>seconds?|secs?|minutes?|mins?|hours?|hrs?)
                 (?:\s+called\s+(?P<name1>.+))?
               |
-                (?P<n2>\d+)\s+(?P<unit2>second|sec|minute|min|hour|hr)\s+timer
+                (?P<n2>\d+)\s+(?P<unit2>seconds?|secs?|minutes?|mins?|hours?|hrs?)\s+timer
                 (?:\s+called\s+(?P<name2>.+))?
               )
               $",
@@ -129,11 +128,11 @@ fn match_timer(t: &str) -> Option<Intent> {
     };
     let n: u64 = n_str.parse().ok()?;
     let seconds = match unit_str {
-        u if u.starts_with("sec") => n,
-        u if u.starts_with("min") => n * 60,
-        u if u.starts_with("hr") || u.starts_with("hour") => n * 3600,
-        _ => return None,
-    };
+        u if u.starts_with("sec") => Some(n),
+        u if u.starts_with("min") => n.checked_mul(60),
+        u if u.starts_with("hr") || u.starts_with("hour") => n.checked_mul(3600),
+        _ => None,
+    }?;
     Some(Intent::TimerSet {
         duration: Duration::from_secs(seconds),
         name,
@@ -261,6 +260,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn timer_short_form_units() {
+        assert_eq!(
+            parse("set a timer for 15 min"),
+            Some(Intent::TimerSet {
+                duration: Duration::from_secs(15 * 60),
+                name: None
+            })
+        );
+        assert_eq!(
+            parse("set a timer for 1 hr"),
+            Some(Intent::TimerSet {
+                duration: Duration::from_secs(3600),
+                name: None
+            })
+        );
+        assert_eq!(
+            parse("set a timer for 45 secs"),
+            Some(Intent::TimerSet {
+                duration: Duration::from_secs(45),
+                name: None
+            })
+        );
+    }
+
+    #[test]
+    fn timer_short_form_with_name_and_plural() {
+        assert_eq!(
+            parse("8 minutes timer called pasta"),
+            Some(Intent::TimerSet {
+                duration: Duration::from_secs(8 * 60),
+                name: Some("pasta".into())
+            })
+        );
+    }
+
+    #[test]
+    fn timer_overflow_returns_none() {
+        // u64::MAX minutes would overflow when multiplied by 60.
+        let input = format!("set a timer for {} minutes", u64::MAX);
+        assert_eq!(parse(&input), None);
+    }
+
     // ---- Stop / cancel ----
 
     #[test]
@@ -282,6 +324,14 @@ mod tests {
         assert_eq!(parse(""), None);
         assert_eq!(parse("turn off"), None); // missing room
         assert_eq!(parse("timer"), None); // missing duration
+    }
+
+    #[test]
+    fn ambiguous_the_lights_rejected() {
+        // No room mentioned — must not silently produce room="the".
+        // Caller is expected to escalate to Tier 1.
+        assert_eq!(parse("turn on the lights"), None);
+        assert_eq!(parse("turn off the lights"), None);
     }
 
     #[test]

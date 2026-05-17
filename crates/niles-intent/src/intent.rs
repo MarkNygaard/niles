@@ -12,7 +12,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Intent {
-    /// "turn off the kitchen light(s)" / "turn on the bedroom lamp"
+    /// "turn off the kitchen light(s)" / "bedroom lights on"
     LightSet {
         room: String,
         on: bool,
