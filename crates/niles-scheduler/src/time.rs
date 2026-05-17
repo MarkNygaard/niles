@@ -14,11 +14,6 @@ use std::str::FromStr;
 pub struct MinuteOfDay(u16);
 
 impl MinuteOfDay {
-    /// 00:00.
-    pub const MIDNIGHT: Self = Self(0);
-    /// 23:59 — the last representable minute.
-    pub const END_OF_DAY: Self = Self(1439);
-
     /// Construct from hours (0–23) and minutes (0–59).
     pub fn new(hour: u8, minute: u8) -> Result<Self> {
         if hour >= 24 {
@@ -120,11 +115,5 @@ mod tests {
         let a = MinuteOfDay::new(5, 45).unwrap();
         let b = MinuteOfDay::new(6, 30).unwrap();
         assert!(a < b);
-    }
-
-    #[test]
-    fn constants() {
-        assert_eq!(MinuteOfDay::MIDNIGHT.total_minutes(), 0);
-        assert_eq!(MinuteOfDay::END_OF_DAY.total_minutes(), 1439);
     }
 }

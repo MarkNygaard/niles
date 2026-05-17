@@ -100,6 +100,10 @@ pub enum Phase {
 }
 
 /// Which phase the curve is in at `time`.
+///
+/// Caller must pass a config accepted by [`CurveConfig::validate`].
+/// With an unvalidated config (e.g. inverted ramp ordering) the
+/// returned phase is unspecified but the call never panics.
 pub fn phase_at(config: &CurveConfig, time: MinuteOfDay) -> Phase {
     let t = time.total_minutes();
     let morning_start = config.morning_start.total_minutes();
@@ -120,8 +124,13 @@ pub fn phase_at(config: &CurveConfig, time: MinuteOfDay) -> Phase {
 
 /// Brightness at `time` (0..=100).
 ///
-/// Continuous everywhere — adjacent minutes return values that match
-/// within the rounding of the linear interpolation.
+/// Continuous within the rounding of integer-minute discretization:
+/// adjacent minutes differ by at most ~2 brightness units, and the
+/// curve never jumps from the daytime plateau straight to the night
+/// floor (the spec bug clarified in PR #4).
+///
+/// Caller must pass a config accepted by [`CurveConfig::validate`];
+/// behavior on an unvalidated config is unspecified.
 pub fn brightness_at(config: &CurveConfig, time: MinuteOfDay) -> u8 {
     let t = time.total_minutes();
     match phase_at(config, time) {
@@ -262,25 +271,77 @@ mod tests {
         assert!((57..=58).contains(&b), "got {b}");
     }
 
-    #[test]
-    fn brightness_continuity_at_morning_boundary() {
-        // The whole point of the spec clarification — no jump at 05:45.
-        assert_eq!(
-            brightness_at(&cfg(), t(5, 44)),
-            brightness_at(&cfg(), t(5, 45))
+    // ---- continuity across phase boundaries -----------------------
+
+    // Curve is sampled at integer minutes, so adjacent minutes near a
+    // ramp endpoint differ by at most ~2 brightness units. The spec
+    // bug fixed in PR #4 was a 15→0 jump at 05:45; this tolerance is
+    // small enough that any reintroduction would fail the assertion.
+    const MAX_ADJACENT_MINUTE_DELTA: u8 = 2;
+
+    fn assert_continuous_across(cfg: &CurveConfig, before: MinuteOfDay, after: MinuteOfDay) {
+        let b = brightness_at(cfg, before);
+        let a = brightness_at(cfg, after);
+        let delta = b.abs_diff(a);
+        assert!(
+            delta <= MAX_ADJACENT_MINUTE_DELTA,
+            "discontinuity across {before}→{after}: {b}→{a} (delta {delta})"
         );
     }
 
     #[test]
+    fn brightness_continuous_at_morning_start() {
+        // The original spec-bug boundary: Night → MorningRamp.
+        assert_continuous_across(&cfg(), t(5, 44), t(5, 45));
+    }
+
+    #[test]
+    fn brightness_continuous_at_morning_end() {
+        // MorningRamp → Day.
+        assert_continuous_across(&cfg(), t(6, 29), t(6, 30));
+    }
+
+    #[test]
+    fn brightness_continuous_at_sunset_start() {
+        // Day → SunsetRamp.
+        assert_continuous_across(&cfg(), t(21, 29), t(21, 30));
+    }
+
+    #[test]
+    fn brightness_continuous_at_sunset_end() {
+        // SunsetRamp → Night.
+        assert_continuous_across(&cfg(), t(22, 59), t(23, 0));
+    }
+
+    // ---- monotonic sweeps -----------------------------------------
+
+    fn minute_offset(base: MinuteOfDay, offset: u16) -> MinuteOfDay {
+        let total = base.total_minutes() + offset;
+        MinuteOfDay::new((total / 60) as u8, (total % 60) as u8).unwrap()
+    }
+
+    #[test]
     fn brightness_monotonic_through_morning_ramp() {
-        // Sweep every minute through the ramp; each value must be >=
-        // the previous one (linear interpolation is monotonic).
         let cfg = cfg();
-        let mut last = brightness_at(&cfg, t(5, 45));
-        for m in 46..=89u16 {
-            let time = MinuteOfDay::new((m / 60 + 5) as u8, (m % 60) as u8).unwrap();
+        let span = cfg.morning_end.total_minutes() - cfg.morning_start.total_minutes();
+        let mut last = brightness_at(&cfg, cfg.morning_start);
+        for offset in 1..span {
+            let time = minute_offset(cfg.morning_start, offset);
             let b = brightness_at(&cfg, time);
             assert!(b >= last, "non-monotonic: {time} = {b} < previous {last}");
+            last = b;
+        }
+    }
+
+    #[test]
+    fn brightness_monotonic_through_sunset_ramp() {
+        let cfg = cfg();
+        let span = cfg.sunset_end.total_minutes() - cfg.sunset_start.total_minutes();
+        let mut last = brightness_at(&cfg, cfg.sunset_start);
+        for offset in 1..span {
+            let time = minute_offset(cfg.sunset_start, offset);
+            let b = brightness_at(&cfg, time);
+            assert!(b <= last, "non-monotonic: {time} = {b} > previous {last}");
             last = b;
         }
     }
@@ -310,6 +371,25 @@ mod tests {
             daytime_brightness: 100,
         };
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_zero_length_day_plateau() {
+        // morning_end == sunset_start is degenerate but valid: the
+        // morning ramp hands directly to the sunset ramp with no Day
+        // plateau in between. Useful for short winter days.
+        let c = CurveConfig {
+            morning_start: t(5, 45),
+            morning_end: t(12, 0),
+            sunset_start: t(12, 0),
+            sunset_end: t(23, 0),
+            night_floor_brightness: 15,
+            daytime_brightness: 100,
+        };
+        c.validate().unwrap();
+        // At the seam, phase is SunsetRamp (Day is the open interval).
+        assert_eq!(phase_at(&c, t(12, 0)), Phase::SunsetRamp);
+        assert_eq!(brightness_at(&c, t(12, 0)), 100);
     }
 
     #[test]
