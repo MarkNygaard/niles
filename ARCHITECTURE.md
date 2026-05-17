@@ -308,8 +308,16 @@ This is the only system-initiated turn-on event in Niles. It exists to wake the 
 - Configured per day pattern (e.g. Mon–Fri at 05:45) with a target set of lights (e.g. `bedroom/*`)
 - At the trigger time, the routine checks each target light's current state
 - For target lights that are **off**: routine turns them on at 0% and applies its **own** ramp from 0% → 100% over the morning window (05:45 → 06:30). The user doesn't perceive the difference between "off" and "0%" since the room was dark, so there is no visible jump. This routine ramp is distinct from the curve's morning ramp (which goes 15% → 100% for already-on lights, continuous from the night floor).
-- For target lights that are **already on**: routine skips them. The user is already up. The light continues to follow the curve from its current value (typically the 15% night floor, smoothly ramping to 100%).
+- For target lights that are **already on**: routine skips them. The user is already up. The light continues at its current state — if it's in manual mode (the user clicked to escalate to 80% / 100%), that's respected and the curve does not touch it; otherwise it follows the curve from its current value (typically the 15% night floor, smoothly ramping to 100%).
 - The routine completes at the end of the ramp window; control hands back to the regular curve, which by then is at 100% anyway, so the handoff is seamless.
+
+**Worked example — early-riser scenario.** You wake up before the routine, go to the bathroom, click the bathroom light on and click again to escalate it to 100%. The bathroom light is now in manual mode. At 05:45 the routine fires:
+
+- *Bathroom light*: already on → routine skips it. In manual mode → curve also leaves it alone. Stays at 100% until you turn it off.
+- *Your partner's bedroom light* (still off, in the routine's target set): routine turns it on at 0% and rides the routine ramp to 100% by 06:30. Your partner wakes up gently.
+- *Hallway light left on overnight at the 15% night floor* (not in manual mode, not a routine target): routine doesn't touch it, but the curve's morning ramp does — it drifts smoothly from 15% to 100% over the window.
+
+Three lights, three behaviors, one rule set.
 
 **Skip overrides:**
 - Single-day skip: "Niles, skip tomorrow's wake-up" — sets a one-day skip flag
