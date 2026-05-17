@@ -1,1 +1,18 @@
-//! niles-scheduler — time-driven behaviors: lighting curve, morning routine, timers.
+//! niles-scheduler — time-driven behaviors.
+//!
+//! This crate hosts the lighting curve, the morning routine, and the
+//! timer scheduler. The current module set is:
+//!
+//! - [`time`] — the `MinuteOfDay` type used throughout.
+//! - [`curve`] — the daily brightness curve.
+//!
+//! The morning routine, timer subsystem, and color-temperature curve
+//! land in follow-up PRs.
+
+pub mod curve;
+pub mod error;
+pub mod time;
+
+pub use curve::{CurveConfig, Phase, brightness_at, phase_at};
+pub use error::{Error, Result};
+pub use time::MinuteOfDay;
