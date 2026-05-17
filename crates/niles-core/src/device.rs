@@ -58,6 +58,10 @@ impl fmt::Display for DeviceName {
     }
 }
 
+/// Names are restricted to `[a-z0-9_]+`. The explicit allowlist keeps
+/// `DeviceId` round-trips bijective (no `:` or `/` to confuse the
+/// parser) and rules out unicode-lookalikes in identifiers shown to
+/// the LLM.
 fn validate_segment(kind: &'static str, s: &str) -> Result<()> {
     if s.is_empty() {
         return Err(Error::InvalidName {
@@ -65,23 +69,13 @@ fn validate_segment(kind: &'static str, s: &str) -> Result<()> {
             reason: "empty".into(),
         });
     }
-    if s.contains('/') {
-        return Err(Error::InvalidName {
-            kind,
-            reason: "contains '/'".into(),
-        });
-    }
-    if s.chars().any(|c| c.is_uppercase()) {
-        return Err(Error::InvalidName {
-            kind,
-            reason: "uppercase forbidden".into(),
-        });
-    }
-    if s.chars().any(char::is_whitespace) {
-        return Err(Error::InvalidName {
-            kind,
-            reason: "whitespace forbidden".into(),
-        });
+    for c in s.chars() {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return Err(Error::InvalidName {
+                kind,
+                reason: format!("'{c}' not in [a-z0-9_]"),
+            });
+        }
     }
     Ok(())
 }
@@ -100,12 +94,10 @@ pub struct DeviceId {
 }
 
 impl DeviceId {
-    pub fn new(source: impl Into<String>, room: RoomName, name: DeviceName) -> Self {
-        Self {
-            source: source.into(),
-            room,
-            name,
-        }
+    pub fn new(source: impl Into<String>, room: RoomName, name: DeviceName) -> Result<Self> {
+        let source = source.into();
+        validate_segment("source", &source)?;
+        Ok(Self { source, room, name })
     }
 
     /// Parse from the `source:room/name` string form.
@@ -116,6 +108,7 @@ impl DeviceId {
         let (room, name) = rest
             .split_once('/')
             .ok_or_else(|| Error::InvalidDeviceId(s.to_string()))?;
+        validate_segment("source", source)?;
         Ok(Self {
             source: source.to_string(),
             room: RoomName::parse(room)?,
@@ -151,6 +144,11 @@ impl fmt::Display for DeviceId {
 /// `brightness` is normalized to 0–100 (percent). Upstream-source
 /// translation (e.g. Z2M's 0–254 range, mireds → Kelvin) happens in
 /// the source-specific crate, not here.
+///
+/// **Partial updates:** `None` means "not reported", not "off / cleared".
+/// When merging an incoming partial state, copy `Some` fields over the
+/// stored state — do NOT replace the whole struct, or known values get
+/// clobbered by `None` for fields the upstream report didn't include.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeviceState {
     pub on: Option<bool>,
@@ -195,6 +193,40 @@ mod tests {
     }
 
     #[test]
+    fn device_name_accepts_valid() {
+        assert!(DeviceName::parse("ceiling_light").is_ok());
+        assert!(DeviceName::parse("sensor_1").is_ok());
+    }
+
+    #[test]
+    fn device_name_rejects_invalid() {
+        assert!(DeviceName::parse("").is_err());
+        assert!(DeviceName::parse("Light").is_err());
+        assert!(DeviceName::parse("ceiling light").is_err());
+        assert!(DeviceName::parse("ceiling/light").is_err());
+    }
+
+    /// Pin the validator's character class — `[a-z0-9_]+`, nothing more.
+    /// Round-trip safety of `DeviceId` depends on `:` and `/` being rejected,
+    /// and the LLM-facing identifier surface stays ASCII-only.
+    #[test]
+    fn segment_character_class_is_ascii_lower_digit_underscore() {
+        // Accepted
+        assert!(RoomName::parse("a").is_ok());
+        assert!(RoomName::parse("kitchen_2").is_ok());
+        assert!(RoomName::parse("_leading").is_ok());
+        assert!(RoomName::parse("123").is_ok());
+
+        // Rejected
+        assert!(RoomName::parse("kitchen-light").is_err()); // hyphen
+        assert!(RoomName::parse("kitchen.light").is_err()); // dot
+        assert!(RoomName::parse("kitchen:light").is_err()); // colon (round-trip safety)
+        assert!(RoomName::parse("é").is_err()); // non-ASCII letter
+        assert!(RoomName::parse("Kitchen").is_err()); // uppercase
+        assert!(RoomName::parse("kitchen light").is_err()); // space
+    }
+
+    #[test]
     fn device_id_round_trip() {
         let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
         assert_eq!(id.source(), "z2m");
@@ -208,5 +240,27 @@ mod tests {
         assert!(DeviceId::parse("kitchen/ceiling_light").is_err());
         assert!(DeviceId::parse("z2m:kitchen").is_err());
         assert!(DeviceId::parse("z2m:Kitchen/light").is_err());
+    }
+
+    #[test]
+    fn device_id_rejects_invalid_source() {
+        // Empty source: ":kitchen/light" splits to source="" — rejected.
+        assert!(DeviceId::parse(":kitchen/light").is_err());
+        // Uppercase / non-ASCII in source.
+        assert!(DeviceId::parse("Z2M:kitchen/light").is_err());
+        // new() validates too.
+        let room = RoomName::parse("kitchen").unwrap();
+        let name = DeviceName::parse("light").unwrap();
+        assert!(DeviceId::new("", room.clone(), name.clone()).is_err());
+        assert!(DeviceId::new("bad source", room, name).is_err());
+    }
+
+    #[test]
+    fn device_id_source_differentiates() {
+        let room = RoomName::parse("kitchen").unwrap();
+        let name = DeviceName::parse("light").unwrap();
+        let z2m = DeviceId::new("z2m", room.clone(), name.clone()).unwrap();
+        let matter = DeviceId::new("matter", room, name).unwrap();
+        assert_ne!(z2m, matter);
     }
 }

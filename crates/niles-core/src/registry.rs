@@ -86,7 +86,8 @@ mod tests {
                 "z2m",
                 RoomName::parse(room).unwrap(),
                 DeviceName::parse(name).unwrap(),
-            ),
+            )
+            .unwrap(),
             state: DeviceState::default(),
         }
     }

@@ -63,6 +63,7 @@ mod tests {
             RoomName::parse("kitchen").unwrap(),
             DeviceName::parse("ceiling_light").unwrap(),
         )
+        .unwrap()
     }
 
     #[tokio::test]

@@ -9,9 +9,6 @@ pub enum Error {
 
     #[error("invalid device identifier: {0}")]
     InvalidDeviceId(String),
-
-    #[error("device not found: {0}")]
-    DeviceNotFound(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
