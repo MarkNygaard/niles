@@ -269,24 +269,26 @@ A single brightness-and-color-temperature function governs the home, every day. 
 ```
 Night floor:    15% brightness, ~2000K color temp (very warm)
                 Holds from sunset end → next morning's sunrise start.
-                
+
 Morning ramp:   05:45 → 06:30 (universal time, same every day)
-                Brightness: 0% → 100%
+                Brightness: 15% → 100% (continuous from the night floor)
                 Color temp: ~2000K → ~2700K (warm daytime)
-                
+
 Daytime:        06:30 → sunset_start
                 Brightness: 100%
                 Color temp: continues curve (warm morning → cool midday
                             ~4500K → warm afternoon)
-                
+
 Sunset ramp:    sunset_start → sunset_start + 90min
                 Brightness: 100% → 15%
                 Color temp: ramps back toward ~2000K
-                
+
 Night floor:    resumes after sunset ramp completes
 ```
 
 The curve only describes state for lights that are currently on. It does not turn lights on or off (with one exception — the morning routine, below). Lights are off because no one turned them on; the curve simply waits.
+
+**The curve is continuous.** Brightness is well-defined at every minute and never jumps — a hallway light left on overnight at the 15% night floor drifts smoothly upward through the morning ramp to 100% by 06:30. The morning routine (next section) is a separate concern that turns *its* target lights on at 0% and runs its *own* ramp; it does not modify the curve that governs already-on lights.
 
 ### What varies day to day
 
@@ -305,9 +307,9 @@ This is the only system-initiated turn-on event in Niles. It exists to wake the 
 **Behavior:**
 - Configured per day pattern (e.g. Mon–Fri at 05:45) with a target set of lights (e.g. `bedroom/*`)
 - At the trigger time, the routine checks each target light's current state
-- For target lights that are **off**: routine sends "turn on at 0%." These lights then ride the morning ramp from 0% → 100% over the next 45 minutes
-- For target lights that are **already on**: routine skips them. The user is already up. The light continues to follow the curve from its current value
-- The routine completes at the end of the ramp window; control hands back to the regular curve (which by then is at 100% anyway)
+- For target lights that are **off**: routine turns them on at 0% and applies its **own** ramp from 0% → 100% over the morning window (05:45 → 06:30). The user doesn't perceive the difference between "off" and "0%" since the room was dark, so there is no visible jump. This routine ramp is distinct from the curve's morning ramp (which goes 15% → 100% for already-on lights, continuous from the night floor).
+- For target lights that are **already on**: routine skips them. The user is already up. The light continues to follow the curve from its current value (typically the 15% night floor, smoothly ramping to 100%).
+- The routine completes at the end of the ramp window; control hands back to the regular curve, which by then is at 100% anyway, so the handoff is seamless.
 
 **Skip overrides:**
 - Single-day skip: "Niles, skip tomorrow's wake-up" — sets a one-day skip flag
@@ -315,7 +317,7 @@ This is the only system-initiated turn-on event in Niles. It exists to wake the 
 
 Both are stored in config and consulted by the routine at trigger time.
 
-A skip override only disables the auto-on trigger for that day. **The curve itself is unchanged** — the morning ramp still runs from 0% → 100% between 05:45 and 06:30, sunset still happens, color temperature still cycles. The only difference is that no lights are automatically turned on, so the bedroom stays dark while you sleep in. If you wake up later and manually turn on a light, you get the curve value for whatever time it currently is (typically 100% if you're up past 06:30).
+A skip override only disables the auto-on trigger for that day. **The curve itself is unchanged** — the curve's morning ramp still runs from 15% → 100% between 05:45 and 06:30, sunset still happens, color temperature still cycles. The only difference is that no lights are automatically turned on, so the bedroom stays dark while you sleep in. If you wake up later and manually turn on a light, you get the curve value for whatever time it currently is (typically 100% if you're up past 06:30).
 
 ### Manual interactions
 
@@ -329,7 +331,7 @@ The light comes on at the current curve value for that moment.
 | 3am toilet trip | 15%, ~2000K | Dim warm light. Not blinded. |
 | Saturday 09:30 | 100%, ~4000K | Full bright daylight color. |
 | Mid-sunset ramp at 22:15 | ~50%, ~2500K | Light matches the room's wind-down. |
-| During morning ramp at 06:10 (weekend, no auto-on) | ~40%, ~2400K | Light comes on at current ramp value. |
+| During morning ramp at 06:10 (weekend, no auto-on) | ~62%, ~2400K | Light comes on at current ramp value. |
 
 **Manual escalation, subsequent clicks within the same on-session:**
 Click 2 → 80%
