@@ -25,11 +25,23 @@ pub struct CurveConfig {
     pub night_floor_brightness: u8,
     /// Brightness during the daytime plateau (`0..=100`).
     pub daytime_brightness: u8,
+    /// Color-temperature anchors throughout the day, in chronological order.
+    ///
+    /// Between adjacent anchors, color temperature is linearly
+    /// interpolated. Before the first anchor or after the last,
+    /// the nearest anchor's value is returned (no wrap-around).
+    /// Must be non-empty; values are validated to be in the
+    /// `1000..=10000` Kelvin range.
+    pub color_temp_anchors: Vec<(MinuteOfDay, u16)>,
 }
 
 impl CurveConfig {
     /// Architecture-spec defaults: morning 05:45–06:30, sunset 21:30–23:00,
-    /// night floor 15%, daytime 100%.
+    /// night floor 15%, daytime 100%, color temp 2000K (night) → 2700K
+    /// (morning end) → 4500K (midday peak) → 3500K (afternoon) → 2700K
+    /// (sunset start) → 2000K (sunset end). The bookend anchors at 00:00
+    /// and 23:59 pin the flat night sections so out-of-range lookups
+    /// return the night-floor color rather than the first/last transition.
     pub fn default_weekday() -> Self {
         Self {
             morning_start: MinuteOfDay::new(5, 45).expect("05:45 is valid"),
@@ -38,6 +50,16 @@ impl CurveConfig {
             sunset_end: MinuteOfDay::new(23, 0).expect("23:00 is valid"),
             night_floor_brightness: 15,
             daytime_brightness: 100,
+            color_temp_anchors: vec![
+                (MinuteOfDay::new(0, 0).expect("00:00 is valid"), 2000),
+                (MinuteOfDay::new(5, 45).expect("05:45 is valid"), 2000),
+                (MinuteOfDay::new(6, 30).expect("06:30 is valid"), 2700),
+                (MinuteOfDay::new(12, 0).expect("12:00 is valid"), 4500),
+                (MinuteOfDay::new(17, 0).expect("17:00 is valid"), 3500),
+                (MinuteOfDay::new(21, 30).expect("21:30 is valid"), 2700),
+                (MinuteOfDay::new(23, 0).expect("23:00 is valid"), 2000),
+                (MinuteOfDay::new(23, 59).expect("23:59 is valid"), 2000),
+            ],
         }
     }
 
@@ -81,6 +103,30 @@ impl CurveConfig {
             return Err(Error::InvalidConfig {
                 reason: format!("daytime_brightness {} > 100", self.daytime_brightness),
             });
+        }
+        if self.color_temp_anchors.is_empty() {
+            return Err(Error::InvalidConfig {
+                reason: "color_temp_anchors must not be empty".into(),
+            });
+        }
+        for window in self.color_temp_anchors.windows(2) {
+            if window[0].0 >= window[1].0 {
+                return Err(Error::InvalidConfig {
+                    reason: format!(
+                        "color_temp_anchors must be sorted ascending by time: {} >= {}",
+                        window[0].0, window[1].0
+                    ),
+                });
+            }
+        }
+        for (time, kelvin) in &self.color_temp_anchors {
+            if !(1000..=10000).contains(kelvin) {
+                return Err(Error::InvalidConfig {
+                    reason: format!(
+                        "color_temp anchor at {time}: {kelvin}K outside valid 1000..=10000 range"
+                    ),
+                });
+            }
         }
         Ok(())
     }
@@ -159,6 +205,47 @@ pub fn brightness_at(config: &CurveConfig, time: MinuteOfDay) -> u8 {
     }
 }
 
+/// Color temperature at `time`, in Kelvin.
+///
+/// Linearly interpolated between adjacent anchors in
+/// `config.color_temp_anchors`. Before the first anchor or after the
+/// last, the nearest anchor's value is returned (no wrap-around).
+///
+/// Caller must pass a config accepted by [`CurveConfig::validate`].
+/// On an unvalidated config (empty anchors, out-of-order) behavior
+/// is unspecified but the call never panics.
+pub fn color_temp_at(config: &CurveConfig, time: MinuteOfDay) -> u16 {
+    let anchors = &config.color_temp_anchors;
+    debug_assert!(
+        !anchors.is_empty(),
+        "color_temp_at called with empty color_temp_anchors — caller must validate the config first"
+    );
+    let Some(first) = anchors.first() else {
+        return 2000; // safe fallback for unvalidated empty config in release
+    };
+    let last = anchors
+        .last()
+        .expect("anchors non-empty per first.is_some()");
+
+    let t = time.total_minutes();
+    if t <= first.0.total_minutes() {
+        return first.1;
+    }
+    if t >= last.0.total_minutes() {
+        return last.1;
+    }
+    for window in anchors.windows(2) {
+        let a = window[0];
+        let b = window[1];
+        let a_t = a.0.total_minutes();
+        let b_t = b.0.total_minutes();
+        if t >= a_t && t < b_t {
+            return lerp_kelvin(a.1, b.1, t - a_t, b_t - a_t);
+        }
+    }
+    last.1 // unreachable for sorted anchors
+}
+
 /// Linear interpolation between two brightness values.
 /// Math is done in `i32` so reversed ramps (sunset goes high → low)
 /// work and no `u8` overflow is possible.
@@ -172,6 +259,21 @@ fn lerp_brightness(from: u8, to: u8, numerator: u16, denominator: u16) -> u8 {
     let den = i32::from(denominator);
     let result = from + (to - from) * num / den;
     result.clamp(0, 100) as u8
+}
+
+/// Linear interpolation between two Kelvin values.
+///
+/// `from` and `to` are guaranteed to be in `1000..=10000` by
+/// [`CurveConfig::validate`], so the result is too — no clamp needed.
+fn lerp_kelvin(from: u16, to: u16, numerator: u16, denominator: u16) -> u16 {
+    if denominator == 0 {
+        return from;
+    }
+    let from = i32::from(from);
+    let to = i32::from(to);
+    let num = i32::from(numerator);
+    let den = i32::from(denominator);
+    (from + (to - from) * num / den) as u16
 }
 
 #[cfg(test)]
@@ -369,6 +471,7 @@ mod tests {
             sunset_end: t(23, 0),
             night_floor_brightness: 15,
             daytime_brightness: 100,
+            color_temp_anchors: cfg().color_temp_anchors,
         };
         assert!(c.validate().is_err());
     }
@@ -385,6 +488,7 @@ mod tests {
             sunset_end: t(23, 0),
             night_floor_brightness: 15,
             daytime_brightness: 100,
+            color_temp_anchors: cfg().color_temp_anchors,
         };
         c.validate().unwrap();
         // At the seam, phase is SunsetRamp (Day is the open interval).
@@ -400,6 +504,96 @@ mod tests {
 
         let mut c = cfg();
         c.daytime_brightness = 200;
+        assert!(c.validate().is_err());
+    }
+
+    // ---- color_temp_at --------------------------------------------
+
+    #[test]
+    fn color_temp_night_anchor() {
+        // Anchored at 2000K at 00:00 and 05:45; flat between.
+        assert_eq!(color_temp_at(&cfg(), t(0, 0)), 2000);
+        assert_eq!(color_temp_at(&cfg(), t(3, 0)), 2000);
+        assert_eq!(color_temp_at(&cfg(), t(5, 45)), 2000);
+    }
+
+    #[test]
+    fn color_temp_morning_ramp_interpolates() {
+        // 05:45 = 2000K, 06:30 = 2700K. 06:07 is 22 min in of 45 min ramp.
+        // 2000 + (22/45) * 700 ≈ 2342.
+        let k = color_temp_at(&cfg(), t(6, 7));
+        assert!((2330..=2360).contains(&k), "got {k}K");
+    }
+
+    #[test]
+    fn color_temp_morning_end_is_anchor_value() {
+        assert_eq!(color_temp_at(&cfg(), t(6, 30)), 2700);
+    }
+
+    #[test]
+    fn color_temp_midday_peak() {
+        // Anchor at 12:00 = 4500K.
+        assert_eq!(color_temp_at(&cfg(), t(12, 0)), 4500);
+    }
+
+    #[test]
+    fn color_temp_warms_into_afternoon() {
+        // 12:00 = 4500K, 17:00 = 3500K. Midpoint 14:30 ≈ 4000K.
+        let k = color_temp_at(&cfg(), t(14, 30));
+        assert!((3990..=4010).contains(&k), "got {k}K");
+    }
+
+    #[test]
+    fn color_temp_sunset_anchors() {
+        assert_eq!(color_temp_at(&cfg(), t(21, 30)), 2700);
+        assert_eq!(color_temp_at(&cfg(), t(23, 0)), 2000);
+        assert_eq!(color_temp_at(&cfg(), t(23, 59)), 2000);
+    }
+
+    #[test]
+    fn color_temp_clamps_to_first_anchor_before_start() {
+        // The default anchors start at 00:00, but if a custom config had
+        // a later first anchor, times before it should return that anchor.
+        let mut c = cfg();
+        c.color_temp_anchors = vec![(t(6, 0), 3000), (t(18, 0), 4000), (t(22, 0), 2200)];
+        c.validate().unwrap();
+        assert_eq!(color_temp_at(&c, t(0, 0)), 3000);
+        assert_eq!(color_temp_at(&c, t(5, 0)), 3000);
+        // And after the last anchor:
+        assert_eq!(color_temp_at(&c, t(23, 0)), 2200);
+    }
+
+    #[test]
+    fn color_temp_continuous_at_morning_end_boundary() {
+        // The 06:30 anchor pins both sides; adjacent minutes must match
+        // within rounding.
+        let before = color_temp_at(&cfg(), t(6, 29));
+        let after = color_temp_at(&cfg(), t(6, 30));
+        assert!(before.abs_diff(after) <= 20, "got {before}K -> {after}K");
+    }
+
+    #[test]
+    fn validate_rejects_empty_color_temp_anchors() {
+        let mut c = cfg();
+        c.color_temp_anchors = vec![];
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_unsorted_color_temp_anchors() {
+        let mut c = cfg();
+        c.color_temp_anchors = vec![(t(12, 0), 4500), (t(6, 0), 2700)];
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_color_temp_outside_kelvin_range() {
+        let mut c = cfg();
+        c.color_temp_anchors = vec![(t(12, 0), 500)]; // too cold
+        assert!(c.validate().is_err());
+
+        let mut c = cfg();
+        c.color_temp_anchors = vec![(t(12, 0), 12000)]; // too hot
         assert!(c.validate().is_err());
     }
 }

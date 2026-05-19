@@ -11,7 +11,7 @@ this file in every PR that completes a phase deliverable.
 - **Crates with content:** `niles-core`, `niles-intent`, `niles-scheduler`
 - **In flight:** Phase 6 (color temp curve, scenes, morning routine still pending)
 - **Blocked on hardware:** Phase 1 (Mosquitto + Z2M cluster deployment), Phase 3 (voice satellite firmware)
-- **Last PR merged:** [#5 — daily brightness curve](https://github.com/MarkNygaard/niles/pull/5)
+- **Last PR merged:** [#7 — color temperature curve](https://github.com/MarkNygaard/niles/pull/7)
 
 ---
 
@@ -93,7 +93,7 @@ Blocked on Phase 0 hardware delivery + decision on Kustomize manifest authoring.
 ## Phase 6 — Ambient lighting + scenes 🚧
 
 - ✅ Lighting brightness curve [#5](https://github.com/MarkNygaard/niles/pull/5), spec clarified in [#4](https://github.com/MarkNygaard/niles/pull/4)
-- ⏳ Color temperature curve (extends the brightness scaffolding)
+- ✅ Color temperature curve [#7](https://github.com/MarkNygaard/niles/pull/7) — anchor-based piecewise-linear, default warm→cool→warm circadian cycle
 - ⏳ Morning routine (separate from the curve — its own 0% → 100% ramp)
 - ⏳ Manual mode (per-light, escalation on subsequent clicks)
 - ⏳ Scenes (save / apply / list / delete / update / exit)
