@@ -39,7 +39,9 @@ impl CurveConfig {
     /// Architecture-spec defaults: morning 05:45–06:30, sunset 21:30–23:00,
     /// night floor 15%, daytime 100%, color temp 2000K (night) → 2700K
     /// (morning end) → 4500K (midday peak) → 3500K (afternoon) → 2700K
-    /// (sunset start) → 2000K (sunset end).
+    /// (sunset start) → 2000K (sunset end). The bookend anchors at 00:00
+    /// and 23:59 pin the flat night sections so out-of-range lookups
+    /// return the night-floor color rather than the first/last transition.
     pub fn default_weekday() -> Self {
         Self {
             morning_start: MinuteOfDay::new(5, 45).expect("05:45 is valid"),
@@ -214,8 +216,12 @@ pub fn brightness_at(config: &CurveConfig, time: MinuteOfDay) -> u8 {
 /// is unspecified but the call never panics.
 pub fn color_temp_at(config: &CurveConfig, time: MinuteOfDay) -> u16 {
     let anchors = &config.color_temp_anchors;
+    debug_assert!(
+        !anchors.is_empty(),
+        "color_temp_at called with empty color_temp_anchors — caller must validate the config first"
+    );
     let Some(first) = anchors.first() else {
-        return 2000; // safe fallback for unvalidated empty config
+        return 2000; // safe fallback for unvalidated empty config in release
     };
     let last = anchors
         .last()
@@ -255,8 +261,10 @@ fn lerp_brightness(from: u8, to: u8, numerator: u16, denominator: u16) -> u8 {
     result.clamp(0, 100) as u8
 }
 
-/// Linear interpolation between two Kelvin values, clamped to the
-/// realistic 1000..=10000 K range.
+/// Linear interpolation between two Kelvin values.
+///
+/// `from` and `to` are guaranteed to be in `1000..=10000` by
+/// [`CurveConfig::validate`], so the result is too — no clamp needed.
 fn lerp_kelvin(from: u16, to: u16, numerator: u16, denominator: u16) -> u16 {
     if denominator == 0 {
         return from;
@@ -265,8 +273,7 @@ fn lerp_kelvin(from: u16, to: u16, numerator: u16, denominator: u16) -> u16 {
     let to = i32::from(to);
     let num = i32::from(numerator);
     let den = i32::from(denominator);
-    let result = from + (to - from) * num / den;
-    result.clamp(1000, 10000) as u16
+    (from + (to - from) * num / den) as u16
 }
 
 #[cfg(test)]
