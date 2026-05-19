@@ -26,6 +26,9 @@ desktop.ini
 /mosquitto-data
 /z2m-data
 
+# Personal config file (copy from examples/niles.example.toml)
+/niles.toml
+
 # mdBook output
 /docs/book
 
