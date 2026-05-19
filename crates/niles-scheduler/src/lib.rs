@@ -13,6 +13,6 @@ pub mod curve;
 pub mod error;
 pub mod time;
 
-pub use curve::{CurveConfig, Phase, brightness_at, phase_at};
+pub use curve::{CurveConfig, Phase, brightness_at, color_temp_at, phase_at};
 pub use error::{Error, Result};
 pub use time::MinuteOfDay;
