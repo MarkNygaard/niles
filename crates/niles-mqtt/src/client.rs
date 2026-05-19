@@ -1,7 +1,7 @@
 //! MQTT client wrapper.
 
 use crate::error::Result;
-use rumqttc::{AsyncClient, ConnAck, Event, EventLoop, Incoming, MqttOptions as RmqOptions, QoS};
+use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions as RmqOptions, QoS};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -99,6 +99,12 @@ impl std::fmt::Display for DisconnectReason {
 /// Initial connection failures (bad credentials, unreachable host)
 /// still surface via [`Self::last_error`] and terminate the loop,
 /// because those almost always require human intervention to fix.
+///
+/// During a runtime disconnect the eventloop sleeps on a backoff
+/// timer rather than draining outgoing requests, so concurrent
+/// [`Self::subscribe`] / [`Self::publish`] calls buffer up to the
+/// internal channel's capacity (32) and then block until reconnect.
+/// Treat them as best-effort while the broker is unreachable.
 pub struct MqttClient {
     client: AsyncClient,
     incoming: mpsc::UnboundedReceiver<Message>,
@@ -219,7 +225,7 @@ async fn pump_events(
 
     let reason = loop {
         match event_loop.poll().await {
-            Ok(Event::Incoming(Incoming::ConnAck(ConnAck { .. }))) => {
+            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                 if ever_connected {
                     info!("MQTT reconnected; replaying subscriptions");
                 } else {
