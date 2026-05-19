@@ -10,6 +10,7 @@
 pub mod error;
 pub mod home;
 pub mod lighting;
+pub mod mqtt;
 
 use serde::Deserialize;
 use std::path::Path;
@@ -17,12 +18,14 @@ use std::path::Path;
 pub use error::{Error, Result};
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig};
+pub use mqtt::MqttConfig;
 
 /// Top-level Niles configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub home: HomeConfig,
+    pub mqtt: MqttConfig,
     pub lighting: LightingConfig,
 }
 
@@ -62,6 +65,7 @@ impl Config {
     /// a future `into_validated()` will return them bundled.
     pub fn validate(&self) -> Result<()> {
         self.home.validate()?;
+        self.mqtt.validate()?;
         let _ = self.lighting.to_curve_config()?;
         Ok(())
     }
@@ -78,6 +82,12 @@ name = "test home"
 latitude = 56.1572
 longitude = 10.2107
 timezone = "Europe/Copenhagen"
+
+[mqtt]
+host = "192.168.42.16"
+port = 1883
+username_env = "NILES_MQTT_USERNAME"
+password_env = "NILES_MQTT_PASSWORD"
 
 [lighting]
 morning_start = "05:45"
@@ -195,6 +205,78 @@ kelvin = 2000
     fn rejects_invalid_toml_syntax() {
         let bad = "not = valid = toml";
         assert!(Config::load_from_str(bad).is_err());
+    }
+
+    #[test]
+    fn mqtt_defaults_are_filled_in() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        assert_eq!(cfg.mqtt.client_id, "niles");
+        assert_eq!(cfg.mqtt.z2m_prefix, "zigbee2mqtt");
+    }
+
+    #[test]
+    fn rejects_mqtt_empty_host() {
+        let bad = valid_toml().replace("host = \"192.168.42.16\"", "host = \"\"");
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_mqtt_zero_port() {
+        let bad = valid_toml().replace("port = 1883", "port = 0");
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_mqtt_z2m_prefix_with_wildcards() {
+        let bad = valid_toml().replace(
+            "username_env = \"NILES_MQTT_USERNAME\"",
+            "username_env = \"NILES_MQTT_USERNAME\"\nz2m_prefix = \"zigbee2mqtt/#\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn resolve_credentials_reads_env_vars() {
+        // Use unique var names so this test doesn't fight with parallel tests.
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::set_var("NILES_TEST_MQTT_USER", "u");
+            std::env::set_var("NILES_TEST_MQTT_PASS", "p");
+        }
+        let cfg = MqttConfig {
+            host: "h".into(),
+            port: 1883,
+            username_env: "NILES_TEST_MQTT_USER".into(),
+            password_env: "NILES_TEST_MQTT_PASS".into(),
+            client_id: "niles".into(),
+            z2m_prefix: "zigbee2mqtt".into(),
+        };
+        let (u, p) = cfg.resolve_credentials().unwrap();
+        assert_eq!(u, "u");
+        assert_eq!(p, "p");
+    }
+
+    #[test]
+    fn resolve_credentials_errors_when_env_var_missing() {
+        let cfg = MqttConfig {
+            host: "h".into(),
+            port: 1883,
+            username_env: "NILES_TEST_DEFINITELY_NOT_SET_USER_XYZ".into(),
+            password_env: "NILES_TEST_DEFINITELY_NOT_SET_PASS_XYZ".into(),
+            client_id: "niles".into(),
+            z2m_prefix: "zigbee2mqtt".into(),
+        };
+        let err = cfg.resolve_credentials().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "mqtt",
+                ..
+            }
+        ));
     }
 
     #[test]

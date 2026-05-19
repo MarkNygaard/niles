@@ -9,9 +9,9 @@ this file in every PR that completes a phase deliverable.
 ## Snapshot
 
 - **Crates with content:** `niles-core`, `niles-intent`, `niles-scheduler`
-- **In flight:** Phase 6 (color temp curve, scenes, morning routine still pending)
-- **Blocked on hardware:** Phase 1 (Mosquitto + Z2M cluster deployment), Phase 3 (voice satellite firmware)
-- **Last PR merged:** [#8 — niles-config](https://github.com/MarkNygaard/niles/pull/8)
+- **In flight:** Phase 2 (`niles-mqtt` connection + Z2M parser landed; registry wiring next), Phase 6 (scenes, morning routine still pending)
+- **Blocked on hardware:** Phase 1 (Z2M can't connect to coordinator until the SLZB-06MU arrives), Phase 3 (voice satellite firmware)
+- **Last PR merged:** [#9 — niles-mqtt connection + Z2M parser](https://github.com/MarkNygaard/niles/pull/9)
 
 ---
 

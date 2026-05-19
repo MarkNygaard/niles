@@ -1,0 +1,71 @@
+# Niles example config. Copy to ./niles.toml (gitignored) and edit values.
+#
+# Secrets never live in this file — TOML carries env-var *names*, and
+# the runtime resolves them at startup. For local dev, put the values
+# in .env at the repo root (also gitignored). For a k8s deploy, mount
+# them via a Secret.
+
+[home]
+name = "your home name"
+latitude = 56.1572
+longitude = 10.2107
+timezone = "Europe/Copenhagen"
+
+[mqtt]
+# Broker reachable from where you run `niles`. For a cluster deploy
+# this is the in-cluster service DNS; for local dev pointed at a
+# cluster broker, use the LoadBalancer/NodePort IP.
+host = "127.0.0.1"
+port = 1883
+# Real credentials live in NILES_MQTT_USERNAME / NILES_MQTT_PASSWORD,
+# loaded from .env in local dev or a k8s Secret in deploy.
+username_env = "NILES_MQTT_USERNAME"
+password_env = "NILES_MQTT_PASSWORD"
+# Optional overrides (defaults shown):
+# client_id   = "niles"
+# z2m_prefix  = "zigbee2mqtt"
+
+[lighting]
+# Times are HH:MM in local wall-clock. See ARCHITECTURE.md for the
+# semantics of each phase.
+morning_start = "05:45"
+morning_end   = "06:30"
+sunset_start  = "21:30"
+sunset_end    = "23:00"
+night_floor_brightness = 15
+daytime_brightness     = 100
+
+# Color temperature anchors throughout the day. Linear interpolation
+# between adjacent anchors; outside the anchor range, the nearest
+# anchor value is used.
+[[lighting.color_temp_anchors]]
+time = "00:00"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "05:45"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "06:30"
+kelvin = 2700
+
+[[lighting.color_temp_anchors]]
+time = "12:00"
+kelvin = 4500
+
+[[lighting.color_temp_anchors]]
+time = "17:00"
+kelvin = 3500
+
+[[lighting.color_temp_anchors]]
+time = "21:30"
+kelvin = 2700
+
+[[lighting.color_temp_anchors]]
+time = "23:00"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "23:59"
+kelvin = 2000
