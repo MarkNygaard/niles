@@ -9,3 +9,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+niles-scheduler.workspace = true
