@@ -11,7 +11,7 @@ this file in every PR that completes a phase deliverable.
 - **Crates with content:** `niles-core`, `niles-intent`, `niles-scheduler`
 - **In flight:** Phase 6 (color temp curve, scenes, morning routine still pending)
 - **Blocked on hardware:** Phase 1 (Mosquitto + Z2M cluster deployment), Phase 3 (voice satellite firmware)
-- **Last PR merged:** [#7 — color temperature curve](https://github.com/MarkNygaard/niles/pull/7)
+- **Last PR merged:** [#8 — niles-config](https://github.com/MarkNygaard/niles/pull/8)
 
 ---
 
@@ -55,7 +55,7 @@ Blocked on Phase 0 hardware delivery + decision on Kustomize manifest authoring.
 - ✅ `niles-core` — event bus, device registry, shared types [#2](https://github.com/MarkNygaard/niles/pull/2)
 - ⏳ `niles-mqtt` — Z2M subscriber that auto-populates the registry (blocked on Mosquitto + Z2M)
 - ⏳ `niles-api` — HTTP read-only device list and state
-- ⏳ `niles-config` — TOML loading and validation
+- ✅ `niles-config` — TOML loading and validation [#8](https://github.com/MarkNygaard/niles/pull/8) (`[home]` + `[lighting]` sections; new sections land alongside their consuming crates)
 
 ---
 

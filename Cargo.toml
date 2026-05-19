@@ -15,3 +15,9 @@ unused_must_use = "deny"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
 regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
+# any crate that depends on another workspace crate.
+niles-scheduler = { path = "crates/niles-scheduler" }
