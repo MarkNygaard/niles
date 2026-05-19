@@ -1,11 +1,16 @@
 //! Error types for niles-config.
 
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("could not read config file: {0}")]
-    Read(#[from] std::io::Error),
+    #[error("could not read config file {}: {source}", path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("could not parse config TOML: {0}")]
     Parse(#[from] toml::de::Error),

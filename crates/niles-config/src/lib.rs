@@ -33,13 +33,33 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Read and parse a TOML file.
+    /// Read and parse a TOML file. The path is preserved in any I/O
+    /// error so `file not found` surfaces *which* file was missing.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|source| Error::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
         Self::load_from_str(&content)
     }
 
-    /// Validate every subsection. Returns the first error encountered.
+    /// Verify every subsection is loadable and consistent. Call this
+    /// at startup to fail-fast on a malformed config.
+    ///
+    /// After a successful `validate()`, call section-specific
+    /// converters to obtain typed configs:
+    ///
+    /// ```ignore
+    /// let cfg = niles_config::Config::load_from_path(path)?;
+    /// cfg.validate()?;
+    /// let curve = cfg.lighting.to_curve_config()
+    ///     .expect("already validated above");
+    /// ```
+    ///
+    /// The two-step (`validate()` + `to_curve_config()`) is deliberate
+    /// while there's only one typed section. Once more sections exist,
+    /// a future `into_validated()` will return them bundled.
     pub fn validate(&self) -> Result<()> {
         self.home.validate()?;
         let _ = self.lighting.to_curve_config()?;
@@ -175,6 +195,30 @@ kelvin = 2000
     fn rejects_invalid_toml_syntax() {
         let bad = "not = valid = toml";
         assert!(Config::load_from_str(bad).is_err());
+    }
+
+    #[test]
+    fn load_from_path_includes_path_in_error() {
+        let missing = std::path::Path::new("does/not/exist/niles.toml");
+        let err = Config::load_from_path(missing).unwrap_err();
+        match err {
+            Error::Read { path, .. } => {
+                assert_eq!(path, missing, "Error::Read should carry the offending path");
+                // Display impl should mention the path so it's visible in logs.
+                let rendered = format!(
+                    "{}",
+                    Error::Read {
+                        path: path.clone(),
+                        source: std::io::Error::other("test"),
+                    }
+                );
+                assert!(
+                    rendered.contains("does"),
+                    "expected path in rendered error, got: {rendered}"
+                );
+            }
+            other => panic!("expected Error::Read, got {other:?}"),
+        }
     }
 
     #[test]
