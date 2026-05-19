@@ -83,10 +83,10 @@ struct SetArgs {
     #[arg(long)]
     on: Option<bool>,
     /// Brightness percent (0–100).
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
     brightness: Option<u8>,
-    /// Color temperature in Kelvin.
-    #[arg(long)]
+    /// Color temperature in Kelvin (typical lighting range 1000–20000).
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1000..=20000))]
     kelvin: Option<u16>,
     /// Print the message that would be published without actually sending.
     #[arg(long)]
