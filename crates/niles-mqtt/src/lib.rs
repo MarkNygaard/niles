@@ -13,8 +13,10 @@
 
 pub mod client;
 pub mod error;
+pub mod source;
 pub mod z2m;
 
 pub use client::{DisconnectReason, Message, MqttClient, MqttOptions};
 pub use error::{Error, Result};
+pub use source::Z2mSource;
 pub use z2m::{Z2mDevice, Z2mState};
