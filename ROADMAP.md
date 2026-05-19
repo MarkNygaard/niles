@@ -9,9 +9,9 @@ this file in every PR that completes a phase deliverable.
 ## Snapshot
 
 - **Crates with content:** `niles-core`, `niles-intent`, `niles-scheduler`
-- **In flight:** Phase 2 (`niles-mqtt` now reads + writes; `niles-api` next), Phase 6 (scenes, morning routine still pending)
+- **In flight:** Phase 2 (`niles-mqtt` reads + writes; `niles-api` exposes the registry over HTTP), Phase 6 (scenes, morning routine still pending)
 - **Blocked on hardware:** Phase 1 (Z2M can't connect to coordinator until the SLZB-06MU arrives), Phase 3 (voice satellite firmware)
-- **Last PR merged:** [#12 — niles-mqtt Z2M command publishing](https://github.com/MarkNygaard/niles/pull/12)
+- **Last PR merged:** [#13 — niles-api read-only HTTP endpoints](https://github.com/MarkNygaard/niles/pull/13)
 
 ---
 
@@ -54,7 +54,7 @@ Blocked on Phase 0 hardware delivery + decision on Kustomize manifest authoring.
 
 - ✅ `niles-core` — event bus, device registry, shared types [#2](https://github.com/MarkNygaard/niles/pull/2)
 - 🚧 `niles-mqtt` — connection + Z2M parser ([#9](https://github.com/MarkNygaard/niles/pull/9)) + registry wiring via `Z2mSource` ([#10](https://github.com/MarkNygaard/niles/pull/10)) + auto-reconnect with subscription replay ([#11](https://github.com/MarkNygaard/niles/pull/11)) + Z2M command publishing ([#12](https://github.com/MarkNygaard/niles/pull/12)). Source + sink ownership refactor still pending for a real `niles serve` (currently the source consumes the client; sink uses its own short-lived connection in `niles set`).
-- ⏳ `niles-api` — HTTP read-only device list and state
+- 🚧 `niles-api` — read-only HTTP endpoints (`GET /devices`, `GET /rooms/{room}`, `GET /healthz`) over the registry [#13](https://github.com/MarkNygaard/niles/pull/13). New `niles api` subcommand runs source + API together. Write endpoints + WebSocket event stream still pending.
 - ✅ `niles-config` — TOML loading and validation [#8](https://github.com/MarkNygaard/niles/pull/8) (`[home]` + `[lighting]` sections; new sections land alongside their consuming crates)
 
 ---

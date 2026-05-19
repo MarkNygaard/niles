@@ -25,6 +25,12 @@ password_env = "NILES_MQTT_PASSWORD"
 # client_id   = "niles"
 # z2m_prefix  = "zigbee2mqtt"
 
+[api]
+# HTTP API server bind address. `0.0.0.0` listens on all interfaces
+# (handy for cluster deploy + local curl); use `127.0.0.1` to scope
+# to localhost only.
+bind_address = "0.0.0.0:8080"
+
 [lighting]
 # Times are HH:MM in local wall-clock. See ARCHITECTURE.md for the
 # semantics of each phase.
