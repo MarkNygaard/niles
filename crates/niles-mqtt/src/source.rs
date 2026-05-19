@@ -48,36 +48,39 @@ impl Z2mSource {
     /// Subscribe to the Z2M topics and run the message loop until the
     /// underlying MQTT client disconnects.
     pub async fn run(mut self) -> Result<()> {
-        let bridge_topic = format!("{}/bridge/devices", self.prefix);
-        // `+/+` matches `<room>/<device>` per-device state topics.
+        // `+/+` matches every two-level topic under the prefix, which
+        // covers both `bridge/devices` (the device list) and
+        // `<room>/<device>` (per-device state). Routing inside
+        // `dispatch` distinguishes them.
         let state_pattern = format!("{}/+/+", self.prefix);
-        self.client.subscribe(&bridge_topic).await?;
         self.client.subscribe(&state_pattern).await?;
 
         while let Some(msg) = self.client.next_message().await {
-            self.dispatch(&msg);
+            dispatch(&msg, &self.prefix, &self.registry, &self.bus);
         }
         Ok(())
     }
+}
 
-    /// Route an incoming message to the right handler.
-    pub(crate) fn dispatch(&self, msg: &Message) {
-        let Some(rest) = msg.topic.strip_prefix(&self.prefix) else {
-            return;
-        };
-        let Some(rest) = rest.strip_prefix('/') else {
-            return;
-        };
+/// Route an incoming message to the right handler. Extracted as a
+/// free function so tests can exercise routing without constructing a
+/// real `MqttClient`.
+pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, bus: &EventBus) {
+    let Some(rest) = msg.topic.strip_prefix(prefix) else {
+        return;
+    };
+    let Some(rest) = rest.strip_prefix('/') else {
+        return;
+    };
 
-        if rest == "bridge/devices" {
-            handle_device_list(&msg.payload, &self.registry, &self.bus);
-        } else if let Some((room, device)) = split_room_device(rest) {
-            // Skip Z2M's internal `bridge/*` topics other than `bridge/devices`.
-            if room == "bridge" {
-                return;
-            }
-            handle_device_state(room, device, &msg.payload, &self.registry, &self.bus);
+    if rest == "bridge/devices" {
+        handle_device_list(&msg.payload, registry, bus);
+    } else if let Some((room, device)) = split_room_device(rest) {
+        // Skip Z2M's internal `bridge/*` topics other than `bridge/devices`.
+        if room == "bridge" {
+            return;
         }
+        handle_device_state(room, device, &msg.payload, registry, bus);
     }
 }
 
@@ -173,14 +176,18 @@ pub(crate) fn handle_device_state(
             return;
         }
     };
-    let state = z2m_state.to_device_state();
-    let updated = registry.update_state(&id, state.clone());
+    let partial = z2m_state.to_device_state();
+    let updated = registry.merge_state(&id, partial.clone());
     if !updated {
-        debug!("state for {id} arrived before bridge/devices — buffering");
-        // We still publish the event so subscribers see it; downstream
-        // can decide whether to ignore states for unknown devices.
+        // State can arrive before bridge/devices on startup. We
+        // discard it from the registry (no entry to merge into) but
+        // still publish the event so any pre-bound subscribers see
+        // it. Z2M republishes the full inventory shortly after
+        // connect, which will re-prime the registry; devices report
+        // current state on the next change.
+        debug!("state for unknown {id} discarded; awaiting bridge/devices");
     }
-    bus.publish(Event::DeviceStateChanged { id, state });
+    bus.publish(Event::DeviceStateChanged { id, state: partial });
 }
 
 #[cfg(test)]
@@ -315,6 +322,45 @@ mod tests {
         assert!(matches!(events[0], Event::DeviceStateChanged { .. }));
     }
 
+    /// Z2M only republishes the fields that changed. A subsequent
+    /// delta must not clobber fields the registry already knows about.
+    #[test]
+    fn partial_state_messages_do_not_clobber_known_fields() {
+        let (registry, bus, mut rx) = fixtures();
+        let device_list = br#"[
+            {"ieee_address":"0x1","friendly_name":"kitchen/ceiling_light","type":"Router"}
+        ]"#;
+        handle_device_list(device_list, &registry, &bus);
+        drain(&mut rx);
+
+        // Full state arrives first.
+        handle_device_state(
+            "kitchen",
+            "ceiling_light",
+            br#"{"state":"ON","brightness":254,"color_temp":250}"#,
+            &registry,
+            &bus,
+        );
+        // Then a brightness-only delta.
+        handle_device_state(
+            "kitchen",
+            "ceiling_light",
+            br#"{"brightness":127}"#,
+            &registry,
+            &bus,
+        );
+
+        let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
+        let s = registry.get(&id).unwrap().state;
+        assert_eq!(s.on, Some(true), "on must survive a brightness-only update");
+        assert_eq!(s.brightness, Some(50));
+        assert_eq!(
+            s.color_temp_kelvin,
+            Some(4000),
+            "color_temp must survive a brightness-only update"
+        );
+    }
+
     #[test]
     fn state_for_unknown_device_still_emits_event() {
         // State can arrive before bridge/devices on startup; the
@@ -336,24 +382,9 @@ mod tests {
 
     // ---- dispatch routing ----------------------------------------
 
-    fn make_source(prefix: &str) -> (Arc<DeviceRegistry>, EventBus, Z2mSource) {
-        // We can't easily construct an MqttClient without a runtime
-        // and a broker, but dispatch only uses prefix/registry/bus.
-        // So we build a "dummy" source by tunnelling through
-        // private fields — done via a tokio runtime that connects to
-        // a nonsense host. The pump task exits immediately on error;
-        // dispatch is callable as long as the struct exists.
-        let registry = Arc::new(DeviceRegistry::new());
-        let bus = EventBus::default();
-        let opts = crate::MqttOptions::new("127.0.0.1", 1, "test").with_credentials("u", "p");
-        let client = MqttClient::connect(opts);
-        let source = Z2mSource::new(client, registry.clone(), bus.clone(), prefix);
-        (registry, bus, source)
-    }
-
-    #[tokio::test]
-    async fn dispatch_routes_bridge_devices() {
-        let (registry, _bus, source) = make_source("zigbee2mqtt");
+    #[test]
+    fn dispatch_routes_bridge_devices() {
+        let (registry, bus, _rx) = fixtures();
         let msg = Message {
             topic: "zigbee2mqtt/bridge/devices".into(),
             payload: br#"[
@@ -361,43 +392,43 @@ mod tests {
             ]"#
             .to_vec(),
         };
-        source.dispatch(&msg);
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert_eq!(registry.list_all().len(), 1);
     }
 
-    #[tokio::test]
-    async fn dispatch_routes_state_topics() {
-        let (registry, _bus, source) = make_source("zigbee2mqtt");
+    #[test]
+    fn dispatch_routes_state_topics() {
+        let (registry, bus, _rx) = fixtures();
         let msg = Message {
             topic: "zigbee2mqtt/office/desk_lamp".into(),
             payload: br#"{"state":"ON"}"#.to_vec(),
         };
-        source.dispatch(&msg);
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         // No registry entry yet (no bridge/devices first), but the
         // call should not panic and the bus event should have fired.
         let id = DeviceId::parse("z2m:office/desk_lamp").unwrap();
         assert!(registry.get(&id).is_none());
     }
 
-    #[tokio::test]
-    async fn dispatch_ignores_unrelated_topics() {
-        let (registry, _bus, source) = make_source("zigbee2mqtt");
+    #[test]
+    fn dispatch_ignores_unrelated_topics() {
+        let (registry, bus, _rx) = fixtures();
         let msg = Message {
             topic: "homeassistant/light/foo".into(),
             payload: b"{}".to_vec(),
         };
-        source.dispatch(&msg);
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(registry.is_empty());
     }
 
-    #[tokio::test]
-    async fn dispatch_ignores_z2m_internal_topics() {
-        let (registry, _bus, source) = make_source("zigbee2mqtt");
+    #[test]
+    fn dispatch_ignores_z2m_internal_topics() {
+        let (registry, bus, _rx) = fixtures();
         let msg = Message {
             topic: "zigbee2mqtt/bridge/logging".into(),
             payload: br#"{"level":"info"}"#.to_vec(),
         };
-        source.dispatch(&msg);
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(registry.is_empty());
     }
 }

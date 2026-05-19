@@ -39,15 +39,26 @@ impl DeviceRegistry {
         guard.get(id).cloned()
     }
 
-    /// Update the state of an existing device. Returns `true` if updated.
-    pub fn update_state(&self, id: &DeviceId, state: DeviceState) -> bool {
+    /// Merge a partial state update into an existing device.
+    ///
+    /// `Some` fields in `partial` overwrite the stored value; `None`
+    /// fields preserve it. This matches the `DeviceState` contract:
+    /// upstream reports only what changed, so a `None` means "not
+    /// reported", never "cleared". Returns `true` if the device
+    /// existed and was updated.
+    pub fn merge_state(&self, id: &DeviceId, partial: DeviceState) -> bool {
         let mut guard = self.devices.write().unwrap();
-        if let Some(device) = guard.get_mut(id) {
-            device.state = state;
-            true
-        } else {
-            false
-        }
+        let Some(device) = guard.get_mut(id) else {
+            return false;
+        };
+        let s = &mut device.state;
+        s.on = partial.on.or(s.on);
+        s.brightness = partial.brightness.or(s.brightness);
+        s.color_temp_kelvin = partial.color_temp_kelvin.or(s.color_temp_kelvin);
+        s.temperature_celsius = partial.temperature_celsius.or(s.temperature_celsius);
+        s.humidity_percent = partial.humidity_percent.or(s.humidity_percent);
+        s.battery_percent = partial.battery_percent.or(s.battery_percent);
+        true
     }
 
     /// All devices in the given room.
@@ -116,27 +127,66 @@ mod tests {
     }
 
     #[test]
-    fn update_state_existing() {
+    fn merge_state_existing() {
         let registry = DeviceRegistry::new();
         let device = make_device("kitchen", "ceiling_light");
         registry.upsert(device.clone());
 
-        let new_state = DeviceState {
+        let partial = DeviceState {
             on: Some(true),
             brightness: Some(80),
             ..Default::default()
         };
-        assert!(registry.update_state(&device.id, new_state.clone()));
+        assert!(registry.merge_state(&device.id, partial.clone()));
 
         let retrieved = registry.get(&device.id).unwrap();
-        assert_eq!(retrieved.state, new_state);
+        assert_eq!(retrieved.state, partial);
+    }
+
+    /// The contract on `DeviceState`: `None` in a partial means "not
+    /// reported", not "cleared". Subsequent partials must not clobber
+    /// fields that earlier reports set.
+    #[test]
+    fn merge_state_preserves_unreported_fields() {
+        let registry = DeviceRegistry::new();
+        let device = make_device("kitchen", "ceiling_light");
+        registry.upsert(device.clone());
+
+        // Full initial state.
+        registry.merge_state(
+            &device.id,
+            DeviceState {
+                on: Some(true),
+                brightness: Some(100),
+                color_temp_kelvin: Some(4000),
+                ..Default::default()
+            },
+        );
+
+        // Z2M sends a brightness-only delta.
+        registry.merge_state(
+            &device.id,
+            DeviceState {
+                brightness: Some(60),
+                ..Default::default()
+            },
+        );
+
+        let s = registry.get(&device.id).unwrap().state;
+        assert_eq!(s.on, Some(true), "on must survive a brightness-only update");
+        assert_eq!(s.brightness, Some(60));
+        assert_eq!(
+            s.color_temp_kelvin,
+            Some(4000),
+            "color_temp must survive a brightness-only update"
+        );
     }
 
     #[test]
-    fn update_state_missing_returns_false() {
+    fn merge_state_missing_returns_false() {
         let registry = DeviceRegistry::new();
         let id = make_device("kitchen", "ceiling_light").id;
-        assert!(!registry.update_state(&id, DeviceState::default()));
+        assert!(!registry.merge_state(&id, DeviceState::default()));
     }
 
     #[test]
