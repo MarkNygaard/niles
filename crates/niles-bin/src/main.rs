@@ -115,7 +115,11 @@ async fn mqtt_tap(args: MqttTapArgs) -> anyhow::Result<()> {
                     println!("[{}] {}", msg.topic, body);
                 }
                 None => {
-                    eprintln!("\nMQTT event loop terminated. Exiting.");
+                    let reason = client.last_error().await;
+                    match reason {
+                        Some(r) => eprintln!("\nMQTT event loop terminated: {r}"),
+                        None => eprintln!("\nMQTT event loop terminated."),
+                    }
                     break;
                 }
             },

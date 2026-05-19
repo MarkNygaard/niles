@@ -15,6 +15,6 @@ pub mod client;
 pub mod error;
 pub mod z2m;
 
-pub use client::{Message, MqttClient, MqttOptions};
+pub use client::{DisconnectReason, Message, MqttClient, MqttOptions};
 pub use error::{Error, Result};
 pub use z2m::{Z2mDevice, Z2mState};

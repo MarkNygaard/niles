@@ -3,7 +3,7 @@
 use crate::error::Result;
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions as RmqOptions, QoS};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 /// Configuration for connecting to an MQTT broker.
@@ -63,7 +63,28 @@ impl Message {
 pub struct MqttClient {
     client: AsyncClient,
     incoming: mpsc::UnboundedReceiver<Message>,
+    disconnect: Option<oneshot::Receiver<DisconnectReason>>,
     _event_loop: JoinHandle<()>,
+}
+
+/// Why the event-loop task terminated.
+#[derive(Debug, Clone)]
+pub enum DisconnectReason {
+    /// `MqttClient` was dropped while the eventloop was still running.
+    /// Normal shutdown from the eventloop's perspective.
+    ConsumerDropped,
+    /// `rumqttc` returned an error from `poll()`. The string is
+    /// `e.to_string()` because rumqttc's errors aren't `Clone`.
+    Error(String),
+}
+
+impl std::fmt::Display for DisconnectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConsumerDropped => f.write_str("consumer dropped the receiver"),
+            Self::Error(s) => f.write_str(s),
+        }
+    }
 }
 
 impl MqttClient {
@@ -79,11 +100,13 @@ impl MqttClient {
 
         let (client, event_loop) = AsyncClient::new(rmq, 32);
         let (tx, rx) = mpsc::unbounded_channel();
-        let handle = tokio::spawn(pump_events(event_loop, tx));
+        let (disc_tx, disc_rx) = oneshot::channel();
+        let handle = tokio::spawn(pump_events(event_loop, tx, disc_tx));
 
         Self {
             client,
             incoming: rx,
+            disconnect: Some(disc_rx),
             _event_loop: handle,
         }
     }
@@ -104,17 +127,35 @@ impl MqttClient {
     }
 
     /// Block until the next incoming message arrives, or `None` if
-    /// the eventloop has terminated.
+    /// the eventloop has terminated. On `None`, call
+    /// [`Self::last_error`] to retrieve the disconnect reason.
     pub async fn next_message(&mut self) -> Option<Message> {
         self.incoming.recv().await
+    }
+
+    /// After [`Self::next_message`] returns `None`, this returns the
+    /// reason the eventloop terminated — bad credentials, broker
+    /// disconnect, DNS failure, etc. Returns `None` if the eventloop
+    /// is still running or the reason has already been consumed.
+    ///
+    /// Async because it awaits the oneshot from the eventloop task,
+    /// which may not have sent yet when `next_message` first returns
+    /// `None` (rare race; usually it has).
+    pub async fn last_error(&mut self) -> Option<DisconnectReason> {
+        let rx = self.disconnect.take()?;
+        rx.await.ok()
     }
 }
 
 /// Background task that pumps the rumqttc `EventLoop` and forwards
-/// `Publish` packets to the consumer channel. Exits silently when
-/// the consumer drops the receiver or the eventloop errors.
-async fn pump_events(mut event_loop: EventLoop, tx: mpsc::UnboundedSender<Message>) {
-    loop {
+/// `Publish` packets to the consumer channel. Always reports a
+/// [`DisconnectReason`] on exit so callers can diagnose failures.
+async fn pump_events(
+    mut event_loop: EventLoop,
+    tx: mpsc::UnboundedSender<Message>,
+    disc_tx: oneshot::Sender<DisconnectReason>,
+) {
+    let reason = loop {
         match event_loop.poll().await {
             Ok(Event::Incoming(Incoming::Publish(p))) => {
                 let msg = Message {
@@ -122,21 +163,21 @@ async fn pump_events(mut event_loop: EventLoop, tx: mpsc::UnboundedSender<Messag
                     payload: p.payload.to_vec(),
                 };
                 if tx.send(msg).is_err() {
-                    // Consumer dropped the receiver — clean shutdown.
-                    break;
+                    break DisconnectReason::ConsumerDropped;
                 }
             }
             Ok(_) => {} // ack/pingresp/etc. — uninteresting here
             Err(e) => {
-                // Surface the disconnect so downstream knows the
-                // stream ended. rumqttc auto-reconnects on subsequent
-                // poll calls, but for v0.1 we exit on first error
-                // and let the caller decide how to handle it.
-                let _ = e;
-                break;
+                // rumqttc auto-reconnects on subsequent poll calls,
+                // but for v0.1 we surface the first error and exit.
+                // The caller can decide whether to retry.
+                break DisconnectReason::Error(e.to_string());
             }
         }
-    }
+    };
+    // If the receiver was dropped (client itself dropped), we don't
+    // care — no one's listening.
+    let _ = disc_tx.send(reason);
 }
 
 #[cfg(test)]
@@ -168,5 +209,41 @@ mod tests {
             payload: vec![0xff, 0xfe, 0xfd],
         };
         assert_eq!(msg.payload_str(), None);
+    }
+
+    #[test]
+    fn disconnect_reason_display() {
+        assert_eq!(
+            DisconnectReason::ConsumerDropped.to_string(),
+            "consumer dropped the receiver"
+        );
+        assert_eq!(
+            DisconnectReason::Error("bad password".into()).to_string(),
+            "bad password"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_error_reports_connection_failure() {
+        // Connect to a port that isn't bound; pump_events should
+        // surface the error through last_error().
+        let opts = MqttOptions {
+            host: "127.0.0.1".into(),
+            port: 1, // privileged port, almost certainly nothing listening
+            client_id: "niles-test".into(),
+            username: None,
+            password: None,
+            keep_alive: Some(Duration::from_secs(1)),
+        };
+        let mut client = MqttClient::connect(opts);
+        // next_message returns None when the loop exits with an error
+        assert!(client.next_message().await.is_none());
+        let reason = client.last_error().await;
+        match reason {
+            Some(DisconnectReason::Error(s)) => {
+                assert!(!s.is_empty(), "expected non-empty error string");
+            }
+            other => panic!("expected DisconnectReason::Error, got {other:?}"),
+        }
     }
 }
