@@ -23,10 +23,14 @@ dotenvy = "0.15"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+axum = "0.7"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
 niles-core = { path = "crates/niles-core" }
 niles-config = { path = "crates/niles-config" }
 niles-mqtt = { path = "crates/niles-mqtt" }
+niles-api = { path = "crates/niles-api" }
 niles-scheduler = { path = "crates/niles-scheduler" }

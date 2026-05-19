@@ -22,3 +22,4 @@ tracing-subscriber.workspace = true
 niles-core.workspace = true
 niles-config.workspace = true
 niles-mqtt.workspace = true
+niles-api.workspace = true

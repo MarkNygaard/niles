@@ -2,6 +2,7 @@
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
+use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_mqtt::{MqttClient, MqttOptions, Z2mSource, format_set_command, is_actionable};
@@ -41,6 +42,10 @@ enum Commands {
     Discover(DiscoverArgs),
     /// Send a Z2M set-command to a device (dev tool).
     Set(SetArgs),
+    /// Run the Z2M source + HTTP API together. Devices land in the
+    /// registry as Z2M reports them, and `curl http://<bind>/devices`
+    /// returns the current snapshot.
+    Api(ApiArgs),
 }
 
 #[derive(Subcommand)]
@@ -93,6 +98,13 @@ struct SetArgs {
     dry_run: bool,
 }
 
+#[derive(Args)]
+struct ApiArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -118,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::MqttTap(args) => mqtt_tap(args).await,
         Commands::Discover(args) => discover(args).await,
         Commands::Set(args) => set(args).await,
+        Commands::Api(args) => api(args).await,
     }
 }
 
@@ -274,5 +287,44 @@ async fn set(args: SetArgs) -> anyhow::Result<()> {
     // event-loop task). 250ms is overkill for a healthy broker.
     tokio::time::sleep(Duration::from_millis(250)).await;
 
+    Ok(())
+}
+
+async fn api(args: ApiArgs) -> anyhow::Result<()> {
+    let (cfg, client) = connect_from_config(&args.config).await?;
+    let bind = cfg
+        .api
+        .socket_addr()
+        .context("resolving api.bind_address")?;
+
+    let registry = Arc::new(DeviceRegistry::new());
+    let bus = EventBus::default();
+
+    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
+    let source_handle = tokio::spawn(async move {
+        if let Err(e) = source.run().await {
+            tracing::error!("Z2mSource exited: {e}");
+        }
+    });
+
+    let state = AppState::new(registry.clone());
+    let api_handle = tokio::spawn(async move {
+        if let Err(e) = niles_api::serve(bind, state).await {
+            tracing::error!("API server exited: {e}");
+        }
+    });
+
+    eprintln!(
+        "Z2M source running on {prefix}/+/+; API listening on http://{bind}\n  GET /devices   /rooms/<room>   /healthz\nPress Ctrl-C to exit.",
+        prefix = cfg.mqtt.z2m_prefix
+    );
+
+    tokio::signal::ctrl_c()
+        .await
+        .context("listening for Ctrl-C")?;
+    eprintln!("\nReceived Ctrl-C, shutting down.");
+
+    api_handle.abort();
+    source_handle.abort();
     Ok(())
 }

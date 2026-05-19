@@ -7,6 +7,7 @@
 //! Currently covered sections: `[home]`, `[lighting]`. New sections
 //! land alongside the crates that consume them.
 
+pub mod api;
 pub mod error;
 pub mod home;
 pub mod lighting;
@@ -15,6 +16,7 @@ pub mod mqtt;
 use serde::Deserialize;
 use std::path::Path;
 
+pub use api::ApiConfig;
 pub use error::{Error, Result};
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig};
@@ -26,6 +28,7 @@ pub use mqtt::MqttConfig;
 pub struct Config {
     pub home: HomeConfig,
     pub mqtt: MqttConfig,
+    pub api: ApiConfig,
     pub lighting: LightingConfig,
 }
 
@@ -66,6 +69,7 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         self.home.validate()?;
         self.mqtt.validate()?;
+        self.api.validate()?;
         let _ = self.lighting.to_curve_config()?;
         Ok(())
     }
@@ -88,6 +92,9 @@ host = "192.168.42.16"
 port = 1883
 username_env = "NILES_MQTT_USERNAME"
 password_env = "NILES_MQTT_PASSWORD"
+
+[api]
+bind_address = "0.0.0.0:8080"
 
 [lighting]
 morning_start = "05:45"
@@ -277,6 +284,23 @@ kelvin = 2000
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn api_section_parses_and_resolves_socket_addr() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        let addr = cfg.api.socket_addr().unwrap();
+        assert_eq!(addr.port(), 8080);
+    }
+
+    #[test]
+    fn rejects_invalid_api_bind_address() {
+        let bad = valid_toml().replace(
+            "bind_address = \"0.0.0.0:8080\"",
+            "bind_address = \"not-an-address\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
