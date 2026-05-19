@@ -3,8 +3,11 @@
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use niles_config::Config;
-use niles_mqtt::{MqttClient, MqttOptions};
+use niles_core::{DeviceRegistry, Event, EventBus};
+use niles_mqtt::{MqttClient, MqttOptions, Z2mSource};
 use std::path::PathBuf;
+use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "niles", about = "AI-first home automation system", version)]
@@ -33,6 +36,8 @@ enum Commands {
     },
     /// Connect to MQTT and print received messages (for development).
     MqttTap(MqttTapArgs),
+    /// Discover devices via Z2M and print add/remove/state-change events.
+    Discover(DiscoverArgs),
 }
 
 #[derive(Subcommand)]
@@ -57,10 +62,23 @@ struct MqttTapArgs {
     topic: String,
 }
 
+#[derive(Args)]
+struct DiscoverArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
     let _ = dotenvy::dotenv();
+
+    // Initialize tracing. Honors RUST_LOG; defaults to `info` for the
+    // niles_* crates so dev subcommands give meaningful output.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("niles_mqtt=info,niles_bin=info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cli = Cli::parse();
     match cli.command {
@@ -74,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
             ToolsAction::List => todo!("implement `tools list`"),
         },
         Commands::MqttTap(args) => mqtt_tap(args).await,
+        Commands::Discover(args) => discover(args).await,
     }
 }
 
@@ -81,9 +100,13 @@ async fn config_validate() -> anyhow::Result<()> {
     todo!("implement `config validate`")
 }
 
-async fn mqtt_tap(args: MqttTapArgs) -> anyhow::Result<()> {
-    let cfg = Config::load_from_path(&args.config)
-        .with_context(|| format!("loading config from {}", args.config.display()))?;
+/// Build an `MqttClient` connected to the broker described in
+/// `niles.toml`, with credentials resolved from env vars.
+async fn connect_from_config(
+    config_path: &std::path::Path,
+) -> anyhow::Result<(Config, MqttClient)> {
+    let cfg = Config::load_from_path(config_path)
+        .with_context(|| format!("loading config from {}", config_path.display()))?;
     cfg.validate().context("validating config")?;
 
     let (username, password) = cfg
@@ -98,7 +121,12 @@ async fn mqtt_tap(args: MqttTapArgs) -> anyhow::Result<()> {
 
     let opts = MqttOptions::new(&cfg.mqtt.host, cfg.mqtt.port, &cfg.mqtt.client_id)
         .with_credentials(username, password);
-    let mut client = MqttClient::connect(opts);
+    let client = MqttClient::connect(opts);
+    Ok((cfg, client))
+}
+
+async fn mqtt_tap(args: MqttTapArgs) -> anyhow::Result<()> {
+    let (_cfg, mut client) = connect_from_config(&args.config).await?;
 
     client
         .subscribe(&args.topic)
@@ -128,6 +156,54 @@ async fn mqtt_tap(args: MqttTapArgs) -> anyhow::Result<()> {
                 break;
             }
         }
+    }
+
+    Ok(())
+}
+
+async fn discover(args: DiscoverArgs) -> anyhow::Result<()> {
+    let (cfg, client) = connect_from_config(&args.config).await?;
+
+    let registry = Arc::new(DeviceRegistry::new());
+    let bus = EventBus::default();
+    let mut bus_rx = bus.subscribe();
+
+    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
+
+    eprintln!(
+        "Subscribed to {prefix}/bridge/devices and {prefix}/+/+. Press Ctrl-C to exit.\n",
+        prefix = cfg.mqtt.z2m_prefix
+    );
+
+    let source_handle = tokio::spawn(async move { source.run().await });
+
+    loop {
+        tokio::select! {
+            ev = bus_rx.recv() => match ev {
+                Ok(Event::DeviceAdded { device }) => println!("+ {}", device.id),
+                Ok(Event::DeviceRemoved { id }) => println!("- {id}"),
+                Ok(Event::DeviceStateChanged { id, state }) => {
+                    println!("~ {id} {state:?}");
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    eprintln!("(skipped {n} events — receiver fell behind)");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nReceived Ctrl-C.");
+                break;
+            }
+        }
+    }
+
+    source_handle.abort();
+
+    let devices = registry.list_all();
+    println!("\nFinal registry ({} devices):", devices.len());
+    for d in devices {
+        println!("  {} state={:?}", d.id, d.state);
     }
 
     Ok(())

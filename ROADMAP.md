@@ -9,9 +9,9 @@ this file in every PR that completes a phase deliverable.
 ## Snapshot
 
 - **Crates with content:** `niles-core`, `niles-intent`, `niles-scheduler`
-- **In flight:** Phase 2 (`niles-mqtt` connection + Z2M parser landed; registry wiring next), Phase 6 (scenes, morning routine still pending)
+- **In flight:** Phase 2 (`niles-mqtt` populates the registry from MQTT — reconnect strategy and command publishing next), Phase 6 (scenes, morning routine still pending)
 - **Blocked on hardware:** Phase 1 (Z2M can't connect to coordinator until the SLZB-06MU arrives), Phase 3 (voice satellite firmware)
-- **Last PR merged:** [#9 — niles-mqtt connection + Z2M parser](https://github.com/MarkNygaard/niles/pull/9)
+- **Last PR merged:** [#10 — niles-mqtt Z2mSource](https://github.com/MarkNygaard/niles/pull/10)
 
 ---
 
@@ -53,7 +53,7 @@ Blocked on Phase 0 hardware delivery + decision on Kustomize manifest authoring.
 ## Phase 2 — Rust backend skeleton 🚧
 
 - ✅ `niles-core` — event bus, device registry, shared types [#2](https://github.com/MarkNygaard/niles/pull/2)
-- ⏳ `niles-mqtt` — Z2M subscriber that auto-populates the registry (blocked on Mosquitto + Z2M)
+- 🚧 `niles-mqtt` — connection + Z2M parser ([#9](https://github.com/MarkNygaard/niles/pull/9)) + registry wiring via `Z2mSource` ([#10](https://github.com/MarkNygaard/niles/pull/10)). Reconnect strategy and command publishing still pending.
 - ⏳ `niles-api` — HTTP read-only device list and state
 - ✅ `niles-config` — TOML loading and validation [#8](https://github.com/MarkNygaard/niles/pull/8) (`[home]` + `[lighting]` sections; new sections land alongside their consuming crates)
 

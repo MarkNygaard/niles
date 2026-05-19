@@ -21,6 +21,8 @@ toml = "0.8"
 rumqttc = "0.24"
 dotenvy = "0.15"
 anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
