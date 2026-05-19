@@ -3,10 +3,11 @@
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use niles_config::Config;
-use niles_core::{DeviceRegistry, Event, EventBus};
-use niles_mqtt::{MqttClient, MqttOptions, Z2mSource};
+use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
+use niles_mqtt::{MqttClient, MqttOptions, Z2mSource, format_set_command, is_actionable};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -38,6 +39,8 @@ enum Commands {
     MqttTap(MqttTapArgs),
     /// Discover devices via Z2M and print add/remove/state-change events.
     Discover(DiscoverArgs),
+    /// Send a Z2M set-command to a device (dev tool).
+    Set(SetArgs),
 }
 
 #[derive(Subcommand)]
@@ -69,6 +72,27 @@ struct DiscoverArgs {
     config: PathBuf,
 }
 
+#[derive(Args)]
+struct SetArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+    /// Target device as "<room>/<device>" (source prefix `z2m:` is added).
+    device: String,
+    /// Turn on (`--on true`), off (`--on false`), or leave unchanged.
+    #[arg(long)]
+    on: Option<bool>,
+    /// Brightness percent (0–100).
+    #[arg(long)]
+    brightness: Option<u8>,
+    /// Color temperature in Kelvin.
+    #[arg(long)]
+    kelvin: Option<u16>,
+    /// Print the message that would be published without actually sending.
+    #[arg(long)]
+    dry_run: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -93,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::MqttTap(args) => mqtt_tap(args).await,
         Commands::Discover(args) => discover(args).await,
+        Commands::Set(args) => set(args).await,
     }
 }
 
@@ -205,6 +230,49 @@ async fn discover(args: DiscoverArgs) -> anyhow::Result<()> {
     for d in devices {
         println!("  {} state={:?}", d.id, d.state);
     }
+
+    Ok(())
+}
+
+async fn set(args: SetArgs) -> anyhow::Result<()> {
+    let id = DeviceId::parse(&format!("z2m:{}", args.device))
+        .with_context(|| format!("parsing device {:?}", args.device))?;
+
+    let target = DeviceState {
+        on: args.on,
+        brightness: args.brightness,
+        color_temp_kelvin: args.kelvin,
+        ..Default::default()
+    };
+    if !is_actionable(&target) {
+        anyhow::bail!("nothing to set — pass at least one of --on / --brightness / --kelvin");
+    }
+
+    if args.dry_run {
+        // Dry-run uses the config's z2m_prefix if available, but doesn't
+        // need credentials or a connection. Default to "zigbee2mqtt"
+        // if the config can't be loaded so the user can preview a
+        // command without a working config.
+        let prefix = Config::load_from_path(&args.config)
+            .map(|cfg| cfg.mqtt.z2m_prefix)
+            .unwrap_or_else(|_| "zigbee2mqtt".into());
+        let (topic, payload) = format_set_command(&prefix, &id, &target);
+        println!("[dry-run] {topic}");
+        println!("[dry-run] {payload}");
+        return Ok(());
+    }
+
+    let (cfg, client) = connect_from_config(&args.config).await?;
+    let (topic, payload) = format_set_command(&cfg.mqtt.z2m_prefix, &id, &target);
+    println!("Publishing {topic}");
+    println!("          {payload}");
+    client.publish(&topic, payload.into_bytes()).await?;
+
+    // QoS::AtLeastOnce: publish() returns once the message is queued,
+    // not once it's confirmed on the wire. Give the event loop a
+    // beat to flush before we drop the client (which aborts the
+    // event-loop task). 250ms is overkill for a healthy broker.
+    tokio::time::sleep(Duration::from_millis(250)).await;
 
     Ok(())
 }
