@@ -114,6 +114,26 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 - When the spec is ambiguous, **fix the spec first** in a doc-only PR, then implement against the clarified version. Don't bake ambiguity into code.
 - The roadmap ([ROADMAP.md](ROADMAP.md)) is the source of truth for *what's built*. Update it in any PR that completes a phase deliverable.
 
+## Prior art worth checking before designing new subsystems
+
+Some external projects have interesting patterns for problems Niles will eventually solve. Look at them *before* inventing our own approach — borrow what fits, ignore what doesn't, and be explicit either way.
+
+### Hermes Agent (Nous Research)
+
+Python LLM-agent framework with self-improving skills and a layered memory system.
+
+- **Local code:** `C:\Users\Mark\Github\hermes-agent`
+- **Docs:** <https://hermes-agent.nousresearch.com/docs/llms.txt>
+
+Specifically check before building:
+
+- **Phase 4 — `niles-capabilities` (capability reference loader):** Hermes uses the [agentskills.io](https://agentskills.io) format — directory per skill, required `SKILL.md` with YAML frontmatter (`name`, `description`, `version`, `prerequisites`), optional `references/` / `templates/` / `assets/` subdirs. Loaded on-demand via progressive disclosure (metadata in the index, full content fetched when invoked). Worth aligning with this format before defining our own.
+- **Phase 4 — `niles-llm` (LLM client, system prompt assembly):** Hermes splits the system prompt into stable / context / volatile tiers to keep Anthropic prompt caching effective (stable bits cached, volatile bits rebuilt per turn). Mirror this layout in our Tier A/B/C context assembly.
+- **Phase 7 — `niles-recognition` (per-user identity):** Hermes stores per-user persistent context as a markdown file (`USER.md` per user). Human-readable, hand-editable, diffable. Maps to our "personal references, not preferences" section. Note: this is per-*household-user*. Niles itself has one global persona — not per-user.
+- **Phase 12+ — skill curator (autonomous skill creation):** Hermes can mint new skills from successful task patterns and review/archive them over time. Out of scope for v1, but interesting if/when we want Niles to learn its own Tier 0 patterns from real usage.
+
+What *not* to borrow: Hermes's messaging-gateway layer (Telegram/Discord/etc. — not relevant to a voice-first home assistant), its pluggable memory-provider abstraction (we commit to Postgres + pgvector, one canonical backend), and its TUI / Vue dashboards (Niles is headless).
+
 ## Pointers
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — full architectural spec (long, detailed)
