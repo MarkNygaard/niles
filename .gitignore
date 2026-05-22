@@ -11,6 +11,12 @@
 # Claude Code per-user state
 .claude/settings.local.json
 
+# Local-only Claude Code working notes (prior-art pointers, personal
+# scratchpads, anything we don't want on the public repo). Auto-loaded
+# alongside CLAUDE.md when present.
+CLAUDE.local.md
+ROADMAP.md
+
 # OS
 .DS_Store
 Thumbs.db
