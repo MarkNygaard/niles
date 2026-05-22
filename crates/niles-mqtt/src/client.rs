@@ -120,6 +120,14 @@ impl MqttClient {
     pub fn connect(opts: MqttOptions) -> Self {
         let mut rmq = RmqOptions::new(opts.client_id, opts.host, opts.port);
         rmq.set_keep_alive(opts.keep_alive.unwrap_or(Duration::from_secs(30)));
+        // rumqttc defaults to a 10 KB packet limit, which is far too
+        // small for Z2M's `bridge/devices` payload (26 KB for one
+        // bulb in a real Z2M; 100+ KB at a typical home). Without
+        // this, every reconnect triggers Z2M to re-publish the
+        // retained inventory, which exceeds the limit, which forces
+        // another disconnect — an infinite reconnect loop. 1 MB
+        // gives ample headroom for both directions.
+        rmq.set_max_packet_size(1024 * 1024, 256 * 1024);
         if let (Some(u), Some(p)) = (opts.username, opts.password) {
             rmq.set_credentials(u, p);
         }
