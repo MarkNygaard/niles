@@ -112,11 +112,12 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - The spec ([ARCHITECTURE.md](ARCHITECTURE.md)) is the source of truth for *what* Niles does.
 - When the spec is ambiguous, **fix the spec first** in a doc-only PR, then implement against the clarified version. Don't bake ambiguity into code.
-- The roadmap ([ROADMAP.md](ROADMAP.md)) is the source of truth for *what's built*. Update it in any PR that completes a phase deliverable.
+- Build status (which phase deliverables are done, in flight, blocked) is tracked in a local `ROADMAP.md` at the repo root. The file is gitignored — it's a working doc, not a public artifact — but it's auto-loaded by Claude Code when present. Update it as PRs land. If the file is missing, recreate it from the phase structure in ARCHITECTURE.md.
 
 ## Pointers
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — full architectural spec (long, detailed)
-- [ROADMAP.md](ROADMAP.md) — current build status across all 13 phases
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup and PR conventions for humans
 - [README.md](README.md) — human-facing intro
+- `ROADMAP.md` — local-only build status (gitignored; see "Spec discipline" above)
+- `CLAUDE.local.md` — local-only working notes (gitignored sibling to this file)
