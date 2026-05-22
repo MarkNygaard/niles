@@ -70,7 +70,12 @@ Home Assistant is a fantastic project, but it solves a different problem: maximu
 │                                 │  - TTS pipeline              │   │
 │                                 │  - Speaker controllers       │   │
 │                                 │  - HTTP API + WebSocket      │   │
-│                                 │  - SQLite (state, history)   │   │
+│                                 └──────────────────────────────┘   │
+│                                                ↕ SQL (TCP)         │
+│                                 ┌──────────────────────────────┐   │
+│                                 │  Postgres (CNPG + pgvecto.rs)│   │
+│                                 │  - relational state          │   │
+│                                 │  - voice embeddings (vector) │   │
 │                                 └──────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────┘
         ↑                                ↑                ↑
@@ -439,7 +444,7 @@ This two-stage design gives the Alexa-like reliability of "the kitchen keeps bee
 
 Timer state lives in the central Niles service, not on the satellites:
 
-- Stored in SQLite immediately on creation, so a service restart picks up active timers
+- Stored in Postgres immediately on creation, so a service restart picks up active timers
 - The scheduler reloads active timers on startup; if a timer's expiry passed while the service was down, it fires immediately
 - Satellites are dumb — they receive "play alarm" / "stop alarm" commands from the central service
 
@@ -464,7 +469,7 @@ These same functions are exposed as LLM tools (for the query and cancellation fl
 
 ### Edge cases
 
-- **Service restart while a timer is running:** SQLite-backed, timer survives. If expiry passed during downtime, fires immediately on restart.
+- **Service restart while a timer is running:** Postgres-backed, timer survives. If expiry passed during downtime, fires immediately on restart.
 - **Two timers expiring simultaneously:** Each fires its alarm independently. Acknowledging "stop" stops the most recent one; "stop all" stops everything. The LLM resolves "stop" vs "stop all" based on intent.
 - **Timer set in a room with no Sonos:** Just plays alarm on the satellite. No ducking needed.
 - **Network partition between Niles service and originating satellite at expiry time:** Niles attempts the originating satellite, fails, immediately falls back to Stage 2 (all satellites). Better to over-alarm than miss the timer.
@@ -523,7 +528,7 @@ This is the deliberate escape from a scene. Without it, scenes risk becoming roa
 
 ### Storage
 
-Scenes live in SQLite alongside timers. Minimal schema:
+Scenes live in Postgres alongside timers. Minimal schema:
 
 ```
 scenes
@@ -668,7 +673,7 @@ This is honest about what the room can do without trying to fake music playback 
 
 No new crate needed. Music extends:
 
-- `niles-speakers` — adds source-aware playback methods to the Sonos implementation, music intent dispatchers, per-room state tracking in SQLite
+- `niles-speakers` — adds source-aware playback methods to the Sonos implementation, music intent dispatchers, per-room state tracking in Postgres
 - `niles-tools` — adds the music intent tools
 - `niles-intent` — adds Tier 0 patterns for common music commands
 
@@ -871,14 +876,14 @@ Notifications are not transient — Niles remembers recent ones. The user can as
 - "What did I miss this morning?"
 - "Did Archon finish?"
 
-Notifications are stored in SQLite for ~7 days, then garbage-collected. The Tier 1 LLM has a `list_recent_notifications` tool for these queries.
+Notifications are stored in Postgres for ~7 days, then garbage-collected. The Tier 1 LLM has a `list_recent_notifications` tool for these queries.
 
 ### Where this lives in the codebase
 
 A new crate, `niles-notifications`:
 
 - Exposes an internal API: `notify(message, priority, origin?, satellite_hint?)`
-- Handles routing (which satellite), formatting (chime + message), persistence (SQLite)
+- Handles routing (which satellite), formatting (chime + message), persistence (Postgres)
 - Consumes events from the internal event bus that other crates publish
 - Provides the `list_recent_notifications` LLM tool
 
@@ -911,7 +916,7 @@ Each integration is its own crate (`niles-integration-<name>`) and follows the s
 2. **Exposes LLM tools** for actions the user might trigger by voice
 3. **Publishes events to the internal event bus** for notifications, state updates, etc.
 4. **Loads a capability reference file** so users can ask "how do I use [integration]?"
-5. **Maintains its own short-lived state** (caches, subscriptions) but persistent data lives in the central Niles SQLite
+5. **Maintains its own short-lived state** (caches, subscriptions) but persistent data lives in the shared cluster Postgres alongside Niles's own tables
 
 Integrations are independent of each other and of the core. Adding a new integration is a self-contained piece of work that doesn't require touching anything else.
 
@@ -1134,7 +1139,7 @@ If the speaker is unknown and a personal reference is used, Niles prompts for id
 
 Voice fingerprints are biometric data. Niles is deliberate about handling:
 
-- **Stored locally only.** Embeddings live in Niles's SQLite. They are never sent to Groq, Anthropic, or any cloud provider. Whisper receives audio for transcription, but Whisper does not do speaker ID.
+- **Stored on your own infrastructure only.** Embeddings live in the cluster Postgres (as `vector` columns via pgvecto.rs). They are never sent to Groq, Anthropic, or any cloud provider. Whisper receives audio for transcription, but Whisper does not do speaker ID.
 - **Easy to delete.** "Niles, forget me" wipes that user's embeddings and identity entirely.
 - **Opt-in.** Niles works for anonymous users — they just don't get personalized features.
 - **No silent identification.** Niles only attempts to identify people who have been introduced. Random visitors who never give a name remain "unknown speaker."
@@ -1271,7 +1276,7 @@ Available to anyone:
 
 A new crate, `niles-permissions`:
 
-- Stores rules in SQLite
+- Stores rules in Postgres
 - Evaluates `(speaker, tool, args) → allow | deny | requires_identity`
 - Hooks into the tool dispatch path; every tool call goes through it
 - Provides the rule-management LLM tools (admin-gated)
@@ -1429,7 +1434,7 @@ The LLM (admin-only, since automations affect everyone) extracts:
 
 Stores it as a new automation, confirms back in natural language. The structured form exists because the runtime needs it; the user never edits it.
 
-Voice-created automations are stored in SQLite, alongside config-defined ones. Both are evaluated identically at runtime.
+Voice-created automations are stored in Postgres, alongside config-defined ones. Both are evaluated identically at runtime.
 
 ### Automation lifecycle
 
@@ -1450,7 +1455,7 @@ When multiple automations fire on the same event, they execute in declaration or
 A new crate, `niles-automations`:
 
 - Loads config-defined automations at startup
-- Loads voice-defined automations from SQLite at startup
+- Loads voice-defined automations from Postgres at startup
 - Subscribes to the internal event bus
 - Evaluates conditions against current state
 - Dispatches actions through the tool system (which respects permissions, manual mode, etc.)
@@ -1465,6 +1470,55 @@ Voice-created automations are admin-only (they affect everyone). Listing and dis
 Niles supports two deployment paths as first-class options: Docker Compose and Kubernetes. Most users will choose Compose; Kubernetes is for users running multi-node clusters.
 
 Both paths consume the same canonical Niles config (TOML), the same API keys (env vars), and produce identical runtime behavior. The Niles service has no knowledge of which deployment style launched it.
+
+### Persistence
+
+Niles uses a **single Postgres instance** (with the [pgvecto.rs](https://github.com/tensorchord/pgvecto.rs) extension for vector storage) as the canonical store for *all* runtime state:
+
+- Timers, scenes, voice-created automations, permission rules, notification history, per-room music state — relational tables.
+- User voice embeddings — `vector` columns, queried with pgvecto.rs's index-backed approximate nearest neighbor lookup.
+
+This is a deliberate change from the originally-spec'd embedded SQLite. The reasoning:
+
+- **Niles becomes stateless.** Restart the service freely; the database holds the truth. Multi-replica Niles becomes possible later without coordination.
+- **One DB instead of two.** pgvector subsumes a separate vector store (Qdrant et al.) for the embeddings use case.
+- **Operational lift comes free in a cluster.** If you're already running a Postgres (e.g. CNPG-managed), Niles plugs in. Backups, monitoring, certificate rotation, HA are all the cluster operator's concerns, not Niles's.
+- **Latency cost is negligible.** A typical in-cluster Postgres query is sub-millisecond; the voice loop is bounded by STT + LLM + TTS at 400–1300 ms. The DB never sits in a hot path: the registry is in memory, the curve is pure math, timers are tracked in memory and merely *persisted* to the DB on creation/restart.
+
+#### Operational expectations
+
+- **Operator:** [CloudNativePG](https://cloudnative-pg.io/) is the recommended way to run Postgres in a cluster. It handles pod lifecycle, certificates, secret rotation, and (when configured) replication + WAL archiving for HA.
+- **Extension:** install [pgvecto.rs](https://github.com/tensorchord/pgvecto.rs) (or any pgvector implementation) at cluster bootstrap so Niles's `CREATE EXTENSION vector;` migration can run.
+- **Backups:** CNPG's `Backup`/`ScheduledBackup` CRDs against an S3-compatible target (Cloudflare R2, Minio, etc.). Niles assumes someone has backups; it doesn't implement them itself.
+- **Schema migrations:** the Niles binary runs migrations on startup (via `sqlx::migrate!` or `refinery`). A failed migration aborts startup with a clear error; nothing partial.
+- **Single-tenant assumption (v1):** one Niles database per home. Schema is not designed for multi-home tenancy.
+
+#### Connection config
+
+A new `[database]` section in `niles.toml`:
+
+```toml
+[database]
+host = "postgres-rw.database.svc.cluster.local"
+port = 5432
+database = "niles"
+username_env = "NILES_DB_USERNAME"
+password_env = "NILES_DB_PASSWORD"
+# Optional; defaults shown
+# sslmode      = "prefer"   # prefer / require / disable
+# pool_max     = 10
+```
+
+Same secrets pattern as `[mqtt]`: TOML carries env-var *names*; values come from `.env` in local dev or a k8s `Secret` in deploy.
+
+#### Local dev
+
+Two viable patterns:
+
+1. **Port-forward to the cluster Postgres:** `kubectl port-forward -n database svc/postgres-rw 5432:5432`. Niles connects to `localhost:5432`. Easiest if you already have the cluster.
+2. **Local Postgres in a throwaway container:** `docker run` (or a podman-equivalent on Linux) for ad-hoc dev. Niles's migrations bootstrap the schema.
+
+Unit tests do *not* require a running Postgres — pure-logic code is testable against in-memory stubs. Integration tests that exercise the DB path are gated behind a `DATABASE_URL` env var; CI doesn't run them.
 
 ### Docker Compose (default path)
 
@@ -1494,21 +1548,33 @@ services:
     command: --voice en_US-amy-medium
     restart: unless-stopped
 
+  postgres:
+    image: tensorchord/pgvecto-rs:pg16-v0.4.0  # Postgres 16 + pgvecto.rs
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: niles
+      POSTGRES_USER: ${NILES_DB_USERNAME}
+      POSTGRES_PASSWORD: ${NILES_DB_PASSWORD}
+    restart: unless-stopped
+
   niles:
     image: ghcr.io/<org>/niles:latest
     volumes:
       - ./niles-config.toml:/etc/niles/config.toml:ro
-      - ./niles-data:/var/lib/niles
     environment:
       GROQ_API_KEY: ${GROQ_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       TADO_API_TOKEN: ${TADO_API_TOKEN}
+      NILES_DB_USERNAME: ${NILES_DB_USERNAME}
+      NILES_DB_PASSWORD: ${NILES_DB_PASSWORD}
     ports:
       - "10300:10300"  # Wyoming protocol
       - "8080:8080"    # HTTP API
     depends_on:
       - mosquitto
       - piper-tts
+      - postgres
     restart: unless-stopped
 ```
 
@@ -1518,7 +1584,11 @@ Plus a `.env` file (gitignored) with the actual secret values:
 GROQ_API_KEY=gsk_...
 ANTHROPIC_API_KEY=sk-ant-...
 TADO_API_TOKEN=...
+NILES_DB_USERNAME=niles
+NILES_DB_PASSWORD=...
 ```
+
+The Niles container itself has no persistent volume — all state lives in the bundled Postgres. Back up `./postgres-data` (e.g. via `pg_dump` cron or a sidecar) to protect your scenes, embeddings, timers, etc.
 
 Setup is: clone the repo, edit `niles-config.toml` with home coordinates and feature toggles, create `.env` with API keys, `docker compose up -d`. Done.
 
@@ -1531,7 +1601,9 @@ For users running a cluster. The repo includes a Kustomize base in `deploy/kuber
 - `mosquitto/` — Deployment + Service + PVC
 - `zigbee2mqtt/` — Deployment + Service + PVC
 - `piper-tts/` — Deployment + Service
-- `niles/` — Deployment + Service + PVC, references a `niles-config` ConfigMap and a `niles-secrets` Secret
+- `niles/` — Deployment + Service, references a `niles-config` ConfigMap and a `niles-secrets` Secret. **No PVC** — Niles is stateless; state lives in cluster Postgres.
+
+Cluster Postgres is *not* in the Kustomize base. The expectation is that a CNPG-managed Postgres already exists in your cluster (or is deployed via a separate Kustomize / Helm release that you own). The Niles `ConfigMap` references it by service DNS, and `niles-secrets` holds the credentials.
 
 Users create overlays under `deploy/kubernetes/overlays/<their-home>/` that patch the base with their values:
 
@@ -1568,12 +1640,13 @@ The Niles config TOML is the canonical configuration. Everything user-tunable li
 - Lighting curve (sunrise/sunset times, night floor, color temp anchors)
 - Feature toggles (which modules are enabled)
 - Integration endpoints (Archon URL, Sonos discovery hint, etc.)
+- Database connection (host, port, db name; credentials via env-var names)
 - Notification preferences (quiet hours, routing)
 - Automations defined at deploy time
 
 Secrets (API tokens) live in env vars referenced by the config. Deployment-specific delivery: `.env` for Compose, `Secret` for k8s.
 
-Runtime state (scenes, voice-created automations, timers, user embeddings, permission rules, notification history) lives in Niles's SQLite, in a persistent volume.
+Runtime state (scenes, voice-created automations, timers, user embeddings, permission rules, notification history) lives in the cluster Postgres. Niles itself is stateless — restart it freely; the database holds the truth. See the [Persistence](#persistence) subsection below.
 
 ### Choosing between Compose and Kubernetes
 
@@ -1886,7 +1959,7 @@ niles:
 - Timers: set via Tier 0 fast-path, query/cancel via Tier 1 LLM tools
 - Two-stage alarm escalation (originating satellite → all satellites after 10s)
 - Pre-recorded alarm audio on satellites
-- SQLite persistence so timers survive service restarts
+- Postgres persistence so timers survive service restarts
 - Verify: common commands stay <800ms; how-to questions answer correctly; timers reliable
 
 ### Phase 5: Room speaker integration and music (1–2 weekends)
@@ -1894,7 +1967,7 @@ niles:
 - Sonos as both an LLM tool AND a ducking target during voice responses
 - Multi-room awareness ("play music in living room")
 - Music intent tools: `play_radio`, `play_music`, `play_podcast`, `resume_in_room`, transport controls, grouping
-- Per-room music state in SQLite (last source, last content) including polling for app-initiated playback
+- Per-room music state in Postgres (last source, last content) including polling for app-initiated playback
 - Tier 0 fast-paths for common music commands ("play TuneIn", "pause", "louder", etc.)
 - Graceful degradation in rooms without a Sonos
 - Verify: "play TuneIn" resumes the last station in current room; "play my Discover Weekly" routes to the speaker's Spotify account once recognition is active
@@ -1922,7 +1995,7 @@ niles:
 - Verify: two household members can be recognized reliably, rules enforce correctly, unknown speakers prompted only when needed
 
 ### Phase 8: Notifications subsystem (1 weekend)
-- `niles-notifications` crate: routing rules, chime + voice formatting, SQLite persistence
+- `niles-notifications` crate: routing rules, chime + voice formatting, Postgres persistence
 - Quiet hours config with priority-aware handling
 - "Last active satellite" tracking in `niles-core`
 - `list_recent_notifications` LLM tool
@@ -1934,7 +2007,7 @@ niles:
 - Second adapter: manual ("Niles, I'm leaving") as supplement
 - Home-state aggregation with hysteresis; presence events published to event bus
 - `niles-automations` crate: config-defined automation loader, event subscription, condition evaluation, action dispatch
-- Voice-creatable automations: LLM extracts trigger/condition/action from natural language, stores in SQLite
+- Voice-creatable automations: LLM extracts trigger/condition/action from natural language, stores in Postgres
 - Admin-only creation; anyone can list and temporarily disable
 - Concrete first automation: "when home becomes occupied and it's dark, turn on hallway lights"
 - Verify: arrival lights work reliably; voice-created automation persists and fires correctly
@@ -1963,7 +2036,7 @@ niles:
 - Order remaining satellites once one room is proven
 - Add Tier 2 escalation
 - Event log + SQL search tool
-- Conversation memory (short-term in context, long-term in SQLite)
+- Conversation memory (short-term in context, long-term in Postgres)
 
 ### Phase 13: Additional integrations and extensions
 - Additional presence sources (phone-based, BLE)
@@ -2046,11 +2119,11 @@ These are intentionally left open for the project owner / community to decide:
 - **Personal reference** — a phrase like "my calendar" or "wake me up" that the LLM resolves to the speaker's specific external resource (their calendar account, their bedroom, etc.); distinct from per-user preferences, which Niles does not maintain for shared home state
 - **Presence source** — an adapter that reports whether a specific user is home (Tado, phone GPS, BLE beacons, manual voice command, etc.); multiple sources can be combined per user
 - **Home state** — Niles's aggregated occupancy status (`occupied` / `unoccupied` / `transitioning`), derived from per-user presence with hysteresis
-- **Automation** — a "when X, do Y" rule. Code automations are foundational behaviors implemented in Rust; config automations are simple rules in TOML or voice-created via the LLM, stored in SQLite
+- **Automation** — a "when X, do Y" rule. Code automations are foundational behaviors implemented in Rust; config automations are simple rules in TOML or voice-created via the LLM, stored in Postgres
 - **Capability manifest** — `MANIFEST.md`, the LLM-facing structured description of Niles's features, requirements, and setup decisions; generated from the canonical `features.toml`
 - **features.toml** — canonical feature catalog at the repo root; single source of truth for the runtime's feature awareness, the generated MANIFEST.md, the README's feature table, and the docs site
 - **Music intent** — high-level LLM tool (`play_radio`, `play_music`, etc.) that maps to source-specific Sonos actions internally; insulates the LLM from knowing which music service is being used
-- **Per-room music state** — Niles's SQLite-stored memory of what each room was last playing (source, content URI, playing/paused), enabling "play TuneIn" to resume that room's last station
+- **Per-room music state** — Niles's database memory of what each room was last playing (source, content URI, playing/paused), enabling "play TuneIn" to resume that room's last station
 
 ---
 

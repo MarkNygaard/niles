@@ -85,7 +85,7 @@ Blocked on Phase 0 hardware delivery + decision on Kustomize manifest authoring.
 - ⏳ `niles-speakers` — Sonos SOAP/UPnP client
 - ⏳ Ducking during voice responses
 - ⏳ Music intent tools (`play_radio`, `play_music`, transport, grouping)
-- ⏳ Per-room music state in SQLite
+- ⏳ Per-room music state in Postgres
 - ⏳ Tier 0 fast-paths for common music commands
 
 ---
@@ -113,7 +113,7 @@ Blocked on Phase 0 hardware delivery + decision on Kustomize manifest authoring.
 
 ## Phase 8 — Notifications subsystem ⏳
 
-- ⏳ `niles-notifications` — routing, chime + voice formatting, SQLite persistence
+- ⏳ `niles-notifications` — routing, chime + voice formatting, Postgres persistence
 - ⏳ Quiet hours config with priority-aware handling
 - ⏳ Last-active satellite tracking
 - ⏳ `list_recent_notifications` LLM tool
