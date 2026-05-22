@@ -80,6 +80,19 @@ pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, b
         if room == "bridge" {
             return;
         }
+        // Skip Z2M's per-device subtopics. For `room/device` friendly_names
+        // these are 3 levels deep and wouldn't match our `+/+` subscription;
+        // but for *flat* friendly_names (e.g. `bathroom_sensor_motion`) the
+        // form `<flat>/availability` is 2 levels and *does* match. Without
+        // this guard we'd happily treat `availability` as a device name
+        // and emit bogus `DeviceStateChanged` events. Z2M's reserved
+        // subtopics for the friendly-name prefix:
+        //   <name>/availability   — online/offline tracking
+        //   <name>/set            — write commands (often echoed back)
+        //   <name>/get            — request-state messages
+        if matches!(device, "availability" | "set" | "get") {
+            return;
+        }
         handle_device_state(room, device, &msg.payload, registry, bus);
     }
 }
@@ -408,6 +421,27 @@ mod tests {
         // call should not panic and the bus event should have fired.
         let id = DeviceId::parse("z2m:office/desk_lamp").unwrap();
         assert!(registry.get(&id).is_none());
+    }
+
+    #[test]
+    fn dispatch_ignores_z2m_per_device_subtopics() {
+        // A flat-named device (e.g. one paired before adopting the
+        // <room>/<device> convention, or one whose retained
+        // availability message lingers after removal) would
+        // otherwise produce bogus DeviceStateChanged events for
+        // "devices" called "availability", "set", or "get".
+        let (registry, bus, mut rx) = fixtures();
+        for sub in ["availability", "set", "get"] {
+            let topic = format!("zigbee2mqtt/bathroom_sensor_motion/{sub}");
+            let msg = Message {
+                topic,
+                payload: br#"{"state":"online"}"#.to_vec(),
+            };
+            dispatch(&msg, "zigbee2mqtt", &registry, &bus);
+        }
+        // No events emitted, no registry mutation:
+        assert!(registry.is_empty());
+        assert!(rx.try_recv().is_err(), "no event should have fired");
     }
 
     #[test]
