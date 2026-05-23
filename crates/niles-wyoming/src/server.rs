@@ -62,10 +62,11 @@ impl WyomingServer {
     /// of the event and disconnect channels.
     ///
     /// The disconnect channel fires exactly one `SocketAddr` per
-    /// closed connection (idle timeout, peer EOF, parse error, or
-    /// consumer-dropped). Consumers that don't care about
-    /// disconnects can drop the receiver — the server's
-    /// notifications then silently fail to send, never blocking.
+    /// closed connection — any exit path of the per-connection
+    /// reader: idle timeout, peer EOF, parse error, or the events
+    /// receiver being dropped. Callers that don't need disconnect
+    /// notifications can drop the returned disconnect receiver; the
+    /// server's `send` then silently fails and never blocks.
     pub async fn bind(
         addr: SocketAddr,
     ) -> Result<(

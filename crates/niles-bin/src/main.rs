@@ -546,6 +546,10 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
 
     loop {
         tokio::select! {
+            // Drain queued events before reacting to a disconnect:
+            // an `audio-stop` already in `rx` should complete its
+            // session before `drop_peer` clears the in-flight slot.
+            biased;
             incoming = rx.recv() => match incoming {
                 Some(incoming) => {
                     if let Some(session) = tracker.feed(incoming) {
@@ -686,6 +690,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 
     loop {
         tokio::select! {
+            // See voice-tap: drain events before disconnects so a
+            // trailing `audio-stop` isn't dropped by the race.
+            biased;
             incoming = rx.recv() => match incoming {
                 Some(incoming) => {
                     if let Some(session) = tracker.feed(incoming) {
