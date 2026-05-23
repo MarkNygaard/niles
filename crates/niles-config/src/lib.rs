@@ -355,6 +355,16 @@ kelvin = 2000
     }
 
     #[test]
+    fn rejects_stt_base_url_without_http_scheme() {
+        let bad = valid_toml().replace(
+            "api_key_env = \"GROQ_API_KEY\"",
+            "api_key_env = \"GROQ_API_KEY\"\nbase_url = \"api.groq.com/openai/v1\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
     fn resolve_stt_api_key_reads_env_var() {
         // SAFETY: in #[cfg(test)] only.
         unsafe {
@@ -372,6 +382,13 @@ kelvin = 2000
 
     #[test]
     fn resolve_stt_api_key_errors_when_missing() {
+        // Guarantee the var is unset even if a parallel test, an
+        // ambient shell export, or a prior iteration of this test
+        // body set it.
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::remove_var("NILES_TEST_DEFINITELY_NOT_SET_STT_KEY_XYZ");
+        }
         let cfg = SttConfig {
             api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_STT_KEY_XYZ".into(),
             base_url: "https://example".into(),

@@ -17,12 +17,6 @@ use serde::Deserialize;
 use std::time::Duration;
 use tracing::debug;
 
-/// Defaults pointing at Groq's hosted Whisper. Override per
-/// deployment via [`WhisperConfig`].
-const DEFAULT_BASE_URL: &str = "https://api.groq.com/openai/v1";
-const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-
 /// Inputs to [`WhisperClient::new`]. Keeps configuration explicit so
 /// the binary's config-loading layer is the only place that reads
 /// env vars or files.
@@ -34,20 +28,6 @@ pub struct WhisperConfig {
     /// ISO-639-1 hint, e.g. `Some("en")`. None = auto-detect.
     pub language: Option<String>,
     pub request_timeout: Duration,
-}
-
-impl WhisperConfig {
-    /// Construct with sensible defaults: Groq's public endpoint, the
-    /// recommended turbo model, no language hint, 30s timeout.
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self {
-            api_key: api_key.into(),
-            base_url: DEFAULT_BASE_URL.into(),
-            model: DEFAULT_MODEL.into(),
-            language: None,
-            request_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
-        }
-    }
 }
 
 /// Successful transcription. Fields beyond `text` are best-effort:
@@ -105,9 +85,17 @@ impl WhisperClient {
         let status = resp.status();
         let body = resp.bytes().await?;
         if !status.is_success() {
+            // Keep error bodies bounded — a multi-MB HTML error page
+            // shouldn't ride into logs or anyhow chains.
+            const MAX_ERR_BODY: usize = 2048;
+            let preview = if body.len() > MAX_ERR_BODY {
+                &body[..MAX_ERR_BODY]
+            } else {
+                &body[..]
+            };
             return Err(Error::Provider {
                 status: status.as_u16(),
-                body: String::from_utf8_lossy(&body).into_owned(),
+                body: String::from_utf8_lossy(preview).into_owned(),
             });
         }
 
@@ -135,13 +123,14 @@ struct RawTranscript {
 mod tests {
     use super::*;
 
-    #[test]
-    fn defaults_point_at_groq_turbo() {
-        let cfg = WhisperConfig::new("k");
-        assert_eq!(cfg.base_url, "https://api.groq.com/openai/v1");
-        assert_eq!(cfg.model, "whisper-large-v3-turbo");
-        assert!(cfg.language.is_none());
-        assert_eq!(cfg.request_timeout, Duration::from_secs(30));
+    fn test_cfg() -> WhisperConfig {
+        WhisperConfig {
+            api_key: "fake-key".into(),
+            base_url: "https://example.invalid".into(),
+            model: "test-model".into(),
+            language: None,
+            request_timeout: Duration::from_secs(5),
+        }
     }
 
     #[test]
@@ -167,7 +156,6 @@ mod tests {
     #[test]
     fn new_builds_a_client_without_calling_out() {
         // Constructor must not perform any network I/O.
-        let cfg = WhisperConfig::new("fake-key");
-        let _client = WhisperClient::new(cfg).expect("client builds");
+        let _client = WhisperClient::new(test_cfg()).expect("client builds");
     }
 }

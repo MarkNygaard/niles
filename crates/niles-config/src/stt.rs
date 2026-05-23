@@ -55,6 +55,18 @@ impl SttConfig {
                 reason: "base_url must not be empty".into(),
             });
         }
+        // Fail fast on the obvious typo (`htps://...`) at startup
+        // rather than on first transcription. Skips a full URL-parse
+        // dep — reqwest catches anything subtler.
+        if !self.base_url.starts_with("http://") && !self.base_url.starts_with("https://") {
+            return Err(Error::InvalidSection {
+                section: "stt",
+                reason: format!(
+                    "base_url '{}' must start with http:// or https://",
+                    self.base_url
+                ),
+            });
+        }
         if self.model.trim().is_empty() {
             return Err(Error::InvalidSection {
                 section: "stt",
