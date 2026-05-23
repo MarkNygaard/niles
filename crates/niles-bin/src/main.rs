@@ -9,8 +9,10 @@ use niles_intent::{Intent, IntentRouter};
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
+use niles_scheduler::{MinuteOfDay, brightness_at, build_curve_target, color_temp_at};
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_wyoming::{SessionTracker, WyomingServer};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,6 +72,12 @@ enum Commands {
     /// like "kitchen" resolve to real devices. Pass `--dry-run` to
     /// match and log without publishing.
     VoiceDispatch(VoiceDispatchArgs),
+    /// Run the ambient-lighting curve driver: every minute, compute
+    /// the curve's brightness + color-temperature target and publish
+    /// it to every currently-on light. Per the architecture the curve
+    /// never turns lights on or off — it only adjusts ones already
+    /// on. (v0.1: does not yet respect manual-mode; see PR notes.)
+    Lighting(LightingArgs),
 }
 
 #[derive(Subcommand)]
@@ -164,6 +172,21 @@ struct VoiceDispatchArgs {
     dry_run: bool,
 }
 
+#[derive(Args)]
+struct LightingArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+    /// Compute and log the curve target each tick, but don't publish.
+    #[arg(long)]
+    dry_run: bool,
+    /// Override the default 60-second tick interval. Mostly useful
+    /// for development — the curve is integer-minute discretized,
+    /// so polling faster than once a minute doesn't change values.
+    #[arg(long, default_value_t = 60)]
+    tick_seconds: u64,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -194,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Transcribe(args) => transcribe(args).await,
         Commands::VoiceTap(args) => voice_tap(args).await,
         Commands::VoiceDispatch(args) => voice_dispatch(args).await,
+        Commands::Lighting(args) => lighting(args).await,
     }
 }
 
@@ -800,6 +824,161 @@ fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
         })
         .collect();
     RoomName::parse(&normalized).map_err(|e| format!("{e}"))
+}
+
+async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
+    let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
+    let publisher = mqtt_client.publisher();
+    let z2m_prefix = cfg.mqtt.z2m_prefix.clone();
+
+    // Time zone first — fail fast on bad config rather than after
+    // we've spun up MQTT and Z2mSource.
+    let tz: chrono_tz::Tz = cfg.home.timezone.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "home.timezone '{}' is not a valid IANA zone: {e}",
+            cfg.home.timezone
+        )
+    })?;
+    let curve = cfg
+        .lighting
+        .to_curve_config()
+        .context("converting [lighting] section to a CurveConfig")?;
+
+    let registry = Arc::new(DeviceRegistry::new());
+    // Z2mSource requires an EventBus; nothing in this subcommand
+    // subscribes to events, so the bus is wired straight in and
+    // dropped once Z2mSource takes ownership.
+    let source = Z2mSource::new(
+        mqtt_client,
+        registry.clone(),
+        EventBus::default(),
+        z2m_prefix.as_str(),
+    );
+    let source_handle = tokio::spawn(async move {
+        if let Err(e) = source.run().await {
+            tracing::error!("Z2mSource exited: {e}");
+        }
+    });
+
+    let tick = Duration::from_secs(args.tick_seconds.max(1));
+    let mode = if args.dry_run { " (dry-run)" } else { "" };
+    eprintln!(
+        "Lighting curve driver running in {tz}{mode}; ticking every {}s. Press Ctrl-C to exit.\n",
+        tick.as_secs()
+    );
+
+    // Last `(brightness, kelvin)` we published per device. Lets us
+    // skip re-sending the same set command while we wait for Z2M to
+    // ack the state change — without this, a slow bulb keeps showing
+    // its pre-publish brightness and we'd republish every tick.
+    let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
+
+    let mut ticker = tokio::time::interval(tick);
+    // The first tick fires immediately; that's what we want — no
+    // need to wait a full minute on startup before applying the
+    // curve to lights that are already on.
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                if source_handle.is_finished() {
+                    anyhow::bail!(
+                        "Z2mSource task has exited; the device registry is no longer \
+                         being updated, so the curve would publish blindly. Bailing."
+                    );
+                }
+                run_curve_tick(
+                    &registry,
+                    &publisher,
+                    &z2m_prefix,
+                    &curve,
+                    tz,
+                    args.dry_run,
+                    &mut last_published,
+                )
+                .await;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nReceived Ctrl-C. Exiting.");
+                break;
+            }
+        }
+    }
+
+    source_handle.abort();
+    Ok(())
+}
+
+/// One tick of the curve driver. Reads the current wall-clock time
+/// in `tz`, computes the curve, and publishes (or logs, if `dry_run`)
+/// a set command for every currently-on light whose state has
+/// drifted past the debounce threshold and whose last-published
+/// target differs from the current one.
+async fn run_curve_tick(
+    registry: &DeviceRegistry,
+    publisher: &MqttPublisher,
+    z2m_prefix: &str,
+    curve: &niles_scheduler::CurveConfig,
+    tz: chrono_tz::Tz,
+    dry_run: bool,
+    last_published: &mut HashMap<DeviceId, (u8, u16)>,
+) {
+    use chrono::{Timelike, Utc};
+
+    let now = Utc::now().with_timezone(&tz);
+    // `chrono::Timelike::hour()` / `minute()` return `u32` but are
+    // guaranteed by the trait contract to be `0..=23` / `0..=59`.
+    let hour = u8::try_from(now.hour()).expect("chrono::Timelike::hour is 0..=23");
+    let minute = u8::try_from(now.minute()).expect("chrono::Timelike::minute is 0..=59");
+    let minute_of_day = match MinuteOfDay::new(hour, minute) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("could not construct MinuteOfDay from {now}: {e}");
+            return;
+        }
+    };
+    let target_brightness = brightness_at(curve, minute_of_day);
+    let target_kelvin = color_temp_at(curve, minute_of_day);
+    let curve_target = (target_brightness, target_kelvin);
+
+    let mut publish_count = 0usize;
+    for device in registry.list_all() {
+        if device.state.on != Some(true) {
+            continue;
+        }
+        // If we already published this exact curve target for this
+        // device, skip — even if its reported state hasn't caught
+        // up yet (Z2M acks lag the set command).
+        if last_published.get(&device.id) == Some(&curve_target) {
+            continue;
+        }
+        let Some(target_state) =
+            build_curve_target(&device.state, target_brightness, target_kelvin)
+        else {
+            continue;
+        };
+        let (topic, payload) = format_set_command(z2m_prefix, &device.id, &target_state);
+        debug_assert!(
+            is_actionable(&target_state),
+            "build_curve_target should only return actionable targets"
+        );
+        if dry_run {
+            tracing::info!("[curve {minute_of_day}] [dry-run] {topic}  {payload}");
+            last_published.insert(device.id.clone(), curve_target);
+        } else {
+            match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+                Ok(()) => {
+                    tracing::info!("[curve {minute_of_day}] {topic}  {payload}");
+                    last_published.insert(device.id.clone(), curve_target);
+                }
+                Err(e) => tracing::warn!("[curve {minute_of_day}] {topic} failed: {e}"),
+            }
+        }
+        publish_count += 1;
+    }
+    tracing::debug!(
+        "curve tick at {minute_of_day} in {tz}: brightness={target_brightness}, \
+         kelvin={target_kelvin}K, devices_touched={publish_count}"
+    );
 }
 
 /// Compact, human-readable rendering of an [`Intent`] for the dev
