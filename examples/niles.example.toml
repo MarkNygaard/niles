@@ -31,6 +31,13 @@ password_env = "NILES_MQTT_PASSWORD"
 # to localhost only.
 bind_address = "0.0.0.0:8080"
 
+[wyoming]
+# Wyoming voice-protocol server bind address. Port 10300 is the
+# convention used by Home Assistant satellites and ESPHome's
+# voice_assistant component — match it unless you have a reason
+# not to.
+bind_address = "0.0.0.0:10300"
+
 [lighting]
 # Times are HH:MM in local wall-clock. See ARCHITECTURE.md for the
 # semantics of each phase.
