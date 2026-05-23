@@ -6,8 +6,8 @@ use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_mqtt::{MqttClient, MqttOptions, Z2mSource, format_set_command, is_actionable};
-use niles_stt::{WhisperClient, WhisperConfig};
-use niles_wyoming::WyomingServer;
+use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
+use niles_wyoming::{SessionTracker, WyomingServer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +55,11 @@ enum Commands {
     /// (Groq Whisper). The file is uploaded as-is — supported
     /// formats are WAV, MP3, FLAC, OGG, M4A, etc.
     Transcribe(TranscribeArgs),
+    /// Run the Wyoming server, accumulate each satellite utterance
+    /// between `audio-start` and `audio-stop`, send it to the STT
+    /// provider, and print the transcript. (Dev tool — no intent
+    /// dispatch or TTS yet.)
+    VoiceTap(VoiceTapArgs),
 }
 
 #[derive(Subcommand)]
@@ -130,6 +135,13 @@ struct TranscribeArgs {
     audio: PathBuf,
 }
 
+#[derive(Args)]
+struct VoiceTapArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -158,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Api(args) => api(args).await,
         Commands::WyomingTap(args) => wyoming_tap(args).await,
         Commands::Transcribe(args) => transcribe(args).await,
+        Commands::VoiceTap(args) => voice_tap(args).await,
     }
 }
 
@@ -404,15 +417,27 @@ async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
-    let cfg = Config::load_from_path(&args.config)
-        .with_context(|| format!("loading config from {}", args.config.display()))?;
-    cfg.validate().context("validating config")?;
-
+/// Build a `WhisperClient` from the `[stt]` section of an already-
+/// validated config, resolving the API key from the environment.
+fn build_whisper_client(cfg: &Config) -> anyhow::Result<WhisperClient> {
     let api_key = cfg
         .stt
         .resolve_api_key()
         .context("resolving STT API key from environment")?;
+    let whisper_cfg = WhisperConfig {
+        api_key,
+        base_url: cfg.stt.base_url.clone(),
+        model: cfg.stt.model.clone(),
+        language: cfg.stt.language.clone(),
+        request_timeout: Duration::from_secs(cfg.stt.timeout_seconds),
+    };
+    WhisperClient::new(whisper_cfg).context("building Whisper HTTP client")
+}
+
+async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
 
     let audio = std::fs::read(&args.audio)
         .with_context(|| format!("reading audio file {}", args.audio.display()))?;
@@ -422,14 +447,7 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_else(|| "audio".into());
 
-    let whisper_cfg = WhisperConfig {
-        api_key,
-        base_url: cfg.stt.base_url.clone(),
-        model: cfg.stt.model.clone(),
-        language: cfg.stt.language.clone(),
-        request_timeout: Duration::from_secs(cfg.stt.timeout_seconds),
-    };
-    let client = WhisperClient::new(whisper_cfg).context("building Whisper HTTP client")?;
+    let client = build_whisper_client(&cfg)?;
 
     eprintln!(
         "Transcribing {} ({} bytes) via {} ({}) ...",
@@ -451,4 +469,95 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     }
     println!("{}", transcript.text);
     Ok(())
+}
+
+async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+
+    let bind = cfg
+        .wyoming
+        .socket_addr()
+        .context("resolving wyoming.bind_address")?;
+
+    let client = Arc::new(build_whisper_client(&cfg)?);
+    let (server, mut rx) = WyomingServer::bind(bind)
+        .await
+        .with_context(|| format!("binding Wyoming server on {bind}"))?;
+
+    eprintln!(
+        "Wyoming server listening on tcp://{bind}\nTranscribing each utterance via {} ({}). Press Ctrl-C to exit.\n",
+        cfg.stt.base_url, cfg.stt.model
+    );
+
+    let server_handle = tokio::spawn(async move { server.run().await });
+    let mut tracker = SessionTracker::new();
+
+    loop {
+        tokio::select! {
+            incoming = rx.recv() => match incoming {
+                Some(incoming) => {
+                    if let Some(session) = tracker.feed(incoming) {
+                        // Hand transcription off to a task so a slow
+                        // STT round-trip doesn't block the next
+                        // satellite's audio from being buffered.
+                        // Concurrency is unbounded by design for this
+                        // dev tap — head-of-line blocking is worse
+                        // than fan-out at small N. Prod dispatch will
+                        // need a bounded worker pool.
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            transcribe_session(&client, session).await;
+                        });
+                    }
+                }
+                None => {
+                    eprintln!("\nWyoming server stopped.");
+                    break;
+                }
+            },
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nReceived Ctrl-C. Exiting.");
+                break;
+            }
+        }
+    }
+
+    // Detached transcription tasks (if any) are dropped here without
+    // awaiting — fine for a dev tap; a graceful-shutdown signal will
+    // land alongside the connection-close hook.
+    server_handle.abort();
+    Ok(())
+}
+
+/// Wrap a session's PCM in WAV and ship it to Whisper. Errors are
+/// logged rather than propagated so a single bad request doesn't
+/// take the listener down.
+async fn transcribe_session(client: &WhisperClient, session: niles_wyoming::AudioSession) {
+    let pcm_format = PcmFormat {
+        sample_rate_hz: session.format.sample_rate_hz,
+        bits_per_sample: session.format.bits_per_sample,
+        channels: session.format.channels,
+    };
+    let pcm_bytes = session.pcm.len();
+    let wav = match pcm_to_wav(&session.pcm, pcm_format) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(
+                "{}: WAV wrap failed ({pcm_bytes} PCM bytes): {e}",
+                session.from
+            );
+            return;
+        }
+    };
+
+    match client.transcribe(wav, "session.wav").await {
+        Ok(t) => {
+            println!("[{}] \"{}\"", session.from, t.text.trim());
+        }
+        Err(e) => {
+            tracing::warn!("{}: transcription failed: {e}", session.from);
+        }
+    }
 }
