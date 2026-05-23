@@ -502,6 +502,10 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
                         // Hand transcription off to a task so a slow
                         // STT round-trip doesn't block the next
                         // satellite's audio from being buffered.
+                        // Concurrency is unbounded by design for this
+                        // dev tap — head-of-line blocking is worse
+                        // than fan-out at small N. Prod dispatch will
+                        // need a bounded worker pool.
                         let client = client.clone();
                         tokio::spawn(async move {
                             transcribe_session(&client, session).await;
@@ -520,6 +524,9 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Detached transcription tasks (if any) are dropped here without
+    // awaiting — fine for a dev tap; a graceful-shutdown signal will
+    // land alongside the connection-close hook.
     server_handle.abort();
     Ok(())
 }

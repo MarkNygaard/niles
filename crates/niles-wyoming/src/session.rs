@@ -29,7 +29,12 @@ use tracing::{debug, warn};
 const MAX_SESSION_PCM_BYTES: usize = 5 * 1024 * 1024;
 
 /// PCM format declared in the `audio-start` event.
+///
+/// `#[non_exhaustive]` so callers in other crates can't bypass
+/// [`parse_audio_format`]'s validation by constructing one directly
+/// with zeroed or out-of-range fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AudioFormat {
     pub sample_rate_hz: u32,
     /// Bits per sample, derived from Wyoming's `width` (bytes).
@@ -40,6 +45,7 @@ pub struct AudioFormat {
 /// One completed audio utterance: the format declared at start, plus
 /// every PCM byte received between `audio-start` and `audio-stop`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AudioSession {
     pub from: SocketAddr,
     pub format: AudioFormat,
@@ -335,6 +341,9 @@ mod tests {
             t.feed(ev(EventKind::AudioStop, json!({}), vec![]))
                 .is_none()
         );
+        // ...and the slot is removed so we're not leaking the
+        // (now-empty) poisoned entry past stop.
+        assert_eq!(t.open_session_count(), 0);
     }
 
     #[test]
