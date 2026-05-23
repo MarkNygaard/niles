@@ -26,6 +26,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 axum = "0.7"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# rustls-tls keeps us off platform OpenSSL — same call cross-platform
+# and what CI Ubuntu would need anyway. Multipart is for Whisper's
+# audio-upload endpoint.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
@@ -35,3 +39,4 @@ niles-mqtt = { path = "crates/niles-mqtt" }
 niles-api = { path = "crates/niles-api" }
 niles-scheduler = { path = "crates/niles-scheduler" }
 niles-wyoming = { path = "crates/niles-wyoming" }
+niles-stt = { path = "crates/niles-stt" }
