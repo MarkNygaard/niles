@@ -747,6 +747,7 @@ dependencies = [
  "niles-api",
  "niles-config",
  "niles-core",
+ "niles-intent",
  "niles-mqtt",
  "niles-stt",
  "niles-wyoming",
