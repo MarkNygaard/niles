@@ -8,9 +8,29 @@ use crate::codec::WyomingReader;
 use crate::error::Result;
 use crate::event::Event;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+/// Capacity of the incoming-event channel. A bounded channel
+/// applies backpressure to the per-connection reader (and through
+/// it, to the TCP socket and ultimately the satellite) if the
+/// consumer falls behind, instead of letting memory grow without
+/// bound. 1024 events ≈ 20s of audio at typical chunk rates —
+/// plenty of headroom for transient consumer slow-downs.
+const EVENT_CHANNEL_CAPACITY: usize = 1024;
+
+/// Drop a connection that hasn't produced an event in this long.
+/// Wyoming has ping/pong for keepalive, so a healthy satellite
+/// sends something at least every minute or two. 10 minutes is a
+/// generous floor that still reclaims dead sockets.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Sleep this long after a transient `accept()` error to avoid
+/// spinning a hot loop if the error condition (e.g. FD exhaustion)
+/// is persistent.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 /// One inbound event tagged with which connection it came from.
 /// The remote address is convenient for logging while we wait to
@@ -26,28 +46,31 @@ pub struct IncomingEvent {
 /// events from the socket and forwards them.
 pub struct WyomingServer {
     listener: TcpListener,
-    tx: mpsc::UnboundedSender<IncomingEvent>,
+    tx: mpsc::Sender<IncomingEvent>,
 }
 
 impl WyomingServer {
     /// Bind to `addr` and return the server plus the receiver end of
     /// the event channel.
-    pub async fn bind(addr: SocketAddr) -> Result<(Self, mpsc::UnboundedReceiver<IncomingEvent>)> {
+    pub async fn bind(addr: SocketAddr) -> Result<(Self, mpsc::Receiver<IncomingEvent>)> {
         let listener = TcpListener::bind(addr).await?;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         info!("niles-wyoming listening on tcp://{addr}");
         Ok((Self { listener, tx }, rx))
     }
 
-    /// Run the accept loop until the listener errors. Each accepted
-    /// connection gets its own task that reads events until the
-    /// peer disconnects.
-    pub async fn run(self) -> Result<()> {
+    /// Run the accept loop forever. Each accepted connection gets its
+    /// own task that reads events until the peer disconnects, hits an
+    /// idle timeout, or sends malformed input. The function only
+    /// returns when its task is cancelled (e.g. by `JoinHandle::abort`
+    /// or a future shutdown signal).
+    pub async fn run(self) {
         loop {
             let (stream, peer) = match self.listener.accept().await {
                 Ok(x) => x,
                 Err(e) => {
                     warn!("accept error: {e}");
+                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                     continue;
                 }
             };
@@ -58,28 +81,30 @@ impl WyomingServer {
     }
 }
 
-async fn handle_connection(
-    stream: TcpStream,
-    peer: SocketAddr,
-    tx: mpsc::UnboundedSender<IncomingEvent>,
-) {
+async fn handle_connection(stream: TcpStream, peer: SocketAddr, tx: mpsc::Sender<IncomingEvent>) {
     let mut reader = WyomingReader::new(stream);
     loop {
-        match reader.read_event().await {
-            Ok(Some(event)) => {
-                if tx.send(IncomingEvent { from: peer, event }).is_err() {
-                    debug!("event consumer dropped — closing {peer}");
-                    return;
-                }
+        let event = match tokio::time::timeout(IDLE_TIMEOUT, reader.read_event()).await {
+            Err(_) => {
+                warn!(
+                    "Wyoming idle timeout for {peer} ({}s with no events)",
+                    IDLE_TIMEOUT.as_secs()
+                );
+                return;
             }
-            Ok(None) => {
+            Ok(Ok(Some(event))) => event,
+            Ok(Ok(None)) => {
                 debug!("{peer} closed connection");
                 return;
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!("Wyoming parse error from {peer}: {e}");
                 return;
             }
+        };
+        if tx.send(IncomingEvent { from: peer, event }).await.is_err() {
+            debug!("event consumer dropped — closing {peer}");
+            return;
         }
     }
 }

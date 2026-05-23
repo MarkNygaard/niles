@@ -24,33 +24,35 @@ const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 /// `BufReader` so we can `read_line` cheaply.
 pub struct WyomingReader<R> {
     inner: BufReader<R>,
+    line: String,
 }
 
 impl<R: AsyncRead + Unpin> WyomingReader<R> {
     pub fn new(inner: R) -> Self {
         Self {
             inner: BufReader::new(inner),
+            line: String::new(),
         }
     }
 
     /// Read one event from the stream. Returns `Ok(None)` on clean
     /// EOF (peer closed); `Err` on malformed or truncated input.
     pub async fn read_event(&mut self) -> Result<Option<Event>> {
-        let mut line = String::new();
-        let n = self.inner.read_line(&mut line).await?;
+        self.line.clear();
+        let n = self.inner.read_line(&mut self.line).await?;
         if n == 0 {
             return Ok(None); // clean EOF
         }
-        if line.len() > MAX_HEADER_BYTES {
+        if self.line.len() > MAX_HEADER_BYTES {
             return Err(Error::Frame {
                 reason: format!(
                     "header exceeds {MAX_HEADER_BYTES}-byte limit (got {} bytes)",
-                    line.len()
+                    self.line.len()
                 ),
             });
         }
         // Strip the trailing \n (and \r if present — robust against CRLF senders).
-        let trimmed = line.trim_end_matches(['\n', '\r']);
+        let trimmed = self.line.trim_end_matches(['\n', '\r']);
         if trimmed.is_empty() {
             return Err(Error::Frame {
                 reason: "received empty header line".into(),
@@ -73,9 +75,17 @@ impl<R: AsyncRead + Unpin> WyomingReader<R> {
             self.inner.read_exact(&mut payload).await?;
         }
 
+        // Normalize a missing or explicit-null `data` field to an
+        // empty JSON object so consumers see one canonical shape.
+        let data = if header.data.is_null() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            header.data
+        };
+
         Ok(Some(Event {
             kind: EventKind::from(header.type_.as_str()),
-            data: header.data,
+            data,
             payload,
             version: header.version,
         }))
@@ -203,6 +213,40 @@ mod tests {
         let mut reader = WyomingReader::new(Cursor::new(&raw[..]));
         let event = reader.read_event().await.unwrap().expect("event");
         assert_eq!(event.kind, EventKind::Ping);
+    }
+
+    #[tokio::test]
+    async fn missing_data_field_normalizes_to_empty_object() {
+        let raw = b"{\"type\":\"describe\"}\n";
+        let mut reader = WyomingReader::new(Cursor::new(&raw[..]));
+        let event = reader.read_event().await.unwrap().expect("event");
+        assert_eq!(event.data, json!({}));
+    }
+
+    #[tokio::test]
+    async fn explicit_null_data_normalizes_to_empty_object() {
+        let raw = b"{\"type\":\"describe\",\"data\":null}\n";
+        let mut reader = WyomingReader::new(Cursor::new(&raw[..]));
+        let event = reader.read_event().await.unwrap().expect("event");
+        assert_eq!(event.data, json!({}));
+    }
+
+    #[tokio::test]
+    async fn reuses_buffer_across_reads() {
+        // Two events back-to-back, then EOF. The reader's internal
+        // line buffer is reused; this just confirms the round-trip
+        // still works (allocation behavior isn't directly testable).
+        let raw = b"{\"type\":\"ping\"}\n{\"type\":\"pong\"}\n";
+        let mut reader = WyomingReader::new(Cursor::new(&raw[..]));
+        assert_eq!(
+            reader.read_event().await.unwrap().expect("e1").kind,
+            EventKind::Ping
+        );
+        assert_eq!(
+            reader.read_event().await.unwrap().expect("e2").kind,
+            EventKind::Pong
+        );
+        assert!(reader.read_event().await.unwrap().is_none());
     }
 
     #[tokio::test]

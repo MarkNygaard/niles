@@ -19,7 +19,9 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub struct Event {
     pub kind: EventKind,
-    /// Raw `data` field as JSON. Empty object if not present.
+    /// Raw `data` field as JSON. Normalized to an empty object
+    /// (never `Value::Null`) by the reader when the wire header omits
+    /// `data` or sends an explicit `null`.
     pub data: Value,
     /// Binary payload bytes that followed the header, if any.
     pub payload: Vec<u8>,
