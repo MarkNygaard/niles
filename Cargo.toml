@@ -30,6 +30,12 @@ http-body-util = "0.1"
 # and what CI Ubuntu would need anyway. Multipart is for Whisper's
 # audio-upload endpoint.
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# Date / time. `clock` gives us the system clock; we skip the rest of
+# the default features (notably `oldtime`, `wasmbind`) to keep deps
+# tight. `chrono-tz` ships the IANA database so we can resolve
+# `cfg.home.timezone` strings like "Europe/Copenhagen".
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono-tz = "0.10"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
