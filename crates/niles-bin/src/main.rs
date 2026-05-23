@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand};
 use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
+use niles_intent::{Intent, IntentRouter};
 use niles_mqtt::{MqttClient, MqttOptions, Z2mSource, format_set_command, is_actionable};
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_wyoming::{SessionTracker, WyomingServer};
@@ -60,6 +61,12 @@ enum Commands {
     /// provider, and print the transcript. (Dev tool — no intent
     /// dispatch or TTS yet.)
     VoiceTap(VoiceTapArgs),
+    /// Same audio pipeline as `voice-tap`, plus parse each transcript
+    /// through the Tier 0 intent router. Prints the matched `Intent`
+    /// (or `no match`). No MQTT dispatch yet — that lands in a
+    /// follow-up PR once we've validated the regexes against real
+    /// STT output.
+    VoiceDispatch(VoiceDispatchArgs),
 }
 
 #[derive(Subcommand)]
@@ -142,6 +149,13 @@ struct VoiceTapArgs {
     config: PathBuf,
 }
 
+#[derive(Args)]
+struct VoiceDispatchArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -171,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::WyomingTap(args) => wyoming_tap(args).await,
         Commands::Transcribe(args) => transcribe(args).await,
         Commands::VoiceTap(args) => voice_tap(args).await,
+        Commands::VoiceDispatch(args) => voice_dispatch(args).await,
     }
 }
 
@@ -508,7 +523,9 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
                         // need a bounded worker pool.
                         let client = client.clone();
                         tokio::spawn(async move {
-                            transcribe_session(&client, session).await;
+                            if let Some((peer, text)) = transcribe_session(&client, session).await {
+                                println!("[{peer}] \"{text}\"");
+                            }
                         });
                     }
                 }
@@ -531,10 +548,14 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Wrap a session's PCM in WAV and ship it to Whisper. Errors are
-/// logged rather than propagated so a single bad request doesn't
-/// take the listener down.
-async fn transcribe_session(client: &WhisperClient, session: niles_wyoming::AudioSession) {
+/// Wrap a session's PCM in WAV and ship it to Whisper. Returns the
+/// (trimmed) transcript on success, `None` on any failure — errors
+/// are logged in place so a single bad request doesn't take the
+/// listener down.
+async fn transcribe_session(
+    client: &WhisperClient,
+    session: niles_wyoming::AudioSession,
+) -> Option<(std::net::SocketAddr, String)> {
     let pcm_format = PcmFormat {
         sample_rate_hz: session.format.sample_rate_hz,
         bits_per_sample: session.format.bits_per_sample,
@@ -548,16 +569,103 @@ async fn transcribe_session(client: &WhisperClient, session: niles_wyoming::Audi
                 "{}: WAV wrap failed ({pcm_bytes} PCM bytes): {e}",
                 session.from
             );
-            return;
+            return None;
         }
     };
 
     match client.transcribe(wav, "session.wav").await {
-        Ok(t) => {
-            println!("[{}] \"{}\"", session.from, t.text.trim());
-        }
+        Ok(t) => Some((session.from, t.text.trim().to_string())),
         Err(e) => {
             tracing::warn!("{}: transcription failed: {e}", session.from);
+            None
         }
+    }
+}
+
+async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+
+    let bind = cfg
+        .wyoming
+        .socket_addr()
+        .context("resolving wyoming.bind_address")?;
+
+    let client = Arc::new(build_whisper_client(&cfg)?);
+    let (server, mut rx) = WyomingServer::bind(bind)
+        .await
+        .with_context(|| format!("binding Wyoming server on {bind}"))?;
+
+    eprintln!(
+        "Wyoming server listening on tcp://{bind}\nTranscribing via {} ({}), then matching against Tier 0 patterns.\nNo MQTT dispatch yet — this prints `intent` or `no match`. Press Ctrl-C to exit.\n",
+        cfg.stt.base_url, cfg.stt.model
+    );
+
+    let server_handle = tokio::spawn(async move { server.run().await });
+    let mut tracker = SessionTracker::new();
+
+    loop {
+        tokio::select! {
+            incoming = rx.recv() => match incoming {
+                Some(incoming) => {
+                    if let Some(session) = tracker.feed(incoming) {
+                        // Same unbounded fan-out as voice-tap — fine
+                        // for a dev tool, replaced by a bounded
+                        // worker pool when this becomes prod dispatch.
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            if let Some((peer, text)) = transcribe_session(&client, session).await {
+                                // IntentRouter is a zero-sized unit
+                                // struct; the regexes are compiled
+                                // once into a static OnceLock, so
+                                // constructing a fresh router per
+                                // task is free.
+                                match IntentRouter::new().parse(&text) {
+                                    Some(intent) => {
+                                        println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
+                                    }
+                                    None => {
+                                        println!("[{peer}] \"{text}\" -> no Tier 0 match");
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+                None => {
+                    eprintln!("\nWyoming server stopped.");
+                    break;
+                }
+            },
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nReceived Ctrl-C. Exiting.");
+                break;
+            }
+        }
+    }
+
+    server_handle.abort();
+    Ok(())
+}
+
+/// Compact, human-readable rendering of an [`Intent`] for the dev
+/// dispatch log. `{:?}` works but the output is noisier than we want
+/// when each line is a single utterance.
+fn format_intent(intent: &Intent) -> String {
+    // `Intent` is `#[non_exhaustive]` — a future variant lands as
+    // `{:?}` until this dev tool catches up.
+    match intent {
+        Intent::LightSet { room, on } => {
+            let state = if *on { "on" } else { "off" };
+            format!("LightSet({room} -> {state})")
+        }
+        Intent::TimerSet { duration, name } => match name {
+            Some(n) => format!("TimerSet({}s, name={n:?})", duration.as_secs()),
+            None => format!("TimerSet({}s)", duration.as_secs()),
+        },
+        Intent::Stop => "Stop".into(),
+        Intent::Cancel => "Cancel".into(),
+        other => format!("{other:?}"),
     }
 }

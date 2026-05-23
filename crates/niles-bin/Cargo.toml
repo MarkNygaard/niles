@@ -25,3 +25,4 @@ niles-mqtt.workspace = true
 niles-api.workspace = true
 niles-wyoming.workspace = true
 niles-stt.workspace = true
+niles-intent.workspace = true
