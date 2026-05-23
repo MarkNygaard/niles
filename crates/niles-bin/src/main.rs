@@ -426,7 +426,10 @@ async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
 
-    let (server, mut rx) = WyomingServer::bind(bind)
+    // wyoming-tap doesn't track sessions, so disconnect events
+    // have nothing to clean up — discard the receiver. The server
+    // sends best-effort and won't block on a dropped receiver.
+    let (server, mut rx, _disconnects) = WyomingServer::bind(bind)
         .await
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
 
@@ -529,7 +532,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
         .context("resolving wyoming.bind_address")?;
 
     let client = Arc::new(build_whisper_client(&cfg)?);
-    let (server, mut rx) = WyomingServer::bind(bind)
+    let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
 
@@ -566,6 +569,14 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
                     break;
                 }
             },
+            disconnect = disconnects_rx.recv() => {
+                if let Some(peer) = disconnect {
+                    // Free any half-buffered session for this peer
+                    // immediately, rather than waiting on the 10-min
+                    // idle reaper inside the server.
+                    tracker.drop_peer(peer);
+                }
+            }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nReceived Ctrl-C. Exiting.");
                 break;
@@ -574,8 +585,8 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
     }
 
     // Detached transcription tasks (if any) are dropped here without
-    // awaiting — fine for a dev tap; a graceful-shutdown signal will
-    // land alongside the connection-close hook.
+    // awaiting — fine for a dev tap; a graceful-shutdown signal for
+    // those in-flight tasks is a separate concern.
     server_handle.abort();
     Ok(())
 }
@@ -647,7 +658,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         }
     });
 
-    let (server, mut rx) = WyomingServer::bind(bind)
+    let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
 
@@ -695,6 +706,11 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                     break;
                 }
             },
+            disconnect = disconnects_rx.recv() => {
+                if let Some(peer) = disconnect {
+                    tracker.drop_peer(peer);
+                }
+            }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nReceived Ctrl-C. Exiting.");
                 break;
