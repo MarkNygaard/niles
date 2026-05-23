@@ -6,6 +6,7 @@ use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_mqtt::{MqttClient, MqttOptions, Z2mSource, format_set_command, is_actionable};
+use niles_wyoming::WyomingServer;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +47,9 @@ enum Commands {
     /// registry as Z2M reports them, and `curl http://<bind>/devices`
     /// returns the current snapshot.
     Api(ApiArgs),
+    /// Run the Wyoming server and log every incoming event from
+    /// connected satellites (dev tool — no STT / TTS yet).
+    WyomingTap(WyomingTapArgs),
 }
 
 #[derive(Subcommand)]
@@ -105,6 +109,13 @@ struct ApiArgs {
     config: PathBuf,
 }
 
+#[derive(Args)]
+struct WyomingTapArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -131,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Discover(args) => discover(args).await,
         Commands::Set(args) => set(args).await,
         Commands::Api(args) => api(args).await,
+        Commands::WyomingTap(args) => wyoming_tap(args).await,
     }
 }
 
@@ -326,5 +338,53 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
 
     api_handle.abort();
     source_handle.abort();
+    Ok(())
+}
+
+async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+
+    let bind = cfg
+        .wyoming
+        .socket_addr()
+        .context("resolving wyoming.bind_address")?;
+
+    let (server, mut rx) = WyomingServer::bind(bind)
+        .await
+        .with_context(|| format!("binding Wyoming server on {bind}"))?;
+
+    eprintln!(
+        "Wyoming server listening on tcp://{bind}\nPoint your satellite at it. Press Ctrl-C to exit.\n"
+    );
+
+    let server_handle = tokio::spawn(async move { server.run().await });
+
+    loop {
+        tokio::select! {
+            incoming = rx.recv() => match incoming {
+                Some(incoming) => {
+                    let kind = incoming.event.kind.as_wire_str();
+                    let payload_len = incoming.event.payload.len();
+                    if payload_len > 0 {
+                        println!("[{}] {kind} (+ {payload_len}B payload)", incoming.from);
+                    } else {
+                        println!("[{}] {kind} {data}", incoming.from, data = incoming.event.data);
+                    }
+                }
+                None => {
+                    eprintln!("\nWyoming server stopped.");
+                    break;
+                }
+            },
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nReceived Ctrl-C. Exiting.");
+                break;
+            }
+        }
+    }
+
+    server_handle.abort();
     Ok(())
 }

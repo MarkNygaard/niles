@@ -12,6 +12,7 @@ pub mod error;
 pub mod home;
 pub mod lighting;
 pub mod mqtt;
+pub mod wyoming;
 
 use serde::Deserialize;
 use std::path::Path;
@@ -21,6 +22,7 @@ pub use error::{Error, Result};
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig};
 pub use mqtt::MqttConfig;
+pub use wyoming::WyomingConfig;
 
 /// Top-level Niles configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +31,7 @@ pub struct Config {
     pub home: HomeConfig,
     pub mqtt: MqttConfig,
     pub api: ApiConfig,
+    pub wyoming: WyomingConfig,
     pub lighting: LightingConfig,
 }
 
@@ -70,6 +73,7 @@ impl Config {
         self.home.validate()?;
         self.mqtt.validate()?;
         self.api.validate()?;
+        self.wyoming.validate()?;
         let _ = self.lighting.to_curve_config()?;
         Ok(())
     }
@@ -95,6 +99,9 @@ password_env = "NILES_MQTT_PASSWORD"
 
 [api]
 bind_address = "0.0.0.0:8080"
+
+[wyoming]
+bind_address = "0.0.0.0:10300"
 
 [lighting]
 morning_start = "05:45"
@@ -284,6 +291,23 @@ kelvin = 2000
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn wyoming_section_parses_and_resolves_socket_addr() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        let addr = cfg.wyoming.socket_addr().unwrap();
+        assert_eq!(addr.port(), 10300);
+    }
+
+    #[test]
+    fn rejects_invalid_wyoming_bind_address() {
+        let bad = valid_toml().replace(
+            "bind_address = \"0.0.0.0:10300\"",
+            "bind_address = \"not-an-address\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
