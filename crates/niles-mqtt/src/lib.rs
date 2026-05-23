@@ -17,7 +17,7 @@ pub mod sink;
 pub mod source;
 pub mod z2m;
 
-pub use client::{DisconnectReason, Message, MqttClient, MqttOptions};
+pub use client::{DisconnectReason, Message, MqttClient, MqttOptions, MqttPublisher};
 pub use error::{Error, Result};
 pub use sink::{format_set_command, is_actionable};
 pub use source::Z2mSource;

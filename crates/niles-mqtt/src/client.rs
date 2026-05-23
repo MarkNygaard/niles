@@ -178,6 +178,17 @@ impl MqttClient {
         Ok(())
     }
 
+    /// Return a clone-able publish-only handle backed by this
+    /// client's connection. Useful when one part of the program
+    /// owns the `MqttClient` (e.g. `Z2mSource` consuming messages)
+    /// and other tasks need to publish on the same connection
+    /// without opening a second one.
+    pub fn publisher(&self) -> MqttPublisher {
+        MqttPublisher {
+            client: self.client.clone(),
+        }
+    }
+
     /// Block until the next incoming message arrives, or `None` if
     /// the eventloop has terminated (either initial-connect failure
     /// or `MqttClient` drop). On `None`, call [`Self::last_error`] to
@@ -210,6 +221,30 @@ impl Drop for MqttClient {
         // Abort the eventloop so the task doesn't keep running with
         // its (sleeping) backoff timer after the consumer is gone.
         self.event_loop.abort();
+    }
+}
+
+/// Clone-able publish-only handle. Backed by the same `AsyncClient`
+/// (and therefore the same eventloop + connection) as the
+/// `MqttClient` it was obtained from. Publishes go through that
+/// shared eventloop, so they survive runtime disconnects and benefit
+/// from the same backoff/reconnect behavior.
+///
+/// Dropping a `MqttPublisher` does not affect the underlying
+/// connection — that lives and dies with the `MqttClient`. If the
+/// `MqttClient` is dropped, subsequent `publish` calls will return
+/// an error because the eventloop task has been aborted.
+#[derive(Clone)]
+pub struct MqttPublisher {
+    client: AsyncClient,
+}
+
+impl MqttPublisher {
+    pub async fn publish(&self, topic: &str, payload: impl Into<Vec<u8>>) -> Result<()> {
+        self.client
+            .publish(topic, QoS::AtLeastOnce, false, payload.into())
+            .await?;
+        Ok(())
     }
 }
 
