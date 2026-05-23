@@ -21,6 +21,13 @@ impl IntentRouter {
     pub fn parse(&self, transcript: &str) -> Option<Intent> {
         let t = normalize(transcript);
 
+        // Order matters when patterns could conflict. `light_dim`
+        // requires the trailing "... to N%" so it can't be confused
+        // with `light` (which requires a trailing `on`/`off`), but
+        // we still match the more specific pattern first as a habit.
+        if let Some(intent) = match_light_dim(&t) {
+            return Some(intent);
+        }
         if let Some(intent) = match_light(&t) {
             return Some(intent);
         }
@@ -34,10 +41,16 @@ impl IntentRouter {
     }
 }
 
-/// Lowercase, trim, collapse internal whitespace, strip trailing punctuation.
+/// Lowercase, trim, collapse internal whitespace, strip trailing
+/// sentence punctuation (`.`, `!`, `?`, `,`, `;`, `:`).
+///
+/// Note: we explicitly enumerate the trailing chars to strip rather
+/// than "anything non-alphanumeric" — otherwise `%` gets eaten and
+/// `dim the kitchen lights to 30%` becomes `... to 30`, which the
+/// `light_dim` regex can't anchor on.
 fn normalize(s: &str) -> String {
     let lower = s.trim().to_lowercase();
-    let no_trailing_punct = lower.trim_end_matches(|c: char| !c.is_alphanumeric());
+    let no_trailing_punct = lower.trim_end_matches(['.', '!', '?', ',', ';', ':']);
     // Collapse internal whitespace runs to single spaces.
     no_trailing_punct
         .split_whitespace()
@@ -83,6 +96,48 @@ fn match_light(t: &str) -> Option<Intent> {
     Some(Intent::LightSet {
         room: room.to_string(),
         on: state == "on",
+    })
+}
+
+// ---- Light dim (brightness percent) ----------------------------------------
+
+fn light_dim_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // "dim [the] <room> light[s] to N%"
+        // "set [the] <room> light[s] to N percent"
+        //
+        // `set ... on/off` won't match here because the suffix
+        // requires `to N (%|percent)`; the regular light regex
+        // handles the on/off case.
+        Regex::new(
+            r"(?x)
+              ^
+              (?:dim|set)\s+(?:the\s+)?(?P<room>.+?)\s+lights?\s+to\s+
+              (?P<n>\d{1,3})
+              \s*(?:%|percent)
+              $",
+        )
+        .expect("light_dim regex compiles")
+    })
+}
+
+fn match_light_dim(t: &str) -> Option<Intent> {
+    let caps = light_dim_regex().captures(t)?;
+    let room = caps.name("room")?.as_str();
+    // Same trap as the on/off pattern: the optional `the` group can
+    // decline to match, leaving "the" as the captured room. Reject
+    // so we escalate to Tier 1 instead of producing a bogus room.
+    if room == "the" {
+        return None;
+    }
+    let n: u8 = caps.name("n")?.as_str().parse().ok()?;
+    if n > 100 {
+        return None;
+    }
+    Some(Intent::LightDim {
+        room: room.to_string(),
+        percent: n,
     })
 }
 
@@ -196,6 +251,122 @@ mod tests {
     fn normalizes_case_and_trailing_punctuation() {
         assert_eq!(
             parse("Turn off the kitchen light."),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: false
+            })
+        );
+    }
+
+    // ---- Light dim (brightness percent) ----
+
+    #[test]
+    fn dim_kitchen_lights_to_30_percent_symbol() {
+        assert_eq!(
+            parse("dim the kitchen lights to 30%"),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 30
+            })
+        );
+    }
+
+    #[test]
+    fn dim_kitchen_lights_to_30_percent_word() {
+        assert_eq!(
+            parse("dim the kitchen lights to 30 percent"),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 30
+            })
+        );
+    }
+
+    #[test]
+    fn set_living_room_light_to_50_percent_multiword_room() {
+        assert_eq!(
+            parse("set the living room light to 50%"),
+            Some(Intent::LightDim {
+                room: "living room".into(),
+                percent: 50
+            })
+        );
+    }
+
+    #[test]
+    fn dim_works_without_definite_article() {
+        assert_eq!(
+            parse("dim kitchen lights to 30%"),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 30
+            })
+        );
+    }
+
+    #[test]
+    fn dim_boundary_values_accepted() {
+        assert_eq!(
+            parse("set the kitchen light to 0%"),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 0
+            })
+        );
+        assert_eq!(
+            parse("set the kitchen light to 100%"),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 100
+            })
+        );
+    }
+
+    #[test]
+    fn dim_rejects_over_100() {
+        // "150%" is regex-shaped but out of range — fall through to Tier 1.
+        assert_eq!(parse("set the kitchen light to 150%"), None);
+        assert_eq!(parse("dim the kitchen light to 200 percent"), None);
+    }
+
+    #[test]
+    fn dim_normalizes_case_and_trailing_punctuation() {
+        assert_eq!(
+            parse("Dim the Kitchen lights to 30%."),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 30
+            })
+        );
+    }
+
+    #[test]
+    fn dim_ambiguous_the_lights_rejected() {
+        // Without a room, the optional `the` group leaves room="the".
+        assert_eq!(parse("dim the lights to 50%"), None);
+        assert_eq!(parse("set the lights to 50 percent"), None);
+    }
+
+    #[test]
+    fn dim_does_not_claim_set_on_off() {
+        // `set ... on/off` lacks the trailing "to N%" so the dim
+        // regex must not claim it. (The on/off light regex's
+        // alt-phrasing is lenient enough to match this with room =
+        // "set the kitchen" — a known quirk of that pattern, not in
+        // scope for this PR.)
+        let result = parse("set the kitchen light on");
+        assert!(
+            !matches!(result, Some(Intent::LightDim { .. })),
+            "light_dim must not claim {result:?}"
+        );
+    }
+
+    #[test]
+    fn dim_set_on_off_still_routes_to_lightset() {
+        // Sanity: the original on/off regex still wins for its own
+        // phrasing.
+        assert_eq!(
+            parse("turn off the kitchen light"),
             Some(Intent::LightSet {
                 room: "kitchen".into(),
                 on: false
