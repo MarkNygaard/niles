@@ -608,6 +608,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
     let registry = Arc::new(DeviceRegistry::new());
+    // Z2mSource requires a bus, but voice-dispatch doesn't subscribe
+    // — events are still emitted for any future consumer.
     let bus = EventBus::default();
     let source = Z2mSource::new(
         mqtt_client,
@@ -741,7 +743,19 @@ async fn dispatch_light_set(ctx: &DispatchCtx, peer: std::net::SocketAddr, room:
         .collect();
 
     if targets.is_empty() {
-        println!("[{peer}] no controllable devices in room '{canonical}' — nothing to dispatch");
+        // Distinguish startup race from a genuinely empty room.
+        // The registry is populated asynchronously from Z2M's
+        // retained `bridge/devices`; on a cold start it may not
+        // have arrived yet by the time the first utterance lands.
+        if ctx.registry.is_empty() {
+            println!(
+                "[{peer}] registry is still warming up (no devices yet) — try again in a moment"
+            );
+        } else {
+            println!(
+                "[{peer}] no controllable devices in room '{canonical}' — nothing to dispatch"
+            );
+        }
         return;
     }
 
@@ -760,17 +774,22 @@ async fn dispatch_light_set(ctx: &DispatchCtx, peer: std::net::SocketAddr, room:
             println!("[{peer}] [dry-run] {topic}  {payload}");
             continue;
         }
-        match ctx.publisher.publish(&topic, payload.into_bytes()).await {
-            Ok(()) => println!("[{peer}] published {topic}"),
+        match ctx
+            .publisher
+            .publish(&topic, payload.clone().into_bytes())
+            .await
+        {
+            Ok(()) => println!("[{peer}] published {topic}  {payload}"),
             Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
         }
     }
 }
 
 /// Convert a transcript-style room reference ("living room") into a
-/// registry [`RoomName`] ("living_room"). The router already
-/// lowercases, so we just need to swap whitespace for underscores
-/// and round-trip through the validator.
+/// registry [`RoomName`] ("living_room"). This is the single
+/// normalization point between intent output and registry lookup:
+/// trims, lowercases, swaps whitespace for underscores, then
+/// validates via `RoomName::parse`.
 fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
     let normalized: String = s
         .trim()
@@ -828,7 +847,8 @@ mod intent_room_tests {
 
     #[test]
     fn mixed_case_lowercases() {
-        // IntentRouter normalizes already, but be defensive.
+        // Normalization is this function's contract — callers don't
+        // have to pre-lowercase.
         let r = intent_room_to_canonical("Kitchen").unwrap();
         assert_eq!(r.as_str(), "kitchen");
     }
