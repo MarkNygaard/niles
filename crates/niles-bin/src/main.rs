@@ -12,6 +12,7 @@ use niles_mqtt::{
 use niles_scheduler::{MinuteOfDay, brightness_at, build_curve_target, color_temp_at};
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_wyoming::{SessionTracker, WyomingServer};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -844,12 +845,13 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
         .context("converting [lighting] section to a CurveConfig")?;
 
     let registry = Arc::new(DeviceRegistry::new());
-    // Z2mSource needs a bus; no consumer in this subcommand yet.
-    let bus = EventBus::default();
+    // Z2mSource requires an EventBus; nothing in this subcommand
+    // subscribes to events, so the bus is wired straight in and
+    // dropped once Z2mSource takes ownership.
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
-        bus.clone(),
+        EventBus::default(),
         z2m_prefix.as_str(),
     );
     let source_handle = tokio::spawn(async move {
@@ -865,6 +867,12 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
         tick.as_secs()
     );
 
+    // Last `(brightness, kelvin)` we published per device. Lets us
+    // skip re-sending the same set command while we wait for Z2M to
+    // ack the state change — without this, a slow bulb keeps showing
+    // its pre-publish brightness and we'd republish every tick.
+    let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
+
     let mut ticker = tokio::time::interval(tick);
     // The first tick fires immediately; that's what we want — no
     // need to wait a full minute on startup before applying the
@@ -872,7 +880,22 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                run_curve_tick(&registry, &publisher, &z2m_prefix, &curve, tz, args.dry_run).await;
+                if source_handle.is_finished() {
+                    anyhow::bail!(
+                        "Z2mSource task has exited; the device registry is no longer \
+                         being updated, so the curve would publish blindly. Bailing."
+                    );
+                }
+                run_curve_tick(
+                    &registry,
+                    &publisher,
+                    &z2m_prefix,
+                    &curve,
+                    tz,
+                    args.dry_run,
+                    &mut last_published,
+                )
+                .await;
             }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nReceived Ctrl-C. Exiting.");
@@ -888,7 +911,8 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
 /// One tick of the curve driver. Reads the current wall-clock time
 /// in `tz`, computes the curve, and publishes (or logs, if `dry_run`)
 /// a set command for every currently-on light whose state has
-/// drifted past the debounce threshold.
+/// drifted past the debounce threshold and whose last-published
+/// target differs from the current one.
 async fn run_curve_tick(
     registry: &DeviceRegistry,
     publisher: &MqttPublisher,
@@ -896,13 +920,16 @@ async fn run_curve_tick(
     curve: &niles_scheduler::CurveConfig,
     tz: chrono_tz::Tz,
     dry_run: bool,
+    last_published: &mut HashMap<DeviceId, (u8, u16)>,
 ) {
     use chrono::{Timelike, Utc};
 
     let now = Utc::now().with_timezone(&tz);
-    // `now.hour()` and `now.minute()` are guaranteed in range — they
-    // come from a real timestamp, not user input.
-    let minute_of_day = match MinuteOfDay::new(now.hour() as u8, now.minute() as u8) {
+    // `chrono::Timelike::hour()` / `minute()` return `u32` but are
+    // guaranteed by the trait contract to be `0..=23` / `0..=59`.
+    let hour = u8::try_from(now.hour()).expect("chrono::Timelike::hour is 0..=23");
+    let minute = u8::try_from(now.minute()).expect("chrono::Timelike::minute is 0..=59");
+    let minute_of_day = match MinuteOfDay::new(hour, minute) {
         Ok(m) => m,
         Err(e) => {
             tracing::error!("could not construct MinuteOfDay from {now}: {e}");
@@ -911,10 +938,17 @@ async fn run_curve_tick(
     };
     let target_brightness = brightness_at(curve, minute_of_day);
     let target_kelvin = color_temp_at(curve, minute_of_day);
+    let curve_target = (target_brightness, target_kelvin);
 
     let mut publish_count = 0usize;
     for device in registry.list_all() {
         if device.state.on != Some(true) {
+            continue;
+        }
+        // If we already published this exact curve target for this
+        // device, skip — even if its reported state hasn't caught
+        // up yet (Z2M acks lag the set command).
+        if last_published.get(&device.id) == Some(&curve_target) {
             continue;
         }
         let Some(target_state) =
@@ -928,13 +962,14 @@ async fn run_curve_tick(
             "build_curve_target should only return actionable targets"
         );
         if dry_run {
-            println!("[curve {minute_of_day}] [dry-run] {topic}  {payload}");
+            tracing::info!("[curve {minute_of_day}] [dry-run] {topic}  {payload}");
+            last_published.insert(device.id.clone(), curve_target);
         } else {
-            match publisher
-                .publish(&topic, payload.clone().into_bytes())
-                .await
-            {
-                Ok(()) => println!("[curve {minute_of_day}] {topic}  {payload}"),
+            match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+                Ok(()) => {
+                    tracing::info!("[curve {minute_of_day}] {topic}  {payload}");
+                    last_published.insert(device.id.clone(), curve_target);
+                }
                 Err(e) => tracing::warn!("[curve {minute_of_day}] {topic} failed: {e}"),
             }
         }

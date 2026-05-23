@@ -16,5 +16,5 @@ pub mod time;
 
 pub use curve::{CurveConfig, Phase, brightness_at, color_temp_at, phase_at};
 pub use error::{Error, Result};
-pub use sink::{BRIGHTNESS_DEBOUNCE, KELVIN_DEBOUNCE_K, build_curve_target};
+pub use sink::build_curve_target;
 pub use time::MinuteOfDay;
