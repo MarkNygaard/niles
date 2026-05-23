@@ -733,7 +733,18 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
         Intent::LightSet { room, on } => {
-            dispatch_light_set(ctx, peer, &room, on).await;
+            let desired = DeviceState {
+                on: Some(on),
+                ..Default::default()
+            };
+            dispatch_room(ctx, peer, &room, |d| d.state.on.is_some(), &desired).await;
+        }
+        Intent::LightDim { room, percent } => {
+            let desired = DeviceState {
+                brightness: Some(percent),
+                ..Default::default()
+            };
+            dispatch_room(ctx, peer, &room, |d| d.state.brightness.is_some(), &desired).await;
         }
         Intent::TimerSet { .. } | Intent::Stop | Intent::Cancel => {
             tracing::info!("{peer}: intent recognized but dispatch not wired yet");
@@ -744,9 +755,24 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
     }
 }
 
-/// Resolve a transcript-derived room name to actionable devices in
-/// the registry, then publish a Z2M `set` command toggling each.
-async fn dispatch_light_set(ctx: &DispatchCtx, peer: std::net::SocketAddr, room: &str, on: bool) {
+/// Resolve a transcript-derived room reference to devices in the
+/// registry, filter by capability, and publish the requested target
+/// state to each. Shared by every room-scoped intent (LightSet,
+/// LightDim, etc.).
+///
+/// `capability_filter` decides which devices in the room actually
+/// support this action (e.g. lights for LightSet, brightness-capable
+/// bulbs for LightDim). Sensors and unrelated devices in the same
+/// room get skipped without needing a separate device-type model.
+async fn dispatch_room<F>(
+    ctx: &DispatchCtx,
+    peer: std::net::SocketAddr,
+    room: &str,
+    capability_filter: F,
+    desired: &DeviceState,
+) where
+    F: Fn(&niles_core::Device) -> bool,
+{
     let canonical = match intent_room_to_canonical(room) {
         Ok(r) => r,
         Err(reason) => {
@@ -755,15 +781,11 @@ async fn dispatch_light_set(ctx: &DispatchCtx, peer: std::net::SocketAddr, room:
         }
     };
 
-    // Filter to devices that expose a power-state field. A bare
-    // sensor will never have `on: Some(_)` in its current state,
-    // so this skips them without needing a separate capability
-    // model.
     let targets: Vec<_> = ctx
         .registry
         .list_room(&canonical)
         .into_iter()
-        .filter(|d| d.state.on.is_some())
+        .filter(&capability_filter)
         .collect();
 
     if targets.is_empty() {
@@ -777,30 +799,26 @@ async fn dispatch_light_set(ctx: &DispatchCtx, peer: std::net::SocketAddr, room:
             );
         } else {
             println!(
-                "[{peer}] no controllable devices in room '{canonical}' — nothing to dispatch"
+                "[{peer}] no devices in room '{canonical}' support this action — nothing to dispatch"
             );
         }
         return;
     }
 
-    let desired = DeviceState {
-        on: Some(on),
-        ..Default::default()
-    };
     debug_assert!(
-        is_actionable(&desired),
-        "LightSet target should always be actionable"
+        is_actionable(desired),
+        "dispatch_room target should always be actionable"
     );
 
     for device in &targets {
-        let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, &desired);
+        let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, desired);
         if ctx.dry_run {
             println!("[{peer}] [dry-run] {topic}  {payload}");
             continue;
         }
         match ctx
             .publisher
-            .publish(&topic, payload.clone().into_bytes())
+            .publish(&topic, payload.as_bytes().to_vec())
             .await
         {
             Ok(()) => println!("[{peer}] published {topic}  {payload}"),
@@ -991,6 +1009,9 @@ fn format_intent(intent: &Intent) -> String {
         Intent::LightSet { room, on } => {
             let state = if *on { "on" } else { "off" };
             format!("LightSet({room} -> {state})")
+        }
+        Intent::LightDim { room, percent } => {
+            format!("LightDim({room} -> {percent}%)")
         }
         Intent::TimerSet { duration, name } => match name {
             Some(n) => format!("TimerSet({}s, name={n:?})", duration.as_secs()),
