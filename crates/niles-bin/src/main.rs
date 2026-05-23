@@ -6,6 +6,7 @@ use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_mqtt::{MqttClient, MqttOptions, Z2mSource, format_set_command, is_actionable};
+use niles_stt::{WhisperClient, WhisperConfig};
 use niles_wyoming::WyomingServer;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,6 +51,10 @@ enum Commands {
     /// Run the Wyoming server and log every incoming event from
     /// connected satellites (dev tool — no STT / TTS yet).
     WyomingTap(WyomingTapArgs),
+    /// Transcribe an audio file via the configured STT provider
+    /// (Groq Whisper). The file is uploaded as-is — supported
+    /// formats are WAV, MP3, FLAC, OGG, M4A, etc.
+    Transcribe(TranscribeArgs),
 }
 
 #[derive(Subcommand)]
@@ -116,6 +121,15 @@ struct WyomingTapArgs {
     config: PathBuf,
 }
 
+#[derive(Args)]
+struct TranscribeArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+    /// Audio file to transcribe (WAV, MP3, FLAC, OGG, M4A, ...).
+    audio: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -143,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Set(args) => set(args).await,
         Commands::Api(args) => api(args).await,
         Commands::WyomingTap(args) => wyoming_tap(args).await,
+        Commands::Transcribe(args) => transcribe(args).await,
     }
 }
 
@@ -386,5 +401,54 @@ async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
     }
 
     server_handle.abort();
+    Ok(())
+}
+
+async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+
+    let api_key = cfg
+        .stt
+        .resolve_api_key()
+        .context("resolving STT API key from environment")?;
+
+    let audio = std::fs::read(&args.audio)
+        .with_context(|| format!("reading audio file {}", args.audio.display()))?;
+    let filename = args
+        .audio
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "audio".into());
+
+    let whisper_cfg = WhisperConfig {
+        api_key,
+        base_url: cfg.stt.base_url.clone(),
+        model: cfg.stt.model.clone(),
+        language: cfg.stt.language.clone(),
+        request_timeout: Duration::from_secs(cfg.stt.timeout_seconds),
+    };
+    let client = WhisperClient::new(whisper_cfg).context("building Whisper HTTP client")?;
+
+    eprintln!(
+        "Transcribing {} ({} bytes) via {} ({}) ...",
+        args.audio.display(),
+        audio.len(),
+        cfg.stt.base_url,
+        cfg.stt.model
+    );
+    let transcript = client
+        .transcribe(audio, &filename)
+        .await
+        .context("transcribing audio")?;
+
+    if let Some(lang) = &transcript.language {
+        eprintln!("Detected language: {lang}");
+    }
+    if let Some(dur) = transcript.duration_seconds {
+        eprintln!("Audio duration: {dur:.2}s");
+    }
+    println!("{}", transcript.text);
     Ok(())
 }

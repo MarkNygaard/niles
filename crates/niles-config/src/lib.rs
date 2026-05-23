@@ -12,6 +12,7 @@ pub mod error;
 pub mod home;
 pub mod lighting;
 pub mod mqtt;
+pub mod stt;
 pub mod wyoming;
 
 use serde::Deserialize;
@@ -22,6 +23,7 @@ pub use error::{Error, Result};
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig};
 pub use mqtt::MqttConfig;
+pub use stt::SttConfig;
 pub use wyoming::WyomingConfig;
 
 /// Top-level Niles configuration.
@@ -32,6 +34,7 @@ pub struct Config {
     pub mqtt: MqttConfig,
     pub api: ApiConfig,
     pub wyoming: WyomingConfig,
+    pub stt: SttConfig,
     pub lighting: LightingConfig,
 }
 
@@ -74,6 +77,7 @@ impl Config {
         self.mqtt.validate()?;
         self.api.validate()?;
         self.wyoming.validate()?;
+        self.stt.validate()?;
         let _ = self.lighting.to_curve_config()?;
         Ok(())
     }
@@ -102,6 +106,9 @@ bind_address = "0.0.0.0:8080"
 
 [wyoming]
 bind_address = "0.0.0.0:10300"
+
+[stt]
+api_key_env = "GROQ_API_KEY"
 
 [lighting]
 morning_start = "05:45"
@@ -308,6 +315,89 @@ kelvin = 2000
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn stt_section_parses_with_defaults() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        assert_eq!(cfg.stt.api_key_env, "GROQ_API_KEY");
+        assert_eq!(cfg.stt.base_url, "https://api.groq.com/openai/v1");
+        assert_eq!(cfg.stt.model, "whisper-large-v3-turbo");
+        assert!(cfg.stt.language.is_none());
+        assert_eq!(cfg.stt.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn rejects_empty_stt_api_key_env() {
+        let bad = valid_toml().replace("api_key_env = \"GROQ_API_KEY\"", "api_key_env = \"\"");
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_stt_timeout() {
+        let bad = valid_toml().replace(
+            "api_key_env = \"GROQ_API_KEY\"",
+            "api_key_env = \"GROQ_API_KEY\"\ntimeout_seconds = 0",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_stt_language_when_set() {
+        let bad = valid_toml().replace(
+            "api_key_env = \"GROQ_API_KEY\"",
+            "api_key_env = \"GROQ_API_KEY\"\nlanguage = \"\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_stt_base_url_without_http_scheme() {
+        let bad = valid_toml().replace(
+            "api_key_env = \"GROQ_API_KEY\"",
+            "api_key_env = \"GROQ_API_KEY\"\nbase_url = \"api.groq.com/openai/v1\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn resolve_stt_api_key_reads_env_var() {
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::set_var("NILES_TEST_GROQ_API_KEY", "gsk_test");
+        }
+        let cfg = SttConfig {
+            api_key_env: "NILES_TEST_GROQ_API_KEY".into(),
+            base_url: "https://example".into(),
+            model: "m".into(),
+            language: None,
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test");
+    }
+
+    #[test]
+    fn resolve_stt_api_key_errors_when_missing() {
+        // Guarantee the var is unset even if a parallel test, an
+        // ambient shell export, or a prior iteration of this test
+        // body set it.
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::remove_var("NILES_TEST_DEFINITELY_NOT_SET_STT_KEY_XYZ");
+        }
+        let cfg = SttConfig {
+            api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_STT_KEY_XYZ".into(),
+            base_url: "https://example".into(),
+            model: "m".into(),
+            language: None,
+            timeout_seconds: 30,
+        };
+        let err = cfg.resolve_api_key().unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: "stt", .. }));
     }
 
     #[test]
