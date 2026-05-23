@@ -4,9 +4,11 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use niles_api::AppState;
 use niles_config::Config;
-use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
+use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
 use niles_intent::{Intent, IntentRouter};
-use niles_mqtt::{MqttClient, MqttOptions, Z2mSource, format_set_command, is_actionable};
+use niles_mqtt::{
+    MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
+};
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_wyoming::{SessionTracker, WyomingServer};
 use std::path::PathBuf;
@@ -61,11 +63,12 @@ enum Commands {
     /// provider, and print the transcript. (Dev tool — no intent
     /// dispatch or TTS yet.)
     VoiceTap(VoiceTapArgs),
-    /// Same audio pipeline as `voice-tap`, plus parse each transcript
-    /// through the Tier 0 intent router. Prints the matched `Intent`
-    /// (or `no match`). No MQTT dispatch yet — that lands in a
-    /// follow-up PR once we've validated the regexes against real
-    /// STT output.
+    /// Same audio pipeline as `voice-tap`, plus parse each
+    /// transcript through the Tier 0 intent router and publish MQTT
+    /// `set` commands for matched intents. Connects to MQTT and
+    /// populates the device registry from Z2M, so room references
+    /// like "kitchen" resolve to real devices. Pass `--dry-run` to
+    /// match and log without publishing.
     VoiceDispatch(VoiceDispatchArgs),
 }
 
@@ -154,6 +157,11 @@ struct VoiceDispatchArgs {
     /// Path to the Niles config file.
     #[arg(short, long, default_value = "niles.toml")]
     config: PathBuf,
+    /// Match and log intents but skip the actual MQTT publish.
+    /// Useful for confirming the audio + intent pipeline against a
+    /// real broker-populated registry without affecting devices.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[tokio::main]
@@ -583,27 +591,61 @@ async fn transcribe_session(
 }
 
 async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
-    let cfg = Config::load_from_path(&args.config)
-        .with_context(|| format!("loading config from {}", args.config.display()))?;
-    cfg.validate().context("validating config")?;
+    // MQTT + config: connect_from_config validates and gives us a
+    // live MqttClient. We grab a publisher handle *before* handing
+    // the client to Z2mSource (which consumes it) so spawned
+    // dispatch tasks can publish on the same connection.
+    let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
+    let publisher = mqtt_client.publisher();
+    let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
 
     let bind = cfg
         .wyoming
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
+    let whisper = Arc::new(build_whisper_client(&cfg)?);
 
-    let client = Arc::new(build_whisper_client(&cfg)?);
+    // Registry populated by Z2mSource. Dispatch tasks look up
+    // devices in a room from this shared snapshot.
+    let registry = Arc::new(DeviceRegistry::new());
+    let bus = EventBus::default();
+    let source = Z2mSource::new(
+        mqtt_client,
+        registry.clone(),
+        bus.clone(),
+        cfg.mqtt.z2m_prefix.as_str(),
+    );
+    let source_handle = tokio::spawn(async move {
+        if let Err(e) = source.run().await {
+            tracing::error!("Z2mSource exited: {e}");
+        }
+    });
+
     let (server, mut rx) = WyomingServer::bind(bind)
         .await
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
 
+    let mode_note = if args.dry_run {
+        " (dry-run: nothing will be published)"
+    } else {
+        ""
+    };
     eprintln!(
-        "Wyoming server listening on tcp://{bind}\nTranscribing via {} ({}), then matching against Tier 0 patterns.\nNo MQTT dispatch yet — this prints `intent` or `no match`. Press Ctrl-C to exit.\n",
-        cfg.stt.base_url, cfg.stt.model
+        "Wyoming server listening on tcp://{bind}\nZ2M source running on {prefix}/+/+; STT via {stt_url} ({model}).\nMatched intents trigger MQTT publish{mode}. Press Ctrl-C to exit.\n",
+        prefix = cfg.mqtt.z2m_prefix,
+        stt_url = cfg.stt.base_url,
+        model = cfg.stt.model,
+        mode = mode_note,
     );
 
     let server_handle = tokio::spawn(async move { server.run().await });
     let mut tracker = SessionTracker::new();
+    let ctx = DispatchCtx {
+        publisher,
+        registry: registry.clone(),
+        z2m_prefix,
+        dry_run: args.dry_run,
+    };
 
     loop {
         tokio::select! {
@@ -613,22 +655,11 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                         // Same unbounded fan-out as voice-tap — fine
                         // for a dev tool, replaced by a bounded
                         // worker pool when this becomes prod dispatch.
-                        let client = client.clone();
+                        let whisper = whisper.clone();
+                        let ctx = ctx.clone();
                         tokio::spawn(async move {
-                            if let Some((peer, text)) = transcribe_session(&client, session).await {
-                                // IntentRouter is a zero-sized unit
-                                // struct; the regexes are compiled
-                                // once into a static OnceLock, so
-                                // constructing a fresh router per
-                                // task is free.
-                                match IntentRouter::new().parse(&text) {
-                                    Some(intent) => {
-                                        println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
-                                    }
-                                    None => {
-                                        println!("[{peer}] \"{text}\" -> no Tier 0 match");
-                                    }
-                                }
+                            if let Some((peer, text)) = transcribe_session(&whisper, session).await {
+                                handle_transcript(&ctx, peer, &text).await;
                             }
                         });
                     }
@@ -646,7 +677,110 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     }
 
     server_handle.abort();
+    source_handle.abort();
     Ok(())
+}
+
+/// Shared by every spawned dispatch task. Cheaply cloneable —
+/// `MqttPublisher`, `Arc`, `bool` all clone in constant time.
+#[derive(Clone)]
+struct DispatchCtx {
+    publisher: MqttPublisher,
+    registry: Arc<DeviceRegistry>,
+    z2m_prefix: Arc<String>,
+    dry_run: bool,
+}
+
+/// Parse a transcript and act on any Tier 0 intent it produces.
+async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: &str) {
+    // IntentRouter is a zero-sized unit struct; the regexes are
+    // compiled once into a static OnceLock, so constructing one
+    // per call is free.
+    let intent = match IntentRouter::new().parse(text) {
+        Some(i) => i,
+        None => {
+            println!("[{peer}] \"{text}\" -> no Tier 0 match");
+            return;
+        }
+    };
+
+    println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
+    match intent {
+        Intent::LightSet { room, on } => {
+            dispatch_light_set(ctx, peer, &room, on).await;
+        }
+        Intent::TimerSet { .. } | Intent::Stop | Intent::Cancel => {
+            tracing::info!("{peer}: intent recognized but dispatch not wired yet");
+        }
+        _ => {
+            tracing::info!("{peer}: unknown intent variant, skipping dispatch");
+        }
+    }
+}
+
+/// Resolve a transcript-derived room name to actionable devices in
+/// the registry, then publish a Z2M `set` command toggling each.
+async fn dispatch_light_set(ctx: &DispatchCtx, peer: std::net::SocketAddr, room: &str, on: bool) {
+    let canonical = match intent_room_to_canonical(room) {
+        Ok(r) => r,
+        Err(reason) => {
+            tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
+            return;
+        }
+    };
+
+    // Filter to devices that expose a power-state field. A bare
+    // sensor will never have `on: Some(_)` in its current state,
+    // so this skips them without needing a separate capability
+    // model.
+    let targets: Vec<_> = ctx
+        .registry
+        .list_room(&canonical)
+        .into_iter()
+        .filter(|d| d.state.on.is_some())
+        .collect();
+
+    if targets.is_empty() {
+        println!("[{peer}] no controllable devices in room '{canonical}' — nothing to dispatch");
+        return;
+    }
+
+    let desired = DeviceState {
+        on: Some(on),
+        ..Default::default()
+    };
+    debug_assert!(
+        is_actionable(&desired),
+        "LightSet target should always be actionable"
+    );
+
+    for device in &targets {
+        let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, &desired);
+        if ctx.dry_run {
+            println!("[{peer}] [dry-run] {topic}  {payload}");
+            continue;
+        }
+        match ctx.publisher.publish(&topic, payload.into_bytes()).await {
+            Ok(()) => println!("[{peer}] published {topic}"),
+            Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
+        }
+    }
+}
+
+/// Convert a transcript-style room reference ("living room") into a
+/// registry [`RoomName`] ("living_room"). The router already
+/// lowercases, so we just need to swap whitespace for underscores
+/// and round-trip through the validator.
+fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
+    let normalized: String = s
+        .trim()
+        .chars()
+        .map(|c| match c {
+            ' ' | '\t' => '_',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect();
+    RoomName::parse(&normalized).map_err(|e| format!("{e}"))
 }
 
 /// Compact, human-readable rendering of an [`Intent`] for the dev
@@ -667,5 +801,48 @@ fn format_intent(intent: &Intent) -> String {
         Intent::Stop => "Stop".into(),
         Intent::Cancel => "Cancel".into(),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod intent_room_tests {
+    use super::*;
+
+    #[test]
+    fn single_word_room_passes_through() {
+        let r = intent_room_to_canonical("kitchen").unwrap();
+        assert_eq!(r.as_str(), "kitchen");
+    }
+
+    #[test]
+    fn multi_word_room_replaces_spaces_with_underscores() {
+        let r = intent_room_to_canonical("living room").unwrap();
+        assert_eq!(r.as_str(), "living_room");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        let r = intent_room_to_canonical("  bedroom  ").unwrap();
+        assert_eq!(r.as_str(), "bedroom");
+    }
+
+    #[test]
+    fn mixed_case_lowercases() {
+        // IntentRouter normalizes already, but be defensive.
+        let r = intent_room_to_canonical("Kitchen").unwrap();
+        assert_eq!(r.as_str(), "kitchen");
+    }
+
+    #[test]
+    fn rejects_invalid_chars() {
+        // RoomName::parse rejects anything outside [a-z0-9_].
+        assert!(intent_room_to_canonical("kitchen!").is_err());
+        assert!(intent_room_to_canonical("kitchen-light").is_err());
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(intent_room_to_canonical("").is_err());
+        assert!(intent_room_to_canonical("   ").is_err());
     }
 }
