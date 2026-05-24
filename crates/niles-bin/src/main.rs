@@ -901,13 +901,12 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         }
     });
 
-    // Wait for Z2M to populate the registry before tool calls can
-    // ask for device state. Same warm-up the `chat` subcommand uses.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
     // Build the LLM + tool registry once for the lifetime of the
     // server. Both go into DispatchCtx wrapped in Arc — they're cloned
-    // (Arc::clone) into every spawned dispatch task.
+    // (Arc::clone) into every spawned dispatch task. No Z2M warm-up
+    // needed here: the first transcript arrives many seconds after
+    // startup (wake-word + speech + STT round-trip), so Z2M has plenty
+    // of time to populate before any tool call hits the registry.
     let llm = Arc::new(build_groq_client(&cfg)?);
     let tools = Arc::new(niles_tools::default_registry(
         registry.clone(),
@@ -1295,10 +1294,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     });
 
-    // Wait for Z2M to populate the registry before tool calls can
-    // ask for device state. Same warm-up the `chat` subcommand uses.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
+    // No Z2M warm-up needed here: tool calls only fire after a
+    // transcript arrives, by which point Z2M has had seconds to
+    // populate. See voice_dispatch for the same reasoning.
     let llm = Arc::new(build_groq_client(&cfg)?);
     let tools = Arc::new(niles_tools::default_registry(
         registry.clone(),
