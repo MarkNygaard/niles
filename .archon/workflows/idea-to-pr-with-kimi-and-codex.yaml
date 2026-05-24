@@ -43,25 +43,35 @@ nodes:
     context: fresh
 
   # ═══════════════════════════════════════════════════════════════════
-  # PHASE 1: SETUP
+  # PHASE 1: SETUP — Claude Sonnet
   # ═══════════════════════════════════════════════════════════════════
+  # `plan-setup` is mostly mechanical: read the plan artifact written
+  # by `create-plan`, ensure the worktree branch is ready, write a
+  # context artifact. No strategic reasoning that needs Opus. Sonnet
+  # 4.6 handles it cleanly at roughly 1/5 the cost.
 
   - id: plan-setup
     command: archon-plan-setup
     depends_on: [create-plan]
     provider: claude
-    model: opus
+    model: sonnet
     context: fresh
 
   # ═══════════════════════════════════════════════════════════════════
-  # PHASE 2: CONFIRM PLAN
+  # PHASE 2: CONFIRM PLAN — Claude Sonnet
   # ═══════════════════════════════════════════════════════════════════
+  # `confirm-plan` verifies the plan's research is still valid
+  # (do the referenced patterns / files / functions still exist,
+  # has the code drifted since the plan was written). That's a
+  # grep-shaped verification pass — Sonnet's tool use is plenty.
+  # Opus is reserved for `create-plan` where strategic reasoning
+  # actually matters.
 
   - id: confirm-plan
     command: archon-confirm-plan
     depends_on: [plan-setup]
     provider: claude
-    model: opus
+    model: sonnet
     context: fresh
 
   # ═══════════════════════════════════════════════════════════════════
