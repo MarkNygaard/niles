@@ -2,7 +2,7 @@
 //!
 //! Off→on transitions auto-clear the flag per `ARCHITECTURE.md`.
 
-use niles_core::{DeviceId, DeviceState};
+use niles_core::{DeviceId, DeviceState, RoomName};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
@@ -36,6 +36,30 @@ impl ManualModeTracker {
     /// Remove the manual-mode flag for `id`, returning it to curve control.
     pub fn clear(&self, id: &DeviceId) {
         self.flagged_write().remove(id);
+    }
+
+    /// Clear the manual-mode flag for *every* tracked device.
+    /// Returns the number of devices that had been flagged.
+    ///
+    /// Leaves `last_on` untouched so the off→on auto-clear contract
+    /// continues to work for any flag added later.
+    pub fn clear_all(&self) -> usize {
+        let mut flagged = self.flagged_write();
+        let n = flagged.len();
+        flagged.clear();
+        n
+    }
+
+    /// Clear the manual-mode flag for every device whose ID's room
+    /// segment matches `room`. Returns the number of devices cleared.
+    ///
+    /// The caller passes a canonicalized `RoomName` so the tracker
+    /// doesn't have to know about transcript normalization.
+    pub fn clear_room(&self, room: &RoomName) -> usize {
+        let mut flagged = self.flagged_write();
+        let before = flagged.len();
+        flagged.retain(|id| id.room() != room);
+        before - flagged.len()
     }
 
     /// True if `id` is currently flagged.
@@ -124,6 +148,10 @@ mod tests {
             on: Some(on),
             ..Default::default()
         }
+    }
+
+    fn dev_in(room: &str, name: &str) -> DeviceId {
+        DeviceId::parse(&format!("z2m:{room}/{name}")).unwrap()
     }
 
     #[test]
@@ -229,5 +257,86 @@ mod tests {
         let t = ManualModeTracker::new();
         // No prior flag, no prior observe — must not panic.
         t.forget(&dev("never_touched"));
+    }
+
+    #[test]
+    fn clear_all_empties_and_returns_count() {
+        let t = ManualModeTracker::new();
+        let a = dev("a");
+        let b = dev("b");
+        let c = dev("c");
+        t.flag(&a);
+        t.flag(&b);
+        t.flag(&c);
+        assert_eq!(t.clear_all(), 3);
+        assert!(!t.is_flagged(&a));
+        assert!(!t.is_flagged(&b));
+        assert!(!t.is_flagged(&c));
+    }
+
+    #[test]
+    fn clear_all_returns_zero_when_empty() {
+        let t = ManualModeTracker::new();
+        assert_eq!(t.clear_all(), 0);
+    }
+
+    #[test]
+    fn clear_room_only_clears_matching_room() {
+        let t = ManualModeTracker::new();
+        let kitchen_a = dev_in("kitchen", "a");
+        let kitchen_b = dev_in("kitchen", "b");
+        let bedroom_a = dev_in("bedroom", "a");
+        t.flag(&kitchen_a);
+        t.flag(&kitchen_b);
+        t.flag(&bedroom_a);
+        let kitchen = RoomName::parse("kitchen").unwrap();
+        assert_eq!(t.clear_room(&kitchen), 2);
+        assert!(!t.is_flagged(&kitchen_a));
+        assert!(!t.is_flagged(&kitchen_b));
+        assert!(t.is_flagged(&bedroom_a));
+    }
+
+    #[test]
+    fn clear_room_returns_zero_when_no_match() {
+        let t = ManualModeTracker::new();
+        t.flag(&dev_in("kitchen", "a"));
+        let bedroom = RoomName::parse("bedroom").unwrap();
+        assert_eq!(t.clear_room(&bedroom), 0);
+    }
+
+    #[test]
+    fn clear_all_leaves_last_on_intact() {
+        // After clear_all, off→on auto-clear must still fire for a
+        // freshly re-flagged device. That contract relies on `last_on`
+        // surviving a clear_all.
+        let t = ManualModeTracker::new();
+        let id = dev("light");
+        t.flag(&id);
+        t.observe(&id, &on_state(false)); // prior=false in last_on
+        assert_eq!(t.clear_all(), 1);
+
+        t.flag(&id);
+        t.observe(&id, &on_state(true)); // off->on must clear because last_on still says false
+        assert!(
+            !t.is_flagged(&id),
+            "last_on must survive clear_all so off→on auto-clear keeps working"
+        );
+    }
+
+    #[test]
+    fn clear_room_leaves_last_on_intact() {
+        let t = ManualModeTracker::new();
+        let id = dev_in("kitchen", "ceiling");
+        t.flag(&id);
+        t.observe(&id, &on_state(false));
+        let kitchen = RoomName::parse("kitchen").unwrap();
+        assert_eq!(t.clear_room(&kitchen), 1);
+
+        t.flag(&id);
+        t.observe(&id, &on_state(true));
+        assert!(
+            !t.is_flagged(&id),
+            "last_on must survive clear_room so off→on auto-clear keeps working"
+        );
     }
 }

@@ -867,6 +867,27 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
             };
             dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
         }
+        Intent::ClearManualMode { room } => match room {
+            None => {
+                let n = ctx.tracker.clear_all();
+                println!("[{peer}] back to normal -> cleared manual flag on {n} devices");
+            }
+            Some(name) => {
+                let canonical = match intent_room_to_canonical(&name) {
+                    Ok(r) => r,
+                    Err(reason) => {
+                        tracing::warn!(
+                            "[{peer}] room {name:?} is not a valid registry name: {reason}"
+                        );
+                        return;
+                    }
+                };
+                let n = ctx.tracker.clear_room(&canonical);
+                println!(
+                    "[{peer}] back to normal in {name} -> cleared manual flag on {n} devices in {canonical}"
+                );
+            }
+        },
         Intent::TimerSet { .. } | Intent::Stop | Intent::Cancel => {
             tracing::info!("{peer}: intent recognized but dispatch not wired yet");
         }
@@ -1539,6 +1560,9 @@ fn format_intent(intent: &Intent) -> String {
         }
         Intent::LightDim { room, percent } => {
             format!("LightDim({room} -> {percent}%)")
+        }
+        Intent::ClearManualMode { room } => {
+            format!("ClearManualMode({})", room.as_deref().unwrap_or("home"))
         }
         Intent::TimerSet { duration, name } => match name {
             Some(n) => format!("TimerSet({}s, name={n:?})", duration.as_secs()),

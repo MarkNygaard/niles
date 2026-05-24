@@ -27,6 +27,16 @@ pub enum Intent {
         percent: u8,
     },
 
+    /// "back to normal" / "normal lights" (whole-home) or
+    /// "back to normal in <room>" / "<room> back to normal" (room-scoped).
+    ClearManualMode {
+        /// `None` = clear flags for *every* device in the registry.
+        /// `Some(s)` = clear flags only for devices in that room. The
+        /// raw room string is passed through; canonicalization happens
+        /// at dispatch time (same pattern as `LightSet { room }`).
+        room: Option<String>,
+    },
+
     /// "set a timer for 5 minutes" / "5 minute timer" / "10 minute timer called pasta"
     TimerSet {
         duration: Duration,
