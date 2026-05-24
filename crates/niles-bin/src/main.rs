@@ -10,7 +10,9 @@ use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
 use niles_scheduler::{
-    ManualModeTracker, MinuteOfDay, brightness_at, build_curve_target, color_temp_at,
+    ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig, brightness_at,
+    build_curve_target, color_temp_at, routine_brightness_at, should_fire_today,
+    sink::BRIGHTNESS_DEBOUNCE,
 };
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_wyoming::{SessionTracker, WyomingServer};
@@ -942,18 +944,26 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .lighting
         .to_curve_config()
         .context("converting [lighting] section to a CurveConfig")?;
+    let morning_routine = cfg
+        .lighting
+        .morning_routine
+        .as_ref()
+        .map(|dto| dto.to_morning_routine_config().context("converting [lighting.morning_routine] to MorningRoutineConfig"))
+        .transpose()?;
 
     let whisper = Arc::new(build_whisper_client(&cfg)?);
 
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
     let tracker = Arc::new(ManualModeTracker::new());
+    let claim_tracker = Arc::new(MorningClaimTracker::new());
 
     // Subscribe to the bus *before* spawning the source so we can't miss
     // the early DeviceStateChanged events that seed the observer's
     // last-seen on/off map — broadcast channels only deliver messages
     // sent after a receiver is bound.
     let observer_tracker = tracker.clone();
+    let observer_claim_tracker = claim_tracker.clone();
     let mut bus_rx = bus.subscribe();
 
     let source = Z2mSource::new(
@@ -972,14 +982,21 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // auto-clear, and tracker.forget() so removed devices don't
     // leave stale tracker entries behind (the maps would otherwise
     // grow monotonically over a long-running service).
+    // Also releases morning-routine claims when a device is turned
+    // off mid-ramp, and forgets claims on device removal.
     let observer_handle = tokio::spawn(async move {
         loop {
             match bus_rx.recv().await {
                 Ok(Event::DeviceStateChanged { id, state }) => {
                     observer_tracker.observe(&id, &state);
+                    // Mid-ramp off cancels the routine for the rest of today.
+                    if state.on == Some(false) && observer_claim_tracker.is_claimed(&id) {
+                        observer_claim_tracker.release(&id);
+                    }
                 }
                 Ok(Event::DeviceRemoved { id }) => {
                     observer_tracker.forget(&id);
+                    observer_claim_tracker.forget(&id);
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -1061,6 +1078,20 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                          being updated, so the curve would publish blindly. Bailing."
                     );
                 }
+                if let Some(routine) = &morning_routine {
+                    run_morning_routine_tick(
+                        &registry,
+                        &publisher,
+                        cfg.mqtt.z2m_prefix.as_str(),
+                        routine,
+                        curve.morning_start,
+                        curve.morning_end,
+                        tz,
+                        args.dry_run,
+                        &tracker,
+                        &claim_tracker,
+                    ).await;
+                }
                 run_curve_tick(
                     &registry,
                     &publisher,
@@ -1070,6 +1101,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     args.dry_run,
                     &mut last_published,
                     &tracker,
+                    &claim_tracker,
                 ).await;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -1133,6 +1165,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     // its pre-publish brightness and we'd republish every tick.
     let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
     let tracker = ManualModeTracker::new();
+    let claim_tracker = MorningClaimTracker::new();
 
     let mut ticker = tokio::time::interval(tick);
     // The first tick fires immediately; that's what we want — no
@@ -1156,6 +1189,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     args.dry_run,
                     &mut last_published,
                     &tracker,
+                    &claim_tracker,
                 )
                 .await;
             }
@@ -1185,6 +1219,7 @@ async fn run_curve_tick(
     dry_run: bool,
     last_published: &mut HashMap<DeviceId, (u8, u16)>,
     tracker: &ManualModeTracker,
+    claim_tracker: &MorningClaimTracker,
 ) {
     use chrono::{Timelike, Utc};
 
@@ -1210,6 +1245,9 @@ async fn run_curve_tick(
             continue;
         }
         if tracker.is_flagged(&device.id) {
+            continue;
+        }
+        if claim_tracker.is_claimed(&device.id) {
             continue;
         }
         // If we already published this exact curve target for this
@@ -1252,6 +1290,146 @@ async fn run_curve_tick(
         "curve tick at {minute_of_day} in {tz}: brightness={target_brightness}, \
          kelvin={target_kelvin}K, devices_touched={publish_count}"
     );
+}
+
+/// One tick of the morning routine. Behaviour:
+///
+/// - At `morning_start` on a fire-day: claim every off target device
+///   and publish `on: true, brightness: 0`.
+/// - During the window: for each currently-claimed device, compute the
+///   target via `routine_brightness_at` and publish a brightness update
+///   if it differs from current state by strictly more than
+///   `BRIGHTNESS_DEBOUNCE`.
+/// - At `morning_end` or after: release any device the routine still
+///   has claimed.
+#[allow(clippy::too_many_arguments)]
+async fn run_morning_routine_tick(
+    registry: &DeviceRegistry,
+    publisher: &MqttPublisher,
+    z2m_prefix: &str,
+    routine: &MorningRoutineConfig,
+    morning_start: MinuteOfDay,
+    morning_end: MinuteOfDay,
+    tz: chrono_tz::Tz,
+    dry_run: bool,
+    tracker: &ManualModeTracker,
+    claim_tracker: &MorningClaimTracker,
+) {
+    use chrono::{Timelike, Utc};
+
+    let now = Utc::now().with_timezone(&tz);
+    let hour = u8::try_from(now.hour()).expect("chrono::Timelike::hour is 0..=23");
+    let minute = u8::try_from(now.minute()).expect("chrono::Timelike::minute is 0..=59");
+    let Ok(minute_of_day) = MinuteOfDay::new(hour, minute) else {
+        return;
+    };
+    let today = now.date_naive();
+
+    // Phase 1 — window has closed: release any leftover claims.
+    if minute_of_day >= morning_end {
+        for id in &routine.target_devices {
+            if claim_tracker.is_claimed(id) {
+                claim_tracker.release(id);
+                tracing::info!("[routine {minute_of_day}] released {id}");
+            }
+        }
+        return;
+    }
+    if minute_of_day < morning_start {
+        return;
+    }
+
+    // Phase 2 — at start, on a fire-day: claim + kick-on devices that are off.
+    let mut just_kicked_on = std::collections::HashSet::new();
+    let firing = should_fire_today(routine, today);
+    if minute_of_day == morning_start && firing {
+        for id in &routine.target_devices {
+            if tracker.is_flagged(id) {
+                continue;
+            }
+            let Some(device) = registry.get(id) else {
+                continue;
+            };
+            if device.state.on == Some(true) {
+                continue;
+            }
+            if claim_tracker.is_claimed(id) {
+                continue;
+            }
+            let target = DeviceState {
+                on: Some(true),
+                brightness: Some(0),
+                ..Default::default()
+            };
+            let (topic, payload) = format_set_command(z2m_prefix, id, &target);
+            let ok = if dry_run {
+                tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
+                true
+            } else {
+                match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+                    Ok(()) => {
+                        tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
+                        false
+                    }
+                }
+            };
+            if ok {
+                claim_tracker.claim(id);
+                just_kicked_on.insert(id.clone());
+            }
+        }
+    }
+
+    // Phase 3 — during window: drive the ramp for claimed devices.
+    let Some(target_brightness) = routine_brightness_at(minute_of_day, morning_start, morning_end)
+    else {
+        return;
+    };
+    for id in &routine.target_devices {
+        if tracker.is_flagged(id) {
+            continue;
+        }
+        if !claim_tracker.is_claimed(id) {
+            continue;
+        }
+        if just_kicked_on.contains(id) {
+            continue;
+        }
+        let Some(device) = registry.get(id) else {
+            continue;
+        };
+        let publish_brightness = match device.state.brightness {
+            Some(cur) if cur.abs_diff(target_brightness) > BRIGHTNESS_DEBOUNCE => {
+                Some(target_brightness)
+            }
+            None => Some(target_brightness),
+            _ => None,
+        };
+        let Some(b) = publish_brightness else {
+            continue;
+        };
+        let target = DeviceState {
+            brightness: Some(b),
+            ..Default::default()
+        };
+        let (topic, payload) = format_set_command(z2m_prefix, id, &target);
+        if dry_run {
+            tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
+        } else {
+            match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+                Ok(()) => {
+                    tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
+                }
+                Err(e) => {
+                    tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
+                }
+            }
+        }
+    }
 }
 
 /// Compact, human-readable rendering of an [`Intent`] for the dev

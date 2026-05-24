@@ -93,3 +93,14 @@ kelvin = 2000
 [[lighting.color_temp_anchors]]
 time = "23:59"
 kelvin = 2000
+
+# Optional morning auto-on routine. If omitted, no light is auto-turned-on.
+# Lights in `target_devices` are claimed at `morning_start` and driven through
+# a 0% → 100% brightness ramp over [morning_start, morning_end] (the curve
+# window) on weekdays matching `fire_days`. Dates in `skip_overrides` disable
+# the routine for that day only.
+#
+# [lighting.morning_routine]
+# fire_days = ["mon", "tue", "wed", "thu", "fri"]
+# target_devices = ["z2m:bedroom/ceiling_light", "z2m:hallway/main"]
+# skip_overrides = ["2026-12-25", "2026-12-31"]

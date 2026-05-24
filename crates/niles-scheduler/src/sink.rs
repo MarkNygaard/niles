@@ -22,7 +22,7 @@ use niles_core::DeviceState;
 /// many brightness points of the curve. Matches the curve test's
 /// per-minute delta tolerance — anything tighter is meaningless to
 /// the human eye and noisy on the wire.
-pub(crate) const BRIGHTNESS_DEBOUNCE: u8 = 2;
+pub const BRIGHTNESS_DEBOUNCE: u8 = 2;
 
 /// Same idea, for color temperature. Hue/equivalent bulbs change
 /// kelvin in roughly 50-K steps anyway, so this threshold avoids

@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 thiserror.workspace = true
 niles-core.workspace = true
+chrono.workspace = true

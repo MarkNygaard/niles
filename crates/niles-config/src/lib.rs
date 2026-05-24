@@ -21,7 +21,7 @@ use std::path::Path;
 pub use api::ApiConfig;
 pub use error::{Error, Result};
 pub use home::HomeConfig;
-pub use lighting::{ColorTempAnchor, LightingConfig};
+pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use mqtt::MqttConfig;
 pub use stt::SttConfig;
 pub use wyoming::WyomingConfig;
@@ -79,6 +79,9 @@ impl Config {
         self.wyoming.validate()?;
         self.stt.validate()?;
         let _ = self.lighting.to_curve_config()?;
+        if let Some(routine) = &self.lighting.morning_routine {
+            let _ = routine.to_morning_routine_config()?;
+        }
         Ok(())
     }
 }
@@ -457,5 +460,96 @@ kelvin = 2000
                 ..
             }
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // Morning routine config tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn routine_absent_when_omitted() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        assert!(cfg.lighting.morning_routine.is_none());
+    }
+
+    fn valid_toml_with_routine() -> String {
+        format!(
+            r#"{}
+[lighting.morning_routine]
+fire_days = ["mon", "tue", "wed", "thu", "fri"]
+target_devices = ["z2m:bedroom/ceiling_light", "z2m:hallway/main"]
+skip_overrides = ["2026-12-25", "2026-12-31"]
+"#,
+            valid_toml()
+        )
+    }
+
+    #[test]
+    fn routine_section_round_trips() {
+        let cfg = Config::load_from_str(&valid_toml_with_routine()).unwrap();
+        cfg.validate().unwrap();
+        let routine = cfg.lighting.morning_routine.as_ref().unwrap();
+        let typed = routine.to_morning_routine_config().unwrap();
+        assert_eq!(typed.fire_days.len(), 5);
+        assert_eq!(typed.target_devices.len(), 2);
+        assert_eq!(typed.skip_overrides.len(), 2);
+        assert_eq!(
+            typed.target_devices[0].to_string(),
+            "z2m:bedroom/ceiling_light"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_weekday() {
+        let bad = valid_toml_with_routine().replace(
+            "fire_days = [\"mon\", \"tue\", \"wed\", \"thu\", \"fri\"]",
+            "fire_days = [\"funday\"]",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("funday"),
+            "error should contain offending input: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_device_id() {
+        let bad = valid_toml_with_routine().replace(
+            "target_devices = [\"z2m:bedroom/ceiling_light\", \"z2m:hallway/main\"]",
+            "target_devices = [\"not_a_device_id\"]",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not_a_device_id"),
+            "error should contain offending input: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_skip_date() {
+        let bad = valid_toml_with_routine().replace(
+            "skip_overrides = [\"2026-12-25\", \"2026-12-31\"]",
+            "skip_overrides = [\"2026-13-99\"]",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("2026-13-99"),
+            "error should contain offending input: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_routine_field() {
+        let bad = valid_toml_with_routine().replace(
+            "[lighting.morning_routine]",
+            "[lighting.morning_routine]\nunknown_field = 42",
+        );
+        assert!(Config::load_from_str(&bad).is_err());
     }
 }
