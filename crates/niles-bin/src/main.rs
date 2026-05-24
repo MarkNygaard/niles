@@ -1331,13 +1331,38 @@ async fn run_morning_routine_tick(
     };
     let today = now.date_naive();
 
-    // Phase 1 — window has closed: release any leftover claims.
+    // Phase 1 — at exact end-minute, force 100% once then release.
+    // After the end-minute, only release leftovers.
     if minute_of_day >= morning_end {
         for id in &routine.target_devices {
-            if claim_tracker.is_claimed(id) {
-                claim_tracker.release(id);
-                tracing::info!("[routine {minute_of_day}] released {id}");
+            if !claim_tracker.is_claimed(id) {
+                continue;
             }
+
+            if minute_of_day == morning_end {
+                let Some(device) = registry.get(id) else {
+                    claim_tracker.release(id);
+                    tracing::info!("[routine {minute_of_day}] released {id}");
+                    continue;
+                };
+                if device.state.brightness != Some(100) {
+                    let target = DeviceState {
+                        brightness: Some(100),
+                        ..Default::default()
+                    };
+                    let (topic, payload) = format_set_command(z2m_prefix, id, &target);
+                    if dry_run {
+                        tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
+                    } else if let Err(e) = publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+                        tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
+                    } else {
+                        tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
+                    }
+                }
+            }
+
+            claim_tracker.release(id);
+            tracing::info!("[routine {minute_of_day}] released {id}");
         }
         return;
     }
