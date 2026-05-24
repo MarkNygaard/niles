@@ -97,12 +97,4 @@ mod tests {
         // Constructor must not perform any network I/O.
         let _client = PiperClient::new(test_cfg()).expect("client builds");
     }
-
-    #[test]
-    fn piper_config_round_trip() {
-        let cfg = test_cfg();
-        assert_eq!(cfg.base_url, "https://example.invalid");
-        assert_eq!(cfg.default_voice, "en_GB-alan-medium");
-        assert_eq!(cfg.request_timeout, Duration::from_secs(5));
-    }
 }

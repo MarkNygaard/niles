@@ -489,4 +489,11 @@ kelvin = 2000
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
     }
+
+    #[test]
+    fn rejects_zero_tts_timeout() {
+        let bad = valid_toml().replace("[tts]", "[tts]\ntimeout_seconds = 0");
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
 }
