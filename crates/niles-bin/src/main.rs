@@ -1323,8 +1323,12 @@ async fn run_morning_routine_tick(
     let now = Utc::now().with_timezone(&tz);
     let hour = u8::try_from(now.hour()).expect("chrono::Timelike::hour is 0..=23");
     let minute = u8::try_from(now.minute()).expect("chrono::Timelike::minute is 0..=59");
-    let Ok(minute_of_day) = MinuteOfDay::new(hour, minute) else {
-        return;
+    let minute_of_day = match MinuteOfDay::new(hour, minute) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("could not construct MinuteOfDay from {now}: {e}");
+            return;
+        }
     };
     let today = now.date_naive();
 
