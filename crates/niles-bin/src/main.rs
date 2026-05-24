@@ -747,12 +747,13 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
 
+    // Surface the actual error chain on failure. Both loop exhaustion
+    // and a real LLM/network error end up here, but they're distinct
+    // failure modes — printing `{e:#}` keeps the cause honest instead
+    // of mislabeling every error as "loop exhausted".
     match run_tool_calling_chat(&client, &tools_registry, &args.prompt, MAX_TOOL_ITERATIONS).await {
         Ok(text) => println!("{text}"),
-        Err(e) => {
-            eprintln!("[chat loop exhausted after {MAX_TOOL_ITERATIONS} iterations]");
-            tracing::debug!("chat loop exit cause: {e}");
-        }
+        Err(e) => eprintln!("[niles chat] {e:#}"),
     }
 
     source_handle.abort();
@@ -1020,7 +1021,10 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                     println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
                 }
                 Err(e) => {
-                    tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e}");
+                    // Mirror the success-path stdout line so a Tier 1
+                    // failure is visible without enabling tracing.
+                    println!("[{peer}] \"{text}\" -> (Tier 1) error: {e:#}");
+                    tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e:#}");
                 }
             }
             return;
