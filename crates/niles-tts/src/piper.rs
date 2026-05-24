@@ -105,14 +105,4 @@ mod tests {
         assert_eq!(cfg.default_voice, "en_GB-alan-medium");
         assert_eq!(cfg.request_timeout, Duration::from_secs(5));
     }
-
-    #[test]
-    fn provider_error_body_is_truncated_to_2kb() {
-        const MAX_ERR_BODY: usize = 2048;
-        let oversized = vec![b'x'; 5000];
-        assert_eq!(oversized[..oversized.len().min(MAX_ERR_BODY)].len(), 2048);
-
-        let small = [b'y'; 100].to_vec();
-        assert_eq!(small[..small.len().min(MAX_ERR_BODY)].len(), 100);
-    }
 }

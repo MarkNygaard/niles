@@ -581,7 +581,7 @@ async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
 
     eprintln!(
         "Synthesizing {} chars via {} (voice {}) ...",
-        args.text.len(),
+        args.text.chars().count(),
         cfg.tts.base_url,
         voice_for_log
     );
