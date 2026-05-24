@@ -58,6 +58,17 @@ api_key_env = "GROQ_API_KEY"
 # default_voice = "en_GB-alan-medium"
 # timeout_seconds = 30
 
+[llm]
+# Tier 1 LLM provider (Groq GPT-OSS by default). The API key itself
+# lives in the env var named here (GROQ_API_KEY in .env for local
+# dev, or a k8s Secret in cluster deploy) — never in this file.
+# Independent of [stt]'s api_key_env so providers can be split.
+api_key_env = "GROQ_API_KEY"
+# Optional overrides (defaults shown):
+# base_url        = "https://api.groq.com/openai/v1"
+# model           = "openai/gpt-oss-20b"
+# timeout_seconds = 30
+
 [lighting]
 # Times are HH:MM in local wall-clock. See ARCHITECTURE.md for the
 # semantics of each phase.

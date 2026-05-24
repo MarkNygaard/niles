@@ -810,6 +810,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-intent",
+ "niles-llm",
  "niles-mqtt",
  "niles-scheduler",
  "niles-stt",
@@ -858,6 +859,14 @@ dependencies = [
 [[package]]
 name = "niles-llm"
 version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "niles-mqtt"

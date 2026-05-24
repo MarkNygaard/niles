@@ -48,3 +48,4 @@ niles-wyoming = { path = "crates/niles-wyoming" }
 niles-stt = { path = "crates/niles-stt" }
 niles-tts = { path = "crates/niles-tts" }
 niles-intent = { path = "crates/niles-intent" }
+niles-llm = { path = "crates/niles-llm" }
