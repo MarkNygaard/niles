@@ -54,7 +54,17 @@ impl PiperClient {
     /// Submit `text` to the Piper endpoint and return WAV bytes.
     /// `voice_override` replaces `cfg.default_voice` when present.
     pub async fn synthesize(&self, text: &str, voice_override: Option<&str>) -> Result<Synthesis> {
-        let voice = voice_override.unwrap_or(&self.cfg.default_voice);
+        if text.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "text must not be empty or whitespace-only".into(),
+            ));
+        }
+        let voice = voice_override.unwrap_or(&self.cfg.default_voice).trim();
+        if voice.is_empty() {
+            return Err(Error::InvalidInput(
+                "voice must not be empty or whitespace-only".into(),
+            ));
+        }
         let url = self.cfg.base_url.trim_end_matches('/');
         let req = PiperRequest { text, voice };
 
@@ -96,5 +106,19 @@ mod tests {
     fn new_builds_a_client_without_calling_out() {
         // Constructor must not perform any network I/O.
         let _client = PiperClient::new(test_cfg()).expect("client builds");
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_text_before_network() {
+        let client = PiperClient::new(test_cfg()).expect("client builds");
+        let err = client.synthesize("   ", None).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_voice_override_before_network() {
+        let client = PiperClient::new(test_cfg()).expect("client builds");
+        let err = client.synthesize("hello", Some("   ")).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput(_)));
     }
 }

@@ -6,6 +6,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("invalid synthesis input: {0}")]
+    InvalidInput(String),
+
     #[error("HTTP request to TTS provider failed: {0}")]
     Http(#[from] reqwest::Error),
 
