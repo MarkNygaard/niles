@@ -46,4 +46,5 @@ niles-api = { path = "crates/niles-api" }
 niles-scheduler = { path = "crates/niles-scheduler" }
 niles-wyoming = { path = "crates/niles-wyoming" }
 niles-stt = { path = "crates/niles-stt" }
+niles-tts = { path = "crates/niles-tts" }
 niles-intent = { path = "crates/niles-intent" }
