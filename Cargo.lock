@@ -828,6 +828,8 @@ version = "0.1.0"
 name = "niles-config"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "niles-core",
  "niles-scheduler",
  "serde",
  "thiserror 2.0.18",
@@ -890,6 +892,7 @@ version = "0.1.0"
 name = "niles-scheduler"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "niles-core",
  "thiserror 2.0.18",
 ]
