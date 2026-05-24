@@ -6,7 +6,7 @@ use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
 use niles_intent::{Intent, IntentRouter};
-use niles_llm::{ChatRequest, GroqClient, GroqConfig, Message};
+use niles_llm::{ChatRequest, GroqClient, GroqConfig, Message, ToolChoice};
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
@@ -17,6 +17,7 @@ use niles_scheduler::{
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingServer};
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -634,31 +635,92 @@ async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
 }
 
 async fn chat(args: ChatArgs) -> anyhow::Result<()> {
-    let cfg = Config::load_from_path(&args.config)
-        .with_context(|| format!("loading config from {}", args.config.display()))?;
-    cfg.validate().context("validating config")?;
+    const MAX_TOOL_ITERATIONS: usize = 5;
+
+    let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
+    let publisher = mqtt_client.publisher();
+    let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
+
+    let registry = Arc::new(DeviceRegistry::new());
+    let bus = EventBus::default();
+    let source = Z2mSource::new(
+        mqtt_client,
+        registry.clone(),
+        bus.clone(),
+        cfg.mqtt.z2m_prefix.as_str(),
+    );
+    let source_handle = tokio::spawn(async move {
+        if let Err(e) = source.run().await {
+            tracing::error!("Z2mSource exited: {e}");
+        }
+    });
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let tools_registry = niles_tools::default_registry(registry.clone(), publisher, z2m_prefix);
+    let llm_tools = tools_registry.llm_tools();
 
     let client = build_groq_client(&cfg)?;
-
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
-    let req = ChatRequest {
-        messages: vec![Message::User {
-            content: args.prompt,
-        }],
-        tools: None,
-        tool_choice: None,
-    };
-    let resp = client.chat(req).await.context("calling LLM")?;
 
-    if let Some(text) = &resp.content {
+    let mut messages = vec![Message::User {
+        content: args.prompt,
+    }];
+    let mut final_text: Option<String> = None;
+
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        let req = ChatRequest {
+            messages: messages.clone(),
+            tools: Some(llm_tools.clone()),
+            tool_choice: Some(ToolChoice::Auto),
+        };
+        let resp = client.chat(req).await.context("calling LLM")?;
+
+        if resp.tool_calls.is_empty() {
+            final_text = resp.content;
+            break;
+        }
+
+        // For compatibility across OpenAI-style providers, keep the
+        // assistant tool-call turn as tool_calls-only.
+        messages.push(Message::Assistant {
+            content: None,
+            tool_calls: Some(resp.tool_calls.clone()),
+        });
+
+        for call in &resp.tool_calls {
+            let arg_keys: Vec<&str> = call
+                .arguments
+                .as_object()
+                .map(|m| m.keys().map(|s| s.as_str()).collect())
+                .unwrap_or_default();
+            tracing::info!(
+                "[tool] {id} {name}({keys})",
+                id = call.id,
+                name = call.name,
+                keys = arg_keys.join(",")
+            );
+
+            let result = match tools_registry.execute(call).await {
+                Ok(v) => v,
+                Err(e) => json!({ "error": format!("{e}") }),
+            };
+            messages.push(Message::Tool {
+                tool_call_id: call.id.clone(),
+                content: result.to_string(),
+            });
+        }
+
+        if iteration == MAX_TOOL_ITERATIONS - 1 {
+            eprintln!("[chat loop exhausted after {MAX_TOOL_ITERATIONS} iterations]");
+        }
+    }
+
+    if let Some(text) = final_text {
         println!("{text}");
     }
-    if !resp.tool_calls.is_empty() {
-        eprintln!(
-            "tool_calls (unexpected without tools): {:?}",
-            resp.tool_calls
-        );
-    }
+
+    source_handle.abort();
     Ok(())
 }
 
