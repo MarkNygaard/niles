@@ -9,7 +9,9 @@ use niles_intent::{Intent, IntentRouter};
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
-use niles_scheduler::{MinuteOfDay, brightness_at, build_curve_target, color_temp_at};
+use niles_scheduler::{
+    ManualModeTracker, MinuteOfDay, brightness_at, build_curve_target, color_temp_at,
+};
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_wyoming::{SessionTracker, WyomingServer};
 use std::collections::HashMap;
@@ -27,8 +29,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the main Niles service.
-    Serve,
+    /// Run the full Niles stack in one process: Z2M source, HTTP API,
+    /// voice dispatch (Wyoming + STT + intent), and the ambient-lighting
+    /// curve, all sharing one device registry and one manual-mode tracker.
+    Serve(ServeArgs),
     /// One-shot helper to migrate state from Home Assistant.
     MigrateFromHa,
     /// Flash firmware to a satellite device.
@@ -76,7 +80,8 @@ enum Commands {
     /// the curve's brightness + color-temperature target and publish
     /// it to every currently-on light. Per the architecture the curve
     /// never turns lights on or off — it only adjusts ones already
-    /// on. (v0.1: does not yet respect manual-mode; see PR notes.)
+    /// on. In standalone mode no flags are set, so the curve runs for
+    /// all on-lights; use `niles serve` for manual-mode integration.
     Lighting(LightingArgs),
 }
 
@@ -187,6 +192,19 @@ struct LightingArgs {
     tick_seconds: u64,
 }
 
+#[derive(Args)]
+struct ServeArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+    /// Match and log intents but skip the actual MQTT publish.
+    #[arg(long)]
+    dry_run: bool,
+    /// Override the default 60-second curve tick interval.
+    #[arg(long, default_value_t = 60)]
+    tick_seconds: u64,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
@@ -200,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Commands::Serve => todo!("implement `serve` (Phase 2+)"),
+        Commands::Serve(args) => serve(args).await,
         Commands::MigrateFromHa => todo!("implement `migrate-from-ha`"),
         Commands::FlashSatellite => todo!("implement `flash-satellite`"),
         Commands::Config { action } => match action {
@@ -437,7 +455,7 @@ async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
         "Wyoming server listening on tcp://{bind}\nPoint your satellite at it. Press Ctrl-C to exit.\n"
     );
 
-    let server_handle = tokio::spawn(async move { server.run().await });
+    let server_handle = tokio::spawn(server.run());
 
     loop {
         tokio::select! {
@@ -541,7 +559,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
         cfg.stt.base_url, cfg.stt.model
     );
 
-    let server_handle = tokio::spawn(async move { server.run().await });
+    let server_handle = tokio::spawn(server.run());
     let mut tracker = SessionTracker::new();
 
     loop {
@@ -679,13 +697,14 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         mode = mode_note,
     );
 
-    let server_handle = tokio::spawn(async move { server.run().await });
+    let server_handle = tokio::spawn(server.run());
     let mut tracker = SessionTracker::new();
     let ctx = DispatchCtx {
         publisher,
         registry: registry.clone(),
         z2m_prefix,
         dry_run: args.dry_run,
+        tracker: Arc::new(ManualModeTracker::new()),
     };
 
     loop {
@@ -738,6 +757,7 @@ struct DispatchCtx {
     registry: Arc<DeviceRegistry>,
     z2m_prefix: Arc<String>,
     dry_run: bool,
+    tracker: Arc<ManualModeTracker>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -756,18 +776,34 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
         Intent::LightSet { room, on } => {
+            let Some((canonical, targets)) =
+                resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some())
+            else {
+                return;
+            };
             let desired = DeviceState {
                 on: Some(on),
                 ..Default::default()
             };
-            dispatch_room(ctx, peer, &room, |d| d.state.on.is_some(), &desired).await;
+            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
         }
         Intent::LightDim { room, percent } => {
+            let Some((canonical, targets)) =
+                resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some())
+            else {
+                return;
+            };
+            // Flag each dimmable target *before* publishing so the
+            // curve driver can't race a tick in between and overwrite
+            // the dim we're about to send.
+            for device in &targets {
+                ctx.tracker.flag(&device.id);
+            }
             let desired = DeviceState {
                 brightness: Some(percent),
                 ..Default::default()
             };
-            dispatch_room(ctx, peer, &room, |d| d.state.brightness.is_some(), &desired).await;
+            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
         }
         Intent::TimerSet { .. } | Intent::Stop | Intent::Cancel => {
             tracing::info!("{peer}: intent recognized but dispatch not wired yet");
@@ -778,29 +814,29 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
     }
 }
 
-/// Resolve a transcript-derived room reference to devices in the
-/// registry, filter by capability, and publish the requested target
-/// state to each. Shared by every room-scoped intent (LightSet,
-/// LightDim, etc.).
+/// Resolve a transcript-derived room reference into the canonical
+/// `RoomName` + the list of devices in that room that pass
+/// `capability_filter`. Returns `None` if the room name is invalid
+/// or no devices match — in both cases the right user-facing log
+/// line is already emitted here, so the caller just bails.
 ///
-/// `capability_filter` decides which devices in the room actually
-/// support this action (e.g. lights for LightSet, brightness-capable
-/// bulbs for LightDim). Sensors and unrelated devices in the same
-/// room get skipped without needing a separate device-type model.
-async fn dispatch_room<F>(
+/// Centralizing this avoids the previous duplicated lookup in the
+/// `LightDim` arm (one walk to flag, another inside `dispatch_room`
+/// to publish).
+fn resolve_room_targets<F>(
     ctx: &DispatchCtx,
     peer: std::net::SocketAddr,
     room: &str,
     capability_filter: F,
-    desired: &DeviceState,
-) where
+) -> Option<(RoomName, Vec<niles_core::Device>)>
+where
     F: Fn(&niles_core::Device) -> bool,
 {
     let canonical = match intent_room_to_canonical(room) {
         Ok(r) => r,
         Err(reason) => {
             tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
-            return;
+            return None;
         }
     };
 
@@ -825,15 +861,30 @@ async fn dispatch_room<F>(
                 "[{peer}] no devices in room '{canonical}' support this action — nothing to dispatch"
             );
         }
-        return;
+        return None;
     }
 
+    Some((canonical, targets))
+}
+
+/// Publish the requested target state to each device in `targets`.
+/// Pure dispatch — room resolution + capability filtering happened
+/// upstream in [`resolve_room_targets`].
+async fn dispatch_to_targets(
+    ctx: &DispatchCtx,
+    peer: std::net::SocketAddr,
+    canonical: &RoomName,
+    targets: &[niles_core::Device],
+    desired: &DeviceState,
+) {
     debug_assert!(
         is_actionable(desired),
-        "dispatch_room target should always be actionable"
+        "dispatch_to_targets called with a non-actionable target state"
     );
+    let _ = canonical; // currently only used for upstream logging; keep the
+    // parameter so the caller can pass it without extra plumbing later.
 
-    for device in &targets {
+    for device in targets {
         let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, desired);
         if ctx.dry_run {
             println!("[{peer}] [dry-run] {topic}  {payload}");
@@ -865,6 +916,174 @@ fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
         })
         .collect();
     RoomName::parse(&normalized).map_err(|e| format!("{e}"))
+}
+
+async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
+    let publisher = mqtt_client.publisher();
+    let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
+
+    let api_bind = cfg
+        .api
+        .socket_addr()
+        .context("resolving api.bind_address")?;
+    let wyoming_bind = cfg
+        .wyoming
+        .socket_addr()
+        .context("resolving wyoming.bind_address")?;
+
+    let tz: chrono_tz::Tz = cfg.home.timezone.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "home.timezone '{}' is not a valid IANA zone: {e}",
+            cfg.home.timezone
+        )
+    })?;
+    let curve = cfg
+        .lighting
+        .to_curve_config()
+        .context("converting [lighting] section to a CurveConfig")?;
+
+    let whisper = Arc::new(build_whisper_client(&cfg)?);
+
+    let registry = Arc::new(DeviceRegistry::new());
+    let bus = EventBus::default();
+    let tracker = Arc::new(ManualModeTracker::new());
+
+    // Subscribe to the bus *before* spawning the source so we can't miss
+    // the early DeviceStateChanged events that seed the observer's
+    // last-seen on/off map — broadcast channels only deliver messages
+    // sent after a receiver is bound.
+    let observer_tracker = tracker.clone();
+    let mut bus_rx = bus.subscribe();
+
+    let source = Z2mSource::new(
+        mqtt_client,
+        registry.clone(),
+        bus.clone(),
+        cfg.mqtt.z2m_prefix.as_str(),
+    );
+    let source_handle = tokio::spawn(async move {
+        if let Err(e) = source.run().await {
+            tracing::error!("Z2mSource exited: {e}");
+        }
+    });
+
+    // EventBus observer — feeds tracker.observe() for off→on
+    // auto-clear, and tracker.forget() so removed devices don't
+    // leave stale tracker entries behind (the maps would otherwise
+    // grow monotonically over a long-running service).
+    let observer_handle = tokio::spawn(async move {
+        loop {
+            match bus_rx.recv().await {
+                Ok(Event::DeviceStateChanged { id, state }) => {
+                    observer_tracker.observe(&id, &state);
+                }
+                Ok(Event::DeviceRemoved { id }) => {
+                    observer_tracker.forget(&id);
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("ManualModeTracker observer lagged by {n} events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    // HTTP API
+    let api_state = AppState::new(registry.clone());
+    let api_handle = tokio::spawn(async move {
+        if let Err(e) = niles_api::serve(api_bind, api_state).await {
+            tracing::error!("API server exited: {e}");
+        }
+    });
+
+    // Wyoming + STT + Intent dispatch
+    let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
+        .await
+        .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
+    let server_handle = tokio::spawn(server.run());
+
+    let mode_note = if args.dry_run { " (dry-run)" } else { "" };
+    eprintln!(
+        "niles serve\n  Z2M:     {prefix}/+/+\n  API:     http://{api_bind}\n  \
+         Wyoming: tcp://{wyoming_bind}\n  STT:     {stt_url} ({model})\n  \
+         Curve:   tick every {tick}s in {tz}{mode}\nPress Ctrl-C to exit.\n",
+        prefix = cfg.mqtt.z2m_prefix,
+        stt_url = cfg.stt.base_url,
+        model = cfg.stt.model,
+        tick = args.tick_seconds.max(1),
+        mode = mode_note,
+    );
+
+    let mut session_tracker = SessionTracker::new();
+    let ctx = DispatchCtx {
+        publisher: publisher.clone(),
+        registry: registry.clone(),
+        z2m_prefix: z2m_prefix.clone(),
+        dry_run: args.dry_run,
+        tracker: tracker.clone(),
+    };
+
+    // Curve loop: driven inline with select! so we share Ctrl-C handling.
+    let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
+    let mut ticker = tokio::time::interval(Duration::from_secs(args.tick_seconds.max(1)));
+
+    loop {
+        tokio::select! {
+            biased;
+            incoming = rx.recv() => match incoming {
+                Some(incoming) => {
+                    if let Some(session) = session_tracker.feed(incoming) {
+                        let whisper = whisper.clone();
+                        let ctx = ctx.clone();
+                        tokio::spawn(async move {
+                            if let Some((peer, text)) = transcribe_session(&whisper, session).await {
+                                handle_transcript(&ctx, peer, &text).await;
+                            }
+                        });
+                    }
+                }
+                None => {
+                    eprintln!("\nWyoming server stopped.");
+                    break;
+                }
+            },
+            disconnect = disconnects_rx.recv() => {
+                if let Some(peer) = disconnect {
+                    session_tracker.drop_peer(peer);
+                }
+            }
+            _ = ticker.tick() => {
+                if source_handle.is_finished() {
+                    anyhow::bail!(
+                        "Z2mSource task has exited; the device registry is no longer \
+                         being updated, so the curve would publish blindly. Bailing."
+                    );
+                }
+                run_curve_tick(
+                    &registry,
+                    &publisher,
+                    cfg.mqtt.z2m_prefix.as_str(),
+                    &curve,
+                    tz,
+                    args.dry_run,
+                    &mut last_published,
+                    &tracker,
+                ).await;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nReceived Ctrl-C. Exiting.");
+                break;
+            }
+        }
+    }
+
+    server_handle.abort();
+    source_handle.abort();
+    api_handle.abort();
+    observer_handle.abort();
+    Ok(())
 }
 
 async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
@@ -913,6 +1132,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     // ack the state change — without this, a slow bulb keeps showing
     // its pre-publish brightness and we'd republish every tick.
     let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
+    let tracker = ManualModeTracker::new();
 
     let mut ticker = tokio::time::interval(tick);
     // The first tick fires immediately; that's what we want — no
@@ -935,6 +1155,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     tz,
                     args.dry_run,
                     &mut last_published,
+                    &tracker,
                 )
                 .await;
             }
@@ -954,6 +1175,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
 /// a set command for every currently-on light whose state has
 /// drifted past the debounce threshold and whose last-published
 /// target differs from the current one.
+#[allow(clippy::too_many_arguments)]
 async fn run_curve_tick(
     registry: &DeviceRegistry,
     publisher: &MqttPublisher,
@@ -962,6 +1184,7 @@ async fn run_curve_tick(
     tz: chrono_tz::Tz,
     dry_run: bool,
     last_published: &mut HashMap<DeviceId, (u8, u16)>,
+    tracker: &ManualModeTracker,
 ) {
     use chrono::{Timelike, Utc};
 
@@ -986,6 +1209,9 @@ async fn run_curve_tick(
         if device.state.on != Some(true) {
             continue;
         }
+        if tracker.is_flagged(&device.id) {
+            continue;
+        }
         // If we already published this exact curve target for this
         // device, skip — even if its reported state hasn't caught
         // up yet (Z2M acks lag the set command).
@@ -1002,17 +1228,23 @@ async fn run_curve_tick(
             is_actionable(&target_state),
             "build_curve_target should only return actionable targets"
         );
-        if dry_run {
+        let ok = if dry_run {
             tracing::info!("[curve {minute_of_day}] [dry-run] {topic}  {payload}");
-            last_published.insert(device.id.clone(), curve_target);
+            true
         } else {
             match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
                 Ok(()) => {
                     tracing::info!("[curve {minute_of_day}] {topic}  {payload}");
-                    last_published.insert(device.id.clone(), curve_target);
+                    true
                 }
-                Err(e) => tracing::warn!("[curve {minute_of_day}] {topic} failed: {e}"),
+                Err(e) => {
+                    tracing::warn!("[curve {minute_of_day}] {topic} failed: {e}");
+                    false
+                }
             }
+        };
+        if ok {
+            last_published.insert(device.id.clone(), curve_target);
         }
         publish_count += 1;
     }
