@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1"
 rumqttc = "0.24"
 dotenvy = "0.15"
 anyhow = "1"
