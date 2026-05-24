@@ -13,6 +13,7 @@ pub mod home;
 pub mod lighting;
 pub mod mqtt;
 pub mod stt;
+pub mod tts;
 pub mod wyoming;
 
 use serde::Deserialize;
@@ -24,6 +25,7 @@ pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig};
 pub use mqtt::MqttConfig;
 pub use stt::SttConfig;
+pub use tts::TtsConfig;
 pub use wyoming::WyomingConfig;
 
 /// Top-level Niles configuration.
@@ -35,6 +37,7 @@ pub struct Config {
     pub api: ApiConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
+    pub tts: TtsConfig,
     pub lighting: LightingConfig,
 }
 
@@ -78,6 +81,7 @@ impl Config {
         self.api.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
+        self.tts.validate()?;
         let _ = self.lighting.to_curve_config()?;
         Ok(())
     }
@@ -109,6 +113,8 @@ bind_address = "0.0.0.0:10300"
 
 [stt]
 api_key_env = "GROQ_API_KEY"
+
+[tts]
 
 [lighting]
 morning_start = "05:45"
@@ -457,5 +463,30 @@ kelvin = 2000
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn tts_section_parses_with_defaults() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        assert_eq!(
+            cfg.tts.base_url,
+            "http://piper.home-automation.svc.cluster.local:5000"
+        );
+        assert_eq!(cfg.tts.default_voice, "en_GB-alan-medium");
+        assert_eq!(cfg.tts.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn rejects_empty_tts_default_voice() {
+        let bad = valid_toml().replace("[tts]", "[tts]\ndefault_voice = \"\"");
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_tts_base_url_without_http_scheme() {
+        let bad = valid_toml().replace("[tts]", "[tts]\nbase_url = \"piper.local:5000\"");
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
     }
 }
