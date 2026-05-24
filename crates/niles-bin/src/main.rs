@@ -926,7 +926,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let tracker = Arc::new(ManualModeTracker::new());
 
-    // Z2M source
+    // Subscribe to the bus *before* spawning the source so we can't miss
+    // the early DeviceStateChanged events that seed the observer's
+    // last-seen on/off map — broadcast channels only deliver messages
+    // sent after a receiver is bound.
+    let observer_tracker = tracker.clone();
+    let mut bus_rx = bus.subscribe();
+
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
@@ -940,8 +946,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     });
 
     // EventBus observer — feeds tracker.observe() for off→on auto-clear.
-    let observer_tracker = tracker.clone();
-    let mut bus_rx = bus.subscribe();
     let observer_handle = tokio::spawn(async move {
         loop {
             match bus_rx.recv().await {
