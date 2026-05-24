@@ -1001,6 +1001,14 @@ struct DispatchCtx {
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
 async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: &str) {
+    // `transcribe_session` already trims, so an empty `text` here means
+    // Whisper returned nothing for a silent/noise session. Don't burn
+    // a Groq round-trip on it — Tier 0 wouldn't match either.
+    if text.is_empty() {
+        tracing::debug!("[{peer}] empty transcript, skipping dispatch");
+        return;
+    }
+
     // IntentRouter is a zero-sized unit struct; the regexes are
     // compiled once into a static OnceLock, so constructing one
     // per call is free.
