@@ -27,6 +27,7 @@ niles-wyoming.workspace = true
 niles-stt.workspace = true
 niles-tts.workspace = true
 niles-intent.workspace = true
+niles-llm.workspace = true
 niles-scheduler.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true

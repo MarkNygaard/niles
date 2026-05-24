@@ -6,6 +6,7 @@ use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
 use niles_intent::{Intent, IntentRouter};
+use niles_llm::{ChatRequest, GroqClient, GroqConfig, Message};
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
@@ -69,6 +70,11 @@ enum Commands {
     /// Synthesize speech via the configured TTS provider (Piper).
     /// Writes the resulting WAV to the path given by `--out`.
     Synthesize(SynthesizeArgs),
+    /// One-shot chat with the configured Tier 1 LLM (Groq GPT-OSS by
+    /// default). Sends `prompt` as a single user message with no tools
+    /// and prints the model's reply to stdout. Manual-verification
+    /// path — voice loop integration comes in a later PR.
+    Chat(ChatArgs),
     /// Run the Wyoming server, accumulate each satellite utterance
     /// between `audio-start` and `audio-stop`, send it to the STT
     /// provider, and print the transcript. (Dev tool — no intent
@@ -152,6 +158,15 @@ struct WyomingTapArgs {
     /// Path to the Niles config file.
     #[arg(short, long, default_value = "niles.toml")]
     config: PathBuf,
+}
+
+#[derive(Args)]
+struct ChatArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+    /// Prompt to send as a single user message.
+    prompt: String,
 }
 
 #[derive(Args)]
@@ -254,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::WyomingTap(args) => wyoming_tap(args).await,
         Commands::Transcribe(args) => transcribe(args).await,
         Commands::Synthesize(args) => synthesize(args).await,
+        Commands::Chat(args) => chat(args).await,
         Commands::VoiceTap(args) => voice_tap(args).await,
         Commands::VoiceDispatch(args) => voice_dispatch(args).await,
         Commands::Lighting(args) => lighting(args).await,
@@ -523,6 +539,22 @@ fn build_whisper_client(cfg: &Config) -> anyhow::Result<WhisperClient> {
     WhisperClient::new(whisper_cfg).context("building Whisper HTTP client")
 }
 
+/// Build a `GroqClient` from the `[llm]` section of an already-
+/// validated config, resolving the API key from the environment.
+fn build_groq_client(cfg: &Config) -> anyhow::Result<GroqClient> {
+    let api_key = cfg
+        .llm
+        .resolve_api_key()
+        .context("resolving LLM API key from environment")?;
+    let groq_cfg = GroqConfig {
+        api_key,
+        base_url: cfg.llm.base_url.clone(),
+        model: cfg.llm.model.clone(),
+        request_timeout: Duration::from_secs(cfg.llm.timeout_seconds),
+    };
+    GroqClient::new(groq_cfg).context("building Groq HTTP client")
+}
+
 /// Build a `PiperClient` from the `[tts]` section of an already-
 /// validated config.
 fn build_piper_client(cfg: &Config) -> anyhow::Result<PiperClient> {
@@ -598,6 +630,35 @@ async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
         synthesis.audio_wav.len(),
         args.out.display()
     );
+    Ok(())
+}
+
+async fn chat(args: ChatArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+
+    let client = build_groq_client(&cfg)?;
+
+    eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
+    let req = ChatRequest {
+        messages: vec![Message::User {
+            content: args.prompt,
+        }],
+        tools: None,
+        tool_choice: None,
+    };
+    let resp = client.chat(req).await.context("calling LLM")?;
+
+    if let Some(text) = &resp.content {
+        println!("{text}");
+    }
+    if !resp.tool_calls.is_empty() {
+        eprintln!(
+            "tool_calls (unexpected without tools): {:?}",
+            resp.tool_calls
+        );
+    }
     Ok(())
 }
 

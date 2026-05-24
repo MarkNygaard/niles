@@ -11,6 +11,7 @@ pub mod api;
 pub mod error;
 pub mod home;
 pub mod lighting;
+pub mod llm;
 pub mod mqtt;
 pub mod stt;
 pub mod tts;
@@ -23,6 +24,7 @@ pub use api::ApiConfig;
 pub use error::{Error, Result};
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
+pub use llm::LlmConfig;
 pub use mqtt::MqttConfig;
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
@@ -38,6 +40,7 @@ pub struct Config {
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
+    pub llm: LlmConfig,
     pub lighting: LightingConfig,
 }
 
@@ -82,6 +85,7 @@ impl Config {
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
+        self.llm.validate()?;
         let _ = self.lighting.to_curve_config()?;
         if let Some(routine) = &self.lighting.morning_routine {
             let _ = routine.to_morning_routine_config()?;
@@ -118,6 +122,9 @@ bind_address = "0.0.0.0:10300"
 api_key_env = "GROQ_API_KEY"
 
 [tts]
+
+[llm]
+api_key_env = "GROQ_API_KEY"
 
 [lighting]
 morning_start = "05:45"
@@ -338,7 +345,10 @@ kelvin = 2000
 
     #[test]
     fn rejects_empty_stt_api_key_env() {
-        let bad = valid_toml().replace("api_key_env = \"GROQ_API_KEY\"", "api_key_env = \"\"");
+        let bad = valid_toml().replace(
+            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
+            "[stt]\napi_key_env = \"\"",
+        );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
     }
@@ -346,8 +356,8 @@ kelvin = 2000
     #[test]
     fn rejects_zero_stt_timeout() {
         let bad = valid_toml().replace(
-            "api_key_env = \"GROQ_API_KEY\"",
-            "api_key_env = \"GROQ_API_KEY\"\ntimeout_seconds = 0",
+            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
+            "[stt]\napi_key_env = \"GROQ_API_KEY\"\ntimeout_seconds = 0",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -356,8 +366,8 @@ kelvin = 2000
     #[test]
     fn rejects_empty_stt_language_when_set() {
         let bad = valid_toml().replace(
-            "api_key_env = \"GROQ_API_KEY\"",
-            "api_key_env = \"GROQ_API_KEY\"\nlanguage = \"\"",
+            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
+            "[stt]\napi_key_env = \"GROQ_API_KEY\"\nlanguage = \"\"",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -366,8 +376,8 @@ kelvin = 2000
     #[test]
     fn rejects_stt_base_url_without_http_scheme() {
         let bad = valid_toml().replace(
-            "api_key_env = \"GROQ_API_KEY\"",
-            "api_key_env = \"GROQ_API_KEY\"\nbase_url = \"api.groq.com/openai/v1\"",
+            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
+            "[stt]\napi_key_env = \"GROQ_API_KEY\"\nbase_url = \"api.groq.com/openai/v1\"",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -407,6 +417,90 @@ kelvin = 2000
         };
         let err = cfg.resolve_api_key().unwrap_err();
         assert!(matches!(err, Error::InvalidSection { section: "stt", .. }));
+    }
+
+    // ------------------------------------------------------------------
+    // LLM section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn llm_section_parses_with_defaults() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        assert_eq!(cfg.llm.api_key_env, "GROQ_API_KEY");
+        assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
+        assert_eq!(cfg.llm.model, "openai/gpt-oss-20b");
+        assert_eq!(cfg.llm.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn rejects_empty_llm_api_key_env() {
+        let bad = valid_toml().replace(
+            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
+            "[llm]\napi_key_env = \"\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_llm_timeout() {
+        let bad = valid_toml().replace(
+            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
+            "[llm]\napi_key_env = \"GROQ_API_KEY\"\ntimeout_seconds = 0",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_llm_base_url_without_http_scheme() {
+        let bad = valid_toml().replace(
+            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
+            "[llm]\napi_key_env = \"GROQ_API_KEY\"\nbase_url = \"api.groq.com/openai/v1\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_llm_model() {
+        let bad = valid_toml().replace(
+            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
+            "[llm]\napi_key_env = \"GROQ_API_KEY\"\nmodel = \"\"",
+        );
+        let cfg = Config::load_from_str(&bad).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn resolve_llm_api_key_reads_env_var() {
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::set_var("NILES_TEST_LLM_GROQ_API_KEY", "gsk_test_llm");
+        }
+        let cfg = LlmConfig {
+            api_key_env: "NILES_TEST_LLM_GROQ_API_KEY".into(),
+            base_url: "https://example".into(),
+            model: "m".into(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test_llm");
+    }
+
+    #[test]
+    fn resolve_llm_api_key_errors_when_missing() {
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::remove_var("NILES_TEST_DEFINITELY_NOT_SET_LLM_KEY_XYZ");
+        }
+        let cfg = LlmConfig {
+            api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_LLM_KEY_XYZ".into(),
+            base_url: "https://example".into(),
+            model: "m".into(),
+            timeout_seconds: 30,
+        };
+        let err = cfg.resolve_api_key().unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: "llm", .. }));
     }
 
     #[test]
