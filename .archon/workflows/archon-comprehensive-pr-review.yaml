@@ -1,0 +1,110 @@
+name: archon-comprehensive-pr-review
+description: |
+  Use when: User wants a comprehensive code review of a pull request with automatic fixes.
+  Triggers: "review this PR", "review PR #123", "comprehensive review", "full PR review",
+            "review and fix", "check this PR", "code review".
+  Does: Syncs PR with main (rebase if needed) -> runs 5 specialized review agents in parallel ->
+        synthesizes findings -> auto-fixes CRITICAL/HIGH issues -> reports remaining issues.
+  NOT for: Quick questions about a PR, checking CI status, simple "what changed" queries.
+
+  This workflow produces artifacts in $ARTIFACTS_DIR/../reviews/pr-{number}/ and posts
+  a comprehensive review comment to the GitHub PR.
+nodes:
+- id: scope
+  command: archon-pr-review-scope
+- id: sync
+  depends_on:
+  - scope
+  command: archon-sync-pr-with-main
+- id: code-review
+  depends_on:
+  - sync
+  command: archon-code-review-agent
+- id: error-handling
+  depends_on:
+  - sync
+  command: archon-error-handling-agent
+- id: test-coverage
+  depends_on:
+  - sync
+  command: archon-test-coverage-agent
+- id: comment-quality
+  depends_on:
+  - sync
+  command: archon-comment-quality-agent
+- id: docs-impact
+  depends_on:
+  - sync
+  command: archon-docs-impact-agent
+- id: synthesize
+  depends_on:
+  - code-review
+  - error-handling
+  - test-coverage
+  - comment-quality
+  - docs-impact
+  trigger_rule: one_success
+  command: archon-synthesize-review
+- id: implement-fixes
+  depends_on:
+  - synthesize
+  prompt: |
+    The synthesize step has just written a consolidated review to
+    `artifacts/runs/<this run's id>/review/consolidated-review.md` (it is
+    the most recent file under `artifacts/runs/*/review/` in the worktree).
+    Find and read it before doing anything else.
+
+    The consolidated review groups findings by severity:
+    CRITICAL · HIGH · MEDIUM · LOW. Each finding includes a file path,
+    a description, and usually a "Recommended fix" snippet.
+
+    Disposition rules (this is the contract):
+    - **CRITICAL**: implement the fix unless the finding explicitly names it
+      as a human hand-off (e.g. "the human reviewer regenerates the
+      lockfile"). For hand-offs, leave a single PR comment naming the
+      blocker and move on — do not stall the workflow.
+    - **HIGH**: implement every HIGH. Use the reviewer's recommended patch
+      verbatim where one is given. One commit per HIGH.
+    - **MEDIUM**: for EACH medium, do ONE of:
+      (a) Implement the reviewer's "Recommended" option (preferred when
+          effort is LOW), OR
+      (b) Leave a single line in your final summary explicitly naming the
+          finding ID (e.g. "M3") and a one-line reason for skipping
+          (e.g. "scope creep — needs separate PR").
+      DO NOT silently drop a MEDIUM. Every MEDIUM must be either addressed
+      or explicitly accounted for in your summary.
+    - **LOW**: optional. Bundle with HIGH/MEDIUM commits when the diff is
+      adjacent and trivial; otherwise skip.
+
+    For each fix you implement:
+    1. Edit the relevant files. Use the reviewer's recommended patch when
+       present.
+    2. Run scoped checks for affected packages
+       (`pnpm typecheck --filter @workspace/<pkg>`, same for `lint` and
+       `test`). Repo-root pnpm is forbidden per CLAUDE.md.
+    3. Commit with a conventional-commit message that names the severity
+       tier in the body (e.g. "addresses M1, M2"). Push.
+
+    Do NOT use `gh pr review` — the synthesize step already posted the
+    summary comment. Do NOT use --no-verify. Do NOT skip commit hooks.
+
+    Database safety: per AGENTS.md/CLAUDE.md, NEVER run
+    `prisma migrate dev/deploy` or `prisma db execute`. If a finding asks
+    for a migration, edit `schema.prisma`, write the SQL, and flag it in
+    your summary as requiring a human to apply.
+
+    When done, output a structured summary:
+
+    ```
+    ## implement-fixes summary
+
+    Addressed:
+    - <finding-id> (<severity>): <one-line description> — commit <sha>
+    ...
+
+    Skipped MEDIUMs (with reason):
+    - <finding-id>: <one-line reason>
+    ...
+    ```
+
+    Then output: <promise>IMPLEMENT-FIXES-DONE</promise>
