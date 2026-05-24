@@ -31,6 +31,9 @@ impl IntentRouter {
         if let Some(intent) = match_light(&t) {
             return Some(intent);
         }
+        if let Some(intent) = match_back_to_normal(&t) {
+            return Some(intent);
+        }
         if let Some(intent) = match_timer(&t) {
             return Some(intent);
         }
@@ -138,6 +141,51 @@ fn match_light_dim(t: &str) -> Option<Intent> {
     Some(Intent::LightDim {
         room: room.to_string(),
         percent: n,
+    })
+}
+
+// ---- Back to normal (clear manual mode) ------------------------------------
+
+fn back_to_normal_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Four phrasings (anchored — no false-match on "back to the normal way"):
+        //   "back to normal"                              -> room: None
+        //   "normal lights"                               -> room: None
+        //   "back to normal in [the] <room>"              -> room: Some(...)
+        //   "<room> back to normal"                       -> room: Some(...)
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                back\s+to\s+normal\s+in\s+(?:the\s+)?(?P<room1>.+?)
+              |
+                (?P<room2>.+?)\s+back\s+to\s+normal
+              |
+                back\s+to\s+normal
+              |
+                normal\s+lights
+              )
+              $",
+        )
+        .expect("back_to_normal regex compiles")
+    })
+}
+
+fn match_back_to_normal(t: &str) -> Option<Intent> {
+    let caps = back_to_normal_regex().captures(t)?;
+    let room = caps
+        .name("room1")
+        .or_else(|| caps.name("room2"))
+        .map(|m| m.as_str());
+    // Reject bogus rooms: "the" (when the optional group declines to
+    // match) and "lights" (a fixture type, not a room). Escalate to
+    // Tier 1 rather than produce a nonsensical room name.
+    if room == Some("the") || room == Some("lights") {
+        return None;
+    }
+    Some(Intent::ClearManualMode {
+        room: room.map(|s| s.to_string()),
     })
 }
 
@@ -472,6 +520,88 @@ mod tests {
         // u64::MAX minutes would overflow when multiplied by 60.
         let input = format!("set a timer for {} minutes", u64::MAX);
         assert_eq!(parse(&input), None);
+    }
+
+    // ---- Back to normal ----
+
+    #[test]
+    fn back_to_normal_whole_home() {
+        assert_eq!(
+            parse("back to normal"),
+            Some(Intent::ClearManualMode { room: None })
+        );
+    }
+
+    #[test]
+    fn back_to_normal_normal_lights_phrasing() {
+        assert_eq!(
+            parse("normal lights"),
+            Some(Intent::ClearManualMode { room: None })
+        );
+    }
+
+    #[test]
+    fn back_to_normal_in_room() {
+        assert_eq!(
+            parse("back to normal in kitchen"),
+            Some(Intent::ClearManualMode {
+                room: Some("kitchen".into())
+            })
+        );
+    }
+
+    #[test]
+    fn back_to_normal_in_the_room() {
+        assert_eq!(
+            parse("back to normal in the kitchen"),
+            Some(Intent::ClearManualMode {
+                room: Some("kitchen".into())
+            })
+        );
+    }
+
+    #[test]
+    fn back_to_normal_multiword_room() {
+        assert_eq!(
+            parse("back to normal in the living room"),
+            Some(Intent::ClearManualMode {
+                room: Some("living room".into())
+            })
+        );
+    }
+
+    #[test]
+    fn back_to_normal_room_prefix_phrasing() {
+        assert_eq!(
+            parse("living room back to normal"),
+            Some(Intent::ClearManualMode {
+                room: Some("living room".into())
+            })
+        );
+    }
+
+    #[test]
+    fn back_to_normal_normalizes_case_and_punctuation() {
+        assert_eq!(
+            parse("Back to normal."),
+            Some(Intent::ClearManualMode { room: None })
+        );
+        assert_eq!(
+            parse("BACK TO NORMAL"),
+            Some(Intent::ClearManualMode { room: None })
+        );
+    }
+
+    #[test]
+    fn back_to_normal_rejects_substring_in_other_phrase() {
+        // Anchored regex must NOT match "back to the normal way".
+        assert_eq!(parse("back to the normal way"), None);
+    }
+
+    #[test]
+    fn back_to_normal_in_the_lights_rejected() {
+        // "lights" isn't a room — must escalate to Tier 1.
+        assert_eq!(parse("back to normal in the lights"), None);
     }
 
     // ---- Stop / cancel ----
