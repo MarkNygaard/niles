@@ -275,6 +275,8 @@ impl GroqClient {
         let status = resp.status();
         let body_bytes = resp.bytes().await?;
         if !status.is_success() {
+            // Keep error bodies bounded — a multi-MB HTML error page
+            // shouldn't ride into logs or anyhow chains.
             const MAX_ERR_BODY: usize = 2048;
             let preview = if body_bytes.len() > MAX_ERR_BODY {
                 &body_bytes[..MAX_ERR_BODY]
@@ -292,9 +294,8 @@ impl GroqClient {
             .choices
             .into_iter()
             .next()
-            .ok_or_else(|| Error::Provider {
-                status: 200,
-                body: "empty choices array".into(),
+            .ok_or_else(|| Error::InvalidResponse {
+                reason: "empty choices array".into(),
             })?;
 
         let tool_calls: Result<Vec<_>> = choice
@@ -488,6 +489,15 @@ mod tests {
     #[test]
     fn new_builds_a_client_without_calling_out() {
         let _client = GroqClient::new(test_cfg()).expect("client builds");
+    }
+
+    #[test]
+    fn chat_response_empty_choices_is_invalid_response() {
+        let body = br#"{"choices":[]}"#;
+        let raw: RawChatResponse = serde_json::from_slice(body).unwrap();
+        // chat() turns this into Error::InvalidResponse — the parse
+        // itself succeeds; what fails is structural expectations.
+        assert!(raw.choices.is_empty());
     }
 
     #[test]

@@ -14,4 +14,7 @@ pub enum Error {
 
     #[error("failed to parse LLM provider response: {0}")]
     Decode(#[from] serde_json::Error),
+
+    #[error("LLM provider returned a structurally invalid response: {reason}")]
+    InvalidResponse { reason: String },
 }
