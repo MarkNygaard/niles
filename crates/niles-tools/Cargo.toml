@@ -9,3 +9,15 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+niles-core.workspace = true
+niles-mqtt.workspace = true
+niles-llm.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -21,6 +21,7 @@ toml = "0.8"
 rumqttc = "0.24"
 dotenvy = "0.15"
 anyhow = "1"
+async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 axum = "0.7"
@@ -49,3 +50,4 @@ niles-stt = { path = "crates/niles-stt" }
 niles-tts = { path = "crates/niles-tts" }
 niles-intent = { path = "crates/niles-intent" }
 niles-llm = { path = "crates/niles-llm" }
+niles-tools = { path = "crates/niles-tools" }

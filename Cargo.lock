@@ -814,8 +814,11 @@ dependencies = [
  "niles-mqtt",
  "niles-scheduler",
  "niles-stt",
+ "niles-tools",
  "niles-tts",
  "niles-wyoming",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -925,6 +928,17 @@ dependencies = [
 [[package]]
 name = "niles-tools"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "niles-core",
+ "niles-llm",
+ "niles-mqtt",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "niles-tts"
