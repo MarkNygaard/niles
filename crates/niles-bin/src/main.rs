@@ -948,7 +948,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .lighting
         .morning_routine
         .as_ref()
-        .map(|dto| dto.to_morning_routine_config().context("converting [lighting.morning_routine] to MorningRoutineConfig"))
+        .map(|dto| {
+            dto.to_morning_routine_config()
+                .context("converting [lighting.morning_routine] to MorningRoutineConfig")
+        })
         .transpose()?;
 
     let whisper = Arc::new(build_whisper_client(&cfg)?);

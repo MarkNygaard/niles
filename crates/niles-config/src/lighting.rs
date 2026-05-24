@@ -40,9 +40,21 @@ impl MorningRoutineConfigDto {
     /// Parse strings into typed `MorningRoutineConfig`, validating
     /// every field.
     pub fn to_morning_routine_config(&self) -> Result<MorningRoutineConfig> {
-        let fire_days = self.fire_days.iter().map(|s| parse_weekday(s)).collect::<Result<Vec<_>>>()?;
-        let target_devices = self.target_devices.iter().map(|s| parse_device_id(s)).collect::<Result<Vec<_>>>()?;
-        let skip_overrides = self.skip_overrides.iter().map(|s| parse_naive_date(s)).collect::<Result<Vec<_>>>()?;
+        let fire_days = self
+            .fire_days
+            .iter()
+            .map(|s| parse_weekday(s))
+            .collect::<Result<Vec<_>>>()?;
+        let target_devices = self
+            .target_devices
+            .iter()
+            .map(|s| parse_device_id(s))
+            .collect::<Result<Vec<_>>>()?;
+        let skip_overrides = self
+            .skip_overrides
+            .iter()
+            .map(|s| parse_naive_date(s))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(MorningRoutineConfig {
             fire_days,
@@ -65,7 +77,8 @@ pub struct ColorTempAnchor {
 impl LightingConfig {
     /// Parse times and anchors, then validate the resulting `CurveConfig`.
     pub fn to_curve_config(&self) -> Result<CurveConfig> {
-        let anchors = self.color_temp_anchors
+        let anchors = self
+            .color_temp_anchors
             .iter()
             .map(|a| Ok((parse_time(&a.time)?, a.kelvin)))
             .collect::<Result<Vec<_>>>()?;
