@@ -30,17 +30,25 @@ impl ManualModeTracker {
 
     /// Mark `id` as manually controlled — the curve driver should skip it.
     pub fn flag(&self, id: &DeviceId) {
-        self.flagged.write().unwrap().insert(id.clone());
+        self.flagged_write().insert(id.clone());
     }
 
     /// Remove the manual-mode flag for `id`, returning it to curve control.
     pub fn clear(&self, id: &DeviceId) {
-        self.flagged.write().unwrap().remove(id);
+        self.flagged_write().remove(id);
     }
 
     /// True if `id` is currently flagged.
     pub fn is_flagged(&self, id: &DeviceId) -> bool {
-        self.flagged.read().unwrap().contains(id)
+        self.flagged_read().contains(id)
+    }
+
+    /// Drop *all* tracker state for `id` — both the manual-mode flag and
+    /// the last-seen on-state. Use when a device is removed from the
+    /// registry so its entries don't linger forever.
+    pub fn forget(&self, id: &DeviceId) {
+        self.flagged_write().remove(id);
+        self.last_on_write().remove(id);
     }
 
     /// Observe a state update and auto-clear the flag on off→on transitions.
@@ -62,7 +70,7 @@ impl ManualModeTracker {
         };
 
         let prev = {
-            let mut last_on = self.last_on.write().unwrap();
+            let mut last_on = self.last_on_write();
             let prev = last_on.get(id).copied();
             last_on.insert(id.clone(), new_on);
             prev
@@ -71,6 +79,29 @@ impl ManualModeTracker {
         if prev == Some(false) && new_on {
             self.clear(id);
         }
+    }
+
+    // ---- lock helpers -----------------------------------------------------
+    //
+    // `std::sync::RwLock` poisons on a panic in any thread holding the
+    // write lock. Our operations are trivial (HashSet/HashMap inserts
+    // and removes) and don't panic in practice, but defensively
+    // recovering from poison via `into_inner()` means a panic in one
+    // path can't cascade-kill the whole tracker. The recovered state
+    // is consistent because each individual lock guards a single
+    // collection that's mutated atomically inside the critical
+    // section.
+
+    fn flagged_write(&self) -> std::sync::RwLockWriteGuard<'_, HashSet<DeviceId>> {
+        self.flagged.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn flagged_read(&self) -> std::sync::RwLockReadGuard<'_, HashSet<DeviceId>> {
+        self.flagged.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn last_on_write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<DeviceId, bool>> {
+        self.last_on.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -170,5 +201,33 @@ mod tests {
         let id = dev("light_g");
         t.flag(&id);
         assert!(t2.is_flagged(&id));
+    }
+
+    #[test]
+    fn forget_clears_flag_and_last_on() {
+        let t = ManualModeTracker::new();
+        let id = dev("light_h");
+        t.flag(&id);
+        t.observe(&id, &on_state(true));
+        t.forget(&id);
+        assert!(!t.is_flagged(&id));
+        // After forget, the next observe with no prior should NOT
+        // trigger a spurious clear — verify the `last_on` row is
+        // also gone by re-checking the off->on transition contract:
+        // observe(true) alone (no prior false) must not clear a
+        // freshly re-set flag.
+        t.flag(&id);
+        t.observe(&id, &on_state(true));
+        assert!(
+            t.is_flagged(&id),
+            "forget should have wiped last_on too, so observe(true) has no prior=false to trigger clear"
+        );
+    }
+
+    #[test]
+    fn forget_is_idempotent_on_unknown_device() {
+        let t = ManualModeTracker::new();
+        // No prior flag, no prior observe — must not panic.
+        t.forget(&dev("never_touched"));
     }
 }

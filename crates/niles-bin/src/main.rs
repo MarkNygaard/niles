@@ -776,26 +776,34 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
         Intent::LightSet { room, on } => {
+            let Some((canonical, targets)) =
+                resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some())
+            else {
+                return;
+            };
             let desired = DeviceState {
                 on: Some(on),
                 ..Default::default()
             };
-            dispatch_room(ctx, peer, &room, |d| d.state.on.is_some(), &desired).await;
+            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
         }
         Intent::LightDim { room, percent } => {
+            let Some((canonical, targets)) =
+                resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some())
+            else {
+                return;
+            };
+            // Flag each dimmable target *before* publishing so the
+            // curve driver can't race a tick in between and overwrite
+            // the dim we're about to send.
+            for device in &targets {
+                ctx.tracker.flag(&device.id);
+            }
             let desired = DeviceState {
                 brightness: Some(percent),
                 ..Default::default()
             };
-            // Flag each dimmable target so the curve driver skips it.
-            if let Ok(canonical) = intent_room_to_canonical(&room) {
-                for device in ctx.registry.list_room(&canonical) {
-                    if device.state.brightness.is_some() {
-                        ctx.tracker.flag(&device.id);
-                    }
-                }
-            }
-            dispatch_room(ctx, peer, &room, |d| d.state.brightness.is_some(), &desired).await;
+            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
         }
         Intent::TimerSet { .. } | Intent::Stop | Intent::Cancel => {
             tracing::info!("{peer}: intent recognized but dispatch not wired yet");
@@ -806,29 +814,29 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
     }
 }
 
-/// Resolve a transcript-derived room reference to devices in the
-/// registry, filter by capability, and publish the requested target
-/// state to each. Shared by every room-scoped intent (LightSet,
-/// LightDim, etc.).
+/// Resolve a transcript-derived room reference into the canonical
+/// `RoomName` + the list of devices in that room that pass
+/// `capability_filter`. Returns `None` if the room name is invalid
+/// or no devices match — in both cases the right user-facing log
+/// line is already emitted here, so the caller just bails.
 ///
-/// `capability_filter` decides which devices in the room actually
-/// support this action (e.g. lights for LightSet, brightness-capable
-/// bulbs for LightDim). Sensors and unrelated devices in the same
-/// room get skipped without needing a separate device-type model.
-async fn dispatch_room<F>(
+/// Centralizing this avoids the previous duplicated lookup in the
+/// `LightDim` arm (one walk to flag, another inside `dispatch_room`
+/// to publish).
+fn resolve_room_targets<F>(
     ctx: &DispatchCtx,
     peer: std::net::SocketAddr,
     room: &str,
     capability_filter: F,
-    desired: &DeviceState,
-) where
+) -> Option<(RoomName, Vec<niles_core::Device>)>
+where
     F: Fn(&niles_core::Device) -> bool,
 {
     let canonical = match intent_room_to_canonical(room) {
         Ok(r) => r,
         Err(reason) => {
             tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
-            return;
+            return None;
         }
     };
 
@@ -853,15 +861,30 @@ async fn dispatch_room<F>(
                 "[{peer}] no devices in room '{canonical}' support this action — nothing to dispatch"
             );
         }
-        return;
+        return None;
     }
 
+    Some((canonical, targets))
+}
+
+/// Publish the requested target state to each device in `targets`.
+/// Pure dispatch — room resolution + capability filtering happened
+/// upstream in [`resolve_room_targets`].
+async fn dispatch_to_targets(
+    ctx: &DispatchCtx,
+    peer: std::net::SocketAddr,
+    canonical: &RoomName,
+    targets: &[niles_core::Device],
+    desired: &DeviceState,
+) {
     debug_assert!(
         is_actionable(desired),
-        "dispatch_room target should always be actionable"
+        "dispatch_to_targets called with a non-actionable target state"
     );
+    let _ = canonical; // currently only used for upstream logging; keep the
+    // parameter so the caller can pass it without extra plumbing later.
 
-    for device in &targets {
+    for device in targets {
         let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, desired);
         if ctx.dry_run {
             println!("[{peer}] [dry-run] {topic}  {payload}");
@@ -945,12 +968,18 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     });
 
-    // EventBus observer — feeds tracker.observe() for off→on auto-clear.
+    // EventBus observer — feeds tracker.observe() for off→on
+    // auto-clear, and tracker.forget() so removed devices don't
+    // leave stale tracker entries behind (the maps would otherwise
+    // grow monotonically over a long-running service).
     let observer_handle = tokio::spawn(async move {
         loop {
             match bus_rx.recv().await {
                 Ok(Event::DeviceStateChanged { id, state }) => {
                     observer_tracker.observe(&id, &state);
+                }
+                Ok(Event::DeviceRemoved { id }) => {
+                    observer_tracker.forget(&id);
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
