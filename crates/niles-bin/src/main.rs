@@ -13,6 +13,7 @@ use niles_scheduler::{
     ManualModeTracker, MinuteOfDay, brightness_at, build_curve_target, color_temp_at,
 };
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
+use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingServer};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -64,6 +65,9 @@ enum Commands {
     /// (Groq Whisper). The file is uploaded as-is — supported
     /// formats are WAV, MP3, FLAC, OGG, M4A, etc.
     Transcribe(TranscribeArgs),
+    /// Synthesize speech via the configured TTS provider (Piper).
+    /// Writes the resulting WAV to the path given by `--out`.
+    Synthesize(SynthesizeArgs),
     /// Run the Wyoming server, accumulate each satellite utterance
     /// between `audio-start` and `audio-stop`, send it to the STT
     /// provider, and print the transcript. (Dev tool — no intent
@@ -159,6 +163,21 @@ struct TranscribeArgs {
 }
 
 #[derive(Args)]
+struct SynthesizeArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+    /// Text to synthesize.
+    text: String,
+    /// Path to write the resulting WAV file.
+    #[arg(short, long)]
+    out: PathBuf,
+    /// Override the default voice from the [tts] config.
+    #[arg(long)]
+    voice: Option<String>,
+}
+
+#[derive(Args)]
 struct VoiceTapArgs {
     /// Path to the Niles config file.
     #[arg(short, long, default_value = "niles.toml")]
@@ -233,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Api(args) => api(args).await,
         Commands::WyomingTap(args) => wyoming_tap(args).await,
         Commands::Transcribe(args) => transcribe(args).await,
+        Commands::Synthesize(args) => synthesize(args).await,
         Commands::VoiceTap(args) => voice_tap(args).await,
         Commands::VoiceDispatch(args) => voice_dispatch(args).await,
         Commands::Lighting(args) => lighting(args).await,
@@ -502,6 +522,17 @@ fn build_whisper_client(cfg: &Config) -> anyhow::Result<WhisperClient> {
     WhisperClient::new(whisper_cfg).context("building Whisper HTTP client")
 }
 
+/// Build a `PiperClient` from the `[tts]` section of an already-
+/// validated config.
+fn build_piper_client(cfg: &Config) -> anyhow::Result<PiperClient> {
+    let piper_cfg = PiperConfig {
+        base_url: cfg.tts.base_url.clone(),
+        default_voice: cfg.tts.default_voice.clone(),
+        request_timeout: Duration::from_secs(cfg.tts.timeout_seconds),
+    };
+    PiperClient::new(piper_cfg).context("building Piper HTTP client")
+}
+
 async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     let cfg = Config::load_from_path(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
@@ -536,6 +567,36 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
         eprintln!("Audio duration: {dur:.2}s");
     }
     println!("{}", transcript.text);
+    Ok(())
+}
+
+async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+
+    let client = build_piper_client(&cfg)?;
+    let voice = args.voice.as_deref();
+    let voice_for_log = voice.unwrap_or(&cfg.tts.default_voice);
+
+    eprintln!(
+        "Synthesizing {} chars via {} (voice {}) ...",
+        args.text.chars().count(),
+        cfg.tts.base_url,
+        voice_for_log
+    );
+    let synthesis = client
+        .synthesize(&args.text, voice)
+        .await
+        .context("synthesizing speech")?;
+
+    std::fs::write(&args.out, &synthesis.audio_wav)
+        .with_context(|| format!("writing WAV to {}", args.out.display()))?;
+    println!(
+        "Wrote {} bytes to {}",
+        synthesis.audio_wav.len(),
+        args.out.display()
+    );
     Ok(())
 }
 
