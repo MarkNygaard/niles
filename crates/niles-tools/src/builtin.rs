@@ -76,10 +76,10 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
                 tool: "set_device".into(),
                 reason: "color_temp_kelvin must be an integer".into(),
             })?;
-            if n > u16::MAX as u64 {
+            if !(1000..=10000).contains(&n) {
                 return Err(Error::InvalidArgs {
                     tool: "set_device".into(),
-                    reason: format!("color_temp_kelvin {n} exceeds maximum {}", u16::MAX),
+                    reason: format!("color_temp_kelvin {n} outside valid range 1000..=10000"),
                 });
             }
             Some(n as u16)
@@ -436,5 +436,30 @@ mod tests {
         let args = json!({ "on": true });
         let err = required_str("set_device", &args, "device_id").unwrap_err();
         assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_device"));
+    }
+
+    #[test]
+    fn set_device_args_color_temp_kelvin_below_range_errors() {
+        let args = json!({ "device_id": "kitchen/ceiling_light", "color_temp_kelvin": 500 });
+        let err = extract_set_state(&args).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_device" && reason.contains("500"))
+        );
+    }
+
+    #[test]
+    fn set_device_args_color_temp_kelvin_above_range_errors() {
+        let args = json!({ "device_id": "kitchen/ceiling_light", "color_temp_kelvin": 50000 });
+        let err = extract_set_state(&args).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_device" && reason.contains("50000"))
+        );
+    }
+
+    #[test]
+    fn set_device_args_color_temp_kelvin_in_range_accepted() {
+        let args = json!({ "device_id": "kitchen/ceiling_light", "color_temp_kelvin": 4000 });
+        let state = extract_set_state(&args).unwrap();
+        assert_eq!(state.color_temp_kelvin, Some(4000));
     }
 }
