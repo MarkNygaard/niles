@@ -681,8 +681,10 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
             break;
         }
 
+        // For compatibility across OpenAI-style providers, keep the
+        // assistant tool-call turn as tool_calls-only.
         messages.push(Message::Assistant {
-            content: resp.content.clone(),
+            content: None,
             tool_calls: Some(resp.tool_calls.clone()),
         });
 

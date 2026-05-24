@@ -25,10 +25,13 @@ impl ToolRegistry {
     /// All registered tools, as `niles_llm::Tool` wire types ready to
     /// send in a `ChatRequest`.
     pub fn llm_tools(&self) -> Vec<niles_llm::Tool> {
-        self.tools
+        let mut out: Vec<niles_llm::Tool> = self
+            .tools
             .values()
             .map(|t| t.descriptor().to_llm_tool())
-            .collect()
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// Dispatch a `ToolCall`. Returns the JSON value the tool produced;
@@ -113,5 +116,16 @@ mod tests {
         assert_eq!(tools[0].description, "a stub");
         let params = &tools[0].parameters;
         assert_eq!(params["type"], "object");
+    }
+
+    #[test]
+    fn llm_tools_are_sorted_by_name() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(StubTool { name: "z".into() }));
+        reg.register(Box::new(StubTool { name: "a".into() }));
+        reg.register(Box::new(StubTool { name: "m".into() }));
+
+        let names: Vec<String> = reg.llm_tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["a", "m", "z"]);
     }
 }
