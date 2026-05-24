@@ -1,7 +1,14 @@
-# CLAUDE.md
+# AGENTS.md
 
-Working notes for Claude Code (and any AI coding agent) on this repo.
-Auto-loaded by Claude Code when sessions start in this directory.
+Working notes for any AI coding agent on this repo. This file
+exists alongside [`CLAUDE.md`](CLAUDE.md) so agents that auto-load
+`AGENTS.md` (Codex, OpenAI agent SDK, Pi/Kimi via Archon) see the
+same project conventions as agents that auto-load `CLAUDE.md`
+(Claude Code).
+
+**The two files mirror each other.** Keep them in sync — when you
+edit one, edit the other to match. Same content, same rules, just
+two filenames so different agents can find them.
 
 ## What this project is
 
