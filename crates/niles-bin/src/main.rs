@@ -1353,7 +1353,9 @@ async fn run_morning_routine_tick(
                     let (topic, payload) = format_set_command(z2m_prefix, id, &target);
                     if dry_run {
                         tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
-                    } else if let Err(e) = publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+                    } else if let Err(e) =
+                        publisher.publish(&topic, payload.as_bytes().to_vec()).await
+                    {
                         tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
                     } else {
                         tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
