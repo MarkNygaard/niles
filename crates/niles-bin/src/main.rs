@@ -6,7 +6,7 @@ use niles_api::AppState;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
 use niles_intent::{Intent, IntentRouter};
-use niles_llm::{ChatRequest, GroqClient, GroqConfig, Message, ToolChoice};
+use niles_llm::{ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, ToolChoice};
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
@@ -15,6 +15,7 @@ use niles_scheduler::{
     brightness_at, build_curve_target, color_temp_at, routine_brightness_at, should_fire_today,
 };
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
+use niles_tools::ToolRegistry;
 use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingServer};
 use serde_json::json;
@@ -634,9 +635,94 @@ async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn chat(args: ChatArgs) -> anyhow::Result<()> {
-    const MAX_TOOL_ITERATIONS: usize = 5;
+const MAX_TOOL_ITERATIONS: usize = 5;
 
+/// A minimal abstraction over the chat-completions endpoint so the
+/// tool-calling loop is testable without spinning up an HTTP server.
+/// `GroqClient` is the only real implementor; tests use a fake.
+#[async_trait::async_trait]
+trait ChatProvider: Send + Sync {
+    async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse>;
+}
+
+#[async_trait::async_trait]
+impl ChatProvider for GroqClient {
+    async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+        Ok(GroqClient::chat(self, req).await?)
+    }
+}
+
+/// Drive a chat conversation with tool calling until the model emits
+/// a final text response or `max_iterations` is exhausted.
+///
+/// Each iteration sends the full message history to `client`. If the
+/// response carries no tool calls, the function returns the assistant
+/// content (or empty string if `content` is `None`). Otherwise the
+/// tool calls are dispatched through `registry` and their results are
+/// fed back as `Message::Tool` for the next iteration.
+async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
+    client: &C,
+    registry: &ToolRegistry,
+    prompt: &str,
+    max_iterations: usize,
+) -> anyhow::Result<String> {
+    let llm_tools = registry.llm_tools();
+    let mut messages = vec![Message::User {
+        content: prompt.to_string(),
+    }];
+
+    for _ in 0..max_iterations {
+        let req = ChatRequest {
+            messages: messages.clone(),
+            tools: Some(llm_tools.clone()),
+            tool_choice: Some(ToolChoice::Auto),
+        };
+        let resp = client.chat(req).await.context("calling LLM")?;
+
+        if resp.tool_calls.is_empty() {
+            return Ok(resp.content.unwrap_or_default());
+        }
+
+        messages.push(Message::Assistant {
+            content: None,
+            tool_calls: Some(resp.tool_calls.clone()),
+        });
+
+        for call in &resp.tool_calls {
+            let arg_keys: Vec<&str> = call
+                .arguments
+                .as_object()
+                .map(|m| m.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            tracing::info!(
+                "tool_call {name}({keys}) [id={id}]",
+                id = call.id,
+                name = call.name,
+                keys = arg_keys.join(",")
+            );
+
+            let result = match registry.execute(call).await {
+                Ok(v) => v,
+                Err(e) => json!({ "error": format!("{e}") }),
+            };
+            tracing::info!(
+                "tool_result {name} -> {body}",
+                name = call.name,
+                body = result.to_string()
+            );
+            messages.push(Message::Tool {
+                tool_call_id: call.id.clone(),
+                content: result.to_string(),
+            });
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "chat tool-calling loop exhausted after {max_iterations} iterations without a final text answer"
+    ))
+}
+
+async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
     let publisher = mqtt_client.publisher();
     let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
@@ -658,66 +744,15 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let tools_registry = niles_tools::default_registry(registry.clone(), publisher, z2m_prefix);
-    let llm_tools = tools_registry.llm_tools();
-
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
 
-    let mut messages = vec![Message::User {
-        content: args.prompt,
-    }];
-    let mut final_text: Option<String> = None;
-
-    for iteration in 0..MAX_TOOL_ITERATIONS {
-        let req = ChatRequest {
-            messages: messages.clone(),
-            tools: Some(llm_tools.clone()),
-            tool_choice: Some(ToolChoice::Auto),
-        };
-        let resp = client.chat(req).await.context("calling LLM")?;
-
-        if resp.tool_calls.is_empty() {
-            final_text = resp.content;
-            break;
-        }
-
-        // For compatibility across OpenAI-style providers, keep the
-        // assistant tool-call turn as tool_calls-only.
-        messages.push(Message::Assistant {
-            content: None,
-            tool_calls: Some(resp.tool_calls.clone()),
-        });
-
-        for call in &resp.tool_calls {
-            let arg_keys: Vec<&str> = call
-                .arguments
-                .as_object()
-                .map(|m| m.keys().map(|s| s.as_str()).collect())
-                .unwrap_or_default();
-            tracing::info!(
-                "[tool] {id} {name}({keys})",
-                id = call.id,
-                name = call.name,
-                keys = arg_keys.join(",")
-            );
-
-            let result = match tools_registry.execute(call).await {
-                Ok(v) => v,
-                Err(e) => json!({ "error": format!("{e}") }),
-            };
-            messages.push(Message::Tool {
-                tool_call_id: call.id.clone(),
-                content: result.to_string(),
-            });
-        }
-
-        if iteration == MAX_TOOL_ITERATIONS - 1 {
+    match run_tool_calling_chat(&client, &tools_registry, &args.prompt, MAX_TOOL_ITERATIONS).await {
+        Ok(text) => println!("{text}"),
+        Err(e) => {
             eprintln!("[chat loop exhausted after {MAX_TOOL_ITERATIONS} iterations]");
+            tracing::debug!("chat loop exit cause: {e}");
         }
-    }
-
-    if let Some(text) = final_text {
-        println!("{text}");
     }
 
     source_handle.abort();
@@ -865,6 +900,20 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         }
     });
 
+    // Wait for Z2M to populate the registry before tool calls can
+    // ask for device state. Same warm-up the `chat` subcommand uses.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Build the LLM + tool registry once for the lifetime of the
+    // server. Both go into DispatchCtx wrapped in Arc — they're cloned
+    // (Arc::clone) into every spawned dispatch task.
+    let llm = Arc::new(build_groq_client(&cfg)?);
+    let tools = Arc::new(niles_tools::default_registry(
+        registry.clone(),
+        publisher.clone(),
+        z2m_prefix.clone(),
+    ));
+
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
@@ -890,6 +939,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         z2m_prefix,
         dry_run: args.dry_run,
         tracker: Arc::new(ManualModeTracker::new()),
+        llm,
+        tools,
     };
 
     loop {
@@ -943,6 +994,8 @@ struct DispatchCtx {
     z2m_prefix: Arc<String>,
     dry_run: bool,
     tracker: Arc<ManualModeTracker>,
+    llm: Arc<GroqClient>,
+    tools: Arc<ToolRegistry>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -953,7 +1006,23 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
     let intent = match IntentRouter::new().parse(text) {
         Some(i) => i,
         None => {
-            println!("[{peer}] \"{text}\" -> no Tier 0 match");
+            // Tier 0 miss — escalate to Tier 1 LLM with the tool registry.
+            tracing::info!("[{peer}] Tier 0 miss, escalating to LLM: {text:?}");
+            match run_tool_calling_chat(
+                ctx.llm.as_ref(),
+                ctx.tools.as_ref(),
+                text,
+                MAX_TOOL_ITERATIONS,
+            )
+            .await
+            {
+                Ok(response) => {
+                    println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
+                }
+                Err(e) => {
+                    tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e}");
+                }
+            }
             return;
         }
     };
@@ -1214,6 +1283,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     });
 
+    // Wait for Z2M to populate the registry before tool calls can
+    // ask for device state. Same warm-up the `chat` subcommand uses.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let llm = Arc::new(build_groq_client(&cfg)?);
+    let tools = Arc::new(niles_tools::default_registry(
+        registry.clone(),
+        publisher.clone(),
+        z2m_prefix.clone(),
+    ));
+
     // HTTP API
     let api_state = AppState::new(registry.clone());
     let api_handle = tokio::spawn(async move {
@@ -1247,6 +1327,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         z2m_prefix: z2m_prefix.clone(),
         dry_run: args.dry_run,
         tracker: tracker.clone(),
+        llm,
+        tools,
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -1738,5 +1820,168 @@ mod intent_room_tests {
     fn rejects_empty() {
         assert!(intent_room_to_canonical("").is_err());
         assert!(intent_room_to_canonical("   ").is_err());
+    }
+}
+
+#[cfg(test)]
+mod chat_loop_tests {
+    use super::*;
+    use niles_llm::{FinishReason, ToolCall};
+    use niles_tools::tool::{Tool, ToolDescriptor};
+    use serde_json::{Value, json};
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    struct FakeChat {
+        responses: Mutex<VecDeque<ChatResponse>>,
+    }
+
+    impl FakeChat {
+        fn new(responses: Vec<ChatResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().collect()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChatProvider for FakeChat {
+        async fn chat(&self, _req: ChatRequest) -> anyhow::Result<ChatResponse> {
+            let mut q = self.responses.lock().unwrap();
+            q.pop_front()
+                .ok_or_else(|| anyhow::anyhow!("FakeChat ran out of canned responses"))
+        }
+    }
+
+    struct StubTool {
+        name: String,
+        result: Value,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for StubTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: self.name.clone(),
+                description: "stub".into(),
+                parameters: json!({"type":"object","properties":{},"required":[]}),
+            }
+        }
+        async fn execute(&self, _args: Value) -> niles_tools::Result<Value> {
+            Ok(self.result.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn returns_final_text_when_no_tool_calls() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: Some("hello world".into()),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+        }]);
+        let registry = ToolRegistry::new();
+        let out = run_tool_calling_chat(&fake, &registry, "hi", 5)
+            .await
+            .unwrap();
+        assert_eq!(out, "hello world");
+    }
+
+    #[tokio::test]
+    async fn dispatches_tool_call_then_returns_final_text() {
+        let fake = FakeChat::new(vec![
+            ChatResponse {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "stub".into(),
+                    arguments: json!({}),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+            },
+            ChatResponse {
+                content: Some("the answer is 42".into()),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Stop,
+            },
+        ]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "stub".into(),
+            result: json!({"value": 42}),
+        }));
+        let out = run_tool_calling_chat(&fake, &registry, "ask the stub", 5)
+            .await
+            .unwrap();
+        assert_eq!(out, "the answer is 42");
+    }
+
+    #[tokio::test]
+    async fn errors_when_max_iterations_exhausted() {
+        let tool_call_response = || ChatResponse {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "loop".into(),
+                name: "stub".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+        };
+        let fake = FakeChat::new(vec![
+            tool_call_response(),
+            tool_call_response(),
+            tool_call_response(),
+        ]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "stub".into(),
+            result: json!({"ok": true}),
+        }));
+        let err = run_tool_calling_chat(&fake, &registry, "go", 3)
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("exhausted"),
+            "error message should mention exhaustion: got {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_content_returns_empty_string() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: None,
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+        }]);
+        let registry = ToolRegistry::new();
+        let out = run_tool_calling_chat(&fake, &registry, "hi", 5)
+            .await
+            .unwrap();
+        assert_eq!(out, "");
+    }
+
+    #[tokio::test]
+    async fn tool_error_is_passed_back_as_json_error_message() {
+        let fake = FakeChat::new(vec![
+            ChatResponse {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: "boom".into(),
+                    name: "ghost".into(),
+                    arguments: json!({}),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+            },
+            ChatResponse {
+                content: Some("ok we recovered".into()),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Stop,
+            },
+        ]);
+        let registry = ToolRegistry::new();
+        let out = run_tool_calling_chat(&fake, &registry, "go", 5)
+            .await
+            .unwrap();
+        assert_eq!(out, "ok we recovered");
     }
 }
