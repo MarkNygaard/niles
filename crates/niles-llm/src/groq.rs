@@ -310,10 +310,17 @@ impl GroqClient {
                 })
             })
             .collect();
+        let tool_calls = tool_calls?;
+        let content = choice.message.content;
+        if content.is_none() && tool_calls.is_empty() {
+            return Err(Error::InvalidResponse {
+                reason: "assistant message had neither content nor tool_calls".into(),
+            });
+        }
 
         Ok(ChatResponse {
-            content: choice.message.content,
-            tool_calls: tool_calls?,
+            content,
+            tool_calls,
             finish_reason: choice.finish_reason.into(),
         })
     }
@@ -498,6 +505,35 @@ mod tests {
         // chat() turns this into Error::InvalidResponse — the parse
         // itself succeeds; what fails is structural expectations.
         assert!(raw.choices.is_empty());
+    }
+
+    #[test]
+    fn chat_response_with_no_content_and_no_tool_calls_is_invalid() {
+        let body = br#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[]},"finish_reason":"stop"}]}"#;
+        let raw: RawChatResponse = serde_json::from_slice(body).unwrap();
+        let choice = raw.choices.into_iter().next().unwrap();
+        let tool_calls: Result<Vec<_>> = choice
+            .message
+            .tool_calls
+            .into_iter()
+            .map(|raw_tc| {
+                Ok(ToolCall {
+                    id: raw_tc.id,
+                    name: raw_tc.function.name,
+                    arguments: serde_json::from_str(&raw_tc.function.arguments)?,
+                })
+            })
+            .collect();
+        let content = choice.message.content;
+        let tool_calls = tool_calls.unwrap();
+        let err = if content.is_none() && tool_calls.is_empty() {
+            Error::InvalidResponse {
+                reason: "assistant message had neither content nor tool_calls".into(),
+            }
+        } else {
+            panic!("expected invalid empty assistant payload");
+        };
+        assert!(matches!(err, Error::InvalidResponse { .. }));
     }
 
     #[test]
