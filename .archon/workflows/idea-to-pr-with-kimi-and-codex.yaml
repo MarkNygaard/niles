@@ -1,0 +1,614 @@
+name: idea-to-pr-with-kimi-and-codex
+description: |
+  Use when: User wants a task implemented end-to-end with Claude
+  planning, Kimi K2.6 (via Pi) doing implementation and up to 3
+  self-review iterations, Codex second-pass review with fixes, and
+  Claude Sonnet 4.6 sign-off at the end.
+  Triggers: "kimi pipeline", "kimi+codex pipeline", "pi+codex+sonnet",
+            "implement with kimi", "task with kimi review then codex".
+  Input: Feature description in natural language, or path to a PRD file.
+  Output: PR against the project's base branch (auto-detected from
+  `$BASE_BRANCH`), with Claude-planned, Kimi-implemented,
+  Kimi-self-reviewed (up to 3x), Codex-reviewed-and-fixed,
+  Sonnet-reviewed-and-fixed work, plus a verdict comment + PR label.
+
+  Project-specific rules — package manager, verify chain, conventional-
+  commit scope vocabulary, agent prohibitions (no `--no-verify`, no
+  migration auto-execute, etc.) — live in the project's `CLAUDE.md`
+  and/or `AGENTS.md`. Archon auto-loads those into every agent's
+  context. This workflow is provider/orchestration only.
+
+  Differs from idea-to-pr-with-codex in two ways:
+  1. Implementation and initial review are handled by Kimi K2.6 via Pi,
+     replacing the 5-perspective parallel Claude review block with a
+     converge-or-stop self-review loop (max 3 iterations).
+  2. A final Claude Sonnet 4.6 review-and-fix node runs after Codex —
+     fixes concrete bugs the earlier two reviewers missed, posts a
+     sized verdict comment (terse on APPROVE, full on
+     REQUEST_CHANGES/NEEDS_DISCUSSION), and sets a PR label
+     (archon-approved / -request-changes / -needs-discussion) for
+     at-a-glance triage.
+
+  NOT for: Quick fixes, standalone reviews, plans without implementation.
+
+nodes:
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 0: CREATE PLAN — Claude Opus
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: create-plan
+    command: archon-create-plan
+    provider: claude
+    model: opus
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 1: SETUP
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: plan-setup
+    command: archon-plan-setup
+    depends_on: [create-plan]
+    provider: claude
+    model: opus
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 2: CONFIRM PLAN
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: confirm-plan
+    command: archon-confirm-plan
+    depends_on: [plan-setup]
+    provider: claude
+    model: opus
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 2b: INSTALL WORKTREE DEPENDENCIES
+  # ═══════════════════════════════════════════════════════════════════
+  # Archon's `git worktree add` doesn't run the project's install step,
+  # so the fresh worktree has no `node_modules/.bin/`, no `target/`,
+  # etc. — every AI agent downstream would otherwise re-download deps
+  # on first invocation, burning billable minutes. We detect the
+  # project's package manager from lockfiles and run the appropriate
+  # locked install once, before any AI agent touches the tree.
+  #
+  # Locked / frozen installs match CI policy across ecosystems: if the
+  # lockfile drifts from the manifest, fail fast rather than silently
+  # mutating the lockfile inside the worktree.
+
+  - id: install-deps
+    bash: |
+      set -euo pipefail
+      if [ -f pnpm-lock.yaml ]; then
+        echo "Detected pnpm project"
+        pnpm install --frozen-lockfile
+        # Prisma codegen is common in pnpm projects but optional.
+        if [ -f prisma/schema.prisma ] || grep -q '"db:generate"' package.json 2>/dev/null; then
+          pnpm db:generate
+        fi
+      elif [ -f Cargo.toml ]; then
+        echo "Detected Cargo project"
+        cargo fetch --locked
+      elif [ -f package-lock.json ]; then
+        echo "Detected npm project"
+        npm ci
+      elif [ -f uv.lock ]; then
+        echo "Detected uv project"
+        uv sync --locked
+      elif [ -f poetry.lock ]; then
+        echo "Detected poetry project"
+        poetry install --no-interaction
+      elif [ -f go.mod ]; then
+        echo "Detected Go project"
+        go mod download
+      else
+        echo "No recognized lockfile — skipping install step. \
+        If this project needs setup, add the command to its CLAUDE.md \
+        so downstream agents can run it themselves."
+      fi
+    depends_on: [confirm-plan]
+    timeout: 300000
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 3: IMPLEMENT — Kimi K2.6 via Pi
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: implement-tasks
+    command: archon-implement-tasks
+    depends_on: [install-deps]
+    provider: pi
+    model: moonshotai/kimi-k2.6
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 3b: SIMPLIFY (pi-simplify extension)
+  # ═══════════════════════════════════════════════════════════════════
+  # Runs BEFORE finalize-pr so the PR's first appearance already contains
+  # the simplified code — no "fix what I just wrote" commits show up in
+  # the PR's initial commit graph. Any simplification commits land on
+  # the branch locally; the next finalize-pr step pushes them along
+  # with the implementation.
+  #
+  # Precondition: pi-simplify must be installed on the cluster's Pi
+  # instance. If the extension is missing, this node will fail with a
+  # clear error and the user can install it before re-running.
+
+  - id: pi-simplify
+    depends_on: [implement-tasks]
+    provider: pi
+    model: moonshotai/kimi-k2.6
+    context: fresh
+    prompt: |
+      Run the pi-simplify extension over the code just implemented on
+      this branch. Invoke:
+
+          /simplify --ref=$BASE_BRANCH
+
+      The extension reviews `git diff $BASE_BRANCH...HEAD`, applies
+      clarity / redundancy / naming improvements one file at a time,
+      and runs tests after each change to verify nothing breaks.
+      Per the extension docs, it preserves behaviour — it does not
+      change what the code does.
+
+      After /simplify finishes:
+
+      - If `git status --porcelain` reports modified files, stage them
+        and commit with a single conventional-commit message:
+          `chore: simplify implementation per pi-simplify pass`
+        Do NOT push — the next finalize-pr step pushes the branch.
+        Do NOT skip commit hooks. Do NOT use --no-verify.
+      - If `git status --porcelain` is empty, do nothing — /simplify
+        found nothing to change. No-op is fine.
+
+      The project's `CLAUDE.md` / `AGENTS.md` (auto-loaded into your
+      context) describe project-specific agent rules — migration
+      tooling restrictions, package-manager constraints, etc. Honor
+      those if they apply to changes /simplify proposes.
+
+      Output a one-line summary of what was simplified (or "no changes")
+      and: <promise>SIMPLIFY-DONE</promise>
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 4: VALIDATE
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: validate
+    command: archon-validate
+    depends_on: [pi-simplify]
+    provider: pi
+    model: moonshotai/kimi-k2.6
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 5: FINALIZE PR
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: finalize-pr
+    command: archon-finalize-pr
+    depends_on: [validate]
+    provider: pi
+    model: moonshotai/kimi-k2.6
+    context: fresh
+
+  - id: verify-pr-base
+    bash: |
+      set -euo pipefail
+      EXPECTED="$BASE_BRANCH"
+      ACTUAL=$(gh pr view --json baseRefName -q '.baseRefName')
+      if [ "$ACTUAL" != "$EXPECTED" ]; then
+        PR_NUMBER=$(gh pr view --json number -q '.number')
+        echo "Base mismatch on PR #$PR_NUMBER: expected=$EXPECTED actual=$ACTUAL — re-targeting" >&2
+        gh pr edit "$PR_NUMBER" --base "$EXPECTED"
+      else
+        echo "PR base verified: $EXPECTED"
+      fi
+    depends_on: [finalize-pr]
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 5b: VERIFY PR TITLE IS CONVENTIONAL-COMMIT FORMAT
+  # ═══════════════════════════════════════════════════════════════════
+  # When the PR squash-merges, GitHub uses the PR title as the merged
+  # commit message. release-please reads that commit to decide whether
+  # to bump the version and what to write in the changelog. A non-
+  # conventional PR title silently falls outside release-please's
+  # changelog generation. AGENTS.md / CLAUDE.md state this rule, but
+  # this node enforces it after `finalize-pr` so the rule can't be
+  # accidentally skipped.
+
+  - id: verify-pr-title
+    depends_on: [verify-pr-base]
+    provider: pi
+    model: moonshotai/kimi-k2.6
+    context: fresh
+    prompt: |
+      Verify the PR title follows the conventional-commits format.
+      If it doesn't, rewrite it via `gh pr edit`.
+
+      ## Format (universal — same for every project)
+
+          ^(feat|fix|chore|ci|docs|refactor|perf|test)(\([^)]+\))?!?: <description>
+
+      - `<description>` is a short, lower-case imperative summary
+        ("wire X to Y", not "Wire X To Y").
+      - Breaking change: add `!` after the type (e.g.
+        `feat!: remove legacy API`).
+      - Scope is optional but encouraged. Use the project's package /
+        crate / app name. The vocabulary is project-specific — pick it
+        up from:
+          1. The project's `CLAUDE.md` / `AGENTS.md` if a scope
+             vocabulary is documented there, OR
+          2. `git log --oneline origin/$BASE_BRANCH..HEAD~50` — copy
+             the convention already in use, OR
+          3. The directory structure (top-level `crates/`,
+             `packages/`, `apps/` etc. — use the affected one's name).
+
+      ## Type selection rubric (universal)
+
+      | Type | Use when |
+      |---|---|
+      | `feat` | Adds user-visible functionality. Triggers a minor bump. |
+      | `fix` | Fixes a bug. Triggers a patch bump. |
+      | `perf` | Performance change without new behavior. Triggers a patch bump. |
+      | `refactor` | Internal restructure, no behavior change. No release. |
+      | `chore` | Tooling, deps, internal config, agent workflows. No release. |
+      | `ci` | CI / release config changes. No release. |
+      | `docs` | Docs-only changes. No release. |
+      | `test` | Tests-only changes. No release. |
+
+      ## Steps
+
+      1. `gh pr view --json number,title`
+      2. If the title already matches the pattern AND the type fits the
+         change set (don't accept `chore:` on a PR that adds a new
+         feature), output `TITLE OK: <title>` and emit
+         <promise>PR-TITLE-OK</promise>.
+      3. Otherwise infer the right type+scope from
+         `git diff origin/$BASE_BRANCH...HEAD --stat` and
+         `git log --oneline origin/$BASE_BRANCH..HEAD`. Pick the
+         dominant scope when multiple packages are touched.
+      4. Rewrite the title and apply with
+         `gh pr edit <number> --title "<new title>"`.
+      5. Output `Renamed PR title to: <new title>` and emit
+         <promise>PR-TITLE-OK</promise>.
+
+      Do NOT touch the PR body, labels, base branch, or any other
+      property. Title only.
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 6: KIMI SELF-REVIEW LOOP (up to 3 iterations, converge-or-stop)
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: pi-review-fix-loop
+    depends_on: [verify-pr-title]
+    loop:
+      provider: pi
+      model: moonshotai/kimi-k2.6
+      max_iterations: 3
+      until: PI_REVIEW_CLEAN
+      prompt: |
+        You are performing a self-review-and-fix pass on a PR that you
+        (or an earlier iteration of you) just implemented. This may be
+        one of up to 3 such passes — look at the commit history to see
+        whether earlier passes have already run. Stop early when you
+        have no more substantive issues to fix.
+
+        ## Read the change set first
+
+        Use `gh pr view --json title,body,baseRefName,headRefName,additions,deletions`
+        and `git log --oneline origin/$BASE_BRANCH..HEAD` to understand
+        what's been done. Read the diff with `git diff origin/$BASE_BRANCH...HEAD`.
+
+        Look at any prior iteration's commits — your previous self has
+        already addressed those issues. Don't re-flag the same thing.
+
+        ## Review categories
+
+        Note: `pi-simplify` has already run upstream and handled pure
+        clarity / redundancy / naming / dead-code issues. Don't re-do
+        that pass — focus on the categories below, which are more about
+        correctness and observability than style.
+
+        Run a self-review against these dimensions:
+        - **Correctness**: off-by-one, null/undefined handling, boundary
+          conditions, logic errors, edge cases the implementation missed.
+        - **Error handling**: silently swallowed errors, unhelpful error
+          messages, missing try/catch around external calls, retry/idempotency
+          gaps in async code.
+        - **Test coverage**: critical paths or new functions without tests,
+          mocks that hide real failures, missing edge-case tests for branches
+          you added.
+        - **Performance**: N+1 queries, unbounded loops, accidental re-renders,
+          eager loading where lazy would do, large in-memory payloads.
+        - **Security**: SQL injection, XSS, missing auth/scope checks, PII
+          leaks into logs, secrets in code, broken access control, unsafe
+          type casts (`as any` in TS, `unsafe` blocks in Rust, etc.).
+        - **Inconsistencies with sibling code**: comments that contradict
+          the code, naming that doesn't match the surrounding module's
+          conventions. (Pure clarity / dead-code fixes belong to pi-simplify,
+          not here.)
+        - **Docs**: behaviour changes that aren't reflected in inline doc
+          comments, the project's `CLAUDE.md` / `AGENTS.md`, or its docs site.
+
+        ## Disposition
+
+        For each issue you find:
+        1. Fix it directly. Edit the file(s).
+        2. Run the project's scoped verify chain — the commands live in
+           `CLAUDE.md` / `AGENTS.md`. Use the narrowest scope that
+           covers the change (single package / crate, not repo-wide)
+           unless the project explicitly requires the wider run.
+        3. Commit with a conventional-commit message. Push to the PR branch.
+
+        Universal AI-agent rules (do not violate, even if asked):
+        - Do NOT post PR comments or use `gh pr review` from this node.
+        - Do NOT use `--no-verify` or otherwise skip commit hooks.
+        - Do NOT execute database / schema migrations (`prisma migrate`,
+          `sqlx migrate run`, etc.) — edit the schema + write the SQL,
+          flag the migration for the human in your summary.
+        - Follow any additional project-specific prohibitions in
+          `CLAUDE.md` / `AGENTS.md`.
+
+        After fixing this iteration's issues, produce a short summary:
+
+        ```
+        ## Self-review iteration N
+
+        Addressed this iteration:
+        - <one-line description> — commit <sha>
+        ...
+        ```
+
+        Then decide:
+        - If you found and fixed issues this iteration, end your turn
+          (do NOT emit the convergence signal). The orchestrator will run
+          another iteration so you can take another pass.
+        - If you genuinely have nothing more to improve — code is clean,
+          tests cover the change, docs are aligned, no smells — output
+          the literal convergence signal:
+
+          <promise>PI_REVIEW_CLEAN</promise>
+
+        Be honest: emitting PI_REVIEW_CLEAN prematurely shifts cost onto
+        the Codex and Sonnet phases that follow. Emitting it on a clean
+        PR is the goal.
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 7: CODEX SECOND-PASS REVIEW + FIX
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: codex-review-fix
+    depends_on: [pi-review-fix-loop]
+    provider: codex
+    model: gpt-5.3-codex
+    context: fresh
+    prompt: |
+      You are reviewing a PR that an upstream agent already authored
+      and self-reviewed up to 3 times. Your job is to find what the
+      upstream agent missed.
+
+      The PR branch is checked out at HEAD with all of the upstream
+      agent's fixes applied. Use `gh pr view` and
+      `git log --oneline origin/$BASE_BRANCH..HEAD` to understand the
+      change set. Pay attention to the prior self-review summaries in
+      the commit history — they tell you what's already been addressed
+      so you can focus on what's still open.
+
+      Look for issues a single-model review tends to rationalize or miss:
+      - Subtle logic bugs (off-by-one, boundary conditions, null/undefined)
+      - Race conditions, idempotency gaps in async code or DB writes
+      - Performance issues: N+1 queries, unbounded loops, eager loading,
+        accidental re-renders, large in-memory payloads
+      - Security: SQL injection, XSS, missing auth checks, PII leaks in logs,
+        secrets in code, broken access control
+      - API design: inconsistent error shapes, leaky abstractions, breaking
+        changes that aren't called out
+
+      For each issue you find, FIX IT directly:
+      1. Edit the relevant file(s).
+      2. Commit with a conventional-commit message
+         (e.g. `fix(scope): handle race in token refresh`).
+      3. Push to the same branch.
+
+      Do NOT post PR comments. Do NOT use `gh pr review`. Do NOT use --no-verify.
+      Push commits — that is the entire output.
+
+      If you genuinely find nothing, push nothing.
+
+      When done, output: <promise>CODEX-REVIEW-DONE</promise>
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 8: FINAL REVIEW (Claude Sonnet 4.6) — THIRD MODEL-DIVERSE FIX PASS
+  # ═══════════════════════════════════════════════════════════════════
+  # Sonnet is the third independent model after Kimi (Pi/Moonshot) and
+  # Codex (OpenAI). It fixes concrete bugs the earlier two missed, and
+  # posts a sized summary comment + PR label so the human can triage at
+  # a glance — full detail only when the human needs to look.
+
+  - id: sonnet-final-review
+    depends_on: [codex-review-fix]
+    provider: claude
+    model: sonnet
+    context: fresh
+    prompt: |
+      You are the third model-diverse review pass on a PR that has been:
+      1. Planned (strategic planning agent)
+      2. Implemented (implementation agent)
+      3. Self-reviewed up to 3 iterations, fix-and-push each round
+      4. Reviewed with a second-pass agent that also pushed fixes
+
+      You bring a different training-data / bias profile than the two
+      earlier reviewers — your job is to catch what they rationalized
+      or missed, fix what's concretely fixable, and surface judgment-
+      call questions for the human.
+
+      ## Read the change set first
+
+      1. `gh pr view --json title,body,baseRefName,number` — note the PR number.
+      2. `git diff origin/$BASE_BRANCH...HEAD` — full diff at HEAD with all
+         prior fixes applied.
+      3. `git log --oneline origin/$BASE_BRANCH..HEAD` — paper trail of
+         self-review summaries and second-pass fix commits.
+
+      ## What to fix vs flag
+
+      Classify every finding as one of:
+
+      - **Concrete fixable bug** (off-by-one, null/undefined, missing
+        try/catch, broken test, dead branch, etc.): FIX IT.
+        - Edit the file(s)
+        - Run the project's scoped verify chain — see `CLAUDE.md` /
+          `AGENTS.md` for the commands. Use the narrowest scope that
+          covers the change.
+        - Commit with a conventional-commit message and push.
+        - Universal AI-agent rules: do NOT skip commit hooks, do NOT
+          use `--no-verify`, do NOT execute database / schema migrations
+          (`prisma migrate`, `sqlx migrate run`, etc.) — edit the
+          schema + SQL only, flag the migration for the human. Follow
+          additional project-specific prohibitions in `CLAUDE.md` /
+          `AGENTS.md`.
+
+      - **Judgment-call concern** (scope ambiguity, architectural risk,
+        "is X the right approach"): do NOT touch the code. Surface it
+        in the summary comment for the human.
+
+      If a finding is fixable but you're not confident your fix is
+      correct, prefer flagging over fixing.
+
+      ## Verdict rubric (used in the comment + label)
+
+      - **APPROVE** — code is mergeable as-is, optionally after the fixes
+        you just pushed. No judgment-call concerns remain.
+      - **REQUEST_CHANGES** — concrete, fixable issue you chose NOT to
+        fix (e.g. ambiguous, broader scope) — surfaced for human.
+      - **NEEDS_DISCUSSION** — architectural concern, scope ambiguity,
+        or risk that needs human judgment, not a fix.
+
+      ## What to look at (checklist)
+
+      - **Scope discipline**: does the PR match the original ask, or did
+        earlier agents drift?
+      - **Architectural risk**: coupling, leaky abstractions, contracts
+        that are hard to evolve.
+      - **Operational risk**: migrations, destructive operations, env-var
+        surface, anything that needs a human deploy step.
+      - **Test honesty**: tests pin real invariants, not happy paths only.
+      - **Upstream guardrail compliance**: `CLAUDE.md` / `AGENTS.md`
+        is auto-loaded into your context. Verify the upstream agents
+        respected its rules — no `--no-verify`, no migrations
+        executed, no scope-violating commands, no lockfile churn
+        unrelated to the change. Any violation → REQUEST_CHANGES.
+
+      ## Output: sized PR comment + PR label
+
+      Pick a comment shape based on the verdict:
+
+      ### If APPROVE — terse comment (one paragraph)
+
+      ```
+      ## Sonnet 4.6 sign-off — APPROVE ✅
+
+      <one short paragraph: what the PR does + your read on quality>
+
+      <if you pushed fixes this phase, list commit short-shas + one line each>
+      <if you pushed nothing this phase, say "No additional fixes needed.">
+
+      🤖 Final sign-off by Claude Sonnet 4.6
+      ```
+
+      ### If REQUEST_CHANGES or NEEDS_DISCUSSION — full structured comment
+
+      ```
+      ## Sonnet 4.6 sign-off — <REQUEST_CHANGES | NEEDS_DISCUSSION>
+
+      ### What I fixed this phase
+      <list of commit short-shas + one line each, or "Nothing pushed.">
+
+      ### Open items the human should look at
+      <bulleted list. For REQUEST_CHANGES: concrete file:line items.
+       For NEEDS_DISCUSSION: questions to decide.>
+
+      ### Risk
+      <migrations / destructive ops / env-var changes / etc. State
+       what the human needs to do before/after merge. Skip if none.>
+
+      🤖 Final sign-off by Claude Sonnet 4.6
+      ```
+
+      ## Posting steps
+
+      1. Post the comment:
+         `gh pr comment <number> --body "<comment body>"`
+
+      2. Set a PR label matching the verdict:
+         - APPROVE → `archon-approved`
+         - REQUEST_CHANGES → `archon-request-changes`
+         - NEEDS_DISCUSSION → `archon-needs-discussion`
+
+         Apply with:
+         `gh pr edit <number> --add-label "archon-approved"`
+
+         If the label doesn't exist yet, create it first:
+         `gh label create archon-approved --color "0E8A16" --description "Sonnet sign-off approved" 2>/dev/null || true`
+         Use color `0E8A16` (green) for approved, `D73A4A` (red) for
+         request-changes, `FBCA04` (yellow) for needs-discussion.
+
+      3. Output: <promise>SONNET-SIGNOFF-DONE</promise>
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 9: FINAL SUMMARY & FOLLOW-UP
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: workflow-summary
+    depends_on: [sonnet-final-review]
+    provider: pi
+    model: moonshotai/kimi-k2.6
+    context: fresh
+    prompt: |
+      Post a short "workflow complete" PR comment that reflects what
+      ACTUALLY happened in this run. Don't suggest running review
+      agents — three review passes (kimi self-review loop, codex, sonnet)
+      already ran in this same workflow. Sonnet's verdict comment and
+      the PR label are the authoritative signal for the human; your
+      summary is a thin status line, not a second review.
+
+      ## Read first
+
+      1. `gh pr view --json number,title,headRefName,labels,additions,deletions`
+         — get the PR number and the archon-* label sonnet set.
+      2. `git log --oneline origin/$BASE_BRANCH..HEAD`
+         — see every commit that landed, including any from codex-review-fix
+         and sonnet-final-review.
+      3. Count commits by phase using the conventional-commit prefixes
+         (feat / fix / chore / etc.) and any phase markers in the bodies.
+
+      ## Output: one short PR comment
+
+      Use `gh pr comment <number> --body "..."` with this shape:
+
+      ```
+      ## Workflow complete — `idea-to-pr-with-kimi-and-codex`
+
+      **Sonnet verdict**: <archon-approved | archon-request-changes | archon-needs-discussion>
+        (see Sonnet 4.6 sign-off comment above for details)
+
+      **Diff**: +<additions> / -<deletions>
+
+      **Commit breakdown**:
+      - Implementation + kimi self-review: <N> commits
+      - Codex fix-pass: <N> commits (or "none — nothing to fix")
+      - Sonnet fix-pass: <N> commits (or "none — nothing to fix")
+
+      **Run**: `<workflow-run-id>` on archon.mnygaard.io
+      ```
+
+      Rules:
+      - One short comment. No "review agents have not yet run" wording —
+        they ran. No "next steps" / "@archon" suggestion blocks.
+      - No deviations table, no validation table, no follow-up issue
+        suggestions. Sonnet's comment covers those if needed.
+      - If commit counts can't be cleanly inferred from prefixes, just
+        say "X commits total" rather than guessing per-phase.
+
+      Output: <promise>WORKFLOW-SUMMARY-DONE</promise>
