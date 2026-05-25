@@ -1097,6 +1097,14 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                 return;
             };
             for entry in entries {
+                // ARCHITECTURE.md:491,499 — scenes capture/replay *lights*.
+                // `list_all`/`list_room` also returns sensors, whose state
+                // has no settable fields; `format_set_command` would emit
+                // `{}` for them. Skip both the no-op publish and the
+                // manual-mode flag (sensors don't have a manual mode).
+                if !is_actionable(&entry.state) {
+                    continue;
+                }
                 let (topic, payload) =
                     format_set_command(&ctx.z2m_prefix, &entry.device_id, &entry.state);
                 if ctx.dry_run {
