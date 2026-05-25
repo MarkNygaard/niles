@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::registry::ToolRegistry;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
+use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, RoomName};
 use niles_mqtt::{MqttPublisher, format_set_command, is_actionable};
 use serde_json::{Value, json};
@@ -275,6 +276,55 @@ impl Tool for SetDevice {
     }
 }
 
+// ---------- LookUpCapability ----------
+
+pub struct LookUpCapability {
+    loader: Arc<CapabilityLoader>,
+}
+
+impl LookUpCapability {
+    pub fn new(loader: Arc<CapabilityLoader>) -> Self {
+        Self { loader }
+    }
+}
+
+#[async_trait]
+impl Tool for LookUpCapability {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "look_up_capability".into(),
+            description: "Fetch a capability's markdown body and metadata by name. On a miss, returns available names so the LLM can self-correct.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Capability name to look up." }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let name = required_str("look_up_capability", &args, "name")?;
+        match self.loader.get(name) {
+            Some(cap) => Ok(json!({
+                "found": true,
+                "name": cap.metadata.name,
+                "description": cap.metadata.description,
+                "version": cap.metadata.version,
+                "prerequisites": cap.metadata.prerequisites,
+                "body": cap.body
+            })),
+            None => Ok(json!({
+                "found": false,
+                "name": name,
+                "available": self.loader.names()
+            })),
+        }
+    }
+}
+
 /// Build a `ToolRegistry` containing every Tier-1 built-in.
 pub fn default_registry(
     registry: Arc<DeviceRegistry>,
@@ -292,7 +342,26 @@ pub fn default_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use niles_capabilities::CapabilityLoader;
     use niles_core::Device;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn write_skill(dir: &Path, content: &str) {
+        fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    fn make_loader(caps: &[(&str, &str)]) -> (TempDir, Arc<CapabilityLoader>) {
+        let tmp = TempDir::new().unwrap();
+        for (name, content) in caps {
+            let dir = tmp.path().join(name);
+            fs::create_dir(&dir).unwrap();
+            write_skill(&dir, content);
+        }
+        let loader = Arc::new(CapabilityLoader::load_from_dir(tmp.path()).unwrap());
+        (tmp, loader)
+    }
 
     fn fixture_registry() -> Arc<DeviceRegistry> {
         let reg = Arc::new(DeviceRegistry::new());
@@ -461,5 +530,125 @@ mod tests {
         let args = json!({ "device_id": "kitchen/ceiling_light", "color_temp_kelvin": 4000 });
         let state = extract_set_state(&args).unwrap();
         assert_eq!(state.color_temp_kelvin, Some(4000));
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_known_name_returns_full_metadata_and_body() {
+        let (_tmp, loader) = make_loader(&[(
+            "lights",
+            "---\nname: lights\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lights\n\nTurn on/off lights.\n",
+        )]);
+        let tool = LookUpCapability::new(loader);
+        let result = tool.execute(json!({ "name": "lights" })).await.unwrap();
+
+        assert_eq!(result["found"], true);
+        assert_eq!(result["name"], "lights");
+        assert_eq!(result["description"], "Control smart lights");
+        assert_eq!(result["version"], "1.0.0");
+        assert_eq!(result["body"], "# Lights\n\nTurn on/off lights.\n");
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_unknown_name_returns_available_names() {
+        let (_tmp, loader) = make_loader(&[
+            (
+                "alpha",
+                "---\nname: alpha\ndescription: Alpha cap\nversion: 1.0.0\n---\nAlpha body.\n",
+            ),
+            (
+                "zebra",
+                "---\nname: zebra\ndescription: Zebra cap\nversion: 1.0.0\n---\nZebra body.\n",
+            ),
+        ]);
+        let tool = LookUpCapability::new(loader);
+        let result = tool.execute(json!({ "name": "missing" })).await.unwrap();
+
+        assert_eq!(result["found"], false);
+        assert_eq!(result["name"], "missing");
+        let available = result["available"].as_array().unwrap();
+        assert_eq!(available.len(), 2);
+        assert_eq!(available[0], "alpha");
+        assert_eq!(available[1], "zebra");
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_missing_name_errors_invalid_args() {
+        let (_tmp, loader) = make_loader(&[]);
+        let tool = LookUpCapability::new(loader);
+        let err = tool.execute(json!({})).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "look_up_capability"));
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_non_string_name_errors_invalid_args() {
+        let (_tmp, loader) = make_loader(&[]);
+        let tool = LookUpCapability::new(loader);
+        let err = tool.execute(json!({ "name": 42 })).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "look_up_capability"));
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_empty_string_name_returns_not_found() {
+        let (_tmp, loader) = make_loader(&[(
+            "lights",
+            "---\nname: lights\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lights\n\nTurn on/off lights.\n",
+        )]);
+        let tool = LookUpCapability::new(loader);
+        let result = tool.execute(json!({ "name": "" })).await.unwrap();
+
+        assert_eq!(result["found"], false);
+        assert_eq!(result["name"], "");
+        let available = result["available"].as_array().unwrap();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0], "lights");
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_empty_registry_returns_not_found_empty_available() {
+        let (_tmp, loader) = make_loader(&[]);
+        let tool = LookUpCapability::new(loader);
+        let result = tool.execute(json!({ "name": "anything" })).await.unwrap();
+
+        assert_eq!(result["found"], false);
+        assert_eq!(result["name"], "anything");
+        let available = result["available"].as_array().unwrap();
+        assert!(available.is_empty());
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_hit_does_not_leak_others() {
+        let (_tmp, loader) = make_loader(&[
+            (
+                "cap-a",
+                "---\nname: cap-a\ndescription: Cap A\nversion: 1.0.0\n---\nBody A.\n",
+            ),
+            (
+                "cap-b",
+                "---\nname: cap-b\ndescription: Cap B\nversion: 1.0.0\n---\nBody B.\n",
+            ),
+        ]);
+        let tool = LookUpCapability::new(loader);
+        let result = tool.execute(json!({ "name": "cap-a" })).await.unwrap();
+
+        assert_eq!(result["found"], true);
+        assert_eq!(result["name"], "cap-a");
+        assert_eq!(result["body"], "Body A.\n");
+        assert!(result.get("available").is_none());
+    }
+
+    #[tokio::test]
+    async fn look_up_capability_prerequisites_roundtrip() {
+        let (_tmp, loader) = make_loader(&[(
+            "prereq",
+            "---\nname: prereq\ndescription: Needs deps\nversion: 1.0.0\nprerequisites:\n  - foo\n  - bar\n---\nBody.\n",
+        )]);
+        let tool = LookUpCapability::new(loader);
+        let result = tool.execute(json!({ "name": "prereq" })).await.unwrap();
+
+        assert_eq!(result["found"], true);
+        let prereqs = result["prerequisites"].as_array().unwrap();
+        assert_eq!(prereqs.len(), 2);
+        assert_eq!(prereqs[0], "foo");
+        assert_eq!(prereqs[1], "bar");
     }
 }

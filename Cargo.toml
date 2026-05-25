@@ -53,3 +53,4 @@ niles-tts = { path = "crates/niles-tts" }
 niles-intent = { path = "crates/niles-intent" }
 niles-llm = { path = "crates/niles-llm" }
 niles-tools = { path = "crates/niles-tools" }
+niles-capabilities = { path = "crates/niles-capabilities" }

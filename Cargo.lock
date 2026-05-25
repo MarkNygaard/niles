@@ -1009,11 +1009,13 @@ name = "niles-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "niles-capabilities",
  "niles-core",
  "niles-llm",
  "niles-mqtt",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
