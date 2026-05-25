@@ -143,13 +143,18 @@ fn scene_save_regex() -> &'static Regex {
         //   "save this as <name>"                         -> room: None
         //   "save (the )?<room> as <name>"                -> room: Some(...)
         //   "save <name>"                                 -> room: None (last resort)
+        //
+        // The optional `scene\s+` slot before `as` lets users phrase
+        // naturally: "save this scene as cozy" and "save the kitchen
+        // scene as cozy" route to the right (name, room) pair instead
+        // of leaving `scene` glued onto whatever precedes it.
         Regex::new(
             r"(?x)
               ^
               (?:
-                save\s+this\s+as\s+(?P<name1>.+)
+                save\s+this\s+(?:scene\s+)?as\s+(?P<name1>.+)
               |
-                save\s+(?:the\s+)?(?P<room>.+?)\s+as\s+(?P<name2>.+)
+                save\s+(?:the\s+)?(?P<room>.+?)\s+(?:scene\s+)?as\s+(?P<name2>.+)
               |
                 save\s+(?P<name3>.+)
               )
@@ -724,6 +729,43 @@ mod tests {
     fn scene_save_room_as_name_multiword_room() {
         assert_eq!(
             parse("save the living room as cozy"),
+            Some(Intent::SceneSave {
+                name: "cozy".into(),
+                room: Some("living room".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_this_scene_as() {
+        // "this scene" must not leak into the captured name as a room.
+        assert_eq!(
+            parse("save this scene as kitchen evening"),
+            Some(Intent::SceneSave {
+                name: "kitchen evening".into(),
+                room: None,
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_room_scene_as_name() {
+        // "scene" between the room and "as" must not be captured as
+        // part of the room (regression guard: previously produced
+        // room="kitchen scene").
+        assert_eq!(
+            parse("save the kitchen scene as evening"),
+            Some(Intent::SceneSave {
+                name: "evening".into(),
+                room: Some("kitchen".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_multiword_room_scene_as_name() {
+        assert_eq!(
+            parse("save the living room scene as cozy"),
             Some(Intent::SceneSave {
                 name: "cozy".into(),
                 room: Some("living room".into()),
