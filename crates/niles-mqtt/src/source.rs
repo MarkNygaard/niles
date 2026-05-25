@@ -602,11 +602,14 @@ mod tests {
 
     #[test]
     fn state_with_only_action_field_does_not_emit() {
+        // Z2M can publish `{"action":..,"linkquality":..}` alone when
+        // the dimmer's battery hasn't changed. No tracked field is set,
+        // so the dispatch path must skip it.
         let (registry, bus, mut rx) = fixtures();
         handle_device_state(
             "office",
             "switch",
-            br#"{"action":"on_press","battery":100,"linkquality":168}"#,
+            br#"{"action":"on_press","linkquality":168}"#,
             &registry,
             &bus,
         );
@@ -614,5 +617,26 @@ mod tests {
             drain(&mut rx).is_empty(),
             "action-only payload must not emit DeviceStateChanged"
         );
+    }
+
+    #[test]
+    fn battery_only_state_payload_still_emits() {
+        // Regression guard: battery is surfaced via the HTTP API and
+        // the `get_device_state` tool, so a `{"battery":..}` update
+        // must merge into the registry and fire DeviceStateChanged.
+        let (registry, bus, mut rx) = fixtures();
+        let device_list = br#"[
+            {"ieee_address":"0x1","friendly_name":"office/sensor","type":"EndDevice"}
+        ]"#;
+        handle_device_list(device_list, &registry, &bus);
+        drain(&mut rx);
+
+        handle_device_state("office", "sensor", br#"{"battery":42}"#, &registry, &bus);
+
+        let id = DeviceId::parse("z2m:office/sensor").unwrap();
+        assert_eq!(registry.get(&id).unwrap().state.battery_percent, Some(42));
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::DeviceStateChanged { .. }));
     }
 }
