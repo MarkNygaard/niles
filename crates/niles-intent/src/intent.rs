@@ -37,6 +37,26 @@ pub enum Intent {
         room: Option<String>,
     },
 
+    /// "save this as <name>" / "save <room> as <name>" / "save <name>"
+    SceneSave {
+        /// The scene name as the user said it. Canonicalization
+        /// (lowercase, whitespace -> underscore) happens at dispatch
+        /// time in `SceneStore::save`.
+        name: String,
+        /// `None` = whole-home snapshot.
+        /// `Some(s)` = restrict to that room. Same raw-string contract
+        /// as `LightSet { room }` — canonicalize via
+        /// `intent_room_to_canonical` at dispatch time.
+        room: Option<String>,
+    },
+
+    /// "apply <name>" / "<name> scene" / "scene <name>" — matched
+    /// only when the transcript uses an explicit scene-recall phrasing.
+    /// Bare `<name>` is intentionally rejected at the router level.
+    SceneApply {
+        name: String,
+    },
+
     /// "set a timer for 5 minutes" / "5 minute timer" / "10 minute timer called pasta"
     TimerSet {
         duration: Duration,
