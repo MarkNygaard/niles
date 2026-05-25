@@ -5,7 +5,7 @@
 //! which can evolve independently of the runtime types as the API
 //! versions.
 
-use niles_core::{Device, DeviceState};
+use niles_core::{Device, DeviceClass, DeviceState};
 use serde::Serialize;
 
 /// JSON shape for a device. The `id` field is the canonical
@@ -18,6 +18,7 @@ pub struct DeviceDto {
     pub source: String,
     pub room: String,
     pub name: String,
+    pub class: DeviceClassDto,
     pub state: DeviceStateDto,
 }
 
@@ -28,7 +29,35 @@ impl From<&Device> for DeviceDto {
             source: d.id.source().to_string(),
             room: d.id.room().as_str().to_string(),
             name: d.id.name().as_str().to_string(),
+            class: (&d.class).into(),
             state: (&d.state).into(),
+        }
+    }
+}
+
+/// JSON shape for a device's class. Serialized as a lowercase string
+/// (`"light"`, `"switch"`, `"sensor"`, `"unknown"`) — clients should
+/// treat unknown variants as forward-compatible additions.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceClassDto {
+    Light,
+    Switch,
+    Sensor,
+    Unknown,
+}
+
+impl From<&DeviceClass> for DeviceClassDto {
+    fn from(c: &DeviceClass) -> Self {
+        match c {
+            DeviceClass::Light => Self::Light,
+            DeviceClass::Switch => Self::Switch,
+            DeviceClass::Sensor => Self::Sensor,
+            DeviceClass::Unknown => Self::Unknown,
+            // `DeviceClass` is `#[non_exhaustive]`; new upstream
+            // variants serialize as `"unknown"` until this mapping
+            // is updated, keeping the wire contract forward-stable.
+            _ => Self::Unknown,
         }
     }
 }
