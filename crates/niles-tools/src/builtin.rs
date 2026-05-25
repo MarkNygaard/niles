@@ -325,7 +325,11 @@ impl Tool for LookUpCapability {
     }
 }
 
-/// Build a `ToolRegistry` containing every Tier-1 built-in.
+/// Build a `ToolRegistry` containing every device-facing Tier-1 built-in.
+///
+/// `LookUpCapability` is not included here because it requires an
+/// `Arc<CapabilityLoader>`; callers that have one should register it
+/// onto the returned registry explicitly.
 pub fn default_registry(
     registry: Arc<DeviceRegistry>,
     publisher: MqttPublisher,
