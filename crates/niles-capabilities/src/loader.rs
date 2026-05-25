@@ -389,6 +389,24 @@ mod tests {
     }
 
     #[test]
+    fn crlf_line_endings_parse_correctly() {
+        // SKILL.md files authored on Windows can have `\r\n` line endings.
+        // The parser must still detect `---` delimiters and not include the
+        // trailing `\r` in YAML keys.
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("crlf");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\r\nname: crlf\r\ndescription: Windows line endings\r\nversion: 1.0.0\r\n---\r\nBody line one.\r\n",
+        );
+
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let cap = loader.get("crlf").unwrap();
+        assert_eq!(cap.metadata.description, "Windows line endings");
+    }
+
+    #[test]
     fn get_returns_none_for_unknown() {
         let tmp = TempDir::new().unwrap();
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
