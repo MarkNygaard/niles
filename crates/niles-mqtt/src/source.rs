@@ -193,12 +193,16 @@ pub(crate) fn handle_device_action(room: &str, device: &str, payload: &[u8], bus
         return;
     }
     let action = match std::str::from_utf8(payload) {
-        Ok(s) => s.to_string(),
+        Ok(s) => s.trim().to_string(),
         Err(e) => {
             warn!("action payload for {room}/{device} is not UTF-8: {e}");
             return;
         }
     };
+    if action.is_empty() {
+        warn!("action payload for {room}/{device} is empty after trimming; dropping");
+        return;
+    }
     let id_str = format!("z2m:{room}/{device}");
     let id = match DeviceId::parse(&id_str) {
         Ok(id) => id,
@@ -238,9 +242,9 @@ pub(crate) fn handle_device_state(
         }
     };
     if !z2m_state.has_actionable_state_field() {
-        // Dimmer-style devices republish `{"action":..,"battery":..,
-        // "linkquality":..}` on every press. None of those are tracked
-        // state in this PR, so skip the merge + event entirely.
+        // Dimmer-style devices can republish `{"action":..,"linkquality":..}`
+        // on every press. Those fields aren't tracked state, so skip
+        // the merge + event entirely.
         debug!("skipping state payload for {id} (no actionable field)");
         return;
     }
@@ -557,6 +561,28 @@ mod tests {
     fn action_with_non_utf8_payload_is_dropped() {
         let (_registry, bus, mut rx) = fixtures();
         handle_device_action("office", "switch", &[0xff, 0xfe], &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn action_with_trailing_newline_is_trimmed() {
+        let (_registry, bus, mut rx) = fixtures();
+        handle_device_action("office", "switch", b"on_press\n", &bus);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::DeviceAction { id, action } => {
+                assert_eq!(id, &DeviceId::parse("z2m:office/switch").unwrap());
+                assert_eq!(action, "on_press");
+            }
+            _ => panic!("expected DeviceAction"),
+        }
+    }
+
+    #[test]
+    fn action_with_whitespace_only_payload_is_dropped() {
+        let (_registry, bus, mut rx) = fixtures();
+        handle_device_action("office", "switch", b"   \n\t", &bus);
         assert!(drain(&mut rx).is_empty());
     }
 
