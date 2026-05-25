@@ -106,7 +106,8 @@ impl Z2mDevice {
         expose.property.as_deref() == Some("action")
     }
 
-    /// Convert into a `niles_core::Device` with a default (empty) state.
+    /// Convert into a `niles_core::Device` with a default (empty) state
+    /// and a [`DeviceClass`] derived via [`Self::classify`].
     ///
     /// Returns an error if the `friendly_name` doesn't parse as a
     /// valid `<room>/<device>` identifier.
@@ -415,6 +416,87 @@ mod tests {
                         features: vec![],
                     },
                 ],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Light);
+    }
+
+    /// End-to-end: deserialize a realistic `bridge/devices` payload
+    /// (light expose with nested features + dimmer with top-level
+    /// `action`) and confirm classification flows through `to_device`.
+    /// Pins both the wire shape we expect Z2M to send and the
+    /// parse-then-classify path together.
+    #[test]
+    fn realistic_bridge_devices_payload_classifies() {
+        let json = br#"[
+            {
+                "ieee_address": "0x00124b001f44b3e6",
+                "friendly_name": "kitchen/ceiling_light",
+                "type": "Router",
+                "definition": {
+                    "model": "LCT001",
+                    "vendor": "Philips",
+                    "description": "Hue white and color ambiance",
+                    "exposes": [
+                        {
+                            "type": "light",
+                            "features": [
+                                {"type": "binary", "name": "state", "property": "state",
+                                 "value_on": "ON", "value_off": "OFF"},
+                                {"type": "numeric", "name": "brightness", "property": "brightness"},
+                                {"type": "numeric", "name": "color_temp", "property": "color_temp"}
+                            ]
+                        },
+                        {"type": "numeric", "name": "linkquality", "property": "linkquality"}
+                    ]
+                }
+            },
+            {
+                "ieee_address": "0x00124b001f5566aa",
+                "friendly_name": "kitchen/dimmer",
+                "type": "EndDevice",
+                "definition": {
+                    "model": "324131092621",
+                    "vendor": "Philips",
+                    "description": "Hue dimmer switch",
+                    "exposes": [
+                        {"type": "enum", "name": "action", "property": "action",
+                         "values": ["on_press", "off_press"]},
+                        {"type": "numeric", "name": "battery", "property": "battery"},
+                        {"type": "numeric", "name": "linkquality", "property": "linkquality"}
+                    ]
+                }
+            }
+        ]"#;
+        let devices = parse_device_list(json).unwrap();
+        assert_eq!(devices.len(), 2);
+
+        let light = devices[0].to_device().unwrap();
+        assert_eq!(light.class, DeviceClass::Light);
+
+        let dimmer = devices[1].to_device().unwrap();
+        assert_eq!(dimmer.class, DeviceClass::Switch);
+    }
+
+    /// Defensive: `expose_is_light` recurses into `features`. Verifies
+    /// a hypothetical wrapper expose with a nested `light` still
+    /// classifies as Light.
+    #[test]
+    fn classify_light_nested_under_features() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "kitchen/strip".into(),
+            device_type: "Router".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![Z2mExpose {
+                    expose_type: Some("composite".into()),
+                    property: None,
+                    features: vec![Z2mExpose {
+                        expose_type: Some("light".into()),
+                        property: None,
+                        features: vec![],
+                    }],
+                }],
             }),
         };
         assert_eq!(z2m.classify(), DeviceClass::Light);
