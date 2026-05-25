@@ -80,6 +80,14 @@ impl SceneStore {
         names
     }
 
+    /// Remove a scene by name. Returns `true` if a scene with that
+    /// (canonicalized) name was present and removed, `false` otherwise.
+    pub fn delete(&self, name: &str) -> bool {
+        self.scenes_write()
+            .remove(&canonicalize_name(name))
+            .is_some()
+    }
+
     // ---- lock helpers -----------------------------------------------------
 
     fn scenes_write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, Vec<SceneEntry>>> {
@@ -276,5 +284,49 @@ mod tests {
         assert_eq!(entries[0].state.on, Some(true));
         assert_eq!(entries[0].state.brightness, Some(80));
         assert_eq!(entries[0].state.color_temp_kelvin, Some(2700));
+    }
+
+    #[test]
+    fn delete_returns_true_when_present_false_when_missing() {
+        let store = SceneStore::new();
+        let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
+        assert!(!store.delete("evening"));
+        store.save("evening", &reg, None);
+        assert!(store.delete("evening"));
+        assert!(!store.delete("evening"));
+    }
+
+    #[test]
+    fn delete_removes_from_get_and_exists() {
+        let store = SceneStore::new();
+        let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
+        store.save("evening", &reg, None);
+        assert!(store.exists("evening"));
+        assert!(store.get("evening").is_some());
+        store.delete("evening");
+        assert!(!store.exists("evening"));
+        assert!(store.get("evening").is_none());
+    }
+
+    #[test]
+    fn delete_uses_canonicalized_name() {
+        // "Kitchen Evening" canonicalizes to "kitchen_evening" — same
+        // contract as save/get/exists. (See name_canonicalization_collisions.)
+        let store = SceneStore::new();
+        let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
+        store.save("Kitchen Evening", &reg, None);
+        assert!(store.delete("kitchen evening"));
+        assert!(!store.exists("Kitchen Evening"));
+    }
+
+    #[test]
+    fn delete_preserves_other_scenes() {
+        let store = SceneStore::new();
+        let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
+        store.save("evening", &reg, None);
+        store.save("morning", &reg, None);
+        store.save("movie", &reg, None);
+        assert!(store.delete("morning"));
+        assert_eq!(store.names(), vec!["evening", "movie"]);
     }
 }

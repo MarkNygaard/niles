@@ -57,6 +57,18 @@ pub enum Intent {
         name: String,
     },
 
+    /// "list my scenes" / "what scenes do I have" / "list scenes" /
+    /// "show me my scenes"
+    SceneList,
+
+    /// "delete the kitchen evening scene" / "remove kitchen evening
+    /// scene" / "delete scene kitchen evening" / "remove scene kitchen
+    /// evening". `name` is the raw user-said name; `SceneStore::delete`
+    /// canonicalizes.
+    SceneDelete {
+        name: String,
+    },
+
     /// "set a timer for 5 minutes" / "5 minute timer" / "10 minute timer called pasta"
     TimerSet {
         duration: Duration,
