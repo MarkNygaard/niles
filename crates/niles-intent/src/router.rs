@@ -25,22 +25,13 @@ impl IntentRouter {
         // requires the trailing "... to N%" so it can't be confused
         // with `light` (which requires a trailing `on`/`off`), but
         // we still match the more specific pattern first as a habit.
-        if let Some(intent) = match_light_dim(&t) {
-            return Some(intent);
-        }
-        if let Some(intent) = match_light(&t) {
-            return Some(intent);
-        }
-        if let Some(intent) = match_back_to_normal(&t) {
-            return Some(intent);
-        }
-        if let Some(intent) = match_timer(&t) {
-            return Some(intent);
-        }
-        if let Some(intent) = match_stop_cancel(&t) {
-            return Some(intent);
-        }
-        None
+        match_light_dim(&t)
+            .or_else(|| match_light(&t))
+            .or_else(|| match_back_to_normal(&t))
+            .or_else(|| match_scene_save(&t))
+            .or_else(|| match_scene_apply(&t))
+            .or_else(|| match_timer(&t))
+            .or_else(|| match_stop_cancel(&t))
     }
 }
 
@@ -52,10 +43,9 @@ impl IntentRouter {
 /// `dim the kitchen lights to 30%` becomes `... to 30`, which the
 /// `light_dim` regex can't anchor on.
 fn normalize(s: &str) -> String {
-    let lower = s.trim().to_lowercase();
-    let no_trailing_punct = lower.trim_end_matches(['.', '!', '?', ',', ';', ':']);
-    // Collapse internal whitespace runs to single spaces.
-    no_trailing_punct
+    s.trim()
+        .to_lowercase()
+        .trim_end_matches(['.', '!', '?', ',', ';', ':'])
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -141,6 +131,113 @@ fn match_light_dim(t: &str) -> Option<Intent> {
     Some(Intent::LightDim {
         room: room.to_string(),
         percent: n,
+    })
+}
+
+// ---- Scene save ------------------------------------------------------------
+
+fn scene_save_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Three phrasings in priority order:
+        //   "save this as <name>"                         -> room: None
+        //   "save (the )?<room> as <name>"                -> room: Some(...)
+        //   "save <name>"                                 -> room: None (last resort)
+        //
+        // The optional `scene\s+` slot before `as` lets users phrase
+        // naturally: "save this scene as cozy" and "save the kitchen
+        // scene as cozy" route to the right (name, room) pair instead
+        // of leaving `scene` glued onto whatever precedes it.
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                save\s+this\s+(?:scene\s+)?as\s+(?P<name1>.+)
+              |
+                save\s+(?:the\s+)?(?P<room>.+?)\s+(?:scene\s+)?as\s+(?P<name2>.+)
+              |
+                save\s+(?P<name3>.+)
+              )
+              $",
+        )
+        .expect("scene_save regex compiles")
+    })
+}
+
+fn match_scene_save(t: &str) -> Option<Intent> {
+    let caps = scene_save_regex().captures(t)?;
+    if let Some(name) = caps.name("name1") {
+        let name = name.as_str().trim();
+        if name.is_empty() || name == "the" || name == "lights" {
+            return None;
+        }
+        return Some(Intent::SceneSave {
+            name: name.to_string(),
+            room: None,
+        });
+    }
+    if let Some(name) = caps.name("name2") {
+        let name = name.as_str().trim();
+        let room = caps.name("room")?.as_str();
+        if name.is_empty() || name == "the" || name == "lights" {
+            return None;
+        }
+        if room == "the" || room == "lights" {
+            return None;
+        }
+        return Some(Intent::SceneSave {
+            name: name.to_string(),
+            room: Some(room.to_string()),
+        });
+    }
+    let name = caps.name("name3")?.as_str().trim();
+    if name.is_empty() || name == "the" || name == "lights" {
+        return None;
+    }
+    Some(Intent::SceneSave {
+        name: name.to_string(),
+        room: None,
+    })
+}
+
+// ---- Scene apply -----------------------------------------------------------
+
+fn scene_apply_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Three phrasings:
+        //   "apply <name>"
+        //   "<name> scene"
+        //   "scene <name>"
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                apply\s+(?P<name1>.+)
+              |
+                (?P<name2>.+)\s+scene
+              |
+                scene\s+(?P<name3>.+)
+              )
+              $",
+        )
+        .expect("scene_apply regex compiles")
+    })
+}
+
+fn match_scene_apply(t: &str) -> Option<Intent> {
+    let caps = scene_apply_regex().captures(t)?;
+    let name = caps
+        .name("name1")
+        .or_else(|| caps.name("name2"))
+        .or_else(|| caps.name("name3"))?
+        .as_str()
+        .trim();
+    if name.is_empty() || name == "the" || name == "lights" {
+        return None;
+    }
+    Some(Intent::SceneApply {
+        name: name.to_string(),
     })
 }
 
@@ -602,6 +699,136 @@ mod tests {
     fn back_to_normal_in_the_lights_rejected() {
         // "lights" isn't a room — must escalate to Tier 1.
         assert_eq!(parse("back to normal in the lights"), None);
+    }
+
+    // ---- Scene save ----
+
+    #[test]
+    fn scene_save_this_as() {
+        assert_eq!(
+            parse("save this as kitchen evening"),
+            Some(Intent::SceneSave {
+                name: "kitchen evening".into(),
+                room: None,
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_room_as_name() {
+        assert_eq!(
+            parse("save the kitchen as evening"),
+            Some(Intent::SceneSave {
+                name: "evening".into(),
+                room: Some("kitchen".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_room_as_name_multiword_room() {
+        assert_eq!(
+            parse("save the living room as cozy"),
+            Some(Intent::SceneSave {
+                name: "cozy".into(),
+                room: Some("living room".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_this_scene_as() {
+        // "this scene" must not leak into the captured name as a room.
+        assert_eq!(
+            parse("save this scene as kitchen evening"),
+            Some(Intent::SceneSave {
+                name: "kitchen evening".into(),
+                room: None,
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_room_scene_as_name() {
+        // "scene" between the room and "as" must not be captured as
+        // part of the room (regression guard: previously produced
+        // room="kitchen scene").
+        assert_eq!(
+            parse("save the kitchen scene as evening"),
+            Some(Intent::SceneSave {
+                name: "evening".into(),
+                room: Some("kitchen".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_multiword_room_scene_as_name() {
+        assert_eq!(
+            parse("save the living room scene as cozy"),
+            Some(Intent::SceneSave {
+                name: "cozy".into(),
+                room: Some("living room".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_save_short_form() {
+        assert_eq!(
+            parse("save kitchen evening"),
+            Some(Intent::SceneSave {
+                name: "kitchen evening".into(),
+                room: None,
+            })
+        );
+    }
+
+    // ---- Scene apply ----
+
+    #[test]
+    fn scene_apply_explicit() {
+        assert_eq!(
+            parse("apply kitchen evening"),
+            Some(Intent::SceneApply {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_apply_suffix() {
+        assert_eq!(
+            parse("kitchen evening scene"),
+            Some(Intent::SceneApply {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_apply_prefix() {
+        assert_eq!(
+            parse("scene kitchen evening"),
+            Some(Intent::SceneApply {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_apply_bare_name_rejected() {
+        assert_eq!(parse("kitchen evening"), None);
+    }
+
+    #[test]
+    fn scene_normalizes_case_and_punctuation() {
+        assert_eq!(
+            parse("Apply Kitchen Evening."),
+            Some(Intent::SceneApply {
+                name: "kitchen evening".into(),
+            })
+        );
     }
 
     // ---- Stop / cancel ----

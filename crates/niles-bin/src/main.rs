@@ -12,7 +12,8 @@ use niles_mqtt::{
 };
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
-    brightness_at, build_curve_target, color_temp_at, routine_brightness_at, should_fire_today,
+    SceneStore, brightness_at, build_curve_target, color_temp_at, routine_brightness_at,
+    should_fire_today,
 };
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::ToolRegistry;
@@ -939,6 +940,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         z2m_prefix,
         dry_run: args.dry_run,
         tracker: Arc::new(ManualModeTracker::new()),
+        scenes: Arc::new(SceneStore::new()),
         llm,
         tools,
     };
@@ -994,6 +996,7 @@ struct DispatchCtx {
     z2m_prefix: Arc<String>,
     dry_run: bool,
     tracker: Arc<ManualModeTracker>,
+    scenes: Arc<SceneStore>,
     llm: Arc<GroqClient>,
     tools: Arc<ToolRegistry>,
 }
@@ -1069,6 +1072,54 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                 ..Default::default()
             };
             dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
+        }
+        Intent::SceneSave { name, room } => {
+            let canonical = match room.as_deref().map(intent_room_to_canonical) {
+                Some(Ok(r)) => Some(r),
+                Some(Err(reason)) => {
+                    tracing::warn!(
+                        "[{peer}] room {room:?} is not a valid registry name: {reason}",
+                        room = room.as_deref().unwrap_or(""),
+                    );
+                    return;
+                }
+                None => None,
+            };
+            let n = ctx.scenes.save(&name, &ctx.registry, canonical.as_ref());
+            match &canonical {
+                Some(r) => println!("[{peer}] saved scene {name:?} with {n} devices in {r}"),
+                None => println!("[{peer}] saved scene {name:?} with {n} devices (whole home)"),
+            }
+        }
+        Intent::SceneApply { name } => {
+            let Some(entries) = ctx.scenes.get(&name) else {
+                println!("[{peer}] no scene named {name:?}");
+                return;
+            };
+            if entries.is_empty() {
+                println!("[{peer}] scene {name:?} is empty — nothing to apply");
+                return;
+            }
+            for entry in entries {
+                let (topic, payload) =
+                    format_set_command(&ctx.z2m_prefix, &entry.device_id, &entry.state);
+                if ctx.dry_run {
+                    println!("[{peer}] [dry-run] {topic}  {payload}");
+                } else {
+                    match ctx
+                        .publisher
+                        .publish(&topic, payload.as_bytes().to_vec())
+                        .await
+                    {
+                        Ok(()) => println!("[{peer}] published {topic}  {payload}"),
+                        Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
+                    }
+                }
+                // ARCHITECTURE.md:501 — scene-applied lights enter
+                // manual mode until the user explicitly clears them.
+                ctx.tracker.flag(&entry.device_id);
+            }
+            println!("[{peer}] applied scene {name:?}");
         }
         Intent::ClearManualMode { room } => match room {
             None => {
@@ -1337,6 +1388,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         z2m_prefix: z2m_prefix.clone(),
         dry_run: args.dry_run,
         tracker: tracker.clone(),
+        scenes: Arc::new(SceneStore::new()),
         llm,
         tools,
     };
@@ -1783,6 +1835,11 @@ fn format_intent(intent: &Intent) -> String {
             Some(n) => format!("TimerSet({}s, name={n:?})", duration.as_secs()),
             None => format!("TimerSet({}s)", duration.as_secs()),
         },
+        Intent::SceneSave { name, room } => match room {
+            Some(r) => format!("SceneSave({name:?} in {r})"),
+            None => format!("SceneSave({name:?})"),
+        },
+        Intent::SceneApply { name } => format!("SceneApply({name:?})"),
         Intent::Stop => "Stop".into(),
         Intent::Cancel => "Cancel".into(),
         other => format!("{other:?}"),
