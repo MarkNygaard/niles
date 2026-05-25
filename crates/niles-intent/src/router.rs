@@ -30,6 +30,8 @@ impl IntentRouter {
             .or_else(|| match_back_to_normal(&t))
             .or_else(|| match_scene_save(&t))
             .or_else(|| match_scene_apply(&t))
+            .or_else(|| match_scene_list(&t))
+            .or_else(|| match_scene_delete(&t))
             .or_else(|| match_timer(&t))
             .or_else(|| match_stop_cancel(&t))
     }
@@ -236,7 +238,70 @@ fn match_scene_apply(t: &str) -> Option<Intent> {
     if name.is_empty() || name == "the" || name == "lights" {
         return None;
     }
+    // Reject phrases that start with "delete" or "remove" so they
+    // fall through to match_scene_delete instead of being captured
+    // by the `.+\s+scene` arm of scene_apply_regex.
+    if name.starts_with("delete ") || name.starts_with("remove ") {
+        return None;
+    }
     Some(Intent::SceneApply {
+        name: name.to_string(),
+    })
+}
+
+// ---- Scene list -----------------------------------------------------------
+
+fn scene_list_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                (?:list|show)\s+(?:me\s+)?(?:my\s+)?scenes
+              |
+                what\s+scenes\s+do\s+i\s+have
+              )
+              $",
+        )
+        .expect("scene_list regex compiles")
+    })
+}
+
+fn match_scene_list(t: &str) -> Option<Intent> {
+    scene_list_regex().is_match(t).then_some(Intent::SceneList)
+}
+
+// ---- Scene delete ---------------------------------------------------------
+
+fn scene_delete_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                (?:delete|remove)\s+(?:the\s+)?(?P<name1>.+?)\s+scene
+              |
+                (?:delete|remove)\s+scene\s+(?P<name2>.+)
+              )
+              $",
+        )
+        .expect("scene_delete regex compiles")
+    })
+}
+
+fn match_scene_delete(t: &str) -> Option<Intent> {
+    let caps = scene_delete_regex().captures(t)?;
+    let name = caps
+        .name("name1")
+        .or_else(|| caps.name("name2"))?
+        .as_str()
+        .trim();
+    if name.is_empty() || name == "the" || name == "lights" {
+        return None;
+    }
+    Some(Intent::SceneDelete {
         name: name.to_string(),
     })
 }
@@ -825,6 +890,105 @@ mod tests {
     fn scene_normalizes_case_and_punctuation() {
         assert_eq!(
             parse("Apply Kitchen Evening."),
+            Some(Intent::SceneApply {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    // ---- Scene list ----
+
+    #[test]
+    fn scene_list_my_scenes() {
+        assert_eq!(parse("list my scenes"), Some(Intent::SceneList));
+    }
+
+    #[test]
+    fn scene_list_bare() {
+        assert_eq!(parse("list scenes"), Some(Intent::SceneList));
+    }
+
+    #[test]
+    fn scene_list_show_me_my_scenes() {
+        assert_eq!(parse("show me my scenes"), Some(Intent::SceneList));
+    }
+
+    #[test]
+    fn scene_list_what_scenes_do_i_have() {
+        assert_eq!(parse("what scenes do I have"), Some(Intent::SceneList));
+    }
+
+    // ---- Scene delete ----
+
+    #[test]
+    fn scene_delete_the_name_scene() {
+        assert_eq!(
+            parse("delete the kitchen evening scene"),
+            Some(Intent::SceneDelete {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_delete_remove_name_scene_no_the() {
+        assert_eq!(
+            parse("remove kitchen evening scene"),
+            Some(Intent::SceneDelete {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_delete_scene_name_form() {
+        assert_eq!(
+            parse("delete scene kitchen evening"),
+            Some(Intent::SceneDelete {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_delete_remove_scene_name_form() {
+        assert_eq!(
+            parse("remove scene kitchen evening"),
+            Some(Intent::SceneDelete {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_delete_single_word_name() {
+        assert_eq!(
+            parse("remove the kitchen scene"),
+            Some(Intent::SceneDelete {
+                name: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_delete_normalizes_case_and_punctuation() {
+        assert_eq!(
+            parse("Delete the Kitchen Evening Scene!"),
+            Some(Intent::SceneDelete {
+                name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_delete_lights_rejected() {
+        assert_eq!(parse("delete the lights scene"), None);
+    }
+
+    #[test]
+    fn scene_apply_still_wins_over_delete_for_suffix_phrasing() {
+        assert_eq!(
+            parse("kitchen evening scene"),
             Some(Intent::SceneApply {
                 name: "kitchen evening".into(),
             })

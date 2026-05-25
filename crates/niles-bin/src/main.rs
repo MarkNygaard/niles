@@ -1121,6 +1121,21 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
             }
             println!("[{peer}] applied scene {name:?}");
         }
+        Intent::SceneList => {
+            let names = ctx.scenes.names();
+            if names.is_empty() {
+                println!("[{peer}] no scenes saved yet");
+            } else {
+                println!("[{peer}] {} scenes: {}", names.len(), names.join(", "));
+            }
+        }
+        Intent::SceneDelete { name } => {
+            if ctx.scenes.delete(&name) {
+                println!("[{peer}] deleted scene {name:?}");
+            } else {
+                println!("[{peer}] no scene named {name:?}");
+            }
+        }
         Intent::ClearManualMode { room } => match room {
             None => {
                 let n = ctx.tracker.clear_all();
@@ -1840,6 +1855,8 @@ fn format_intent(intent: &Intent) -> String {
             None => format!("SceneSave({name:?})"),
         },
         Intent::SceneApply { name } => format!("SceneApply({name:?})"),
+        Intent::SceneList => "SceneList".into(),
+        Intent::SceneDelete { name } => format!("SceneDelete({name:?})"),
         Intent::Stop => "Stop".into(),
         Intent::Cancel => "Cancel".into(),
         other => format!("{other:?}"),
