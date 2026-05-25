@@ -103,7 +103,10 @@ impl Z2mDevice {
     }
 
     fn expose_is_action(expose: &Z2mExpose) -> bool {
-        expose.property.as_deref() == Some("action")
+        if expose.property.as_deref() == Some("action") {
+            return true;
+        }
+        expose.features.iter().any(Self::expose_is_action)
     }
 
     /// Convert into a `niles_core::Device` with a default (empty) state
@@ -500,6 +503,27 @@ mod tests {
             }),
         };
         assert_eq!(z2m.classify(), DeviceClass::Light);
+    }
+
+    #[test]
+    fn classify_switch_when_action_nested_under_features() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "kitchen/dimmer".into(),
+            device_type: "EndDevice".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![Z2mExpose {
+                    expose_type: Some("composite".into()),
+                    property: None,
+                    features: vec![Z2mExpose {
+                        expose_type: Some("enum".into()),
+                        property: Some("action".into()),
+                        features: vec![],
+                    }],
+                }],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Switch);
     }
 
     // ---- state parsing -------------------------------------------
