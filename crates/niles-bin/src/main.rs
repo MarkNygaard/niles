@@ -1096,6 +1096,10 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                 println!("[{peer}] no scene named {name:?}");
                 return;
             };
+            if entries.is_empty() {
+                println!("[{peer}] scene {name:?} is empty — nothing to apply");
+                return;
+            }
             for entry in entries {
                 let (topic, payload) =
                     format_set_command(&ctx.z2m_prefix, &entry.device_id, &entry.state);
