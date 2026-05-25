@@ -389,6 +389,23 @@ mod tests {
     }
 
     #[test]
+    fn subdir_without_skill_md_errors() {
+        // Loader enforces the strict policy that every subdirectory under
+        // `root` is a capability and must contain SKILL.md. A stray
+        // directory (without SKILL.md) surfaces as a `MissingSkillFile`
+        // error rather than being silently skipped.
+        let tmp = TempDir::new().unwrap();
+        let stray = tmp.path().join("not-a-capability");
+        fs::create_dir(&stray).unwrap();
+
+        let err = CapabilityLoader::load_from_dir(tmp.path()).unwrap_err();
+        match err {
+            Error::MissingSkillFile { dir } => assert_eq!(dir, stray),
+            other => panic!("expected MissingSkillFile, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn crlf_line_endings_parse_correctly() {
         // SKILL.md files authored on Windows can have `\r\n` line endings.
         // The parser must still detect `---` delimiters and not include the
