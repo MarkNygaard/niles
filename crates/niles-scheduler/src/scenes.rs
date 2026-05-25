@@ -32,11 +32,10 @@ impl SceneStore {
     /// devices captured. Overwrites any existing scene with the same
     /// canonical name.
     ///
-    /// Devices whose `DeviceState` has no settable field (`on`,
-    /// `brightness`, `color_temp_kelvin`) are dropped — per
-    /// ARCHITECTURE.md:491, scenes capture *lights*, not sensors,
-    /// and `format_set_command` would emit an empty `{}` payload for
-    /// such entries on apply anyway.
+    /// Non-light devices are dropped — per ARCHITECTURE.md:491,
+    /// scenes capture *lights*, not sensors, and `format_set_command`
+    /// would emit an empty `{}` payload for sensor entries on apply
+    /// anyway.
     pub fn save(&self, name: &str, registry: &DeviceRegistry, room: Option<&RoomName>) -> usize {
         let key = canonicalize_name(name);
         let entries: Vec<SceneEntry> = match room {
@@ -44,14 +43,7 @@ impl SceneStore {
             None => registry.list_all(),
         }
         .into_iter()
-        // Mirror of `niles_mqtt::is_actionable`. Duplicated to avoid
-        // an MQTT-crate dependency from niles-scheduler; both must
-        // update if `DeviceState` gains a new settable field.
-        .filter(|d| {
-            d.state.on.is_some()
-                || d.state.brightness.is_some()
-                || d.state.color_temp_kelvin.is_some()
-        })
+        .filter(|d| d.is_light())
         .map(|d| SceneEntry {
             device_id: d.id,
             state: d.state,
@@ -119,7 +111,7 @@ fn canonicalize_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use niles_core::Device;
+    use niles_core::{Device, DeviceClass};
 
     fn dev_in(room: &str, name: &str) -> DeviceId {
         DeviceId::parse(&format!("z2m:{room}/{name}")).unwrap()
@@ -141,6 +133,7 @@ mod tests {
             r.upsert(Device {
                 id,
                 state: s.clone(),
+                class: DeviceClass::Light,
             });
         }
         r
@@ -250,14 +243,16 @@ mod tests {
     }
 
     #[test]
-    fn save_drops_devices_with_no_settable_state() {
+    fn save_drops_non_light_devices() {
         // Sensor-style device: only sensor fields set. Scenes are
-        // about lights (ARCHITECTURE.md:491), so it should be filtered.
+        // about lights (ARCHITECTURE.md:491), so it should be filtered
+        // by `DeviceClass`, not just by state fields.
         let store = SceneStore::new();
         let reg = DeviceRegistry::new();
         reg.upsert(Device {
             id: dev_in("kitchen", "ceiling_light"),
             state: state(true, 80, 2700),
+            class: DeviceClass::Light,
         });
         reg.upsert(Device {
             id: dev_in("kitchen", "thermometer"),
@@ -265,6 +260,7 @@ mod tests {
                 temperature_celsius: Some(21.5),
                 ..Default::default()
             },
+            class: DeviceClass::Sensor,
         });
 
         let n = store.save("evening", &reg, None);

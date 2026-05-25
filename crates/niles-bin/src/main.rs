@@ -4,7 +4,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use niles_api::AppState;
 use niles_config::Config;
-use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
+use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
 use niles_intent::{Intent, IntentRouter};
 use niles_llm::{ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, ToolChoice};
 use niles_mqtt::{
@@ -1180,7 +1180,7 @@ fn resolve_room_targets<F>(
     peer: std::net::SocketAddr,
     room: &str,
     capability_filter: F,
-) -> Option<(RoomName, Vec<niles_core::Device>)>
+) -> Option<(RoomName, Vec<Device>)>
 where
     F: Fn(&niles_core::Device) -> bool,
 {
@@ -1226,7 +1226,7 @@ async fn dispatch_to_targets(
     ctx: &DispatchCtx,
     peer: std::net::SocketAddr,
     canonical: &RoomName,
-    targets: &[niles_core::Device],
+    targets: &[Device],
     desired: &DeviceState,
 ) {
     debug_assert!(
@@ -1361,10 +1361,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         continue;
                     };
                     let room = id.room().clone();
-                    let targets: Vec<niles_core::Device> = observer_registry
+                    let targets: Vec<Device> = observer_registry
                         .list_room(&room)
                         .into_iter()
-                        .filter(|d| is_actionable(&d.state) && d.id != id)
+                        .filter(|d| d.is_light() && d.id != id)
                         .collect();
                     if targets.is_empty() {
                         tracing::debug!("switch {id} pressed but no actionable lights in {room}");

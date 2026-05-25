@@ -347,7 +347,7 @@ pub fn default_registry(
 mod tests {
     use super::*;
     use niles_capabilities::CapabilityLoader;
-    use niles_core::Device;
+    use niles_core::{Device, DeviceClass};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -377,6 +377,7 @@ mod tests {
                 color_temp_kelvin: Some(3000),
                 ..Default::default()
             },
+            class: DeviceClass::Light,
         };
         let living_lamp = Device {
             id: DeviceId::parse("z2m:living_room/floor_lamp").unwrap(),
@@ -384,6 +385,7 @@ mod tests {
                 on: Some(false),
                 ..Default::default()
             },
+            class: DeviceClass::Light,
         };
         reg.upsert(kitchen_light);
         reg.upsert(living_lamp);

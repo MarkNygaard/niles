@@ -11,14 +11,14 @@
 //! `serde(deny_unknown_fields)` is deliberately **not** used here —
 //! Z2M's schema evolves and we want forward compatibility.
 
-use niles_core::{Device, DeviceId, DeviceState};
+use niles_core::{Device, DeviceClass, DeviceId, DeviceState};
 use serde::Deserialize;
 
 /// A single entry from `<prefix>/bridge/devices`.
 ///
 /// Only the fields we care about are typed; Z2M sends many more
-/// (definition.exposes, endpoints, network_address, ...) which we
-/// ignore for v0.1.
+/// (endpoints, network_address, ...) which we ignore for v0.1.
+/// `definition.exposes` is now parsed to derive [`DeviceClass`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct Z2mDevice {
     /// e.g. `"0x00124b001f44b3e6"`. We don't currently use this — the
@@ -31,6 +31,29 @@ pub struct Z2mDevice {
     /// `"Coordinator"` / `"Router"` / `"EndDevice"`.
     #[serde(rename = "type")]
     pub device_type: String,
+    /// Z2M device definition (model, exposes, etc.).
+    pub definition: Option<Z2mDefinition>,
+}
+
+/// Z2M device definition metadata.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Z2mDefinition {
+    /// List of capability exposes for this device.
+    pub exposes: Vec<Z2mExpose>,
+}
+
+/// A single expose entry within `definition.exposes`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Z2mExpose {
+    /// Expose type, e.g. `"light"`, `"switch"`, `"numeric"`, etc.
+    #[serde(rename = "type")]
+    pub expose_type: Option<String>,
+    /// Property name, e.g. `"action"`, `"temperature"`, etc.
+    pub property: Option<String>,
+    /// Nested exposes (e.g. a light expose contains features).
+    pub features: Vec<Z2mExpose>,
 }
 
 impl Z2mDevice {
@@ -38,6 +61,49 @@ impl Z2mDevice {
     /// be skipped when populating the registry.
     pub fn is_user_device(&self) -> bool {
         self.device_type != "Coordinator"
+    }
+
+    /// Classify this Z2M device into a [`DeviceClass`] based on
+    /// `definition.exposes`.
+    ///
+    /// Rules (in priority order):
+    /// - exposes contains `{"type": "light"}` → `Light`
+    /// - exposes contains `{"property": "action"}` (no light) → `Switch`
+    /// - non-empty exposes, neither light nor action → `Sensor`
+    /// - missing/empty definition → `Unknown`
+    pub fn classify(&self) -> DeviceClass {
+        let exposes = match self.definition.as_ref() {
+            Some(def) if !def.exposes.is_empty() => &def.exposes,
+            _ => return DeviceClass::Unknown,
+        };
+
+        let mut has_action = false;
+
+        for expose in exposes {
+            if Self::expose_is_light(expose) {
+                return DeviceClass::Light;
+            }
+            if Self::expose_is_action(expose) {
+                has_action = true;
+            }
+        }
+
+        if has_action {
+            DeviceClass::Switch
+        } else {
+            DeviceClass::Sensor
+        }
+    }
+
+    fn expose_is_light(expose: &Z2mExpose) -> bool {
+        if expose.expose_type.as_deref() == Some("light") {
+            return true;
+        }
+        expose.features.iter().any(Self::expose_is_light)
+    }
+
+    fn expose_is_action(expose: &Z2mExpose) -> bool {
+        expose.property.as_deref() == Some("action")
     }
 
     /// Convert into a `niles_core::Device` with a default (empty) state.
@@ -49,6 +115,7 @@ impl Z2mDevice {
         Ok(Device {
             id,
             state: DeviceState::default(),
+            class: self.classify(),
         })
     }
 }
@@ -234,11 +301,13 @@ mod tests {
             ieee_address: "0x123".into(),
             friendly_name: "kitchen/ceiling_light".into(),
             device_type: "Router".into(),
+            definition: None,
         };
         let device = z2m.to_device().unwrap();
         assert_eq!(device.id.source(), "z2m");
         assert_eq!(device.id.room().as_str(), "kitchen");
         assert_eq!(device.id.name().as_str(), "ceiling_light");
+        assert_eq!(device.class, DeviceClass::Unknown);
     }
 
     #[test]
@@ -247,8 +316,108 @@ mod tests {
             ieee_address: "0x123".into(),
             friendly_name: "Kitchen Light".into(), // uppercase + space
             device_type: "Router".into(),
+            definition: None,
         };
         assert!(z2m.to_device().is_err());
+    }
+
+    // ---- classification ------------------------------------------
+
+    #[test]
+    fn classify_light_from_exposes_type() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "kitchen/ceiling_light".into(),
+            device_type: "Router".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![Z2mExpose {
+                    expose_type: Some("light".into()),
+                    property: None,
+                    features: vec![],
+                }],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Light);
+    }
+
+    #[test]
+    fn classify_switch_from_action_property() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "office/switch".into(),
+            device_type: "EndDevice".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![Z2mExpose {
+                    expose_type: None,
+                    property: Some("action".into()),
+                    features: vec![],
+                }],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Switch);
+    }
+
+    #[test]
+    fn classify_sensor_from_other_exposes() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "living_room/thermometer".into(),
+            device_type: "EndDevice".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![Z2mExpose {
+                    expose_type: Some("numeric".into()),
+                    property: Some("temperature".into()),
+                    features: vec![],
+                }],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Sensor);
+    }
+
+    #[test]
+    fn classify_unknown_when_no_definition() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "kitchen/ceiling_light".into(),
+            device_type: "Router".into(),
+            definition: None,
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Unknown);
+    }
+
+    #[test]
+    fn classify_unknown_when_empty_exposes() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "kitchen/ceiling_light".into(),
+            device_type: "Router".into(),
+            definition: Some(Z2mDefinition { exposes: vec![] }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Unknown);
+    }
+
+    #[test]
+    fn classify_light_wins_over_action() {
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "bedroom/dimmer".into(),
+            device_type: "EndDevice".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![
+                    Z2mExpose {
+                        expose_type: Some("light".into()),
+                        property: None,
+                        features: vec![],
+                    },
+                    Z2mExpose {
+                        expose_type: None,
+                        property: Some("action".into()),
+                        features: vec![],
+                    },
+                ],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Light);
     }
 
     // ---- state parsing -------------------------------------------

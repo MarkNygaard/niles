@@ -33,7 +33,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use niles_core::{Device, DeviceId, DeviceName, DeviceRegistry, DeviceState, RoomName};
+    use niles_core::{
+        Device, DeviceClass, DeviceId, DeviceName, DeviceRegistry, DeviceState, RoomName,
+    };
     use serde_json::Value;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -51,6 +53,7 @@ mod tests {
             )
             .unwrap(),
             state: DeviceState::default(),
+            class: DeviceClass::Unknown,
         }
     }
 
