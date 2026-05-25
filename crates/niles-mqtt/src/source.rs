@@ -79,13 +79,16 @@ pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, b
 
     if rest == "bridge/devices" {
         handle_device_list(&msg.payload, registry, bus);
-    } else if let Some(action_rest) = rest.strip_suffix("/action") {
-        if let Some((room, device)) = split_room_device(action_rest) {
-            if room == "bridge" {
-                return;
-            }
-            handle_device_action(room, device, &msg.payload, bus);
+    } else if let Some((room, device)) = rest.strip_suffix("/action").and_then(split_room_device) {
+        // 3-segment `<room>/<device>/action` from a button device.
+        // A 2-segment `<room>/action` (state for a flat-named device
+        // literally called "action") doesn't parse here and falls
+        // through to the state branch below — silently dropping it
+        // would have been a regression.
+        if room == "bridge" {
+            return;
         }
+        handle_device_action(room, device, &msg.payload, bus);
     } else if let Some((room, device)) = split_room_device(rest) {
         // Skip Z2M's internal `bridge/*` topics other than `bridge/devices`.
         if room == "bridge" {
@@ -582,6 +585,32 @@ mod tests {
         };
         dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn dispatch_two_segment_action_falls_through_to_state() {
+        // `zigbee2mqtt/office/action` is a 2-segment state topic for a
+        // flat-named device literally called "action" — not our
+        // 3-segment action topic. Pre-PR this was handled as state;
+        // the action branch must fall through so it stays that way.
+        let (registry, bus, mut rx) = fixtures();
+        let device_list = br#"[
+            {"ieee_address":"0x1","friendly_name":"office/action","type":"EndDevice"}
+        ]"#;
+        handle_device_list(device_list, &registry, &bus);
+        drain(&mut rx);
+
+        let msg = Message {
+            topic: "zigbee2mqtt/office/action".into(),
+            payload: br#"{"state":"ON"}"#.to_vec(),
+        };
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
+
+        let id = DeviceId::parse("z2m:office/action").unwrap();
+        assert_eq!(registry.get(&id).unwrap().state.on, Some(true));
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::DeviceStateChanged { .. }));
     }
 
     #[test]
