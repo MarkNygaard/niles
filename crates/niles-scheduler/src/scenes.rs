@@ -27,9 +27,16 @@ impl SceneStore {
         }
     }
 
-    /// Snapshot every device in `room` (or the whole registry if `room` is
-    /// `None`) and store it under `name`. Returns the number of devices
-    /// captured. Overwrites any existing scene with the same canonical name.
+    /// Snapshot every *light* in `room` (or the whole registry if `room`
+    /// is `None`) and store it under `name`. Returns the number of
+    /// devices captured. Overwrites any existing scene with the same
+    /// canonical name.
+    ///
+    /// Devices whose `DeviceState` has no settable field (`on`,
+    /// `brightness`, `color_temp_kelvin`) are dropped — per
+    /// ARCHITECTURE.md:491, scenes capture *lights*, not sensors,
+    /// and `format_set_command` would emit an empty `{}` payload for
+    /// such entries on apply anyway.
     pub fn save(&self, name: &str, registry: &DeviceRegistry, room: Option<&RoomName>) -> usize {
         let key = canonicalize_name(name);
         let entries: Vec<SceneEntry> = match room {
@@ -37,6 +44,14 @@ impl SceneStore {
             None => registry.list_all(),
         }
         .into_iter()
+        // Mirror of `niles_mqtt::is_actionable`. Duplicated to avoid
+        // an MQTT-crate dependency from niles-scheduler; both must
+        // update if `DeviceState` gains a new settable field.
+        .filter(|d| {
+            d.state.on.is_some()
+                || d.state.brightness.is_some()
+                || d.state.color_temp_kelvin.is_some()
+        })
         .map(|d| SceneEntry {
             device_id: d.id,
             state: d.state,
@@ -224,6 +239,32 @@ mod tests {
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
         store.save("evening", &reg, None);
         assert!(store2.exists("evening"));
+    }
+
+    #[test]
+    fn save_drops_devices_with_no_settable_state() {
+        // Sensor-style device: only sensor fields set. Scenes are
+        // about lights (ARCHITECTURE.md:491), so it should be filtered.
+        let store = SceneStore::new();
+        let reg = DeviceRegistry::new();
+        reg.upsert(Device {
+            id: dev_in("kitchen", "ceiling_light"),
+            state: state(true, 80, 2700),
+        });
+        reg.upsert(Device {
+            id: dev_in("kitchen", "thermometer"),
+            state: DeviceState {
+                temperature_celsius: Some(21.5),
+                ..Default::default()
+            },
+        });
+
+        let n = store.save("evening", &reg, None);
+        assert_eq!(n, 1, "sensor should not be captured");
+
+        let entries = store.get("evening").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].device_id, dev_in("kitchen", "ceiling_light"));
     }
 
     #[test]
