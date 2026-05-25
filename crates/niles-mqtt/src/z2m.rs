@@ -82,6 +82,21 @@ impl Z2mState {
             battery_percent: self.battery.map(|b| b.round().clamp(0.0, 100.0) as u8),
         }
     }
+
+    /// True if any actionable / sensor state field is present in the
+    /// parsed payload. Used to filter out Z2M's noisy "action-only"
+    /// publishes from button-style devices (the dimmer republishes
+    /// `{"action":..,"battery":..,"linkquality":..}` on every press;
+    /// without this filter that would look like an empty state change).
+    /// Battery alone is excluded deliberately — battery surfacing is a
+    /// separate feature.
+    pub fn has_actionable_state_field(&self) -> bool {
+        self.state.is_some()
+            || self.brightness.is_some()
+            || self.color_temp.is_some()
+            || self.temperature.is_some()
+            || self.humidity.is_some()
+    }
 }
 
 fn parse_on_off(s: &str) -> Option<bool> {
@@ -276,5 +291,27 @@ mod tests {
         let json = br#"{ "state": "toggle" }"#;
         let state = parse_state(json).unwrap();
         assert_eq!(state.to_device_state().on, None);
+    }
+
+    #[test]
+    fn action_only_payload_has_no_actionable_state() {
+        let json = br#"{"action":"on_press","battery":100,"linkquality":168}"#;
+        let state = parse_state(json).unwrap();
+        assert!(!state.has_actionable_state_field());
+    }
+
+    #[test]
+    fn brightness_only_payload_is_actionable() {
+        let json = br#"{"brightness":127}"#;
+        let state = parse_state(json).unwrap();
+        assert!(state.has_actionable_state_field());
+    }
+
+    #[test]
+    fn battery_only_is_not_actionable_yet() {
+        // Battery surfacing is out of scope for the dimmer PR.
+        let json = br#"{"battery":42}"#;
+        let state = parse_state(json).unwrap();
+        assert!(!state.has_actionable_state_field());
     }
 }

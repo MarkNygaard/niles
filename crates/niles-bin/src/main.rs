@@ -12,8 +12,8 @@ use niles_mqtt::{
 };
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
-    SceneStore, brightness_at, build_curve_target, color_temp_at, routine_brightness_at,
-    should_fire_today,
+    SceneStore, SwitchEffect, brightness_at, build_curve_target, classify_action, color_temp_at,
+    routine_brightness_at, should_fire_today,
 };
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::ToolRegistry;
@@ -1317,6 +1317,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // sent after a receiver is bound.
     let observer_tracker = tracker.clone();
     let observer_claim_tracker = claim_tracker.clone();
+    let observer_registry = registry.clone();
+    let observer_publisher = publisher.clone();
+    let observer_z2m_prefix = z2m_prefix.clone();
+    let observer_dry_run = args.dry_run;
     let mut bus_rx = bus.subscribe();
 
     let source = Z2mSource::new(
@@ -1350,6 +1354,65 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 Ok(Event::DeviceRemoved { id }) => {
                     observer_tracker.forget(&id);
                     observer_claim_tracker.forget(&id);
+                }
+                Ok(Event::DeviceAction { id, action }) => {
+                    let Some(effect) = classify_action(&action) else {
+                        // Includes _release variants and unknown strings.
+                        continue;
+                    };
+                    let room = id.room().clone();
+                    let targets: Vec<niles_core::Device> = observer_registry
+                        .list_room(&room)
+                        .into_iter()
+                        .filter(|d| is_actionable(&d.state) && d.id != id)
+                        .collect();
+                    if targets.is_empty() {
+                        tracing::debug!("switch {id} pressed but no actionable lights in {room}");
+                        continue;
+                    }
+                    let desired = match effect {
+                        SwitchEffect::TurnOnRoom => DeviceState {
+                            on: Some(true),
+                            ..Default::default()
+                        },
+                        SwitchEffect::TurnOffRoom => DeviceState {
+                            on: Some(false),
+                            ..Default::default()
+                        },
+                        SwitchEffect::StepBrightness { delta_percent } => {
+                            let known: Vec<u8> =
+                                targets.iter().filter_map(|d| d.state.brightness).collect();
+                            let base: i16 = if known.is_empty() {
+                                50
+                            } else {
+                                (known.iter().copied().map(|b| b as i32).sum::<i32>()
+                                    / known.len() as i32) as i16
+                            };
+                            let next = (base + delta_percent).clamp(0, 100) as u8;
+                            DeviceState {
+                                brightness: Some(next),
+                                ..Default::default()
+                            }
+                        }
+                    };
+                    for d in &targets {
+                        observer_tracker.flag(&d.id);
+                    }
+                    for d in &targets {
+                        let (topic, payload) =
+                            format_set_command(&observer_z2m_prefix, &d.id, &desired);
+                        if observer_dry_run {
+                            println!("[switch] [dry-run] {topic}  {payload}");
+                        } else {
+                            match observer_publisher
+                                .publish(&topic, payload.as_bytes().to_vec())
+                                .await
+                            {
+                                Ok(()) => println!("[switch] published {topic}  {payload}"),
+                                Err(e) => tracing::warn!("[switch] publish to {topic} failed: {e}"),
+                            }
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
