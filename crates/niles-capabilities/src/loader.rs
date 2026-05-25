@@ -108,13 +108,13 @@ impl CapabilityLoader {
 /// its own line — a `---` substring inside a YAML scalar must not terminate
 /// the frontmatter.
 fn parse_skill_md(raw: &str, dir: &Path) -> Result<(CapabilityMetadata, String)> {
-    let trimmed = raw.trim_start();
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
 
     // First line must be exactly `---` (allowing for `\r\n` line endings).
-    let first_newline = trimmed.find('\n');
+    let first_newline = raw.find('\n');
     let first_line = match first_newline {
-        Some(idx) => trimmed[..idx].trim_end_matches('\r'),
-        None => trimmed.trim_end_matches('\r'),
+        Some(idx) => raw[..idx].trim_end_matches('\r'),
+        None => raw.trim_end_matches('\r'),
     };
     if first_line != "---" {
         return Err(Error::Frontmatter {
@@ -129,7 +129,7 @@ fn parse_skill_md(raw: &str, dir: &Path) -> Result<(CapabilityMetadata, String)>
             reason: "missing closing `---` delimiter".into(),
         });
     };
-    let after_open = &trimmed[open_end + 1..];
+    let after_open = &raw[open_end + 1..];
 
     // Walk lines until we hit one that is exactly `---`.
     let mut search = 0;
@@ -157,7 +157,7 @@ fn parse_skill_md(raw: &str, dir: &Path) -> Result<(CapabilityMetadata, String)>
 
     let yaml = &after_open[..close_start];
     let body_start = (close_end + 1).min(after_open.len());
-    let body = after_open[body_start..].trim_start().to_string();
+    let body = after_open[body_start..].to_string();
 
     if body.is_empty() {
         return Err(Error::BodyMissing {
@@ -421,6 +421,21 @@ mod tests {
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let cap = loader.get("crlf").unwrap();
         assert_eq!(cap.metadata.description, "Windows line endings");
+    }
+
+    #[test]
+    fn body_leading_whitespace_is_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("leading-ws");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: leading-ws\ndescription: Preserve body formatting\nversion: 1.0.0\n---\n    code block line\n",
+        );
+
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let cap = loader.get("leading-ws").unwrap();
+        assert_eq!(cap.body, "    code block line\n");
     }
 
     #[test]
