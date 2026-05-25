@@ -9,7 +9,7 @@ description: |
   Input: Feature description in natural language, or path to a PRD file.
   Output: PR against the project's base branch (auto-detected from
   `$BASE_BRANCH`), with Claude-planned, Kimi-implemented,
-  Kimi-self-reviewed (up to 3x), Codex-reviewed-and-fixed,
+  Kimi-self-reviewed (up to 5x), Codex-reviewed-and-fixed,
   Sonnet-reviewed-and-fixed work, plus a verdict comment + PR label.
 
   Project-specific rules — package manager, verify chain, conventional-
@@ -295,12 +295,12 @@ nodes:
     loop:
       provider: pi
       model: moonshotai/kimi-k2.6
-      max_iterations: 3
+      max_iterations: 5
       until: PI_REVIEW_CLEAN
       prompt: |
         You are performing a self-review-and-fix pass on a PR that you
         (or an earlier iteration of you) just implemented. This may be
-        one of up to 3 such passes — look at the commit history to see
+        one of up to 5 such passes — look at the commit history to see
         whether earlier passes have already run. Stop early when you
         have no more substantive issues to fix.
 
