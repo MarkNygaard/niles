@@ -584,6 +584,20 @@ mod tests {
         assert!(drain(&mut rx).is_empty());
     }
 
+    #[test]
+    fn dispatch_action_under_bridge_is_dropped() {
+        // Hypothetical `bridge/<name>/action` from a misconfigured
+        // Z2M bridge — never our intent. The state path filters
+        // `bridge` as a room; the action path must do the same.
+        let (registry, bus, mut rx) = fixtures();
+        let msg = Message {
+            topic: "zigbee2mqtt/bridge/devices/action".into(),
+            payload: b"on_press".to_vec(),
+        };
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
     // ---- JSON state filter --------------------------------------
 
     #[test]
