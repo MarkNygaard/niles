@@ -229,6 +229,7 @@ fn scene_apply_regex() -> &'static Regex {
 
 fn match_scene_apply(t: &str) -> Option<Intent> {
     let caps = scene_apply_regex().captures(t)?;
+    let from_suffix_form = caps.name("name2").is_some();
     let name = caps
         .name("name1")
         .or_else(|| caps.name("name2"))
@@ -238,10 +239,10 @@ fn match_scene_apply(t: &str) -> Option<Intent> {
     if name.is_empty() || name == "the" || name == "lights" {
         return None;
     }
-    // Reject phrases that start with "delete" or "remove" so they
-    // fall through to match_scene_delete instead of being captured
-    // by the `.+\s+scene` arm of scene_apply_regex.
-    if name.starts_with("delete ") || name.starts_with("remove ") {
+    // Reject only the ambiguous "<name> scene" form when it starts with
+    // "delete"/"remove"; explicit "apply <name>" and "scene <name>" should
+    // still allow scene names like "delete party".
+    if from_suffix_form && (name.starts_with("delete ") || name.starts_with("remove ")) {
         return None;
     }
     Some(Intent::SceneApply {
@@ -991,6 +992,26 @@ mod tests {
             parse("kitchen evening scene"),
             Some(Intent::SceneApply {
                 name: "kitchen evening".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_apply_explicit_form_allows_delete_prefixed_name() {
+        assert_eq!(
+            parse("apply delete party"),
+            Some(Intent::SceneApply {
+                name: "delete party".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn scene_apply_scene_prefix_form_allows_remove_prefixed_name() {
+        assert_eq!(
+            parse("scene remove clutter"),
+            Some(Intent::SceneApply {
+                name: "remove clutter".into(),
             })
         );
     }
