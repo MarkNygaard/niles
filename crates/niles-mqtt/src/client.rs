@@ -271,19 +271,24 @@ async fn pump_events(
             Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                 if ever_connected {
                     info!("MQTT reconnected; replaying subscriptions");
+                    // Replay only on RECONNECT. On the initial connect,
+                    // the caller's subscribe() calls already queued the
+                    // subscriptions through rumqttc — replaying here
+                    // would double-subscribe, which Mosquitto handles
+                    // poorly when multiple overlapping patterns are in
+                    // play (silently wedges message delivery).
+                    let to_replay: Vec<String> = subscriptions.lock().unwrap().clone();
+                    for topic in to_replay {
+                        match client.subscribe(&topic, QoS::AtLeastOnce).await {
+                            Ok(()) => debug!("resubscribed to {topic}"),
+                            Err(e) => warn!("failed to resubscribe to {topic}: {e}"),
+                        }
+                    }
                 } else {
                     info!("MQTT connected");
                 }
                 ever_connected = true;
                 backoff = RECONNECT_INITIAL_BACKOFF;
-
-                let to_replay: Vec<String> = subscriptions.lock().unwrap().clone();
-                for topic in to_replay {
-                    match client.subscribe(&topic, QoS::AtLeastOnce).await {
-                        Ok(()) => debug!("resubscribed to {topic}"),
-                        Err(e) => warn!("failed to resubscribe to {topic}: {e}"),
-                    }
-                }
             }
             Ok(Event::Incoming(Incoming::Publish(p))) => {
                 let msg = Message {
