@@ -82,6 +82,27 @@ impl Z2mState {
             battery_percent: self.battery.map(|b| b.round().clamp(0.0, 100.0) as u8),
         }
     }
+
+    /// True if any tracked state field is present in the parsed
+    /// payload. Used to filter out Z2M's noisy "pure-action" publishes
+    /// from button-style devices: the dimmer republishes
+    /// `{"action":..,"linkquality":..}` on every press, and without
+    /// this filter that would look like an empty state change.
+    ///
+    /// Battery counts as actionable — `battery_percent` is surfaced via
+    /// the HTTP API and the `get_device_state` tool, so a battery-only
+    /// payload from a sensor must still propagate. The dimmer's
+    /// payloads commonly include `battery`, which means they too will
+    /// pass this filter; that's deliberate (we want the dimmer's
+    /// battery tracked too).
+    pub fn has_actionable_state_field(&self) -> bool {
+        self.state.is_some()
+            || self.brightness.is_some()
+            || self.color_temp.is_some()
+            || self.temperature.is_some()
+            || self.humidity.is_some()
+            || self.battery.is_some()
+    }
 }
 
 fn parse_on_off(s: &str) -> Option<bool> {
@@ -276,5 +297,43 @@ mod tests {
         let json = br#"{ "state": "toggle" }"#;
         let state = parse_state(json).unwrap();
         assert_eq!(state.to_device_state().on, None);
+    }
+
+    #[test]
+    fn pure_action_payload_has_no_actionable_state() {
+        // Z2M occasionally publishes `{"action":..,"linkquality":..}`
+        // alone when battery hasn't changed since the last press —
+        // no tracked field is set, so the dispatch path must skip it.
+        let json = br#"{"action":"on_press","linkquality":168}"#;
+        let state = parse_state(json).unwrap();
+        assert!(!state.has_actionable_state_field());
+    }
+
+    #[test]
+    fn brightness_only_payload_is_actionable() {
+        let json = br#"{"brightness":127}"#;
+        let state = parse_state(json).unwrap();
+        assert!(state.has_actionable_state_field());
+    }
+
+    #[test]
+    fn battery_only_is_actionable() {
+        // Battery is surfaced via the HTTP API and the
+        // `get_device_state` tool, so a battery-only payload from a
+        // sensor must propagate through the dispatch path.
+        let json = br#"{"battery":42}"#;
+        let state = parse_state(json).unwrap();
+        assert!(state.has_actionable_state_field());
+    }
+
+    #[test]
+    fn dimmer_action_with_battery_is_actionable() {
+        // The dimmer's typical payload includes battery alongside the
+        // action. Even though the action itself is consumed via the
+        // separate `/action` topic, the battery field must still
+        // propagate so battery surfacing keeps working.
+        let json = br#"{"action":"on_press","battery":100,"linkquality":168}"#;
+        let state = parse_state(json).unwrap();
+        assert!(state.has_actionable_state_field());
     }
 }

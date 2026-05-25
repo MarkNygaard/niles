@@ -16,6 +16,15 @@ pub enum Event {
     DeviceRemoved { id: DeviceId },
     /// A device's state changed (from an upstream report or an in-flight command).
     DeviceStateChanged { id: DeviceId, state: DeviceState },
+    /// Transient event from a button-style device. Not state — fires
+    /// once per press / hold-repeat, never replayed.
+    DeviceAction {
+        id: DeviceId,
+        /// Z2M-format action string ("on_press", "up_hold", etc.).
+        /// Kept as `String` to avoid coupling niles-core to the Z2M
+        /// vocabulary; consumers parse what they care about.
+        action: String,
+    },
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.
@@ -92,5 +101,22 @@ mod tests {
         let bus = EventBus::default();
         let count = bus.publish(Event::DeviceRemoved { id: fixture_id() });
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn publish_reaches_subscriber_device_action() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+        bus.publish(Event::DeviceAction {
+            id: fixture_id(),
+            action: "on_press".to_string(),
+        });
+        match rx.recv().await.unwrap() {
+            Event::DeviceAction { id, action } => {
+                assert_eq!(id, fixture_id());
+                assert_eq!(action, "on_press");
+            }
+            _ => panic!("expected DeviceAction"),
+        }
     }
 }

@@ -6,6 +6,8 @@
 //! - `zigbee2mqtt/bridge/devices` — full device list (JSON array of
 //!   [`Z2mDevice`]). Republished by Z2M whenever the inventory changes.
 //! - `zigbee2mqtt/<room>/<device>` — per-device state JSON.
+//! - `zigbee2mqtt/<room>/<device>/action` — per-device action strings
+//!   from button / dimmer devices.
 //!
 //! Anything else under `<prefix>/...` (e.g. `bridge/logging`,
 //! `bridge/info`) is ignored.
@@ -54,6 +56,8 @@ impl Z2mSource {
         // `dispatch` distinguishes them.
         let state_pattern = format!("{}/+/+", self.prefix);
         self.client.subscribe(&state_pattern).await?;
+        let action_pattern = format!("{}/+/+/action", self.prefix);
+        self.client.subscribe(&action_pattern).await?;
 
         while let Some(msg) = self.client.next_message().await {
             dispatch(&msg, &self.prefix, &self.registry, &self.bus);
@@ -75,6 +79,16 @@ pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, b
 
     if rest == "bridge/devices" {
         handle_device_list(&msg.payload, registry, bus);
+    } else if let Some((room, device)) = rest.strip_suffix("/action").and_then(split_room_device) {
+        // 3-segment `<room>/<device>/action` from a button device.
+        // A 2-segment `<room>/action` (state for a flat-named device
+        // literally called "action") doesn't parse here and falls
+        // through to the state branch below — silently dropping it
+        // would have been a regression.
+        if room == "bridge" {
+            return;
+        }
+        handle_device_action(room, device, &msg.payload, bus);
     } else if let Some((room, device)) = split_room_device(rest) {
         // Skip Z2M's internal `bridge/*` topics other than `bridge/devices`.
         if room == "bridge" {
@@ -162,6 +176,44 @@ pub(crate) fn handle_device_list(payload: &[u8], registry: &DeviceRegistry, bus:
     }
 }
 
+/// Maximum action-payload size we'll accept. Z2M action strings are
+/// short (`up_hold_release` is the longest at 16 bytes); anything
+/// orders of magnitude larger is almost certainly a misconfigured
+/// retain or a wrong-topic publish. We log and drop.
+const MAX_ACTION_PAYLOAD: usize = 256;
+
+/// Parse a per-device action payload (plain UTF-8 string) and emit a
+/// `DeviceAction` event. Drops non-UTF-8 / oversize payloads with a warn.
+pub(crate) fn handle_device_action(room: &str, device: &str, payload: &[u8], bus: &EventBus) {
+    if payload.len() >= MAX_ACTION_PAYLOAD {
+        let len = payload.len();
+        warn!(
+            "action payload for {room}/{device} is {len} bytes (>= {MAX_ACTION_PAYLOAD}); dropping"
+        );
+        return;
+    }
+    let action = match std::str::from_utf8(payload) {
+        Ok(s) => s.trim().to_string(),
+        Err(e) => {
+            warn!("action payload for {room}/{device} is not UTF-8: {e}");
+            return;
+        }
+    };
+    if action.is_empty() {
+        warn!("action payload for {room}/{device} is empty after trimming; dropping");
+        return;
+    }
+    let id_str = format!("z2m:{room}/{device}");
+    let id = match DeviceId::parse(&id_str) {
+        Ok(id) => id,
+        Err(e) => {
+            debug!("ignoring action topic {id_str:?}: {e}");
+            return;
+        }
+    };
+    bus.publish(Event::DeviceAction { id, action });
+}
+
 /// Parse a per-device state payload and update the registry. Emits a
 /// `DeviceStateChanged` event regardless of whether the device was
 /// already known — the source of truth is the bridge/devices list,
@@ -189,9 +241,15 @@ pub(crate) fn handle_device_state(
             return;
         }
     };
+    if !z2m_state.has_actionable_state_field() {
+        // Dimmer-style devices can republish `{"action":..,"linkquality":..}`
+        // on every press. Those fields aren't tracked state, so skip
+        // the merge + event entirely.
+        debug!("skipping state payload for {id} (no actionable field)");
+        return;
+    }
     let partial = z2m_state.to_device_state();
-    let updated = registry.merge_state(&id, partial.clone());
-    if !updated {
+    if !registry.merge_state(&id, partial.clone()) {
         // State can arrive before bridge/devices on startup. We
         // discard it from the registry (no entry to merge into) but
         // still publish the event so any pre-bound subscribers see
@@ -464,5 +522,176 @@ mod tests {
         };
         dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(registry.is_empty());
+    }
+
+    // ---- handle_device_action ------------------------------------
+
+    #[test]
+    fn action_message_emits_device_action_event() {
+        let (_registry, bus, mut rx) = fixtures();
+        handle_device_action("office", "switch", b"on_press", &bus);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::DeviceAction { id, action } => {
+                assert_eq!(id, &DeviceId::parse("z2m:office/switch").unwrap());
+                assert_eq!(action, "on_press");
+            }
+            _ => panic!("expected DeviceAction"),
+        }
+    }
+
+    #[test]
+    fn action_with_invalid_topic_segment_is_dropped() {
+        let (_registry, bus, mut rx) = fixtures();
+        // Uppercase room is invalid per RoomName parsing rules.
+        handle_device_action("Office", "switch", b"on_press", &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn action_with_oversize_payload_is_dropped() {
+        let (_registry, bus, mut rx) = fixtures();
+        let payload = vec![b'a'; 256];
+        handle_device_action("office", "switch", &payload, &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn action_with_non_utf8_payload_is_dropped() {
+        let (_registry, bus, mut rx) = fixtures();
+        handle_device_action("office", "switch", &[0xff, 0xfe], &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn action_with_trailing_newline_is_trimmed() {
+        let (_registry, bus, mut rx) = fixtures();
+        handle_device_action("office", "switch", b"on_press\n", &bus);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::DeviceAction { id, action } => {
+                assert_eq!(id, &DeviceId::parse("z2m:office/switch").unwrap());
+                assert_eq!(action, "on_press");
+            }
+            _ => panic!("expected DeviceAction"),
+        }
+    }
+
+    #[test]
+    fn action_with_whitespace_only_payload_is_dropped() {
+        let (_registry, bus, mut rx) = fixtures();
+        handle_device_action("office", "switch", b"   \n\t", &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    // ---- dispatch routing for action topics ---------------------
+
+    #[test]
+    fn dispatch_routes_action_topics() {
+        let (registry, bus, mut rx) = fixtures();
+        let msg = Message {
+            topic: "zigbee2mqtt/office/switch/action".into(),
+            payload: b"on_press".to_vec(),
+        };
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::DeviceAction { .. }));
+    }
+
+    #[test]
+    fn dispatch_action_misshapen_topic_is_dropped() {
+        let (registry, bus, mut rx) = fixtures();
+        // 4 segments under prefix (room/device/sub/action) — not our shape.
+        let msg = Message {
+            topic: "zigbee2mqtt/office/switch/extra/action".into(),
+            payload: b"on_press".to_vec(),
+        };
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn dispatch_two_segment_action_falls_through_to_state() {
+        // `zigbee2mqtt/office/action` is a 2-segment state topic for a
+        // flat-named device literally called "action" — not our
+        // 3-segment action topic. Pre-PR this was handled as state;
+        // the action branch must fall through so it stays that way.
+        let (registry, bus, mut rx) = fixtures();
+        let device_list = br#"[
+            {"ieee_address":"0x1","friendly_name":"office/action","type":"EndDevice"}
+        ]"#;
+        handle_device_list(device_list, &registry, &bus);
+        drain(&mut rx);
+
+        let msg = Message {
+            topic: "zigbee2mqtt/office/action".into(),
+            payload: br#"{"state":"ON"}"#.to_vec(),
+        };
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
+
+        let id = DeviceId::parse("z2m:office/action").unwrap();
+        assert_eq!(registry.get(&id).unwrap().state.on, Some(true));
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::DeviceStateChanged { .. }));
+    }
+
+    #[test]
+    fn dispatch_action_under_bridge_is_dropped() {
+        // Hypothetical `bridge/<name>/action` from a misconfigured
+        // Z2M bridge — never our intent. The state path filters
+        // `bridge` as a room; the action path must do the same.
+        let (registry, bus, mut rx) = fixtures();
+        let msg = Message {
+            topic: "zigbee2mqtt/bridge/devices/action".into(),
+            payload: b"on_press".to_vec(),
+        };
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    // ---- JSON state filter --------------------------------------
+
+    #[test]
+    fn state_with_only_action_field_does_not_emit() {
+        // Z2M can publish `{"action":..,"linkquality":..}` alone when
+        // the dimmer's battery hasn't changed. No tracked field is set,
+        // so the dispatch path must skip it.
+        let (registry, bus, mut rx) = fixtures();
+        handle_device_state(
+            "office",
+            "switch",
+            br#"{"action":"on_press","linkquality":168}"#,
+            &registry,
+            &bus,
+        );
+        assert!(
+            drain(&mut rx).is_empty(),
+            "action-only payload must not emit DeviceStateChanged"
+        );
+    }
+
+    #[test]
+    fn battery_only_state_payload_still_emits() {
+        // Regression guard: battery is surfaced via the HTTP API and
+        // the `get_device_state` tool, so a `{"battery":..}` update
+        // must merge into the registry and fire DeviceStateChanged.
+        let (registry, bus, mut rx) = fixtures();
+        let device_list = br#"[
+            {"ieee_address":"0x1","friendly_name":"office/sensor","type":"EndDevice"}
+        ]"#;
+        handle_device_list(device_list, &registry, &bus);
+        drain(&mut rx);
+
+        handle_device_state("office", "sensor", br#"{"battery":42}"#, &registry, &bus);
+
+        let id = DeviceId::parse("z2m:office/sensor").unwrap();
+        assert_eq!(registry.get(&id).unwrap().state.battery_percent, Some(42));
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::DeviceStateChanged { .. }));
     }
 }
