@@ -24,7 +24,7 @@ anyhow = "1"
 async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-axum = "0.7"
+axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # rustls-tls keeps us off platform OpenSSL — same call cross-platform
