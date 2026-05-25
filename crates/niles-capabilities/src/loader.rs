@@ -24,8 +24,13 @@ impl CapabilityLoader {
         let root = root.as_ref();
         let mut by_name: BTreeMap<String, Capability> = BTreeMap::new();
 
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
+        // Sort entries so duplicate detection's `first`/`second` labels and
+        // the order capabilities are encountered are reproducible across
+        // filesystems (ext4's read_dir order is not lexicographic).
+        let mut entries: Vec<_> = fs::read_dir(root)?.collect::<std::io::Result<_>>()?;
+        entries.sort_by_key(|e| e.path());
+
+        for entry in entries {
             let meta = entry.metadata()?;
             if !meta.is_dir() {
                 continue;
@@ -98,31 +103,61 @@ impl CapabilityLoader {
 
 /// Split a `SKILL.md` string into frontmatter and body.
 ///
-/// Expects the file to start with `---`, then YAML, then `---`,
-/// then the markdown body. If the first line is not `---`, returns
-/// a frontmatter error.
+/// Expects the first line to be exactly `---`, a YAML block, a line that is
+/// exactly `---`, then the markdown body. The closing delimiter must be on
+/// its own line — a `---` substring inside a YAML scalar must not terminate
+/// the frontmatter.
 fn parse_skill_md(raw: &str, dir: &Path) -> Result<(CapabilityMetadata, String)> {
     let trimmed = raw.trim_start();
 
-    // Must start with ---
-    if !trimmed.starts_with("---") {
+    // First line must be exactly `---` (allowing for `\r\n` line endings).
+    let first_newline = trimmed.find('\n');
+    let first_line = match first_newline {
+        Some(idx) => trimmed[..idx].trim_end_matches('\r'),
+        None => trimmed.trim_end_matches('\r'),
+    };
+    if first_line != "---" {
         return Err(Error::Frontmatter {
             dir: dir.to_path_buf(),
-            reason: "missing leading --- delimiter".into(),
+            reason: "first line must be `---` delimiter".into(),
         });
     }
 
-    // Find the end of frontmatter (second ---)
-    let after_open = &trimmed[3..];
-    let Some(close_idx) = after_open.find("---") else {
+    let Some(open_end) = first_newline else {
         return Err(Error::Frontmatter {
             dir: dir.to_path_buf(),
-            reason: "missing closing --- delimiter".into(),
+            reason: "missing closing `---` delimiter".into(),
+        });
+    };
+    let after_open = &trimmed[open_end + 1..];
+
+    // Walk lines until we hit one that is exactly `---`.
+    let mut search = 0;
+    let close = loop {
+        let line_end = after_open[search..]
+            .find('\n')
+            .map(|i| search + i)
+            .unwrap_or(after_open.len());
+        let line = after_open[search..line_end].trim_end_matches('\r');
+        if line == "---" {
+            break Some((search, line_end));
+        }
+        if line_end >= after_open.len() {
+            break None;
+        }
+        search = line_end + 1;
+    };
+
+    let Some((close_start, close_end)) = close else {
+        return Err(Error::Frontmatter {
+            dir: dir.to_path_buf(),
+            reason: "missing closing `---` delimiter".into(),
         });
     };
 
-    let yaml = after_open[..close_idx].trim();
-    let body = after_open[close_idx + 3..].trim_start().to_string();
+    let yaml = &after_open[..close_start];
+    let body_start = (close_end + 1).min(after_open.len());
+    let body = after_open[body_start..].trim_start().to_string();
 
     if body.is_empty() {
         return Err(Error::BodyMissing {
@@ -333,6 +368,24 @@ mod tests {
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let cap = loader.get("prereq").unwrap();
         assert_eq!(cap.metadata.prerequisites, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn yaml_scalar_containing_triple_dash_is_not_a_delimiter() {
+        // The closing `---` delimiter must be on its own line; a `---`
+        // substring inside a YAML scalar must not terminate frontmatter.
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("triple");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: triple\ndescription: \"a --- b\"\nversion: 1.0.0\n---\nBody.\n",
+        );
+
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let cap = loader.get("triple").unwrap();
+        assert_eq!(cap.metadata.description, "a --- b");
+        assert_eq!(cap.body, "Body.\n");
     }
 
     #[test]
