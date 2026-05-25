@@ -15,7 +15,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(handlers::healthz))
         .route("/devices", get(handlers::list_devices))
-        .route("/rooms/:room", get(handlers::devices_in_room))
+        .route("/rooms/{room}", get(handlers::devices_in_room))
         .with_state(state)
 }
 
