@@ -37,6 +37,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 # `cfg.home.timezone` strings like "Europe/Copenhagen".
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
+serde_yaml = "0.9"
+tempfile = "3"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
