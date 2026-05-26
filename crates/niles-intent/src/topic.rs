@@ -78,10 +78,7 @@ impl Default for CapabilityIndex {
 pub fn tokenize(s: &str) -> Vec<String> {
     s.to_lowercase()
         .split_whitespace()
-        .map(|word| {
-            word.trim_matches(|c: char| !c.is_alphanumeric())
-                .to_string()
-        })
+        .map(|word| word.chars().filter(|c| c.is_alphanumeric()).collect())
         .filter(|word| !word.is_empty() && !STOP_WORDS.contains(&word.as_str()))
         .collect()
 }
@@ -106,13 +103,14 @@ pub fn detect_topics(transcript: &str, index: &CapabilityIndex) -> Vec<String> {
     let mut visited = HashSet::new();
     let mut worklist: Vec<&str> = matched.iter().copied().collect();
     while let Some(name) = worklist.pop() {
+        let Some(&idx) = index.by_name.get(name) else {
+            continue;
+        };
         if !visited.insert(name) {
             continue;
         }
-        if let Some(&idx) = index.by_name.get(name) {
-            for prereq in &index.entries[idx].prerequisites {
-                worklist.push(prereq.as_str());
-            }
+        for prereq in &index.entries[idx].prerequisites {
+            worklist.push(prereq.as_str());
         }
     }
 
@@ -218,6 +216,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unknown_prerequisite_is_not_returned() {
+        let entries = vec![entry("lighting", "control lights", &["missing-capability"])];
+        assert_eq!(detect("lights", entries), vec!["lighting"]);
+    }
+
     // 9. Cycle in prerequisites (a → b → a) → terminates, returns both
     #[test]
     fn cycle_in_prerequisites_terminates() {
@@ -278,6 +282,11 @@ mod tests {
     #[test]
     fn tokenize_strips_punctuation() {
         assert_eq!(tokenize("lights, please."), vec!["lights", "please"]);
+    }
+
+    #[test]
+    fn tokenize_strips_internal_non_alphanumeric() {
+        assert_eq!(tokenize("can't kitchen-lights"), vec!["cant", "kitchenlights"]);
     }
 
     #[test]
