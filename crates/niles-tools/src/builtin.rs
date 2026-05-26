@@ -139,8 +139,10 @@ fn explain_light(id: &str, state: &DeviceState) -> String {
 }
 
 fn explain_switch(id: &str, state: &DeviceState) -> String {
+    // No vendor/model metadata in the registry yet, so describe the device
+    // class generically rather than guessing a brand.
     if let Some(pct) = state.battery_percent {
-        format!("{id} is a Hue dimmer switch (button device); battery {pct}%")
+        format!("{id} is a button device; battery {pct}%")
     } else {
         format!("{id} is a button device; no battery report yet")
     }
@@ -1021,7 +1023,7 @@ mod tests {
         );
         assert_eq!(
             explain_device(&d),
-            "office/switch is a Hue dimmer switch (button device); battery 100%"
+            "office/switch is a button device; battery 100%"
         );
     }
 
@@ -1104,6 +1106,20 @@ mod tests {
         assert_eq!(
             s,
             "garage/unknown_thing is an unclassified device; on: true, brightness: 50"
+        );
+    }
+
+    #[tokio::test]
+    async fn explain_device_state_wraps_sentence_under_explanation_key() {
+        let reg = fixture_registry();
+        let tool = ExplainDeviceState::new(reg);
+        let args = json!({ "device_id": "kitchen/ceiling_light" });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "explanation": "kitchen/ceiling_light is on at 80% brightness, color temperature 3000K"
+            })
         );
     }
 
