@@ -17,6 +17,12 @@ pub enum Error {
     #[error("device not found: {id}")]
     DeviceNotFound { id: String },
 
+    #[error("device {id} is a {class:?}; set_device only accepts lights")]
+    WrongDeviceClass {
+        id: String,
+        class: niles_core::DeviceClass,
+    },
+
     #[error("room not found: {name}")]
     RoomNotFound { name: String },
 
