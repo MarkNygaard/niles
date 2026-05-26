@@ -560,8 +560,9 @@ impl Tool for CancelTimer {
 
     async fn execute(&self, args: Value) -> Result<Value> {
         let name = required_str("cancel_timer", &args, "name")?;
+        let canonical = canonicalize_name(name);
         let count = self.timers.cancel_by_name(name);
-        Ok(json!({ "cancelled": count, "name": name }))
+        Ok(json!({ "cancelled": count, "name": canonical }))
     }
 }
 
@@ -1406,6 +1407,7 @@ mod tests {
         let tool = CancelTimer::new(store.clone());
         let result = tool.execute(json!({ "name": " Pasta " })).await.unwrap();
         assert_eq!(result["cancelled"], 1);
+        assert_eq!(result["name"], "pasta"); // echoed canonical, not the raw input
         assert_eq!(store.list().len(), 0);
     }
 
