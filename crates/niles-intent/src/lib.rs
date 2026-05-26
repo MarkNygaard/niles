@@ -11,6 +11,8 @@
 
 pub mod intent;
 pub mod router;
+pub mod topic;
 
 pub use intent::Intent;
 pub use router::IntentRouter;
+pub use topic::{CapabilityIndex, CapabilityIndexEntry, detect_topics};
