@@ -1,6 +1,7 @@
 //! niles — AI-first home automation system.
 
 use anyhow::Context;
+use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use niles_api::AppState;
 use niles_config::Config;
@@ -12,8 +13,8 @@ use niles_mqtt::{
 };
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
-    SceneStore, SwitchEffect, brightness_at, build_curve_target, classify_action, color_temp_at,
-    routine_brightness_at, should_fire_today,
+    SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
+    classify_action, color_temp_at, routine_brightness_at, should_fire_today,
 };
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::ToolRegistry;
@@ -902,6 +903,54 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         }
     });
 
+    // In-memory timer store + driver task. The driver wakes on the
+    // soonest pending expiry (`next_expiry`), transitions matching
+    // timers from Pending -> Ringing, prints a user-visible FIRED line,
+    // and publishes Event::TimerFired for any future consumer
+    // (satellite-alarm playback is XVF3800-blocked, out of scope here).
+    // Idle wake every 60 s so a timer added after a long idle is
+    // still seen promptly.
+    let timer_store = Arc::new(TimerStore::new());
+    let timer_bus = bus.clone();
+    let timer_store_for_driver = Arc::clone(&timer_store);
+    let timer_handle = tokio::spawn(async move {
+        use tokio::time::sleep;
+        loop {
+            let now = Utc::now();
+            let sleep_for = match timer_store_for_driver.next_expiry() {
+                Some(exp) => {
+                    let ms = (exp - now).num_milliseconds().max(0) as u64;
+                    std::time::Duration::from_millis(ms)
+                }
+                None => std::time::Duration::from_secs(60),
+            };
+            sleep(sleep_for).await;
+
+            let now = Utc::now();
+            let to_fire: Vec<TimerEntry> = timer_store_for_driver
+                .list()
+                .into_iter()
+                .filter(|e| e.is_pending() && e.expires_at <= now)
+                .collect();
+
+            for entry in to_fire {
+                if let Some(rung) = timer_store_for_driver.mark_ringing(entry.id) {
+                    println!(
+                        "[timer] FIRED {} (peer={}, id={})",
+                        timer_label(&rung),
+                        rung.origin,
+                        rung.id.0,
+                    );
+                    timer_bus.publish(Event::TimerFired {
+                        id: rung.id.0,
+                        name: rung.name.clone(),
+                        origin: rung.origin,
+                    });
+                }
+            }
+        }
+    });
+
     // Build the LLM + tool registry once for the lifetime of the
     // server. Both go into DispatchCtx wrapped in Arc — they're cloned
     // (Arc::clone) into every spawned dispatch task. No Z2M warm-up
@@ -941,6 +990,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         dry_run: args.dry_run,
         tracker: Arc::new(ManualModeTracker::new()),
         scenes: Arc::new(SceneStore::new()),
+        timers: Arc::clone(&timer_store),
         llm,
         tools,
     };
@@ -984,6 +1034,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 
     server_handle.abort();
     source_handle.abort();
+    timer_handle.abort();
     Ok(())
 }
 
@@ -997,6 +1048,7 @@ struct DispatchCtx {
     dry_run: bool,
     tracker: Arc<ManualModeTracker>,
     scenes: Arc<SceneStore>,
+    timers: Arc<TimerStore>,
     llm: Arc<GroqClient>,
     tools: Arc<ToolRegistry>,
 }
@@ -1157,8 +1209,45 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                 );
             }
         },
-        Intent::TimerSet { .. } | Intent::Stop | Intent::Cancel => {
-            tracing::info!("{peer}: intent recognized but dispatch not wired yet");
+        Intent::TimerSet { duration, name } => {
+            let id = ctx.timers.set(duration, name.clone(), peer, Utc::now());
+            let label = match &name {
+                Some(n) => format!("'{n}' timer"),
+                None => format!("{} minute timer", duration.as_secs() / 60),
+            };
+            println!("[{peer}] {label} started (id={})", id.0);
+        }
+        Intent::Stop | Intent::Cancel => {
+            if let Some(stopped) = ctx.timers.stop_most_recent_ringing() {
+                println!("[{peer}] stopped {}", timer_label(&stopped));
+            } else {
+                println!("[{peer}] nothing ringing to stop");
+            }
+        }
+        Intent::TimerCancel { name } => {
+            let n = ctx.timers.cancel_by_name(&name);
+            if n == 0 {
+                println!("[{peer}] no timer named {name:?}");
+            } else {
+                println!("[{peer}] cancelled {n} timer(s) named {name:?}");
+            }
+        }
+        Intent::TimerList => {
+            let entries = ctx.timers.list();
+            if entries.is_empty() {
+                println!("[{peer}] no active timers");
+            } else {
+                println!("[{peer}] {} active timer(s):", entries.len());
+                for e in &entries {
+                    println!(
+                        "  - id={} {} (state={:?}, expires_at={})",
+                        e.id.0,
+                        timer_label(e),
+                        e.state,
+                        e.expires_at,
+                    );
+                }
+            }
         }
         _ => {
             tracing::info!("{peer}: unknown intent variant, skipping dispatch");
@@ -1467,6 +1556,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         dry_run: args.dry_run,
         tracker: tracker.clone(),
         scenes: Arc::new(SceneStore::new()),
+        timers: Arc::new(TimerStore::new()),
         llm,
         tools,
     };
@@ -1892,6 +1982,15 @@ async fn run_morning_routine_tick(
     }
 }
 
+/// Presentation helper for a timer entry — lives in the binary, not
+/// the scheduler, because user-facing strings are a dispatch concern.
+fn timer_label(entry: &TimerEntry) -> String {
+    match &entry.name {
+        Some(n) => format!("'{n}' timer"),
+        None => format!("{} minute timer", entry.duration.as_secs() / 60),
+    }
+}
+
 /// Compact, human-readable rendering of an [`Intent`] for the dev
 /// dispatch log. `{:?}` works but the output is noisier than we want
 /// when each line is a single utterance.
@@ -1920,6 +2019,8 @@ fn format_intent(intent: &Intent) -> String {
         Intent::SceneApply { name } => format!("SceneApply({name:?})"),
         Intent::SceneList => "SceneList".into(),
         Intent::SceneDelete { name } => format!("SceneDelete({name:?})"),
+        Intent::TimerCancel { name } => format!("TimerCancel({name:?})"),
+        Intent::TimerList => "TimerList".into(),
         Intent::Stop => "Stop".into(),
         Intent::Cancel => "Cancel".into(),
         other => format!("{other:?}"),

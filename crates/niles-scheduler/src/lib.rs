@@ -8,6 +8,7 @@
 //! - [`manual_mode`] — the manual-mode tracker for per-light override.
 //! - [`morning`] — the morning auto-turn-on routine + claim tracker.
 //! - [`switch`] — pure-logic classifier for hardware button events.
+//! - [`timer`] — in-memory timer store for voice-dispatch timers.
 
 pub mod curve;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod scenes;
 pub mod sink;
 pub mod switch;
 pub mod time;
+pub mod timer;
 
 pub use curve::{CurveConfig, Phase, brightness_at, color_temp_at, phase_at};
 pub use error::{Error, Result};
@@ -28,3 +30,4 @@ pub use scenes::{SceneEntry, SceneStore};
 pub use sink::{BRIGHTNESS_DEBOUNCE, build_curve_target};
 pub use switch::{SwitchEffect, classify_action};
 pub use time::MinuteOfDay;
+pub use timer::{TimerEntry, TimerId, TimerState, TimerStore};

@@ -33,6 +33,8 @@ impl IntentRouter {
             .or_else(|| match_scene_list(&t))
             .or_else(|| match_scene_delete(&t))
             .or_else(|| match_timer(&t))
+            .or_else(|| match_timer_cancel(&t))
+            .or_else(|| match_timer_list(&t))
             .or_else(|| match_stop_cancel(&t))
     }
 }
@@ -405,6 +407,55 @@ fn match_timer(t: &str) -> Option<Intent> {
     })
 }
 
+// ---- Timer cancel (named) ------------------------------------------------
+
+fn timer_cancel_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:cancel|stop)\s+(?:the\s+)?(?P<name>.+?)\s+timer
+              $",
+        )
+        .expect("timer_cancel regex compiles")
+    })
+}
+
+fn match_timer_cancel(t: &str) -> Option<Intent> {
+    let caps = timer_cancel_regex().captures(t)?;
+    let name = caps.name("name")?.as_str().trim();
+    if name.is_empty() || name == "the" || name == "lights" {
+        return None;
+    }
+    Some(Intent::TimerCancel {
+        name: name.to_string(),
+    })
+}
+
+// ---- Timer list ----------------------------------------------------------
+
+fn timer_list_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                (?:list|show)\s+(?:me\s+)?(?:my\s+)?timers
+              |
+                what\s+timers\s+do\s+i\s+have
+              )
+              $",
+        )
+        .expect("timer_list regex compiles")
+    })
+}
+
+fn match_timer_list(t: &str) -> Option<Intent> {
+    timer_list_regex().is_match(t).then_some(Intent::TimerList)
+}
+
 // ---- Stop / cancel ---------------------------------------------------------
 
 fn match_stop_cancel(t: &str) -> Option<Intent> {
@@ -683,6 +734,49 @@ mod tests {
         // u64::MAX minutes would overflow when multiplied by 60.
         let input = format!("set a timer for {} minutes", u64::MAX);
         assert_eq!(parse(&input), None);
+    }
+
+    #[test]
+    fn cancel_the_pasta_timer_returns_timer_cancel() {
+        assert_eq!(
+            parse("cancel the pasta timer"),
+            Some(Intent::TimerCancel {
+                name: "pasta".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn stop_the_pasta_timer_alt_form() {
+        assert_eq!(
+            parse("stop the pasta timer"),
+            Some(Intent::TimerCancel {
+                name: "pasta".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn cancel_timer_without_name_falls_through() {
+        // "cancel timer" lacks a name segment, so it must NOT match
+        // timer_cancel. "cancel" alone should still hit Intent::Cancel.
+        assert_eq!(parse("cancel timer"), None);
+        assert_eq!(parse("cancel"), Some(Intent::Cancel));
+    }
+
+    #[test]
+    fn list_my_timers_returns_timer_list() {
+        assert_eq!(parse("list my timers"), Some(Intent::TimerList));
+    }
+
+    #[test]
+    fn show_me_my_timers_returns_timer_list() {
+        assert_eq!(parse("show me my timers"), Some(Intent::TimerList));
+    }
+
+    #[test]
+    fn what_timers_do_i_have_returns_timer_list() {
+        assert_eq!(parse("what timers do I have"), Some(Intent::TimerList));
     }
 
     // ---- Back to normal ----
