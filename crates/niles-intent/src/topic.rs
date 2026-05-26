@@ -78,7 +78,11 @@ impl Default for CapabilityIndex {
 pub fn tokenize(s: &str) -> Vec<String> {
     s.to_lowercase()
         .split_whitespace()
-        .map(|word| word.chars().filter(|c| c.is_alphanumeric()).collect())
+        .map(|word| {
+            word.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
         .filter(|word| !word.is_empty() && !STOP_WORDS.contains(&word.as_str()))
         .collect()
 }
@@ -286,7 +290,10 @@ mod tests {
 
     #[test]
     fn tokenize_strips_internal_non_alphanumeric() {
-        assert_eq!(tokenize("can't kitchen-lights"), vec!["cant", "kitchenlights"]);
+        assert_eq!(
+            tokenize("can't kitchen-lights"),
+            vec!["cant", "kitchenlights"]
+        );
     }
 
     #[test]
