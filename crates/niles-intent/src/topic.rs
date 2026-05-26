@@ -41,7 +41,11 @@ impl CapabilityIndex {
             .collect();
         let token_sets = entries
             .iter()
-            .map(|e| tokenize(&format!("{} {}", e.name, e.description)).into_iter().collect())
+            .map(|e| {
+                tokenize(&format!("{} {}", e.name, e.description))
+                    .into_iter()
+                    .collect()
+            })
             .collect();
         Self {
             entries,
@@ -74,7 +78,10 @@ impl Default for CapabilityIndex {
 pub fn tokenize(s: &str) -> Vec<String> {
     s.to_lowercase()
         .split_whitespace()
-        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
         .filter(|word| !word.is_empty() && !STOP_WORDS.contains(&word.as_str()))
         .collect()
 }
