@@ -461,7 +461,9 @@ fn match_timer_list(t: &str) -> Option<Intent> {
 fn match_stop_cancel(t: &str) -> Option<Intent> {
     match t {
         "stop" => Some(Intent::Stop),
+        "stop the timer" => Some(Intent::Stop),
         "cancel" => Some(Intent::Cancel),
+        "cancel the timer" => Some(Intent::Cancel),
         _ => None,
     }
 }
@@ -762,6 +764,12 @@ mod tests {
         // timer_cancel. "cancel" alone should still hit Intent::Cancel.
         assert_eq!(parse("cancel timer"), None);
         assert_eq!(parse("cancel"), Some(Intent::Cancel));
+    }
+
+    #[test]
+    fn stop_or_cancel_the_timer_maps_to_ack_intents() {
+        assert_eq!(parse("stop the timer"), Some(Intent::Stop));
+        assert_eq!(parse("cancel the timer"), Some(Intent::Cancel));
     }
 
     #[test]
