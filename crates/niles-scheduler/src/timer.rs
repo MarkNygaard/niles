@@ -92,8 +92,15 @@ impl TimerStore {
         let mut inner = self.inner_write();
         let id = TimerId(inner.next_id);
         inner.next_id += 1;
-        let expires_at =
-            now + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::zero());
+        // Voice input can produce absurd durations ("set a timer for
+        // a trillion minutes"). `chrono::Duration::from_std` rejects
+        // values beyond i64-milliseconds, and `DateTime + Duration`
+        // panics on year-range overflow. Treat both as "fire now"
+        // rather than crash the driver task.
+        let expires_at = chrono::Duration::from_std(duration)
+            .ok()
+            .and_then(|d| now.checked_add_signed(d))
+            .unwrap_or(now);
         let entry = TimerEntry {
             id,
             name: name.as_deref().map(canonicalize_name),
@@ -377,5 +384,21 @@ mod tests {
     fn next_expiry_none_when_empty() {
         let store = TimerStore::new();
         assert!(store.next_expiry().is_none());
+    }
+
+    #[test]
+    fn set_with_overflowing_duration_falls_back_to_now() {
+        // Regression: `now + chrono::Duration::from_std(d)` panics on
+        // DateTime year-range overflow. A trillion-minute timer is
+        // a plausible voice-transcription artifact and must not crash
+        // the driver task.
+        let store = TimerStore::new();
+        let now = Utc::now();
+        let huge = Duration::from_secs(u64::MAX);
+        let id = store.set(huge, None, localhost(), now);
+        let entries = store.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, id);
+        assert_eq!(entries[0].expires_at, now);
     }
 }
