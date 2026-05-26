@@ -89,7 +89,7 @@ impl DeviceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::{DeviceName, RoomName};
+    use crate::device::{DeviceClass, DeviceName, RoomName};
 
     fn make_device(room: &str, name: &str) -> Device {
         Device {
@@ -100,6 +100,7 @@ mod tests {
             )
             .unwrap(),
             state: DeviceState::default(),
+            class: DeviceClass::Unknown,
         }
     }
 

@@ -159,10 +159,32 @@ pub struct DeviceState {
     pub battery_percent: Option<u8>,
 }
 
+/// Classification of a device based on its upstream capabilities.
+///
+/// Derived at registry-population time from Z2M's `definition.exposes`
+/// metadata (or equivalent for future sources). Used to distinguish
+/// lights from switches and sensors without relying on runtime state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DeviceClass {
+    Light,
+    Switch,
+    Sensor,
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct Device {
     pub id: DeviceId,
     pub state: DeviceState,
+    pub class: DeviceClass,
+}
+
+impl Device {
+    /// True if this device is classified as a light.
+    pub fn is_light(&self) -> bool {
+        matches!(self.class, DeviceClass::Light)
+    }
 }
 
 #[cfg(test)]

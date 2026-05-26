@@ -33,7 +33,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use niles_core::{Device, DeviceId, DeviceName, DeviceRegistry, DeviceState, RoomName};
+    use niles_core::{
+        Device, DeviceClass, DeviceId, DeviceName, DeviceRegistry, DeviceState, RoomName,
+    };
     use serde_json::Value;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -51,6 +53,7 @@ mod tests {
             )
             .unwrap(),
             state: DeviceState::default(),
+            class: DeviceClass::Unknown,
         }
     }
 
@@ -152,6 +155,7 @@ mod tests {
         let mut device = make_device("kitchen", "ceiling_light");
         device.state.on = Some(true);
         device.state.brightness = Some(80);
+        device.class = DeviceClass::Light;
         state.registry.upsert(device);
         let app = router(state);
 
@@ -162,9 +166,39 @@ mod tests {
         assert_eq!(d["source"], "z2m");
         assert_eq!(d["room"], "kitchen");
         assert_eq!(d["name"], "ceiling_light");
+        assert_eq!(d["class"], "light");
         assert_eq!(d["state"]["on"], true);
         assert_eq!(d["state"]["brightness"], 80);
         // Unset fields are JSON null:
         assert_eq!(d["state"]["color_temp_kelvin"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn device_dto_serializes_all_class_variants() {
+        let state = make_state();
+        for (room, name, class) in [
+            ("kitchen", "light", DeviceClass::Light),
+            ("kitchen", "dimmer", DeviceClass::Switch),
+            ("kitchen", "thermometer", DeviceClass::Sensor),
+            ("kitchen", "mystery", DeviceClass::Unknown),
+        ] {
+            let mut d = make_device(room, name);
+            d.class = class;
+            state.registry.upsert(d);
+        }
+        let app = router(state);
+
+        let (status, body) = get(app, "/devices").await;
+        assert_eq!(status, StatusCode::OK);
+        let by_name: std::collections::HashMap<&str, &str> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| (d["name"].as_str().unwrap(), d["class"].as_str().unwrap()))
+            .collect();
+        assert_eq!(by_name["light"], "light");
+        assert_eq!(by_name["dimmer"], "switch");
+        assert_eq!(by_name["thermometer"], "sensor");
+        assert_eq!(by_name["mystery"], "unknown");
     }
 }

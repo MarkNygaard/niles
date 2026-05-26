@@ -9,7 +9,7 @@ pub mod error;
 pub mod event;
 pub mod registry;
 
-pub use device::{Device, DeviceId, DeviceName, DeviceState, RoomName};
+pub use device::{Device, DeviceClass, DeviceId, DeviceName, DeviceState, RoomName};
 pub use error::{Error, Result};
 pub use event::{Event, EventBus};
 pub use registry::DeviceRegistry;
