@@ -25,6 +25,20 @@ pub enum Event {
         /// vocabulary; consumers parse what they care about.
         action: String,
     },
+    /// A timer registered via `Intent::TimerSet` has reached its
+    /// `expires_at`. Emitted once when the driver flips the entry from
+    /// `Pending` to `Ringing`. Future consumer: satellite alarm playback.
+    TimerFired {
+        /// The `TimerId.0` value — kept as a raw `u64` to avoid an
+        /// upward dep on `niles-scheduler`.
+        id: u64,
+        /// Canonical (trim + lowercase + underscore) name, or `None`
+        /// if the user didn't name the timer.
+        name: Option<String>,
+        /// Satellite (peer) `SocketAddr` that issued the original
+        /// `TimerSet`. Used later for two-stage escalation.
+        origin: std::net::SocketAddr,
+    },
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.
@@ -117,6 +131,30 @@ mod tests {
                 assert_eq!(action, "on_press");
             }
             _ => panic!("expected DeviceAction"),
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_reaches_subscriber_timer_fired() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+        let origin: std::net::SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        bus.publish(Event::TimerFired {
+            id: 42,
+            name: Some("pasta".into()),
+            origin,
+        });
+        match rx.recv().await.unwrap() {
+            Event::TimerFired {
+                id,
+                name,
+                origin: o,
+            } => {
+                assert_eq!(id, 42);
+                assert_eq!(name.as_deref(), Some("pasta"));
+                assert_eq!(o, origin);
+            }
+            _ => panic!("expected TimerFired"),
         }
     }
 }

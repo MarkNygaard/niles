@@ -75,6 +75,16 @@ pub enum Intent {
         name: Option<String>,
     },
 
+    /// "cancel the pasta timer" / "stop the pasta timer" — named
+    /// cancellation. `name` is the raw user-said name; `TimerStore`
+    /// canonicalizes (trim + ASCII lowercase + whitespace -> `_`).
+    TimerCancel {
+        name: String,
+    },
+
+    /// "list my timers" / "what timers do I have"
+    TimerList,
+
     /// Acknowledgments used to stop an in-progress alarm.
     Stop,
     Cancel,
