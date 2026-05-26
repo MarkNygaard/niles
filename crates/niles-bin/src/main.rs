@@ -597,8 +597,6 @@ fn build_capability_loader(
     }
 }
 
-/// Build the default tool registry and optionally register
-/// `look_up_capability` when a capabilities directory is configured.
 fn build_tool_registry(
     registry: Arc<DeviceRegistry>,
     publisher: MqttPublisher,
