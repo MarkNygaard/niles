@@ -488,6 +488,7 @@ pub fn default_registry(
     z2m_prefix: Arc<String>,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
+    reg.register(Box::new(ExplainDeviceState::new(registry.clone())));
     reg.register(Box::new(GetDeviceState::new(registry.clone())));
     reg.register(Box::new(ListDevicesInRoom::new(registry.clone())));
     reg.register(Box::new(ListAllDevices::new(registry.clone())));
@@ -1162,5 +1163,13 @@ mod tests {
         let args = json!({});
         let err = tool.execute(args).await.unwrap_err();
         assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "explain_device_state"));
+    }
+
+    #[test]
+    fn default_registry_includes_explain_device_state() {
+        let reg = fixture_registry();
+        let tools = default_registry(reg, MqttPublisher::new(), Arc::new("z2m".into()));
+        let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
+        assert!(names.contains(&"explain_device_state".to_string()));
     }
 }
