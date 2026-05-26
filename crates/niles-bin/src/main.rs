@@ -4,6 +4,7 @@ use anyhow::Context;
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use niles_api::AppState;
+use niles_capabilities::CapabilityLoader;
 use niles_config::Config;
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
 use niles_intent::{Intent, IntentRouter};
@@ -17,7 +18,7 @@ use niles_scheduler::{
     classify_action, color_temp_at, routine_brightness_at, should_fire_today,
 };
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
-use niles_tools::ToolRegistry;
+use niles_tools::{LookUpCapability, ToolRegistry};
 use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingServer};
 use serde_json::json;
@@ -559,6 +560,58 @@ fn build_groq_client(cfg: &Config) -> anyhow::Result<GroqClient> {
     GroqClient::new(groq_cfg).context("building Groq HTTP client")
 }
 
+/// Build a `CapabilityLoader` from config, or `None` if capabilities
+/// are not configured or fail to load. A loader failure is **not
+/// fatal** — niles starts without the `look_up_capability` tool and
+/// logs the cause. This matches the optional-subsystem semantics of
+/// the voice / STT / TTS stacks.
+fn build_capability_loader(
+    cfg: &niles_config::CapabilitiesConfig,
+) -> Option<Arc<CapabilityLoader>> {
+    let Some(dir) = &cfg.directory else {
+        tracing::info!(
+            "no capabilities directory configured; LLM will run without look_up_capability"
+        );
+        return None;
+    };
+    match CapabilityLoader::load_from_dir(dir) {
+        Ok(loader) if loader.is_empty() => {
+            tracing::warn!(
+                "capability directory {} is empty; not registering look_up_capability",
+                dir.display()
+            );
+            None
+        }
+        Ok(loader) => {
+            tracing::info!(
+                "loaded {} capabilities from {}",
+                loader.len(),
+                dir.display()
+            );
+            Some(Arc::new(loader))
+        }
+        Err(e) => {
+            tracing::warn!("failed to load capabilities from {}: {e}", dir.display());
+            None
+        }
+    }
+}
+
+/// Build the default tool registry and optionally register
+/// `look_up_capability` when a capabilities directory is configured.
+fn build_tool_registry(
+    registry: Arc<DeviceRegistry>,
+    publisher: MqttPublisher,
+    z2m_prefix: Arc<String>,
+    capabilities: &niles_config::CapabilitiesConfig,
+) -> ToolRegistry {
+    let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
+    if let Some(loader) = build_capability_loader(capabilities) {
+        tools.register(Box::new(LookUpCapability::new(loader)));
+    }
+    tools
+}
+
 /// Build a `PiperClient` from the `[tts]` section of an already-
 /// validated config.
 fn build_piper_client(cfg: &Config) -> anyhow::Result<PiperClient> {
@@ -745,7 +798,8 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let tools_registry = niles_tools::default_registry(registry.clone(), publisher, z2m_prefix);
+    let tools_registry =
+        build_tool_registry(registry.clone(), publisher, z2m_prefix, &cfg.capabilities);
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
 
@@ -962,10 +1016,11 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // startup (wake-word + speech + STT round-trip), so Z2M has plenty
     // of time to populate before any tool call hits the registry.
     let llm = Arc::new(build_groq_client(&cfg)?);
-    let tools = Arc::new(niles_tools::default_registry(
+    let tools = Arc::new(build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
+        &cfg.capabilities,
     ));
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
@@ -1517,10 +1572,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // transcript arrives, by which point Z2M has had seconds to
     // populate. See voice_dispatch for the same reasoning.
     let llm = Arc::new(build_groq_client(&cfg)?);
-    let tools = Arc::new(niles_tools::default_registry(
+    let tools = Arc::new(build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
+        &cfg.capabilities,
     ));
 
     // HTTP API

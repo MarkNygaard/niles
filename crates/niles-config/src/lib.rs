@@ -8,6 +8,7 @@
 //! land alongside the crates that consume them.
 
 pub mod api;
+pub mod capabilities;
 pub mod error;
 pub mod home;
 pub mod lighting;
@@ -21,6 +22,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 pub use api::ApiConfig;
+pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
@@ -37,6 +39,8 @@ pub struct Config {
     pub home: HomeConfig,
     pub mqtt: MqttConfig,
     pub api: ApiConfig,
+    #[serde(default)]
+    pub capabilities: CapabilitiesConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -82,6 +86,7 @@ impl Config {
         self.home.validate()?;
         self.mqtt.validate()?;
         self.api.validate()?;
+        self.capabilities.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
@@ -687,5 +692,48 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
             "[lighting.morning_routine]\nunknown_field = 42",
         );
         assert!(Config::load_from_str(&bad).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Capabilities section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn capabilities_section_absent_defaults_to_none() {
+        // The existing valid_toml() has no [capabilities] section.
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.capabilities.directory.is_none());
+    }
+
+    #[test]
+    fn capabilities_directory_parses_into_pathbuf() {
+        let toml = format!(
+            "{}\n[capabilities]\ndirectory = \"/x\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.capabilities.directory.as_deref(),
+            Some(std::path::Path::new("/x"))
+        );
+    }
+
+    #[test]
+    fn rejects_empty_capabilities_directory() {
+        let toml = format!(
+            "{}\n[capabilities]\ndirectory = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "capabilities",
+                ..
+            }
+        ));
     }
 }
