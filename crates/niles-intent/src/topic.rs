@@ -187,8 +187,8 @@ mod tests {
     // 6. Capability matches only via description tokens → still returned
     #[test]
     fn description_only_match() {
-        let entries = vec![entry(" ambiance", "mood lighting for your rooms", &[])];
-        assert_eq!(detect("mood lighting", entries), vec![" ambiance"]);
+        let entries = vec![entry("ambiance", "mood lighting for your rooms", &[])];
+        assert_eq!(detect("mood lighting", entries), vec!["ambiance"]);
     }
 
     // 7. Prerequisite resolution: lighting → devices
