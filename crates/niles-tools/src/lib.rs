@@ -11,8 +11,8 @@ pub mod registry;
 pub mod tool;
 
 pub use builtin::{
-    GetDeviceState, ListAllDevices, ListDevicesInRoom, LookUpCapability, SetDevice,
-    default_registry,
+    ExplainDeviceState, GetDeviceState, ListAllDevices, ListDevicesInRoom, LookUpCapability,
+    SetDevice, default_registry,
 };
 pub use error::{Error, Result};
 pub use registry::ToolRegistry;

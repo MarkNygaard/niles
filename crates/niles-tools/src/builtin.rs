@@ -5,7 +5,7 @@ use crate::registry::ToolRegistry;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use niles_capabilities::CapabilityLoader;
-use niles_core::{DeviceId, DeviceRegistry, DeviceState, RoomName};
+use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
 use niles_mqtt::{MqttPublisher, format_set_command, is_actionable};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -37,15 +37,11 @@ fn device_summary(device: &niles_core::Device) -> Value {
 }
 
 fn device_full(device: &niles_core::Device) -> Value {
-    json!({
-        "id": format!("{}/{}", device.id.room(), device.id.name()),
-        "on": device.state.on,
-        "brightness": device.state.brightness,
-        "color_temp_kelvin": device.state.color_temp_kelvin,
-        "temperature_celsius": device.state.temperature_celsius,
-        "humidity_percent": device.state.humidity_percent,
-        "battery_percent": device.state.battery_percent,
-    })
+    let mut v = device_summary(device);
+    v["temperature_celsius"] = json!(device.state.temperature_celsius);
+    v["humidity_percent"] = json!(device.state.humidity_percent);
+    v["battery_percent"] = json!(device.state.battery_percent);
+    v
 }
 
 /// Extract and validate `DeviceState` from `set_device` arguments.
@@ -105,6 +101,98 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
     Ok(state)
 }
 
+// ---------- explain_device formatters ----------
+
+fn explain_device(device: &niles_core::Device) -> String {
+    let id = format!("{}/{}", device.id.room(), device.id.name());
+    match device.class {
+        DeviceClass::Light => explain_light(&id, &device.state),
+        DeviceClass::Switch => explain_switch(&id, &device.state),
+        DeviceClass::Sensor => explain_sensor(&id, &device.state),
+        // DeviceClass is #[non_exhaustive]; Unknown and future variants fall back to generic.
+        _ => explain_unknown(&id, &device.state),
+    }
+}
+
+fn explain_light(id: &str, state: &DeviceState) -> String {
+    match state.on {
+        Some(true) => {
+            let mut s = format!("{id} is on");
+            if let Some(b) = state.brightness {
+                s.push_str(&format!(" at {b}% brightness"));
+            }
+            if let Some(k) = state.color_temp_kelvin {
+                s.push_str(&format!(", color temperature {k}K"));
+            }
+            s
+        }
+        Some(false) => {
+            // When the light is off we ignore brightness / kelvin.
+            format!("{id} is off")
+        }
+        None => {
+            // Without on/off we can't say anything meaningful; any
+            // partial fields are still "not reported yet".
+            format!("{id} is a light but its state hasn't been reported yet")
+        }
+    }
+}
+
+fn explain_switch(id: &str, state: &DeviceState) -> String {
+    if let Some(pct) = state.battery_percent {
+        format!("{id} is a Hue dimmer switch (button device); battery {pct}%")
+    } else {
+        format!("{id} is a button device; no battery report yet")
+    }
+}
+
+fn explain_sensor(id: &str, state: &DeviceState) -> String {
+    let mut parts = Vec::new();
+    if let Some(t) = state.temperature_celsius {
+        parts.push(format!("temperature {t:.1}°C"));
+    }
+    // Note: brief claims u8, but niles_core declares Option<f32>.
+    // Using {:.0} to render as integer-shaped percent.
+    if let Some(h) = state.humidity_percent {
+        parts.push(format!("humidity {h:.0}%"));
+    }
+    if let Some(b) = state.battery_percent {
+        parts.push(format!("battery {b}%"));
+    }
+    if parts.is_empty() {
+        format!("{id} is a sensor but no readings have been reported yet")
+    } else {
+        format!("{id} is a sensor; {}", parts.join(", "))
+    }
+}
+
+fn explain_unknown(id: &str, state: &DeviceState) -> String {
+    let mut parts = Vec::new();
+    if let Some(v) = state.on {
+        parts.push(format!("on: {v}"));
+    }
+    if let Some(v) = state.brightness {
+        parts.push(format!("brightness: {v}"));
+    }
+    if let Some(v) = state.color_temp_kelvin {
+        parts.push(format!("color_temp_kelvin: {v}"));
+    }
+    if let Some(v) = state.temperature_celsius {
+        parts.push(format!("temperature_celsius: {v:.1}"));
+    }
+    if let Some(v) = state.humidity_percent {
+        parts.push(format!("humidity_percent: {v:.0}"));
+    }
+    if let Some(v) = state.battery_percent {
+        parts.push(format!("battery_percent: {v}"));
+    }
+    if parts.is_empty() {
+        format!("{id} is an unclassified device with no state reported")
+    } else {
+        format!("{id} is an unclassified device; {}", parts.join(", "))
+    }
+}
+
 // ---------- GetDeviceState ----------
 
 pub struct GetDeviceState {
@@ -141,6 +229,45 @@ impl Tool for GetDeviceState {
             .get(&id)
             .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?;
         Ok(device_full(&device))
+    }
+}
+
+// ---------- ExplainDeviceState ----------
+
+pub struct ExplainDeviceState {
+    registry: Arc<DeviceRegistry>,
+}
+
+impl ExplainDeviceState {
+    pub fn new(registry: Arc<DeviceRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait]
+impl Tool for ExplainDeviceState {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "explain_device_state".into(),
+            description: "Return a human-readable one-sentence description of a single device's current state. Use this when responding to the user about a device, not get_device_state (which returns raw JSON).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string", "description": "Room-qualified id, e.g. 'kitchen/ceiling_light'." }
+                },
+                "required": ["device_id"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let raw = required_str("explain_device_state", &args, "device_id")?;
+        let id = parse_device_id("explain_device_state", raw)?;
+        let device = self
+            .registry
+            .get(&id)
+            .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?;
+        Ok(json!({ "explanation": explain_device(&device) }))
     }
 }
 
@@ -323,20 +450,21 @@ impl Tool for LookUpCapability {
 
     async fn execute(&self, args: Value) -> Result<Value> {
         let name = required_str("look_up_capability", &args, "name")?;
-        match self.loader.get(name) {
-            Some(cap) => Ok(json!({
+        if let Some(cap) = self.loader.get(name) {
+            Ok(json!({
                 "found": true,
                 "name": cap.metadata.name,
                 "description": cap.metadata.description,
                 "version": cap.metadata.version,
                 "prerequisites": cap.metadata.prerequisites,
                 "body": cap.body
-            })),
-            None => Ok(json!({
+            }))
+        } else {
+            Ok(json!({
                 "found": false,
                 "name": name,
                 "available": self.loader.names()
-            })),
+            }))
         }
     }
 }
@@ -783,5 +911,217 @@ mod tests {
             matches!(err, Error::WrongDeviceClass { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
         );
         assert!(mock.topics.lock().await.is_empty());
+    }
+
+    // ---------- explain_device_state tests ----------
+
+    #[test]
+    fn explain_light_full_state() {
+        let d = device(
+            "office/lightstrip",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(true),
+                brightness: Some(100),
+                color_temp_kelvin: Some(2857),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/lightstrip is on at 100% brightness, color temperature 2857K"
+        );
+    }
+
+    #[test]
+    fn explain_light_no_kelvin() {
+        let d = device(
+            "office/lightstrip",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(true),
+                brightness: Some(80),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/lightstrip is on at 80% brightness"
+        );
+    }
+
+    #[test]
+    fn explain_light_on_only() {
+        let d = device(
+            "office/lightstrip",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(explain_device(&d), "office/lightstrip is on");
+    }
+
+    #[test]
+    fn explain_light_off_ignores_brightness() {
+        let d = device(
+            "living_room/floor_lamp",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(false),
+                brightness: Some(50),
+                ..Default::default()
+            },
+        );
+        assert_eq!(explain_device(&d), "living_room/floor_lamp is off");
+    }
+
+    #[test]
+    fn explain_light_no_state_says_not_reported() {
+        let d = device(
+            "bedroom/light",
+            DeviceClass::Light,
+            DeviceState {
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "bedroom/light is a light but its state hasn't been reported yet"
+        );
+    }
+
+    #[test]
+    fn explain_light_zero_brightness_does_not_collapse_to_off() {
+        let d = device(
+            "office/lightstrip",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(true),
+                brightness: Some(0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/lightstrip is on at 0% brightness"
+        );
+    }
+
+    #[test]
+    fn explain_switch_with_battery() {
+        let d = device(
+            "office/switch",
+            DeviceClass::Switch,
+            DeviceState {
+                battery_percent: Some(100),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/switch is a Hue dimmer switch (button device); battery 100%"
+        );
+    }
+
+    #[test]
+    fn explain_switch_no_battery_report() {
+        let d = device(
+            "office/switch",
+            DeviceClass::Switch,
+            DeviceState {
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/switch is a button device; no battery report yet"
+        );
+    }
+
+    #[test]
+    fn explain_sensor_all_fields() {
+        let d = device(
+            "kitchen/thermometer",
+            DeviceClass::Sensor,
+            DeviceState {
+                temperature_celsius: Some(21.5),
+                humidity_percent: Some(47.0),
+                battery_percent: Some(88),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "kitchen/thermometer is a sensor; temperature 21.5°C, humidity 47%, battery 88%"
+        );
+    }
+
+    #[test]
+    fn explain_sensor_single_field_no_comma_drift() {
+        let d = device(
+            "kitchen/thermometer",
+            DeviceClass::Sensor,
+            DeviceState {
+                temperature_celsius: Some(21.5),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "kitchen/thermometer is a sensor; temperature 21.5°C"
+        );
+    }
+
+    #[test]
+    fn explain_sensor_no_readings() {
+        let d = device(
+            "kitchen/thermometer",
+            DeviceClass::Sensor,
+            DeviceState {
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "kitchen/thermometer is a sensor but no readings have been reported yet"
+        );
+    }
+
+    #[test]
+    fn explain_unknown_falls_back_to_generic() {
+        let d = device(
+            "garage/unknown_thing",
+            DeviceClass::Unknown,
+            DeviceState {
+                on: Some(true),
+                brightness: Some(50),
+                ..Default::default()
+            },
+        );
+        let s = explain_device(&d);
+        assert_eq!(
+            s,
+            "garage/unknown_thing is an unclassified device; on: true, brightness: 50"
+        );
+    }
+
+    #[tokio::test]
+    async fn explain_device_state_unknown_id() {
+        let reg = fixture_registry();
+        let tool = ExplainDeviceState::new(reg);
+        let args = json!({ "device_id": "kitchen/ghost" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::DeviceNotFound { id } if id == "kitchen/ghost"));
+    }
+
+    #[tokio::test]
+    async fn explain_device_state_missing_device_id() {
+        let reg = fixture_registry();
+        let tool = ExplainDeviceState::new(reg);
+        let args = json!({});
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "explain_device_state"));
     }
 }
