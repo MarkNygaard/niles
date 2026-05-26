@@ -547,7 +547,7 @@ impl Tool for CancelTimer {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "cancel_timer".into(),
-            description: "Cancel a timer by name (case-insensitive). Returns the count of timers cancelled; 0 means no match.".into(),
+            description: "Cancel timer(s) by name. Matching is case-insensitive and whitespace-normalized (e.g. ' Pasta ' matches 'pasta'). Returns the count of timers cancelled; multiple timers may share a name and all matches are removed. 0 means no match.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -582,7 +582,7 @@ impl Tool for GetTimerRemaining {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "get_timer_remaining".into(),
-            description: "Return remaining seconds for a timer by name. Returns null in 'remaining_seconds' if no timer with that name is active.".into(),
+            description: "Return remaining seconds for a timer by name. Matching is case-insensitive and whitespace-normalized. If multiple timers share the name, the one expiring soonest is returned. Returns null in 'remaining_seconds' if no timer with that name is active.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -614,7 +614,7 @@ impl Tool for GetTimerRemaining {
             }
             None => Ok(json!({
                 "found": false,
-                "name": name,
+                "name": canonical,
                 "remaining_seconds": null,
             })),
         }
@@ -1473,6 +1473,34 @@ mod tests {
         let tool = GetTimerRemaining::new(store);
         let err = tool.execute(json!({})).await.unwrap_err();
         assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "get_timer_remaining"));
+    }
+
+    #[tokio::test]
+    async fn list_timers_reports_ringing_state() {
+        let store = Arc::new(TimerStore::new());
+        let now = chrono::Utc::now();
+        let id = store.set(
+            std::time::Duration::from_secs(60),
+            Some("pasta".into()),
+            localhost(),
+            now,
+        );
+        store.mark_ringing(id);
+        let tool = ListTimers::new(store);
+        let result = tool.execute(json!({})).await.unwrap();
+        let arr = result["timers"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["state"], "ringing");
+    }
+
+    #[tokio::test]
+    async fn get_timer_remaining_missing_echoes_canonical_name() {
+        let store = Arc::new(TimerStore::new());
+        let tool = GetTimerRemaining::new(store);
+        let result = tool.execute(json!({ "name": " MISSING " })).await.unwrap();
+        assert_eq!(result["found"], false);
+        assert_eq!(result["name"], "missing");
+        assert!(result["remaining_seconds"].is_null());
     }
 
     #[tokio::test]
