@@ -1517,11 +1517,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // transcript arrives, by which point Z2M has had seconds to
     // populate. See voice_dispatch for the same reasoning.
     let llm = Arc::new(build_groq_client(&cfg)?);
-    let tools = Arc::new(niles_tools::default_registry(
-        registry.clone(),
-        publisher.clone(),
-        z2m_prefix.clone(),
-    ));
+    let timers = Arc::new(TimerStore::new());
+    let mut tools =
+        niles_tools::default_registry(registry.clone(), publisher.clone(), z2m_prefix.clone());
+    niles_tools::register_timer_tools(&mut tools, timers.clone());
+    let tools = Arc::new(tools);
 
     // HTTP API
     let api_state = AppState::new(registry.clone());
@@ -1557,7 +1557,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         dry_run: args.dry_run,
         tracker: tracker.clone(),
         scenes: Arc::new(SceneStore::new()),
-        timers: Arc::new(TimerStore::new()),
+        timers: timers.clone(),
         llm,
         tools,
     };

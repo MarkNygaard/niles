@@ -11,8 +11,9 @@ pub mod registry;
 pub mod tool;
 
 pub use builtin::{
-    ExplainDeviceState, GetDeviceState, ListAllDevices, ListDevicesInRoom, LookUpCapability,
-    SetDevice, default_registry,
+    CancelTimer, ExplainDeviceState, GetDeviceState, GetTimerRemaining, ListAllDevices,
+    ListDevicesInRoom, ListTimers, LookUpCapability, SetDevice, default_registry,
+    register_timer_tools,
 };
 pub use error::{Error, Result};
 pub use registry::ToolRegistry;

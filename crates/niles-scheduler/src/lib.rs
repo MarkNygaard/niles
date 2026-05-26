@@ -30,4 +30,4 @@ pub use scenes::{SceneEntry, SceneStore};
 pub use sink::{BRIGHTNESS_DEBOUNCE, build_curve_target};
 pub use switch::{SwitchEffect, classify_action};
 pub use time::MinuteOfDay;
-pub use timer::{TimerEntry, TimerId, TimerState, TimerStore};
+pub use timer::{TimerEntry, TimerId, TimerState, TimerStore, canonicalize_name};
