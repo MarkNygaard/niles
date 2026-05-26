@@ -117,14 +117,20 @@ fn explain_device(device: &niles_core::Device) -> String {
 fn explain_light(id: &str, state: &DeviceState) -> String {
     match state.on {
         Some(true) => {
-            let mut s = format!("{id} is on");
+            // Build detail clauses into a Vec so a missing brightness
+            // doesn't leave a hanging comma before a kelvin-only suffix.
+            let mut detail = Vec::new();
             if let Some(b) = state.brightness {
-                s.push_str(&format!(" at {b}% brightness"));
+                detail.push(format!("{b}% brightness"));
             }
             if let Some(k) = state.color_temp_kelvin {
-                s.push_str(&format!(", color temperature {k}K"));
+                detail.push(format!("color temperature {k}K"));
             }
-            s
+            if detail.is_empty() {
+                format!("{id} is on")
+            } else {
+                format!("{id} is on at {}", detail.join(", "))
+            }
         }
         Some(false) => {
             // When the light is off we ignore brightness / kelvin.
@@ -963,6 +969,23 @@ mod tests {
             },
         );
         assert_eq!(explain_device(&d), "office/lightstrip is on");
+    }
+
+    #[test]
+    fn explain_light_kelvin_without_brightness_does_not_emit_hanging_comma() {
+        let d = device(
+            "office/lightstrip",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(true),
+                color_temp_kelvin: Some(2857),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/lightstrip is on at color temperature 2857K"
+        );
     }
 
     #[test]
