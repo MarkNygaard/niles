@@ -19,6 +19,8 @@ niles-core.workspace = true
 niles-mqtt.workspace = true
 niles-llm.workspace = true
 niles-capabilities.workspace = true
+niles-scheduler.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

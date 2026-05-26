@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
 use niles_mqtt::{MqttPublisher, format_set_command, is_actionable};
+use niles_scheduler::{TimerState, TimerStore, canonicalize_name};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -473,6 +474,160 @@ impl Tool for LookUpCapability {
             }))
         }
     }
+}
+
+fn timer_state_str(state: TimerState) -> &'static str {
+    match state {
+        TimerState::Pending => "pending",
+        TimerState::Ringing => "ringing",
+    }
+}
+
+// ---------- ListTimers ----------
+
+pub struct ListTimers {
+    timers: Arc<TimerStore>,
+}
+
+impl ListTimers {
+    pub fn new(timers: Arc<TimerStore>) -> Self {
+        Self { timers }
+    }
+}
+
+#[async_trait]
+impl Tool for ListTimers {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "list_timers".into(),
+            description: "Return all active timers (pending or ringing). Each entry includes id, name, duration, state, and remaining seconds.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, _args: Value) -> Result<Value> {
+        let now = chrono::Utc::now();
+        let entries: Vec<Value> = self
+            .timers
+            .list()
+            .into_iter()
+            .map(|e| {
+                let remaining_s = (e.expires_at - now).num_seconds().max(0);
+                json!({
+                    "id": e.id.0,
+                    "name": e.name,
+                    "duration_seconds": e.duration.as_secs(),
+                    "state": timer_state_str(e.state),
+                    "remaining_seconds": remaining_s,
+                })
+            })
+            .collect();
+        Ok(json!({ "timers": entries }))
+    }
+}
+
+// ---------- CancelTimer ----------
+
+pub struct CancelTimer {
+    timers: Arc<TimerStore>,
+}
+
+impl CancelTimer {
+    pub fn new(timers: Arc<TimerStore>) -> Self {
+        Self { timers }
+    }
+}
+
+#[async_trait]
+impl Tool for CancelTimer {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "cancel_timer".into(),
+            description: "Cancel a timer by name (case-insensitive). Returns the count of timers cancelled; 0 means no match.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Timer name, e.g. 'pasta'." }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let name = required_str("cancel_timer", &args, "name")?;
+        let count = self.timers.cancel_by_name(name);
+        Ok(json!({ "cancelled": count, "name": name }))
+    }
+}
+
+// ---------- GetTimerRemaining ----------
+
+pub struct GetTimerRemaining {
+    timers: Arc<TimerStore>,
+}
+
+impl GetTimerRemaining {
+    pub fn new(timers: Arc<TimerStore>) -> Self {
+        Self { timers }
+    }
+}
+
+#[async_trait]
+impl Tool for GetTimerRemaining {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "get_timer_remaining".into(),
+            description: "Return remaining seconds for a timer by name. Returns null in 'remaining_seconds' if no timer with that name is active.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Timer name, e.g. 'pasta'." }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let name = required_str("get_timer_remaining", &args, "name")?;
+        let canonical = canonicalize_name(name);
+        let now = chrono::Utc::now();
+        let found = self
+            .timers
+            .list()
+            .into_iter()
+            .find(|e| e.name.as_ref() == Some(&canonical));
+        match found {
+            Some(e) => {
+                let remaining_s = (e.expires_at - now).num_seconds().max(0);
+                Ok(json!({
+                    "found": true,
+                    "name": e.name,
+                    "remaining_seconds": remaining_s,
+                    "state": timer_state_str(e.state),
+                }))
+            }
+            None => Ok(json!({
+                "found": false,
+                "name": name,
+                "remaining_seconds": null,
+            })),
+        }
+    }
+}
+
+/// Register the timer tools onto an existing registry. Separate from
+/// `default_registry` because the timer store comes from
+/// `niles-scheduler` at runtime, not from the LLM tools layer.
+pub fn register_timer_tools(reg: &mut ToolRegistry, timers: Arc<TimerStore>) {
+    reg.register(Box::new(ListTimers::new(timers.clone())));
+    reg.register(Box::new(CancelTimer::new(timers.clone())));
+    reg.register(Box::new(GetTimerRemaining::new(timers)));
 }
 
 /// Build a `ToolRegistry` containing every device-facing Tier-1 built-in.
@@ -1169,5 +1324,165 @@ mod tests {
         let tools = default_registry(reg, MockPublisher::default(), Arc::new("z2m".into()));
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"explain_device_state".to_string()));
+    }
+
+    // ---------- timer tool tests ----------
+
+    fn localhost() -> std::net::SocketAddr {
+        "127.0.0.1:0".parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_timers_empty_store_returns_empty_array() {
+        let store = Arc::new(TimerStore::new());
+        let tool = ListTimers::new(store);
+        let result = tool.execute(json!({})).await.unwrap();
+        assert_eq!(result, json!({ "timers": [] }));
+    }
+
+    #[tokio::test]
+    async fn list_timers_returns_both_entries_with_correct_shape() {
+        let store = Arc::new(TimerStore::new());
+        let now = chrono::Utc::now();
+        store.set(
+            std::time::Duration::from_secs(60),
+            Some("pasta".into()),
+            localhost(),
+            now,
+        );
+        store.set(
+            std::time::Duration::from_secs(120),
+            Some("laundry".into()),
+            localhost(),
+            now,
+        );
+        let tool = ListTimers::new(store);
+        let result = tool.execute(json!({})).await.unwrap();
+        let arr = result["timers"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        // Sorted by expires_at — pasta (60s) first
+        assert_eq!(arr[0]["name"], "pasta");
+        assert_eq!(arr[0]["duration_seconds"], 60);
+        assert_eq!(arr[0]["state"], "pending");
+        assert!(arr[0]["remaining_seconds"].as_i64().unwrap() >= 0);
+        assert_eq!(arr[1]["name"], "laundry");
+        assert_eq!(arr[1]["duration_seconds"], 120);
+    }
+
+    #[tokio::test]
+    async fn cancel_timer_existing_returns_count_one() {
+        let store = Arc::new(TimerStore::new());
+        let now = chrono::Utc::now();
+        store.set(
+            std::time::Duration::from_secs(60),
+            Some("pasta".into()),
+            localhost(),
+            now,
+        );
+        let tool = CancelTimer::new(store.clone());
+        let result = tool.execute(json!({ "name": "pasta" })).await.unwrap();
+        assert_eq!(result, json!({ "cancelled": 1, "name": "pasta" }));
+        assert_eq!(store.list().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_timer_missing_returns_count_zero() {
+        let store = Arc::new(TimerStore::new());
+        let tool = CancelTimer::new(store);
+        let result = tool.execute(json!({ "name": "missing" })).await.unwrap();
+        assert_eq!(result, json!({ "cancelled": 0, "name": "missing" }));
+    }
+
+    #[tokio::test]
+    async fn cancel_timer_is_case_insensitive() {
+        let store = Arc::new(TimerStore::new());
+        let now = chrono::Utc::now();
+        store.set(
+            std::time::Duration::from_secs(60),
+            Some("pasta".into()),
+            localhost(),
+            now,
+        );
+        let tool = CancelTimer::new(store.clone());
+        let result = tool.execute(json!({ "name": " Pasta " })).await.unwrap();
+        assert_eq!(result["cancelled"], 1);
+        assert_eq!(store.list().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_timer_missing_name_arg_returns_invalid_args() {
+        let store = Arc::new(TimerStore::new());
+        let tool = CancelTimer::new(store);
+        let err = tool.execute(json!({})).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "cancel_timer"));
+    }
+
+    #[tokio::test]
+    async fn get_timer_remaining_existing_returns_found_true() {
+        let store = Arc::new(TimerStore::new());
+        let now = chrono::Utc::now();
+        store.set(
+            std::time::Duration::from_secs(300),
+            Some("pasta".into()),
+            localhost(),
+            now,
+        );
+        let tool = GetTimerRemaining::new(store);
+        let result = tool.execute(json!({ "name": "pasta" })).await.unwrap();
+        assert_eq!(result["found"], true);
+        assert_eq!(result["name"], "pasta");
+        assert_eq!(result["state"], "pending");
+        let remaining = result["remaining_seconds"].as_i64().unwrap();
+        assert!((0..=300).contains(&remaining));
+    }
+
+    #[tokio::test]
+    async fn get_timer_remaining_missing_returns_found_false_null_remaining() {
+        let store = Arc::new(TimerStore::new());
+        let tool = GetTimerRemaining::new(store);
+        let result = tool.execute(json!({ "name": "missing" })).await.unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "found": false,
+                "name": "missing",
+                "remaining_seconds": null,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn get_timer_remaining_is_case_insensitive() {
+        let store = Arc::new(TimerStore::new());
+        let now = chrono::Utc::now();
+        store.set(
+            std::time::Duration::from_secs(60),
+            Some("Pasta".into()),
+            localhost(),
+            now,
+        );
+        let tool = GetTimerRemaining::new(store);
+        let result = tool.execute(json!({ "name": " PASTA " })).await.unwrap();
+        assert_eq!(result["found"], true);
+        assert_eq!(result["name"], "pasta"); // stored canonicalized
+    }
+
+    #[tokio::test]
+    async fn get_timer_remaining_missing_name_arg_returns_invalid_args() {
+        let store = Arc::new(TimerStore::new());
+        let tool = GetTimerRemaining::new(store);
+        let err = tool.execute(json!({})).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "get_timer_remaining"));
+    }
+
+    #[tokio::test]
+    async fn register_timer_tools_registers_all_three_names() {
+        let store = Arc::new(TimerStore::new());
+        let mut reg = ToolRegistry::new();
+        register_timer_tools(&mut reg, store);
+        let names: Vec<String> = reg.llm_tools().into_iter().map(|t| t.name).collect();
+        assert!(names.contains(&"list_timers".to_string()));
+        assert!(names.contains(&"cancel_timer".to_string()));
+        assert!(names.contains(&"get_timer_remaining".to_string()));
     }
 }

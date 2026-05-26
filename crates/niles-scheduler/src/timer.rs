@@ -201,11 +201,7 @@ impl Default for TimerStore {
 /// Normalize a raw timer name for use as a HashMap key.
 ///
 /// Rules: trim, lowercase ASCII, collapse runs of ASCII whitespace to `_`.
-///
-/// Intentionally duplicated from `scenes::canonicalize_name` — per
-/// CLAUDE.md "no premature abstractions". Promote to a shared
-/// `niles-scheduler::names` module the third time it's needed.
-fn canonicalize_name(raw: &str) -> String {
+pub fn canonicalize_name(raw: &str) -> String {
     raw.trim()
         .to_ascii_lowercase()
         .split_whitespace()
