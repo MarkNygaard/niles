@@ -159,8 +159,6 @@ fn explain_sensor(id: &str, state: &DeviceState) -> String {
     if let Some(t) = state.temperature_celsius {
         parts.push(format!("temperature {t:.1}°C"));
     }
-    // Note: brief claims u8, but niles_core declares Option<f32>.
-    // Using {:.0} to render as integer-shaped percent.
     if let Some(h) = state.humidity_percent {
         parts.push(format!("humidity {h:.0}%"));
     }
@@ -482,9 +480,9 @@ impl Tool for LookUpCapability {
 /// `LookUpCapability` is not included here because it requires an
 /// `Arc<CapabilityLoader>`; callers that have one should register it
 /// onto the returned registry explicitly.
-pub fn default_registry(
+pub fn default_registry<P: Publisher + 'static>(
     registry: Arc<DeviceRegistry>,
-    publisher: MqttPublisher,
+    publisher: P,
     z2m_prefix: Arc<String>,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
@@ -1168,7 +1166,7 @@ mod tests {
     #[test]
     fn default_registry_includes_explain_device_state() {
         let reg = fixture_registry();
-        let tools = default_registry(reg, MqttPublisher::new(), Arc::new("z2m".into()));
+        let tools = default_registry(reg, MockPublisher::default(), Arc::new("z2m".into()));
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"explain_device_state".to_string()));
     }
