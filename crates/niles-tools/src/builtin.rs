@@ -219,20 +219,28 @@ impl Tool for ListAllDevices {
     }
 }
 
+#[async_trait]
+pub trait Publisher: Send + Sync {
+    async fn publish(&self, topic: &str, payload: Vec<u8>) -> niles_mqtt::Result<()>;
+}
+
+#[async_trait]
+impl Publisher for MqttPublisher {
+    async fn publish(&self, topic: &str, payload: Vec<u8>) -> niles_mqtt::Result<()> {
+        self.publish(topic, payload).await
+    }
+}
+
 // ---------- SetDevice ----------
 
-pub struct SetDevice {
+pub struct SetDevice<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
-    publisher: MqttPublisher,
+    publisher: P,
     z2m_prefix: Arc<String>,
 }
 
-impl SetDevice {
-    pub fn new(
-        registry: Arc<DeviceRegistry>,
-        publisher: MqttPublisher,
-        z2m_prefix: Arc<String>,
-    ) -> Self {
+impl<P: Publisher> SetDevice<P> {
+    pub fn new(registry: Arc<DeviceRegistry>, publisher: P, z2m_prefix: Arc<String>) -> Self {
         Self {
             registry,
             publisher,
@@ -242,7 +250,7 @@ impl SetDevice {
 }
 
 #[async_trait]
-impl Tool for SetDevice {
+impl<P: Publisher> Tool for SetDevice<P> {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "set_device".into(),
@@ -264,8 +272,16 @@ impl Tool for SetDevice {
         let raw = required_str("set_device", &args, "device_id")?;
         let id = parse_device_id("set_device", raw)?;
 
-        if self.registry.get(&id).is_none() {
-            return Err(Error::DeviceNotFound { id: raw.into() });
+        let device = self
+            .registry
+            .get(&id)
+            .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?;
+
+        if !device.is_light() {
+            return Err(Error::WrongDeviceClass {
+                id: raw.into(),
+                class: device.class,
+            });
         }
 
         let target = extract_set_state(&args)?;
@@ -367,28 +383,55 @@ mod tests {
         (tmp, loader)
     }
 
+    fn device(id: &str, class: DeviceClass, state: DeviceState) -> Device {
+        Device {
+            id: DeviceId::parse(&format!("z2m:{id}")).unwrap(),
+            state,
+            class,
+        }
+    }
+
     fn fixture_registry() -> Arc<DeviceRegistry> {
         let reg = Arc::new(DeviceRegistry::new());
-        let kitchen_light = Device {
-            id: DeviceId::parse("z2m:kitchen/ceiling_light").unwrap(),
-            state: DeviceState {
+        reg.upsert(device(
+            "kitchen/ceiling_light",
+            DeviceClass::Light,
+            DeviceState {
                 on: Some(true),
                 brightness: Some(80),
                 color_temp_kelvin: Some(3000),
                 ..Default::default()
             },
-            class: DeviceClass::Light,
-        };
-        let living_lamp = Device {
-            id: DeviceId::parse("z2m:living_room/floor_lamp").unwrap(),
-            state: DeviceState {
+        ));
+        reg.upsert(device(
+            "living_room/floor_lamp",
+            DeviceClass::Light,
+            DeviceState {
                 on: Some(false),
                 ..Default::default()
             },
-            class: DeviceClass::Light,
-        };
-        reg.upsert(kitchen_light);
-        reg.upsert(living_lamp);
+        ));
+        reg.upsert(device(
+            "hallway/wall_switch",
+            DeviceClass::Switch,
+            DeviceState {
+                on: Some(true),
+                ..Default::default()
+            },
+        ));
+        reg.upsert(device(
+            "office/temp_sensor",
+            DeviceClass::Sensor,
+            DeviceState {
+                temperature_celsius: Some(22.0),
+                ..Default::default()
+            },
+        ));
+        reg.upsert(device(
+            "garage/unknown_thing",
+            DeviceClass::Unknown,
+            DeviceState::default(),
+        ));
         reg
     }
 
@@ -469,7 +512,7 @@ mod tests {
         let tool = ListAllDevices::new(reg);
         let result = tool.execute(json!({})).await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.len(), 5);
     }
 
     #[tokio::test]
@@ -656,5 +699,89 @@ mod tests {
         assert_eq!(prereqs.len(), 2);
         assert_eq!(prereqs[0], "foo");
         assert_eq!(prereqs[1], "bar");
+    }
+
+    #[derive(Clone, Default)]
+    struct MockPublisher {
+        topics: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Publisher for MockPublisher {
+        async fn publish(&self, topic: &str, _payload: Vec<u8>) -> niles_mqtt::Result<()> {
+            self.topics.lock().await.push(topic.to_string());
+            Ok(())
+        }
+    }
+
+    fn set_device_setup() -> (MockPublisher, SetDevice<MockPublisher>) {
+        let mock = MockPublisher::default();
+        let tool = SetDevice::new(fixture_registry(), mock.clone(), Arc::new("z2m".into()));
+        (mock, tool)
+    }
+
+    #[tokio::test]
+    async fn set_device_light_publishes_and_returns_ok() {
+        let (mock, tool) = set_device_setup();
+        let args = json!({ "device_id": "kitchen/ceiling_light", "on": false });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["topic"], "z2m/kitchen/ceiling_light/set");
+        let topics = mock.topics.lock().await;
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "z2m/kitchen/ceiling_light/set");
+    }
+
+    #[tokio::test]
+    async fn set_device_switch_returns_wrong_device_class() {
+        let (mock, tool) = set_device_setup();
+        let args = json!({ "device_id": "hallway/wall_switch", "on": true });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::WrongDeviceClass { id, class } if id == "hallway/wall_switch" && class == DeviceClass::Switch)
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_sensor_returns_wrong_device_class() {
+        let (mock, tool) = set_device_setup();
+        let args = json!({ "device_id": "office/temp_sensor", "on": true });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::WrongDeviceClass { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_unknown_returns_wrong_device_class() {
+        let (mock, tool) = set_device_setup();
+        let args = json!({ "device_id": "garage/unknown_thing", "on": true });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::WrongDeviceClass { id, class } if id == "garage/unknown_thing" && class == DeviceClass::Unknown)
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_missing_id_returns_device_not_found() {
+        let (mock, tool) = set_device_setup();
+        let args = json!({ "device_id": "nonexistent/device", "on": true });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::DeviceNotFound { id } if id == "nonexistent/device"));
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_sensor_with_no_args_returns_wrong_device_class_before_invalid_args() {
+        let (mock, tool) = set_device_setup();
+        let args = json!({ "device_id": "office/temp_sensor" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::WrongDeviceClass { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
+        );
+        assert!(mock.topics.lock().await.is_empty());
     }
 }
