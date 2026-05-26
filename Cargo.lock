@@ -879,6 +879,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "niles-api",
+ "niles-capabilities",
  "niles-config",
  "niles-core",
  "niles-intent",

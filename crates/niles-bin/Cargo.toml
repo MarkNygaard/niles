@@ -26,6 +26,7 @@ niles-core.workspace = true
 niles-config.workspace = true
 niles-mqtt.workspace = true
 niles-api.workspace = true
+niles-capabilities.workspace = true
 niles-wyoming.workspace = true
 niles-stt.workspace = true
 niles-tts.workspace = true
