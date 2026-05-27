@@ -2212,14 +2212,34 @@ mod spawn_timer_driver_tests {
     }
 
     #[tokio::test]
-    async fn driver_transitions_expired_timer_to_ringing() {
+    async fn driver_transitions_expired_timer_and_publishes_event() {
         let timers = Arc::new(TimerStore::new());
         let bus = EventBus::default();
+        // Subscribe before spawning — broadcast::Receiver only sees
+        // events published after subscription.
+        let mut rx = bus.subscribe();
         let id = timers.set(Duration::from_secs(0), None, localhost(), Utc::now());
 
         let _handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Deterministic: wait for the event with a generous timeout
+        // instead of a fixed sleep that races CI load.
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("driver did not publish TimerFired within 2s")
+            .expect("event bus closed unexpectedly");
+        match event {
+            Event::TimerFired {
+                id: fired_id,
+                name,
+                origin,
+            } => {
+                assert_eq!(fired_id, id.0);
+                assert_eq!(name, None);
+                assert_eq!(origin, localhost());
+            }
+            other => panic!("expected TimerFired, got {other:?}"),
+        }
 
         let entries = timers.list();
         assert_eq!(entries.len(), 1);
