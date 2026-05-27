@@ -1115,7 +1115,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                             if let Some((peer, text)) = transcribe_session(&whisper, session).await
                                 && let Some(say) = handle_transcript(&ctx, peer, &text).await
                             {
-                                println!("[{peer}] say: {say:?}");
+                                println!("[{peer}] say: {say}");
                                 // TODO (speak-back PR): synthesize via PiperClient and send
                                 // via WyomingSender::send_audio(peer, pcm, AudioFormat).
                             }
@@ -1250,11 +1250,12 @@ async fn handle_transcript(
             let canonical = match room.as_deref().map(intent_room_to_canonical) {
                 Some(Ok(r)) => Some(r),
                 Some(Err(reason)) => {
+                    let room_name = room.as_deref().unwrap_or("");
                     tracing::warn!(
                         "[{peer}] room {room:?} is not a valid registry name: {reason}",
-                        room = room.as_deref().unwrap_or(""),
+                        room = room_name,
                     );
-                    return None;
+                    return Some(response::room_not_found(room_name));
                 }
                 None => None,
             };
@@ -1327,7 +1328,7 @@ async fn handle_transcript(
                         tracing::warn!(
                             "[{peer}] room {name:?} is not a valid registry name: {reason}"
                         );
-                        return None;
+                        return Some(response::room_not_found(&name));
                     }
                 };
                 let n = ctx.tracker.clear_room(&canonical);
@@ -1347,6 +1348,8 @@ async fn handle_transcript(
             let stopped_entry = ctx.timers.stop_most_recent_ringing();
             if let Some(entry) = &stopped_entry {
                 println!("[{peer}] stopped {}", timer_label(entry));
+            } else {
+                println!("[{peer}] nothing ringing to stop");
             }
             Some(response::stopped(stopped_entry.is_some()))
         }
@@ -1745,7 +1748,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                             if let Some((peer, text)) = transcribe_session(&whisper, session).await
                                 && let Some(say) = handle_transcript(&ctx, peer, &text).await
                             {
-                                println!("[{peer}] say: {say:?}");
+                                println!("[{peer}] say: {say}");
                                 // TODO (speak-back PR): synthesize via PiperClient and send
                                 // via WyomingSender::send_audio(peer, pcm, AudioFormat).
                             }
