@@ -11,11 +11,12 @@ fn spoken_room(room: &str) -> String {
     room.replace('_', " ")
 }
 
-/// ASCII first-char uppercase; leaves non-ASCII untouched.
+/// Uppercase the first ASCII character; non-ASCII first chars are left as-is.
 fn capitalize_first(s: &str) -> String {
-    match s.split_at_checked(1) {
-        Some((first, rest)) => first.to_ascii_uppercase() + rest,
+    let mut chars = s.chars();
+    match chars.next() {
         None => String::new(),
+        Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
     }
 }
 
