@@ -1539,7 +1539,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // tools (above) and threaded into `DispatchCtx` (below) so
     // timers set via voice in `serve` actually fire. See
     // `spawn_timer_driver` for behavior + the 60 s sleep-cap caveat.
-    let _timer_handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
+    let timer_handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
 
     // HTTP API
     let api_state = AppState::new(registry.clone());
@@ -1584,7 +1584,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
     let mut ticker = tokio::time::interval(Duration::from_secs(args.tick_seconds.max(1)));
 
-    loop {
+    let serve_result = loop {
         tokio::select! {
             biased;
             incoming = rx.recv() => match incoming {
@@ -1611,10 +1611,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             }
             _ = ticker.tick() => {
                 if source_handle.is_finished() {
-                    anyhow::bail!(
+                    break Err(anyhow::anyhow!(
                         "Z2mSource task has exited; the device registry is no longer \
                          being updated, so the curve would publish blindly. Bailing."
-                    );
+                    ));
                 }
                 if let Some(routine) = &morning_routine {
                     run_morning_routine_tick(
@@ -1644,16 +1644,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nReceived Ctrl-C. Exiting.");
-                break;
+                break Ok(());
             }
         }
-    }
+    };
 
     server_handle.abort();
     source_handle.abort();
     api_handle.abort();
     observer_handle.abort();
-    Ok(())
+    timer_handle.abort();
+    serve_result
 }
 
 async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
