@@ -15,3 +15,9 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum SendError {
+    #[error("peer not connected")]
+    NotConnected,
+}

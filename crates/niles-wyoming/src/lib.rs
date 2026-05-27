@@ -26,7 +26,7 @@ pub mod server;
 pub mod session;
 
 pub use codec::{WyomingReader, WyomingWriter};
-pub use error::{Error, Result};
+pub use error::{Error, Result, SendError};
 pub use event::Event;
-pub use server::WyomingServer;
+pub use server::{WyomingSender, WyomingServer};
 pub use session::{AudioFormat, AudioSession, SessionTracker};
