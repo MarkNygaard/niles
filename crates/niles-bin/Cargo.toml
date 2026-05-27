@@ -36,3 +36,6 @@ niles-scheduler.workspace = true
 niles-tools.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

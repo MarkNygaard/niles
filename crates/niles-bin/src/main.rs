@@ -1,7 +1,7 @@
 //! niles — AI-first home automation system.
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{Timelike, Utc};
 use clap::{Args, Parser, Subcommand};
 use niles_api::AppState;
 use niles_capabilities::CapabilityLoader;
@@ -22,8 +22,8 @@ use niles_tools::{LookUpCapability, ToolRegistry};
 use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingServer};
 use serde_json::json;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -287,9 +287,7 @@ async fn config_validate() -> anyhow::Result<()> {
 
 /// Build an `MqttClient` connected to the broker described in
 /// `niles.toml`, with credentials resolved from env vars.
-async fn connect_from_config(
-    config_path: &std::path::Path,
-) -> anyhow::Result<(Config, MqttClient)> {
+async fn connect_from_config(config_path: &Path) -> anyhow::Result<(Config, MqttClient)> {
     let cfg = Config::load_from_path(config_path)
         .with_context(|| format!("loading config from {}", config_path.display()))?;
     cfg.validate().context("validating config")?;
@@ -597,14 +595,51 @@ fn build_capability_loader(
     }
 }
 
+fn build_capability_index(loader: &CapabilityLoader) -> niles_intent::CapabilityIndex {
+    let entries = loader
+        .iter()
+        .map(|cap| niles_intent::CapabilityIndexEntry {
+            name: cap.metadata.name.clone(),
+            description: cap.metadata.description.clone(),
+            prerequisites: cap.metadata.prerequisites.clone(),
+        })
+        .collect();
+    niles_intent::CapabilityIndex::from_entries(entries)
+}
+
+fn assemble_system_prompt(
+    transcript: &str,
+    index: &niles_intent::CapabilityIndex,
+    loader: &CapabilityLoader,
+) -> String {
+    let names = niles_intent::detect_topics(transcript, index);
+    if names.is_empty() {
+        return NILES_SYSTEM_PERSONA.to_string();
+    }
+    let mut out = String::from(NILES_SYSTEM_PERSONA);
+    out.push_str(
+        "\n\n# Capability references\n\nThe following references \
+         are relevant to the current request:\n",
+    );
+    for name in &names {
+        if let Some(cap) = loader.get(name) {
+            out.push_str(&format!(
+                "\n## {} (v{})\n{}\n",
+                cap.metadata.name, cap.metadata.version, cap.body,
+            ));
+        }
+    }
+    out
+}
+
 fn build_tool_registry(
     registry: Arc<DeviceRegistry>,
     publisher: MqttPublisher,
     z2m_prefix: Arc<String>,
-    capabilities: &niles_config::CapabilitiesConfig,
+    capability_loader: Option<Arc<CapabilityLoader>>,
 ) -> ToolRegistry {
     let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
-    if let Some(loader) = build_capability_loader(capabilities) {
+    if let Some(loader) = capability_loader {
         tools.register(Box::new(LookUpCapability::new(loader)));
     }
     tools
@@ -690,6 +725,20 @@ async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
 
 const MAX_TOOL_ITERATIONS: usize = 5;
 
+/// Tier A — stable system persona. Same on every LLM call so it
+/// stays at the front of the system prompt where prompt caching
+/// is most effective.
+const NILES_SYSTEM_PERSONA: &str = "\
+You are Niles, a home-automation assistant. You control lights, \
+switches, scenes, and timers in a private home via the tools \
+provided. Be concise and action-oriented: when the user asks you \
+to do something, call the appropriate tool rather than describing \
+what you would do. When you lack domain context for a request, \
+you may have been given relevant capability references below; use \
+them. If a needed capability isn't present, call \
+look_up_capability to fetch one by name. Never invent device \
+names — use the listing tools to discover what exists.";
+
 /// A minimal abstraction over the chat-completions endpoint so the
 /// tool-calling loop is testable without spinning up an HTTP server.
 /// `GroqClient` is the only real implementor; tests use a fake.
@@ -717,12 +766,19 @@ async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
     client: &C,
     registry: &ToolRegistry,
     prompt: &str,
+    system_prompt: Option<&str>,
     max_iterations: usize,
 ) -> anyhow::Result<String> {
     let llm_tools = registry.llm_tools();
-    let mut messages = vec![Message::User {
+    let mut messages = Vec::new();
+    if let Some(sys) = system_prompt {
+        messages.push(Message::System {
+            content: sys.to_string(),
+        });
+    }
+    messages.push(Message::User {
         content: prompt.to_string(),
-    }];
+    });
 
     for _ in 0..max_iterations {
         let req = ChatRequest {
@@ -796,16 +852,36 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let tools_registry =
-        build_tool_registry(registry.clone(), publisher, z2m_prefix, &cfg.capabilities);
+    let capability_loader = build_capability_loader(&cfg.capabilities);
+    let capability_index = capability_loader.as_deref().map(build_capability_index);
+
+    let tools_registry = build_tool_registry(
+        registry.clone(),
+        publisher,
+        z2m_prefix,
+        capability_loader.clone(),
+    );
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
+
+    let system_prompt = match (&capability_loader, &capability_index) {
+        (Some(loader), Some(index)) => assemble_system_prompt(&args.prompt, index, loader),
+        _ => NILES_SYSTEM_PERSONA.to_string(),
+    };
 
     // Surface the actual error chain on failure. Both loop exhaustion
     // and a real LLM/network error end up here, but they're distinct
     // failure modes — printing `{e:#}` keeps the cause honest instead
     // of mislabeling every error as "loop exhausted".
-    match run_tool_calling_chat(&client, &tools_registry, &args.prompt, MAX_TOOL_ITERATIONS).await {
+    match run_tool_calling_chat(
+        &client,
+        &tools_registry,
+        &args.prompt,
+        Some(system_prompt.as_str()),
+        MAX_TOOL_ITERATIONS,
+    )
+    .await
+    {
         Ok(text) => println!("{text}"),
         Err(e) => eprintln!("[niles chat] {e:#}"),
     }
@@ -969,11 +1045,17 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // startup (wake-word + speech + STT round-trip), so Z2M has plenty
     // of time to populate before any tool call hits the registry.
     let llm = Arc::new(build_groq_client(&cfg)?);
+    let capability_loader = build_capability_loader(&cfg.capabilities);
+    let capability_index = capability_loader
+        .as_deref()
+        .map(build_capability_index)
+        .map(Arc::new);
+
     let tools = Arc::new(build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
-        &cfg.capabilities,
+        capability_loader.clone(),
     ));
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
@@ -1005,6 +1087,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         timers: Arc::clone(&timers),
         llm,
         tools,
+        capability_loader,
+        capability_index,
     };
 
     loop {
@@ -1063,6 +1147,8 @@ struct DispatchCtx {
     timers: Arc<TimerStore>,
     llm: Arc<GroqClient>,
     tools: Arc<ToolRegistry>,
+    capability_loader: Option<Arc<CapabilityLoader>>,
+    capability_index: Option<Arc<niles_intent::CapabilityIndex>>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1083,10 +1169,15 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
         None => {
             // Tier 0 miss — escalate to Tier 1 LLM with the tool registry.
             tracing::info!("[{peer}] Tier 0 miss, escalating to LLM: {text:?}");
+            let system_prompt = match (&ctx.capability_loader, &ctx.capability_index) {
+                (Some(loader), Some(index)) => assemble_system_prompt(text, index, loader),
+                _ => NILES_SYSTEM_PERSONA.to_string(),
+            };
             match run_tool_calling_chat(
                 ctx.llm.as_ref(),
                 ctx.tools.as_ref(),
                 text,
+                Some(system_prompt.as_str()),
                 MAX_TOOL_ITERATIONS,
             )
             .await
@@ -1323,7 +1414,7 @@ where
 async fn dispatch_to_targets(
     ctx: &DispatchCtx,
     peer: std::net::SocketAddr,
-    canonical: &RoomName,
+    _canonical: &RoomName,
     targets: &[Device],
     desired: &DeviceState,
 ) {
@@ -1331,8 +1422,6 @@ async fn dispatch_to_targets(
         is_actionable(desired),
         "dispatch_to_targets called with a non-actionable target state"
     );
-    let _ = canonical; // currently only used for upstream logging; keep the
-    // parameter so the caller can pass it without extra plumbing later.
 
     for device in targets {
         let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, desired);
@@ -1366,6 +1455,25 @@ fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
         })
         .collect();
     RoomName::parse(&normalized).map_err(|e| format!("{e}"))
+}
+
+/// Current wall-clock time in `tz` converted to a [`MinuteOfDay`].
+/// Returns `None` and logs an error if the conversion fails (should
+/// be impossible with chrono's contract). The returned `DateTime`
+/// is the same instant used for the conversion.
+fn current_minute_of_day(
+    tz: chrono_tz::Tz,
+) -> Option<(MinuteOfDay, chrono::DateTime<chrono_tz::Tz>)> {
+    let now = Utc::now().with_timezone(&tz);
+    let hour = u8::try_from(now.hour()).expect("chrono::Timelike::hour is 0..=23");
+    let minute = u8::try_from(now.minute()).expect("chrono::Timelike::minute is 0..=59");
+    match MinuteOfDay::new(hour, minute) {
+        Ok(m) => Some((m, now)),
+        Err(e) => {
+            tracing::error!("could not construct MinuteOfDay from {now}: {e}");
+            None
+        }
+    }
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
@@ -1526,11 +1634,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // populate. See voice_dispatch for the same reasoning.
     let llm = Arc::new(build_groq_client(&cfg)?);
     let timers = Arc::new(TimerStore::new());
+    let capability_loader = build_capability_loader(&cfg.capabilities);
+    let capability_index = capability_loader
+        .as_deref()
+        .map(build_capability_index)
+        .map(Arc::new);
+
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
-        &cfg.capabilities,
+        capability_loader.clone(),
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
     let tools = Arc::new(tools);
@@ -1578,6 +1692,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         timers: timers.clone(),
         llm,
         tools,
+        capability_loader,
+        capability_index,
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -1760,19 +1876,8 @@ async fn run_curve_tick(
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
 ) {
-    use chrono::{Timelike, Utc};
-
-    let now = Utc::now().with_timezone(&tz);
-    // `chrono::Timelike::hour()` / `minute()` return `u32` but are
-    // guaranteed by the trait contract to be `0..=23` / `0..=59`.
-    let hour = u8::try_from(now.hour()).expect("chrono::Timelike::hour is 0..=23");
-    let minute = u8::try_from(now.minute()).expect("chrono::Timelike::minute is 0..=59");
-    let minute_of_day = match MinuteOfDay::new(hour, minute) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!("could not construct MinuteOfDay from {now}: {e}");
-            return;
-        }
+    let Some((minute_of_day, _)) = current_minute_of_day(tz) else {
+        return;
     };
     let target_brightness = brightness_at(curve, minute_of_day);
     let target_kelvin = color_temp_at(curve, minute_of_day);
@@ -1854,17 +1959,8 @@ async fn run_morning_routine_tick(
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
 ) {
-    use chrono::{Timelike, Utc};
-
-    let now = Utc::now().with_timezone(&tz);
-    let hour = u8::try_from(now.hour()).expect("chrono::Timelike::hour is 0..=23");
-    let minute = u8::try_from(now.minute()).expect("chrono::Timelike::minute is 0..=59");
-    let minute_of_day = match MinuteOfDay::new(hour, minute) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!("could not construct MinuteOfDay from {now}: {e}");
-            return;
-        }
+    let Some((minute_of_day, now)) = current_minute_of_day(tz) else {
+        return;
     };
     let today = now.date_naive();
 
@@ -1910,7 +2006,7 @@ async fn run_morning_routine_tick(
     }
 
     // Phase 2 — at start, on a fire-day: claim + kick-on devices that are off.
-    let mut just_kicked_on = std::collections::HashSet::new();
+    let mut just_kicked_on = HashSet::new();
     let firing = should_fire_today(routine, today);
     if minute_of_day == morning_start && firing {
         for id in &routine.target_devices {
@@ -2263,19 +2359,26 @@ mod chat_loop_tests {
 
     struct FakeChat {
         responses: Mutex<VecDeque<ChatResponse>>,
+        requests: Mutex<Vec<ChatRequest>>,
     }
 
     impl FakeChat {
         fn new(responses: Vec<ChatResponse>) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
+                requests: Mutex::new(Vec::new()),
             }
+        }
+
+        fn captured_requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().unwrap().clone()
         }
     }
 
     #[async_trait::async_trait]
     impl ChatProvider for FakeChat {
-        async fn chat(&self, _req: ChatRequest) -> anyhow::Result<ChatResponse> {
+        async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+            self.requests.lock().unwrap().push(req);
             let mut q = self.responses.lock().unwrap();
             q.pop_front()
                 .ok_or_else(|| anyhow::anyhow!("FakeChat ran out of canned responses"))
@@ -2309,7 +2412,7 @@ mod chat_loop_tests {
             finish_reason: FinishReason::Stop,
         }]);
         let registry = ToolRegistry::new();
-        let out = run_tool_calling_chat(&fake, &registry, "hi", 5)
+        let out = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "hello world");
@@ -2338,7 +2441,7 @@ mod chat_loop_tests {
             name: "stub".into(),
             result: json!({"value": 42}),
         }));
-        let out = run_tool_calling_chat(&fake, &registry, "ask the stub", 5)
+        let out = run_tool_calling_chat(&fake, &registry, "ask the stub", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "the answer is 42");
@@ -2365,7 +2468,7 @@ mod chat_loop_tests {
             name: "stub".into(),
             result: json!({"ok": true}),
         }));
-        let err = run_tool_calling_chat(&fake, &registry, "go", 3)
+        let err = run_tool_calling_chat(&fake, &registry, "go", None, 3)
             .await
             .unwrap_err();
         let msg = format!("{err}");
@@ -2383,7 +2486,7 @@ mod chat_loop_tests {
             finish_reason: FinishReason::Stop,
         }]);
         let registry = ToolRegistry::new();
-        let out = run_tool_calling_chat(&fake, &registry, "hi", 5)
+        let out = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "");
@@ -2408,9 +2511,202 @@ mod chat_loop_tests {
             },
         ]);
         let registry = ToolRegistry::new();
-        let out = run_tool_calling_chat(&fake, &registry, "go", 5)
+        let out = run_tool_calling_chat(&fake, &registry, "go", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "ok we recovered");
+    }
+
+    #[tokio::test]
+    async fn system_prompt_is_prepended_to_messages() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: Some("ok".into()),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+        }]);
+        let registry = ToolRegistry::new();
+        run_tool_calling_chat(&fake, &registry, "hello", Some("YOU ARE NILES"), 5)
+            .await
+            .unwrap();
+
+        let reqs = fake.captured_requests();
+        assert_eq!(reqs.len(), 1);
+        match reqs[0].messages.as_slice() {
+            [Message::System { content }, Message::User { content: user }] => {
+                assert_eq!(content, "YOU ARE NILES");
+                assert_eq!(user, "hello");
+            }
+            other => panic!("expected [System, User], got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn no_system_message_when_system_prompt_is_none() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: Some("ok".into()),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+        }]);
+        let registry = ToolRegistry::new();
+        run_tool_calling_chat(&fake, &registry, "hello", None, 5)
+            .await
+            .unwrap();
+
+        let reqs = fake.captured_requests();
+        assert_eq!(reqs.len(), 1);
+        match reqs[0].messages.as_slice() {
+            [Message::User { content }] => assert_eq!(content, "hello"),
+            other => panic!("expected [User] only, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod system_prompt_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_skill(dir: &Path, content: &str) {
+        fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    #[test]
+    fn assemble_persona_only_when_loader_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt("turn on the lights", &index, &loader);
+        assert_eq!(out, NILES_SYSTEM_PERSONA);
+    }
+
+    #[test]
+    fn assemble_persona_only_when_no_topic_matches() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        // "weather" doesn't intersect with "lighting" or "Control smart lights"
+        let out = assemble_system_prompt("what is the weather today", &index, &loader);
+        assert_eq!(out, NILES_SYSTEM_PERSONA);
+    }
+
+    #[test]
+    fn assemble_injects_matching_capability_body() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: How brightness curves decide brightness\nversion: 1.2.3\n---\n# Lighting Curve\n\nThe curve uses a cosine falloff.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "how does the lighting curve decide brightness",
+            &index,
+            &loader,
+        );
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("The curve uses a cosine falloff."));
+        assert!(out.contains("# Capability references"));
+    }
+
+    #[test]
+    fn assemble_injects_two_matching_capabilities() {
+        let tmp = TempDir::new().unwrap();
+
+        let alpha_dir = tmp.path().join("alpha");
+        fs::create_dir(&alpha_dir).unwrap();
+        write_skill(
+            &alpha_dir,
+            "---\nname: alpha\ndescription: Alpha capability about scenes\nversion: 1.0.0\n---\nAlpha body.\n",
+        );
+
+        let beta_dir = tmp.path().join("beta");
+        fs::create_dir(&beta_dir).unwrap();
+        write_skill(
+            &beta_dir,
+            "---\nname: beta\ndescription: Beta capability about scenes\nversion: 2.0.0\n---\nBeta body.\n",
+        );
+
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt("tell me about scenes", &index, &loader);
+
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("Alpha body."));
+        assert!(out.contains("Beta body."));
+
+        // Verify alphabetical ordering: alpha before beta
+        let alpha_pos = out.find("Alpha body.").unwrap();
+        let beta_pos = out.find("Beta body.").unwrap();
+        assert!(
+            alpha_pos < beta_pos,
+            "alpha should appear before beta in output"
+        );
+    }
+
+    #[test]
+    fn assemble_includes_version_in_section_header() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("my-cap");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: my-cap\ndescription: My capability\nversion: 4.5.6\n---\nBody.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt("tell me about my capability", &index, &loader);
+        assert!(
+            out.contains("(v4.5.6)"),
+            "output should contain version: {out}"
+        );
+    }
+
+    #[test]
+    fn assemble_is_deterministic() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let a = assemble_system_prompt("turn on the lights", &index, &loader);
+        let b = assemble_system_prompt("turn on the lights", &index, &loader);
+        assert_eq!(a, b, "assemble_system_prompt must be deterministic");
+    }
+
+    #[test]
+    fn build_capability_index_round_trips_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("prereq");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: prereq\ndescription: Needs deps\nversion: 1.0.0\nprerequisites:\n  - foo\n  - bar\n---\nBody.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+
+        let entries = index.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "prereq");
+        assert_eq!(entries[0].description, "Needs deps");
+        assert_eq!(entries[0].prerequisites, vec!["foo", "bar"]);
+
+        // Indirectly verify the capability is detectable and that
+        // prerequisite expansion works when the capability itself matches.
+        let names = niles_intent::detect_topics("prereq", &index);
+        assert!(names.contains(&"prereq".to_string()));
     }
 }
