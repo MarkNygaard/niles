@@ -178,8 +178,13 @@ impl WyomingSender {
     ///
     /// Chunk size is rounded down to a multiple of the frame size
     /// `(bits_per_sample / 8) * channels` so no audio frame is split
-    /// across chunk boundaries. Empty PCM yields `audio-start`
-    /// immediately followed by `audio-stop`.
+    /// across chunk boundaries. Trailing bytes that do not form a
+    /// whole frame are dropped and logged at `debug` level. Empty
+    /// PCM yields `audio-start` immediately followed by `audio-stop`.
+    ///
+    /// If a chunk send fails (e.g. the peer disconnects mid-stream),
+    /// `audio-stop` is still sent as a best-effort attempt to reset
+    /// the satellite's audio state before the error is returned.
     pub async fn send_audio(
         &self,
         peer: SocketAddr,
@@ -221,29 +226,39 @@ impl WyomingSender {
                 pcm.len()
             );
         }
-        for chunk in pcm[..valid_len].chunks(chunk_size) {
-            self.send_to(
+
+        let chunk_result = async {
+            for chunk in pcm[..valid_len].chunks(chunk_size) {
+                self.send_to(
+                    peer,
+                    Event {
+                        kind: EventKind::AudioChunk,
+                        data: json!({}),
+                        payload: chunk.to_vec(),
+                        version: None,
+                    },
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        .await;
+
+        // Best-effort audio-stop so the satellite doesn't stay stuck
+        // in audio-receiving state even if chunks failed.
+        let _ = self
+            .send_to(
                 peer,
                 Event {
-                    kind: EventKind::AudioChunk,
+                    kind: EventKind::AudioStop,
                     data: json!({}),
-                    payload: chunk.to_vec(),
+                    payload: Vec::new(),
                     version: None,
                 },
             )
-            .await?;
-        }
+            .await;
 
-        self.send_to(
-            peer,
-            Event {
-                kind: EventKind::AudioStop,
-                data: json!({}),
-                payload: Vec::new(),
-                version: None,
-            },
-        )
-        .await
+        chunk_result
     }
 }
 
@@ -257,7 +272,14 @@ async fn handle_connection(
     let mut reader = WyomingReader::new(read_half);
 
     let (outbound_tx, mut outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
-    outbound.lock().unwrap().insert(peer, outbound_tx);
+    {
+        let mut map = outbound.lock().unwrap();
+        if map.contains_key(&peer) {
+            warn!("rejecting duplicate connection from {peer}");
+            return;
+        }
+        map.insert(peer, outbound_tx);
+    }
 
     let mut writer = WyomingWriter::new(write_half);
 
