@@ -130,7 +130,8 @@ pub fn timer_started(duration: Duration, name: Option<&str>) -> String {
 /// "Cancelled the pasta timer." / "I don't have a timer called pasta."
 pub fn timer_cancelled(name: &str, count: usize) -> String {
     match (count, name.is_empty()) {
-        (0, _) => format!("I don't have a timer called {name}."),
+        (0, true) => "No timers running.".into(),
+        (0, false) => format!("I don't have a timer called {name}."),
         (1, true) => "Cancelled your timer.".into(),
         (_, true) => format!("Cancelled {count} timers."),
         (1, false) => format!("Cancelled the {name} timer."),
@@ -331,6 +332,11 @@ mod tests {
             timer_cancelled("pasta", 0),
             "I don't have a timer called pasta."
         );
+    }
+
+    #[test]
+    fn timer_cancelled_unnamed_miss() {
+        assert_eq!(timer_cancelled("", 0), "No timers running.");
     }
 
     #[test]
