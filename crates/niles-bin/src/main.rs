@@ -1601,7 +1601,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 }
                 None => {
                     eprintln!("\nWyoming server stopped.");
-                    break;
+                    break Ok(());
                 }
             },
             disconnect = disconnects_rx.recv() => {
