@@ -22,6 +22,7 @@ pub async fn list_devices(State(state): State<AppState>) -> Json<Vec<DeviceDto>>
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SetDeviceBody {
     pub on: Option<bool>,
     pub brightness: Option<u8>,

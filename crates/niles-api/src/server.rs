@@ -564,6 +564,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_invalid_device_name_returns_bad_request() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        // Hyphen is rejected by DeviceName validation.
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk-lamp",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_unknown_field_returns_unprocessable() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"on": true, "unknown_field": "value"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn post_failing_publisher_returns_bad_gateway() {
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
