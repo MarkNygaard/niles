@@ -1345,7 +1345,7 @@ async fn handle_transcript(
         }
         Intent::Stop | Intent::Cancel => {
             let stopped_entry = ctx.timers.stop_most_recent_ringing();
-            if let Some(ref entry) = stopped_entry {
+            if let Some(entry) = &stopped_entry {
                 println!("[{peer}] stopped {}", timer_label(entry));
             }
             Some(response::stopped(stopped_entry.is_some()))

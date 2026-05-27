@@ -13,10 +13,9 @@ fn spoken_room(room: &str) -> String {
 
 /// ASCII first-char uppercase; leaves non-ASCII untouched.
 fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
+    match s.split_at_checked(1) {
+        Some((first, rest)) => first.to_ascii_uppercase() + rest,
         None => String::new(),
-        Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
     }
 }
 
@@ -27,13 +26,12 @@ fn capitalize_first(s: &str) -> String {
 /// - `[a, b]` → `"a and b"`
 /// - `[a, b, c, ...]` → `"a, b, and c"` (Oxford comma always)
 fn join_spoken(items: &[String]) -> String {
-    match items.len() {
-        0 => String::new(),
-        1 => items[0].clone(),
-        2 => format!("{} and {}", items[0], items[1]),
+    match items {
+        [] => String::new(),
+        [single] => single.clone(),
+        [a, b] => format!("{a} and {b}"),
         _ => {
-            let head = &items[..items.len() - 1];
-            let last = &items[items.len() - 1];
+            let (last, head) = items.split_last().unwrap();
             format!("{}, and {}", head.join(", "), last)
         }
     }
@@ -43,13 +41,10 @@ fn join_spoken(items: &[String]) -> String {
 ///
 /// Returns `(value, unit_singular)` so the caller can pluralize.
 fn format_duration_phrase(duration: Duration) -> (u64, &'static str) {
-    let secs = duration.as_secs();
-    if secs.is_multiple_of(3600) && secs >= 3600 {
-        (secs / 3600, "hour")
-    } else if secs.is_multiple_of(60) && secs >= 60 {
-        (secs / 60, "minute")
-    } else {
-        (secs, "second")
+    match duration.as_secs() {
+        n if n >= 3600 && n % 3600 == 0 => (n / 3600, "hour"),
+        n if n >= 60 && n % 60 == 0 => (n / 60, "minute"),
+        n => (n, "second"),
     }
 }
 
@@ -134,13 +129,11 @@ pub fn timer_started(duration: Duration, name: Option<&str>) -> String {
 
 /// "Cancelled the pasta timer." / "I don't have a timer called pasta."
 pub fn timer_cancelled(name: &str, count: usize) -> String {
-    if count == 0 {
-        return format!("I don't have a timer called {name}.");
+    match (count, name.is_empty()) {
+        (0, _) => format!("I don't have a timer called {name}."),
+        (_, true) => "Cancelled your timer.".into(),
+        _ => format!("Cancelled the {name} timer."),
     }
-    if name.is_empty() {
-        return "Cancelled your timer.".into();
-    }
-    format!("Cancelled the {name} timer.")
 }
 
 /// "No timers running." / "You have 2 timers."
@@ -154,10 +147,9 @@ pub fn timer_list(count: usize) -> String {
 
 /// "Stopped." / "Nothing's running."
 pub fn stopped(was_ringing: bool) -> String {
-    if was_ringing {
-        "Stopped.".into()
-    } else {
-        "Nothing's running.".into()
+    match was_ringing {
+        true => "Stopped.".into(),
+        false => "Nothing's running.".into(),
     }
 }
 
