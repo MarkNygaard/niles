@@ -1215,11 +1215,17 @@ async fn handle_transcript(
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
         Intent::LightSet { room, on } => {
-            let Some((canonical, targets)) =
-                resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some())
-            else {
-                return Some(response::room_not_found(&room));
-            };
+            let (canonical, targets) =
+                match resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some()) {
+                    RoomResolve::Found(c, t) => (c, t),
+                    RoomResolve::BadName => return Some(response::room_not_found(&room)),
+                    RoomResolve::NoDevices => {
+                        return Some(response::room_no_devices(&room));
+                    }
+                    RoomResolve::WarmingUp => {
+                        return Some(response::room_warming_up());
+                    }
+                };
             let desired = DeviceState {
                 on: Some(on),
                 ..Default::default()
@@ -1228,11 +1234,17 @@ async fn handle_transcript(
             Some(response::light_set(&room, on))
         }
         Intent::LightDim { room, percent } => {
-            let Some((canonical, targets)) =
-                resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some())
-            else {
-                return Some(response::room_not_found(&room));
-            };
+            let (canonical, targets) =
+                match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
+                    RoomResolve::Found(c, t) => (c, t),
+                    RoomResolve::BadName => return Some(response::room_not_found(&room)),
+                    RoomResolve::NoDevices => {
+                        return Some(response::room_no_devices(&room));
+                    }
+                    RoomResolve::WarmingUp => {
+                        return Some(response::room_warming_up());
+                    }
+                };
             // Flag each dimmable target *before* publishing so the
             // curve driver can't race a tick in between and overwrite
             // the dim we're about to send.
@@ -1382,16 +1394,22 @@ async fn handle_transcript(
         }
         _ => {
             tracing::info!("{peer}: unknown intent variant, skipping dispatch");
-            None
+            Some(response::fallback())
         }
     }
 }
 
+/// Outcome of resolving a room name to a device list.
+enum RoomResolve {
+    Found(RoomName, Vec<Device>),
+    BadName,
+    NoDevices,
+    WarmingUp,
+}
+
 /// Resolve a transcript-derived room reference into the canonical
 /// `RoomName` + the list of devices in that room that pass
-/// `capability_filter`. Returns `None` if the room name is invalid
-/// or no devices match — in both cases the right user-facing log
-/// line is already emitted here, so the caller just bails.
+/// `capability_filter`.
 ///
 /// Centralizing this avoids the previous duplicated lookup in the
 /// `LightDim` arm (one walk to flag, another inside `dispatch_room`
@@ -1401,7 +1419,7 @@ fn resolve_room_targets<F>(
     peer: std::net::SocketAddr,
     room: &str,
     capability_filter: F,
-) -> Option<(RoomName, Vec<Device>)>
+) -> RoomResolve
 where
     F: Fn(&niles_core::Device) -> bool,
 {
@@ -1409,7 +1427,7 @@ where
         Ok(r) => r,
         Err(reason) => {
             tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
-            return None;
+            return RoomResolve::BadName;
         }
     };
 
@@ -1429,15 +1447,16 @@ where
             println!(
                 "[{peer}] registry is still warming up (no devices yet) — try again in a moment"
             );
+            RoomResolve::WarmingUp
         } else {
             println!(
                 "[{peer}] no devices in room '{canonical}' support this action — nothing to dispatch"
             );
+            RoomResolve::NoDevices
         }
-        return None;
+    } else {
+        RoomResolve::Found(canonical, targets)
     }
-
-    Some((canonical, targets))
 }
 
 /// Publish the requested target state to each device in `targets`.

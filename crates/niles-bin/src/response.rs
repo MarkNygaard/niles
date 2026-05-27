@@ -160,6 +160,21 @@ pub fn room_not_found(room: &str) -> String {
     format!("I couldn't find a room called {}.", spoken_room(room))
 }
 
+/// "I couldn't find any lights in the kitchen."
+pub fn room_no_devices(room: &str) -> String {
+    format!("I couldn't find any lights in the {}.", spoken_room(room))
+}
+
+/// "Still waking up, try again in a moment."
+pub fn room_warming_up() -> String {
+    "Still waking up, try again in a moment.".into()
+}
+
+/// Generic fallback for intents that don't have a specific phrase yet.
+pub fn fallback() -> String {
+    "I'm not sure how to help with that.".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,8 +344,18 @@ mod tests {
     }
 
     #[test]
+    fn timer_cancelled_unnamed_plural() {
+        assert_eq!(timer_cancelled("", 3), "Cancelled 3 timers.");
+    }
+
+    #[test]
     fn timer_list_zero() {
         assert_eq!(timer_list(0), "No timers running.");
+    }
+
+    #[test]
+    fn timer_list_one() {
+        assert_eq!(timer_list(1), "You have 1 timer.");
     }
 
     #[test]
@@ -354,6 +379,24 @@ mod tests {
             room_not_found("office"),
             "I couldn't find a room called office."
         );
+    }
+
+    #[test]
+    fn room_no_devices_phrasing() {
+        assert_eq!(
+            room_no_devices("kitchen"),
+            "I couldn't find any lights in the kitchen."
+        );
+    }
+
+    #[test]
+    fn room_warming_up_phrasing() {
+        assert_eq!(room_warming_up(), "Still waking up, try again in a moment.");
+    }
+
+    #[test]
+    fn fallback_phrasing() {
+        assert_eq!(fallback(), "I'm not sure how to help with that.");
     }
 
     #[test]
