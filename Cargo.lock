@@ -892,6 +892,7 @@ dependencies = [
  "niles-wyoming",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
