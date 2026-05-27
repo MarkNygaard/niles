@@ -955,57 +955,12 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         }
     });
 
-    // In-memory timer store + driver task. The driver wakes on the
-    // soonest pending expiry (`next_expiry`), transitions matching
-    // timers from Pending -> Ringing, prints a user-visible FIRED line,
-    // and publishes Event::TimerFired for any future consumer
-    // (satellite-alarm playback is XVF3800-blocked, out of scope here).
-    //
-    // The sleep is capped at 60 s — without a notify mechanism, a
-    // timer added during a long sleep would otherwise miss its
-    // deadline. The cap means a shorter timer added late is at worst
-    // ~60 s overdue, which is acceptable for v0.1.
-    let timer_store = Arc::new(TimerStore::new());
-    let timer_bus = bus.clone();
-    let timer_store_for_driver = Arc::clone(&timer_store);
-    let timer_handle = tokio::spawn(async move {
-        use tokio::time::sleep;
-        const MAX_SLEEP: std::time::Duration = std::time::Duration::from_secs(60);
-        loop {
-            let now = Utc::now();
-            let sleep_for = match timer_store_for_driver.next_expiry() {
-                Some(exp) => {
-                    let ms = (exp - now).num_milliseconds().max(0) as u64;
-                    std::time::Duration::from_millis(ms).min(MAX_SLEEP)
-                }
-                None => MAX_SLEEP,
-            };
-            sleep(sleep_for).await;
-
-            let now = Utc::now();
-            let to_fire: Vec<TimerEntry> = timer_store_for_driver
-                .list()
-                .into_iter()
-                .filter(|e| e.is_pending() && e.expires_at <= now)
-                .collect();
-
-            for entry in to_fire {
-                if let Some(rung) = timer_store_for_driver.mark_ringing(entry.id) {
-                    println!(
-                        "[timer] FIRED {} (peer={}, id={})",
-                        timer_label(&rung),
-                        rung.origin,
-                        rung.id.0,
-                    );
-                    timer_bus.publish(Event::TimerFired {
-                        id: rung.id.0,
-                        name: rung.name.clone(),
-                        origin: rung.origin,
-                    });
-                }
-            }
-        }
-    });
+    // In-memory timer store, shared by the driver task (below) and
+    // the dispatch context. The driver's behavior is documented on
+    // `spawn_timer_driver` — see that helper for the 60 s sleep-cap
+    // trade-off and the Pending → Ringing transition rules.
+    let timers = Arc::new(TimerStore::new());
+    let timer_handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
 
     // Build the LLM + tool registry once for the lifetime of the
     // server. Both go into DispatchCtx wrapped in Arc — they're cloned
@@ -1047,7 +1002,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         dry_run: args.dry_run,
         tracker: Arc::new(ManualModeTracker::new()),
         scenes: Arc::new(SceneStore::new()),
-        timers: Arc::clone(&timer_store),
+        timers: Arc::clone(&timers),
         llm,
         tools,
     };
@@ -1580,6 +1535,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     niles_tools::register_timer_tools(&mut tools, timers.clone());
     let tools = Arc::new(tools);
 
+    // Timer driver: shares the `timers` Arc registered with the LLM
+    // tools (above) and threaded into `DispatchCtx` (below) so
+    // timers set via voice in `serve` actually fire. See
+    // `spawn_timer_driver` for behavior + the 60 s sleep-cap caveat.
+    let _timer_handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
+
     // HTTP API
     let api_state = AppState::new(registry.clone());
     let api_handle = tokio::spawn(async move {
@@ -2040,6 +2001,58 @@ async fn run_morning_routine_tick(
     }
 }
 
+/// Spawn the timer driver task. Wakes on the soonest pending
+/// expiry (`TimerStore::next_expiry`), transitions matching
+/// timers from `Pending` → `Ringing`, prints a user-visible
+/// `[timer] FIRED` line, and publishes [`Event::TimerFired`]
+/// for any future consumer (satellite-alarm playback is
+/// XVF3800-blocked, out of scope here).
+///
+/// The sleep is capped at 60 s — without a notify mechanism, a
+/// timer added during a long sleep would otherwise miss its
+/// deadline. The cap means a shorter timer added late is at
+/// worst ~60 s overdue, which is acceptable for v0.1.
+///
+/// Shared by `voice_dispatch` and `serve`.
+fn spawn_timer_driver(timers: Arc<TimerStore>, bus: EventBus) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        use tokio::time::sleep;
+        const MAX_SLEEP: std::time::Duration = std::time::Duration::from_secs(60);
+        loop {
+            let now = Utc::now();
+            let sleep_for = match timers.next_expiry() {
+                Some(exp) => {
+                    let ms = (exp - now).num_milliseconds().max(0) as u64;
+                    std::time::Duration::from_millis(ms).min(MAX_SLEEP)
+                }
+                None => MAX_SLEEP,
+            };
+            sleep(sleep_for).await;
+
+            let now = Utc::now();
+            for entry in timers
+                .list()
+                .into_iter()
+                .filter(|e| e.is_pending() && e.expires_at <= now)
+            {
+                if let Some(rung) = timers.mark_ringing(entry.id) {
+                    println!(
+                        "[timer] FIRED {} (peer={}, id={})",
+                        timer_label(&rung),
+                        rung.origin,
+                        rung.id.0,
+                    );
+                    bus.publish(Event::TimerFired {
+                        id: rung.id.0,
+                        name: rung.name.clone(),
+                        origin: rung.origin,
+                    });
+                }
+            }
+        }
+    })
+}
+
 /// Presentation helper for a timer entry — lives in the binary, not
 /// the scheduler, because user-facing strings are a dispatch concern.
 fn timer_label(entry: &TimerEntry) -> String {
@@ -2185,6 +2198,35 @@ mod timer_label_tests {
         assert_eq!(
             timer_label_for(None, Duration::from_secs(2 * 3600)),
             "2 hour timer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod spawn_timer_driver_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn localhost() -> SocketAddr {
+        "127.0.0.1:9999".parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn driver_transitions_expired_timer_to_ringing() {
+        let timers = Arc::new(TimerStore::new());
+        let bus = EventBus::default();
+        let id = timers.set(Duration::from_secs(0), None, localhost(), Utc::now());
+
+        let _handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let entries = timers.list();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].is_ringing(),
+            "expected timer {id:?} to be Ringing, got {:?}",
+            entries[0].state
         );
     }
 }
