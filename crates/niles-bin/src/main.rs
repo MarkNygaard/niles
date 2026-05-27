@@ -28,6 +28,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
+mod response;
+
 #[derive(Parser)]
 #[command(name = "niles", about = "AI-first home automation system", version)]
 struct Cli {
@@ -1110,8 +1112,12 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                         let whisper = whisper.clone();
                         let ctx = ctx.clone();
                         tokio::spawn(async move {
-                            if let Some((peer, text)) = transcribe_session(&whisper, session).await {
-                                handle_transcript(&ctx, peer, &text).await;
+                            if let Some((peer, text)) = transcribe_session(&whisper, session).await
+                                && let Some(say) = handle_transcript(&ctx, peer, &text).await
+                            {
+                                println!("[{peer}] say: {say:?}");
+                                // TODO (speak-back PR): synthesize via PiperClient and send
+                                // via WyomingSender::send_audio(peer, pcm, AudioFormat).
                             }
                         });
                     }
@@ -1157,13 +1163,17 @@ struct DispatchCtx {
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
-async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: &str) {
+async fn handle_transcript(
+    ctx: &DispatchCtx,
+    peer: std::net::SocketAddr,
+    text: &str,
+) -> Option<String> {
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
     // a Groq round-trip on it — Tier 0 wouldn't match either.
     if text.is_empty() {
         tracing::debug!("[{peer}] empty transcript, skipping dispatch");
-        return;
+        return None;
     }
 
     // IntentRouter is a zero-sized unit struct; the regexes are
@@ -1189,15 +1199,16 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
             {
                 Ok(response) => {
                     println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
+                    return Some(response);
                 }
                 Err(e) => {
                     // Mirror the success-path stdout line so a Tier 1
                     // failure is visible without enabling tracing.
                     println!("[{peer}] \"{text}\" -> (Tier 1) error: {e:#}");
                     tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e:#}");
+                    return Some("Sorry, something went wrong.".into());
                 }
             }
-            return;
         }
     };
 
@@ -1207,19 +1218,20 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
             let Some((canonical, targets)) =
                 resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some())
             else {
-                return;
+                return Some(response::room_not_found(&room));
             };
             let desired = DeviceState {
                 on: Some(on),
                 ..Default::default()
             };
             dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
+            Some(response::light_set(&room, on))
         }
         Intent::LightDim { room, percent } => {
             let Some((canonical, targets)) =
                 resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some())
             else {
-                return;
+                return Some(response::room_not_found(&room));
             };
             // Flag each dimmable target *before* publishing so the
             // curve driver can't race a tick in between and overwrite
@@ -1232,6 +1244,7 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                 ..Default::default()
             };
             dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
+            Some(response::light_dim(&room, percent))
         }
         Intent::SceneSave { name, room } => {
             let canonical = match room.as_deref().map(intent_room_to_canonical) {
@@ -1241,7 +1254,7 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                         "[{peer}] room {room:?} is not a valid registry name: {reason}",
                         room = room.as_deref().unwrap_or(""),
                     );
-                    return;
+                    return None;
                 }
                 None => None,
             };
@@ -1250,15 +1263,16 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                 Some(r) => println!("[{peer}] saved scene {name:?} with {n} devices in {r}"),
                 None => println!("[{peer}] saved scene {name:?} with {n} devices (whole home)"),
             }
+            Some(response::scene_saved(&name))
         }
         Intent::SceneApply { name } => {
             let Some(entries) = ctx.scenes.get(&name) else {
                 println!("[{peer}] no scene named {name:?}");
-                return;
+                return Some(response::scene_not_found(&name));
             };
             if entries.is_empty() {
                 println!("[{peer}] scene {name:?} is empty — nothing to apply");
-                return;
+                return Some(response::scene_empty(&name));
             }
             for entry in entries {
                 let (topic, payload) =
@@ -1280,6 +1294,7 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                 ctx.tracker.flag(&entry.device_id);
             }
             println!("[{peer}] applied scene {name:?}");
+            Some(response::scene_applied(&name))
         }
         Intent::SceneList => {
             let names = ctx.scenes.names();
@@ -1288,18 +1303,22 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
             } else {
                 println!("[{peer}] {} scenes: {}", names.len(), names.join(", "));
             }
+            Some(response::scene_list(&names))
         }
         Intent::SceneDelete { name } => {
             if ctx.scenes.delete(&name) {
                 println!("[{peer}] deleted scene {name:?}");
+                Some(response::scene_deleted(&name))
             } else {
                 println!("[{peer}] no scene named {name:?}");
+                Some(response::scene_not_found(&name))
             }
         }
         Intent::ClearManualMode { room } => match room {
             None => {
                 let n = ctx.tracker.clear_all();
                 println!("[{peer}] back to normal -> cleared manual flag on {n} devices");
+                Some(response::cleared_manual(None))
             }
             Some(name) => {
                 let canonical = match intent_room_to_canonical(&name) {
@@ -1308,26 +1327,28 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                         tracing::warn!(
                             "[{peer}] room {name:?} is not a valid registry name: {reason}"
                         );
-                        return;
+                        return None;
                     }
                 };
                 let n = ctx.tracker.clear_room(&canonical);
                 println!(
                     "[{peer}] back to normal in {name} -> cleared manual flag on {n} devices in {canonical}"
                 );
+                Some(response::cleared_manual(Some(&name)))
             }
         },
         Intent::TimerSet { duration, name } => {
             let id = ctx.timers.set(duration, name.clone(), peer, Utc::now());
             let label = timer_label_for(name.as_deref(), duration);
             println!("[{peer}] {label} started (id={})", id.0);
+            Some(response::timer_started(duration, name.as_deref()))
         }
         Intent::Stop | Intent::Cancel => {
-            if let Some(stopped) = ctx.timers.stop_most_recent_ringing() {
-                println!("[{peer}] stopped {}", timer_label(&stopped));
-            } else {
-                println!("[{peer}] nothing ringing to stop");
+            let stopped_entry = ctx.timers.stop_most_recent_ringing();
+            if let Some(ref entry) = stopped_entry {
+                println!("[{peer}] stopped {}", timer_label(entry));
             }
+            Some(response::stopped(stopped_entry.is_some()))
         }
         Intent::TimerCancel { name } => {
             let n = ctx.timers.cancel_by_name(&name);
@@ -1336,6 +1357,7 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
             } else {
                 println!("[{peer}] cancelled {n} timer(s) named {name:?}");
             }
+            Some(response::timer_cancelled(&name, n))
         }
         Intent::TimerList => {
             let entries = ctx.timers.list();
@@ -1353,9 +1375,11 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: std::net::SocketAddr, text: 
                     );
                 }
             }
+            Some(response::timer_list(entries.len()))
         }
         _ => {
             tracing::info!("{peer}: unknown intent variant, skipping dispatch");
+            None
         }
     }
 }
@@ -1718,8 +1742,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         let whisper = whisper.clone();
                         let ctx = ctx.clone();
                         tokio::spawn(async move {
-                            if let Some((peer, text)) = transcribe_session(&whisper, session).await {
-                                handle_transcript(&ctx, peer, &text).await;
+                            if let Some((peer, text)) = transcribe_session(&whisper, session).await
+                                && let Some(say) = handle_transcript(&ctx, peer, &text).await
+                            {
+                                println!("[{peer}] say: {say:?}");
+                                // TODO (speak-back PR): synthesize via PiperClient and send
+                                // via WyomingSender::send_audio(peer, pcm, AudioFormat).
                             }
                         });
                     }
