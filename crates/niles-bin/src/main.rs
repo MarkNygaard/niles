@@ -2359,19 +2359,26 @@ mod chat_loop_tests {
 
     struct FakeChat {
         responses: Mutex<VecDeque<ChatResponse>>,
+        requests: Mutex<Vec<ChatRequest>>,
     }
 
     impl FakeChat {
         fn new(responses: Vec<ChatResponse>) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
+                requests: Mutex::new(Vec::new()),
             }
+        }
+
+        fn captured_requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().unwrap().clone()
         }
     }
 
     #[async_trait::async_trait]
     impl ChatProvider for FakeChat {
-        async fn chat(&self, _req: ChatRequest) -> anyhow::Result<ChatResponse> {
+        async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+            self.requests.lock().unwrap().push(req);
             let mut q = self.responses.lock().unwrap();
             q.pop_front()
                 .ok_or_else(|| anyhow::anyhow!("FakeChat ran out of canned responses"))
@@ -2508,6 +2515,49 @@ mod chat_loop_tests {
             .await
             .unwrap();
         assert_eq!(out, "ok we recovered");
+    }
+
+    #[tokio::test]
+    async fn system_prompt_is_prepended_to_messages() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: Some("ok".into()),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+        }]);
+        let registry = ToolRegistry::new();
+        run_tool_calling_chat(&fake, &registry, "hello", Some("YOU ARE NILES"), 5)
+            .await
+            .unwrap();
+
+        let reqs = fake.captured_requests();
+        assert_eq!(reqs.len(), 1);
+        match reqs[0].messages.as_slice() {
+            [Message::System { content }, Message::User { content: user }] => {
+                assert_eq!(content, "YOU ARE NILES");
+                assert_eq!(user, "hello");
+            }
+            other => panic!("expected [System, User], got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn no_system_message_when_system_prompt_is_none() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: Some("ok".into()),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+        }]);
+        let registry = ToolRegistry::new();
+        run_tool_calling_chat(&fake, &registry, "hello", None, 5)
+            .await
+            .unwrap();
+
+        let reqs = fake.captured_requests();
+        assert_eq!(reqs.len(), 1);
+        match reqs[0].messages.as_slice() {
+            [Message::User { content }] => assert_eq!(content, "hello"),
+            other => panic!("expected [User] only, got {other:?}"),
+        }
     }
 }
 
