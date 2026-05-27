@@ -854,9 +854,11 @@ dependencies = [
 name = "niles-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "http-body-util",
  "niles-core",
+ "niles-mqtt",
  "serde",
  "serde_json",
  "tokio",

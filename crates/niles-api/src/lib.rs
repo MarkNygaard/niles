@@ -12,8 +12,10 @@
 
 pub mod dto;
 pub mod handlers;
+pub mod publish;
 pub mod server;
 pub mod state;
 
+pub use publish::DevicePublisher;
 pub use server::{router, serve};
 pub use state::AppState;

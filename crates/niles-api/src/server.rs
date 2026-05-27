@@ -3,7 +3,7 @@
 use crate::handlers;
 use crate::state::AppState;
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -16,6 +16,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(handlers::healthz))
         .route("/devices", get(handlers::list_devices))
         .route("/rooms/{room}", get(handlers::devices_in_room))
+        .route("/rooms/{room}/{device}", post(handlers::set_device))
         .with_state(state)
 }
 
@@ -30,6 +31,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publish::DevicePublisher;
+    use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -37,11 +40,45 @@ mod tests {
         Device, DeviceClass, DeviceId, DeviceName, DeviceRegistry, DeviceState, RoomName,
     };
     use serde_json::Value;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
 
+    #[derive(Default, Clone)]
+    #[allow(clippy::type_complexity)]
+    struct MockPublisher {
+        sent: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    }
+
+    impl MockPublisher {
+        fn calls(&self) -> Vec<(String, Vec<u8>)> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl DevicePublisher for MockPublisher {
+        async fn publish(&self, topic: String, payload: Vec<u8>) -> Result<(), String> {
+            self.sent.lock().unwrap().push((topic, payload));
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingPublisher;
+
+    #[async_trait]
+    impl DevicePublisher for FailingPublisher {
+        async fn publish(&self, _topic: String, _payload: Vec<u8>) -> Result<(), String> {
+            Err("broker unreachable".into())
+        }
+    }
+
     fn make_state() -> AppState {
-        AppState::new(Arc::new(DeviceRegistry::new()))
+        AppState::new(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(MockPublisher::default()),
+            Arc::new("zigbee2mqtt".into()),
+        )
     }
 
     fn make_device(room: &str, name: &str) -> Device {
@@ -57,11 +94,21 @@ mod tests {
         }
     }
 
-    async fn get(app: Router, uri: &str) -> (StatusCode, Value) {
-        let response = app
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+    fn make_light(room: &str, name: &str) -> Device {
+        let mut d = make_device(room, name);
+        d.class = DeviceClass::Light;
+        d.state.on = Some(true);
+        d.state.brightness = Some(100);
+        d
+    }
+
+    fn make_sensor(room: &str, name: &str) -> Device {
+        let mut d = make_device(room, name);
+        d.class = DeviceClass::Sensor;
+        d
+    }
+
+    async fn decode_response(response: axum::response::Response) -> (StatusCode, Value) {
         let status = response.status();
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = if body_bytes.is_empty() {
@@ -72,6 +119,30 @@ mod tests {
             ))
         };
         (status, body)
+    }
+
+    async fn get(app: Router, uri: &str) -> (StatusCode, Value) {
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        decode_response(response).await
+    }
+
+    async fn post(app: Router, uri: &str, json_body: Value) -> (StatusCode, Value) {
+        let body = serde_json::to_vec(&json_body).unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        decode_response(response).await
     }
 
     #[tokio::test]
@@ -200,5 +271,196 @@ mod tests {
         assert_eq!(by_name["dimmer"], "switch");
         assert_eq!(by_name["thermometer"], "sensor");
         assert_eq!(by_name["mystery"], "unknown");
+    }
+
+    // ---- POST /rooms/{room}/{device} tests ----
+
+    #[tokio::test]
+    async fn post_set_on_to_light_returns_accepted() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "zigbee2mqtt/office/desk_lamp/set");
+        let payload = std::str::from_utf8(&calls[0].1).unwrap();
+        assert!(payload.contains("\"state\":\"ON\""), "payload: {payload}");
+    }
+
+    #[tokio::test]
+    async fn post_set_brightness_to_light_returns_accepted() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"brightness": 50}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        let payload = std::str::from_utf8(&calls[0].1).unwrap();
+        assert!(payload.contains("\"brightness\":127"), "payload: {payload}");
+    }
+
+    #[tokio::test]
+    async fn post_set_color_temp_to_light_returns_accepted() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"color_temp_kelvin": 4000}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        let payload = std::str::from_utf8(&calls[0].1).unwrap();
+        assert!(payload.contains("\"color_temp\":250"), "payload: {payload}");
+    }
+
+    #[tokio::test]
+    async fn post_to_missing_device_returns_not_found() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_to_non_light_returns_bad_request() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_sensor("kitchen", "thermometer"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/kitchen/thermometer",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_empty_body_returns_bad_request() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(app, "/rooms/office/desk_lamp", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_brightness_out_of_range_returns_bad_request() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"brightness": 150}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_kelvin_out_of_range_returns_bad_request() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"color_temp_kelvin": 50000}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_invalid_room_name_returns_bad_request() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/OFFICE/desk_lamp",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_failing_publisher_returns_bad_gateway() {
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let state = AppState::new(
+            registry,
+            Arc::new(FailingPublisher),
+            Arc::new("zigbee2mqtt".into()),
+        );
+        let app = router(state);
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
 }

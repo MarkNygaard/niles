@@ -3,7 +3,7 @@
 use anyhow::Context;
 use chrono::{Timelike, Utc};
 use clap::{Args, Parser, Subcommand};
-use niles_api::AppState;
+use niles_api::{AppState, DevicePublisher};
 use niles_capabilities::CapabilityLoader;
 use niles_config::Config;
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
@@ -445,6 +445,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
 
+    let publisher = client.publisher();
     let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -452,7 +453,11 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
         }
     });
 
-    let state = AppState::new(registry.clone());
+    let state = AppState::new(
+        registry.clone(),
+        Arc::new(publisher) as Arc<dyn DevicePublisher>,
+        Arc::new(cfg.mqtt.z2m_prefix.clone()),
+    );
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(bind, state).await {
             tracing::error!("API server exited: {e}");
@@ -1656,7 +1661,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let timer_handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
 
     // HTTP API
-    let api_state = AppState::new(registry.clone());
+    let api_state = AppState::new(
+        registry.clone(),
+        Arc::new(publisher.clone()) as Arc<dyn DevicePublisher>,
+        z2m_prefix.clone(),
+    );
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(api_bind, api_state).await {
             tracing::error!("API server exited: {e}");
