@@ -1,3 +1,8 @@
+//! Abstraction over MQTT publishing for device commands.
+//!
+//! `DevicePublisher` keeps the dependency direction correct:
+//! `niles-api` depends on `niles-mqtt`, not the other way around.
+
 use async_trait::async_trait;
 
 #[async_trait]

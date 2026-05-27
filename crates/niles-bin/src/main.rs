@@ -465,7 +465,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     });
 
     eprintln!(
-        "Z2M source running on {prefix}/+/+; API listening on http://{bind}\n  GET /devices   /rooms/<room>   /healthz\nPress Ctrl-C to exit.",
+        "Z2M source running on {prefix}/+/+; API listening on http://{bind}\n  GET  /devices   /rooms/<room>   /healthz\n  POST /rooms/<room>/<device>\nPress Ctrl-C to exit.",
         prefix = cfg.mqtt.z2m_prefix
     );
 
