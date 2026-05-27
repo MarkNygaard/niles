@@ -246,7 +246,7 @@ impl WyomingSender {
 
         // Best-effort audio-stop so the satellite doesn't stay stuck
         // in audio-receiving state even if chunks failed.
-        let _ = self
+        let stop_result = self
             .send_to(
                 peer,
                 Event {
@@ -258,7 +258,10 @@ impl WyomingSender {
             )
             .await;
 
-        chunk_result
+        match chunk_result {
+            Err(e) => Err(e),
+            Ok(()) => stop_result,
+        }
     }
 }
 
