@@ -8,8 +8,10 @@
 //!
 //! v0.1 scope: protocol types, a codec that reads/writes frames over
 //! any `AsyncRead`/`AsyncWrite`, and a TCP server that accepts
-//! connections and forwards parsed events onto a channel for the
-//! caller to handle. STT, intent dispatch, and TTS land in later PRs.
+//! connections, forwards parsed events onto a channel, and supports
+//! sending events (including framed PCM audio) back to connected
+//! peers via [`WyomingSender`]. STT, intent dispatch, and TTS
+//! synthesis land in later PRs.
 //!
 //! ## Frame format
 //!
@@ -26,7 +28,7 @@ pub mod server;
 pub mod session;
 
 pub use codec::{WyomingReader, WyomingWriter};
-pub use error::{Error, Result};
+pub use error::{Error, Result, SendError};
 pub use event::Event;
-pub use server::WyomingServer;
+pub use server::{WyomingSender, WyomingServer};
 pub use session::{AudioFormat, AudioSession, SessionTracker};
