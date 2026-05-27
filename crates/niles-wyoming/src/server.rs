@@ -137,12 +137,13 @@ impl WyomingServer {
             let disconnects_tx = self.disconnects_tx.clone();
             let outbound = Arc::clone(&self.outbound);
             tokio::spawn(async move {
-                handle_connection(stream, peer, events_tx, outbound).await;
-                // Best-effort disconnect notification. If the
-                // consumer dropped its receiver (e.g. wyoming-tap
-                // doesn't care), `send` returns `SendError(Closed)`
-                // and we move on — the server is not blocked.
-                let _ = disconnects_tx.send(peer);
+                // Only notify if the connection was accepted into the
+                // outbound map. A rejected duplicate returns false and
+                // must not fire a spurious disconnect for the still-
+                // active original connection.
+                if handle_connection(stream, peer, events_tx, outbound).await {
+                    let _ = disconnects_tx.send(peer);
+                }
             });
         }
     }
@@ -270,7 +271,7 @@ async fn handle_connection(
     peer: SocketAddr,
     tx: mpsc::Sender<IncomingEvent>,
     outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Event>>>>,
-) {
+) -> bool {
     let (read_half, write_half) = stream.into_split();
     let mut reader = WyomingReader::new(read_half);
 
@@ -279,7 +280,7 @@ async fn handle_connection(
         let mut map = outbound.lock().unwrap();
         if map.contains_key(&peer) {
             warn!("rejecting duplicate connection from {peer}");
-            return;
+            return false;
         }
         map.insert(peer, outbound_tx);
     }
@@ -328,6 +329,7 @@ async fn handle_connection(
     }
 
     outbound.lock().unwrap().remove(&peer);
+    true
 }
 
 #[cfg(test)]
