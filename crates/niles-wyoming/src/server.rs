@@ -1,8 +1,9 @@
 //! Wyoming TCP server.
 //!
 //! v0.1: accepts connections, parses incoming events, forwards them
-//! onto an mpsc channel for the caller to handle. Writing back to
-//! the satellite (TTS audio, intent responses) lands in a later PR.
+//! onto an mpsc channel for the caller to handle, and supports
+//! sending events (including framed PCM audio) back to any connected
+//! peer via [`WyomingSender`].
 
 use crate::codec::{WyomingReader, WyomingWriter};
 use crate::error::{Result, SendError};
@@ -186,10 +187,11 @@ impl WyomingSender {
         format: AudioFormat,
     ) -> std::result::Result<(), SendError> {
         let frame_size = (format.bits_per_sample / 8) as usize * format.channels as usize;
-        let chunk_size = AUDIO_CHUNK_BYTES
-            .checked_div(frame_size)
-            .map(|n| n * frame_size)
-            .unwrap_or(AUDIO_CHUNK_BYTES);
+        let chunk_size = match AUDIO_CHUNK_BYTES.checked_div(frame_size) {
+            None => AUDIO_CHUNK_BYTES, // frame_size == 0
+            Some(0) => frame_size,     // frame_size > AUDIO_CHUNK_BYTES
+            Some(n) => n * frame_size,
+        };
 
         self.send_to(
             peer,
@@ -206,7 +208,20 @@ impl WyomingSender {
         )
         .await?;
 
-        for chunk in pcm.chunks(chunk_size) {
+        // Truncate to whole frames so no audio frame is split.
+        let valid_len = if frame_size == 0 {
+            pcm.len()
+        } else {
+            pcm.len() - (pcm.len() % frame_size)
+        };
+        if valid_len < pcm.len() {
+            debug!(
+                "dropping {} trailing bytes from {}-byte PCM for {peer} (not a whole frame)",
+                pcm.len() - valid_len,
+                pcm.len()
+            );
+        }
+        for chunk in pcm[..valid_len].chunks(chunk_size) {
             self.send_to(
                 peer,
                 Event {
@@ -275,7 +290,8 @@ async fn handle_connection(
 
     let write_fut = async {
         while let Some(event) = outbound_rx.recv().await {
-            if writer.write_event(&event).await.is_err() {
+            if let Err(e) = writer.write_event(&event).await {
+                warn!("Wyoming write error to {peer}: {e}");
                 break;
             }
         }
@@ -621,6 +637,123 @@ mod tests {
         let unknown: SocketAddr = "127.0.0.1:9999".parse().unwrap();
         let result = sender.send_to(unknown, event(EventKind::Ping)).await;
         assert_eq!(result, Err(SendError::NotConnected));
+    }
+
+    /// When frame_size exceeds AUDIO_CHUNK_BYTES, chunk_size falls
+    /// back to frame_size so `.chunks()` never receives 0.
+    #[tokio::test]
+    async fn send_audio_large_frame_size() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let (server, mut events_rx, _disconnects_rx) = WyomingServer::bind(addr).await.unwrap();
+        let bound = server.listener.local_addr().unwrap();
+        let sender = server.sender();
+        let _server_task = tokio::spawn(server.run());
+
+        let stream = TcpStream::connect(bound).await.unwrap();
+        let client_peer = stream.local_addr().unwrap();
+        let (read_half, write_half) = stream.into_split();
+        let mut reader = WyomingReader::new(read_half);
+        let mut writer = WyomingWriter::new(write_half);
+
+        writer.write_event(&event(EventKind::Ping)).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("timed out")
+            .expect("event");
+
+        // frame_size = 4 * 600 = 2400 > AUDIO_CHUNK_BYTES (2048)
+        let pcm = vec![0xabu8; 5000];
+        let format = AudioFormat {
+            sample_rate_hz: 16000,
+            bits_per_sample: 32,
+            channels: 600,
+        };
+        sender.send_audio(client_peer, &pcm, format).await.unwrap();
+
+        let start = tokio::time::timeout(Duration::from_secs(2), reader.read_event())
+            .await
+            .expect("timed out")
+            .expect("read result")
+            .expect("event");
+        assert_eq!(start.kind, EventKind::AudioStart);
+
+        let mut chunk_sizes = Vec::new();
+        loop {
+            let ev = tokio::time::timeout(Duration::from_secs(2), reader.read_event())
+                .await
+                .expect("timed out")
+                .expect("read result")
+                .expect("event");
+            match ev.kind {
+                EventKind::AudioChunk => {
+                    chunk_sizes.push(ev.payload.len());
+                }
+                EventKind::AudioStop => break,
+                other => panic!("unexpected event kind: {:?}", other),
+            }
+        }
+
+        assert_eq!(chunk_sizes.len(), 2);
+        assert_eq!(chunk_sizes[0], 2400);
+        assert_eq!(chunk_sizes[1], 2400);
+        assert_eq!(chunk_sizes.iter().sum::<usize>(), 4800); // 5000 - (5000 % 2400)
+    }
+
+    /// Trailing bytes that do not make up a whole frame are dropped.
+    #[tokio::test]
+    async fn send_audio_drops_trailing_partial_frame() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let (server, mut events_rx, _disconnects_rx) = WyomingServer::bind(addr).await.unwrap();
+        let bound = server.listener.local_addr().unwrap();
+        let sender = server.sender();
+        let _server_task = tokio::spawn(server.run());
+
+        let stream = TcpStream::connect(bound).await.unwrap();
+        let client_peer = stream.local_addr().unwrap();
+        let (read_half, write_half) = stream.into_split();
+        let mut reader = WyomingReader::new(read_half);
+        let mut writer = WyomingWriter::new(write_half);
+
+        writer.write_event(&event(EventKind::Ping)).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("timed out")
+            .expect("event");
+
+        // frame_size = 2 * 2 = 4; 5001 % 4 = 1 trailing byte
+        let pcm = vec![0xabu8; 5001];
+        let format = AudioFormat {
+            sample_rate_hz: 16000,
+            bits_per_sample: 16,
+            channels: 2,
+        };
+        sender.send_audio(client_peer, &pcm, format).await.unwrap();
+
+        let start = tokio::time::timeout(Duration::from_secs(2), reader.read_event())
+            .await
+            .expect("timed out")
+            .expect("read result")
+            .expect("event");
+        assert_eq!(start.kind, EventKind::AudioStart);
+
+        let mut collected = 0;
+        loop {
+            let ev = tokio::time::timeout(Duration::from_secs(2), reader.read_event())
+                .await
+                .expect("timed out")
+                .expect("read result")
+                .expect("event");
+            match ev.kind {
+                EventKind::AudioChunk => {
+                    collected += ev.payload.len();
+                    assert_eq!(ev.payload.len() % 4, 0, "every chunk must be whole frames");
+                }
+                EventKind::AudioStop => break,
+                other => panic!("unexpected event kind: {:?}", other),
+            }
+        }
+
+        assert_eq!(collected, 5000); // dropped the trailing byte
     }
 
     /// After a client disconnects, the peer is removed from the
