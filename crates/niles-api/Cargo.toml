@@ -14,6 +14,8 @@ serde.workspace = true
 tracing.workspace = true
 axum.workspace = true
 niles-core.workspace = true
+niles-mqtt.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 tower.workspace = true
