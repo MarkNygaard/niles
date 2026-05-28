@@ -1184,6 +1184,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&id);
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 _ => {}
             }
         }
