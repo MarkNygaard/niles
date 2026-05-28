@@ -21,6 +21,14 @@ pub struct SonosClient {
     transport: Arc<dyn SonosTransport>,
 }
 
+impl std::fmt::Debug for SonosClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SonosClient")
+            .field("ip", &self.ip)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SonosClient {
     /// Create a client using the default [`HttpTransport`].
     pub fn new(ip: impl Into<String>) -> Self {
@@ -77,7 +85,8 @@ impl SonosClient {
 
         Ok(match state.as_str() {
             "PLAYING" => TransportState::Playing,
-            "PAUSED_PLAYBACK" => TransportState::Paused,
+            // Some UPnP renderers return the non-canonical "PAUSED".
+            "PAUSED_PLAYBACK" | "PAUSED" => TransportState::Paused,
             "STOPPED" => TransportState::Stopped,
             "TRANSITIONING" => TransportState::Transitioning,
             _ => TransportState::Unknown,
@@ -277,6 +286,23 @@ mod tests {
             client.get_transport_state().await.unwrap(),
             TransportState::Paused
         );
+    }
+
+    #[tokio::test]
+    async fn get_transport_state_parses_paused_alias() {
+        let body = "<CurrentTransportState>PAUSED</CurrentTransportState>".to_string();
+        let (_, client) = client_with(Ok(body));
+        assert_eq!(
+            client.get_transport_state().await.unwrap(),
+            TransportState::Paused
+        );
+    }
+
+    #[tokio::test]
+    async fn get_volume_parses_with_whitespace() {
+        let body = "<CurrentVolume> 42 </CurrentVolume>".to_string();
+        let (_, client) = client_with(Ok(body));
+        assert_eq!(client.get_volume().await.unwrap(), 42);
     }
 
     #[tokio::test]

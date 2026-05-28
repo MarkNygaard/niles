@@ -17,6 +17,7 @@ pub trait SonosTransport: Send + Sync {
 }
 
 /// Production transport using `reqwest` with a 10-second timeout.
+#[derive(Debug)]
 pub struct HttpTransport {
     http: reqwest::Client,
 }
@@ -84,7 +85,7 @@ pub(crate) fn extract_tag(body: &str, tag: &str) -> Option<String> {
     let close = format!("</{tag}>");
     let start = body.find(&open)? + open.len();
     let end = body[start..].find(&close)?;
-    Some(body[start..start + end].to_string())
+    Some(body[start..start + end].trim().to_string())
 }
 
 #[cfg(test)]
