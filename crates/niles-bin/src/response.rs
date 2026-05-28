@@ -3,6 +3,7 @@
 //! unit-testable without a DispatchCtx, and so the TTS layer has
 //! one string to synthesize.
 
+use niles_core::DeviceId;
 use std::time::Duration;
 
 /// Convert a canonical room name (`living_room`) to spoken form
@@ -189,6 +190,33 @@ pub fn media_volume(room: &str, percent: u8) -> String {
         capitalize_first(&spoken_room(room)),
         percent
     )
+}
+
+/// "Living room floor lamp on." / "Bedroom floor lamp off."
+pub fn device_set(id: &DeviceId, on: bool) -> String {
+    let phrase = format!(
+        "{} {} {}.",
+        spoken_room(id.room().as_str()),
+        spoken_room(id.name().as_str()),
+        if on { "on" } else { "off" }
+    );
+    capitalize_first(&phrase)
+}
+
+/// "Living room floor lamp to 30%."
+pub fn device_dim(id: &DeviceId, percent: u8) -> String {
+    let phrase = format!(
+        "{} {} to {}%.",
+        spoken_room(id.room().as_str()),
+        spoken_room(id.name().as_str()),
+        percent
+    );
+    capitalize_first(&phrase)
+}
+
+/// "I couldn't find that device anymore."
+pub fn device_not_found(_id: &DeviceId) -> String {
+    "I couldn't find that device anymore.".into()
 }
 
 /// "No speaker in the office."
@@ -531,6 +559,53 @@ mod tests {
         assert_eq!(
             speaker_unreachable("kitchen"),
             "I couldn't reach the speaker in the kitchen."
+        );
+    }
+
+    #[test]
+    fn device_set_on() {
+        let id = DeviceId::new(
+            "z2m",
+            niles_core::RoomName::parse("living_room").unwrap(),
+            niles_core::DeviceName::parse("floor_lamp").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(device_set(&id, true), "Living room floor lamp on.");
+    }
+
+    #[test]
+    fn device_set_off() {
+        let id = DeviceId::new(
+            "z2m",
+            niles_core::RoomName::parse("bedroom").unwrap(),
+            niles_core::DeviceName::parse("floor_lamp").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(device_set(&id, false), "Bedroom floor lamp off.");
+    }
+
+    #[test]
+    fn device_dim_basic() {
+        let id = DeviceId::new(
+            "z2m",
+            niles_core::RoomName::parse("living_room").unwrap(),
+            niles_core::DeviceName::parse("floor_lamp").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(device_dim(&id, 30), "Living room floor lamp to 30%.");
+    }
+
+    #[test]
+    fn device_not_found_phrasing() {
+        let id = DeviceId::new(
+            "z2m",
+            niles_core::RoomName::parse("kitchen").unwrap(),
+            niles_core::DeviceName::parse("missing").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            device_not_found(&id),
+            "I couldn't find that device anymore."
         );
     }
 }

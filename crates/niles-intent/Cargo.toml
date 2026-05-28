@@ -9,4 +9,5 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+niles-core.workspace = true
 regex.workspace = true

@@ -1,6 +1,8 @@
 //! The Tier 0 router itself.
 
+use crate::devices::DeviceIndex;
 use crate::intent::Intent;
+use niles_core::{DeviceId, RoomName};
 use regex::Regex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -43,6 +45,26 @@ impl IntentRouter {
             .or_else(|| match_timer_list(&t))
             .or_else(|| match_stop_cancel(&t))
     }
+
+    /// Try the existing Tier-0 patterns first, then fall through to
+    /// context-aware matchers that need a [`DeviceIndex`] and optional
+    /// origin room.
+    pub fn parse_with_context(&self, transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
+        // Existing patterns take precedence so behaviour doesn't change.
+        if let Some(intent) = self.parse(transcript) {
+            return Some(intent);
+        }
+
+        let t = normalize(transcript);
+        match_device_dim(&t, &ctx).or_else(|| match_device_set(&t, &ctx))
+    }
+}
+
+/// Context passed to context-aware matchers.
+#[derive(Debug, Clone, Copy)]
+pub struct RouterContext<'a> {
+    pub device_index: &'a DeviceIndex,
+    pub origin_room: Option<&'a RoomName>,
 }
 
 /// Lowercase, trim, collapse internal whitespace, strip trailing
@@ -52,7 +74,7 @@ impl IntentRouter {
 /// than "anything non-alphanumeric" — otherwise `%` gets eaten and
 /// `dim the kitchen lights to 30%` becomes `... to 30`, which the
 /// `light_dim` regex can't anchor on.
-fn normalize(s: &str) -> String {
+pub(crate) fn normalize(s: &str) -> String {
     s.trim()
         .to_lowercase()
         .trim_end_matches(['.', '!', '?', ',', ';', ':'])
@@ -614,6 +636,105 @@ fn match_stop_cancel(t: &str) -> Option<Intent> {
         "cancel" => Some(Intent::Cancel),
         "cancel the timer" => Some(Intent::Cancel),
         _ => None,
+    }
+}
+
+// ---- Device set (on/off by name) ------------------------------------------
+
+fn device_set_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              turn\s+(?P<state>on|off)\s+(?:the\s+)?(?P<device>.+?)
+              (?:\s+in\s+(?:the\s+)?(?P<room>.+))?
+              $",
+        )
+        .expect("device_set regex compiles")
+    })
+}
+
+fn match_device_set(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = device_set_regex().captures(t)?;
+    let state = caps.name("state")?.as_str();
+    let device_phrase = caps.name("device")?.as_str();
+    if device_phrase.is_empty()
+        || device_phrase == "the"
+        || device_phrase == "light"
+        || device_phrase == "lights"
+    {
+        return None;
+    }
+    let on = state == "on";
+    let candidates = ctx.device_index.matches(device_phrase);
+    let room_hint = caps.name("room").map(|m| m.as_str());
+    let id = resolve_device(candidates, room_hint, ctx.origin_room)?;
+    Some(Intent::DeviceSet { device_id: id, on })
+}
+
+// ---- Device dim (brightness by name) --------------------------------------
+
+fn device_dim_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:dim|set)\s+(?:the\s+)?(?P<device>.+?)
+              (?:\s+in\s+(?:the\s+)?(?P<room>.+?))?
+              \s+to\s+(?P<n>\d{1,3})\s*(?:%|percent)
+              $",
+        )
+        .expect("device_dim regex compiles")
+    })
+}
+
+fn match_device_dim(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = device_dim_regex().captures(t)?;
+    let device_phrase = caps.name("device")?.as_str();
+    if device_phrase.is_empty()
+        || device_phrase == "the"
+        || device_phrase == "light"
+        || device_phrase == "lights"
+    {
+        return None;
+    }
+    let n: u8 = caps.name("n")?.as_str().parse().ok()?;
+    if n > 100 {
+        return None;
+    }
+    let candidates = ctx.device_index.matches(device_phrase);
+    let room_hint = caps.name("room").map(|m| m.as_str());
+    let id = resolve_device(candidates, room_hint, ctx.origin_room)?;
+    Some(Intent::DeviceDim {
+        device_id: id,
+        percent: n,
+    })
+}
+
+// ---- Device resolution ----------------------------------------------------
+
+fn resolve_device(
+    candidates: &[DeviceId],
+    room_hint: Option<&str>,
+    origin_room: Option<&RoomName>,
+) -> Option<DeviceId> {
+    match candidates {
+        [] => None,
+        [id] => Some(id.clone()),
+        _ => {
+            let target_room = room_hint
+                .and_then(|r| {
+                    let normalized = r.trim().to_ascii_lowercase().replace([' ', '\t'], "_");
+                    RoomName::parse(&normalized).ok()
+                })
+                .or_else(|| origin_room.cloned())?;
+            candidates
+                .iter()
+                .find(|id| id.room() == &target_room)
+                .cloned()
+        }
     }
 }
 
@@ -1533,5 +1654,187 @@ mod tests {
     #[test]
     fn media_play_alone_rejected() {
         assert_eq!(parse("play"), None);
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    use niles_core::{DeviceName, RoomName};
+
+    fn make_id(room: &str, name: &str) -> DeviceId {
+        DeviceId::new(
+            "z2m",
+            RoomName::parse(room).unwrap(),
+            DeviceName::parse(name).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Index with one unique floor_lamp and one unique desk_lamp.
+    fn fixture_unique() -> DeviceIndex {
+        let mut idx = DeviceIndex::new();
+        idx.insert(make_id("living_room", "floor_lamp"));
+        idx.insert(make_id("kitchen", "desk_lamp"));
+        idx
+    }
+
+    /// Index with two floor_lamps across rooms (for disambiguation tests).
+    fn fixture_multi() -> DeviceIndex {
+        let mut idx = DeviceIndex::new();
+        idx.insert(make_id("living_room", "floor_lamp"));
+        idx.insert(make_id("bedroom", "floor_lamp"));
+        idx.insert(make_id("kitchen", "ceiling_light"));
+        idx
+    }
+
+    fn ctx_with<'a>(idx: &'a DeviceIndex, origin: Option<&'a RoomName>) -> RouterContext<'a> {
+        RouterContext {
+            device_index: idx,
+            origin_room: origin,
+        }
+    }
+
+    fn parse_with(transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
+        IntentRouter::new().parse_with_context(transcript, ctx)
+    }
+
+    #[test]
+    fn turn_on_floor_lamp_unique_device() {
+        let idx = fixture_unique();
+        let living_floor = make_id("living_room", "floor_lamp");
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(
+            parse_with("turn on the floor lamp", ctx),
+            Some(Intent::DeviceSet {
+                device_id: living_floor,
+                on: true,
+            })
+        );
+    }
+
+    #[test]
+    fn turn_off_floor_lamp_unique_device() {
+        let idx = fixture_unique();
+        let living_floor = make_id("living_room", "floor_lamp");
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(
+            parse_with("turn off the floor lamp", ctx),
+            Some(Intent::DeviceSet {
+                device_id: living_floor,
+                on: false,
+            })
+        );
+    }
+
+    #[test]
+    fn turn_on_floor_lamp_with_room_hint() {
+        let idx = fixture_multi();
+        let bedroom_floor = make_id("bedroom", "floor_lamp");
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(
+            parse_with("turn on the floor lamp in the living room", ctx),
+            Some(Intent::DeviceSet {
+                device_id: make_id("living_room", "floor_lamp"),
+                on: true,
+            })
+        );
+        assert_eq!(
+            parse_with("turn on the floor lamp in the bedroom", ctx),
+            Some(Intent::DeviceSet {
+                device_id: bedroom_floor,
+                on: true,
+            })
+        );
+    }
+
+    #[test]
+    fn turn_on_floor_lamp_with_origin_room() {
+        let idx = fixture_multi();
+        let bedroom = RoomName::parse("bedroom").unwrap();
+        let ctx = ctx_with(&idx, Some(&bedroom));
+        assert_eq!(
+            parse_with("turn on the floor lamp", ctx),
+            Some(Intent::DeviceSet {
+                device_id: make_id("bedroom", "floor_lamp"),
+                on: true,
+            })
+        );
+    }
+
+    #[test]
+    fn ambiguous_device_without_hint_or_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("turn on the floor lamp", ctx), None);
+    }
+
+    #[test]
+    fn unknown_device_name_returns_none() {
+        let idx = fixture_unique();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("turn on the unicorn lamp", ctx), None);
+    }
+
+    #[test]
+    fn dim_desk_lamp_unique_device() {
+        let idx = fixture_unique();
+        let desk = make_id("kitchen", "desk_lamp");
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(
+            parse_with("dim the desk lamp to 30%", ctx),
+            Some(Intent::DeviceDim {
+                device_id: desk,
+                percent: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn set_floor_lamp_in_bedroom_to_50_percent() {
+        let idx = fixture_multi();
+        let bedroom_floor = make_id("bedroom", "floor_lamp");
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(
+            parse_with("set the floor lamp in the bedroom to 50 percent", ctx),
+            Some(Intent::DeviceDim {
+                device_id: bedroom_floor,
+                percent: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn dim_rejects_over_100() {
+        let idx = fixture_unique();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("dim the desk lamp to 101%", ctx), None);
+    }
+
+    #[test]
+    fn existing_light_patterns_still_work() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        // These should be caught by parse() first, not fall through.
+        assert_eq!(
+            parse_with("turn on the lights", ctx),
+            None // existing light regex rejects "the" as room
+        );
+        assert_eq!(
+            parse_with("turn off the kitchen light", ctx),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: false,
+            })
+        );
+    }
+
+    #[test]
+    fn literal_light_guarded_out_of_device_matcher() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        // "turn on the light" is guarded because device phrase == "light"
+        assert_eq!(parse_with("turn on the light", ctx), None);
+        assert_eq!(parse_with("turn on the lights", ctx), None);
     }
 }
