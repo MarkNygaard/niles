@@ -412,7 +412,7 @@ fn media_play_regex() -> &'static Regex {
 fn match_media_play(t: &str) -> Option<Intent> {
     let caps = media_play_regex().captures(t)?;
     let room = caps.name("room").or_else(|| caps.name("room2"))?.as_str();
-    if room == "the" || room == "music" {
+    if room == "the" || room == "music" || room == "set" || room == "volume" {
         return None;
     }
     Some(Intent::MediaPlay {
@@ -1511,6 +1511,12 @@ mod tests {
     #[test]
     fn media_volume_set_rejects_missing_percent() {
         assert_eq!(parse("set kitchen volume to 30"), None);
+    }
+
+    #[test]
+    fn media_volume_set_rejects_missing_room() {
+        assert_eq!(parse("set volume to 30%"), None);
+        assert_eq!(parse("the volume to 30 percent"), None);
     }
 
     #[test]
