@@ -59,6 +59,25 @@ mod tests {
     }
 
     #[test]
+    fn valid_room_get_returns_client() {
+        let mut cfg = niles_config::SpeakersConfig::default();
+        cfg.rooms.insert(
+            "kitchen".into(),
+            niles_config::SpeakerConfig {
+                ip: "192.168.69.100".into(),
+                kind: "sonos".into(),
+            },
+        );
+        let reg = SpeakerRegistry::from_config(&cfg);
+        let key = RoomName::parse("kitchen").unwrap();
+        let client = reg.get(&key);
+        assert!(client.is_some());
+        // Debug output includes the configured IP.
+        let debug = format!("{:?}", client.unwrap());
+        assert!(debug.contains("192.168.69.100"), "{debug}");
+    }
+
+    #[test]
     fn unparseable_room_name_is_skipped() {
         let mut cfg = niles_config::SpeakersConfig::default();
         // "living room" contains a space, which RoomName::parse rejects.

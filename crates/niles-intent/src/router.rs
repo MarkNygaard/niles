@@ -1438,6 +1438,17 @@ mod tests {
     }
 
     #[test]
+    fn media_volume_step_room_first_down() {
+        assert_eq!(
+            parse("kitchen volume down"),
+            Some(Intent::MediaVolumeStep {
+                room: "kitchen".into(),
+                delta: -10,
+            })
+        );
+    }
+
+    #[test]
     fn media_volume_step_down() {
         assert_eq!(
             parse("volume down in the living room"),
