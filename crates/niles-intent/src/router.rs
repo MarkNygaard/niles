@@ -253,9 +253,9 @@ fn light_step_regex() -> &'static Regex {
             r"(?x)
               ^
               (?:
-                (?:the\s+)?(?P<room1>.+?)\s+lights?\s+(?P<dir1>brighter|dimmer)
-              |
                 make\s+(?:the\s+)?(?P<room2>.+?)(?:\s+lights?)?\s+(?P<dir2>brighter|dimmer)
+              |
+                (?:the\s+)?(?P<room1>.+?)\s+lights?\s+(?P<dir1>brighter|dimmer)
               )
               $",
         )
