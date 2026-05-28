@@ -7,7 +7,7 @@ use niles_api::{AppState, DevicePublisher};
 use niles_capabilities::CapabilityLoader;
 use niles_config::Config;
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
-use niles_intent::{Intent, IntentRouter};
+use niles_intent::{DeviceIndex, Intent, IntentRouter, RouterContext};
 use niles_llm::{ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, ToolChoice};
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
@@ -26,6 +26,7 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
@@ -620,6 +621,16 @@ fn build_capability_index(loader: &CapabilityLoader) -> niles_intent::Capability
     niles_intent::CapabilityIndex::from_entries(entries)
 }
 
+fn build_initial_device_index(registry: &DeviceRegistry) -> DeviceIndex {
+    let mut idx = DeviceIndex::new();
+    for device in registry.list_all() {
+        if device.is_light() {
+            idx.insert(device.id.clone());
+        }
+    }
+    idx
+}
+
 fn origin_context(room: &RoomName) -> String {
     format!(
         "\n\n# Current context\n\nThe user is speaking from a device in **{}**. \
@@ -1074,9 +1085,12 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
     let registry = Arc::new(DeviceRegistry::new());
-    // Z2mSource requires a bus, but voice-dispatch doesn't subscribe
-    // — events are still emitted for any future consumer.
+    // Z2mSource requires a bus; we subscribe before spawning the
+    // source so the device-index observer can't miss initial
+    // DeviceAdded events while the registry warms up.
     let bus = EventBus::default();
+    let mut bus_rx = bus.subscribe();
+    let device_index = Arc::new(RwLock::new(build_initial_device_index(&registry)));
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
@@ -1151,7 +1165,32 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         capability_loader,
         capability_index,
         satellites,
+        device_index: Arc::clone(&device_index),
     };
+
+    // Keep the device index in sync so Tier-0 device-name matchers
+    // work in voice-dispatch mode too (same pattern as `serve`).
+    let observer_device_index = Arc::clone(&ctx.device_index);
+    let _device_index_handle = tokio::spawn(async move {
+        loop {
+            match bus_rx.recv().await {
+                Ok(Event::DeviceAdded { device }) if device.is_light() => {
+                    observer_device_index
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(device.id.clone());
+                }
+                Ok(Event::DeviceRemoved { id }) => {
+                    observer_device_index
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                _ => {}
+            }
+        }
+    });
 
     loop {
         tokio::select! {
@@ -1207,6 +1246,7 @@ struct DispatchCtx {
     capability_loader: Option<Arc<CapabilityLoader>>,
     capability_index: Option<Arc<niles_intent::CapabilityIndex>>,
     satellites: Arc<SatelliteRegistry>,
+    device_index: Arc<RwLock<DeviceIndex>>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1228,7 +1268,16 @@ async fn handle_transcript(
     // IntentRouter is a zero-sized unit struct; the regexes are
     // compiled once into a static OnceLock, so constructing one
     // per call is free.
-    let intent = match IntentRouter::new().parse(text) {
+    let parsed = {
+        let idx = ctx.device_index.read().unwrap_or_else(|e| e.into_inner());
+        let router_ctx = RouterContext {
+            device_index: &idx,
+            origin_room,
+        };
+        IntentRouter::new().parse_with_context(text, router_ctx)
+    };
+
+    let intent = match parsed {
         Some(i) => i,
         None => {
             // Tier 0 miss — escalate to Tier 1 LLM with the tool registry.
@@ -1308,6 +1357,32 @@ async fn handle_transcript(
             };
             dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
             Some(response::light_dim(&room, percent))
+        }
+        Intent::DeviceSet { device_id, on } => {
+            let Some(device) = ctx.registry.get(&device_id) else {
+                return Some(response::device_not_found(&device_id));
+            };
+            let desired = DeviceState {
+                on: Some(on),
+                ..Default::default()
+            };
+            publish_single(ctx, peer, &device, &desired).await;
+            ctx.tracker.flag(&device.id);
+            Some(response::device_set(&device_id, on))
+        }
+        Intent::DeviceDim { device_id, percent } => {
+            let Some(device) = ctx.registry.get(&device_id) else {
+                return Some(response::device_not_found(&device_id));
+            };
+            // Flag before publishing so the curve driver can't race
+            // a tick in between and overwrite the dim we're about to send.
+            ctx.tracker.flag(&device.id);
+            let desired = DeviceState {
+                brightness: Some(percent),
+                ..Default::default()
+            };
+            publish_single(ctx, peer, &device, &desired).await;
+            Some(response::device_dim(&device_id, percent))
         }
         Intent::SceneSave { name, room } => {
             let canonical = match room.as_deref().map(intent_room_to_canonical) {
@@ -1598,6 +1673,33 @@ async fn dispatch_to_targets(
     }
 }
 
+/// Publish a state update to a single device.
+///
+/// The caller is responsible for `tracker.flag()` timing: flag
+/// *before* publish for dim operations so the curve driver can't
+/// race, and *after* publish for on/off (same pattern as
+/// `dispatch_to_targets`).
+async fn publish_single(
+    ctx: &DispatchCtx,
+    peer: std::net::SocketAddr,
+    device: &Device,
+    desired: &DeviceState,
+) {
+    let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, desired);
+    if ctx.dry_run {
+        println!("[{peer}] [dry-run] {topic}  {payload}");
+    } else {
+        match ctx
+            .publisher
+            .publish(&topic, payload.as_bytes().to_vec())
+            .await
+        {
+            Ok(()) => println!("[{peer}] published {topic}  {payload}"),
+            Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
+        }
+    }
+}
+
 /// Convert a transcript-style room reference ("living room") into a
 /// registry [`RoomName`] ("living_room"). This is the single
 /// normalization point between intent output and registry lookup:
@@ -1766,6 +1868,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let tracker = Arc::new(ManualModeTracker::new());
     let claim_tracker = Arc::new(load_morning_claims(cfg.persistence.directory.as_deref()));
 
+    // Device index: built from the registry at startup and updated
+    // on DeviceAdded / DeviceRemoved so Tier 0 matchers can resolve
+    // spoken device names without an LLM round-trip.
+    let device_index = Arc::new(RwLock::new(build_initial_device_index(&registry)));
+
     // Subscribe to the bus *before* spawning the source so we can't miss
     // the early DeviceStateChanged events that seed the observer's
     // last-seen on/off map — broadcast channels only deliver messages
@@ -1773,6 +1880,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_tracker = tracker.clone();
     let observer_claim_tracker = claim_tracker.clone();
     let observer_registry = registry.clone();
+    let observer_device_index = Arc::clone(&device_index);
     let observer_publisher = publisher.clone();
     let observer_z2m_prefix = z2m_prefix.clone();
     let observer_dry_run = args.dry_run;
@@ -1806,9 +1914,21 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         observer_claim_tracker.release(&id);
                     }
                 }
+                Ok(Event::DeviceAdded { device }) => {
+                    if device.is_light() {
+                        observer_device_index
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(device.id.clone());
+                    }
+                }
                 Ok(Event::DeviceRemoved { id }) => {
                     observer_tracker.forget(&id);
                     observer_claim_tracker.forget(&id);
+                    observer_device_index
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
                 }
                 Ok(Event::DeviceAction { id, action }) => {
                     let Some(effect) = classify_action(&action) else {
@@ -1961,6 +2081,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         capability_loader,
         capability_index,
         satellites,
+        device_index,
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -2446,6 +2567,13 @@ fn format_intent(intent: &Intent) -> String {
         }
         Intent::LightDim { room, percent } => {
             format!("LightDim({room} -> {percent}%)")
+        }
+        Intent::DeviceSet { device_id, on } => {
+            let state = if *on { "on" } else { "off" };
+            format!("DeviceSet({device_id} -> {state})")
+        }
+        Intent::DeviceDim { device_id, percent } => {
+            format!("DeviceDim({device_id} -> {percent}%)")
         }
         Intent::ClearManualMode { room } => {
             format!("ClearManualMode({})", room.as_deref().unwrap_or("home"))

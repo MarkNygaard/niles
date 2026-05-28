@@ -27,6 +27,22 @@ pub enum Intent {
         percent: u8,
     },
 
+    /// "turn on the floor lamp" / "turn off the ceiling light"
+    ///
+    /// Device-name-targeted variant for single-device control.
+    DeviceSet {
+        device_id: niles_core::DeviceId,
+        on: bool,
+    },
+
+    /// "dim the floor lamp to 30%" / "set the ceiling light to 50 percent"
+    ///
+    /// Device-name-targeted dim, same percent range as `LightDim`.
+    DeviceDim {
+        device_id: niles_core::DeviceId,
+        percent: u8,
+    },
+
     /// "back to normal" / "normal lights" (whole-home) or
     /// "back to normal in <room>" / "<room> back to normal" (room-scoped).
     ClearManualMode {

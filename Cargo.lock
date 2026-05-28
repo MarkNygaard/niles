@@ -941,6 +941,7 @@ version = "0.1.0"
 name = "niles-intent"
 version = "0.1.0"
 dependencies = [
+ "niles-core",
  "regex",
 ]
 
