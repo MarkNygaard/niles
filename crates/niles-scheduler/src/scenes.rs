@@ -3,8 +3,13 @@
 //! In-memory only for v0.1. Persistence deferred to a follow-up.
 
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, RoomName};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+
+use crate::persistence::{atomic_write_json, read_json_or_empty};
+use crate::timer::canonicalize_name;
 
 /// A single device captured in a scene.
 #[derive(Debug, Clone, PartialEq)]
@@ -13,17 +18,139 @@ pub struct SceneEntry {
     pub state: DeviceState,
 }
 
+// ------------------------------------------------------------------
+// Persistence DTOs
+// ------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct DeviceStateDto {
+    pub on: Option<bool>,
+    pub brightness: Option<u8>,
+    pub color_temp_kelvin: Option<u16>,
+    pub temperature_celsius: Option<f32>,
+    pub humidity_percent: Option<f32>,
+    pub battery_percent: Option<u8>,
+}
+
+impl From<&DeviceState> for DeviceStateDto {
+    fn from(s: &DeviceState) -> Self {
+        Self {
+            on: s.on,
+            brightness: s.brightness,
+            color_temp_kelvin: s.color_temp_kelvin,
+            temperature_celsius: s.temperature_celsius,
+            humidity_percent: s.humidity_percent,
+            battery_percent: s.battery_percent,
+        }
+    }
+}
+
+impl From<DeviceStateDto> for DeviceState {
+    fn from(d: DeviceStateDto) -> Self {
+        Self {
+            on: d.on,
+            brightness: d.brightness,
+            color_temp_kelvin: d.color_temp_kelvin,
+            temperature_celsius: d.temperature_celsius,
+            humidity_percent: d.humidity_percent,
+            battery_percent: d.battery_percent,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedSceneEntry {
+    device_id: String,
+    state: DeviceStateDto,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedScenes {
+    scenes: BTreeMap<String, Vec<PersistedSceneEntry>>,
+}
+
 /// In-memory store for named lighting scenes.
 ///
 /// Mirrors the `RwLock<HashMap>` shape of [`ManualModeTracker`].
 pub struct SceneStore {
     scenes: RwLock<HashMap<String, Vec<SceneEntry>>>,
+    persistence_path: Option<PathBuf>,
 }
 
 impl SceneStore {
     pub fn new() -> Self {
         Self {
             scenes: RwLock::new(HashMap::new()),
+            persistence_path: None,
+        }
+    }
+
+    pub fn with_persistence(mut self, path: PathBuf) -> Self {
+        self.persistence_path = Some(path);
+        self
+    }
+
+    pub fn load_from_file(path: &Path) -> std::io::Result<Self> {
+        let persisted: PersistedScenes = read_json_or_empty(path, "scenes")?;
+        let mut scenes = HashMap::new();
+        for (name, entries) in persisted.scenes {
+            let valid: Vec<SceneEntry> = entries
+                .into_iter()
+                .filter_map(|e| match DeviceId::parse(&e.device_id) {
+                    Ok(id) => Some(SceneEntry {
+                        device_id: id,
+                        state: e.state.into(),
+                    }),
+                    Err(_) => {
+                        tracing::warn!(
+                            "persistence: dropping scene entry with malformed device_id '{}'",
+                            e.device_id
+                        );
+                        None
+                    }
+                })
+                .collect();
+            if !valid.is_empty() {
+                scenes.insert(name, valid);
+            }
+        }
+        Ok(Self {
+            scenes: RwLock::new(scenes),
+            persistence_path: None,
+        })
+    }
+
+    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
+        let inner = self.scenes_read();
+        self.save_locked(&inner, path)
+    }
+
+    fn save_locked(
+        &self,
+        inner: &HashMap<String, Vec<SceneEntry>>,
+        path: &Path,
+    ) -> std::io::Result<()> {
+        let scenes: BTreeMap<String, Vec<PersistedSceneEntry>> = inner
+            .iter()
+            .map(|(k, v)| {
+                let entries = v
+                    .iter()
+                    .map(|e| PersistedSceneEntry {
+                        device_id: e.device_id.to_string(),
+                        state: (&e.state).into(),
+                    })
+                    .collect();
+                (k.clone(), entries)
+            })
+            .collect();
+        atomic_write_json(path, &PersistedScenes { scenes })
+    }
+
+    fn maybe_save(&self, inner: &HashMap<String, Vec<SceneEntry>>) {
+        if let Some(path) = self.persistence_path.as_deref()
+            && let Err(e) = self.save_locked(inner, path)
+        {
+            tracing::warn!("persistence: scenes save failed: {e}");
         }
     }
 
@@ -50,7 +177,9 @@ impl SceneStore {
         })
         .collect();
         let n = entries.len();
-        self.scenes_write().insert(key, entries);
+        let mut inner = self.scenes_write();
+        inner.insert(key, entries);
+        self.maybe_save(&inner);
         n
     }
 
@@ -75,9 +204,10 @@ impl SceneStore {
     /// Remove a scene by name. Returns `true` if a scene with that
     /// (canonicalized) name was present and removed, `false` otherwise.
     pub fn delete(&self, name: &str) -> bool {
-        self.scenes_write()
-            .remove(&canonicalize_name(name))
-            .is_some()
+        let mut inner = self.scenes_write();
+        let removed = inner.remove(&canonicalize_name(name)).is_some();
+        self.maybe_save(&inner);
+        removed
     }
 
     // ---- lock helpers -----------------------------------------------------
@@ -95,17 +225,6 @@ impl Default for SceneStore {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Normalize a raw scene name for use as a HashMap key.
-///
-/// Rules: trim, lowercase ASCII, collapse runs of ASCII whitespace to `_`.
-fn canonicalize_name(raw: &str) -> String {
-    raw.trim()
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("_")
 }
 
 #[cfg(test)]
@@ -324,5 +443,89 @@ mod tests {
         store.save("movie", &reg, None);
         assert!(store.delete("morning"));
         assert_eq!(store.names(), vec!["evening", "movie"]);
+    }
+
+    // ------------------------------------------------------------------
+    // Persistence tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn persists_and_reloads_scenes_with_state_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenes.json");
+        let store = SceneStore::new().with_persistence(path.clone());
+        let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
+        store.save("evening", &reg, None);
+
+        let reloaded = SceneStore::load_from_file(&path)
+            .unwrap()
+            .with_persistence(path);
+        let entries = reloaded.get("evening").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].device_id, dev_in("kitchen", "a"));
+        assert_eq!(entries[0].state.on, Some(true));
+        assert_eq!(entries[0].state.brightness, Some(80));
+        assert_eq!(entries[0].state.color_temp_kelvin, Some(2700));
+    }
+
+    #[test]
+    fn name_canonicalization_survives_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenes.json");
+        let store = SceneStore::new().with_persistence(path.clone());
+        let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
+        store.save("Kitchen Evening", &reg, None);
+
+        let reloaded = SceneStore::load_from_file(&path)
+            .unwrap()
+            .with_persistence(path);
+        assert!(reloaded.exists("kitchen_evening"));
+    }
+
+    #[test]
+    fn load_from_corrupt_file_yields_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenes.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let store = SceneStore::load_from_file(&path).unwrap();
+        assert!(store.names().is_empty());
+    }
+
+    #[test]
+    fn write_through_persists_on_save_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenes.json");
+        let store = SceneStore::new().with_persistence(path.clone());
+        let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
+        store.save("evening", &reg, None);
+
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["scenes"].as_object().unwrap().len(), 1);
+
+        store.delete("evening");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["scenes"].as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn malformed_device_id_in_file_is_dropped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenes.json");
+        let raw = serde_json::json!({
+            "scenes": {
+                "evening": [
+                    { "device_id": "not_valid", "state": { "on": true } },
+                    { "device_id": "z2m:kitchen/a", "state": { "on": true, "brightness": 80 } }
+                ]
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+
+        let store = SceneStore::load_from_file(&path).unwrap();
+        let entries = store.get("evening").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].device_id, dev_in("kitchen", "a"));
     }
 }

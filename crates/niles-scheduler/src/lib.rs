@@ -14,6 +14,7 @@ pub mod curve;
 pub mod error;
 pub mod manual_mode;
 pub mod morning;
+pub mod persistence;
 pub mod scenes;
 pub mod sink;
 pub mod switch;

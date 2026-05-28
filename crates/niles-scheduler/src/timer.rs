@@ -5,17 +5,36 @@
 //! can be queried from both sync and async contexts.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Duration;
 
+use crate::persistence::{atomic_write_json, read_json_or_empty};
+
+mod serde_duration {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        let ms = d.as_millis() as u64;
+        s.serialize_u64(ms)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let ms = u64::deserialize(d)?;
+        Ok(Duration::from_millis(ms))
+    }
+}
+
 /// Opaque identifier for a timer entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TimerId(pub u64);
 
 /// State machine for a single timer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimerState {
     /// Waiting for the driver loop to reach `expires_at`.
     Pending,
@@ -61,12 +80,59 @@ struct TimerStoreInner {
     timers: HashMap<TimerId, TimerEntry>,
 }
 
+// ------------------------------------------------------------------
+// Persistence DTOs
+// ------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct PersistedTimer {
+    id: TimerId,
+    name: Option<String>,
+    #[serde(with = "serde_duration")]
+    duration: Duration,
+    expires_at: DateTime<Utc>,
+    origin: SocketAddr,
+    state: TimerState,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedTimers {
+    entries: Vec<PersistedTimer>,
+}
+
+impl From<&TimerEntry> for PersistedTimer {
+    fn from(e: &TimerEntry) -> Self {
+        Self {
+            id: e.id,
+            name: e.name.clone(),
+            duration: e.duration,
+            expires_at: e.expires_at,
+            origin: e.origin,
+            state: e.state,
+        }
+    }
+}
+
+impl From<PersistedTimer> for TimerEntry {
+    fn from(p: PersistedTimer) -> Self {
+        Self {
+            id: p.id,
+            name: p.name,
+            duration: p.duration,
+            expires_at: p.expires_at,
+            origin: p.origin,
+            state: p.state,
+        }
+    }
+}
+
 /// In-memory store for pending / ringing timers.
 ///
 /// Mirrors the `RwLock<HashMap>` shape of [`SceneStore`](crate::scenes::SceneStore)
 /// and [`ManualModeTracker`](crate::manual_mode::ManualModeTracker).
 pub struct TimerStore {
     inner: RwLock<TimerStoreInner>,
+    persistence_path: Option<PathBuf>,
 }
 
 impl TimerStore {
@@ -76,6 +142,62 @@ impl TimerStore {
                 next_id: 1,
                 timers: HashMap::new(),
             }),
+            persistence_path: None,
+        }
+    }
+
+    /// Configure a persistence path. Call before handing the store
+    /// to driver/tasks. Returns `self` for chaining.
+    pub fn with_persistence(mut self, path: PathBuf) -> Self {
+        self.persistence_path = Some(path);
+        self
+    }
+
+    /// Load timers from a JSON file. Missing or corrupt files yield
+    /// an empty store (logged, not fatal).
+    pub fn load_from_file(path: &Path) -> std::io::Result<Self> {
+        let persisted: PersistedTimers = read_json_or_empty(path, "timers")?;
+        let now = Utc::now();
+        let mut max_id = 0u64;
+        let timers: HashMap<TimerId, TimerEntry> = persisted
+            .entries
+            .into_iter()
+            .map(|mut p| {
+                max_id = max_id.max(p.id.0);
+                if p.state == TimerState::Pending && p.expires_at <= now {
+                    p.state = TimerState::Ringing;
+                }
+                let entry: TimerEntry = p.into();
+                (entry.id, entry)
+            })
+            .collect();
+        Ok(Self {
+            inner: RwLock::new(TimerStoreInner {
+                next_id: max_id + 1,
+                timers,
+            }),
+            persistence_path: None,
+        })
+    }
+
+    /// Save timers to a JSON file (atomic via tempfile).
+    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
+        let inner = self.inner_read();
+        self.save_locked(&inner, path)
+    }
+
+    fn save_locked(&self, inner: &TimerStoreInner, path: &Path) -> std::io::Result<()> {
+        let mut entries: Vec<PersistedTimer> =
+            inner.timers.values().map(PersistedTimer::from).collect();
+        entries.sort_by_key(|e| e.id);
+        atomic_write_json(path, &PersistedTimers { entries })
+    }
+
+    fn maybe_save(&self, inner: &TimerStoreInner) {
+        if let Some(path) = self.persistence_path.as_deref()
+            && let Err(e) = self.save_locked(inner, path)
+        {
+            tracing::warn!("persistence: timers save failed: {e}");
         }
     }
 
@@ -110,12 +232,16 @@ impl TimerStore {
             state: TimerState::Pending,
         };
         inner.timers.insert(id, entry);
+        self.maybe_save(&inner);
         id
     }
 
     /// Remove a timer by exact id. Returns `true` if it was present.
     pub fn cancel(&self, id: TimerId) -> bool {
-        self.inner_write().timers.remove(&id).is_some()
+        let mut inner = self.inner_write();
+        let removed = inner.timers.remove(&id).is_some();
+        self.maybe_save(&inner);
+        removed
     }
 
     /// Remove every timer whose canonical name matches `name`.
@@ -125,7 +251,9 @@ impl TimerStore {
         let mut inner = self.inner_write();
         let before = inner.timers.len();
         inner.timers.retain(|_, e| e.name.as_ref() != Some(&key));
-        before - inner.timers.len()
+        let removed = before - inner.timers.len();
+        self.maybe_save(&inner);
+        removed
     }
 
     /// Find the most recently-expired *ringing* timer, remove it,
@@ -138,7 +266,9 @@ impl TimerStore {
             .filter(|e| e.is_ringing())
             .max_by_key(|e| e.expires_at)
             .map(|e| e.id)?;
-        inner.timers.remove(&id)
+        let entry = inner.timers.remove(&id);
+        self.maybe_save(&inner);
+        entry
     }
 
     /// Transition `Pending → Ringing` for `id`. Returns the updated
@@ -151,7 +281,9 @@ impl TimerStore {
             return None;
         }
         entry.state = TimerState::Ringing;
-        Some(entry.clone())
+        let cloned = entry.clone();
+        self.maybe_save(&inner);
+        Some(cloned)
     }
 
     /// Return all timers sorted by `expires_at` (soonest first).
@@ -396,5 +528,114 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, id);
         assert_eq!(entries[0].expires_at, now);
+    }
+
+    // ------------------------------------------------------------------
+    // Persistence tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn persists_and_reloads_pending_timers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new().with_persistence(path.clone());
+        let now = Utc::now();
+        let id1 = store.set(
+            Duration::from_secs(60),
+            Some("pasta".into()),
+            localhost(),
+            now,
+        );
+        let id2 = store.set(Duration::from_secs(120), None, localhost(), now);
+
+        let reloaded = TimerStore::load_from_file(&path)
+            .unwrap()
+            .with_persistence(path);
+        let entries = reloaded.list();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, id1);
+        assert_eq!(entries[0].name, Some("pasta".into()));
+        assert_eq!(entries[1].id, id2);
+        assert_eq!(entries[1].name, None);
+    }
+
+    #[test]
+    fn load_from_missing_file_yields_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.json");
+        let store = TimerStore::load_from_file(&path).unwrap();
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn load_from_corrupt_file_yields_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let store = TimerStore::load_from_file(&path).unwrap();
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn loaded_pending_expired_timer_becomes_ringing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new();
+        let now = Utc::now();
+        let id = store.set(
+            Duration::from_secs(60),
+            Some("old".into()),
+            localhost(),
+            now,
+        );
+        store.save_to_file(&path).unwrap();
+
+        // Manually rewrite expires_at to the past.
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        raw["entries"][0]["expires_at"] =
+            serde_json::json!((now - chrono::Duration::days(1)).to_rfc3339());
+        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+
+        let reloaded = TimerStore::load_from_file(&path).unwrap();
+        let entries = reloaded.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, id);
+        assert_eq!(entries[0].state, TimerState::Ringing);
+    }
+
+    #[test]
+    fn next_id_after_reload_is_strictly_greater_than_persisted_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new().with_persistence(path.clone());
+        let now = Utc::now();
+        store.set(Duration::from_secs(60), None, localhost(), now);
+        store.set(Duration::from_secs(60), None, localhost(), now);
+        store.set(Duration::from_secs(60), None, localhost(), now);
+
+        let reloaded = TimerStore::load_from_file(&path)
+            .unwrap()
+            .with_persistence(path);
+        let next_id = reloaded.set(Duration::from_secs(60), None, localhost(), now);
+        assert_eq!(next_id, TimerId(4));
+    }
+
+    #[test]
+    fn write_through_persists_on_set_and_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new().with_persistence(path.clone());
+        let now = Utc::now();
+        let id = store.set(Duration::from_secs(60), None, localhost(), now);
+
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["entries"].as_array().unwrap().len(), 1);
+
+        store.cancel(id);
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["entries"].as_array().unwrap().len(), 0);
     }
 }

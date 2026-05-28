@@ -11,4 +11,8 @@ workspace = true
 [dependencies]
 thiserror.workspace = true
 niles-core.workspace = true
-chrono.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json.workspace = true
+tempfile.workspace = true
+tracing.workspace = true

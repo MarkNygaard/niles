@@ -7,9 +7,12 @@
 
 use chrono::{Datelike, NaiveDate, Weekday};
 use niles_core::DeviceId;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
+use crate::persistence::{atomic_write_json, read_json_or_empty};
 use crate::time::MinuteOfDay;
 
 /// Runtime configuration for the morning routine.
@@ -78,25 +81,86 @@ pub fn routine_brightness_at(
 /// Shape is byte-for-byte parallel to [`ManualModeTracker`](crate::manual_mode::ManualModeTracker)
 /// minus the `last_on` map and `observe()` method — claim release is
 /// purely event-driven (off-state observed by the `niles-bin` task).
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedClaims {
+    device_ids: Vec<String>,
+}
+
 pub struct MorningClaimTracker {
     claimed: RwLock<HashSet<DeviceId>>,
+    persistence_path: Option<PathBuf>,
 }
 
 impl MorningClaimTracker {
     pub fn new() -> Self {
         Self {
             claimed: RwLock::new(HashSet::new()),
+            persistence_path: None,
         }
+    }
+
+    pub fn with_persistence(mut self, path: PathBuf) -> Self {
+        self.persistence_path = Some(path);
+        self
+    }
+
+    pub fn load_from_file(path: &Path) -> std::io::Result<Self> {
+        let persisted: PersistedClaims = read_json_or_empty(path, "morning_claims")?;
+        let mut claimed = HashSet::new();
+        for raw in persisted.device_ids {
+            match DeviceId::parse(&raw) {
+                Ok(id) => {
+                    claimed.insert(id);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "persistence: dropping morning claim with malformed device_id '{}'",
+                        raw
+                    );
+                }
+            }
+        }
+        Ok(Self {
+            claimed: RwLock::new(claimed),
+            persistence_path: None,
+        })
+    }
+
+    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
+        let inner = self.claimed_read();
+        self.save_locked(&inner, path)
+    }
+
+    fn save_locked(&self, inner: &HashSet<DeviceId>, path: &Path) -> std::io::Result<()> {
+        let mut device_ids: Vec<String> = inner.iter().map(|id| id.to_string()).collect();
+        device_ids.sort_unstable();
+        atomic_write_json(path, &PersistedClaims { device_ids })
+    }
+
+    fn maybe_save(&self, inner: &HashSet<DeviceId>) {
+        if let Some(path) = self.persistence_path.as_deref()
+            && let Err(e) = self.save_locked(inner, path)
+        {
+            tracing::warn!("persistence: morning_claims save failed: {e}");
+        }
+    }
+
+    pub fn claimed_count(&self) -> usize {
+        self.claimed_read().len()
     }
 
     /// Claim `id` for the routine — the curve driver should skip it.
     pub fn claim(&self, id: &DeviceId) {
-        self.claimed_write().insert(id.clone());
+        let mut inner = self.claimed_write();
+        inner.insert(id.clone());
+        self.maybe_save(&inner);
     }
 
     /// Release `id` from the routine, returning it to curve control.
     pub fn release(&self, id: &DeviceId) {
-        self.claimed_write().remove(id);
+        let mut inner = self.claimed_write();
+        inner.remove(id);
+        self.maybe_save(&inner);
     }
 
     /// True if `id` is currently claimed.
@@ -107,7 +171,9 @@ impl MorningClaimTracker {
     /// Drop all tracker state for `id`. Use when a device is removed
     /// from the registry so its entry doesn't linger forever.
     pub fn forget(&self, id: &DeviceId) {
-        self.claimed_write().remove(id);
+        let mut inner = self.claimed_write();
+        inner.remove(id);
+        self.maybe_save(&inner);
     }
 
     // ---- lock helpers -------------------------------------------------
@@ -304,5 +370,53 @@ mod tests {
     fn default_is_new() {
         let t: MorningClaimTracker = Default::default();
         assert!(!t.is_claimed(&dev("x")));
+    }
+
+    // ------------------------------------------------------------------
+    // Persistence tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn persists_and_reloads_claim_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("morning_claims.json");
+        let tracker = MorningClaimTracker::new().with_persistence(path.clone());
+        let id1 = dev("light_a");
+        let id2 = dev("light_b");
+        tracker.claim(&id1);
+        tracker.claim(&id2);
+
+        let reloaded = MorningClaimTracker::load_from_file(&path)
+            .unwrap()
+            .with_persistence(path);
+        assert!(reloaded.is_claimed(&id1));
+        assert!(reloaded.is_claimed(&id2));
+        assert_eq!(reloaded.claimed_count(), 2);
+    }
+
+    #[test]
+    fn release_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("morning_claims.json");
+        let tracker = MorningClaimTracker::new().with_persistence(path.clone());
+        let id = dev("light_a");
+        tracker.claim(&id);
+
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["device_ids"].as_array().unwrap().len(), 1);
+
+        tracker.release(&id);
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["device_ids"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn load_from_missing_file_yields_empty_tracker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.json");
+        let tracker = MorningClaimTracker::load_from_file(&path).unwrap();
+        assert_eq!(tracker.claimed_count(), 0);
     }
 }
