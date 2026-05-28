@@ -116,11 +116,7 @@ impl Z2mDevice {
     /// valid `<room>/<device>` identifier.
     pub fn to_device(&self) -> crate::Result<Device> {
         let id = DeviceId::parse(&format!("z2m:{}", self.friendly_name))?;
-        Ok(Device {
-            id,
-            state: DeviceState::default(),
-            class: self.classify(),
-        })
+        Ok(Device::new(id, DeviceState::default(), self.classify()))
     }
 }
 
