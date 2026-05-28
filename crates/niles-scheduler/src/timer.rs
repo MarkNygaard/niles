@@ -215,8 +215,7 @@ impl TimerStore {
         now: DateTime<Utc>,
     ) -> TimerId {
         let mut inner = self.inner_write();
-        let id = TimerId(inner.next_id);
-        inner.next_id += 1;
+        let id = TimerId(next_vacant_id(&mut inner));
         // Voice input can produce absurd durations ("set a timer for
         // a trillion minutes"). `chrono::Duration::from_std` rejects
         // values beyond i64-milliseconds, and `DateTime + Duration`
@@ -330,6 +329,30 @@ impl TimerStore {
 impl Default for TimerStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn next_vacant_id(inner: &mut TimerStoreInner) -> u64 {
+    let mut candidate = if inner.next_id == 0 { 1 } else { inner.next_id };
+    let start = candidate;
+    loop {
+        let id = TimerId(candidate);
+        if !inner.timers.contains_key(&id) {
+            inner.next_id = candidate.wrapping_add(1);
+            if inner.next_id == 0 {
+                inner.next_id = 1;
+            }
+            return candidate;
+        }
+        candidate = candidate.wrapping_add(1);
+        if candidate == 0 {
+            candidate = 1;
+        }
+        if candidate == start {
+            // Practically unreachable (would require 2^64-1 live timers), but
+            // avoid an infinite loop if ID space is exhausted.
+            panic!("timer id space exhausted");
+        }
     }
 }
 
@@ -713,5 +736,51 @@ mod tests {
         // Serialization of u64::MAX seconds exceeds u64 millis and should fail.
         // The temp file is dropped, so the target path should never be created.
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn reload_with_u64_max_id_allocates_non_colliding_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let raw = serde_json::json!({
+            "entries": [{
+                "id": u64::MAX,
+                "name": null,
+                "duration": 1000u64,
+                "expires_at": "2026-01-01T00:00:00Z",
+                "origin": "127.0.0.1:9999",
+                "state": "Pending"
+            }]
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+
+        let store = TimerStore::load_from_file(&path).unwrap();
+        let new_id = store.set(Duration::from_secs(60), None, localhost(), Utc::now());
+        assert_eq!(new_id, TimerId(1));
+        assert_eq!(store.list().len(), 2);
+    }
+
+    #[test]
+    fn wrapped_next_id_skips_existing_timer_ids() {
+        let store = TimerStore {
+            inner: RwLock::new(TimerStoreInner {
+                next_id: 0,
+                timers: HashMap::from([(
+                    TimerId(1),
+                    TimerEntry {
+                        id: TimerId(1),
+                        name: None,
+                        duration: Duration::from_secs(60),
+                        expires_at: Utc::now(),
+                        origin: localhost(),
+                        state: TimerState::Pending,
+                    },
+                )]),
+            }),
+            persistence_path: None,
+        };
+        let new_id = store.set(Duration::from_secs(60), None, localhost(), Utc::now());
+        assert_eq!(new_id, TimerId(2));
+        assert_eq!(store.list().len(), 2);
     }
 }
