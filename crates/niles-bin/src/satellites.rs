@@ -35,7 +35,11 @@ impl SatelliteRegistry {
                 );
                 continue;
             };
-            by_ip.insert(ip, room);
+            if by_ip.insert(ip, room).is_some() {
+                tracing::warn!(
+                    "duplicate IP {ip} for satellite {name}, overwriting previous entry"
+                );
+            }
         }
         Self { by_ip }
     }

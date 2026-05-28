@@ -2,10 +2,8 @@
 //!
 //! Per-subsystem configs (`HomeConfig`, `LightingConfig`, etc.) each
 //! own their own schema and validation. The top-level `Config` is a
-//! container that delegates `validate()` to each subsystem.
-//!
-//! Currently covered sections: `[home]`, `[lighting]`. New sections
-//! land alongside the crates that consume them.
+//! container that delegates `validate()` to each subsystem. New
+//! sections land alongside the crates that consume them.
 
 pub mod api;
 pub mod capabilities;

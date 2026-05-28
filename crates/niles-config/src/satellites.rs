@@ -26,6 +26,7 @@ pub struct SatelliteConfig {
 
 impl SatellitesConfig {
     pub fn validate(&self) -> Result<()> {
+        let mut seen_ips = HashMap::new();
         for (name, sat) in &self.satellites {
             if name.trim().is_empty() {
                 return Err(Error::InvalidSection {
@@ -33,13 +34,20 @@ impl SatellitesConfig {
                     reason: "satellite name must not be empty".into(),
                 });
             }
-            if sat.ip.parse::<IpAddr>().is_err() {
-                return Err(Error::InvalidSection {
+            let ip = sat
+                .ip
+                .parse::<IpAddr>()
+                .map_err(|_| Error::InvalidSection {
                     section: "satellites",
                     reason: format!(
                         "satellites.{name}.ip = {:?} is not a valid IP address",
                         sat.ip
                     ),
+                })?;
+            if let Some(prev) = seen_ips.insert(ip, name.as_str()) {
+                return Err(Error::InvalidSection {
+                    section: "satellites",
+                    reason: format!("satellites.{name}.ip = {ip} duplicates satellites.{prev}.ip"),
                 });
             }
             if RoomName::parse(&sat.room).is_err() {
@@ -243,6 +251,48 @@ room = ""
                 }
             ),
             "expected InvalidSection {{ section: satellites }}, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("room"),
+            "error should mention room field: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_ip() {
+        let toml = format!(
+            r#"{}
+[satellites.living_room_sat]
+ip = "192.168.42.5"
+room = "living_room"
+
+[satellites.kitchen_sat]
+ip = "192.168.42.5"
+room = "kitchen"
+"#,
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::InvalidSection {
+                    section: "satellites",
+                    ..
+                }
+            ),
+            "expected InvalidSection {{ section: satellites }}, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("192.168.42.5"),
+            "error should contain offending IP: {msg}"
+        );
+        assert!(
+            msg.contains("duplicates") || msg.contains("duplicate"),
+            "error should mention duplication: {msg}"
         );
     }
 }
