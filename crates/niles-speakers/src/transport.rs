@@ -4,8 +4,10 @@ use crate::error::{Error, Result};
 use async_trait::async_trait;
 use std::time::Duration;
 
+/// Abstract transport for sending SOAP actions to a Sonos speaker.
 #[async_trait]
 pub trait SonosTransport: Send + Sync {
+    /// Send a raw SOAP action and return the response body.
     async fn send_action(
         &self,
         endpoint: &str,

@@ -14,16 +14,20 @@ pub enum TransportState {
     Unknown,
 }
 
+/// Sonos SOAP/UPnP client for a single speaker (known IP).
+#[derive(Clone)]
 pub struct SonosClient {
     ip: String,
     transport: Arc<dyn SonosTransport>,
 }
 
 impl SonosClient {
+    /// Create a client using the default [`HttpTransport`].
     pub fn new(ip: impl Into<String>) -> Self {
         Self::with_transport(ip, Arc::new(HttpTransport::new()))
     }
 
+    /// Create a client with a custom transport (useful for testing).
     pub fn with_transport(ip: impl Into<String>, transport: Arc<dyn SonosTransport>) -> Self {
         Self {
             ip: ip.into(),
@@ -31,6 +35,7 @@ impl SonosClient {
         }
     }
 
+    /// Start playback on the speaker.
     pub async fn play(&self) -> Result<()> {
         self.invoke(
             av_endpoint(&self.ip),
@@ -42,6 +47,7 @@ impl SonosClient {
         Ok(())
     }
 
+    /// Pause playback on the speaker.
     pub async fn pause(&self) -> Result<()> {
         self.invoke(
             av_endpoint(&self.ip),
@@ -53,6 +59,7 @@ impl SonosClient {
         Ok(())
     }
 
+    /// Query the current transport state (Playing, Paused, etc.).
     pub async fn get_transport_state(&self) -> Result<TransportState> {
         let body = self
             .invoke(
@@ -77,6 +84,7 @@ impl SonosClient {
         })
     }
 
+    /// Query the current volume level (0–100).
     pub async fn get_volume(&self) -> Result<u8> {
         let body = self
             .invoke(
@@ -104,6 +112,7 @@ impl SonosClient {
         Ok(parsed)
     }
 
+    /// Set the volume level. Values above 100 are clamped to 100.
     pub async fn set_volume(&self, volume: u8) -> Result<()> {
         let clamped = volume.min(100);
         self.invoke(
@@ -335,6 +344,33 @@ mod tests {
                 .unwrap()
                 .contains("<DesiredVolume>0</DesiredVolume>")
         );
+    }
+
+    #[tokio::test]
+    async fn set_volume_normal_value_passes_through() {
+        let (mock, client) = client_with(Ok("".into()));
+        client.set_volume(50).await.unwrap();
+        assert!(
+            mock.last_body()
+                .unwrap()
+                .contains("<DesiredVolume>50</DesiredVolume>")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_volume_rejects_invalid() {
+        let body = "<CurrentVolume>abc</CurrentVolume>".to_string();
+        let (_, client) = client_with(Ok(body));
+        let err = client.get_volume().await.unwrap_err();
+        assert!(matches!(err, Error::ParseResponse { .. }));
+    }
+
+    #[tokio::test]
+    async fn parse_error_for_missing_volume_tag() {
+        let body = "<u:GetVolumeResponse></u:GetVolumeResponse>".to_string();
+        let (_, client) = client_with(Ok(body));
+        let err = client.get_volume().await.unwrap_err();
+        assert!(matches!(err, Error::ParseResponse { .. }));
     }
 
     #[tokio::test]
