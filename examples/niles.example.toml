@@ -69,6 +69,19 @@ api_key_env = "GROQ_API_KEY"
 # model           = "openai/gpt-oss-20b"
 # timeout_seconds = 30
 
+# Optional satellite → room mapping. Each entry maps a satellite's
+# LAN IP to a canonical room name. Niles uses this to tell the LLM
+# which room a voice command originated from, so ambiguous requests
+# like "turn on the lights" default to the right room.
+#
+# [satellites.living_room_sat]
+# ip = "192.168.1.10"
+# room = "living_room"
+#
+# [satellites.kitchen_sat]
+# ip = "192.168.1.20"
+# room = "kitchen"
+
 # Optional Tier B capability reference directory. If set, niles loads
 # every `<directory>/<name>/SKILL.md` at startup and registers the
 # `look_up_capability` tool so the LLM can pull a capability's full

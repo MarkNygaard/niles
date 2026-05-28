@@ -30,8 +30,11 @@ use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 mod response;
+mod satellites;
 mod speak;
 mod speakers;
+
+use satellites::SatelliteRegistry;
 
 #[derive(Parser)]
 #[command(name = "niles", about = "AI-first home automation system", version)]
@@ -617,27 +620,46 @@ fn build_capability_index(loader: &CapabilityLoader) -> niles_intent::Capability
     niles_intent::CapabilityIndex::from_entries(entries)
 }
 
+fn origin_context(room: &RoomName) -> String {
+    format!(
+        "\n\n# Current context\n\nThe user is speaking from a device in **{}**. \
+         When a request is ambiguous between rooms, prefer devices in this room.\n",
+        room.as_str(),
+    )
+}
+
+fn persona_with_origin(origin_room: Option<&RoomName>) -> String {
+    let mut out = NILES_SYSTEM_PERSONA.to_string();
+    if let Some(room) = origin_room {
+        out.push_str(&origin_context(room));
+    }
+    out
+}
+
 fn assemble_system_prompt(
     transcript: &str,
     index: &niles_intent::CapabilityIndex,
     loader: &CapabilityLoader,
+    origin_room: Option<&RoomName>,
 ) -> String {
     let names = niles_intent::detect_topics(transcript, index);
-    if names.is_empty() {
-        return NILES_SYSTEM_PERSONA.to_string();
-    }
     let mut out = String::from(NILES_SYSTEM_PERSONA);
-    out.push_str(
-        "\n\n# Capability references\n\nThe following references \
-         are relevant to the current request:\n",
-    );
-    for name in &names {
-        if let Some(cap) = loader.get(name) {
-            out.push_str(&format!(
-                "\n## {} (v{})\n{}\n",
-                cap.metadata.name, cap.metadata.version, cap.body,
-            ));
+    if !names.is_empty() {
+        out.push_str(
+            "\n\n# Capability references\n\nThe following references \
+             are relevant to the current request:\n",
+        );
+        for name in &names {
+            if let Some(cap) = loader.get(name) {
+                out.push_str(&format!(
+                    "\n## {} (v{})\n{}\n",
+                    cap.metadata.name, cap.metadata.version, cap.body,
+                ));
+            }
         }
+    }
+    if let Some(room) = origin_room {
+        out.push_str(&origin_context(room));
     }
     out
 }
@@ -875,7 +897,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
 
     let system_prompt = match (&capability_loader, &capability_index) {
-        (Some(loader), Some(index)) => assemble_system_prompt(&args.prompt, index, loader),
+        (Some(loader), Some(index)) => assemble_system_prompt(&args.prompt, index, loader, None),
         _ => NILES_SYSTEM_PERSONA.to_string(),
     };
 
@@ -1114,6 +1136,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let wyoming_sender = server.sender();
     let server_handle = tokio::spawn(server.run());
     let mut tracker = SessionTracker::new();
+    let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let ctx = DispatchCtx {
         publisher,
         registry: registry.clone(),
@@ -1127,6 +1150,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         tools,
         capability_loader,
         capability_index,
+        satellites,
     };
 
     loop {
@@ -1182,6 +1206,7 @@ struct DispatchCtx {
     tools: Arc<ToolRegistry>,
     capability_loader: Option<Arc<CapabilityLoader>>,
     capability_index: Option<Arc<niles_intent::CapabilityIndex>>,
+    satellites: Arc<SatelliteRegistry>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1198,6 +1223,8 @@ async fn handle_transcript(
         return None;
     }
 
+    let origin_room = ctx.satellites.room_for(peer);
+
     // IntentRouter is a zero-sized unit struct; the regexes are
     // compiled once into a static OnceLock, so constructing one
     // per call is free.
@@ -1207,8 +1234,10 @@ async fn handle_transcript(
             // Tier 0 miss — escalate to Tier 1 LLM with the tool registry.
             tracing::info!("[{peer}] Tier 0 miss, escalating to LLM: {text:?}");
             let system_prompt = match (&ctx.capability_loader, &ctx.capability_index) {
-                (Some(loader), Some(index)) => assemble_system_prompt(text, index, loader),
-                _ => NILES_SYSTEM_PERSONA.to_string(),
+                (Some(loader), Some(index)) => {
+                    assemble_system_prompt(text, index, loader, origin_room)
+                }
+                _ => persona_with_origin(origin_room),
             };
             match run_tool_calling_chat(
                 ctx.llm.as_ref(),
@@ -1917,6 +1946,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     let mut session_tracker = SessionTracker::new();
+    let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let ctx = DispatchCtx {
         publisher: publisher.clone(),
         registry: registry.clone(),
@@ -1930,6 +1960,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tools,
         capability_loader,
         capability_index,
+        satellites,
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -2810,7 +2841,7 @@ mod system_prompt_tests {
         let tmp = TempDir::new().unwrap();
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("turn on the lights", &index, &loader);
+        let out = assemble_system_prompt("turn on the lights", &index, &loader, None);
         assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
 
@@ -2826,7 +2857,7 @@ mod system_prompt_tests {
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
         // "weather" doesn't intersect with "lighting" or "Control smart lights"
-        let out = assemble_system_prompt("what is the weather today", &index, &loader);
+        let out = assemble_system_prompt("what is the weather today", &index, &loader, None);
         assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
 
@@ -2845,6 +2876,7 @@ mod system_prompt_tests {
             "how does the lighting curve decide brightness",
             &index,
             &loader,
+            None,
         );
         assert!(out.starts_with(NILES_SYSTEM_PERSONA));
         assert!(out.contains("The curve uses a cosine falloff."));
@@ -2871,7 +2903,7 @@ mod system_prompt_tests {
 
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("tell me about scenes", &index, &loader);
+        let out = assemble_system_prompt("tell me about scenes", &index, &loader, None);
 
         assert!(out.starts_with(NILES_SYSTEM_PERSONA));
         assert!(out.contains("Alpha body."));
@@ -2897,7 +2929,7 @@ mod system_prompt_tests {
         );
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("tell me about my capability", &index, &loader);
+        let out = assemble_system_prompt("tell me about my capability", &index, &loader, None);
         assert!(
             out.contains("(v4.5.6)"),
             "output should contain version: {out}"
@@ -2915,9 +2947,76 @@ mod system_prompt_tests {
         );
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let a = assemble_system_prompt("turn on the lights", &index, &loader);
-        let b = assemble_system_prompt("turn on the lights", &index, &loader);
+        let a = assemble_system_prompt("turn on the lights", &index, &loader, None);
+        let b = assemble_system_prompt("turn on the lights", &index, &loader, None);
         assert_eq!(a, b, "assemble_system_prompt must be deterministic");
+    }
+
+    #[test]
+    fn assemble_appends_origin_context_when_present() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let room = RoomName::parse("living_room").unwrap();
+        let out = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("# Current context"));
+        assert!(out.contains("living_room"));
+    }
+
+    #[test]
+    fn assemble_orders_persona_then_capability_then_context() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let room = RoomName::parse("kitchen").unwrap();
+        let out = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
+        let persona_pos = out.find(NILES_SYSTEM_PERSONA).unwrap();
+        let cap_pos = out.find("# Capability references").unwrap();
+        let ctx_pos = out.find("# Current context").unwrap();
+        assert!(
+            persona_pos < cap_pos,
+            "persona should come before capability references"
+        );
+        assert!(
+            cap_pos < ctx_pos,
+            "capability references should come before current context"
+        );
+    }
+
+    #[test]
+    fn assemble_deterministic_same_inputs() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let room = RoomName::parse("bedroom").unwrap();
+        let a = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
+        let b = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
+        assert_eq!(
+            a, b,
+            "assemble_system_prompt must be deterministic with origin_room"
+        );
+    }
+
+    #[test]
+    fn persona_with_origin_none_equals_persona() {
+        assert_eq!(persona_with_origin(None), NILES_SYSTEM_PERSONA);
+        let room = RoomName::parse("office").unwrap();
+        let out = persona_with_origin(Some(&room));
+        assert!(out.contains("# Current context"));
+        assert!(out.contains("office"));
     }
 
     #[test]
