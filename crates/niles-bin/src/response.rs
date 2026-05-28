@@ -68,6 +68,15 @@ pub fn light_dim(room: &str, percent: u8) -> String {
     )
 }
 
+/// "All lights on." / "All lights off."
+pub fn all_lights(on: bool) -> String {
+    if on {
+        "All lights on.".into()
+    } else {
+        "All lights off.".into()
+    }
+}
+
 /// "Saved the scene kitchen evening."
 pub fn scene_saved(name: &str) -> String {
     format!("Saved the scene {}.", spoken_room(name))
@@ -257,6 +266,16 @@ mod tests {
     #[test]
     fn light_dim_basic() {
         assert_eq!(light_dim("kitchen", 30), "Kitchen lights to 30%.");
+    }
+
+    #[test]
+    fn all_lights_on() {
+        assert_eq!(all_lights(true), "All lights on.");
+    }
+
+    #[test]
+    fn all_lights_off() {
+        assert_eq!(all_lights(false), "All lights off.");
     }
 
     #[test]

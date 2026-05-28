@@ -9,6 +9,9 @@ use std::time::Duration;
 
 const SPEAKER_VOLUME_STEP: i16 = 10; // tunable; SonosClient clamps to 0..=100
 
+/// Matches the Hue-dimmer hold step (see Event::DeviceAction).
+pub(crate) const LIGHT_STEP_PERCENT: i16 = 10;
+
 /// Tier 0 intent router. Cheap to construct; regexes are compiled
 /// lazily on first use and reused across all subsequent `parse` calls.
 #[derive(Debug, Default, Clone, Copy)]
@@ -30,6 +33,9 @@ impl IntentRouter {
         // with `light` (which requires a trailing `on`/`off`), but
         // we still match the more specific pattern first as a habit.
         match_light_dim(&t)
+            .or_else(|| match_light_set_all_in_room(&t))
+            .or_else(|| match_light_set_all(&t))
+            .or_else(|| match_light_step(&t))
             .or_else(|| match_light(&t))
             .or_else(|| match_back_to_normal(&t))
             .or_else(|| match_scene_save(&t))
@@ -56,7 +62,11 @@ impl IntentRouter {
         }
 
         let t = normalize(transcript);
-        match_device_dim(&t, &ctx).or_else(|| match_device_set(&t, &ctx))
+        match_light_step_implicit_room(&t, &ctx)
+            .or_else(|| match_light_dim_implicit_room(&t, &ctx))
+            .or_else(|| match_light_set_implicit_room(&t, &ctx))
+            .or_else(|| match_device_dim(&t, &ctx))
+            .or_else(|| match_device_set(&t, &ctx))
     }
 }
 
@@ -163,6 +173,201 @@ fn match_light_dim(t: &str) -> Option<Intent> {
     Some(Intent::LightDim {
         room: room.to_string(),
         percent: n,
+    })
+}
+
+// ---- Light set all (whole-home) -------------------------------------------
+
+fn light_set_all_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                turn\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?
+              |
+                all\s+(?:the\s+)?lights?\s+(?P<state2>on|off)
+              |
+                everything\s+off
+              |
+                lights\s+off\s+everywhere
+              )
+              $",
+        )
+        .expect("light_set_all regex compiles")
+    })
+}
+
+fn match_light_set_all(t: &str) -> Option<Intent> {
+    let caps = light_set_all_regex().captures(t)?;
+    let on = caps
+        .name("state1")
+        .or_else(|| caps.name("state2"))
+        .map(|m| m.as_str() == "on")
+        .unwrap_or(false);
+    Some(Intent::LightSetAll { on })
+}
+
+// ---- Light set all in room ------------------------------------------------
+
+fn light_set_all_in_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                turn\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room1>.+?)
+              |
+                all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room2>.+?)\s+(?P<state2>on|off)
+              )
+              $",
+        )
+        .expect("light_set_all_in_room regex compiles")
+    })
+}
+
+fn match_light_set_all_in_room(t: &str) -> Option<Intent> {
+    let caps = light_set_all_in_room_regex().captures(t)?;
+    let (state, room) = if let Some(s) = caps.name("state1") {
+        (s.as_str(), caps.name("room1")?.as_str())
+    } else {
+        (caps.name("state2")?.as_str(), caps.name("room2")?.as_str())
+    };
+    if room == "the" || room == "lights" {
+        return None;
+    }
+    Some(Intent::LightSet {
+        room: room.to_string(),
+        on: state == "on",
+    })
+}
+
+// ---- Light step (explicit room) -------------------------------------------
+
+fn light_step_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                (?:the\s+)?(?P<room1>.+?)\s+lights?\s+(?P<dir1>brighter|dimmer)
+              |
+                make\s+(?:the\s+)?(?P<room2>.+?)\s+(?P<dir2>brighter|dimmer)
+              )
+              $",
+        )
+        .expect("light_step regex compiles")
+    })
+}
+
+fn match_light_step(t: &str) -> Option<Intent> {
+    let caps = light_step_regex().captures(t)?;
+    let dir = caps.name("dir1").or_else(|| caps.name("dir2"))?.as_str();
+    let room = caps.name("room1").or_else(|| caps.name("room2"))?.as_str();
+    if room == "the" || room == "lights" {
+        return None;
+    }
+    let delta_percent = if dir == "brighter" {
+        LIGHT_STEP_PERCENT
+    } else {
+        -LIGHT_STEP_PERCENT
+    };
+    Some(Intent::LightStep {
+        room: room.to_string(),
+        delta_percent,
+    })
+}
+
+// ---- Light set implicit room ----------------------------------------------
+
+fn light_set_implicit_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                lights?\s+(?P<state1>on|off)
+              |
+                turn\s+(?P<state2>on|off)\s+(?:the\s+)?lights?
+              )
+              $",
+        )
+        .expect("light_set_implicit_room regex compiles")
+    })
+}
+
+fn match_light_set_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = light_set_implicit_room_regex().captures(t)?;
+    let origin = ctx.origin_room?;
+    let state = caps
+        .name("state1")
+        .or_else(|| caps.name("state2"))?
+        .as_str();
+    Some(Intent::LightSet {
+        room: origin.as_str().to_owned(),
+        on: state == "on",
+    })
+}
+
+// ---- Light dim implicit room ----------------------------------------------
+
+fn light_dim_implicit_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:dim|set)\s+(?:the\s+)?lights?\s+to\s+(?P<n>\d{1,3})\s*(?:%|percent)
+              $",
+        )
+        .expect("light_dim_implicit_room regex compiles")
+    })
+}
+
+fn match_light_dim_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = light_dim_implicit_room_regex().captures(t)?;
+    let origin = ctx.origin_room?;
+    let n: u8 = caps.name("n")?.as_str().parse().ok()?;
+    if n > 100 {
+        return None;
+    }
+    Some(Intent::LightDim {
+        room: origin.as_str().to_owned(),
+        percent: n,
+    })
+}
+
+// ---- Light step implicit room ---------------------------------------------
+
+fn light_step_implicit_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?P<dir>brighter|dimmer)
+              $",
+        )
+        .expect("light_step_implicit_room regex compiles")
+    })
+}
+
+fn match_light_step_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = light_step_implicit_room_regex().captures(t)?;
+    let origin = ctx.origin_room?;
+    let dir = caps.name("dir")?.as_str();
+    let delta_percent = if dir == "brighter" {
+        LIGHT_STEP_PERCENT
+    } else {
+        -LIGHT_STEP_PERCENT
+    };
+    Some(Intent::LightStep {
+        room: origin.as_str().to_owned(),
+        delta_percent,
     })
 }
 
@@ -1655,6 +1860,127 @@ mod tests {
     fn media_play_alone_rejected() {
         assert_eq!(parse("play"), None);
     }
+
+    // ---- Light set all (whole-home) ----
+
+    #[test]
+    fn light_set_all_turn_off_all_lights() {
+        assert_eq!(
+            parse("turn off all the lights"),
+            Some(Intent::LightSetAll { on: false })
+        );
+    }
+
+    #[test]
+    fn light_set_all_alt_phrasing() {
+        assert_eq!(
+            parse("all the lights off"),
+            Some(Intent::LightSetAll { on: false })
+        );
+        assert_eq!(
+            parse("all lights on"),
+            Some(Intent::LightSetAll { on: true })
+        );
+    }
+
+    #[test]
+    fn light_set_all_everything_off() {
+        assert_eq!(
+            parse("everything off"),
+            Some(Intent::LightSetAll { on: false })
+        );
+        assert_eq!(
+            parse("Everything off."),
+            Some(Intent::LightSetAll { on: false })
+        );
+    }
+
+    #[test]
+    fn light_set_all_lights_off_everywhere() {
+        assert_eq!(
+            parse("lights off everywhere"),
+            Some(Intent::LightSetAll { on: false })
+        );
+    }
+
+    // ---- Light set all in room ----
+
+    #[test]
+    fn light_set_all_in_room_off() {
+        assert_eq!(
+            parse("turn off all the lights in the living room"),
+            Some(Intent::LightSet {
+                room: "living room".into(),
+                on: false,
+            })
+        );
+    }
+
+    #[test]
+    fn light_set_all_in_room_subject_first() {
+        assert_eq!(
+            parse("all the lights in the bedroom off"),
+            Some(Intent::LightSet {
+                room: "bedroom".into(),
+                on: false,
+            })
+        );
+    }
+
+    // ---- Light step (explicit room) ----
+
+    #[test]
+    fn light_step_room_lights_brighter() {
+        assert_eq!(
+            parse("kitchen lights brighter"),
+            Some(Intent::LightStep {
+                room: "kitchen".into(),
+                delta_percent: 10,
+            })
+        );
+        assert_eq!(
+            parse("kitchen lights dimmer"),
+            Some(Intent::LightStep {
+                room: "kitchen".into(),
+                delta_percent: -10,
+            })
+        );
+    }
+
+    #[test]
+    fn light_step_make_room_brighter() {
+        assert_eq!(
+            parse("make the kitchen brighter"),
+            Some(Intent::LightStep {
+                room: "kitchen".into(),
+                delta_percent: 10,
+            })
+        );
+    }
+
+    // ---- Regressions ----
+
+    #[test]
+    fn regression_kitchen_lights_on_unchanged() {
+        assert_eq!(
+            parse("turn on the kitchen lights"),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: true,
+            })
+        );
+    }
+
+    #[test]
+    fn regression_dim_kitchen_lights_to_30_unchanged() {
+        assert_eq!(
+            parse("dim the kitchen lights to 30%"),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 30,
+            })
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1897,5 +2223,91 @@ mod context_tests {
                 percent: 0,
             })
         );
+    }
+
+    // ---- Implicit-room light set ----
+
+    #[test]
+    fn implicit_room_lights_on_uses_origin() {
+        let idx = fixture_multi();
+        let kitchen = RoomName::parse("kitchen").unwrap();
+        let ctx = ctx_with(&idx, Some(&kitchen));
+        assert_eq!(
+            parse_with("lights on", ctx),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: true,
+            })
+        );
+        assert_eq!(
+            parse_with("turn on the lights", ctx),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: true,
+            })
+        );
+    }
+
+    #[test]
+    fn implicit_room_lights_off_no_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("lights off", ctx), None);
+        assert_eq!(parse_with("turn on the lights", ctx), None);
+    }
+
+    // ---- Implicit-room light dim ----
+
+    #[test]
+    fn implicit_room_dim_lights_to_30() {
+        let idx = fixture_multi();
+        let kitchen = RoomName::parse("kitchen").unwrap();
+        let ctx = ctx_with(&idx, Some(&kitchen));
+        assert_eq!(
+            parse_with("dim the lights to 30%", ctx),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn implicit_room_dim_lights_over_100_returns_none() {
+        let idx = fixture_multi();
+        let kitchen = RoomName::parse("kitchen").unwrap();
+        let ctx = ctx_with(&idx, Some(&kitchen));
+        assert_eq!(parse_with("dim the lights to 150%", ctx), None);
+    }
+
+    // ---- Implicit-room light step ----
+
+    #[test]
+    fn light_step_brighter_uses_origin() {
+        let idx = fixture_multi();
+        let bedroom = RoomName::parse("bedroom").unwrap();
+        let ctx = ctx_with(&idx, Some(&bedroom));
+        assert_eq!(
+            parse_with("brighter", ctx),
+            Some(Intent::LightStep {
+                room: "bedroom".into(),
+                delta_percent: 10,
+            })
+        );
+        assert_eq!(
+            parse_with("dimmer", ctx),
+            Some(Intent::LightStep {
+                room: "bedroom".into(),
+                delta_percent: -10,
+            })
+        );
+    }
+
+    #[test]
+    fn light_step_no_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("brighter", ctx), None);
+        assert_eq!(parse_with("dimmer", ctx), None);
     }
 }
