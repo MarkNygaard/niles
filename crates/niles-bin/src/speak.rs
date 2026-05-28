@@ -46,8 +46,12 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
             let channels = u16::from_le_bytes(body[2..4].try_into().unwrap());
             let sample_rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
             let bps = u16::from_le_bytes(body[14..16].try_into().unwrap());
-            if channels == 0 || bps == 0 || sample_rate == 0 {
+            if channels == 0 || sample_rate == 0 || bps == 0 {
                 anyhow::bail!("invalid fmt: channels={channels}, bps={bps}, rate={sample_rate}");
+            }
+            let width = bps / 8;
+            if bps % 8 != 0 || width > 4 {
+                anyhow::bail!("unsupported bits_per_sample {bps} (must be 8, 16, 24, or 32)");
             }
             fmt = Some(AudioFormat::new(sample_rate, bps, channels));
         } else if chunk_id == b"data" {
@@ -245,6 +249,22 @@ mod tests {
     fn zero_bits_per_sample() {
         let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
         wav[34] = 0;
+        wav[35] = 0;
+        assert!(wav_to_pcm(&wav).is_err());
+    }
+
+    #[test]
+    fn non_multiple_of_8_bps() {
+        let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
+        wav[34] = 12; // 12 bits per sample
+        wav[35] = 0;
+        assert!(wav_to_pcm(&wav).is_err());
+    }
+
+    #[test]
+    fn bps_too_large() {
+        let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
+        wav[34] = 64; // 64 bits per sample
         wav[35] = 0;
         assert!(wav_to_pcm(&wav).is_err());
     }
