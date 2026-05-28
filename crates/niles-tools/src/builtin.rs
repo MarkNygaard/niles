@@ -4,8 +4,10 @@ use crate::error::{Error, Result};
 use crate::registry::ToolRegistry;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
+use niles_history::{CommandQuery, CommandReader};
 use niles_mqtt::{MqttPublisher, format_set_command, is_actionable};
 use niles_scheduler::{TimerState, TimerStore, canonicalize_name};
 use serde_json::{Value, json};
@@ -26,6 +28,19 @@ fn required_str<'a>(tool: &'static str, args: &'a Value, key: &str) -> Result<&'
             tool: tool.into(),
             reason: format!("missing required field '{key}'"),
         })
+}
+
+/// Parse an optional RFC 3339 timestamp argument into a UTC `DateTime`.
+fn parse_opt_rfc3339(tool: &'static str, args: &Value, key: &str) -> Result<Option<DateTime<Utc>>> {
+    match args.get(key).and_then(|v| v.as_str()) {
+        Some(s) => DateTime::parse_from_rfc3339(s)
+            .map_err(|e| Error::InvalidArgs {
+                tool: tool.into(),
+                reason: format!("invalid '{key}': {e}"),
+            })
+            .map(|dt| Some(dt.with_timezone(&Utc))),
+        None => Ok(None),
+    }
 }
 
 fn device_summary(device: &niles_core::Device) -> Value {
@@ -561,7 +576,7 @@ impl Tool for CancelTimer {
     async fn execute(&self, args: Value) -> Result<Value> {
         let name = required_str("cancel_timer", &args, "name")?;
         let canonical = canonicalize_name(name);
-        let count = self.timers.cancel_by_name(name);
+        let count = self.timers.cancel_by_name(&canonical);
         Ok(json!({ "cancelled": count, "name": canonical }))
     }
 }
@@ -629,6 +644,84 @@ pub fn register_timer_tools(reg: &mut ToolRegistry, timers: Arc<TimerStore>) {
     reg.register(Box::new(ListTimers::new(timers.clone())));
     reg.register(Box::new(CancelTimer::new(timers.clone())));
     reg.register(Box::new(GetTimerRemaining::new(timers)));
+}
+
+// ---------- QueryCommandHistory ----------
+
+pub struct QueryCommandHistory {
+    reader: Arc<CommandReader>,
+}
+
+impl QueryCommandHistory {
+    pub fn new(reader: Arc<CommandReader>) -> Self {
+        Self { reader }
+    }
+}
+
+#[async_trait]
+impl Tool for QueryCommandHistory {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "query_command_history".into(),
+            description: "Query the user's recent voice command history. Use this to resolve anaphora ('turn it off again') or answer retrospective questions ('what did I do this morning'). Returns an array of command entries newest-first.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "since": {
+                        "type": "string",
+                        "description": "RFC 3339 timestamp for the lower bound (inclusive)."
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "RFC 3339 timestamp for the upper bound (inclusive)."
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "Filter to a specific origin room (canonical lower_snake name)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max entries to return (default 50, max 500).",
+                        "minimum": 1,
+                        "maximum": 500
+                    }
+                },
+                "required": [],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let since = parse_opt_rfc3339("query_command_history", &args, "since")?;
+        let until = parse_opt_rfc3339("query_command_history", &args, "until")?;
+        let room = args
+            .get("room")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+
+        let q = CommandQuery {
+            since,
+            until,
+            room,
+            limit,
+        };
+
+        let entries = self
+            .reader
+            .query(&q)
+            .map_err(|e| Error::Internal(format!("query failed: {e}")))?;
+        Ok(serde_json::to_value(entries)?)
+    }
+}
+
+/// Register the history query tool onto an existing registry.
+pub fn register_history_tools(reg: &mut ToolRegistry, reader: Arc<CommandReader>) {
+    reg.register(Box::new(QueryCommandHistory::new(reader)));
 }
 
 /// Build a `ToolRegistry` containing every device-facing Tier-1 built-in.
