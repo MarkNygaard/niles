@@ -59,7 +59,8 @@ impl SonosTransport for HttpTransport {
 
         if !status.is_success() {
             const MAX_ERR_BODY: usize = 2048;
-            let preview = &body[..body.len().min(MAX_ERR_BODY)];
+            // Use str::get so we never split a multi-byte UTF-8 boundary.
+            let preview = body.get(..MAX_ERR_BODY).unwrap_or(&body);
 
             // UPnP faults wrap the real error in <detail><UPnPError><errorCode>…
             // Fall back to the generic SOAP <faultcode> / <faultstring> if absent.
