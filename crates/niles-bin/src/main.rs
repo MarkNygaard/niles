@@ -1377,12 +1377,14 @@ async fn handle_transcript(
             &room,
             media_dispatch(ctx, &room, |c| async move { c.pause().await }).await,
             response::media_pause(&room),
+            "pause",
         ),
         Intent::MediaPlay { room } => media_result_to_response(
             peer,
             &room,
             media_dispatch(ctx, &room, |c| async move { c.play().await }).await,
             response::media_play(&room),
+            "play",
         ),
         Intent::MediaVolumeSet { room, percent } => media_result_to_response(
             peer,
@@ -1394,6 +1396,7 @@ async fn handle_transcript(
             )
             .await,
             response::media_volume(&room, percent),
+            "volume set",
         ),
         Intent::MediaVolumeStep { room, delta } => {
             let canonical = match intent_room_to_canonical(&room) {
@@ -1405,7 +1408,10 @@ async fn handle_transcript(
             };
             let client = match ctx.speakers.get(&canonical) {
                 Some(c) => c,
-                None => return Some(response::no_speaker_in_room(canonical.as_str())),
+                None => {
+                    println!("[{peer}] no speaker in {canonical}");
+                    return Some(response::no_speaker_in_room(canonical.as_str()));
+                }
             };
             let current = match client.get_volume().await {
                 Ok(v) => v,
@@ -1419,6 +1425,7 @@ async fn handle_transcript(
                 tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
                 return Some(response::speaker_unreachable(canonical.as_str()));
             }
+            println!("[{peer}] media volume step in {canonical}: {current} -> {new}");
             Some(response::media_volume(canonical.as_str(), new))
         }
         Intent::TimerSet { duration, name } => {
@@ -1574,9 +1581,9 @@ fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
 
 #[derive(Debug)]
 enum MediaDispatchError {
-    BadRoom,
+    BadRoom(String),
     NoSpeaker(RoomName),
-    Unreachable(RoomName),
+    Unreachable(RoomName, String),
 }
 
 async fn media_dispatch<F, Fut>(
@@ -1588,14 +1595,14 @@ where
     F: FnOnce(Arc<SonosClient>) -> Fut,
     Fut: std::future::Future<Output = niles_speakers::Result<()>>,
 {
-    let canonical = intent_room_to_canonical(room_raw).map_err(|_| MediaDispatchError::BadRoom)?;
+    let canonical = intent_room_to_canonical(room_raw).map_err(MediaDispatchError::BadRoom)?;
     let client = ctx
         .speakers
         .get(&canonical)
         .ok_or_else(|| MediaDispatchError::NoSpeaker(canonical.clone()))?;
     op(client)
         .await
-        .map_err(|_| MediaDispatchError::Unreachable(canonical))
+        .map_err(|e| MediaDispatchError::Unreachable(canonical, e.to_string()))
 }
 
 /// Turns the result of a `media_dispatch` call into the spoken
@@ -1605,13 +1612,23 @@ fn media_result_to_response(
     room: &str,
     result: std::result::Result<(), MediaDispatchError>,
     ok_msg: String,
+    action: &str,
 ) -> Option<String> {
     match result {
-        Ok(()) => Some(ok_msg),
-        Err(MediaDispatchError::BadRoom) => Some(response::room_not_found(room)),
-        Err(MediaDispatchError::NoSpeaker(r)) => Some(response::no_speaker_in_room(r.as_str())),
-        Err(MediaDispatchError::Unreachable(r)) => {
-            tracing::warn!("[{peer}] speaker unreachable in {r}");
+        Ok(()) => {
+            println!("[{peer}] media {action} in {room}");
+            Some(ok_msg)
+        }
+        Err(MediaDispatchError::BadRoom(reason)) => {
+            tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
+            Some(response::room_not_found(room))
+        }
+        Err(MediaDispatchError::NoSpeaker(r)) => {
+            println!("[{peer}] no speaker in {r}");
+            Some(response::no_speaker_in_room(r.as_str()))
+        }
+        Err(MediaDispatchError::Unreachable(r, e)) => {
+            tracing::warn!("[{peer}] speaker unreachable in {r}: {e}");
             Some(response::speaker_unreachable(r.as_str()))
         }
     }

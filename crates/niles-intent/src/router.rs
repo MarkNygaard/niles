@@ -1469,4 +1469,52 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn media_volume_set_boundary_0() {
+        assert_eq!(
+            parse("set kitchen volume to 0%"),
+            Some(Intent::MediaVolumeSet {
+                room: "kitchen".into(),
+                percent: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn media_volume_set_boundary_100() {
+        assert_eq!(
+            parse("set kitchen volume to 100%"),
+            Some(Intent::MediaVolumeSet {
+                room: "kitchen".into(),
+                percent: 100,
+            })
+        );
+    }
+
+    #[test]
+    fn media_volume_set_rejects_101() {
+        assert_eq!(parse("set kitchen volume to 101%"), None);
+    }
+
+    #[test]
+    fn media_volume_set_rejects_missing_percent() {
+        assert_eq!(parse("set kitchen volume to 30"), None);
+    }
+
+    #[test]
+    fn media_volume_step_without_in() {
+        assert_eq!(
+            parse("volume up kitchen"),
+            Some(Intent::MediaVolumeStep {
+                room: "kitchen".into(),
+                delta: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn media_play_alone_rejected() {
+        assert_eq!(parse("play"), None);
+    }
 }
