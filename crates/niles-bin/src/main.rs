@@ -1341,7 +1341,14 @@ async fn handle_transcript(
                 .filter(|d| d.is_light())
                 .collect();
             if targets.is_empty() {
-                return Some(response::room_warming_up());
+                if ctx.registry.is_empty() {
+                    println!(
+                        "[{peer}] registry is still warming up (no devices yet) — try again in a moment"
+                    );
+                    return Some(response::room_warming_up());
+                }
+                println!("[{peer}] no lights in registry — nothing to dispatch");
+                return Some(response::no_lights());
             }
             let desired = DeviceState {
                 on: Some(on),
@@ -1386,12 +1393,13 @@ async fn handle_transcript(
                     RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
-            let known: Vec<u8> = targets.iter().filter_map(|d| d.state.brightness).collect();
-            let base: i16 = if known.is_empty() {
-                50
-            } else {
-                (known.iter().copied().map(|b| b as i32).sum::<i32>() / known.len() as i32) as i16
-            };
+            // `resolve_room_targets` already filtered for devices with
+            // brightness, so every target has a known value.
+            let base = (targets
+                .iter()
+                .map(|d| d.state.brightness.unwrap() as i32)
+                .sum::<i32>()
+                / targets.len() as i32) as i16;
             let new = (base + delta_percent).clamp(0, 100) as u8;
             for device in &targets {
                 ctx.tracker.flag(&device.id);

@@ -77,6 +77,11 @@ pub fn all_lights(on: bool) -> String {
     }
 }
 
+/// "No lights found."
+pub fn no_lights() -> String {
+    "No lights found.".into()
+}
+
 /// "Saved the scene kitchen evening."
 pub fn scene_saved(name: &str) -> String {
     format!("Saved the scene {}.", spoken_room(name))
@@ -276,6 +281,11 @@ mod tests {
     #[test]
     fn all_lights_off() {
         assert_eq!(all_lights(false), "All lights off.");
+    }
+
+    #[test]
+    fn no_lights_phrasing() {
+        assert_eq!(no_lights(), "No lights found.");
     }
 
     #[test]
