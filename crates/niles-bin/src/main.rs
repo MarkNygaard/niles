@@ -1085,9 +1085,12 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
     let registry = Arc::new(DeviceRegistry::new());
-    // Z2mSource requires a bus, but voice-dispatch doesn't subscribe
-    // — events are still emitted for any future consumer.
+    // Z2mSource requires a bus; we subscribe before spawning the
+    // source so the device-index observer can't miss initial
+    // DeviceAdded events while the registry warms up.
     let bus = EventBus::default();
+    let mut bus_rx = bus.subscribe();
+    let device_index = Arc::new(RwLock::new(build_initial_device_index(&registry)));
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
@@ -1162,13 +1165,12 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         capability_loader,
         capability_index,
         satellites,
-        device_index: Arc::new(RwLock::new(DeviceIndex::new())),
+        device_index: Arc::clone(&device_index),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
     // work in voice-dispatch mode too (same pattern as `serve`).
     let observer_device_index = Arc::clone(&ctx.device_index);
-    let mut bus_rx = bus.subscribe();
     let _device_index_handle = tokio::spawn(async move {
         loop {
             match bus_rx.recv().await {
