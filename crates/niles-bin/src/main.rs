@@ -1515,14 +1515,7 @@ async fn dispatch_to_targets(
 /// trims, lowercases, swaps whitespace for underscores, then
 /// validates via `RoomName::parse`.
 fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
-    let normalized: String = s
-        .trim()
-        .chars()
-        .map(|c| match c {
-            ' ' | '\t' => '_',
-            c => c.to_ascii_lowercase(),
-        })
-        .collect();
+    let normalized = s.trim().to_ascii_lowercase().replace([' ', '\t'], "_");
     RoomName::parse(&normalized).map_err(|e| format!("{e}"))
 }
 
@@ -1541,6 +1534,48 @@ fn current_minute_of_day(
         Err(e) => {
             tracing::error!("could not construct MinuteOfDay from {now}: {e}");
             None
+        }
+    }
+}
+
+fn load_timer_store(dir: Option<&Path>) -> TimerStore {
+    let Some(dir) = dir else {
+        return TimerStore::new();
+    };
+    let path = dir.join("timers.json");
+    match TimerStore::load_from_file(&path) {
+        Ok(s) => s.with_persistence(path),
+        Err(e) => {
+            tracing::warn!("persistence: timers load failed ({e}); starting empty");
+            TimerStore::new().with_persistence(path)
+        }
+    }
+}
+
+fn load_scene_store(dir: Option<&Path>) -> SceneStore {
+    let Some(dir) = dir else {
+        return SceneStore::new();
+    };
+    let path = dir.join("scenes.json");
+    match SceneStore::load_from_file(&path) {
+        Ok(s) => s.with_persistence(path),
+        Err(e) => {
+            tracing::warn!("persistence: scenes load failed ({e}); starting empty");
+            SceneStore::new().with_persistence(path)
+        }
+    }
+}
+
+fn load_morning_claims(dir: Option<&Path>) -> MorningClaimTracker {
+    let Some(dir) = dir else {
+        return MorningClaimTracker::new();
+    };
+    let path = dir.join("morning_claims.json");
+    match MorningClaimTracker::load_from_file(&path) {
+        Ok(s) => s.with_persistence(path),
+        Err(e) => {
+            tracing::warn!("persistence: morning_claims load failed ({e}); starting empty");
+            MorningClaimTracker::new().with_persistence(path)
         }
     }
 }
@@ -1585,7 +1620,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
     let tracker = Arc::new(ManualModeTracker::new());
-    let claim_tracker = Arc::new(MorningClaimTracker::new());
+    let claim_tracker = Arc::new(load_morning_claims(cfg.persistence.directory.as_deref()));
 
     // Subscribe to the bus *before* spawning the source so we can't miss
     // the early DeviceStateChanged events that seed the observer's
@@ -1703,7 +1738,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // transcript arrives, by which point Z2M has had seconds to
     // populate. See voice_dispatch for the same reasoning.
     let llm = Arc::new(build_groq_client(&cfg)?);
-    let timers = Arc::new(TimerStore::new());
+    let timers = Arc::new(load_timer_store(cfg.persistence.directory.as_deref()));
+    let scenes = Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader
         .as_deref()
@@ -1756,6 +1792,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         mode = mode_note,
     );
 
+    let n_timers = timers.list().len();
+    let n_scenes = scenes.names().len();
+    let n_claims = claim_tracker.claimed_count();
+    tracing::info!(
+        target: "niles::persistence",
+        "loaded {n_timers} timers, {n_scenes} scenes, {n_claims} morning claims (dir={:?})",
+        cfg.persistence.directory.as_deref(),
+    );
+
     let mut session_tracker = SessionTracker::new();
     let ctx = DispatchCtx {
         publisher: publisher.clone(),
@@ -1763,7 +1808,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         z2m_prefix: z2m_prefix.clone(),
         dry_run: args.dry_run,
         tracker: tracker.clone(),
-        scenes: Arc::new(SceneStore::new()),
+        scenes: scenes.clone(),
         timers: timers.clone(),
         llm,
         tools,

@@ -14,6 +14,7 @@ pub mod home;
 pub mod lighting;
 pub mod llm;
 pub mod mqtt;
+pub mod persistence;
 pub mod stt;
 pub mod tts;
 pub mod wyoming;
@@ -28,6 +29,7 @@ pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::LlmConfig;
 pub use mqtt::MqttConfig;
+pub use persistence::PersistenceConfig;
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
 pub use wyoming::WyomingConfig;
@@ -41,6 +43,8 @@ pub struct Config {
     pub api: ApiConfig,
     #[serde(default)]
     pub capabilities: CapabilitiesConfig,
+    #[serde(default)]
+    pub persistence: PersistenceConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -87,6 +91,7 @@ impl Config {
         self.mqtt.validate()?;
         self.api.validate()?;
         self.capabilities.validate()?;
+        self.persistence.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
@@ -732,6 +737,49 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
             err,
             Error::InvalidSection {
                 section: "capabilities",
+                ..
+            }
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Persistence section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn persistence_section_absent_defaults_to_none() {
+        // The existing valid_toml() has no [persistence] section.
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.persistence.directory.is_none());
+    }
+
+    #[test]
+    fn persistence_directory_parses_into_pathbuf() {
+        let toml = format!(
+            "{}\n[persistence]\ndirectory = \"/var/niles\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.persistence.directory.as_deref(),
+            Some(std::path::Path::new("/var/niles"))
+        );
+    }
+
+    #[test]
+    fn rejects_empty_persistence_directory() {
+        let toml = format!(
+            "{}\n[persistence]\ndirectory = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "persistence",
                 ..
             }
         ));
