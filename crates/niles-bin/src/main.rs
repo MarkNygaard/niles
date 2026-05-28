@@ -20,7 +20,7 @@ use niles_scheduler::{
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::{LookUpCapability, ToolRegistry};
 use niles_tts::{PiperClient, PiperConfig};
-use niles_wyoming::{SessionTracker, WyomingServer};
+use niles_wyoming::{SessionTracker, WyomingSender, WyomingServer};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -29,6 +29,7 @@ use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 mod response;
+mod speak;
 
 #[derive(Parser)]
 #[command(name = "niles", about = "AI-first home automation system", version)]
@@ -1005,6 +1006,31 @@ async fn transcribe_session(
     }
 }
 
+/// Spawn a fire-and-forget task that transcribes `session`, dispatches
+/// the transcript, and speaks the response back to the satellite.
+fn spawn_dispatch_task(
+    whisper: &Arc<WhisperClient>,
+    ctx: &DispatchCtx,
+    piper: &Arc<PiperClient>,
+    sender: &WyomingSender,
+    session: niles_wyoming::AudioSession,
+) {
+    let whisper = whisper.clone();
+    let ctx = ctx.clone();
+    let piper = piper.clone();
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        if let Some((peer, text)) = transcribe_session(&whisper, session).await
+            && let Some(say) = handle_transcript(&ctx, peer, &text).await
+        {
+            println!("[{peer}] say: {say}");
+            if let Err(e) = crate::speak::speak_back(&piper, &sender, peer, &say).await {
+                tracing::debug!("[{peer}] speak-back failed: {e:#}");
+            }
+        }
+    });
+}
+
 async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // MQTT + config: connect_from_config validates and gives us a
     // live MqttClient. We grab a publisher handle *before* handing
@@ -1019,6 +1045,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
     let whisper = Arc::new(build_whisper_client(&cfg)?);
+    let piper = Arc::new(build_piper_client(&cfg)?);
 
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
@@ -1082,6 +1109,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         mode = mode_note,
     );
 
+    let wyoming_sender = server.sender();
     let server_handle = tokio::spawn(server.run());
     let mut tracker = SessionTracker::new();
     let ctx = DispatchCtx {
@@ -1109,17 +1137,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                         // Same unbounded fan-out as voice-tap — fine
                         // for a dev tool, replaced by a bounded
                         // worker pool when this becomes prod dispatch.
-                        let whisper = whisper.clone();
-                        let ctx = ctx.clone();
-                        tokio::spawn(async move {
-                            if let Some((peer, text)) = transcribe_session(&whisper, session).await
-                                && let Some(say) = handle_transcript(&ctx, peer, &text).await
-                            {
-                                println!("[{peer}] say: {say}");
-                                // TODO (speak-back PR): synthesize via PiperClient and send
-                                // via WyomingSender::send_audio(peer, pcm, AudioFormat).
-                            }
-                        });
+                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session);
                     }
                 }
                 None => {
@@ -1562,6 +1580,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .transpose()?;
 
     let whisper = Arc::new(build_whisper_client(&cfg)?);
+    let piper = Arc::new(build_piper_client(&cfg)?);
 
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
@@ -1722,6 +1741,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
         .await
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
+    let wyoming_sender = server.sender();
     let server_handle = tokio::spawn(server.run());
 
     let mode_note = if args.dry_run { " (dry-run)" } else { "" };
@@ -1761,17 +1781,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             incoming = rx.recv() => match incoming {
                 Some(incoming) => {
                     if let Some(session) = session_tracker.feed(incoming) {
-                        let whisper = whisper.clone();
-                        let ctx = ctx.clone();
-                        tokio::spawn(async move {
-                            if let Some((peer, text)) = transcribe_session(&whisper, session).await
-                                && let Some(say) = handle_transcript(&ctx, peer, &text).await
-                            {
-                                println!("[{peer}] say: {say}");
-                                // TODO (speak-back PR): synthesize via PiperClient and send
-                                // via WyomingSender::send_audio(peer, pcm, AudioFormat).
-                            }
-                        });
+                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session);
                     }
                 }
                 None => {
