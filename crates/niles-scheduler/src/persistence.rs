@@ -10,18 +10,21 @@ use std::path::Path;
 /// `sync_all()`, then renames into place. A crash between
 /// `sync_all` and `persist` leaves the prior file intact.
 pub(crate) fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if parent.as_os_str().is_empty() {
-            // Fall back to cwd below.
-        } else {
-            std::fs::create_dir_all(parent)?;
-        }
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if dir != Path::new(".") {
+        std::fs::create_dir_all(dir)?;
     }
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     serde_json::to_writer_pretty(tmp.as_file_mut(), value).map_err(std::io::Error::other)?;
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| e.error)?;
+    // Ensure the directory entry is durable on POSIX.
+    if let Ok(dir_file) = std::fs::File::open(dir) {
+        let _ = dir_file.sync_all();
+    }
     Ok(())
 }
 

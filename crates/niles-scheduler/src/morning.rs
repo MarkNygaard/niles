@@ -419,4 +419,13 @@ mod tests {
         let tracker = MorningClaimTracker::load_from_file(&path).unwrap();
         assert_eq!(tracker.claimed_count(), 0);
     }
+
+    #[test]
+    fn load_from_corrupt_file_yields_empty_tracker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("morning_claims.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let tracker = MorningClaimTracker::load_from_file(&path).unwrap();
+        assert_eq!(tracker.claimed_count(), 0);
+    }
 }

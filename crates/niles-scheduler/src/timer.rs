@@ -1,8 +1,8 @@
 //! In-memory timer store for voice-dispatch timers.
 //!
-//! v0.1: no persistence, no satellite alarm playback. Timers live
-//! in a `HashMap<TimerId, TimerEntry>` behind an `RwLock` so they
-//! can be queried from both sync and async contexts.
+//! Timers live in a `HashMap<TimerId, TimerEntry>` behind an `RwLock`
+//! so they can be queried from both sync and async contexts.
+//! Optional file persistence (JSON) survives process restarts.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,10 @@ mod serde_duration {
     use std::time::Duration;
 
     pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
-        let ms = d.as_millis() as u64;
+        let ms: u64 = d
+            .as_millis()
+            .try_into()
+            .map_err(|_| serde::ser::Error::custom("duration exceeds u64 millis"))?;
         s.serialize_u64(ms)
     }
 
@@ -637,5 +640,65 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn write_through_persists_on_cancel_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new().with_persistence(path.clone());
+        let now = Utc::now();
+        store.set(
+            Duration::from_secs(60),
+            Some("pasta".into()),
+            localhost(),
+            now,
+        );
+
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["entries"].as_array().unwrap().len(), 1);
+
+        store.cancel_by_name("pasta");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn write_through_persists_on_mark_ringing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new().with_persistence(path.clone());
+        let now = Utc::now();
+        let id = store.set(Duration::from_secs(60), None, localhost(), now);
+
+        let raw_before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw_before["entries"][0]["state"], "Pending");
+
+        store.mark_ringing(id);
+        let raw_after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw_after["entries"][0]["state"], "Ringing");
+    }
+
+    #[test]
+    fn write_through_persists_on_stop_most_recent_ringing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new().with_persistence(path.clone());
+        let now = Utc::now();
+        let id = store.set(Duration::from_secs(60), None, localhost(), now);
+        store.mark_ringing(id);
+
+        let raw_before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw_before["entries"].as_array().unwrap().len(), 1);
+
+        store.stop_most_recent_ringing();
+        let raw_after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw_after["entries"].as_array().unwrap().len(), 0);
     }
 }

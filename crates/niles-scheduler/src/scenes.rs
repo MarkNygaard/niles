@@ -1,6 +1,6 @@
 //! Scene store — snapshots and replays device state by name.
 //!
-//! In-memory only for v0.1. Persistence deferred to a follow-up.
+//! Optional file persistence (JSON) survives process restarts.
 
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, RoomName};
 use serde::{Deserialize, Serialize};
