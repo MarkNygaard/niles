@@ -43,6 +43,7 @@ pub struct AudioFormat {
 }
 
 impl AudioFormat {
+    /// Create a new `AudioFormat` with the given parameters.
     pub fn new(sample_rate_hz: u32, bits_per_sample: u16, channels: u16) -> Self {
         Self {
             sample_rate_hz,

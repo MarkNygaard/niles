@@ -29,7 +29,10 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
     while pos + 8 <= wav.len() {
         let chunk_id = &wav[pos..pos + 4];
         let chunk_size = u32::from_le_bytes(wav[pos + 4..pos + 8].try_into().unwrap()) as usize;
-        let end = pos + 8 + chunk_size;
+        let end = pos.checked_add(8).and_then(|p| p.checked_add(chunk_size));
+        let Some(end) = end else {
+            anyhow::bail!("invalid chunk size");
+        };
 
         if chunk_id == b"fmt " {
             if chunk_size < 16 || end > wav.len() {
@@ -43,6 +46,9 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
             let channels = u16::from_le_bytes(body[2..4].try_into().unwrap());
             let sample_rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
             let bps = u16::from_le_bytes(body[14..16].try_into().unwrap());
+            if channels == 0 || bps == 0 || sample_rate == 0 {
+                anyhow::bail!("invalid fmt: channels={channels}, bps={bps}, rate={sample_rate}");
+            }
             fmt = Some(AudioFormat::new(sample_rate, bps, channels));
         } else if chunk_id == b"data" {
             if end > wav.len() {
@@ -52,7 +58,7 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
         }
 
         // Word-align chunk cursor.
-        pos = end + (chunk_size & 1);
+        pos = end.checked_add(chunk_size & 1).unwrap_or(end);
     }
 
     let fmt = fmt.context("missing fmt chunk")?;
@@ -82,7 +88,9 @@ mod tests {
     fn make_wav(rate: u32, channels: u16, bps: u16, data: &[u8]) -> Vec<u8> {
         let data_len = data.len() as u32;
         let fmt_len = 16u32;
-        let riff_len = 4 + (8 + fmt_len) + (8 + data_len);
+        // RIFF length covers everything after the first 8 bytes,
+        // including the padding byte for odd-sized chunks.
+        let riff_len = 4 + (8 + fmt_len) + (8 + data_len + (data_len & 1));
 
         let mut out = Vec::new();
         out.extend_from_slice(b"RIFF");
@@ -101,6 +109,10 @@ mod tests {
         out.extend_from_slice(b"data");
         out.extend_from_slice(&data_len.to_le_bytes());
         out.extend_from_slice(data);
+        // Pad to word boundary if data length is odd.
+        if data.len() % 2 == 1 {
+            out.push(0);
+        }
 
         out
     }
@@ -202,6 +214,42 @@ mod tests {
     }
 
     #[test]
+    fn missing_wave_marker() {
+        let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
+        wav[8] = b'X';
+        wav[9] = b'X';
+        wav[10] = b'X';
+        wav[11] = b'X';
+        assert!(wav_to_pcm(&wav).is_err());
+    }
+
+    #[test]
+    fn zero_channels() {
+        let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
+        wav[22] = 0;
+        wav[23] = 0;
+        assert!(wav_to_pcm(&wav).is_err());
+    }
+
+    #[test]
+    fn zero_sample_rate() {
+        let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
+        wav[24] = 0;
+        wav[25] = 0;
+        wav[26] = 0;
+        wav[27] = 0;
+        assert!(wav_to_pcm(&wav).is_err());
+    }
+
+    #[test]
+    fn zero_bits_per_sample() {
+        let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
+        wav[34] = 0;
+        wav[35] = 0;
+        assert!(wav_to_pcm(&wav).is_err());
+    }
+
+    #[test]
     fn truncated_fmt_chunk() {
         let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
         // Set fmt chunk size to 15 (needs at least 16 for PCM fmt).
@@ -227,10 +275,7 @@ mod tests {
     #[test]
     fn odd_sized_data() {
         let data = vec![0x01, 0x02, 0x03];
-        let mut wav = make_wav(16000, 1, 16, &data);
-        // Adjust RIFF length to include padding byte.
-        let new_len = (wav.len() - 8) as u32;
-        wav[4..8].copy_from_slice(&new_len.to_le_bytes());
+        let wav = make_wav(16000, 1, 16, &data);
         let (pcm, fmt) = wav_to_pcm(&wav).unwrap();
         assert_eq!(pcm, data);
         assert_eq!(fmt.channels, 1);

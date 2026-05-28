@@ -1025,7 +1025,7 @@ fn spawn_dispatch_task(
         {
             println!("[{peer}] say: {say}");
             if let Err(e) = crate::speak::speak_back(&piper, &sender, peer, &say).await {
-                tracing::debug!("[{peer}] speak-back failed: {e:#}");
+                tracing::warn!("[{peer}] speak-back failed: {e:#}");
             }
         }
     });
