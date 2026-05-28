@@ -176,7 +176,7 @@ impl TimerStore {
             .collect();
         Ok(Self {
             inner: RwLock::new(TimerStoreInner {
-                next_id: max_id + 1,
+                next_id: max_id.wrapping_add(1),
                 timers,
             }),
             persistence_path: None,
