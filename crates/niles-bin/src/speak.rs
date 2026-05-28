@@ -309,8 +309,11 @@ mod tests {
 
     #[test]
     fn odd_sized_data() {
+        // 8-bit mono: frame_size=1, so 3 bytes = 3 complete frames.
+        // The RIFF container pads odd-sized chunks; that pad byte must
+        // not appear in the returned PCM slice.
         let data = vec![0x01, 0x02, 0x03];
-        let wav = make_wav(16000, 1, 16, &data);
+        let wav = make_wav(16000, 1, 8, &data);
         let (pcm, fmt) = wav_to_pcm(&wav).unwrap();
         assert_eq!(pcm, data);
         assert_eq!(fmt.channels, 1);
