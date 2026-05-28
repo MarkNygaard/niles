@@ -80,8 +80,17 @@ mod tests {
         let cfg = SatellitesConfig { satellites };
         let reg = SatelliteRegistry::from_config(&cfg);
         assert_eq!(reg.by_ip.len(), 2);
-        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 12345);
-        assert_eq!(reg.room_for(peer).unwrap().as_str(), "living_room");
+        let peer_lr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 12345);
+        assert_eq!(reg.room_for(peer_lr).unwrap().as_str(), "living_room");
+        let peer_k = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 54321);
+        assert_eq!(reg.room_for(peer_k).unwrap().as_str(), "kitchen");
+    }
+
+    #[test]
+    fn default_registry_returns_none_for_every_peer() {
+        let reg = SatelliteRegistry::default();
+        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
+        assert!(reg.room_for(peer).is_none());
     }
 
     #[test]
