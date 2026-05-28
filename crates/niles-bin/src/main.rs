@@ -298,13 +298,18 @@ async fn config_validate() -> anyhow::Result<()> {
 /// section. Devices listed here are excluded from the ambient
 /// lighting curve and the morning routine.
 fn build_ambient_set(cfg: &Config) -> Arc<HashSet<DeviceId>> {
-    Arc::new(
-        cfg.ambient_lights
-            .devices
-            .iter()
-            .filter_map(|raw| DeviceId::parse(&format!("z2m:{raw}")).ok())
-            .collect(),
-    )
+    let mut set = HashSet::new();
+    for raw in &cfg.ambient_lights.devices {
+        match DeviceId::parse(&format!("z2m:{raw}")) {
+            Ok(id) => {
+                set.insert(id);
+            }
+            Err(e) => {
+                tracing::warn!("ambient_lights device {raw:?} failed to parse: {e}");
+            }
+        }
+    }
+    Arc::new(set)
 }
 
 /// Build an `MqttClient` connected to the broker described in
@@ -2398,10 +2403,7 @@ async fn run_morning_routine_tick(
                     tracing::info!("[routine {minute_of_day}] released {id}");
                     continue;
                 };
-                if device.is_ambient {
-                    continue;
-                }
-                if device.state.brightness != Some(100) {
+                if device.is_curve_driven() && device.state.brightness != Some(100) {
                     let target = DeviceState {
                         brightness: Some(100),
                         ..Default::default()
@@ -2439,7 +2441,7 @@ async fn run_morning_routine_tick(
             let Some(device) = registry.get(id) else {
                 continue;
             };
-            if device.is_ambient {
+            if !device.is_curve_driven() {
                 continue;
             }
             if device.state.on == Some(true) {
@@ -2494,7 +2496,7 @@ async fn run_morning_routine_tick(
         let Some(device) = registry.get(id) else {
             continue;
         };
-        if device.is_ambient {
+        if !device.is_curve_driven() {
             continue;
         }
         let publish_brightness = match device.state.brightness {
