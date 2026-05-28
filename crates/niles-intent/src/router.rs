@@ -448,7 +448,7 @@ fn match_media_volume_set(t: &str) -> Option<Intent> {
         .or_else(|| caps.name("room2"))
         .or_else(|| caps.name("room3"))?
         .as_str();
-    if room == "the" || room == "music" {
+    if room == "the" || room == "music" || room == "set" {
         return None;
     }
     let n_str = caps
