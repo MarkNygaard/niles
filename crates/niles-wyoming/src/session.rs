@@ -42,6 +42,17 @@ pub struct AudioFormat {
     pub channels: u16,
 }
 
+impl AudioFormat {
+    /// Create a new `AudioFormat` with the given parameters.
+    pub fn new(sample_rate_hz: u32, bits_per_sample: u16, channels: u16) -> Self {
+        Self {
+            sample_rate_hz,
+            bits_per_sample,
+            channels,
+        }
+    }
+}
+
 /// One completed audio utterance: the format declared at start, plus
 /// every PCM byte received between `audio-start` and `audio-stop`.
 #[derive(Debug, Clone)]
@@ -104,11 +115,7 @@ impl SessionTracker {
                         self.in_flight.insert(
                             from,
                             InFlight {
-                                format: AudioFormat {
-                                    sample_rate_hz: 0,
-                                    bits_per_sample: 0,
-                                    channels: 0,
-                                },
+                                format: AudioFormat::new(0, 0, 0),
                                 pcm: Vec::new(),
                                 poisoned: true,
                             },
