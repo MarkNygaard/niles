@@ -35,6 +35,7 @@ niles-llm.workspace = true
 niles-scheduler.workspace = true
 niles-speakers.workspace = true
 niles-tools.workspace = true
+niles-history.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 

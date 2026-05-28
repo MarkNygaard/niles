@@ -14,6 +14,9 @@ pub enum Error {
     #[error("MQTT publish failed: {0}")]
     Mqtt(#[from] niles_mqtt::Error),
 
+    #[error("JSON serialization failed: {0}")]
+    Json(#[from] serde_json::Error),
+
     #[error("device not found: {id}")]
     DeviceNotFound { id: String },
 

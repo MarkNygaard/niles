@@ -8,6 +8,7 @@
 pub mod api;
 pub mod capabilities;
 pub mod error;
+pub mod history;
 pub mod home;
 pub mod lighting;
 pub mod llm;
@@ -25,6 +26,7 @@ use std::path::Path;
 pub use api::ApiConfig;
 pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
+pub use history::HistoryConfig;
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::LlmConfig;
@@ -51,6 +53,8 @@ pub struct Config {
     pub satellites: SatellitesConfig,
     #[serde(default)]
     pub speakers: SpeakersConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -100,6 +104,7 @@ impl Config {
         self.persistence.validate()?;
         self.satellites.validate()?;
         self.speakers.validate()?;
+        self.history.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
@@ -788,6 +793,95 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
             err,
             Error::InvalidSection {
                 section: "persistence",
+                ..
+            }
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // History section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn history_section_absent_defaults_to_none() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.history.directory.is_none());
+        assert_eq!(cfg.history.retention_days, 14);
+    }
+
+    #[test]
+    fn history_directory_parses_into_pathbuf() {
+        let toml = format!(
+            "{}\n[history]\ndirectory = \"/var/niles/history\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.history.directory.as_deref(),
+            Some(std::path::Path::new("/var/niles/history"))
+        );
+        assert_eq!(cfg.history.retention_days, 14);
+    }
+
+    #[test]
+    fn history_retention_days_explicit() {
+        let toml = format!(
+            "{}\n[history]\ndirectory = \"/tmp\"\nretention_days = 30\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.history.retention_days, 30);
+    }
+
+    #[test]
+    fn rejects_empty_history_directory() {
+        let toml = format!(
+            "{}\n[history]\ndirectory = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "history",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_history_retention_days_zero() {
+        let toml = format!(
+            "{}\n[history]\ndirectory = \"/tmp\"\nretention_days = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "history",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_history_retention_days_too_large() {
+        let toml = format!(
+            "{}\n[history]\ndirectory = \"/tmp\"\nretention_days = 366\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "history",
                 ..
             }
         ));
