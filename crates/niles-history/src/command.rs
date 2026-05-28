@@ -42,6 +42,7 @@ pub struct CommandQuery {
 pub struct CommandWriter {
     root: PathBuf,
     enabled: bool,
+    lock: std::sync::Mutex<()>,
 }
 
 impl CommandWriter {
@@ -54,6 +55,7 @@ impl CommandWriter {
         Ok(Self {
             root,
             enabled: true,
+            lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -62,6 +64,7 @@ impl CommandWriter {
         Self {
             root: PathBuf::new(),
             enabled: false,
+            lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -70,14 +73,17 @@ impl CommandWriter {
         if !self.enabled {
             return Ok(());
         }
+        let _guard = self.lock.lock().unwrap();
         let date = entry.ts.date_naive();
         let path = self
             .root
             .join("commands")
             .join(format!("{}.jsonl", date.format("%Y-%m-%d")));
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        serde_json::to_writer(&mut file, entry)?;
-        file.write_all(b"\n")?;
+        let mut buf = Vec::new();
+        serde_json::to_writer(&mut buf, entry)?;
+        buf.push(b'\n');
+        file.write_all(&buf)?;
         Ok(())
     }
 
@@ -120,15 +126,30 @@ impl CommandWriter {
 /// Read-side of the command history, filterable and newest-first.
 pub struct CommandReader {
     root: PathBuf,
+    enabled: bool,
 }
 
 impl CommandReader {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            enabled: true,
+        }
+    }
+
+    /// No-op reader that always returns empty results.
+    pub fn disabled() -> Self {
+        Self {
+            root: PathBuf::new(),
+            enabled: false,
+        }
     }
 
     /// Query history entries matching `filter`, returned newest-first.
     pub fn query(&self, filter: &CommandQuery) -> Result<Vec<CommandEntry>> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
         let limit = filter.limit.unwrap_or(50).min(500);
 
         if let (Some(since), Some(until)) = (filter.since, filter.until)
@@ -212,6 +233,7 @@ impl CommandReader {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn make_entry(ts: DateTime<Utc>, transcript: &str, room: Option<&str>) -> CommandEntry {
@@ -464,6 +486,50 @@ mod tests {
         let reader = CommandReader::new(tmp.path());
         let entries = reader.query(&CommandQuery::default()).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn disabled_reader_returns_empty() {
+        let reader = CommandReader::disabled();
+        let entries = reader.query(&CommandQuery::default()).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn concurrent_appends_are_atomic() {
+        let tmp = TempDir::new().unwrap();
+        let writer = Arc::new(CommandWriter::new(tmp.path()).unwrap());
+        let reader = CommandReader::new(tmp.path());
+
+        let now = Utc::now();
+        let mut handles = Vec::new();
+        for t in 0..10 {
+            let w = writer.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..20 {
+                    w.append(&make_entry(
+                        now + chrono::Duration::seconds(t * 20 + i),
+                        &format!("thread-{t}-line-{i}"),
+                        None,
+                    ))
+                    .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let entries = reader
+            .query(&CommandQuery {
+                limit: Some(500),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(entries.len(), 200);
+        let transcripts: std::collections::HashSet<_> =
+            entries.iter().map(|e| e.transcript.clone()).collect();
+        assert_eq!(transcripts.len(), 200);
     }
 
     #[test]

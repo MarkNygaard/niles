@@ -1157,9 +1157,10 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         None => CommandWriter::disabled(),
     };
     let command_writer = Arc::new(command_writer);
-    let command_reader = Arc::new(CommandReader::new(
-        cfg.history.directory.clone().unwrap_or_default(),
-    ));
+    let command_reader = match &cfg.history.directory {
+        Some(dir) => Arc::new(CommandReader::new(dir)),
+        None => Arc::new(CommandReader::disabled()),
+    };
     niles_tools::register_history_tools(&mut tools, command_reader);
     let tools = Arc::new(tools);
 
@@ -2049,9 +2050,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         None => CommandWriter::disabled(),
     };
     let command_writer = Arc::new(command_writer);
-    let command_reader = Arc::new(CommandReader::new(
-        cfg.history.directory.clone().unwrap_or_default(),
-    ));
+    let command_reader = match &cfg.history.directory {
+        Some(dir) => Arc::new(CommandReader::new(dir)),
+        None => Arc::new(CommandReader::disabled()),
+    };
     niles_tools::register_history_tools(&mut tools, command_reader);
     let tools = Arc::new(tools);
 
