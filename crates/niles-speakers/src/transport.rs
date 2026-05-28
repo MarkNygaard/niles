@@ -61,8 +61,14 @@ impl SonosTransport for HttpTransport {
             const MAX_ERR_BODY: usize = 2048;
             let preview = &body[..body.len().min(MAX_ERR_BODY)];
 
-            let code = extract_tag(preview, "faultcode").unwrap_or_else(|| status.to_string());
-            let reason = extract_tag(preview, "faultstring").unwrap_or_else(|| preview.to_string());
+            // UPnP faults wrap the real error in <detail><UPnPError><errorCode>…
+            // Fall back to the generic SOAP <faultcode> / <faultstring> if absent.
+            let code = extract_tag(preview, "errorCode")
+                .or_else(|| extract_tag(preview, "faultcode"))
+                .unwrap_or_else(|| status.to_string());
+            let reason = extract_tag(preview, "errorDescription")
+                .or_else(|| extract_tag(preview, "faultstring"))
+                .unwrap_or_else(|| preview.to_string());
 
             return Err(Error::SoapFault { code, reason });
         }
@@ -78,4 +84,46 @@ pub(crate) fn extract_tag(body: &str, tag: &str) -> Option<String> {
     let start = body.find(&open)? + open.len();
     let end = body[start..].find(&close)?;
     Some(body[start..start + end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_tag_happy_path() {
+        assert_eq!(
+            extract_tag("<foo>bar</foo>", "foo"),
+            Some("bar".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_tag_missing_open() {
+        assert_eq!(extract_tag("no tags here", "foo"), None);
+    }
+
+    #[test]
+    fn extract_tag_missing_close() {
+        assert_eq!(extract_tag("<foo>bar", "foo"), None);
+    }
+
+    #[test]
+    fn extract_tag_prefers_upnp_error_detail() {
+        let body = r#"<s:Fault>
+  <faultcode>s:Client</faultcode>
+  <faultstring>UPnPError</faultstring>
+  <detail>
+    <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+      <errorCode>401</errorCode>
+      <errorDescription>Invalid Action</errorDescription>
+    </UPnPError>
+  </detail>
+</s:Fault>"#;
+        assert_eq!(extract_tag(body, "errorCode"), Some("401".to_string()));
+        assert_eq!(
+            extract_tag(body, "errorDescription"),
+            Some("Invalid Action".to_string())
+        );
+    }
 }
