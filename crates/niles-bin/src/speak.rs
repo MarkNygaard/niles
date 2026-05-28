@@ -67,6 +67,14 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
 
     let fmt = fmt.context("missing fmt chunk")?;
     let pcm = pcm.context("missing data chunk")?;
+    let bytes_per_sample = usize::from(fmt.bits_per_sample / 8);
+    let frame_size = bytes_per_sample * usize::from(fmt.channels);
+    if frame_size == 0 || pcm.len() % frame_size != 0 {
+        anyhow::bail!(
+            "PCM data length {} is not a whole number of frames (frame_size={frame_size})",
+            pcm.len()
+        );
+    }
     Ok((pcm, fmt))
 }
 
@@ -258,6 +266,13 @@ mod tests {
         let mut wav = make_wav(16000, 1, 16, &[0u8; 4]);
         wav[34] = 12; // 12 bits per sample
         wav[35] = 0;
+        assert!(wav_to_pcm(&wav).is_err());
+    }
+
+    #[test]
+    fn data_not_whole_frames() {
+        // 16-bit mono requires 2 bytes/frame; 3 bytes is malformed.
+        let wav = make_wav(16000, 1, 16, &[0x01, 0x02, 0x03]);
         assert!(wav_to_pcm(&wav).is_err());
     }
 
