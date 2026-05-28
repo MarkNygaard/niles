@@ -81,11 +81,84 @@ impl SonosTransport for HttpTransport {
 
 /// Small string-slicing helper for fault extraction.
 pub(crate) fn extract_tag(body: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = body.find(&open)? + open.len();
-    let end = body[start..].find(&close)?;
-    Some(body[start..start + end].trim().to_string())
+    let open = find_open_tag(body, tag)?;
+    let close = find_close_tag(&body[open..], tag)? + open;
+    Some(body[open..close].trim().to_string())
+}
+
+fn find_open_tag(body: &str, tag: &str) -> Option<usize> {
+    let mut i = 0;
+    while let Some(rel) = body[i..].find('<') {
+        let start = i + rel;
+        let bytes = body.as_bytes();
+        let mut name_start = start + 1;
+        if name_start >= bytes.len() {
+            return None;
+        }
+        match bytes[name_start] {
+            b'/' | b'!' | b'?' => {
+                i = name_start;
+                continue;
+            }
+            _ => {}
+        }
+
+        while name_start < bytes.len() && bytes[name_start].is_ascii_whitespace() {
+            name_start += 1;
+        }
+        if name_start >= bytes.len() {
+            return None;
+        }
+
+        let mut name_end = name_start;
+        while name_end < bytes.len()
+            && !bytes[name_end].is_ascii_whitespace()
+            && bytes[name_end] != b'>'
+            && bytes[name_end] != b'/'
+        {
+            name_end += 1;
+        }
+        if name_end <= name_start {
+            i = start + 1;
+            continue;
+        }
+
+        let name = &body[name_start..name_end];
+        let local = name.rsplit(':').next().unwrap_or(name);
+        if local == tag {
+            let gt = body[name_end..].find('>')?;
+            return Some(name_end + gt + 1);
+        }
+
+        i = name_end;
+    }
+    None
+}
+
+fn find_close_tag(body: &str, tag: &str) -> Option<usize> {
+    let mut i = 0;
+    while let Some(rel) = body[i..].find("</") {
+        let start = i + rel + 2;
+        let bytes = body.as_bytes();
+        let mut name_end = start;
+        while name_end < bytes.len()
+            && !bytes[name_end].is_ascii_whitespace()
+            && bytes[name_end] != b'>'
+        {
+            name_end += 1;
+        }
+        if name_end <= start {
+            i = start;
+            continue;
+        }
+        let name = &body[start..name_end];
+        let local = name.rsplit(':').next().unwrap_or(name);
+        if local == tag {
+            return Some(i + rel);
+        }
+        i = name_end;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -108,6 +181,22 @@ mod tests {
     #[test]
     fn extract_tag_missing_close() {
         assert_eq!(extract_tag("<foo>bar", "foo"), None);
+    }
+
+    #[test]
+    fn extract_tag_supports_namespaced_open_and_close() {
+        assert_eq!(
+            extract_tag("<u:foo>bar</u:foo>", "foo"),
+            Some("bar".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_tag_supports_attributes() {
+        assert_eq!(
+            extract_tag(r#"<foo xmlns="urn:test">bar</foo>"#, "foo"),
+            Some("bar".to_string())
+        );
     }
 
     #[test]
