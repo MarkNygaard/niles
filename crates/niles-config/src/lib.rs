@@ -15,6 +15,7 @@ pub mod lighting;
 pub mod llm;
 pub mod mqtt;
 pub mod persistence;
+pub mod speakers;
 pub mod stt;
 pub mod tts;
 pub mod wyoming;
@@ -30,6 +31,7 @@ pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::LlmConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
+pub use speakers::{SpeakerConfig, SpeakersConfig};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
 pub use wyoming::WyomingConfig;
@@ -45,6 +47,8 @@ pub struct Config {
     pub capabilities: CapabilitiesConfig,
     #[serde(default)]
     pub persistence: PersistenceConfig,
+    #[serde(default)]
+    pub speakers: SpeakersConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -92,6 +96,7 @@ impl Config {
         self.api.validate()?;
         self.capabilities.validate()?;
         self.persistence.validate()?;
+        self.speakers.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
