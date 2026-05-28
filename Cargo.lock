@@ -995,6 +995,12 @@ dependencies = [
 [[package]]
 name = "niles-speakers"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "niles-stt"

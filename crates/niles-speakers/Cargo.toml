@@ -9,3 +9,9 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+thiserror.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
