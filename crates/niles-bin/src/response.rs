@@ -172,6 +172,35 @@ pub fn room_warming_up() -> String {
     "Still waking up, try again in a moment.".into()
 }
 
+/// "Playing in the living room."
+pub fn media_play(room: &str) -> String {
+    format!("Playing in the {}.", spoken_room(room))
+}
+
+/// "Paused in the kitchen."
+pub fn media_pause(room: &str) -> String {
+    format!("Paused in the {}.", spoken_room(room))
+}
+
+/// "Kitchen volume to 30%."
+pub fn media_volume(room: &str, percent: u8) -> String {
+    format!(
+        "{} volume to {}%.",
+        capitalize_first(&spoken_room(room)),
+        percent
+    )
+}
+
+/// "No speaker in the office."
+pub fn no_speaker_in_room(room: &str) -> String {
+    format!("No speaker in the {}.", spoken_room(room))
+}
+
+/// "I couldn't reach the speaker in the kitchen."
+pub fn speaker_unreachable(room: &str) -> String {
+    format!("I couldn't reach the speaker in the {}.", spoken_room(room))
+}
+
 /// Generic fallback for intents that don't have a specific phrase yet.
 pub fn fallback() -> String {
     "I'm not sure how to help with that.".into()
@@ -474,6 +503,34 @@ mod tests {
         assert_eq!(
             format_duration_phrase(Duration::from_secs(1)),
             (1, "second")
+        );
+    }
+
+    #[test]
+    fn media_play_phrasing() {
+        assert_eq!(media_play("living_room"), "Playing in the living room.");
+    }
+
+    #[test]
+    fn media_pause_phrasing() {
+        assert_eq!(media_pause("kitchen"), "Paused in the kitchen.");
+    }
+
+    #[test]
+    fn media_volume_phrasing() {
+        assert_eq!(media_volume("kitchen", 30), "Kitchen volume to 30%.");
+    }
+
+    #[test]
+    fn no_speaker_in_room_phrasing() {
+        assert_eq!(no_speaker_in_room("office"), "No speaker in the office.");
+    }
+
+    #[test]
+    fn speaker_unreachable_phrasing() {
+        assert_eq!(
+            speaker_unreachable("kitchen"),
+            "I couldn't reach the speaker in the kitchen."
         );
     }
 }

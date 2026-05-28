@@ -14,6 +14,7 @@ pub mod llm;
 pub mod mqtt;
 pub mod persistence;
 pub mod satellites;
+pub mod speakers;
 pub mod stt;
 pub mod tts;
 pub mod wyoming;
@@ -30,6 +31,7 @@ pub use llm::LlmConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
+pub use speakers::{SpeakerConfig, SpeakersConfig};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
 pub use wyoming::WyomingConfig;
@@ -47,6 +49,8 @@ pub struct Config {
     pub persistence: PersistenceConfig,
     #[serde(default)]
     pub satellites: SatellitesConfig,
+    #[serde(default)]
+    pub speakers: SpeakersConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -95,6 +99,7 @@ impl Config {
         self.capabilities.validate()?;
         self.persistence.validate()?;
         self.satellites.validate()?;
+        self.speakers.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;

@@ -17,6 +17,7 @@ use niles_scheduler::{
     SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
     classify_action, color_temp_at, routine_brightness_at, should_fire_today,
 };
+use niles_speakers::SonosClient;
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::{LookUpCapability, ToolRegistry};
 use niles_tts::{PiperClient, PiperConfig};
@@ -31,6 +32,7 @@ use tracing_subscriber::EnvFilter;
 mod response;
 mod satellites;
 mod speak;
+mod speakers;
 
 use satellites::SatelliteRegistry;
 
@@ -1143,6 +1145,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         tracker: Arc::new(ManualModeTracker::new()),
         scenes: Arc::new(SceneStore::new()),
         timers: Arc::clone(&timers),
+        speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
         llm,
         tools,
         capability_loader,
@@ -1198,6 +1201,7 @@ struct DispatchCtx {
     tracker: Arc<ManualModeTracker>,
     scenes: Arc<SceneStore>,
     timers: Arc<TimerStore>,
+    speakers: Arc<speakers::SpeakerRegistry>,
     llm: Arc<GroqClient>,
     tools: Arc<ToolRegistry>,
     capability_loader: Option<Arc<CapabilityLoader>>,
@@ -1397,6 +1401,62 @@ async fn handle_transcript(
                 Some(response::cleared_manual(Some(&name)))
             }
         },
+        Intent::MediaPause { room } => media_result_to_response(
+            peer,
+            &room,
+            media_dispatch(ctx, &room, |c| async move { c.pause().await }).await,
+            response::media_pause(&room),
+            "pause",
+        ),
+        Intent::MediaPlay { room } => media_result_to_response(
+            peer,
+            &room,
+            media_dispatch(ctx, &room, |c| async move { c.play().await }).await,
+            response::media_play(&room),
+            "play",
+        ),
+        Intent::MediaVolumeSet { room, percent } => media_result_to_response(
+            peer,
+            &room,
+            media_dispatch(
+                ctx,
+                &room,
+                move |c| async move { c.set_volume(percent).await },
+            )
+            .await,
+            response::media_volume(&room, percent),
+            "volume set",
+        ),
+        Intent::MediaVolumeStep { room, delta } => {
+            let canonical = match intent_room_to_canonical(&room) {
+                Ok(r) => r,
+                Err(reason) => {
+                    tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
+                    return Some(response::room_not_found(&room));
+                }
+            };
+            let client = match ctx.speakers.get(&canonical) {
+                Some(c) => c,
+                None => {
+                    println!("[{peer}] no speaker in {canonical}");
+                    return Some(response::no_speaker_in_room(canonical.as_str()));
+                }
+            };
+            let current = match client.get_volume().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
+                    return Some(response::speaker_unreachable(canonical.as_str()));
+                }
+            };
+            let new = (current as i16 + delta).clamp(0, 100) as u8;
+            if let Err(e) = client.set_volume(new).await {
+                tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
+                return Some(response::speaker_unreachable(canonical.as_str()));
+            }
+            println!("[{peer}] media volume step in {canonical}: {current} -> {new}");
+            Some(response::media_volume(canonical.as_str(), new))
+        }
         Intent::TimerSet { duration, name } => {
             let id = ctx.timers.set(duration, name.clone(), peer, Utc::now());
             let label = timer_label_for(name.as_deref(), duration);
@@ -1546,6 +1606,61 @@ async fn dispatch_to_targets(
 fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
     let normalized = s.trim().to_ascii_lowercase().replace([' ', '\t'], "_");
     RoomName::parse(&normalized).map_err(|e| format!("{e}"))
+}
+
+#[derive(Debug)]
+enum MediaDispatchError {
+    BadRoom(String),
+    NoSpeaker(RoomName),
+    Unreachable(RoomName, String),
+}
+
+async fn media_dispatch<F, Fut>(
+    ctx: &DispatchCtx,
+    room_raw: &str,
+    op: F,
+) -> std::result::Result<(), MediaDispatchError>
+where
+    F: FnOnce(Arc<SonosClient>) -> Fut,
+    Fut: std::future::Future<Output = niles_speakers::Result<()>>,
+{
+    let canonical = intent_room_to_canonical(room_raw).map_err(MediaDispatchError::BadRoom)?;
+    let client = ctx
+        .speakers
+        .get(&canonical)
+        .ok_or_else(|| MediaDispatchError::NoSpeaker(canonical.clone()))?;
+    op(client)
+        .await
+        .map_err(|e| MediaDispatchError::Unreachable(canonical, e.to_string()))
+}
+
+/// Turns the result of a `media_dispatch` call into the spoken
+/// response the user hears, logging warnings for error cases.
+fn media_result_to_response(
+    peer: std::net::SocketAddr,
+    room: &str,
+    result: std::result::Result<(), MediaDispatchError>,
+    ok_msg: String,
+    action: &str,
+) -> Option<String> {
+    match result {
+        Ok(()) => {
+            println!("[{peer}] media {action} in {room}");
+            Some(ok_msg)
+        }
+        Err(MediaDispatchError::BadRoom(reason)) => {
+            tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
+            Some(response::room_not_found(room))
+        }
+        Err(MediaDispatchError::NoSpeaker(r)) => {
+            println!("[{peer}] no speaker in {r}");
+            Some(response::no_speaker_in_room(r.as_str()))
+        }
+        Err(MediaDispatchError::Unreachable(r, e)) => {
+            tracing::warn!("[{peer}] speaker unreachable in {r}: {e}");
+            Some(response::speaker_unreachable(r.as_str()))
+        }
+    }
 }
 
 /// Current wall-clock time in `tz` converted to a [`MinuteOfDay`].
@@ -1840,6 +1955,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tracker: tracker.clone(),
         scenes: scenes.clone(),
         timers: timers.clone(),
+        speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
         llm,
         tools,
         capability_loader,
@@ -2334,6 +2450,10 @@ fn format_intent(intent: &Intent) -> String {
         Intent::ClearManualMode { room } => {
             format!("ClearManualMode({})", room.as_deref().unwrap_or("home"))
         }
+        Intent::MediaPause { room } => format!("MediaPause({room})"),
+        Intent::MediaPlay { room } => format!("MediaPlay({room})"),
+        Intent::MediaVolumeSet { room, percent } => format!("MediaVolumeSet({room} -> {percent}%)"),
+        Intent::MediaVolumeStep { room, delta } => format!("MediaVolumeStep({room} -> {delta:+})"),
         Intent::TimerSet { duration, name } => match name {
             Some(n) => format!("TimerSet({}s, name={n:?})", duration.as_secs()),
             None => format!("TimerSet({}s)", duration.as_secs()),
