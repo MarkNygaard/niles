@@ -255,7 +255,7 @@ fn light_step_regex() -> &'static Regex {
               (?:
                 (?:the\s+)?(?P<room1>.+?)\s+lights?\s+(?P<dir1>brighter|dimmer)
               |
-                make\s+(?:the\s+)?(?P<room2>.+?)\s+(?P<dir2>brighter|dimmer)
+                make\s+(?:the\s+)?(?P<room2>.+?)(?:\s+lights?)?\s+(?P<dir2>brighter|dimmer)
               )
               $",
         )
@@ -1964,6 +1964,20 @@ mod tests {
             Some(Intent::LightStep {
                 room: "kitchen".into(),
                 delta_percent: 10,
+            })
+        );
+        assert_eq!(
+            parse("make the kitchen lights brighter"),
+            Some(Intent::LightStep {
+                room: "kitchen".into(),
+                delta_percent: 10,
+            })
+        );
+        assert_eq!(
+            parse("make kitchen lights dimmer"),
+            Some(Intent::LightStep {
+                room: "kitchen".into(),
+                delta_percent: -10,
             })
         );
     }
