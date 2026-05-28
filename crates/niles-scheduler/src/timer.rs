@@ -701,4 +701,17 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw_after["entries"].as_array().unwrap().len(), 0);
     }
+
+    #[test]
+    fn overflowing_duration_fails_to_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let store = TimerStore::new().with_persistence(path.clone());
+        let now = Utc::now();
+        let huge = Duration::from_secs(u64::MAX);
+        store.set(huge, None, localhost(), now);
+        // Serialization of u64::MAX seconds exceeds u64 millis and should fail.
+        // The temp file is dropped, so the target path should never be created.
+        assert!(!path.exists());
+    }
 }

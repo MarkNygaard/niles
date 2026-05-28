@@ -110,9 +110,7 @@ impl SceneStore {
                     }
                 })
                 .collect();
-            if !valid.is_empty() {
-                scenes.insert(name, valid);
-            }
+            scenes.insert(canonicalize_name(&name), valid);
         }
         Ok(Self {
             scenes: RwLock::new(scenes),
@@ -527,5 +525,48 @@ mod tests {
         let entries = store.get("evening").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].device_id, dev_in("kitchen", "a"));
+    }
+
+    #[test]
+    fn non_canonical_scene_name_in_file_is_canonicalized_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenes.json");
+        let raw = serde_json::json!({
+            "scenes": {
+                "Kitchen Evening": [
+                    { "device_id": "z2m:kitchen/a", "state": { "on": true } }
+                ]
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+
+        let store = SceneStore::load_from_file(&path).unwrap();
+        assert!(store.exists("kitchen_evening"));
+        assert_eq!(store.names(), vec!["kitchen_evening"]);
+    }
+
+    #[test]
+    fn empty_scene_survives_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenes.json");
+        let store = SceneStore::new().with_persistence(path.clone());
+        let reg = DeviceRegistry::new();
+        reg.upsert(Device {
+            id: dev_in("kitchen", "thermometer"),
+            state: DeviceState {
+                temperature_celsius: Some(21.5),
+                ..Default::default()
+            },
+            class: DeviceClass::Sensor,
+        });
+        store.save("sensors_only", &reg, None);
+        assert!(store.exists("sensors_only"));
+        assert_eq!(store.get("sensors_only").unwrap().len(), 0);
+
+        let reloaded = SceneStore::load_from_file(&path)
+            .unwrap()
+            .with_persistence(path);
+        assert!(reloaded.exists("sensors_only"));
+        assert_eq!(reloaded.get("sensors_only").unwrap().len(), 0);
     }
 }
