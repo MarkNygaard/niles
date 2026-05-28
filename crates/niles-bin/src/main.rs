@@ -1165,6 +1165,30 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         device_index: Arc::new(RwLock::new(DeviceIndex::new())),
     };
 
+    // Keep the device index in sync so Tier-0 device-name matchers
+    // work in voice-dispatch mode too (same pattern as `serve`).
+    let observer_device_index = Arc::clone(&ctx.device_index);
+    let mut bus_rx = bus.subscribe();
+    let _device_index_handle = tokio::spawn(async move {
+        loop {
+            match bus_rx.recv().await {
+                Ok(Event::DeviceAdded { device }) if device.is_light() => {
+                    observer_device_index
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(device.id.clone());
+                }
+                Ok(Event::DeviceRemoved { id }) => {
+                    observer_device_index
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
+                }
+                _ => {}
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             // See voice-tap: drain events before disconnects so a
@@ -1340,12 +1364,16 @@ async fn handle_transcript(
                 ..Default::default()
             };
             publish_single(ctx, peer, &device, &desired).await;
+            ctx.tracker.flag(&device.id);
             Some(response::device_set(&device_id, on))
         }
         Intent::DeviceDim { device_id, percent } => {
             let Some(device) = ctx.registry.get(&device_id) else {
                 return Some(response::device_not_found(&device_id));
             };
+            // Flag before publishing so the curve driver can't race
+            // a tick in between and overwrite the dim we're about to send.
+            ctx.tracker.flag(&device.id);
             let desired = DeviceState {
                 brightness: Some(percent),
                 ..Default::default()
@@ -1642,7 +1670,12 @@ async fn dispatch_to_targets(
     }
 }
 
-/// Publish a state update to a single device and flag it in the tracker.
+/// Publish a state update to a single device.
+///
+/// The caller is responsible for `tracker.flag()` timing: flag
+/// *before* publish for dim operations so the curve driver can't
+/// race, and *after* publish for on/off (same pattern as
+/// `dispatch_to_targets`).
 async fn publish_single(
     ctx: &DispatchCtx,
     peer: std::net::SocketAddr,
@@ -1662,7 +1695,6 @@ async fn publish_single(
             Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
         }
     }
-    ctx.tracker.flag(&device.id);
 }
 
 /// Convert a transcript-style room reference ("living room") into a

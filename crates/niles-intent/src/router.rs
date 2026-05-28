@@ -1837,4 +1837,65 @@ mod context_tests {
         assert_eq!(parse_with("turn on the light", ctx), None);
         assert_eq!(parse_with("turn on the lights", ctx), None);
     }
+
+    #[test]
+    fn dim_floor_lamp_with_origin_room() {
+        let idx = fixture_multi();
+        let bedroom = RoomName::parse("bedroom").unwrap();
+        let ctx = ctx_with(&idx, Some(&bedroom));
+        assert_eq!(
+            parse_with("dim the floor lamp to 30%", ctx),
+            Some(Intent::DeviceDim {
+                device_id: make_id("bedroom", "floor_lamp"),
+                percent: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn set_desk_lamp_unique_device() {
+        let idx = fixture_unique();
+        let desk = make_id("kitchen", "desk_lamp");
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(
+            parse_with("set the desk lamp to 30%", ctx),
+            Some(Intent::DeviceDim {
+                device_id: desk,
+                percent: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn room_hint_no_match_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        // floor lamps exist in living_room and bedroom, not kitchen
+        assert_eq!(
+            parse_with("turn on the floor lamp in the kitchen", ctx),
+            None
+        );
+    }
+
+    #[test]
+    fn dim_guarded_light_phrase() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("dim the light to 30%", ctx), None);
+        assert_eq!(parse_with("dim the lights to 30%", ctx), None);
+    }
+
+    #[test]
+    fn dim_boundary_0() {
+        let idx = fixture_unique();
+        let desk = make_id("kitchen", "desk_lamp");
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(
+            parse_with("dim the desk lamp to 0%", ctx),
+            Some(Intent::DeviceDim {
+                device_id: desk,
+                percent: 0,
+            })
+        );
+    }
 }
