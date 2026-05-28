@@ -889,6 +889,7 @@ dependencies = [
  "niles-llm",
  "niles-mqtt",
  "niles-scheduler",
+ "niles-speakers",
  "niles-stt",
  "niles-tools",
  "niles-tts",

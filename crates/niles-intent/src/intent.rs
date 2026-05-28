@@ -69,6 +69,28 @@ pub enum Intent {
         name: String,
     },
 
+    /// "pause the living room" / "pause music in the kitchen"
+    MediaPause {
+        room: String,
+    },
+
+    /// "play the kitchen" / "resume music in the living room"
+    MediaPlay {
+        room: String,
+    },
+
+    /// "set the kitchen volume to 30%" / "living room volume to 40 percent"
+    MediaVolumeSet {
+        room: String,
+        percent: u8,
+    },
+
+    /// "volume up in the kitchen" / "kitchen volume down"
+    MediaVolumeStep {
+        room: String,
+        delta: i16,
+    },
+
     /// "set a timer for 5 minutes" / "5 minute timer" / "10 minute timer called pasta"
     TimerSet {
         duration: Duration,
