@@ -267,7 +267,17 @@ fn match_light_step(t: &str) -> Option<Intent> {
     let caps = light_step_regex().captures(t)?;
     let dir = caps.name("dir1").or_else(|| caps.name("dir2"))?.as_str();
     let room = caps.name("room1").or_else(|| caps.name("room2"))?.as_str();
-    if room == "the" || room == "lights" {
+    // The `make ... brighter` branch has no `lights?` anchor, so
+    // pronouns like "it" or "them" get captured as bogus rooms.
+    // Reject so the caller can escalate to Tier 1.
+    if room == "the"
+        || room == "lights"
+        || room == "it"
+        || room == "them"
+        || room == "that"
+        || room == "this"
+        || room == "everything"
+    {
         return None;
     }
     let delta_percent = if dir == "brighter" {
@@ -1956,6 +1966,16 @@ mod tests {
                 delta_percent: 10,
             })
         );
+    }
+
+    #[test]
+    fn light_step_rejects_pronouns() {
+        // Without a `lights?` anchor, the `make ... brighter` branch
+        // would capture pronouns as bogus rooms. They must fall
+        // through to Tier 1.
+        assert_eq!(parse("make it brighter"), None);
+        assert_eq!(parse("make them dimmer"), None);
+        assert_eq!(parse("make everything brighter"), None);
     }
 
     // ---- Regressions ----
