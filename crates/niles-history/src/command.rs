@@ -92,7 +92,10 @@ impl CommandWriter {
         if !self.enabled {
             return Ok(());
         }
-        let cutoff = Utc::now().date_naive() - chrono::Duration::days(retention_days as i64);
+        // Keep exactly `retention_days` calendar dates including today.
+        // For example, retention_days=14 keeps [today-13, today].
+        let oldest_kept =
+            Utc::now().date_naive() - chrono::Duration::days((retention_days as i64) - 1);
         let commands_dir = self.root.join("commands");
         let entries = match std::fs::read_dir(&commands_dir) {
             Ok(it) => it,
@@ -112,7 +115,7 @@ impl CommandWriter {
                     continue;
                 }
             };
-            if date < cutoff {
+            if date < oldest_kept {
                 match std::fs::remove_file(&path) {
                     Ok(()) => tracing::info!("pruned old history file: {}", path.display()),
                     Err(e) => tracing::warn!("failed to prune {}: {e}", path.display()),
@@ -308,6 +311,34 @@ mod tests {
         let entries = reader.query(&CommandQuery::default()).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].transcript, "recent");
+    }
+
+    #[test]
+    fn retention_prune_boundary_keeps_exact_days() {
+        let tmp = TempDir::new().unwrap();
+        let writer = CommandWriter::new(tmp.path()).unwrap();
+
+        let now = Utc::now();
+        let exactly_oldest_kept = now - chrono::Duration::days(13);
+        let one_day_too_old = now - chrono::Duration::days(14);
+        writer
+            .append(&make_entry(exactly_oldest_kept, "kept", None))
+            .unwrap();
+        writer
+            .append(&make_entry(one_day_too_old, "pruned", None))
+            .unwrap();
+
+        writer.prune(14).unwrap();
+
+        let reader = CommandReader::new(tmp.path());
+        let entries = reader
+            .query(&CommandQuery {
+                limit: Some(500),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].transcript, "kept");
     }
 
     #[test]
