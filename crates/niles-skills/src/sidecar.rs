@@ -30,6 +30,10 @@ pub struct Sidecar {
     pub last_used_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
+    pub view_count: u64,
+    #[serde(default)]
+    pub last_viewed_at: Option<DateTime<Utc>>,
 }
 
 impl Sidecar {
@@ -42,13 +46,15 @@ impl Sidecar {
             usage_count: 0,
             last_used_at: None,
             pinned: false,
+            view_count: 0,
+            last_viewed_at: None,
         }
     }
 
     /// Latest activity timestamp, ignoring `created_at`.
     /// Returns `None` when both activity fields are unset.
     pub fn latest_activity_at(&self) -> Option<DateTime<Utc>> {
-        [self.last_used_at, self.last_patched_at]
+        [self.last_used_at, self.last_patched_at, self.last_viewed_at]
             .into_iter()
             .flatten()
             .max()
@@ -84,6 +90,8 @@ mod tests {
             usage_count: 7,
             last_used_at: Some(Utc.with_ymd_and_hms(2026, 1, 3, 12, 0, 0).unwrap()),
             pinned: true,
+            view_count: 2,
+            last_viewed_at: Some(Utc.with_ymd_and_hms(2026, 1, 4, 12, 0, 0).unwrap()),
         };
 
         let tmp = TempDir::new().unwrap();
@@ -114,6 +122,7 @@ mod tests {
     fn latest_activity_max_of_set_fields() {
         let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let t2 = Utc.with_ymd_and_hms(2026, 1, 2, 12, 0, 0).unwrap();
+        let t3 = Utc.with_ymd_and_hms(2026, 1, 3, 12, 0, 0).unwrap();
 
         let mut sidecar = Sidecar::new(Provenance::UserCreated);
         sidecar.last_used_at = Some(t1);
@@ -125,6 +134,30 @@ mod tests {
         sidecar.last_used_at = Some(t2);
         sidecar.last_patched_at = Some(t1);
         assert_eq!(sidecar.latest_activity_at(), Some(t2));
+
+        sidecar.last_viewed_at = Some(t3);
+        assert_eq!(sidecar.latest_activity_at(), Some(t3));
+    }
+
+    #[test]
+    fn defaults_when_view_fields_missing() {
+        let json = r#"{"created_at":"2026-01-01T12:00:00Z","provenance":"agent-created"}"#;
+        let sidecar: Sidecar = serde_json::from_str(json).unwrap();
+        assert_eq!(sidecar.patch_count, 0);
+        assert_eq!(sidecar.usage_count, 0);
+        assert!(!sidecar.pinned);
+        assert_eq!(sidecar.view_count, 0);
+        assert!(sidecar.last_viewed_at.is_none());
+        assert!(sidecar.last_patched_at.is_none());
+        assert!(sidecar.last_used_at.is_none());
+    }
+
+    #[test]
+    fn latest_activity_includes_view() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 5, 12, 0, 0).unwrap();
+        let mut sidecar = Sidecar::new(Provenance::UserCreated);
+        sidecar.last_viewed_at = Some(t);
+        assert_eq!(sidecar.latest_activity_at(), Some(t));
     }
 
     #[test]

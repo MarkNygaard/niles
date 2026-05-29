@@ -12,4 +12,4 @@ pub(crate) mod util;
 
 pub use error::{Error, Result};
 pub use sidecar::{Provenance, Sidecar};
-pub use store::{Skill, SkillStore};
+pub use store::{Skill, SkillStore, SkillSummary};

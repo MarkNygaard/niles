@@ -34,6 +34,9 @@ pub enum Error {
 
     #[error("memory error: {0}")]
     Memory(String),
+
+    #[error("skill error: {0}")]
+    Skill(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

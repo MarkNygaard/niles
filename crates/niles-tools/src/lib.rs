@@ -8,6 +8,7 @@
 pub mod builtin;
 pub mod error;
 pub mod registry;
+pub mod skill;
 pub mod tool;
 
 pub use builtin::{
@@ -19,4 +20,7 @@ pub use builtin::{
 };
 pub use error::{Error, Result};
 pub use registry::ToolRegistry;
+pub use skill::{
+    DeleteSkillTool, MintSkillTool, PatchSkillTool, ViewSkillTool, register_skill_tools,
+};
 pub use tool::{Tool, ToolDescriptor};

@@ -21,6 +21,7 @@ use niles_scheduler::{
     SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
     classify_action, color_temp_at, routine_brightness_at, should_fire_today,
 };
+use niles_skills::{SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::{LookUpCapability, ToolRegistry};
@@ -702,6 +703,7 @@ fn assemble_system_prompt(
     origin_room: Option<&RoomName>,
     user_mem: Option<&str>,
     agent_mem: Option<&str>,
+    skill_summaries: Option<&[SkillSummary]>,
 ) -> String {
     let names = niles_intent::detect_topics(transcript, index);
     let mut out = String::from(NILES_SYSTEM_PERSONA);
@@ -718,6 +720,18 @@ fn assemble_system_prompt(
     {
         out.push_str("\n\n# Agent memory\n\n");
         out.push_str(mem);
+    }
+
+    if let Some(summaries) = skill_summaries
+        && !summaries.is_empty()
+    {
+        out.push_str("\n\n# Available skills\n\n");
+        for s in summaries {
+            out.push_str(&format!(
+                "- {} (v{}) — {}\n",
+                s.name, s.version, s.description,
+            ));
+        }
     }
 
     if !names.is_empty() {
@@ -746,6 +760,7 @@ fn build_tool_registry(
     z2m_prefix: Arc<String>,
     capability_loader: Option<Arc<CapabilityLoader>>,
     memory_store: Option<Arc<MemoryStore>>,
+    skill_store: Option<Arc<SkillStore>>,
 ) -> ToolRegistry {
     let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
     if let Some(loader) = capability_loader {
@@ -753,6 +768,9 @@ fn build_tool_registry(
     }
     if let Some(store) = memory_store {
         niles_tools::register_memory_tools(&mut tools, store);
+    }
+    if let Some(store) = skill_store {
+        niles_tools::register_skill_tools(&mut tools, store);
     }
     tools
 }
@@ -770,6 +788,22 @@ fn build_memory_store(cfg: &niles_config::MemoryConfig) -> Option<Arc<MemoryStor
         Err(e) => {
             tracing::warn!(
                 "Failed to open memory store at {}: {e}; memory tools disabled",
+                dir.display()
+            );
+            None
+        }
+    }
+}
+
+/// Build a `SkillStore` from the `[skills]` section.
+/// Returns `None` when no directory is configured or when opening the store fails.
+fn build_skill_store(cfg: &niles_config::SkillsConfig) -> Option<Arc<SkillStore>> {
+    let dir = cfg.directory.as_ref()?;
+    match SkillStore::open(dir, cfg.skill_max_chars, cfg.supporting_file_max_bytes) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to open skill store at {}: {e}; skill tools disabled",
                 dir.display()
             );
             None
@@ -906,7 +940,14 @@ what you would do. When you lack domain context for a request, \
 you may have been given relevant capability references below; use \
 them. If a needed capability isn't present, call \
 look_up_capability to fetch one by name. Never invent device \
-names — use the listing tools to discover what exists.";
+names — use the listing tools to discover what exists. You can \
+save persistent skills using the mint_skill tool, but only when \
+the user explicitly asks niles to remember or save a routine. \
+Prefer patch_skill over mint_skill when an existing skill \
+overlaps. Skill bodies should describe the how-to, not the \
+conversation that produced them. When the Available skills \
+section below lists a skill relevant to the request, call \
+view_skill to read its full body.";
 
 /// A minimal abstraction over the chat-completions endpoint so the
 /// tool-calling loop is testable without spinning up an HTTP server.
@@ -1027,12 +1068,14 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let capability_index = capability_loader.as_deref().map(build_capability_index);
 
     let memory_store = build_memory_store(&cfg.memory);
+    let skill_store = build_skill_store(&cfg.skills);
     let tools_registry = build_tool_registry(
         registry.clone(),
         publisher,
         z2m_prefix,
         capability_loader.clone(),
         memory_store.clone(),
+        skill_store.clone(),
     );
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
@@ -1059,6 +1102,14 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
     let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
 
+    let skill_summaries = skill_store.as_ref().and_then(|s| match s.list_summaries() {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!("failed to list skills: {e}");
+            None
+        }
+    });
+
     let system_prompt = match (&capability_loader, &capability_index) {
         (Some(loader), Some(index)) => assemble_system_prompt(
             &args.prompt,
@@ -1067,6 +1118,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
             None,
             user_mem_str.as_deref(),
             agent_mem_str.as_deref(),
+            skill_summaries.as_deref(),
         ),
         _ => NILES_SYSTEM_PERSONA.to_string(),
     };
@@ -1308,12 +1360,14 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .map(Arc::new);
 
     let memory_store = build_memory_store(&cfg.memory);
+    let skill_store = build_skill_store(&cfg.skills);
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
         capability_loader.clone(),
         memory_store.clone(),
+        skill_store.clone(),
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
@@ -1378,6 +1432,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         device_index: Arc::clone(&device_index),
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
+        skill_store,
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1465,6 +1520,7 @@ struct DispatchCtx {
     device_index: Arc<RwLock<DeviceIndex>>,
     history: Arc<CommandWriter>,
     memory: Arc<MemoryStore>,
+    skill_store: Option<Arc<SkillStore>>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1512,6 +1568,16 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
             };
             let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
             let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
+            let skill_summaries = ctx
+                .skill_store
+                .as_ref()
+                .and_then(|s| match s.list_summaries() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!("[{peer}] failed to list skills: {e}");
+                        None
+                    }
+                });
             let system_prompt = match (&ctx.capability_loader, &ctx.capability_index) {
                 (Some(loader), Some(index)) => assemble_system_prompt(
                     text,
@@ -1520,6 +1586,7 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                     origin_room,
                     user_mem_str.as_deref(),
                     agent_mem_str.as_deref(),
+                    skill_summaries.as_deref(),
                 ),
                 _ => persona_with_origin(origin_room),
             };
@@ -2345,12 +2412,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .map(Arc::new);
 
     let memory_store = build_memory_store(&cfg.memory);
+    let skill_store = build_skill_store(&cfg.skills);
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
         capability_loader.clone(),
         memory_store.clone(),
+        skill_store.clone(),
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
@@ -2441,6 +2510,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         device_index,
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
+        skill_store,
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -3352,7 +3422,15 @@ mod system_prompt_tests {
         let tmp = TempDir::new().unwrap();
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
 
@@ -3375,6 +3453,7 @@ mod system_prompt_tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
@@ -3394,6 +3473,7 @@ mod system_prompt_tests {
             "how does the lighting curve decide brightness",
             &index,
             &loader,
+            None,
             None,
             None,
             None,
@@ -3423,7 +3503,15 @@ mod system_prompt_tests {
 
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("tell me about scenes", &index, &loader, None, None, None);
+        let out = assemble_system_prompt(
+            "tell me about scenes",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
 
         assert!(out.starts_with(NILES_SYSTEM_PERSONA));
         assert!(out.contains("Alpha body."));
@@ -3456,6 +3544,7 @@ mod system_prompt_tests {
             None,
             None,
             None,
+            None,
         );
         assert!(
             out.contains("(v4.5.6)"),
@@ -3474,8 +3563,24 @@ mod system_prompt_tests {
         );
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let a = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
-        let b = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
+        let a = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
+        let b = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(a, b, "assemble_system_prompt must be deterministic");
     }
 
@@ -3490,6 +3595,7 @@ mod system_prompt_tests {
             &index,
             &loader,
             Some(&room),
+            None,
             None,
             None,
         );
@@ -3515,6 +3621,7 @@ mod system_prompt_tests {
             &index,
             &loader,
             Some(&room),
+            None,
             None,
             None,
         );
@@ -3550,12 +3657,14 @@ mod system_prompt_tests {
             Some(&room),
             None,
             None,
+            None,
         );
         let b = assemble_system_prompt(
             "turn on the lights",
             &index,
             &loader,
             Some(&room),
+            None,
             None,
             None,
         );
@@ -3603,7 +3712,15 @@ mod system_prompt_tests {
         let tmp = TempDir::new().unwrap();
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
 
@@ -3618,6 +3735,7 @@ mod system_prompt_tests {
             &loader,
             None,
             Some("Alice likes tea."),
+            None,
             None,
         );
         assert!(out.contains("# User memory"));
@@ -3637,6 +3755,7 @@ mod system_prompt_tests {
             None,
             None,
             Some("Learned about lighting."),
+            None,
         );
         assert!(out.contains("# Agent memory"));
         assert!(out.contains("Learned about lighting."));
@@ -3655,6 +3774,7 @@ mod system_prompt_tests {
             None,
             Some("Alice likes tea."),
             Some("Learned about lighting."),
+            None,
         );
         let user_pos = out.find("# User memory").unwrap();
         let agent_pos = out.find("# Agent memory").unwrap();
@@ -3682,6 +3802,7 @@ mod system_prompt_tests {
             None,
             Some("Alice likes tea."),
             None,
+            None,
         );
         let mem_pos = out.find("# User memory").unwrap();
         let cap_pos = out.find("# Capability references").unwrap();
@@ -3703,7 +3824,199 @@ mod system_prompt_tests {
             None,
             Some("   "),
             Some(""),
+            None,
         );
         assert_eq!(out, NILES_SYSTEM_PERSONA);
+    }
+
+    #[test]
+    fn assemble_no_skills_section_when_summaries_none() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(!out.contains("# Available skills"));
+    }
+
+    #[test]
+    fn assemble_no_skills_section_when_summaries_empty() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            Some(&[]),
+        );
+        assert!(!out.contains("# Available skills"));
+    }
+
+    #[test]
+    fn assemble_renders_available_skills_after_memory_before_caps() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let summaries = vec![SkillSummary {
+            name: "dinner-time".into(),
+            description: "Dim lights and start playlist".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::UserCreated,
+        }];
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            Some("Alice likes tea."),
+            None,
+            Some(&summaries),
+        );
+        let user_pos = out.find("# User memory").unwrap();
+        let skills_pos = out.find("# Available skills").unwrap();
+        let cap_pos = out.find("# Capability references").unwrap();
+        assert!(
+            user_pos < skills_pos,
+            "user memory should come before available skills"
+        );
+        assert!(
+            skills_pos < cap_pos,
+            "available skills should come before capability references"
+        );
+        assert!(out.contains("- dinner-time (v0.1.0) — Dim lights and start playlist"));
+    }
+
+    #[test]
+    fn assemble_skills_list_preserves_incoming_order() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let summaries = vec![
+            SkillSummary {
+                name: "zebra".into(),
+                description: "Z".into(),
+                version: "1.0.0".into(),
+                pinned: false,
+                provenance: niles_skills::Provenance::UserCreated,
+            },
+            SkillSummary {
+                name: "alpha".into(),
+                description: "A".into(),
+                version: "1.0.0".into(),
+                pinned: false,
+                provenance: niles_skills::Provenance::UserCreated,
+            },
+        ];
+        let out =
+            assemble_system_prompt("hello", &index, &loader, None, None, None, Some(&summaries));
+        let zebra_pos = out.find("zebra").unwrap();
+        let alpha_pos = out.find("alpha").unwrap();
+        assert!(
+            zebra_pos < alpha_pos,
+            "incoming order should be preserved: zebra before alpha"
+        );
+    }
+
+    #[test]
+    fn assemble_is_deterministic_with_skills() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let summaries = vec![SkillSummary {
+            name: "skill-a".into(),
+            description: "Desc".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::UserCreated,
+        }];
+        let a = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            Some(&summaries),
+        );
+        let b = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            Some(&summaries),
+        );
+        assert_eq!(
+            a, b,
+            "assemble_system_prompt must be deterministic with skills"
+        );
+    }
+
+    #[test]
+    fn assemble_deterministic_same_inputs_with_skills() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let room = RoomName::parse("bedroom").unwrap();
+        let summaries = vec![SkillSummary {
+            name: "skill-a".into(),
+            description: "Desc".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::UserCreated,
+        }];
+        let a = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            Some(&room),
+            None,
+            None,
+            Some(&summaries),
+        );
+        let b = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            Some(&room),
+            None,
+            None,
+            Some(&summaries),
+        );
+        assert_eq!(
+            a, b,
+            "assemble_system_prompt must be deterministic with origin_room and skills"
+        );
     }
 }
