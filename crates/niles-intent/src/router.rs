@@ -14,6 +14,19 @@ pub(crate) const LIGHT_STEP_PERCENT: i16 = 10;
 const WARMER_DELTA: i16 = -200;
 const COOLER_DELTA: i16 = 200;
 
+const KELVIN_WARM_WHITE: u16 = 2200;
+const KELVIN_COOL_WHITE: u16 = 4000;
+const KELVIN_DAYLIGHT: u16 = 5500;
+
+fn named_white_to_kelvin(named: &str) -> Option<u16> {
+    match named {
+        "warm white" | "warm" => Some(KELVIN_WARM_WHITE),
+        "cool white" | "cool" => Some(KELVIN_COOL_WHITE),
+        "daylight" => Some(KELVIN_DAYLIGHT),
+        _ => None,
+    }
+}
+
 /// Tier 0 intent router. Cheap to construct; regexes are compiled
 /// lazily on first use and reused across all subsequent `parse` calls.
 #[derive(Debug, Default, Clone, Copy)]
@@ -39,6 +52,7 @@ impl IntentRouter {
             .or_else(|| match_light_set_all(&t))
             .or_else(|| match_light_step(&t))
             .or_else(|| match_light_kelvin_step(&t))
+            .or_else(|| match_light_kelvin_set(&t))
             .or_else(|| match_light(&t))
             .or_else(|| match_back_to_normal(&t))
             .or_else(|| match_scene_save(&t))
@@ -69,6 +83,7 @@ impl IntentRouter {
         let t = normalize(transcript);
         match_light_step_implicit_room(&t, &ctx)
             .or_else(|| match_light_kelvin_step_implicit_room(&t, &ctx))
+            .or_else(|| match_light_kelvin_set_implicit_room(&t, &ctx))
             .or_else(|| match_light_dim_implicit_room(&t, &ctx))
             .or_else(|| match_light_set_implicit_room(&t, &ctx))
             .or_else(|| match_device_dim(&t, &ctx))
@@ -341,6 +356,42 @@ fn match_light_kelvin_step(t: &str) -> Option<Intent> {
     })
 }
 
+// ---- Light kelvin set (explicit room) ------------------------------------
+
+fn light_kelvin_set_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                make\s+(?:the\s+)?(?P<room2>.+?)(?:\s+lights?)?\s+(?P<named2>warm\s+white|cool\s+white|daylight|warm|cool)
+              |
+                (?:the\s+)?(?P<room1>.+?)\s+lights?\s+(?P<named1>warm\s+white|cool\s+white|daylight|warm|cool)
+              )
+              $",
+        )
+        .expect("light_kelvin_set regex compiles")
+    })
+}
+
+fn match_light_kelvin_set(t: &str) -> Option<Intent> {
+    let caps = light_kelvin_set_regex().captures(t)?;
+    let named = caps
+        .name("named1")
+        .or_else(|| caps.name("named2"))?
+        .as_str();
+    let room = caps.name("room1").or_else(|| caps.name("room2"))?.as_str();
+    if is_degenerate_room(room) {
+        return None;
+    }
+    let kelvin = named_white_to_kelvin(named)?;
+    Some(Intent::LightKelvinSet {
+        room: room.to_string(),
+        kelvin,
+    })
+}
+
 // ---- Light set implicit room ----------------------------------------------
 
 fn light_set_implicit_room_regex() -> &'static Regex {
@@ -458,6 +509,32 @@ fn match_light_kelvin_step_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Op
     Some(Intent::LightKelvinStep {
         room: origin.as_str().to_owned(),
         delta_kelvin,
+    })
+}
+
+// ---- Light kelvin set implicit room --------------------------------------
+
+fn light_kelvin_set_implicit_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?P<named>warm\s+white|cool\s+white|daylight)
+              $",
+        )
+        .expect("light_kelvin_set_implicit_room regex compiles")
+    })
+}
+
+fn match_light_kelvin_set_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = light_kelvin_set_implicit_room_regex().captures(t)?;
+    let origin = ctx.origin_room?;
+    let named = caps.name("named")?.as_str();
+    let kelvin = named_white_to_kelvin(named)?;
+    Some(Intent::LightKelvinSet {
+        room: origin.as_str().to_owned(),
+        kelvin,
     })
 }
 
@@ -2376,6 +2453,136 @@ mod tests {
         );
     }
 
+    // ---- Light kelvin set (explicit room) ----
+
+    #[test]
+    fn light_kelvin_set_warm_white() {
+        assert_eq!(
+            parse("kitchen lights warm white"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 2200,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_cool_white() {
+        assert_eq!(
+            parse("kitchen lights cool white"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 4000,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_daylight() {
+        assert_eq!(
+            parse("kitchen lights daylight"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 5500,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_make_form() {
+        assert_eq!(
+            parse("make the kitchen warm white"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 2200,
+            })
+        );
+        assert_eq!(
+            parse("make the kitchen lights cool white"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 4000,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_bare_warm_with_room() {
+        assert_eq!(
+            parse("make the kitchen warm"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 2200,
+            })
+        );
+        assert_eq!(
+            parse("make the kitchen cool"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 4000,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_make_form_daylight() {
+        assert_eq!(
+            parse("make the kitchen daylight"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 5500,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_the_prefix() {
+        assert_eq!(
+            parse("the kitchen lights warm white"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 2200,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_rejects_pronouns() {
+        assert_eq!(parse("make it warm white"), None);
+        assert_eq!(parse("make them daylight"), None);
+    }
+
+    #[test]
+    fn light_kelvin_set_step_still_routes_first() {
+        // Ordering regression: kelvin-step must run before kelvin-set
+        // so "warmer" / "cooler" aren't swallowed by "warm" / "cool" prefix.
+        assert_eq!(
+            parse("kitchen lights warmer"),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: -200,
+            })
+        );
+        assert_eq!(
+            parse("kitchen lights cooler"),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: 200,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_normalizes_case_and_punctuation() {
+        assert_eq!(
+            parse("Kitchen lights Warm White."),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 2200,
+            })
+        );
+    }
+
     #[test]
     fn light_step_make_room_brighter() {
         assert_eq!(
@@ -2808,6 +3015,78 @@ mod context_tests {
                 delta_kelvin: -200,
             })
         );
+    }
+
+    // ---- Implicit-room light kelvin set ----
+
+    #[test]
+    fn light_kelvin_set_warm_white_uses_origin() {
+        let idx = fixture_multi();
+        let living_room = RoomName::parse("living_room").unwrap();
+        let ctx = ctx_with(&idx, Some(&living_room));
+        assert_eq!(
+            parse_with("warm white", ctx),
+            Some(Intent::LightKelvinSet {
+                room: "living_room".into(),
+                kelvin: 2200,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_cool_white_uses_origin() {
+        let idx = fixture_multi();
+        let living_room = RoomName::parse("living_room").unwrap();
+        let ctx = ctx_with(&idx, Some(&living_room));
+        assert_eq!(
+            parse_with("cool white", ctx),
+            Some(Intent::LightKelvinSet {
+                room: "living_room".into(),
+                kelvin: 4000,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_daylight_uses_origin() {
+        let idx = fixture_multi();
+        let living_room = RoomName::parse("living_room").unwrap();
+        let ctx = ctx_with(&idx, Some(&living_room));
+        assert_eq!(
+            parse_with("daylight", ctx),
+            Some(Intent::LightKelvinSet {
+                room: "living_room".into(),
+                kelvin: 5500,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_bare_warm_no_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("warm", ctx), None);
+        assert_eq!(parse_with("cool", ctx), None);
+    }
+
+    #[test]
+    fn light_kelvin_set_bare_warm_with_origin_returns_none() {
+        // Implicit-room form requires full two-word phrases; bare warm/cool
+        // are too ambiguous even with origin room context.
+        let idx = fixture_multi();
+        let living_room = RoomName::parse("living_room").unwrap();
+        let ctx = ctx_with(&idx, Some(&living_room));
+        assert_eq!(parse_with("warm", ctx), None);
+        assert_eq!(parse_with("cool", ctx), None);
+    }
+
+    #[test]
+    fn light_kelvin_set_full_phrase_no_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("warm white", ctx), None);
+        assert_eq!(parse_with("cool white", ctx), None);
+        assert_eq!(parse_with("daylight", ctx), None);
     }
 
     // ---- Implicit-room media next ----

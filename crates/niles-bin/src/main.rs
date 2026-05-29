@@ -1558,6 +1558,28 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
             dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_kelvin_step(&room, new))
         }
+        Intent::LightKelvinSet { room, kelvin } => {
+            let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
+                d.is_curve_driven() && d.supports_color_temperature()
+            }) {
+                RoomResolve::Found(c, t) => (c, t),
+                RoomResolve::BadName => return Some(response::room_not_found(&room)),
+                RoomResolve::NoDevices => {
+                    return Some(response::room_no_devices(&room));
+                }
+                RoomResolve::WarmingUp => return Some(response::room_warming_up()),
+            };
+            let target_kelvin = kelvin.clamp(2000, 6500);
+            for device in &targets {
+                ctx.tracker.flag(&device.id);
+            }
+            let desired = DeviceState {
+                color_temp_kelvin: Some(target_kelvin),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::light_kelvin_set(&room, target_kelvin))
+        }
         Intent::DeviceSet { device_id, on } => {
             let Some(device) = ctx.registry.get(&device_id) else {
                 return Some(response::device_not_found(&device_id));
@@ -2811,6 +2833,9 @@ fn format_intent(intent: &Intent) -> String {
         }
         Intent::LightKelvinStep { room, delta_kelvin } => {
             format!("LightKelvinStep({room} {delta_kelvin:+}K)")
+        }
+        Intent::LightKelvinSet { room, kelvin } => {
+            format!("LightKelvinSet({room} {kelvin}K)")
         }
         Intent::DeviceSet { device_id, on } => {
             let state = if *on { "on" } else { "off" };
