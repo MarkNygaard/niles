@@ -2093,6 +2093,25 @@ mod tests {
     }
 
     #[test]
+    fn brighter_dimmer_still_routes_to_lightstep() {
+        // The new kelvin regex must not steal brighter/dimmer utterances.
+        assert_eq!(
+            parse("kitchen lights brighter"),
+            Some(Intent::LightStep {
+                room: "kitchen".into(),
+                delta_percent: 10,
+            })
+        );
+        assert_eq!(
+            parse("make the kitchen dimmer"),
+            Some(Intent::LightStep {
+                room: "kitchen".into(),
+                delta_percent: -10,
+            })
+        );
+    }
+
+    #[test]
     fn light_step_make_room_brighter() {
         assert_eq!(
             parse("make the kitchen brighter"),

@@ -1537,12 +1537,16 @@ async fn handle_transcript(
             }) {
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                RoomResolve::NoDevices => return None,
+                RoomResolve::NoDevices => {
+                    return Some(response::room_no_devices(&room));
+                }
                 RoomResolve::WarmingUp => return Some(response::room_warming_up()),
             };
+            // `resolve_room_targets` already filtered for devices with
+            // color temperature, so every target has a known value.
             let base = (targets
                 .iter()
-                .map(|d| d.state.color_temp_kelvin.unwrap_or(4000) as u32)
+                .map(|d| d.state.color_temp_kelvin.unwrap() as u32)
                 .sum::<u32>()
                 / targets.len() as u32) as u16;
             let new = base.saturating_add_signed(delta_kelvin).clamp(2000, 6500);
@@ -2795,6 +2799,9 @@ fn format_intent(intent: &Intent) -> String {
             delta_percent,
         } => {
             format!("LightStep({room} {delta_percent:+}%)")
+        }
+        Intent::LightKelvinStep { room, delta_kelvin } => {
+            format!("LightKelvinStep({room} {delta_kelvin:+}K)")
         }
         Intent::DeviceSet { device_id, on } => {
             let state = if *on { "on" } else { "off" };
