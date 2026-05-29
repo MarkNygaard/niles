@@ -145,4 +145,15 @@ mod tests {
     fn empty_string_passes() {
         assert!(scan("").is_ok());
     }
+
+    #[test]
+    fn byte_offset_counts_bytes_not_chars() {
+        // ‘日本’ is 6 bytes; null byte is at byte offset 6.
+        let err = scan("日本\0x").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("byte offset 6"),
+            "expected byte offset 6, got: {msg}"
+        );
+    }
 }

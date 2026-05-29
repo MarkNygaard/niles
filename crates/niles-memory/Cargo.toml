@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
-tracing.workspace = true
 fs2 = "0.4"
 
 [dev-dependencies]

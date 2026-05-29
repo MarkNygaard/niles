@@ -1039,10 +1039,23 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     let user_mem = memory_store
         .as_ref()
-        .and_then(|s| s.load(niles_memory::Target::User).ok());
-    let agent_mem = memory_store
-        .as_ref()
-        .and_then(|s| s.load(niles_memory::Target::Memory).ok());
+        .and_then(|s| match s.load(niles_memory::Target::User) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!("failed to load user memory: {e}");
+                None
+            }
+        });
+    let agent_mem =
+        memory_store
+            .as_ref()
+            .and_then(|s| match s.load(niles_memory::Target::Memory) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("failed to load agent memory: {e}");
+                    None
+                }
+            });
     let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
     let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
 
@@ -1483,8 +1496,20 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
         None => {
             // Tier 0 miss — escalate to Tier 1 LLM with the tool registry.
             tracing::info!("[{peer}] Tier 0 miss, escalating to LLM: {text:?}");
-            let user_mem = ctx.memory.load(niles_memory::Target::User).ok();
-            let agent_mem = ctx.memory.load(niles_memory::Target::Memory).ok();
+            let user_mem = match ctx.memory.load(niles_memory::Target::User) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("[{peer}] failed to load user memory: {e}");
+                    None
+                }
+            };
+            let agent_mem = match ctx.memory.load(niles_memory::Target::Memory) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("[{peer}] failed to load agent memory: {e}");
+                    None
+                }
+            };
             let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
             let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
             let system_prompt = match (&ctx.capability_loader, &ctx.capability_index) {

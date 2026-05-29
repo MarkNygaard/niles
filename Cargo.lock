@@ -990,7 +990,6 @@ dependencies = [
  "fs2",
  "tempfile",
  "thiserror",
- "tracing",
 ]
 
 [[package]]

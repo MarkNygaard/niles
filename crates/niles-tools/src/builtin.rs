@@ -530,7 +530,7 @@ impl Tool for MemoryTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "memory".into(),
-            description: "Manage persistent memory: add facts about users, record agent learnings, replace outdated entries, or remove them. Targets are 'user' (USER.md) or 'agent' (MEMORY.md).".into(),
+            description: "Manage persistent memory. Actions: 'add' requires 'content'; 'replace' requires 'old_text' and 'content'; 'remove' requires 'old_text'; 'view' needs only 'target'. Targets are 'user' (USER.md) or 'agent' (MEMORY.md).".into(),
             parameters: json!({
                 "type": "object",
                 "required": ["action", "target"],

@@ -93,6 +93,9 @@ impl MemoryStore {
     }
 
     /// Read and parse entries from `target`.
+    ///
+    /// Returns an error if the file cannot be read or if a security
+    /// scan of the raw content fails.
     pub fn load(&self, target: Target) -> Result<Vec<Entry>> {
         if !self.enabled {
             return Ok(Vec::new());
@@ -101,6 +104,7 @@ impl MemoryStore {
         let mut file = File::open(&path)?;
         let mut raw = String::new();
         file.read_to_string(&mut raw)?;
+        scan::scan(&raw)?;
         Ok(parse_entries(&raw))
     }
 
@@ -540,5 +544,18 @@ mod tests {
         assert!(store.add(Target::User, "x").is_err());
         assert!(store.replace(Target::User, "x", "y").is_err());
         assert!(store.remove(Target::User, "x").is_err());
+    }
+
+    #[test]
+    fn load_rejects_corrupted_file() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("USER.md"), "hello\0world").unwrap();
+        let store = MemoryStore::open(MemoryConfig {
+            directory: tmp.path().to_path_buf(),
+            ..Default::default()
+        })
+        .unwrap();
+        let err = store.load(Target::User).unwrap_err();
+        assert!(matches!(err, Error::ScanFailed { .. }), "{err}");
     }
 }
