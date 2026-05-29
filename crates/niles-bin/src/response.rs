@@ -68,6 +68,15 @@ pub fn light_dim(room: &str, percent: u8) -> String {
     )
 }
 
+/// "Kitchen lights to 3000K."
+pub fn light_kelvin_step(room: &str, kelvin: u16) -> String {
+    format!(
+        "{} lights to {}K.",
+        capitalize_first(&spoken_room(room)),
+        kelvin
+    )
+}
+
 /// "All lights on." / "All lights off."
 pub fn all_lights(on: bool) -> String {
     if on {
@@ -271,6 +280,22 @@ mod tests {
     #[test]
     fn light_dim_basic() {
         assert_eq!(light_dim("kitchen", 30), "Kitchen lights to 30%.");
+    }
+
+    #[test]
+    fn light_kelvin_step_basic() {
+        assert_eq!(
+            light_kelvin_step("living_room", 2800),
+            "Living room lights to 2800K."
+        );
+    }
+
+    #[test]
+    fn light_kelvin_step_upper() {
+        assert_eq!(
+            light_kelvin_step("kitchen", 6500),
+            "Kitchen lights to 6500K."
+        );
     }
 
     #[test]

@@ -11,6 +11,8 @@ const SPEAKER_VOLUME_STEP: i16 = 10; // tunable; SonosClient clamps to 0..=100
 
 /// Matches the Hue-dimmer hold step (see Event::DeviceAction).
 pub(crate) const LIGHT_STEP_PERCENT: i16 = 10;
+const WARMER_DELTA: i16 = -200;
+const COOLER_DELTA: i16 = 200;
 
 /// Tier 0 intent router. Cheap to construct; regexes are compiled
 /// lazily on first use and reused across all subsequent `parse` calls.
@@ -36,6 +38,7 @@ impl IntentRouter {
             .or_else(|| match_light_set_all_in_room(&t))
             .or_else(|| match_light_set_all(&t))
             .or_else(|| match_light_step(&t))
+            .or_else(|| match_light_kelvin_step(&t))
             .or_else(|| match_light(&t))
             .or_else(|| match_back_to_normal(&t))
             .or_else(|| match_scene_save(&t))
@@ -63,6 +66,7 @@ impl IntentRouter {
 
         let t = normalize(transcript);
         match_light_step_implicit_room(&t, &ctx)
+            .or_else(|| match_light_kelvin_step_implicit_room(&t, &ctx))
             .or_else(|| match_light_dim_implicit_room(&t, &ctx))
             .or_else(|| match_light_set_implicit_room(&t, &ctx))
             .or_else(|| match_device_dim(&t, &ctx))
@@ -263,6 +267,18 @@ fn light_step_regex() -> &'static Regex {
     })
 }
 
+/// Rejects pronouns and other degenerate captures that leak through
+/// the optional `lights?` anchor in the `make ... <room> <dir>` branch.
+fn is_degenerate_room(room: &str) -> bool {
+    room == "the"
+        || room == "lights"
+        || room == "it"
+        || room == "them"
+        || room == "that"
+        || room == "this"
+        || room == "everything"
+}
+
 fn match_light_step(t: &str) -> Option<Intent> {
     let caps = light_step_regex().captures(t)?;
     let dir = caps.name("dir1").or_else(|| caps.name("dir2"))?.as_str();
@@ -270,14 +286,7 @@ fn match_light_step(t: &str) -> Option<Intent> {
     // The `make ... brighter` branch has no `lights?` anchor, so
     // pronouns like "it" or "them" get captured as bogus rooms.
     // Reject so the caller can escalate to Tier 1.
-    if room == "the"
-        || room == "lights"
-        || room == "it"
-        || room == "them"
-        || room == "that"
-        || room == "this"
-        || room == "everything"
-    {
+    if is_degenerate_room(room) {
         return None;
     }
     let delta_percent = if dir == "brighter" {
@@ -288,6 +297,43 @@ fn match_light_step(t: &str) -> Option<Intent> {
     Some(Intent::LightStep {
         room: room.to_string(),
         delta_percent,
+    })
+}
+
+// ---- Light kelvin step (explicit room) ------------------------------------
+
+fn light_kelvin_step_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                make\s+(?:the\s+)?(?P<room2>.+?)(?:\s+lights?)?\s+(?P<dir2>warmer|cooler)
+              |
+                (?:the\s+)?(?P<room1>.+?)\s+lights?\s+(?P<dir1>warmer|cooler)
+              )
+              $",
+        )
+        .expect("light_kelvin_step regex compiles")
+    })
+}
+
+fn match_light_kelvin_step(t: &str) -> Option<Intent> {
+    let caps = light_kelvin_step_regex().captures(t)?;
+    let dir = caps.name("dir1").or_else(|| caps.name("dir2"))?.as_str();
+    let room = caps.name("room1").or_else(|| caps.name("room2"))?.as_str();
+    if is_degenerate_room(room) {
+        return None;
+    }
+    let delta_kelvin = if dir == "warmer" {
+        WARMER_DELTA
+    } else {
+        COOLER_DELTA
+    };
+    Some(Intent::LightKelvinStep {
+        room: room.to_string(),
+        delta_kelvin,
     })
 }
 
@@ -378,6 +424,36 @@ fn match_light_step_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<In
     Some(Intent::LightStep {
         room: origin.as_str().to_owned(),
         delta_percent,
+    })
+}
+
+// ---- Light kelvin step implicit room --------------------------------------
+
+fn light_kelvin_step_implicit_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?P<dir>warmer|cooler)
+              $",
+        )
+        .expect("light_kelvin_step_implicit_room regex compiles")
+    })
+}
+
+fn match_light_kelvin_step_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = light_kelvin_step_implicit_room_regex().captures(t)?;
+    let origin = ctx.origin_room?;
+    let dir = caps.name("dir")?.as_str();
+    let delta_kelvin = if dir == "warmer" {
+        WARMER_DELTA
+    } else {
+        COOLER_DELTA
+    };
+    Some(Intent::LightKelvinStep {
+        room: origin.as_str().to_owned(),
+        delta_kelvin,
     })
 }
 
@@ -1957,6 +2033,65 @@ mod tests {
         );
     }
 
+    // ---- Light kelvin step (explicit room) ----
+
+    #[test]
+    fn light_kelvin_step_room_lights_warmer() {
+        assert_eq!(
+            parse("kitchen lights warmer"),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: -200,
+            })
+        );
+        assert_eq!(
+            parse("kitchen lights cooler"),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: 200,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_step_make_room_warmer() {
+        assert_eq!(
+            parse("make the kitchen warmer"),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: -200,
+            })
+        );
+        assert_eq!(
+            parse("make the kitchen lights warmer"),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: -200,
+            })
+        );
+        assert_eq!(
+            parse("make kitchen lights cooler"),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: 200,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_step_rejects_pronouns() {
+        assert_eq!(parse("make it warmer"), None);
+        assert_eq!(parse("make them cooler"), None);
+        assert_eq!(parse("make everything warmer"), None);
+    }
+
+    #[test]
+    fn light_kelvin_step_rejects_bare_room() {
+        // "kitchen warmer" without "lights" or "make" must NOT match.
+        assert_eq!(parse("kitchen warmer"), None);
+        assert_eq!(parse("kitchen cooler"), None);
+    }
+
     #[test]
     fn light_step_make_room_brighter() {
         assert_eq!(
@@ -2343,5 +2478,51 @@ mod context_tests {
         let ctx = ctx_with(&idx, None);
         assert_eq!(parse_with("brighter", ctx), None);
         assert_eq!(parse_with("dimmer", ctx), None);
+    }
+
+    // ---- Implicit-room light kelvin step ----
+
+    #[test]
+    fn light_kelvin_step_warmer_uses_origin() {
+        let idx = fixture_multi();
+        let bedroom = RoomName::parse("bedroom").unwrap();
+        let ctx = ctx_with(&idx, Some(&bedroom));
+        assert_eq!(
+            parse_with("warmer", ctx),
+            Some(Intent::LightKelvinStep {
+                room: "bedroom".into(),
+                delta_kelvin: -200,
+            })
+        );
+        assert_eq!(
+            parse_with("cooler", ctx),
+            Some(Intent::LightKelvinStep {
+                room: "bedroom".into(),
+                delta_kelvin: 200,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_step_no_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("warmer", ctx), None);
+        assert_eq!(parse_with("cooler", ctx), None);
+    }
+
+    #[test]
+    fn light_kelvin_step_explicit_wins_over_origin() {
+        let idx = fixture_multi();
+        let living_room = RoomName::parse("living_room").unwrap();
+        let ctx = ctx_with(&idx, Some(&living_room));
+        // "kitchen lights warmer" should be caught by parse() first, not fall through.
+        assert_eq!(
+            parse_with("kitchen lights warmer", ctx),
+            Some(Intent::LightKelvinStep {
+                room: "kitchen".into(),
+                delta_kelvin: -200,
+            })
+        );
     }
 }

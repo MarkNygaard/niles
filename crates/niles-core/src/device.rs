@@ -217,6 +217,11 @@ impl Device {
     pub fn is_curve_driven(&self) -> bool {
         self.is_light() && !self.is_ambient
     }
+
+    /// True if this device reports a color temperature.
+    pub fn supports_color_temperature(&self) -> bool {
+        self.state.color_temp_kelvin.is_some()
+    }
 }
 
 #[cfg(test)]

@@ -43,6 +43,16 @@ pub enum Intent {
         delta_percent: i16,
     },
 
+    /// "warmer" / "kitchen lights cooler" / "make the kitchen
+    /// warmer" — step current color temperature by `delta_kelvin`
+    /// (positive = cooler / higher K). Dispatch reads current average
+    /// kelvin of targeted devices, applies the step, and clamps to
+    /// 2000..=6500.
+    LightKelvinStep {
+        room: String,
+        delta_kelvin: i16,
+    },
+
     /// "turn on the floor lamp" / "turn off the ceiling light"
     ///
     /// Device-name-targeted variant for single-device control.
