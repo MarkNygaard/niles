@@ -7,7 +7,9 @@ use niles_api::{AppState, DevicePublisher};
 use niles_capabilities::CapabilityLoader;
 use niles_config::Config;
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
-use niles_history::{CommandEntry, CommandReader, CommandWriter};
+use niles_history::{
+    CommandEntry, CommandReader, CommandWriter, StateEntry, StateReader, StateWriter,
+};
 use niles_intent::{DeviceIndex, Intent, IntentRouter, RouterContext};
 use niles_llm::{ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, ToolChoice};
 use niles_mqtt::{
@@ -732,6 +734,43 @@ fn build_piper_client(cfg: &Config) -> anyhow::Result<PiperClient> {
     PiperClient::new(piper_cfg).context("building Piper HTTP client")
 }
 
+/// Build a `StateWriter` from the `[history]` section, pruning old
+/// files on open. Returns a disabled no-op writer when no directory
+/// is configured.
+fn build_state_writer(cfg: &Config) -> anyhow::Result<Arc<StateWriter>> {
+    let writer = match &cfg.history.directory {
+        Some(dir) => {
+            let w = StateWriter::new(dir).context("opening state history writer")?;
+            if let Err(e) = w.prune(cfg.history.retention_days) {
+                tracing::warn!("state history prune failed: {e:#}");
+            }
+            w
+        }
+        None => StateWriter::disabled(),
+    };
+    Ok(Arc::new(writer))
+}
+
+/// Build a `StateReader` from the `[history]` section. Returns a
+/// disabled no-op reader when no directory is configured.
+fn build_state_reader(cfg: &Config) -> Arc<StateReader> {
+    match &cfg.history.directory {
+        Some(dir) => Arc::new(StateReader::new(dir)),
+        None => Arc::new(StateReader::disabled()),
+    }
+}
+
+/// Append a device-state snapshot to the history log.
+fn append_state_history(writer: &StateWriter, id: &DeviceId, state: &DeviceState) {
+    if let Err(e) = writer.append(&StateEntry {
+        ts: Utc::now(),
+        device_id: id.clone(),
+        state: state.clone(),
+    }) {
+        tracing::warn!("state history append failed: {e:#}");
+    }
+}
+
 async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     let cfg = Config::load_from_path(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
@@ -1198,6 +1237,11 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         None => Arc::new(CommandReader::disabled()),
     };
     niles_tools::register_history_tools(&mut tools, command_reader);
+
+    let state_writer = build_state_writer(&cfg)?;
+    let state_reader = build_state_reader(&cfg);
+    niles_tools::register_state_history_tools(&mut tools, state_reader, registry.clone());
+
     let tools = Arc::new(tools);
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
@@ -1242,6 +1286,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // Keep the device index in sync so Tier-0 device-name matchers
     // work in voice-dispatch mode too (same pattern as `serve`).
     let observer_device_index = Arc::clone(&ctx.device_index);
+    let observer_state_writer = state_writer.clone();
     let _device_index_handle = tokio::spawn(async move {
         loop {
             match bus_rx.recv().await {
@@ -1256,6 +1301,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                         .write()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&id);
+                }
+                Ok(Event::DeviceStateChanged { id, state }) => {
+                    append_state_history(&observer_state_writer, &id, &state);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 _ => {}
@@ -1989,6 +2037,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // the early DeviceStateChanged events that seed the observer's
     // last-seen on/off map — broadcast channels only deliver messages
     // sent after a receiver is bound.
+    let state_writer = build_state_writer(&cfg)?;
     let observer_tracker = tracker.clone();
     let observer_claim_tracker = claim_tracker.clone();
     let observer_registry = registry.clone();
@@ -1996,6 +2045,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_publisher = publisher.clone();
     let observer_z2m_prefix = z2m_prefix.clone();
     let observer_dry_run = args.dry_run;
+    let observer_state_writer = state_writer.clone();
     let mut bus_rx = bus.subscribe();
 
     let ambient_set = build_ambient_set(&cfg);
@@ -2027,6 +2077,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     if state.on == Some(false) && observer_claim_tracker.is_claimed(&id) {
                         observer_claim_tracker.release(&id);
                     }
+                    append_state_history(&observer_state_writer, &id, &state);
                 }
                 Ok(Event::DeviceAdded { device }) => {
                     if device.is_light() {
@@ -2145,6 +2196,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         None => Arc::new(CommandReader::disabled()),
     };
     niles_tools::register_history_tools(&mut tools, command_reader);
+
+    let state_reader = build_state_reader(&cfg);
+    niles_tools::register_state_history_tools(&mut tools, state_reader, registry.clone());
+
     let tools = Arc::new(tools);
 
     // Timer driver: shares the `timers` Arc registered with the LLM

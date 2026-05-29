@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
-use niles_history::{CommandQuery, CommandReader};
+use niles_history::{CommandQuery, CommandReader, StateQuery, StateReader};
 use niles_mqtt::{MqttPublisher, format_set_command, is_actionable};
 use niles_scheduler::{TimerState, TimerStore, canonicalize_name};
 use serde_json::{Value, json};
@@ -41,6 +41,17 @@ fn parse_opt_rfc3339(tool: &'static str, args: &Value, key: &str) -> Result<Opti
             .map(|dt| Some(dt.with_timezone(&Utc))),
         None => Ok(None),
     }
+}
+
+/// Parse a required RFC 3339 timestamp argument into a UTC `DateTime`.
+fn parse_required_rfc3339(tool: &'static str, args: &Value, key: &str) -> Result<DateTime<Utc>> {
+    let raw = required_str(tool, args, key)?;
+    DateTime::parse_from_rfc3339(raw)
+        .map_err(|e| Error::InvalidArgs {
+            tool: tool.into(),
+            reason: format!("invalid '{key}': {e}"),
+        })
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
 fn device_summary(device: &niles_core::Device) -> Value {
@@ -724,6 +735,176 @@ pub fn register_history_tools(reg: &mut ToolRegistry, reader: Arc<CommandReader>
     reg.register(Box::new(QueryCommandHistory::new(reader)));
 }
 
+// ---------- QueryDeviceStateHistory ----------
+
+pub struct QueryDeviceStateHistory {
+    reader: Arc<StateReader>,
+}
+
+impl QueryDeviceStateHistory {
+    pub fn new(reader: Arc<StateReader>) -> Self {
+        Self { reader }
+    }
+}
+
+#[async_trait]
+impl Tool for QueryDeviceStateHistory {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "query_device_state_history".into(),
+            description: "Query the recent device state change history. Use this to answer retrospective questions like 'what was the light level at 8pm yesterday' or 'when did the kitchen light turn off'. Returns an array of state entries newest-first.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "since": {
+                        "type": "string",
+                        "description": "RFC 3339 timestamp for the lower bound (inclusive)."
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "RFC 3339 timestamp for the upper bound (inclusive)."
+                    },
+                    "device_id": {
+                        "type": "string",
+                        "description": "Room-qualified device id, e.g. 'kitchen/ceiling_light'."
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "Filter to a specific room (canonical lower_snake name). Ignored if device_id is set."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max entries to return (default 200, max 2000).",
+                        "minimum": 1,
+                        "maximum": 2000
+                    }
+                },
+                "required": [],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let since = parse_opt_rfc3339("query_device_state_history", &args, "since")?;
+        let until = parse_opt_rfc3339("query_device_state_history", &args, "until")?;
+        let device_id = match args.get("device_id").and_then(|v| v.as_str()) {
+            Some(s) => Some(parse_device_id("query_device_state_history", s)?),
+            None => None,
+        };
+        let room = args
+            .get("room")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+
+        let q = StateQuery {
+            since,
+            until,
+            device_id,
+            room,
+            limit,
+        };
+
+        let entries = self
+            .reader
+            .query(&q)
+            .map_err(|e| Error::Internal(format!("query failed: {e}")))?;
+        Ok(serde_json::to_value(entries)?)
+    }
+}
+
+// ---------- DeviceStateSnapshotAt ----------
+
+pub struct DeviceStateSnapshotAt {
+    reader: Arc<StateReader>,
+    registry: Arc<DeviceRegistry>,
+}
+
+impl DeviceStateSnapshotAt {
+    pub fn new(reader: Arc<StateReader>, registry: Arc<DeviceRegistry>) -> Self {
+        Self { reader, registry }
+    }
+}
+
+#[async_trait]
+impl Tool for DeviceStateSnapshotAt {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "device_state_snapshot_at".into(),
+            description: "Reconstruct the state of one or more devices at a specific point in time. Returns the most recent state entry per device whose timestamp is on or before the requested time. Use this to answer 'how were things at 8pm yesterday' and to compose set_device calls to reproduce a past scene.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "at": {
+                        "type": "string",
+                        "description": "RFC 3339 timestamp for the point-in-time snapshot."
+                    },
+                    "device_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of room-qualified device ids, e.g. ['kitchen/ceiling_light', 'living_room/floor_lamp']."
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "Expand to all devices in this room. Ignored if device_ids is set."
+                    }
+                },
+                "required": ["at"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let at = parse_required_rfc3339("device_state_snapshot_at", &args, "at")?;
+
+        let ids = if let Some(arr) = args.get("device_ids").and_then(|v| v.as_array()) {
+            arr.iter()
+                .map(|v| {
+                    let raw = v.as_str().ok_or_else(|| Error::InvalidArgs {
+                        tool: "device_state_snapshot_at".into(),
+                        reason: "device_ids must be an array of strings".into(),
+                    })?;
+                    parse_device_id("device_state_snapshot_at", raw)
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else if let Some(raw) = args.get("room").and_then(|v| v.as_str()) {
+            let room =
+                RoomName::parse(raw).map_err(|_| Error::RoomNotFound { name: raw.into() })?;
+            self.registry
+                .list_room(&room)
+                .into_iter()
+                .map(|d| d.id.clone())
+                .collect()
+        } else {
+            return Err(Error::InvalidArgs {
+                tool: "device_state_snapshot_at".into(),
+                reason: "must specify one of device_ids or room".into(),
+            });
+        };
+
+        let entries = self
+            .reader
+            .snapshot_at(at, &ids)
+            .map_err(|e| Error::Internal(format!("snapshot failed: {e}")))?;
+        Ok(serde_json::to_value(entries)?)
+    }
+}
+
+/// Register the state-history tools onto an existing registry.
+pub fn register_state_history_tools(
+    reg: &mut ToolRegistry,
+    reader: Arc<StateReader>,
+    registry: Arc<DeviceRegistry>,
+) {
+    reg.register(Box::new(QueryDeviceStateHistory::new(reader.clone())));
+    reg.register(Box::new(DeviceStateSnapshotAt::new(reader, registry)));
+}
+
 /// Build a `ToolRegistry` containing every device-facing Tier-1 built-in.
 ///
 /// `LookUpCapability` is not included here because it requires an
@@ -746,6 +927,7 @@ pub fn default_registry<P: Publisher + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use niles_capabilities::CapabilityLoader;
     use niles_core::{Device, DeviceClass};
     use std::fs;
@@ -1603,5 +1785,68 @@ mod tests {
         assert!(names.contains(&"list_timers".to_string()));
         assert!(names.contains(&"cancel_timer".to_string()));
         assert!(names.contains(&"get_timer_remaining".to_string()));
+    }
+
+    // ---------- state history tool tests ----------
+
+    #[tokio::test]
+    async fn query_device_state_history_rejects_invalid_since() {
+        let reader = Arc::new(StateReader::disabled());
+        let tool = QueryDeviceStateHistory::new(reader);
+        let args = json!({ "since": "not-a-timestamp" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool: t, .. } if t == "query_device_state_history")
+        );
+    }
+
+    #[tokio::test]
+    async fn device_state_snapshot_at_neither_ids_nor_room_errors() {
+        let reader = Arc::new(StateReader::disabled());
+        let reg = fixture_registry();
+        let tool = DeviceStateSnapshotAt::new(reader, reg);
+        let args = json!({ "at": "2026-01-01T12:00:00Z" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool: t, reason } if t == "device_state_snapshot_at" && reason.contains("device_ids or room"))
+        );
+    }
+
+    #[tokio::test]
+    async fn device_state_snapshot_at_room_expands_to_registered_devices() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let writer = niles_history::StateWriter::new(tmp.path()).unwrap();
+        let reader = Arc::new(StateReader::new(tmp.path()));
+        let reg = fixture_registry();
+
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
+        writer
+            .append(&niles_history::StateEntry {
+                ts: t,
+                device_id: DeviceId::parse("z2m:living_room/floor_lamp").unwrap(),
+                state: DeviceState {
+                    on: Some(true),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+        let tool = DeviceStateSnapshotAt::new(reader, reg);
+        let args = json!({ "at": "2026-01-01T12:00:00Z", "room": "living_room" });
+        let result = tool.execute(args).await.unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["device_id"], "z2m:living_room/floor_lamp");
+    }
+
+    #[test]
+    fn register_state_history_tools_registers_both_names() {
+        let reader = Arc::new(StateReader::disabled());
+        let reg = fixture_registry();
+        let mut registry = ToolRegistry::new();
+        register_state_history_tools(&mut registry, reader, reg);
+        let names: Vec<String> = registry.llm_tools().into_iter().map(|t| t.name).collect();
+        assert!(names.contains(&"query_device_state_history".to_string()));
+        assert!(names.contains(&"device_state_snapshot_at".to_string()));
     }
 }

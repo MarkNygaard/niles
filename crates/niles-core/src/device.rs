@@ -4,6 +4,7 @@
 //! sources (Zigbee2MQTT, etc.) as the canonical structure of the home.
 
 use crate::error::{Error, Result};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// A normalized room name like `kitchen` or `living_room`.
@@ -135,6 +136,19 @@ impl fmt::Display for DeviceId {
     }
 }
 
+impl Serialize for DeviceId {
+    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceId {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        DeviceId::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Current state of a device.
 ///
 /// Each field is independently optional — a sensor reports only the
@@ -149,7 +163,7 @@ impl fmt::Display for DeviceId {
 /// When merging an incoming partial state, copy `Some` fields over the
 /// stored state — do NOT replace the whole struct, or known values get
 /// clobbered by `None` for fields the upstream report didn't include.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceState {
     pub on: Option<bool>,
     pub brightness: Option<u8>,

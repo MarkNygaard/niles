@@ -3,6 +3,8 @@
 
 pub mod command;
 pub mod error;
+pub mod state;
 
 pub use command::{CommandEntry, CommandQuery, CommandReader, CommandWriter};
 pub use error::{Error, Result};
+pub use state::{StateEntry, StateQuery, StateReader, StateWriter};
