@@ -99,6 +99,9 @@ impl StateWriter {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
@@ -202,7 +205,11 @@ impl StateReader {
                 continue;
             }
 
-            let file = File::open(&path)?;
+            let file = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
             let reader = BufReader::new(file);
             for line in reader.lines() {
                 let line = line?;
@@ -270,7 +277,11 @@ impl StateReader {
         let mut latest: HashMap<DeviceId, StateEntry> = HashMap::new();
 
         for (_, path) in files {
-            let file = File::open(&path)?;
+            let file = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
             let reader = BufReader::new(file);
             for line in reader.lines() {
                 let line = line?;
@@ -965,5 +976,74 @@ mod tests {
 
         let entries = reader.query(&StateQuery::default()).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn snapshot_at_across_days() {
+        let tmp = TempDir::new().unwrap();
+        let writer = StateWriter::new(tmp.path()).unwrap();
+        let reader = StateReader::new(tmp.path());
+
+        let day1 = Utc.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
+        let day2 = Utc.with_ymd_and_hms(2026, 1, 2, 10, 0, 0).unwrap();
+        let day3 = Utc.with_ymd_and_hms(2026, 1, 3, 12, 0, 0).unwrap();
+
+        writer
+            .append(&make_entry(
+                day1,
+                "kitchen/ceiling_light",
+                DeviceState {
+                    on: Some(false),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        writer
+            .append(&make_entry(
+                day2,
+                "kitchen/ceiling_light",
+                DeviceState {
+                    on: Some(true),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        writer
+            .append(&make_entry(
+                day3,
+                "kitchen/ceiling_light",
+                DeviceState {
+                    on: Some(false),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+
+        let id = make_id("kitchen/ceiling_light");
+
+        let at_day3 = reader.snapshot_at(day3, std::slice::from_ref(&id)).unwrap();
+        assert_eq!(at_day3.len(), 1);
+        assert_eq!(at_day3[0].ts, day3);
+        assert_eq!(at_day3[0].state.on, Some(false));
+
+        let at_day2_5 = reader
+            .snapshot_at(
+                day2 + chrono::Duration::hours(12),
+                std::slice::from_ref(&id),
+            )
+            .unwrap();
+        assert_eq!(at_day2_5.len(), 1);
+        assert_eq!(at_day2_5[0].ts, day2);
+        assert_eq!(at_day2_5[0].state.on, Some(true));
+
+        let at_day1_5 = reader
+            .snapshot_at(
+                day1 + chrono::Duration::hours(12),
+                std::slice::from_ref(&id),
+            )
+            .unwrap();
+        assert_eq!(at_day1_5.len(), 1);
+        assert_eq!(at_day1_5[0].ts, day1);
+        assert_eq!(at_day1_5[0].state.on, Some(false));
     }
 }
