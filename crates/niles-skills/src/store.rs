@@ -131,6 +131,23 @@ impl SkillStore {
 
         let raw = std::fs::read_to_string(skill_md_path)?;
         let (meta, body) = parse_skill_md(&raw, &dir)?;
+        if meta.name != name {
+            return Err(Error::ScanFailed {
+                reason: format!(
+                    "frontmatter name `{}` does not match skill directory `{}`",
+                    meta.name, name
+                ),
+            });
+        }
+        let body_char_count = body.chars().count();
+        if body_char_count > self.skill_max_chars {
+            return Err(Error::TooLarge {
+                reason: format!(
+                    "body is {} chars (max {})",
+                    body_char_count, self.skill_max_chars
+                ),
+            });
+        }
 
         // Enforce supporting-file size limit.
         for entry in read_dir(&dir)? {
@@ -774,6 +791,34 @@ mod tests {
         let store = store(&tmp);
         let err = store.set_pinned("nope", true).unwrap_err();
         assert!(matches!(err, Error::NotFound { name } if name == "nope"));
+    }
+
+    #[test]
+    fn load_rejects_name_mismatch_in_frontmatter() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("skill-a", "Desc", "Body", Provenance::UserCreated)
+            .unwrap();
+        let tampered = format_skill_md("different-name", "Desc", "Body");
+        std::fs::write(store.root.join("skill-a").join("SKILL.md"), tampered).unwrap();
+
+        let err = store.load("skill-a").unwrap_err();
+        assert!(matches!(err, Error::ScanFailed { .. }));
+    }
+
+    #[test]
+    fn load_rejects_body_over_char_limit() {
+        let tmp = TempDir::new().unwrap();
+        let store = SkillStore::open(tmp.path(), 10, 1_048_576).unwrap();
+        store
+            .create("skill", "Desc", "1234567890", Provenance::UserCreated)
+            .unwrap();
+        let oversized = format_skill_md("skill", "Desc", "12345678901");
+        std::fs::write(store.root.join("skill").join("SKILL.md"), oversized).unwrap();
+
+        let err = store.load("skill").unwrap_err();
+        assert!(matches!(err, Error::TooLarge { .. }));
     }
 
     #[test]
