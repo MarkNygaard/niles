@@ -138,6 +138,9 @@ impl MemoryStore {
     /// Replace the first entry whose text contains `old_text` with
     /// `new_content`.  Errors if no match or ambiguous.
     pub fn replace(&self, target: Target, old_text: &str, new_content: &str) -> Result<()> {
+        if old_text.is_empty() {
+            return Err(Error::EmptySearch);
+        }
         if !self.enabled {
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -184,6 +187,9 @@ impl MemoryStore {
     /// Remove the first entry whose text contains `old_text`.
     /// Errors if no match or ambiguous.
     pub fn remove(&self, target: Target, old_text: &str) -> Result<()> {
+        if old_text.is_empty() {
+            return Err(Error::EmptySearch);
+        }
         if !self.enabled {
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -591,5 +597,21 @@ mod tests {
             .replace(Target::User, "short", "way too long text")
             .unwrap_err();
         assert!(matches!(err, Error::OverBudget { .. }), "{err}");
+    }
+
+    #[test]
+    fn replace_rejects_empty_old_text() {
+        let (_tmp, store) = setup();
+        store.add(Target::User, "A").unwrap();
+        let err = store.replace(Target::User, "", "B").unwrap_err();
+        assert!(matches!(err, Error::EmptySearch));
+    }
+
+    #[test]
+    fn remove_rejects_empty_old_text() {
+        let (_tmp, store) = setup();
+        store.add(Target::User, "A").unwrap();
+        let err = store.remove(Target::User, "").unwrap_err();
+        assert!(matches!(err, Error::EmptySearch));
     }
 }

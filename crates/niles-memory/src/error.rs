@@ -27,4 +27,7 @@ pub enum Error {
 
     #[error("multiple entries in {target} memory match the given text; be more specific")]
     Ambiguous { target: &'static str },
+
+    #[error("search text must not be empty")]
+    EmptySearch,
 }
