@@ -51,11 +51,13 @@ impl HomeConfig {
     /// other locales → Metric.
     pub fn resolved_units(&self) -> Units {
         self.units.unwrap_or_else(|| {
-            if self.locale.starts_with("en_US") || self.locale.starts_with("en-US") {
-                Units::Imperial
-            } else {
-                Units::Metric
+            if self.locale.len() >= 5 {
+                let prefix = &self.locale[..5];
+                if prefix.eq_ignore_ascii_case("en_US") || prefix.eq_ignore_ascii_case("en-US") {
+                    return Units::Imperial;
+                }
             }
+            Units::Metric
         })
     }
 
@@ -254,6 +256,42 @@ default_language = "da"
             default_language: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Imperial);
+    }
+
+    #[test]
+    fn resolved_units_us_bcp47_locale_defaults_imperial() {
+        let cfg = HomeConfig {
+            name: "t".into(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: "UTC".into(),
+            locale: "en-US".into(),
+            units: None,
+            country: None,
+            default_language: None,
+        };
+        assert_eq!(cfg.resolved_units(), Units::Imperial);
+    }
+
+    #[test]
+    fn resolved_units_case_insensitive_locale_matching() {
+        for locale in ["EN_US", "En_Us", "en_us", "EN-US", "En-Us", "en-us"] {
+            let cfg = HomeConfig {
+                name: "t".into(),
+                latitude: 0.0,
+                longitude: 0.0,
+                timezone: "UTC".into(),
+                locale: locale.into(),
+                units: None,
+                country: None,
+                default_language: None,
+            };
+            assert_eq!(
+                cfg.resolved_units(),
+                Units::Imperial,
+                "locale {locale} should map to Imperial"
+            );
+        }
     }
 
     #[test]

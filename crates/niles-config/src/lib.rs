@@ -586,6 +586,42 @@ kelvin = 2000
     }
 
     #[test]
+    fn home_locale_fields_explicit_in_full_config() {
+        let toml = valid_toml().trim_end_matches('\n').replace(
+            "[home]\nname = \"test home\"",
+            r#"[home]
+name = "test home"
+locale = "da_DK"
+units = "metric"
+country = "DK"
+default_language = "da""#,
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.home.locale, "da_DK");
+        assert_eq!(cfg.home.units, Some(Units::Metric));
+        assert_eq!(cfg.home.country, Some("DK".into()));
+        assert_eq!(cfg.home.default_language, Some("da".into()));
+        assert_eq!(cfg.home.resolved_units(), Units::Metric);
+        assert_eq!(cfg.home.resolved_country(), Some("DK".into()));
+        assert_eq!(cfg.home.resolved_language(), "da");
+    }
+
+    #[test]
+    fn home_locale_defaults_in_full_config() {
+        // valid_toml() omits locale fields — they should default correctly.
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.home.locale, "en_US");
+        assert_eq!(cfg.home.units, None);
+        assert_eq!(cfg.home.country, None);
+        assert_eq!(cfg.home.default_language, None);
+        assert_eq!(cfg.home.resolved_units(), Units::Imperial);
+        assert_eq!(cfg.home.resolved_country(), Some("US".into()));
+        assert_eq!(cfg.home.resolved_language(), "en");
+    }
+
+    #[test]
     fn load_from_path_includes_path_in_error() {
         let missing = std::path::Path::new("does/not/exist/niles.toml");
         let err = Config::load_from_path(missing).unwrap_err();
