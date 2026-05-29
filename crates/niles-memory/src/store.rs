@@ -65,6 +65,13 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    fn validate_entry_content(content: &str) -> Result<()> {
+        if content.lines().any(|line| line.trim() == "§") {
+            return Err(Error::InvalidDelimiter);
+        }
+        Ok(())
+    }
+
     /// Open (or create) the memory store.  Missing `USER.md` and
     /// `MEMORY.md` files are created as empty.
     pub fn open(config: MemoryConfig) -> Result<Self> {
@@ -117,6 +124,7 @@ impl MemoryStore {
             )));
         }
         scan::scan(content)?;
+        Self::validate_entry_content(content)?;
         let limit = self.char_limit(target);
         self.mutate_file(target, |raw| {
             let mut entries = parse_entries(raw);
@@ -148,6 +156,7 @@ impl MemoryStore {
             )));
         }
         scan::scan(new_content)?;
+        Self::validate_entry_content(new_content)?;
         let limit = self.char_limit(target);
         self.mutate_file(target, |raw| {
             let entries = parse_entries(raw);
@@ -239,12 +248,13 @@ impl MemoryStore {
         loop {
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(file),
-                Err(_) => {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if Instant::now() > deadline {
                         return Err(Error::Locked);
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
+                Err(e) => return Err(Error::Io(e)),
             }
         }
     }
@@ -613,5 +623,22 @@ mod tests {
         store.add(Target::User, "A").unwrap();
         let err = store.remove(Target::User, "").unwrap_err();
         assert!(matches!(err, Error::EmptySearch));
+    }
+
+    #[test]
+    fn add_rejects_section_delimiter_line() {
+        let (_tmp, store) = setup();
+        let err = store.add(Target::User, "line 1\n§\nline 2").unwrap_err();
+        assert!(matches!(err, Error::InvalidDelimiter));
+    }
+
+    #[test]
+    fn replace_rejects_section_delimiter_line() {
+        let (_tmp, store) = setup();
+        store.add(Target::User, "A").unwrap();
+        let err = store
+            .replace(Target::User, "A", "line 1\n§\nline 2")
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidDelimiter));
     }
 }

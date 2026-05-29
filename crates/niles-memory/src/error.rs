@@ -30,4 +30,7 @@ pub enum Error {
 
     #[error("search text must not be empty")]
     EmptySearch,
+
+    #[error("entry content must not contain a standalone '§' delimiter line")]
+    InvalidDelimiter,
 }
