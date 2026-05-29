@@ -332,6 +332,9 @@ impl SkillStore {
             if name_str == ".absorbed" || name_str == ".lock" {
                 continue;
             }
+            if validate_skill_name(&name_str).is_err() {
+                continue;
+            }
             let meta = match entry.metadata() {
                 Ok(m) => m,
                 Err(e) => {
@@ -1084,6 +1087,33 @@ mod tests {
             .unwrap();
         let tampered = format_skill_md("different-name", "Bad desc", "0.1.0", "B");
         std::fs::write(store.root.join("bad").join("SKILL.md"), tampered).unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "good");
+    }
+
+    #[test]
+    fn list_summaries_skips_invalid_name() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("good", "Good desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+
+        // Simulate a hand-created directory with an invalid name.
+        let hidden = store.root.join(".hidden");
+        std::fs::create_dir(&hidden).unwrap();
+        std::fs::write(
+            hidden.join("SKILL.md"),
+            "---\nname: .hidden\ndescription: H\nversion: 0.1.0\n---\nB",
+        )
+        .unwrap();
+        std::fs::write(
+            hidden.join(".usage.json"),
+            r#"{"created_at":"2026-01-01T12:00:00Z","provenance":"user-created"}"#,
+        )
+        .unwrap();
 
         let summaries = store.list_summaries().unwrap();
         assert_eq!(summaries.len(), 1);
