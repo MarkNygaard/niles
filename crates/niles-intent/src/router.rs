@@ -61,6 +61,8 @@ impl IntentRouter {
             .or_else(|| match_scene_delete(&t))
             .or_else(|| match_media_play(&t))
             .or_else(|| match_media_pause(&t))
+            .or_else(|| match_media_next(&t))
+            .or_else(|| match_media_previous(&t))
             .or_else(|| match_media_volume_set(&t))
             .or_else(|| match_media_volume_step(&t))
             .or_else(|| match_timer(&t))
@@ -86,6 +88,8 @@ impl IntentRouter {
             .or_else(|| match_light_set_implicit_room(&t, &ctx))
             .or_else(|| match_device_dim(&t, &ctx))
             .or_else(|| match_device_set(&t, &ctx))
+            .or_else(|| match_media_next_implicit_room(&t, &ctx))
+            .or_else(|| match_media_previous_implicit_room(&t, &ctx))
     }
 }
 
@@ -807,6 +811,112 @@ fn match_media_play(t: &str) -> Option<Intent> {
     }
     Some(Intent::MediaPlay {
         room: room.to_string(),
+    })
+}
+
+// ---- Media next ------------------------------------------------------------
+
+fn media_next_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                (?:next|skip)(?:\s+(?:song|track))?\s+in\s+(?:the\s+)?(?P<room2>.+?)
+              |
+                (?:the\s+)?(?P<room>.+?)\s+(?:next|skip)(?:\s+(?:song|track))?
+              )
+              $",
+        )
+        .expect("media_next regex compiles")
+    })
+}
+
+fn match_media_next(t: &str) -> Option<Intent> {
+    let caps = media_next_regex().captures(t)?;
+    let room = caps.name("room").or_else(|| caps.name("room2"))?.as_str();
+    if room == "the" || room == "music" || room == "song" || room == "track" {
+        return None;
+    }
+    Some(Intent::MediaNext {
+        room: room.to_string(),
+    })
+}
+
+// ---- Media previous --------------------------------------------------------
+
+fn media_previous_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                (?:previous|back|go\s+back)(?:\s+(?:song|track))?\s+in\s+(?:the\s+)?(?P<room2>.+?)
+              |
+                (?:the\s+)?(?P<room>.+?)\s+previous(?:\s+(?:song|track))?
+              )
+              $",
+        )
+        .expect("media_previous regex compiles")
+    })
+}
+
+fn match_media_previous(t: &str) -> Option<Intent> {
+    let caps = media_previous_regex().captures(t)?;
+    let room = caps.name("room").or_else(|| caps.name("room2"))?.as_str();
+    if room == "the" || room == "music" || room == "song" || room == "track" {
+        return None;
+    }
+    Some(Intent::MediaPrevious {
+        room: room.to_string(),
+    })
+}
+
+// ---- Media next implicit room ----------------------------------------------
+
+fn media_next_implicit_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:next|skip)(?:\s+(?:song|track))?
+              $",
+        )
+        .expect("media_next_implicit_room regex compiles")
+    })
+}
+
+fn match_media_next_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    media_next_implicit_room_regex().captures(t)?;
+    let origin = ctx.origin_room?;
+    Some(Intent::MediaNext {
+        room: origin.as_str().to_owned(),
+    })
+}
+
+// ---- Media previous implicit room ------------------------------------------
+
+fn media_previous_implicit_room_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:previous|go\s+back|back)(?:\s+(?:song|track))?
+              $",
+        )
+        .expect("media_previous_implicit_room regex compiles")
+    })
+}
+
+fn match_media_previous_implicit_room(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    media_previous_implicit_room_regex().captures(t)?;
+    let origin = ctx.origin_room?;
+    Some(Intent::MediaPrevious {
+        room: origin.as_str().to_owned(),
     })
 }
 
@@ -1862,6 +1972,151 @@ mod tests {
         );
     }
 
+    // ---- Media next ----
+
+    #[test]
+    fn media_next_song_in_room() {
+        assert_eq!(
+            parse("next song in the kitchen"),
+            Some(Intent::MediaNext {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_skip_in_room() {
+        assert_eq!(
+            parse("skip in the living room"),
+            Some(Intent::MediaNext {
+                room: "living room".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_next_track_in_room() {
+        assert_eq!(
+            parse("next track in the bedroom"),
+            Some(Intent::MediaNext {
+                room: "bedroom".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_next_room_first_phrasing() {
+        assert_eq!(
+            parse("kitchen next song"),
+            Some(Intent::MediaNext {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_next_room_first_bare() {
+        assert_eq!(
+            parse("kitchen next"),
+            Some(Intent::MediaNext {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    // ---- Media previous ----
+
+    #[test]
+    fn media_previous_song_in_room() {
+        assert_eq!(
+            parse("previous song in the kitchen"),
+            Some(Intent::MediaPrevious {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_go_back_in_room() {
+        assert_eq!(
+            parse("go back in the kitchen"),
+            Some(Intent::MediaPrevious {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_back_in_room() {
+        assert_eq!(
+            parse("back in the living room"),
+            Some(Intent::MediaPrevious {
+                room: "living room".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_previous_track_in_room() {
+        assert_eq!(
+            parse("previous track in the bedroom"),
+            Some(Intent::MediaPrevious {
+                room: "bedroom".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_previous_room_first_phrasing() {
+        assert_eq!(
+            parse("kitchen previous song"),
+            Some(Intent::MediaPrevious {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_previous_room_first_bare() {
+        assert_eq!(
+            parse("kitchen previous"),
+            Some(Intent::MediaPrevious {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    // ---- Media rejections ----
+
+    #[test]
+    fn media_next_degenerate_room_rejected() {
+        assert_eq!(parse("next song in the the"), None);
+        assert_eq!(parse("next song in the music"), None);
+        assert_eq!(parse("next song in the song"), None);
+        assert_eq!(parse("next song in the track"), None);
+    }
+
+    #[test]
+    fn media_previous_degenerate_room_rejected() {
+        assert_eq!(parse("previous song in the the"), None);
+        assert_eq!(parse("previous song in the music"), None);
+        assert_eq!(parse("previous song in the song"), None);
+        assert_eq!(parse("previous song in the track"), None);
+    }
+
+    #[test]
+    fn media_next_alone_rejected() {
+        assert_eq!(parse("next song"), None);
+        assert_eq!(parse("skip"), None);
+    }
+
+    #[test]
+    fn media_previous_alone_rejected() {
+        assert_eq!(parse("previous song"), None);
+        assert_eq!(parse("go back"), None);
+        assert_eq!(parse("back"), None);
+    }
+
     // ---- Media volume set ----
 
     #[test]
@@ -1965,6 +2220,16 @@ mod tests {
         assert_eq!(
             parse("PAUSE the Living Room."),
             Some(Intent::MediaPause {
+                room: "living room".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_next_normalizes_case_and_trailing_punctuation() {
+        assert_eq!(
+            parse("SKIP Track in the Living Room."),
+            Some(Intent::MediaNext {
                 room: "living room".into(),
             })
         );
@@ -2822,5 +3087,75 @@ mod context_tests {
         assert_eq!(parse_with("warm white", ctx), None);
         assert_eq!(parse_with("cool white", ctx), None);
         assert_eq!(parse_with("daylight", ctx), None);
+    }
+
+    // ---- Implicit-room media next ----
+
+    #[test]
+    fn media_next_implicit_room_uses_origin() {
+        let idx = fixture_multi();
+        let kitchen = RoomName::parse("kitchen").unwrap();
+        let ctx = ctx_with(&idx, Some(&kitchen));
+        assert_eq!(
+            parse_with("next song", ctx),
+            Some(Intent::MediaNext {
+                room: "kitchen".into(),
+            })
+        );
+        assert_eq!(
+            parse_with("skip", ctx),
+            Some(Intent::MediaNext {
+                room: "kitchen".into(),
+            })
+        );
+        assert_eq!(
+            parse_with("next track", ctx),
+            Some(Intent::MediaNext {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_next_no_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("next song", ctx), None);
+        assert_eq!(parse_with("skip", ctx), None);
+    }
+
+    // ---- Implicit-room media previous ----
+
+    #[test]
+    fn media_previous_implicit_room_uses_origin() {
+        let idx = fixture_multi();
+        let living_room = RoomName::parse("living_room").unwrap();
+        let ctx = ctx_with(&idx, Some(&living_room));
+        assert_eq!(
+            parse_with("previous song", ctx),
+            Some(Intent::MediaPrevious {
+                room: "living_room".into(),
+            })
+        );
+        assert_eq!(
+            parse_with("go back", ctx),
+            Some(Intent::MediaPrevious {
+                room: "living_room".into(),
+            })
+        );
+        assert_eq!(
+            parse_with("back", ctx),
+            Some(Intent::MediaPrevious {
+                room: "living_room".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_previous_no_origin_returns_none() {
+        let idx = fixture_multi();
+        let ctx = ctx_with(&idx, None);
+        assert_eq!(parse_with("previous song", ctx), None);
+        assert_eq!(parse_with("go back", ctx), None);
     }
 }

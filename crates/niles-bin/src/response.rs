@@ -225,6 +225,16 @@ pub fn media_pause(room: &str) -> String {
     format!("Paused in the {}.", spoken_room(room))
 }
 
+/// "Next track in the living room."
+pub fn media_next(room: &str) -> String {
+    format!("Next track in the {}.", spoken_room(room))
+}
+
+/// "Previous track in the kitchen."
+pub fn media_previous(room: &str) -> String {
+    format!("Previous track in the {}.", spoken_room(room))
+}
+
 /// "Kitchen volume to 30%."
 pub fn media_volume(room: &str, percent: u8) -> String {
     format!(
@@ -647,6 +657,16 @@ mod tests {
     #[test]
     fn media_pause_phrasing() {
         assert_eq!(media_pause("kitchen"), "Paused in the kitchen.");
+    }
+
+    #[test]
+    fn media_next_response() {
+        assert_eq!(media_next("kitchen"), "Next track in the kitchen.");
+    }
+
+    #[test]
+    fn media_previous_response() {
+        assert_eq!(media_previous("kitchen"), "Previous track in the kitchen.");
     }
 
     #[test]

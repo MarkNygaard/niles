@@ -1708,6 +1708,20 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
             response::media_play(&room),
             "play",
         ),
+        Intent::MediaNext { room } => media_result_to_response(
+            peer,
+            &room,
+            media_dispatch(ctx, &room, |c| async move { c.next().await }).await,
+            response::media_next(&room),
+            "next",
+        ),
+        Intent::MediaPrevious { room } => media_result_to_response(
+            peer,
+            &room,
+            media_dispatch(ctx, &room, |c| async move { c.previous().await }).await,
+            response::media_previous(&room),
+            "previous",
+        ),
         Intent::MediaVolumeSet { room, percent } => media_result_to_response(
             peer,
             &room,
@@ -2835,6 +2849,8 @@ fn format_intent(intent: &Intent) -> String {
         }
         Intent::MediaPause { room } => format!("MediaPause({room})"),
         Intent::MediaPlay { room } => format!("MediaPlay({room})"),
+        Intent::MediaNext { room } => format!("MediaNext({room})"),
+        Intent::MediaPrevious { room } => format!("MediaPrevious({room})"),
         Intent::MediaVolumeSet { room, percent } => format!("MediaVolumeSet({room} -> {percent}%)"),
         Intent::MediaVolumeStep { room, delta } => format!("MediaVolumeStep({room} -> {delta:+})"),
         Intent::TimerSet { duration, name } => match name {

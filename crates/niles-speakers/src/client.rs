@@ -67,6 +67,30 @@ impl SonosClient {
         Ok(())
     }
 
+    /// Skip to the next track.
+    pub async fn next(&self) -> Result<()> {
+        self.invoke(
+            av_endpoint(&self.ip),
+            AV_TRANSPORT_SERVICE,
+            "Next",
+            "<InstanceID>0</InstanceID>",
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Skip to the previous track.
+    pub async fn previous(&self) -> Result<()> {
+        self.invoke(
+            av_endpoint(&self.ip),
+            AV_TRANSPORT_SERVICE,
+            "Previous",
+            "<InstanceID>0</InstanceID>",
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Query the current transport state (Playing, Paused, etc.).
     pub async fn get_transport_state(&self) -> Result<TransportState> {
         let body = self
@@ -266,6 +290,38 @@ mod tests {
         assert!(body.contains("<u:Pause"));
         assert!(body.contains("<InstanceID>0</InstanceID>"));
         assert!(!body.contains("<Speed>"));
+    }
+
+    #[tokio::test]
+    async fn next_sends_correct_soap() {
+        let (mock, client) = client_with(Ok("".into()));
+        client.next().await.unwrap();
+
+        let endpoint = mock.last_endpoint().unwrap();
+        assert!(endpoint.ends_with("/MediaRenderer/AVTransport/Control"));
+        assert_eq!(
+            mock.last_action().unwrap(),
+            "urn:schemas-upnp-org:service:AVTransport:1#Next"
+        );
+        let body = mock.last_body().unwrap();
+        assert!(body.contains("<u:Next"));
+        assert!(body.contains("<InstanceID>0</InstanceID>"));
+    }
+
+    #[tokio::test]
+    async fn previous_sends_correct_soap() {
+        let (mock, client) = client_with(Ok("".into()));
+        client.previous().await.unwrap();
+
+        let endpoint = mock.last_endpoint().unwrap();
+        assert!(endpoint.ends_with("/MediaRenderer/AVTransport/Control"));
+        assert_eq!(
+            mock.last_action().unwrap(),
+            "urn:schemas-upnp-org:service:AVTransport:1#Previous"
+        );
+        let body = mock.last_body().unwrap();
+        assert!(body.contains("<u:Previous"));
+        assert!(body.contains("<InstanceID>0</InstanceID>"));
     }
 
     #[tokio::test]
