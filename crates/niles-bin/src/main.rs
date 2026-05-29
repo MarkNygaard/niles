@@ -1531,6 +1531,35 @@ async fn handle_transcript(
             dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_dim(&room, new))
         }
+        Intent::LightKelvinStep { room, delta_kelvin } => {
+            let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
+                d.is_curve_driven() && d.supports_color_temperature()
+            }) {
+                RoomResolve::Found(c, t) => (c, t),
+                RoomResolve::BadName => return Some(response::room_not_found(&room)),
+                RoomResolve::NoDevices => {
+                    return Some(response::room_no_devices(&room));
+                }
+                RoomResolve::WarmingUp => return Some(response::room_warming_up()),
+            };
+            // `resolve_room_targets` already filtered for devices with
+            // color temperature, so every target has a known value.
+            let base = (targets
+                .iter()
+                .map(|d| d.state.color_temp_kelvin.unwrap() as u32)
+                .sum::<u32>()
+                / targets.len() as u32) as u16;
+            let new = base.saturating_add_signed(delta_kelvin).clamp(2000, 6500);
+            for device in &targets {
+                ctx.tracker.flag(&device.id);
+            }
+            let desired = DeviceState {
+                color_temp_kelvin: Some(new),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::light_kelvin_step(&room, new))
+        }
         Intent::DeviceSet { device_id, on } => {
             let Some(device) = ctx.registry.get(&device_id) else {
                 return Some(response::device_not_found(&device_id));
@@ -2770,6 +2799,9 @@ fn format_intent(intent: &Intent) -> String {
             delta_percent,
         } => {
             format!("LightStep({room} {delta_percent:+}%)")
+        }
+        Intent::LightKelvinStep { room, delta_kelvin } => {
+            format!("LightKelvinStep({room} {delta_kelvin:+}K)")
         }
         Intent::DeviceSet { device_id, on } => {
             let state = if *on { "on" } else { "off" };

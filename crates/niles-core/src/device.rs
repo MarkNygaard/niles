@@ -217,6 +217,11 @@ impl Device {
     pub fn is_curve_driven(&self) -> bool {
         self.is_light() && !self.is_ambient
     }
+
+    /// True if this device reports a color temperature.
+    pub fn supports_color_temperature(&self) -> bool {
+        self.state.color_temp_kelvin.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -359,5 +364,30 @@ mod tests {
                 "{class:?} with is_ambient=true should not be curve_driven"
             );
         }
+    }
+
+    #[test]
+    fn supports_color_temperature_checks_state_field() {
+        let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
+
+        let with_ct = Device::new(
+            id.clone(),
+            DeviceState {
+                color_temp_kelvin: Some(2700),
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        );
+        assert!(with_ct.supports_color_temperature());
+
+        let without_ct = Device::new(
+            id,
+            DeviceState {
+                color_temp_kelvin: None,
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        );
+        assert!(!without_ct.supports_color_temperature());
     }
 }
