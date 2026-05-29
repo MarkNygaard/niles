@@ -320,13 +320,26 @@ impl SkillStore {
         let max_bytes = self.skill_max_chars as u64 * 4 + 4096;
 
         for entry in entries {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping unreadable directory entry in list_summaries");
+                    continue;
+                }
+            };
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if name_str == ".absorbed" || name_str == ".lock" {
                 continue;
             }
-            if !entry.metadata()?.is_dir() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(skill = %name_str, error = %e, "skipping unreadable metadata in list_summaries");
+                    continue;
+                }
+            };
+            if !meta.is_dir() {
                 continue;
             }
             let skill_md_path = entry.path().join("SKILL.md");
@@ -354,6 +367,15 @@ impl SkillStore {
                     continue;
                 }
             };
+
+            if meta.name != name_str {
+                tracing::warn!(
+                    skill = %name_str,
+                    frontmatter_name = %meta.name,
+                    "skipping skill with mismatched frontmatter name in list_summaries"
+                );
+                continue;
+            }
 
             let sidecar = match Sidecar::read(&entry.path().join(".usage.json")) {
                 Ok(s) => s,
@@ -1044,6 +1066,24 @@ mod tests {
             .create("bad", "Bad desc", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         std::fs::write(store.root.join("bad").join("SKILL.md"), "not yaml at all").unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "good");
+    }
+
+    #[test]
+    fn list_summaries_skips_name_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("good", "Good desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .create("bad", "Bad desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let tampered = format_skill_md("different-name", "Bad desc", "0.1.0", "B");
+        std::fs::write(store.root.join("bad").join("SKILL.md"), tampered).unwrap();
 
         let summaries = store.list_summaries().unwrap();
         assert_eq!(summaries.len(), 1);

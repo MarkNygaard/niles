@@ -51,7 +51,7 @@ impl Tool for MintSkillTool {
                 "properties": {
                     "name": { "type": "string", "description": "Unique kebab-case skill name." },
                     "description": { "type": "string", "description": "One-line description of what the skill does." },
-                    "version": { "type": "string", "description": "Semantic version. Default '0.1.0'." },
+                    "version": { "type": "string", "description": "Semantic version (e.g. '0.1.0')." },
                     "body": { "type": "string", "description": "The how-to content of the skill." }
                 }
             }),
@@ -376,6 +376,75 @@ mod tests {
         let (_tmp, s) = store();
         let view = ViewSkillTool::new(s);
         let err = view.execute(json!({"name": "nope"})).await.unwrap_err();
+        assert!(matches!(err, Error::Skill(_)));
+    }
+
+    #[tokio::test]
+    async fn patch_missing_skill_errors() {
+        let (_tmp, s) = store();
+        let patch = PatchSkillTool::new(s);
+        let err = patch
+            .execute(json!({"name": "nope", "body": "New"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Skill(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_missing_skill_errors() {
+        let (_tmp, s) = store();
+        let delete = DeleteSkillTool::new(s);
+        let err = delete.execute(json!({"name": "nope"})).await.unwrap_err();
+        assert!(matches!(err, Error::Skill(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_pinned_skill_errors() {
+        let (_tmp, s) = store();
+        let mint = MintSkillTool::new(s.clone());
+        let delete = DeleteSkillTool::new(s.clone());
+
+        mint.execute(json!({
+            "name": "pinned-skill",
+            "description": "D",
+            "version": "0.1.0",
+            "body": "B"
+        }))
+        .await
+        .unwrap();
+
+        s.set_pinned("pinned-skill", true).unwrap();
+
+        let err = delete
+            .execute(json!({"name": "pinned-skill"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Skill(_)));
+    }
+
+    #[tokio::test]
+    async fn mint_existing_skill_errors() {
+        let (_tmp, s) = store();
+        let mint = MintSkillTool::new(s);
+
+        mint.execute(json!({
+            "name": "dup",
+            "description": "D",
+            "version": "0.1.0",
+            "body": "B"
+        }))
+        .await
+        .unwrap();
+
+        let err = mint
+            .execute(json!({
+                "name": "dup",
+                "description": "D2",
+                "version": "0.2.0",
+                "body": "B2"
+            }))
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::Skill(_)));
     }
 }
