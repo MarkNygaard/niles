@@ -159,6 +159,9 @@ impl StateReader {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
@@ -913,5 +916,54 @@ mod tests {
         let reader = StateReader::new(tmp.path());
         let entries = reader.query(&StateQuery::default()).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn snapshot_at_empty_device_ids_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let writer = StateWriter::new(tmp.path()).unwrap();
+        let reader = StateReader::new(tmp.path());
+
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
+        writer
+            .append(&make_entry(
+                t,
+                "kitchen/ceiling_light",
+                DeviceState {
+                    on: Some(true),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+
+        let entries = reader.snapshot_at(t, &[]).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn reader_skips_directories_in_state_dir() {
+        let tmp = TempDir::new().unwrap();
+        let writer = StateWriter::new(tmp.path()).unwrap();
+        let reader = StateReader::new(tmp.path());
+
+        let now = Utc::now();
+        writer
+            .append(&make_entry(
+                now,
+                "kitchen/ceiling_light",
+                DeviceState {
+                    on: Some(true),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+
+        // A stray directory should not break queries.
+        let state_dir = tmp.path().join("state");
+        let stray = state_dir.join("2026-01-01");
+        std::fs::create_dir(&stray).unwrap();
+
+        let entries = reader.query(&StateQuery::default()).unwrap();
+        assert_eq!(entries.len(), 1);
     }
 }

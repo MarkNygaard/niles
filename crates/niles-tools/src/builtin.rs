@@ -71,6 +71,16 @@ fn device_full(device: &niles_core::Device) -> Value {
     v
 }
 
+/// Format a `StateEntry` as a JSON value using the same `room/name`
+/// device-id convention that the rest of the tool surface uses.
+fn state_entry_value(entry: &niles_history::StateEntry) -> Result<Value> {
+    Ok(json!({
+        "ts": entry.ts,
+        "device_id": format!("{}/{}", entry.device_id.room(), entry.device_id.name()),
+        "state": entry.state,
+    }))
+}
+
 /// Extract and validate `DeviceState` from `set_device` arguments.
 /// Returns `InvalidArgs` if no state fields are provided or if values
 /// are out of range.
@@ -813,7 +823,8 @@ impl Tool for QueryDeviceStateHistory {
             .reader
             .query(&q)
             .map_err(|e| Error::Internal(format!("query failed: {e}")))?;
-        Ok(serde_json::to_value(entries)?)
+        let arr: Result<Vec<Value>> = entries.iter().map(state_entry_value).collect();
+        Ok(json!(arr?))
     }
 }
 
@@ -891,7 +902,8 @@ impl Tool for DeviceStateSnapshotAt {
             .reader
             .snapshot_at(at, &ids)
             .map_err(|e| Error::Internal(format!("snapshot failed: {e}")))?;
-        Ok(serde_json::to_value(entries)?)
+        let arr: Result<Vec<Value>> = entries.iter().map(state_entry_value).collect();
+        Ok(json!(arr?))
     }
 }
 
@@ -1836,7 +1848,67 @@ mod tests {
         let result = tool.execute(args).await.unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["device_id"], "z2m:living_room/floor_lamp");
+        assert_eq!(arr[0]["device_id"], "living_room/floor_lamp");
+    }
+
+    #[tokio::test]
+    async fn query_device_state_history_returns_formatted_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let writer = niles_history::StateWriter::new(tmp.path()).unwrap();
+        let reader = Arc::new(StateReader::new(tmp.path()));
+
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
+        writer
+            .append(&niles_history::StateEntry {
+                ts: t,
+                device_id: DeviceId::parse("z2m:kitchen/ceiling_light").unwrap(),
+                state: DeviceState {
+                    on: Some(true),
+                    brightness: Some(80),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+        let tool = QueryDeviceStateHistory::new(reader);
+        let args = json!({ "since": "2026-01-01T00:00:00Z", "until": "2026-01-01T23:59:59Z" });
+        let result = tool.execute(args).await.unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["device_id"], "kitchen/ceiling_light");
+        assert_eq!(arr[0]["state"]["on"], true);
+        assert_eq!(arr[0]["state"]["brightness"], 80);
+    }
+
+    #[tokio::test]
+    async fn device_state_snapshot_at_with_device_ids_returns_formatted_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let writer = niles_history::StateWriter::new(tmp.path()).unwrap();
+        let reader = Arc::new(StateReader::new(tmp.path()));
+        let reg = fixture_registry();
+
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
+        writer
+            .append(&niles_history::StateEntry {
+                ts: t,
+                device_id: DeviceId::parse("z2m:kitchen/ceiling_light").unwrap(),
+                state: DeviceState {
+                    on: Some(true),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+        let tool = DeviceStateSnapshotAt::new(reader, reg);
+        let args = json!({
+            "at": "2026-01-01T12:00:00Z",
+            "device_ids": ["kitchen/ceiling_light"]
+        });
+        let result = tool.execute(args).await.unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["device_id"], "kitchen/ceiling_light");
+        assert_eq!(arr[0]["state"]["on"], true);
     }
 
     #[test]
