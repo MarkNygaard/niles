@@ -758,16 +758,23 @@ fn build_tool_registry(
 }
 
 /// Build a `MemoryStore` from the `[memory]` section.
-/// Returns `None` when no directory is configured.
+/// Returns `None` when no directory is configured or when opening the store fails.
 fn build_memory_store(cfg: &niles_config::MemoryConfig) -> Option<Arc<MemoryStore>> {
     let dir = cfg.directory.as_ref()?;
-    let store = MemoryStore::open(niles_memory::MemoryConfig {
+    match MemoryStore::open(niles_memory::MemoryConfig {
         directory: dir.clone(),
         user_char_limit: cfg.user_char_limit,
         agent_char_limit: cfg.agent_char_limit,
-    })
-    .ok()?;
-    Some(Arc::new(store))
+    }) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to open memory store at {}: {e}; memory tools disabled",
+                dir.display()
+            );
+            None
+        }
+    }
 }
 
 /// Build a `PiperClient` from the `[tts]` section of an already-
@@ -1030,10 +1037,24 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
 
+    let user_mem = memory_store
+        .as_ref()
+        .and_then(|s| s.load(niles_memory::Target::User).ok());
+    let agent_mem = memory_store
+        .as_ref()
+        .and_then(|s| s.load(niles_memory::Target::Memory).ok());
+    let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
+    let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
+
     let system_prompt = match (&capability_loader, &capability_index) {
-        (Some(loader), Some(index)) => {
-            assemble_system_prompt(&args.prompt, index, loader, None, None, None)
-        }
+        (Some(loader), Some(index)) => assemble_system_prompt(
+            &args.prompt,
+            index,
+            loader,
+            None,
+            user_mem_str.as_deref(),
+            agent_mem_str.as_deref(),
+        ),
         _ => NILES_SYSTEM_PERSONA.to_string(),
     };
 

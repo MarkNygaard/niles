@@ -61,6 +61,7 @@ impl Default for MemoryConfig {
 /// Persistent markdown memory store.
 pub struct MemoryStore {
     config: MemoryConfig,
+    enabled: bool,
 }
 
 impl MemoryStore {
@@ -74,7 +75,10 @@ impl MemoryStore {
                 File::create(&path)?;
             }
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            enabled: true,
+        })
     }
 
     /// No-op store for when memory is disabled.
@@ -84,11 +88,15 @@ impl MemoryStore {
                 directory: PathBuf::new(),
                 ..Default::default()
             },
+            enabled: false,
         }
     }
 
     /// Read and parse entries from `target`.
     pub fn load(&self, target: Target) -> Result<Vec<Entry>> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
         let path = self.config.directory.join(target.file_name());
         let mut file = File::open(&path)?;
         let mut raw = String::new();
@@ -98,6 +106,12 @@ impl MemoryStore {
 
     /// Append a new entry to `target`.  Enforces scan + budget.
     pub fn add(&self, target: Target, content: &str) -> Result<()> {
+        if !self.enabled {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "memory store is disabled",
+            )));
+        }
         scan::scan(content)?;
         let limit = self.char_limit(target);
         self.mutate_file(target, |raw| {
@@ -120,6 +134,12 @@ impl MemoryStore {
     /// Replace the first entry whose text contains `old_text` with
     /// `new_content`.  Errors if no match or ambiguous.
     pub fn replace(&self, target: Target, old_text: &str, new_content: &str) -> Result<()> {
+        if !self.enabled {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "memory store is disabled",
+            )));
+        }
         scan::scan(new_content)?;
         let limit = self.char_limit(target);
         self.mutate_file(target, |raw| {
@@ -160,6 +180,12 @@ impl MemoryStore {
     /// Remove the first entry whose text contains `old_text`.
     /// Errors if no match or ambiguous.
     pub fn remove(&self, target: Target, old_text: &str) -> Result<()> {
+        if !self.enabled {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "memory store is disabled",
+            )));
+        }
         self.mutate_file(target, |raw| {
             let entries = parse_entries(raw);
             let matches: Vec<usize> = entries
@@ -235,13 +261,19 @@ impl MemoryStore {
 
         let tmp_name = format!("{}.tmp.{}", target.file_name(), std::process::id());
         let tmp_path = path.with_file_name(&tmp_name);
-        {
-            let mut tmp = File::create(&tmp_path)?;
-            tmp.write_all(new_content.as_bytes())?;
-            tmp.sync_all()?;
+        let result = (|| {
+            {
+                let mut tmp = File::create(&tmp_path)?;
+                tmp.write_all(new_content.as_bytes())?;
+                tmp.sync_all()?;
+            }
+            std::fs::rename(&tmp_path, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
         }
-        std::fs::rename(&tmp_path, &path)?;
-        Ok(())
+        result
     }
 }
 
@@ -498,5 +530,15 @@ mod tests {
         }
         let entries = store.load(Target::User).unwrap();
         assert_eq!(entries.len(), 200);
+    }
+
+    #[test]
+    fn disabled_store_returns_empty() {
+        let store = MemoryStore::disabled();
+        assert!(store.load(Target::User).unwrap().is_empty());
+        assert!(store.load(Target::Memory).unwrap().is_empty());
+        assert!(store.add(Target::User, "x").is_err());
+        assert!(store.replace(Target::User, "x", "y").is_err());
+        assert!(store.remove(Target::User, "x").is_err());
     }
 }

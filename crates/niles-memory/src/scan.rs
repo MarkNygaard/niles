@@ -15,43 +15,54 @@ use crate::error::{Error, Result};
 /// - ZWSP (`\u{200B}`), ZWJ (`\u{200D}`), ZWNBSP (`\u{FEFF}`), WJ (`\u{2060}`)
 /// - RTL override (`\u{202E}`)
 pub fn scan(content: &str) -> Result<()> {
-    for (i, ch) in content.chars().enumerate() {
+    let mut byte_offset = 0usize;
+    for ch in content.chars() {
         let cp = ch as u32;
         if ch == '\0' {
             return Err(Error::ScanFailed {
-                reason: format!("null byte at byte offset {i}"),
+                reason: format!("null byte at byte offset {byte_offset}"),
             });
         }
         // C1 controls (U+0080–U+009F)
         if (0x80..=0x9F).contains(&cp) {
             return Err(Error::ScanFailed {
-                reason: format!("C1 control character U+{:04X} at offset {i}", cp),
+                reason: format!(
+                    "C1 control character U+{:04X} at byte offset {byte_offset}",
+                    cp
+                ),
             });
         }
         // C0 controls except \n \r \t
         if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
             return Err(Error::ScanFailed {
-                reason: format!("control character U+{:04X} at offset {i}", cp),
+                reason: format!(
+                    "control character U+{:04X} at byte offset {byte_offset}",
+                    cp
+                ),
             });
         }
         // BOM
         if cp == 0xFEFF {
             return Err(Error::ScanFailed {
-                reason: format!("BOM at offset {i}"),
+                reason: format!("BOM at byte offset {byte_offset}"),
             });
         }
         // ZWSP, ZWJ, WJ
         if matches!(cp, 0x200B | 0x200D | 0x2060) {
             return Err(Error::ScanFailed {
-                reason: format!("zero-width character U+{:04X} at offset {i}", cp),
+                reason: format!(
+                    "zero-width character U+{:04X} at byte offset {byte_offset}",
+                    cp
+                ),
             });
         }
         // RTL override
         if cp == 0x202E {
             return Err(Error::ScanFailed {
-                reason: format!("RTL override character at offset {i}"),
+                reason: format!("RTL override character at byte offset {byte_offset}"),
             });
         }
+        byte_offset += ch.len_utf8();
     }
     Ok(())
 }
