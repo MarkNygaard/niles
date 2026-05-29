@@ -178,12 +178,30 @@ pub struct Device {
     pub id: DeviceId,
     pub state: DeviceState,
     pub class: DeviceClass,
+    pub is_ambient: bool,
 }
 
 impl Device {
+    /// Construct a new device with `is_ambient` defaulted to `false`.
+    pub fn new(id: DeviceId, state: DeviceState, class: DeviceClass) -> Self {
+        Self {
+            id,
+            state,
+            class,
+            is_ambient: false,
+        }
+    }
+
     /// True if this device is classified as a light.
     pub fn is_light(&self) -> bool {
         matches!(self.class, DeviceClass::Light)
+    }
+
+    /// True if this device should be driven by the ambient lighting
+    /// curve and the morning routine. Ambient lights (accent /
+    /// decorative lights the user controls manually) are excluded.
+    pub fn is_curve_driven(&self) -> bool {
+        self.is_light() && !self.is_ambient
     }
 }
 
@@ -284,5 +302,48 @@ mod tests {
         let z2m = DeviceId::new("z2m", room.clone(), name.clone()).unwrap();
         let matter = DeviceId::new("matter", room, name).unwrap();
         assert_ne!(z2m, matter);
+    }
+
+    #[test]
+    fn device_new_defaults_to_non_ambient() {
+        let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
+        let device = Device::new(id, DeviceState::default(), DeviceClass::Light);
+        assert!(!device.is_ambient);
+    }
+
+    #[test]
+    fn is_curve_driven_for_normal_light() {
+        let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
+        let device = Device::new(id, DeviceState::default(), DeviceClass::Light);
+        assert!(device.is_curve_driven());
+    }
+
+    #[test]
+    fn is_curve_driven_excludes_ambient_and_non_lights() {
+        let id = DeviceId::parse("z2m:living_room/tv_lightstrip").unwrap();
+
+        // Light + ambient → false
+        let mut ambient_light = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
+        ambient_light.is_ambient = true;
+        assert!(!ambient_light.is_curve_driven());
+
+        // Non-light classes → false regardless of is_ambient
+        for class in [
+            DeviceClass::Sensor,
+            DeviceClass::Switch,
+            DeviceClass::Unknown,
+        ] {
+            let mut d = Device::new(id.clone(), DeviceState::default(), class);
+            d.is_ambient = false;
+            assert!(
+                !d.is_curve_driven(),
+                "{class:?} with is_ambient=false should not be curve_driven"
+            );
+            d.is_ambient = true;
+            assert!(
+                !d.is_curve_driven(),
+                "{class:?} with is_ambient=true should not be curve_driven"
+            );
+        }
     }
 }

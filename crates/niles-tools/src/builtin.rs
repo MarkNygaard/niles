@@ -768,11 +768,7 @@ mod tests {
     }
 
     fn device(id: &str, class: DeviceClass, state: DeviceState) -> Device {
-        Device {
-            id: DeviceId::parse(&format!("z2m:{id}")).unwrap(),
-            state,
-            class,
-        }
+        Device::new(DeviceId::parse(&format!("z2m:{id}")).unwrap(), state, class)
     }
 
     fn fixture_registry() -> Arc<DeviceRegistry> {

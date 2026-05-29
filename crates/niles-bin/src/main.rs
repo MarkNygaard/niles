@@ -295,6 +295,24 @@ async fn config_validate() -> anyhow::Result<()> {
     todo!("implement `config validate`")
 }
 
+/// Build a `HashSet<DeviceId>` from the `[ambient_lights]` config
+/// section. Devices listed here are excluded from the ambient
+/// lighting curve and the morning routine.
+fn build_ambient_set(cfg: &Config) -> Arc<HashSet<DeviceId>> {
+    let mut set = HashSet::new();
+    for raw in &cfg.ambient_lights.devices {
+        match DeviceId::parse(&format!("z2m:{raw}")) {
+            Ok(id) => {
+                set.insert(id);
+            }
+            Err(e) => {
+                tracing::warn!("ambient_lights device {raw:?} failed to parse: {e}");
+            }
+        }
+    }
+    Arc::new(set)
+}
+
 /// Build an `MqttClient` connected to the broker described in
 /// `niles.toml`, with credentials resolved from env vars.
 async fn connect_from_config(config_path: &Path) -> anyhow::Result<(Config, MqttClient)> {
@@ -361,7 +379,14 @@ async fn discover(args: DiscoverArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let mut bus_rx = bus.subscribe();
 
-    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
+    let ambient_set = build_ambient_set(&cfg);
+    let source = Z2mSource::new(
+        client,
+        registry.clone(),
+        bus.clone(),
+        &cfg.mqtt.z2m_prefix,
+        ambient_set,
+    );
 
     eprintln!(
         "Subscribed to {prefix}/bridge/devices and {prefix}/+/+. Press Ctrl-C to exit.\n",
@@ -456,7 +481,14 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
 
     let publisher = client.publisher();
-    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
+    let ambient_set = build_ambient_set(&cfg);
+    let source = Z2mSource::new(
+        client,
+        registry.clone(),
+        bus.clone(),
+        &cfg.mqtt.z2m_prefix,
+        ambient_set,
+    );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
@@ -882,11 +914,13 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -1106,11 +1140,13 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let mut bus_rx = bus.subscribe();
     let device_index = Arc::new(RwLock::new(build_initial_device_index(&registry)));
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -1351,7 +1387,7 @@ async fn handle_transcript(
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
         Intent::LightSet { room, on } => {
-            let (canonical, targets) =
+            let (_canonical, targets) =
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName => return Some(response::room_not_found(&room)),
@@ -1366,11 +1402,35 @@ async fn handle_transcript(
                 on: Some(on),
                 ..Default::default()
             };
-            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_set(&room, on))
         }
+        Intent::LightSetAll { on } => {
+            let targets: Vec<Device> = ctx
+                .registry
+                .list_all()
+                .into_iter()
+                .filter(|d| d.is_light())
+                .collect();
+            if targets.is_empty() {
+                if ctx.registry.is_empty() {
+                    println!(
+                        "[{peer}] registry is still warming up (no devices yet) — try again in a moment"
+                    );
+                    return Some(response::room_warming_up());
+                }
+                println!("[{peer}] no lights in registry — nothing to dispatch");
+                return Some(response::no_lights());
+            }
+            let desired = DeviceState {
+                on: Some(on),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::all_lights(on))
+        }
         Intent::LightDim { room, percent } => {
-            let (canonical, targets) =
+            let (_canonical, targets) =
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName => return Some(response::room_not_found(&room)),
@@ -1391,8 +1451,37 @@ async fn handle_transcript(
                 brightness: Some(percent),
                 ..Default::default()
             };
-            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_dim(&room, percent))
+        }
+        Intent::LightStep {
+            room,
+            delta_percent,
+        } => {
+            let (_canonical, targets) =
+                match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
+                    RoomResolve::Found(c, t) => (c, t),
+                    RoomResolve::BadName => return Some(response::room_not_found(&room)),
+                    RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
+                    RoomResolve::WarmingUp => return Some(response::room_warming_up()),
+                };
+            // `resolve_room_targets` already filtered for devices with
+            // brightness, so every target has a known value.
+            let base = (targets
+                .iter()
+                .map(|d| d.state.brightness.unwrap() as i32)
+                .sum::<i32>()
+                / targets.len() as i32) as i16;
+            let new = (base + delta_percent).clamp(0, 100) as u8;
+            for device in &targets {
+                ctx.tracker.flag(&device.id);
+            }
+            let desired = DeviceState {
+                brightness: Some(new),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::light_dim(&room, new))
         }
         Intent::DeviceSet { device_id, on } => {
             let Some(device) = ctx.registry.get(&device_id) else {
@@ -1679,7 +1768,6 @@ where
 async fn dispatch_to_targets(
     ctx: &DispatchCtx,
     peer: std::net::SocketAddr,
-    _canonical: &RoomName,
     targets: &[Device],
     desired: &DeviceState,
 ) {
@@ -1910,11 +1998,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_dry_run = args.dry_run;
     let mut bus_rx = bus.subscribe();
 
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -2216,11 +2306,13 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     // Z2mSource requires an EventBus; nothing in this subcommand
     // subscribes to events, so the bus is wired straight in and
     // dropped once Z2mSource takes ownership.
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         EventBus::default(),
         z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -2307,6 +2399,9 @@ async fn run_curve_tick(
     let mut publish_count = 0usize;
     for device in registry.list_all() {
         if device.state.on != Some(true) {
+            continue;
+        }
+        if !device.is_curve_driven() {
             continue;
         }
         if tracker.is_flagged(&device.id) {
@@ -2399,7 +2494,7 @@ async fn run_morning_routine_tick(
                     tracing::info!("[routine {minute_of_day}] released {id}");
                     continue;
                 };
-                if device.state.brightness != Some(100) {
+                if device.is_curve_driven() && device.state.brightness != Some(100) {
                     let target = DeviceState {
                         brightness: Some(100),
                         ..Default::default()
@@ -2435,6 +2530,9 @@ async fn run_morning_routine_tick(
             let Some(device) = registry.get(id) else {
                 continue;
             };
+            if !device.is_curve_driven() {
+                continue;
+            }
             if device.state.on == Some(true) {
                 continue;
             }
@@ -2487,6 +2585,9 @@ async fn run_morning_routine_tick(
         let Some(device) = registry.get(id) else {
             continue;
         };
+        if !device.is_curve_driven() {
+            continue;
+        }
         let publish_brightness = match device.state.brightness {
             Some(cur) if cur.abs_diff(target_brightness) > BRIGHTNESS_DEBOUNCE => {
                 Some(target_brightness)
@@ -2602,8 +2703,18 @@ fn format_intent(intent: &Intent) -> String {
             let state = if *on { "on" } else { "off" };
             format!("LightSet({room} -> {state})")
         }
+        Intent::LightSetAll { on } => {
+            let state = if *on { "on" } else { "off" };
+            format!("LightSetAll(home -> {state})")
+        }
         Intent::LightDim { room, percent } => {
             format!("LightDim({room} -> {percent}%)")
+        }
+        Intent::LightStep {
+            room,
+            delta_percent,
+        } => {
+            format!("LightStep({room} {delta_percent:+}%)")
         }
         Intent::DeviceSet { device_id, on } => {
             let state = if *on { "on" } else { "off" };

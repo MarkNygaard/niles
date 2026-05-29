@@ -247,11 +247,7 @@ mod tests {
         let r = DeviceRegistry::new();
         for (room, name, s) in devs {
             let id = dev_in(room, name);
-            r.upsert(Device {
-                id,
-                state: s.clone(),
-                class: DeviceClass::Light,
-            });
+            r.upsert(Device::new(id, s.clone(), DeviceClass::Light));
         }
         r
     }
@@ -366,19 +362,19 @@ mod tests {
         // by `DeviceClass`, not just by state fields.
         let store = SceneStore::new();
         let reg = DeviceRegistry::new();
-        reg.upsert(Device {
-            id: dev_in("kitchen", "ceiling_light"),
-            state: state(true, 80, 2700),
-            class: DeviceClass::Light,
-        });
-        reg.upsert(Device {
-            id: dev_in("kitchen", "thermometer"),
-            state: DeviceState {
+        reg.upsert(Device::new(
+            dev_in("kitchen", "ceiling_light"),
+            state(true, 80, 2700),
+            DeviceClass::Light,
+        ));
+        reg.upsert(Device::new(
+            dev_in("kitchen", "thermometer"),
+            DeviceState {
                 temperature_celsius: Some(21.5),
                 ..Default::default()
             },
-            class: DeviceClass::Sensor,
-        });
+            DeviceClass::Sensor,
+        ));
 
         let n = store.save("evening", &reg, None);
         assert_eq!(n, 1, "sensor should not be captured");
@@ -551,14 +547,14 @@ mod tests {
         let path = dir.path().join("scenes.json");
         let store = SceneStore::new().with_persistence(path.clone());
         let reg = DeviceRegistry::new();
-        reg.upsert(Device {
-            id: dev_in("kitchen", "thermometer"),
-            state: DeviceState {
+        reg.upsert(Device::new(
+            dev_in("kitchen", "thermometer"),
+            DeviceState {
                 temperature_celsius: Some(21.5),
                 ..Default::default()
             },
-            class: DeviceClass::Sensor,
-        });
+            DeviceClass::Sensor,
+        ));
         store.save("sensors_only", &reg, None);
         assert!(store.exists("sensors_only"));
         assert_eq!(store.get("sensors_only").unwrap().len(), 0);
