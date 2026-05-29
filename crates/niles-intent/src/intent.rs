@@ -53,6 +53,16 @@ pub enum Intent {
         delta_kelvin: i16,
     },
 
+    /// "warm white" / "cool white" / "daylight" — set absolute
+    /// color temperature to a named-white value.
+    ///
+    /// Router emits 2200 K for warm white, 4000 K for cool white,
+    /// 5500 K for daylight. Dispatch clamps to 2000..=6500.
+    LightKelvinSet {
+        room: String,
+        kelvin: u16,
+    },
+
     /// "turn on the floor lamp" / "turn off the ceiling light"
     ///
     /// Device-name-targeted variant for single-device control.

@@ -77,6 +77,25 @@ pub fn light_kelvin_step(room: &str, kelvin: u16) -> String {
     )
 }
 
+fn kelvin_to_named_label(kelvin: u16) -> Option<&'static str> {
+    match kelvin {
+        2200 => Some("warm white"),
+        4000 => Some("cool white"),
+        5500 => Some("daylight"),
+        _ => None,
+    }
+}
+
+/// "Living room lights warm white." / "Kitchen lights to 3000K." (fallback)
+pub fn light_kelvin_set(room: &str, kelvin: u16) -> String {
+    match kelvin_to_named_label(kelvin) {
+        Some(label) => {
+            format!("{} lights {}.", capitalize_first(&spoken_room(room)), label)
+        }
+        None => light_kelvin_step(room, kelvin),
+    }
+}
+
 /// "All lights on." / "All lights off."
 pub fn all_lights(on: bool) -> String {
     if on {
@@ -287,6 +306,38 @@ mod tests {
         assert_eq!(
             light_kelvin_step("living_room", 2800),
             "Living room lights to 2800K."
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_warm_white() {
+        assert_eq!(
+            light_kelvin_set("living_room", 2200),
+            "Living room lights warm white."
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_cool_white() {
+        assert_eq!(
+            light_kelvin_set("kitchen", 4000),
+            "Kitchen lights cool white."
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_daylight() {
+        assert_eq!(
+            light_kelvin_set("bedroom", 5500),
+            "Bedroom lights daylight."
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_fallback_numeric() {
+        assert_eq!(
+            light_kelvin_set("kitchen", 3000),
+            "Kitchen lights to 3000K."
         );
     }
 
