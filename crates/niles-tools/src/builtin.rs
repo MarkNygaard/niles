@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
 use niles_history::{CommandQuery, CommandReader, StateQuery, StateReader};
+use niles_memory::{MemoryStore, Target as MemoryTarget};
 use niles_mqtt::{MqttPublisher, format_set_command, is_actionable};
 use niles_scheduler::{TimerState, TimerStore, canonicalize_name};
 use serde_json::{Value, json};
@@ -73,12 +74,12 @@ fn device_full(device: &niles_core::Device) -> Value {
 
 /// Format a `StateEntry` as a JSON value using the same `room/name`
 /// device-id convention that the rest of the tool surface uses.
-fn state_entry_value(entry: &niles_history::StateEntry) -> Result<Value> {
-    Ok(json!({
+fn state_entry_value(entry: &niles_history::StateEntry) -> Value {
+    json!({
         "ts": entry.ts,
         "device_id": format!("{}/{}", entry.device_id.room(), entry.device_id.name()),
         "state": entry.state,
-    }))
+    })
 }
 
 /// Extract and validate `DeviceState` from `set_device` arguments.
@@ -512,6 +513,95 @@ impl Tool for LookUpCapability {
     }
 }
 
+// ---------- MemoryTool ----------
+
+pub struct MemoryTool {
+    store: Arc<MemoryStore>,
+}
+
+impl MemoryTool {
+    pub fn new(store: Arc<MemoryStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "memory".into(),
+            description: "Manage persistent memory. Actions: 'add' requires 'content'; 'replace' requires 'old_text' and 'content'; 'remove' requires 'old_text'; 'view' needs only 'target'. Targets are 'user' (USER.md) or 'agent' (MEMORY.md).".into(),
+            parameters: json!({
+                "type": "object",
+                "required": ["action", "target"],
+                "properties": {
+                    "action": { "type": "string", "enum": ["add", "replace", "remove", "view"], "description": "Action to perform." },
+                    "target": { "type": "string", "enum": ["user", "agent"], "description": "'user' for household facts (USER.md) or 'agent' for learnings (MEMORY.md)." },
+                    "content": { "type": "string", "description": "Text to add or replace with. Required for 'add' and 'replace'." },
+                    "old_text": { "type": "string", "description": "Snippet to match for 'replace' or 'remove'. Must uniquely identify one entry." }
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let action = required_str("memory", &args, "action")?;
+        let target_str = required_str("memory", &args, "target")?;
+        let target = match target_str {
+            "user" => MemoryTarget::User,
+            "agent" => MemoryTarget::Memory,
+            other => {
+                return Err(Error::InvalidArgs {
+                    tool: "memory".into(),
+                    reason: format!("target must be 'user' or 'agent', got '{other}'"),
+                });
+            }
+        };
+
+        match action {
+            "view" => {
+                let entries = self
+                    .store
+                    .load(target)
+                    .map_err(|e| Error::Memory(format!("{e}")))?;
+                let lines: Vec<String> = entries.into_iter().map(|e| e.text).collect();
+                Ok(json!({ "entries": lines }))
+            }
+            "add" => {
+                let content = required_str("memory", &args, "content")?;
+                self.store
+                    .add(target, content)
+                    .map_err(|e| Error::Memory(format!("{e}")))?;
+                Ok(json!({ "ok": true, "action": "add", "target": target_str }))
+            }
+            "replace" => {
+                let old_text = required_str("memory", &args, "old_text")?;
+                let content = required_str("memory", &args, "content")?;
+                self.store
+                    .replace(target, old_text, content)
+                    .map_err(|e| Error::Memory(format!("{e}")))?;
+                Ok(json!({ "ok": true, "action": "replace", "target": target_str }))
+            }
+            "remove" => {
+                let old_text = required_str("memory", &args, "old_text")?;
+                self.store
+                    .remove(target, old_text)
+                    .map_err(|e| Error::Memory(format!("{e}")))?;
+                Ok(json!({ "ok": true, "action": "remove", "target": target_str }))
+            }
+            other => Err(Error::InvalidArgs {
+                tool: "memory".into(),
+                reason: format!("action must be one of add/replace/remove/view, got '{other}'"),
+            }),
+        }
+    }
+}
+
+/// Register the memory tool onto an existing registry.
+pub fn register_memory_tools(reg: &mut ToolRegistry, store: Arc<MemoryStore>) {
+    reg.register(Box::new(MemoryTool::new(store)));
+}
+
 fn timer_state_str(state: TimerState) -> &'static str {
     match state {
         TimerState::Pending => "pending",
@@ -823,8 +913,8 @@ impl Tool for QueryDeviceStateHistory {
             .reader
             .query(&q)
             .map_err(|e| Error::Internal(format!("query failed: {e}")))?;
-        let arr: Result<Vec<Value>> = entries.iter().map(state_entry_value).collect();
-        Ok(json!(arr?))
+        let arr: Vec<Value> = entries.iter().map(state_entry_value).collect();
+        Ok(json!(arr))
     }
 }
 
@@ -909,8 +999,8 @@ impl Tool for DeviceStateSnapshotAt {
             .reader
             .snapshot_at(at, &ids)
             .map_err(|e| Error::Internal(format!("snapshot failed: {e}")))?;
-        let arr: Result<Vec<Value>> = entries.iter().map(state_entry_value).collect();
-        Ok(json!(arr?))
+        let arr: Vec<Value> = entries.iter().map(state_entry_value).collect();
+        Ok(json!(arr))
     }
 }
 

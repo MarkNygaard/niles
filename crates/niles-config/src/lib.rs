@@ -13,6 +13,7 @@ pub mod history;
 pub mod home;
 pub mod lighting;
 pub mod llm;
+pub mod memory;
 pub mod mqtt;
 pub mod persistence;
 pub mod satellites;
@@ -33,6 +34,7 @@ pub use history::HistoryConfig;
 pub use home::HomeConfig;
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::LlmConfig;
+pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
@@ -61,6 +63,8 @@ pub struct Config {
     pub ambient_lights: AmbientLightsConfig,
     #[serde(default)]
     pub history: HistoryConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
     pub wyoming: WyomingConfig,
@@ -114,6 +118,7 @@ impl Config {
         self.speakers.validate()?;
         self.ambient_lights.validate()?;
         self.history.validate()?;
+        self.memory.validate()?;
         self.skills.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
@@ -919,6 +924,98 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
             err,
             Error::InvalidSection {
                 section: "history",
+                ..
+            }
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Memory section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn memory_section_absent_defaults_to_none() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.memory.directory.is_none());
+        assert_eq!(cfg.memory.user_char_limit, 1375);
+        assert_eq!(cfg.memory.agent_char_limit, 2200);
+    }
+
+    #[test]
+    fn memory_directory_parses_into_pathbuf() {
+        let toml = format!(
+            "{}\n[memory]\ndirectory = \"/var/niles/memory\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.memory.directory.as_deref(),
+            Some(std::path::Path::new("/var/niles/memory"))
+        );
+        assert_eq!(cfg.memory.user_char_limit, 1375);
+        assert_eq!(cfg.memory.agent_char_limit, 2200);
+    }
+
+    #[test]
+    fn memory_char_limits_explicit() {
+        let toml = format!(
+            "{}\n[memory]\ndirectory = \"/tmp\"\nuser_char_limit = 500\nagent_char_limit = 1000\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.memory.user_char_limit, 500);
+        assert_eq!(cfg.memory.agent_char_limit, 1000);
+    }
+
+    #[test]
+    fn rejects_empty_memory_directory() {
+        let toml = format!(
+            "{}\n[memory]\ndirectory = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "memory",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_user_char_limit() {
+        let toml = format!(
+            "{}\n[memory]\ndirectory = \"/tmp\"\nuser_char_limit = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "memory",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_agent_char_limit() {
+        let toml = format!(
+            "{}\n[memory]\ndirectory = \"/tmp\"\nagent_char_limit = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "memory",
                 ..
             }
         ));

@@ -898,6 +898,7 @@ dependencies = [
  "niles-history",
  "niles-intent",
  "niles-llm",
+ "niles-memory",
  "niles-mqtt",
  "niles-scheduler",
  "niles-speakers",
@@ -980,6 +981,15 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "niles-memory"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -1071,6 +1081,7 @@ dependencies = [
  "niles-core",
  "niles-history",
  "niles-llm",
+ "niles-memory",
  "niles-mqtt",
  "niles-scheduler",
  "serde",

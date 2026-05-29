@@ -31,6 +31,9 @@ pub enum Error {
 
     #[error("internal tool error: {0}")]
     Internal(String),
+
+    #[error("memory error: {0}")]
+    Memory(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

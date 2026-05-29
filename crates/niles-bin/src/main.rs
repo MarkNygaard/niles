@@ -12,6 +12,7 @@ use niles_history::{
 };
 use niles_intent::{DeviceIndex, Intent, IntentRouter, RouterContext};
 use niles_llm::{ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, ToolChoice};
+use niles_memory::MemoryStore;
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
@@ -683,14 +684,42 @@ fn persona_with_origin(origin_room: Option<&RoomName>) -> String {
     out
 }
 
+/// Join memory entries into a single newline-separated string.
+/// Returns `None` if the result is empty or whitespace-only.
+fn join_memory_entries(entries: &[niles_memory::Entry]) -> Option<String> {
+    let s = entries
+        .iter()
+        .map(|e| e.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if s.trim().is_empty() { None } else { Some(s) }
+}
+
 fn assemble_system_prompt(
     transcript: &str,
     index: &niles_intent::CapabilityIndex,
     loader: &CapabilityLoader,
     origin_room: Option<&RoomName>,
+    user_mem: Option<&str>,
+    agent_mem: Option<&str>,
 ) -> String {
     let names = niles_intent::detect_topics(transcript, index);
     let mut out = String::from(NILES_SYSTEM_PERSONA);
+
+    // Inject memory sections before capability references for cache warmth.
+    if let Some(mem) = user_mem
+        && !mem.trim().is_empty()
+    {
+        out.push_str("\n\n# User memory\n\n");
+        out.push_str(mem);
+    }
+    if let Some(mem) = agent_mem
+        && !mem.trim().is_empty()
+    {
+        out.push_str("\n\n# Agent memory\n\n");
+        out.push_str(mem);
+    }
+
     if !names.is_empty() {
         out.push_str(
             "\n\n# Capability references\n\nThe following references \
@@ -716,12 +745,36 @@ fn build_tool_registry(
     publisher: MqttPublisher,
     z2m_prefix: Arc<String>,
     capability_loader: Option<Arc<CapabilityLoader>>,
+    memory_store: Option<Arc<MemoryStore>>,
 ) -> ToolRegistry {
     let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
     if let Some(loader) = capability_loader {
         tools.register(Box::new(LookUpCapability::new(loader)));
     }
+    if let Some(store) = memory_store {
+        niles_tools::register_memory_tools(&mut tools, store);
+    }
     tools
+}
+
+/// Build a `MemoryStore` from the `[memory]` section.
+/// Returns `None` when no directory is configured or when opening the store fails.
+fn build_memory_store(cfg: &niles_config::MemoryConfig) -> Option<Arc<MemoryStore>> {
+    let dir = cfg.directory.as_ref()?;
+    match MemoryStore::open(niles_memory::MemoryConfig {
+        directory: dir.clone(),
+        user_char_limit: cfg.user_char_limit,
+        agent_char_limit: cfg.agent_char_limit,
+    }) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to open memory store at {}: {e}; memory tools disabled",
+                dir.display()
+            );
+            None
+        }
+    }
 }
 
 /// Build a `PiperClient` from the `[tts]` section of an already-
@@ -973,17 +1026,48 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader.as_deref().map(build_capability_index);
 
+    let memory_store = build_memory_store(&cfg.memory);
     let tools_registry = build_tool_registry(
         registry.clone(),
         publisher,
         z2m_prefix,
         capability_loader.clone(),
+        memory_store.clone(),
     );
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
 
+    let user_mem = memory_store
+        .as_ref()
+        .and_then(|s| match s.load(niles_memory::Target::User) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!("failed to load user memory: {e}");
+                None
+            }
+        });
+    let agent_mem =
+        memory_store
+            .as_ref()
+            .and_then(|s| match s.load(niles_memory::Target::Memory) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("failed to load agent memory: {e}");
+                    None
+                }
+            });
+    let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
+    let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
+
     let system_prompt = match (&capability_loader, &capability_index) {
-        (Some(loader), Some(index)) => assemble_system_prompt(&args.prompt, index, loader, None),
+        (Some(loader), Some(index)) => assemble_system_prompt(
+            &args.prompt,
+            index,
+            loader,
+            None,
+            user_mem_str.as_deref(),
+            agent_mem_str.as_deref(),
+        ),
         _ => NILES_SYSTEM_PERSONA.to_string(),
     };
 
@@ -1223,11 +1307,13 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .map(build_capability_index)
         .map(Arc::new);
 
+    let memory_store = build_memory_store(&cfg.memory);
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
         capability_loader.clone(),
+        memory_store.clone(),
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
@@ -1291,6 +1377,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         satellites,
         device_index: Arc::clone(&device_index),
         history: command_writer,
+        memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1377,6 +1464,7 @@ struct DispatchCtx {
     satellites: Arc<SatelliteRegistry>,
     device_index: Arc<RwLock<DeviceIndex>>,
     history: Arc<CommandWriter>,
+    memory: Arc<MemoryStore>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1408,10 +1496,31 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
         None => {
             // Tier 0 miss — escalate to Tier 1 LLM with the tool registry.
             tracing::info!("[{peer}] Tier 0 miss, escalating to LLM: {text:?}");
-            let system_prompt = match (&ctx.capability_loader, &ctx.capability_index) {
-                (Some(loader), Some(index)) => {
-                    assemble_system_prompt(text, index, loader, origin_room)
+            let user_mem = match ctx.memory.load(niles_memory::Target::User) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("[{peer}] failed to load user memory: {e}");
+                    None
                 }
+            };
+            let agent_mem = match ctx.memory.load(niles_memory::Target::Memory) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("[{peer}] failed to load agent memory: {e}");
+                    None
+                }
+            };
+            let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
+            let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
+            let system_prompt = match (&ctx.capability_loader, &ctx.capability_index) {
+                (Some(loader), Some(index)) => assemble_system_prompt(
+                    text,
+                    index,
+                    loader,
+                    origin_room,
+                    user_mem_str.as_deref(),
+                    agent_mem_str.as_deref(),
+                ),
                 _ => persona_with_origin(origin_room),
             };
             match run_tool_calling_chat(
@@ -2235,11 +2344,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .map(build_capability_index)
         .map(Arc::new);
 
+    let memory_store = build_memory_store(&cfg.memory);
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
         capability_loader.clone(),
+        memory_store.clone(),
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
@@ -2329,6 +2440,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         satellites,
         device_index,
         history: command_writer,
+        memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -3240,7 +3352,7 @@ mod system_prompt_tests {
         let tmp = TempDir::new().unwrap();
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("turn on the lights", &index, &loader, None);
+        let out = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
         assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
 
@@ -3256,7 +3368,14 @@ mod system_prompt_tests {
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
         // "weather" doesn't intersect with "lighting" or "Control smart lights"
-        let out = assemble_system_prompt("what is the weather today", &index, &loader, None);
+        let out = assemble_system_prompt(
+            "what is the weather today",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+        );
         assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
 
@@ -3275,6 +3394,8 @@ mod system_prompt_tests {
             "how does the lighting curve decide brightness",
             &index,
             &loader,
+            None,
+            None,
             None,
         );
         assert!(out.starts_with(NILES_SYSTEM_PERSONA));
@@ -3302,7 +3423,7 @@ mod system_prompt_tests {
 
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("tell me about scenes", &index, &loader, None);
+        let out = assemble_system_prompt("tell me about scenes", &index, &loader, None, None, None);
 
         assert!(out.starts_with(NILES_SYSTEM_PERSONA));
         assert!(out.contains("Alpha body."));
@@ -3328,7 +3449,14 @@ mod system_prompt_tests {
         );
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let out = assemble_system_prompt("tell me about my capability", &index, &loader, None);
+        let out = assemble_system_prompt(
+            "tell me about my capability",
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+        );
         assert!(
             out.contains("(v4.5.6)"),
             "output should contain version: {out}"
@@ -3346,8 +3474,8 @@ mod system_prompt_tests {
         );
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
-        let a = assemble_system_prompt("turn on the lights", &index, &loader, None);
-        let b = assemble_system_prompt("turn on the lights", &index, &loader, None);
+        let a = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
+        let b = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
         assert_eq!(a, b, "assemble_system_prompt must be deterministic");
     }
 
@@ -3357,7 +3485,14 @@ mod system_prompt_tests {
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
         let room = RoomName::parse("living_room").unwrap();
-        let out = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            Some(&room),
+            None,
+            None,
+        );
         assert!(out.starts_with(NILES_SYSTEM_PERSONA));
         assert!(out.contains("# Current context"));
         assert!(out.contains("living_room"));
@@ -3375,7 +3510,14 @@ mod system_prompt_tests {
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
         let room = RoomName::parse("kitchen").unwrap();
-        let out = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            Some(&room),
+            None,
+            None,
+        );
         let persona_pos = out.find(NILES_SYSTEM_PERSONA).unwrap();
         let cap_pos = out.find("# Capability references").unwrap();
         let ctx_pos = out.find("# Current context").unwrap();
@@ -3401,8 +3543,22 @@ mod system_prompt_tests {
         let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
         let index = build_capability_index(&loader);
         let room = RoomName::parse("bedroom").unwrap();
-        let a = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
-        let b = assemble_system_prompt("turn on the lights", &index, &loader, Some(&room));
+        let a = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            Some(&room),
+            None,
+            None,
+        );
+        let b = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            Some(&room),
+            None,
+            None,
+        );
         assert_eq!(
             a, b,
             "assemble_system_prompt must be deterministic with origin_room"
@@ -3440,5 +3596,114 @@ mod system_prompt_tests {
         // prerequisite expansion works when the capability itself matches.
         let names = niles_intent::detect_topics("prereq", &index);
         assert!(names.contains(&"prereq".to_string()));
+    }
+
+    #[test]
+    fn assemble_no_memory_injection_when_none() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt("turn on the lights", &index, &loader, None, None, None);
+        assert_eq!(out, NILES_SYSTEM_PERSONA);
+    }
+
+    #[test]
+    fn assemble_injects_user_memory() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            Some("Alice likes tea."),
+            None,
+        );
+        assert!(out.contains("# User memory"));
+        assert!(out.contains("Alice likes tea."));
+        assert!(!out.contains("# Agent memory"));
+    }
+
+    #[test]
+    fn assemble_injects_agent_memory() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            None,
+            Some("Learned about lighting."),
+        );
+        assert!(out.contains("# Agent memory"));
+        assert!(out.contains("Learned about lighting."));
+        assert!(!out.contains("# User memory"));
+    }
+
+    #[test]
+    fn assemble_injects_both_memories() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            Some("Alice likes tea."),
+            Some("Learned about lighting."),
+        );
+        let user_pos = out.find("# User memory").unwrap();
+        let agent_pos = out.find("# Agent memory").unwrap();
+        assert!(
+            user_pos < agent_pos,
+            "user memory should come before agent memory"
+        );
+    }
+
+    #[test]
+    fn assemble_memory_before_capability_references() {
+        let tmp = TempDir::new().unwrap();
+        let cap_dir = tmp.path().join("lighting");
+        fs::create_dir(&cap_dir).unwrap();
+        write_skill(
+            &cap_dir,
+            "---\nname: lighting\ndescription: Control smart lights\nversion: 1.0.0\n---\n# Lighting\n\nTurn on/off lights.\n",
+        );
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            Some("Alice likes tea."),
+            None,
+        );
+        let mem_pos = out.find("# User memory").unwrap();
+        let cap_pos = out.find("# Capability references").unwrap();
+        assert!(
+            mem_pos < cap_pos,
+            "memory should come before capability references"
+        );
+    }
+
+    #[test]
+    fn assemble_empty_memory_string_is_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &index,
+            &loader,
+            None,
+            Some("   "),
+            Some(""),
+        );
+        assert_eq!(out, NILES_SYSTEM_PERSONA);
     }
 }
