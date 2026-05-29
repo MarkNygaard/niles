@@ -31,7 +31,7 @@ pub use api::ApiConfig;
 pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
-pub use home::HomeConfig;
+pub use home::{HomeConfig, Units};
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::LlmConfig;
 pub use memory::MemoryConfig;
