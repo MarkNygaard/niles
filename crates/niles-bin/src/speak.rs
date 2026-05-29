@@ -135,10 +135,11 @@ pub async fn speak_back(
     satellites: &SatelliteRegistry,
 ) -> Result<()> {
     let duck_handle = try_duck(speakers, satellites, peer).await;
-    let result = async {
+    let result: Result<()> = async {
         let synth = piper.synthesize(text, None).await?;
         let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
-        sender.send_audio(peer, &pcm, format).await
+        sender.send_audio(peer, &pcm, format).await?;
+        Ok(())
     }
     .await;
 
