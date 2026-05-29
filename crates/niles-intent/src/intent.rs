@@ -133,6 +133,16 @@ pub enum Intent {
         delta: i16,
     },
 
+    /// Skip forward to the next track on the in-room Sonos.
+    MediaNext {
+        room: String,
+    },
+
+    /// Skip back to the previous track on the in-room Sonos.
+    MediaPrevious {
+        room: String,
+    },
+
     /// "set a timer for 5 minutes" / "5 minute timer" / "10 minute timer called pasta"
     TimerSet {
         duration: Duration,
