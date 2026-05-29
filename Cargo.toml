@@ -40,6 +40,7 @@ chrono-tz = "0.10"
 serde_yaml = "0.9"
 tempfile = "3"
 fs2 = "0.4"
+urlencoding = "2"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
