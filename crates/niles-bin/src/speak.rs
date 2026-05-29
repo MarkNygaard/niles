@@ -2,9 +2,16 @@
 //! resulting WAV back to a Wyoming satellite as PCM.
 
 use anyhow::{Context, Result};
+use niles_speakers::{SonosClient, TransportState};
 use niles_tts::PiperClient;
 use niles_wyoming::{AudioFormat, WyomingSender};
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+use crate::satellites::SatelliteRegistry;
+use crate::speakers::SpeakerRegistry;
+
+const DUCK_VOLUME: u8 = 20;
 
 /// Parse a minimal RIFF/WAVE file and return its PCM payload +
 /// format metadata.
@@ -78,6 +85,45 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
     Ok((pcm, fmt))
 }
 
+/// If a Sonos is configured in the satellite's room AND is
+/// currently playing AND its volume is above the duck level,
+/// lower it and return the handle to restore later. Any failure
+/// is logged and the function returns `None` — speak-back will
+/// continue without ducking.
+pub(crate) async fn try_duck(
+    speakers: &SpeakerRegistry,
+    satellites: &SatelliteRegistry,
+    peer: SocketAddr,
+) -> Option<(Arc<SonosClient>, u8)> {
+    let room = satellites.room_for(peer)?;
+    let sonos = speakers.get(room)?;
+
+    match sonos.get_transport_state().await {
+        Ok(TransportState::Playing) => {}
+        Ok(_) => return None,
+        Err(e) => {
+            tracing::warn!("[duck] transport read failed: {e:#}");
+            return None;
+        }
+    }
+
+    let current = match sonos.get_volume().await {
+        Ok(v) if v > DUCK_VOLUME => v,
+        Ok(_) => return None,
+        Err(e) => {
+            tracing::warn!("[duck] volume read failed: {e:#}");
+            return None;
+        }
+    };
+
+    if let Err(e) = sonos.set_volume(DUCK_VOLUME).await {
+        tracing::warn!("[duck] set ducked volume failed: {e:#}");
+        return None;
+    }
+    tracing::debug!("[duck] {current} -> {DUCK_VOLUME}");
+    Some((sonos, current))
+}
+
 /// Synthesize `text` via Piper, decode the returned WAV, and send
 /// the PCM to `peer` through the Wyoming sender.
 pub async fn speak_back(
@@ -85,11 +131,24 @@ pub async fn speak_back(
     sender: &WyomingSender,
     peer: SocketAddr,
     text: &str,
+    speakers: &SpeakerRegistry,
+    satellites: &SatelliteRegistry,
 ) -> Result<()> {
-    let synth = piper.synthesize(text, None).await?;
-    let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
-    sender.send_audio(peer, &pcm, format).await?;
-    Ok(())
+    let duck_handle = try_duck(speakers, satellites, peer).await;
+    let result: Result<()> = async {
+        let synth = piper.synthesize(text, None).await?;
+        let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
+        sender.send_audio(peer, &pcm, format).await?;
+        Ok(())
+    }
+    .await;
+
+    if let Some((sonos, original)) = duck_handle
+        && let Err(e) = sonos.set_volume(original).await
+    {
+        tracing::warn!("[{peer}] duck restore failed: {e:#}");
+    }
+    result
 }
 
 #[cfg(test)]
@@ -317,5 +376,278 @@ mod tests {
         let (pcm, fmt) = wav_to_pcm(&wav).unwrap();
         assert_eq!(pcm, data);
         assert_eq!(fmt.channels, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // RecordingTransport fixture + try_duck tests
+    // -----------------------------------------------------------------
+
+    use async_trait::async_trait;
+    use niles_core::RoomName;
+    use niles_speakers::{Error as SonosError, SonosTransport};
+    use std::collections::VecDeque;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    struct RecordingTransport {
+        calls: Arc<Mutex<Vec<(String, String, String)>>>,
+        responses: Arc<Mutex<VecDeque<Result<String, SonosError>>>>,
+    }
+
+    impl RecordingTransport {
+        fn with_responses(responses: Vec<Result<String, SonosError>>) -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+            }
+        }
+
+        fn calls(&self) -> Vec<(String, String, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl SonosTransport for RecordingTransport {
+        async fn send_action(
+            &self,
+            endpoint: &str,
+            soap_action: &str,
+            soap_body: &str,
+        ) -> Result<String, SonosError> {
+            self.calls.lock().unwrap().push((
+                endpoint.to_string(),
+                soap_action.to_string(),
+                soap_body.to_string(),
+            ));
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("RecordingTransport ran out of scripted responses")
+        }
+    }
+
+    fn xml_transport_info(state: &str) -> String {
+        format!("<CurrentTransportState>{state}</CurrentTransportState>")
+    }
+
+    fn xml_volume(v: u8) -> String {
+        format!("<CurrentVolume>{v}</CurrentVolume>")
+    }
+
+    fn make_speaker_registry(room: RoomName, transport: RecordingTransport) -> SpeakerRegistry {
+        let mut reg = SpeakerRegistry::default();
+        let client = SonosClient::with_transport("0.0.0.0", Arc::new(transport));
+        reg.by_room.insert(room, Arc::new(client));
+        reg
+    }
+
+    fn make_satellite_registry(ip: IpAddr, room: RoomName) -> SatelliteRegistry {
+        let mut reg = SatelliteRegistry::default();
+        reg.by_ip.insert(ip, room);
+        reg
+    }
+
+    fn test_peer() -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234)
+    }
+
+    #[tokio::test]
+    async fn duck_playing_above_threshold_lowers_volume_and_returns_original() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![
+            Ok(xml_transport_info("PLAYING")),
+            Ok(xml_volume(60)),
+            Ok(String::new()),
+        ]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_some());
+        let (_, original) = result.unwrap();
+        assert_eq!(original, 60);
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[0].1.contains("GetTransportInfo"));
+        assert!(calls[1].1.contains("GetVolume"));
+        assert!(calls[2].1.contains("SetVolume"));
+        assert!(calls[2].2.contains("<DesiredVolume>20</DesiredVolume>"));
+    }
+
+    #[tokio::test]
+    async fn duck_paused_returns_none_after_one_call() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock =
+            RecordingTransport::with_responses(vec![Ok(xml_transport_info("PAUSED_PLAYBACK"))]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duck_stopped_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![Ok(xml_transport_info("STOPPED"))]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duck_transitioning_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock =
+            RecordingTransport::with_responses(vec![Ok(xml_transport_info("TRANSITIONING"))]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duck_unknown_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![Ok(xml_transport_info("UNKNOWN"))]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duck_volume_equal_to_threshold_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![
+            Ok(xml_transport_info("PLAYING")),
+            Ok(xml_volume(20)),
+        ]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn duck_volume_below_threshold_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![
+            Ok(xml_transport_info("PLAYING")),
+            Ok(xml_volume(15)),
+        ]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn duck_transport_read_err_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![Err(SonosError::SoapFault {
+            code: "500".into(),
+            reason: "Internal Server Error".into(),
+        })]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duck_volume_read_err_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![
+            Ok(xml_transport_info("PLAYING")),
+            Err(SonosError::SoapFault {
+                code: "500".into(),
+                reason: "Internal Server Error".into(),
+            }),
+        ]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn duck_set_volume_err_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![
+            Ok(xml_transport_info("PLAYING")),
+            Ok(xml_volume(60)),
+            Err(SonosError::SoapFault {
+                code: "500".into(),
+                reason: "Internal Server Error".into(),
+            }),
+        ]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        // Only 3 calls: no restore attempted.
+        assert_eq!(mock.calls().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn duck_no_speaker_for_room_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let other_room = RoomName::parse("kitchen").unwrap();
+        // Install mock in a *different* room so the lookup short-circuits.
+        let mock = RecordingTransport::with_responses(vec![]);
+        let mut speakers = SpeakerRegistry::default();
+        let client = SonosClient::with_transport("0.0.0.0", Arc::new(mock.clone()));
+        speakers.by_room.insert(other_room, Arc::new(client));
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn duck_no_satellite_mapping_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = SatelliteRegistry::default();
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 0);
     }
 }

@@ -27,6 +27,7 @@ use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingSender, WyomingServer};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -1088,7 +1089,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
 async fn transcribe_session(
     client: &WhisperClient,
     session: niles_wyoming::AudioSession,
-) -> Option<(std::net::SocketAddr, String)> {
+) -> Option<(SocketAddr, String)> {
     let pcm_format = PcmFormat {
         sample_rate_hz: session.format.sample_rate_hz,
         bits_per_sample: session.format.bits_per_sample,
@@ -1146,7 +1147,16 @@ fn spawn_dispatch_task(
             }
             if let Some(say) = say {
                 println!("[{peer}] say: {say}");
-                if let Err(e) = crate::speak::speak_back(&piper, &sender, peer, &say).await {
+                if let Err(e) = crate::speak::speak_back(
+                    &piper,
+                    &sender,
+                    peer,
+                    &say,
+                    &ctx.speakers,
+                    &ctx.satellites,
+                )
+                .await
+                {
                     tracing::warn!("[{peer}] speak-back failed: {e:#}");
                 }
             }
@@ -1272,7 +1282,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         dry_run: args.dry_run,
         tracker: Arc::new(ManualModeTracker::new()),
         scenes: Arc::new(SceneStore::new()),
-        timers: Arc::clone(&timers),
+        timers,
         speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
         llm,
         tools,
@@ -1280,7 +1290,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         capability_index,
         satellites,
         device_index: Arc::clone(&device_index),
-        history: command_writer.clone(),
+        history: command_writer,
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1370,11 +1380,7 @@ struct DispatchCtx {
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
-async fn handle_transcript(
-    ctx: &DispatchCtx,
-    peer: std::net::SocketAddr,
-    text: &str,
-) -> Option<String> {
+async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
     // a Groq round-trip on it — Tier 0 wouldn't match either.
@@ -1439,12 +1445,8 @@ async fn handle_transcript(
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                    RoomResolve::NoDevices => {
-                        return Some(response::room_no_devices(&room));
-                    }
-                    RoomResolve::WarmingUp => {
-                        return Some(response::room_warming_up());
-                    }
+                    RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
+                    RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
             let desired = DeviceState {
                 on: Some(on),
@@ -1482,12 +1484,8 @@ async fn handle_transcript(
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                    RoomResolve::NoDevices => {
-                        return Some(response::room_no_devices(&room));
-                    }
-                    RoomResolve::WarmingUp => {
-                        return Some(response::room_warming_up());
-                    }
+                    RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
+                    RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
             // Flag each dimmable target *before* publishing so the
             // curve driver can't race a tick in between and overwrite
@@ -1796,7 +1794,7 @@ enum RoomResolve {
 /// to publish).
 fn resolve_room_targets<F>(
     ctx: &DispatchCtx,
-    peer: std::net::SocketAddr,
+    peer: SocketAddr,
     room: &str,
     capability_filter: F,
 ) -> RoomResolve
@@ -1844,7 +1842,7 @@ where
 /// upstream in [`resolve_room_targets`].
 async fn dispatch_to_targets(
     ctx: &DispatchCtx,
-    peer: std::net::SocketAddr,
+    peer: SocketAddr,
     targets: &[Device],
     desired: &DeviceState,
 ) {
@@ -1874,7 +1872,7 @@ async fn dispatch_to_targets(
 /// `dispatch_to_targets`).
 async fn publish_single(
     ctx: &DispatchCtx,
-    peer: std::net::SocketAddr,
+    peer: SocketAddr,
     device: &Device,
     desired: &DeviceState,
 ) {
@@ -1928,7 +1926,7 @@ where
 /// Turns the result of a `media_dispatch` call into the spoken
 /// response the user hears, logging warnings for error cases.
 fn media_result_to_response(
-    peer: std::net::SocketAddr,
+    peer: SocketAddr,
     room: &str,
     result: std::result::Result<(), MediaDispatchError>,
     ok_msg: String,
@@ -2285,8 +2283,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         z2m_prefix: z2m_prefix.clone(),
         dry_run: args.dry_run,
         tracker: tracker.clone(),
-        scenes: scenes.clone(),
-        timers: timers.clone(),
+        scenes,
+        timers,
         speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
         llm,
         tools,
@@ -2294,7 +2292,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         capability_index,
         satellites,
         device_index,
-        history: command_writer.clone(),
+        history: command_writer,
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -2672,18 +2670,15 @@ async fn run_morning_routine_tick(
         if !device.is_curve_driven() {
             continue;
         }
-        let publish_brightness = match device.state.brightness {
-            Some(cur) if cur.abs_diff(target_brightness) > BRIGHTNESS_DEBOUNCE => {
-                Some(target_brightness)
-            }
-            None => Some(target_brightness),
-            _ => None,
+        let should_publish = match device.state.brightness {
+            Some(cur) => cur.abs_diff(target_brightness) > BRIGHTNESS_DEBOUNCE,
+            None => true,
         };
-        let Some(b) = publish_brightness else {
+        if !should_publish {
             continue;
-        };
+        }
         let target = DeviceState {
-            brightness: Some(b),
+            brightness: Some(target_brightness),
             ..Default::default()
         };
         let (topic, payload) = format_set_command(z2m_prefix, id, &target);
