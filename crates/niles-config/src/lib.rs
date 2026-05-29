@@ -5,6 +5,7 @@
 //! container that delegates `validate()` to each subsystem. New
 //! sections land alongside the crates that consume them.
 
+pub mod ambient_lights;
 pub mod api;
 pub mod capabilities;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod wyoming;
 use serde::Deserialize;
 use std::path::Path;
 
+pub use ambient_lights::AmbientLightsConfig;
 pub use api::ApiConfig;
 pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
@@ -51,6 +53,8 @@ pub struct Config {
     pub satellites: SatellitesConfig,
     #[serde(default)]
     pub speakers: SpeakersConfig,
+    #[serde(default)]
+    pub ambient_lights: AmbientLightsConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -100,6 +104,7 @@ impl Config {
         self.persistence.validate()?;
         self.satellites.validate()?;
         self.speakers.validate()?;
+        self.ambient_lights.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
@@ -254,6 +259,33 @@ kelvin = 2000
         let bad = valid_toml().replace("kelvin = 4500", "kelvin = 15000");
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn ambient_lights_section_parses_and_validates() {
+        let toml = format!(
+            "{}\n[ambient_lights]\ndevices = [\"living_room/tv_lightstrip\"]\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.ambient_lights.devices.len(), 1);
+        assert_eq!(cfg.ambient_lights.devices[0], "living_room/tv_lightstrip");
+    }
+
+    #[test]
+    fn ambient_lights_invalid_device_id_surfaces_section_name() {
+        let toml = format!(
+            "{}\n[ambient_lights]\ndevices = [\"not_a_valid_id\"]\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ambient_lights"),
+            "error should mention section name: {msg}"
+        );
     }
 
     #[test]

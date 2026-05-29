@@ -82,16 +82,16 @@ mod tests {
     }
 
     fn make_device(room: &str, name: &str) -> Device {
-        Device {
-            id: DeviceId::new(
+        Device::new(
+            DeviceId::new(
                 "z2m",
                 RoomName::parse(room).unwrap(),
                 DeviceName::parse(name).unwrap(),
             )
             .unwrap(),
-            state: DeviceState::default(),
-            class: DeviceClass::Unknown,
-        }
+            DeviceState::default(),
+            DeviceClass::Unknown,
+        )
     }
 
     fn make_light(room: &str, name: &str) -> Device {

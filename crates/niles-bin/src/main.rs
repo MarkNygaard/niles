@@ -294,6 +294,24 @@ async fn config_validate() -> anyhow::Result<()> {
     todo!("implement `config validate`")
 }
 
+/// Build a `HashSet<DeviceId>` from the `[ambient_lights]` config
+/// section. Devices listed here are excluded from the ambient
+/// lighting curve and the morning routine.
+fn build_ambient_set(cfg: &Config) -> Arc<HashSet<DeviceId>> {
+    let mut set = HashSet::new();
+    for raw in &cfg.ambient_lights.devices {
+        match DeviceId::parse(&format!("z2m:{raw}")) {
+            Ok(id) => {
+                set.insert(id);
+            }
+            Err(e) => {
+                tracing::warn!("ambient_lights device {raw:?} failed to parse: {e}");
+            }
+        }
+    }
+    Arc::new(set)
+}
+
 /// Build an `MqttClient` connected to the broker described in
 /// `niles.toml`, with credentials resolved from env vars.
 async fn connect_from_config(config_path: &Path) -> anyhow::Result<(Config, MqttClient)> {
@@ -360,7 +378,14 @@ async fn discover(args: DiscoverArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let mut bus_rx = bus.subscribe();
 
-    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
+    let ambient_set = build_ambient_set(&cfg);
+    let source = Z2mSource::new(
+        client,
+        registry.clone(),
+        bus.clone(),
+        &cfg.mqtt.z2m_prefix,
+        ambient_set,
+    );
 
     eprintln!(
         "Subscribed to {prefix}/bridge/devices and {prefix}/+/+. Press Ctrl-C to exit.\n",
@@ -455,7 +480,14 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
 
     let publisher = client.publisher();
-    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
+    let ambient_set = build_ambient_set(&cfg);
+    let source = Z2mSource::new(
+        client,
+        registry.clone(),
+        bus.clone(),
+        &cfg.mqtt.z2m_prefix,
+        ambient_set,
+    );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
@@ -881,11 +913,13 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -1091,11 +1125,13 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let mut bus_rx = bus.subscribe();
     let device_index = Arc::new(RwLock::new(build_initial_device_index(&registry)));
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -1938,11 +1974,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_dry_run = args.dry_run;
     let mut bus_rx = bus.subscribe();
 
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -2229,11 +2267,13 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     // Z2mSource requires an EventBus; nothing in this subcommand
     // subscribes to events, so the bus is wired straight in and
     // dropped once Z2mSource takes ownership.
+    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         EventBus::default(),
         z2m_prefix.as_str(),
+        ambient_set,
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -2320,6 +2360,9 @@ async fn run_curve_tick(
     let mut publish_count = 0usize;
     for device in registry.list_all() {
         if device.state.on != Some(true) {
+            continue;
+        }
+        if !device.is_curve_driven() {
             continue;
         }
         if tracker.is_flagged(&device.id) {
@@ -2412,7 +2455,7 @@ async fn run_morning_routine_tick(
                     tracing::info!("[routine {minute_of_day}] released {id}");
                     continue;
                 };
-                if device.state.brightness != Some(100) {
+                if device.is_curve_driven() && device.state.brightness != Some(100) {
                     let target = DeviceState {
                         brightness: Some(100),
                         ..Default::default()
@@ -2450,6 +2493,9 @@ async fn run_morning_routine_tick(
             let Some(device) = registry.get(id) else {
                 continue;
             };
+            if !device.is_curve_driven() {
+                continue;
+            }
             if device.state.on == Some(true) {
                 continue;
             }
@@ -2502,6 +2548,9 @@ async fn run_morning_routine_tick(
         let Some(device) = registry.get(id) else {
             continue;
         };
+        if !device.is_curve_driven() {
+            continue;
+        }
         let publish_brightness = match device.state.brightness {
             Some(cur) if cur.abs_diff(target_brightness) > BRIGHTNESS_DEBOUNCE => {
                 Some(target_brightness)

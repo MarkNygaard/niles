@@ -146,3 +146,11 @@ kelvin = 2000
 # fire_days = ["mon", "tue", "wed", "thu", "fri"]
 # target_devices = ["z2m:bedroom/ceiling_light", "z2m:hallway/main"]
 # skip_overrides = ["2026-12-25", "2026-12-31"]
+
+# Optional ambient-light opt-out. Devices listed here are excluded
+# from the ambient lighting curve and the morning routine, while all
+# other subsystems (voice, switch, scenes, HTTP API) continue to treat
+# them as normal lights.
+#
+# [ambient_lights]
+# devices = ["living_room/tv_lightstrip"]
