@@ -1315,7 +1315,7 @@ async fn handle_transcript(
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
         Intent::LightSet { room, on } => {
-            let (canonical, targets) =
+            let (_canonical, targets) =
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName => return Some(response::room_not_found(&room)),
@@ -1330,11 +1330,35 @@ async fn handle_transcript(
                 on: Some(on),
                 ..Default::default()
             };
-            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_set(&room, on))
         }
+        Intent::LightSetAll { on } => {
+            let targets: Vec<Device> = ctx
+                .registry
+                .list_all()
+                .into_iter()
+                .filter(|d| d.is_light())
+                .collect();
+            if targets.is_empty() {
+                if ctx.registry.is_empty() {
+                    println!(
+                        "[{peer}] registry is still warming up (no devices yet) — try again in a moment"
+                    );
+                    return Some(response::room_warming_up());
+                }
+                println!("[{peer}] no lights in registry — nothing to dispatch");
+                return Some(response::no_lights());
+            }
+            let desired = DeviceState {
+                on: Some(on),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::all_lights(on))
+        }
         Intent::LightDim { room, percent } => {
-            let (canonical, targets) =
+            let (_canonical, targets) =
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName => return Some(response::room_not_found(&room)),
@@ -1355,8 +1379,37 @@ async fn handle_transcript(
                 brightness: Some(percent),
                 ..Default::default()
             };
-            dispatch_to_targets(ctx, peer, &canonical, &targets, &desired).await;
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_dim(&room, percent))
+        }
+        Intent::LightStep {
+            room,
+            delta_percent,
+        } => {
+            let (_canonical, targets) =
+                match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
+                    RoomResolve::Found(c, t) => (c, t),
+                    RoomResolve::BadName => return Some(response::room_not_found(&room)),
+                    RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
+                    RoomResolve::WarmingUp => return Some(response::room_warming_up()),
+                };
+            // `resolve_room_targets` already filtered for devices with
+            // brightness, so every target has a known value.
+            let base = (targets
+                .iter()
+                .map(|d| d.state.brightness.unwrap() as i32)
+                .sum::<i32>()
+                / targets.len() as i32) as i16;
+            let new = (base + delta_percent).clamp(0, 100) as u8;
+            for device in &targets {
+                ctx.tracker.flag(&device.id);
+            }
+            let desired = DeviceState {
+                brightness: Some(new),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::light_dim(&room, new))
         }
         Intent::DeviceSet { device_id, on } => {
             let Some(device) = ctx.registry.get(&device_id) else {
@@ -1647,7 +1700,6 @@ where
 async fn dispatch_to_targets(
     ctx: &DispatchCtx,
     peer: std::net::SocketAddr,
-    _canonical: &RoomName,
     targets: &[Device],
     desired: &DeviceState,
 ) {
@@ -2565,8 +2617,18 @@ fn format_intent(intent: &Intent) -> String {
             let state = if *on { "on" } else { "off" };
             format!("LightSet({room} -> {state})")
         }
+        Intent::LightSetAll { on } => {
+            let state = if *on { "on" } else { "off" };
+            format!("LightSetAll(home -> {state})")
+        }
         Intent::LightDim { room, percent } => {
             format!("LightDim({room} -> {percent}%)")
+        }
+        Intent::LightStep {
+            room,
+            delta_percent,
+        } => {
+            format!("LightStep({room} {delta_percent:+}%)")
         }
         Intent::DeviceSet { device_id, on } => {
             let state = if *on { "on" } else { "off" };

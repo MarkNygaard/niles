@@ -18,6 +18,13 @@ pub enum Intent {
         on: bool,
     },
 
+    /// "turn off all the lights" / "everything off" — whole-home set.
+    /// No room means dispatch fans out to every device satisfying
+    /// `Device::is_light()`.
+    LightSetAll {
+        on: bool,
+    },
+
     /// "dim the kitchen lights to 30%" / "set the bedroom light to 50 percent"
     ///
     /// `percent` is `0..=100`. The router rejects values outside that
@@ -25,6 +32,15 @@ pub enum Intent {
     LightDim {
         room: String,
         percent: u8,
+    },
+
+    /// "brighter" / "kitchen lights dimmer" / "make the kitchen
+    /// brighter" — step current brightness by `delta_percent` (positive
+    /// = brighter). Dispatch reads current average brightness of
+    /// targeted devices, applies the step, and clamps to 0..=100.
+    LightStep {
+        room: String,
+        delta_percent: i16,
     },
 
     /// "turn on the floor lamp" / "turn off the ceiling light"
