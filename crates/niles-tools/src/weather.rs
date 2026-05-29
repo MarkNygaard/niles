@@ -69,12 +69,29 @@ impl Tool for WeatherTool {
     }
 
     async fn execute(&self, args: Value) -> Result<Value> {
-        let location_query = args.get("location").and_then(|v| v.as_str());
-        let days = args.get("days").and_then(|v| v.as_u64()).unwrap_or(1);
-        let include_current = args
-            .get("include_current")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        let location_query = match args.get("location") {
+            Some(v) => Some(v.as_str().ok_or_else(|| Error::InvalidArgs {
+                tool: "get_weather".into(),
+                reason: "location must be a string".into(),
+            })?),
+            None => None,
+        };
+
+        let days = match args.get("days") {
+            Some(v) => v.as_u64().ok_or_else(|| Error::InvalidArgs {
+                tool: "get_weather".into(),
+                reason: "days must be an integer".into(),
+            })?,
+            None => 1,
+        };
+
+        let include_current = match args.get("include_current") {
+            Some(v) => v.as_bool().ok_or_else(|| Error::InvalidArgs {
+                tool: "get_weather".into(),
+                reason: "include_current must be a boolean".into(),
+            })?,
+            None => true,
+        };
 
         if days < 1 {
             return Err(Error::InvalidArgs {
@@ -271,6 +288,36 @@ mod tests {
         assert!(result.get("current").unwrap().is_null());
         let url = mock.last_url().unwrap();
         assert!(!url.contains("current="));
+    }
+
+    #[tokio::test]
+    async fn days_wrong_type_errors() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let err = tool.execute(json!({"days": -1})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_weather" && reason.contains("days must be an integer"))
+        );
+    }
+
+    #[tokio::test]
+    async fn location_wrong_type_errors() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let err = tool.execute(json!({"location": 42})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_weather" && reason.contains("location must be a string"))
+        );
+    }
+
+    #[tokio::test]
+    async fn include_current_wrong_type_errors() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let err = tool
+            .execute(json!({"include_current": "yes"}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_weather" && reason.contains("include_current must be a boolean"))
+        );
     }
 
     fn forecast_json_no_current() -> String {
