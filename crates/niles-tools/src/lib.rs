@@ -12,9 +12,10 @@ pub mod tool;
 
 pub use builtin::{
     CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState, GetTimerRemaining,
-    ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, QueryCommandHistory,
-    QueryDeviceStateHistory, SetDevice, default_registry, register_history_tools,
-    register_state_history_tools, register_timer_tools,
+    ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
+    QueryCommandHistory, QueryDeviceStateHistory, SetDevice, default_registry,
+    register_history_tools, register_memory_tools, register_state_history_tools,
+    register_timer_tools,
 };
 pub use error::{Error, Result};
 pub use registry::ToolRegistry;

@@ -21,6 +21,7 @@ niles-llm.workspace = true
 niles-capabilities.workspace = true
 niles-scheduler.workspace = true
 niles-history.workspace = true
+niles-memory.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
