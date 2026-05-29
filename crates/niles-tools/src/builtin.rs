@@ -857,6 +857,7 @@ impl Tool for DeviceStateSnapshotAt {
                     "device_ids": {
                         "type": "array",
                         "items": { "type": "string" },
+                        "minItems": 1,
                         "description": "List of room-qualified device ids, e.g. ['kitchen/ceiling_light', 'living_room/floor_lamp']."
                     },
                     "room": {
@@ -874,6 +875,12 @@ impl Tool for DeviceStateSnapshotAt {
         let at = parse_required_rfc3339("device_state_snapshot_at", &args, "at")?;
 
         let ids = if let Some(arr) = args.get("device_ids").and_then(|v| v.as_array()) {
+            if arr.is_empty() {
+                return Err(Error::InvalidArgs {
+                    tool: "device_state_snapshot_at".into(),
+                    reason: "device_ids must contain at least one device id".into(),
+                });
+            }
             arr.iter()
                 .map(|v| {
                     let raw = v.as_str().ok_or_else(|| Error::InvalidArgs {
@@ -1821,6 +1828,18 @@ mod tests {
         let err = tool.execute(args).await.unwrap_err();
         assert!(
             matches!(err, Error::InvalidArgs { tool: t, reason } if t == "device_state_snapshot_at" && reason.contains("device_ids or room"))
+        );
+    }
+
+    #[tokio::test]
+    async fn device_state_snapshot_at_empty_device_ids_errors() {
+        let reader = Arc::new(StateReader::disabled());
+        let reg = fixture_registry();
+        let tool = DeviceStateSnapshotAt::new(reader, reg);
+        let args = json!({ "at": "2026-01-01T12:00:00Z", "device_ids": [] });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool: t, reason } if t == "device_state_snapshot_at" && reason.contains("at least one"))
         );
     }
 
