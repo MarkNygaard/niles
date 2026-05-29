@@ -17,6 +17,7 @@ use crate::util::atomic_write;
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub version: String,
     pub body: String,
     pub sidecar: Sidecar,
 }
@@ -34,6 +35,7 @@ pub struct SkillStore {
 struct Frontmatter {
     name: String,
     description: String,
+    version: String,
 }
 
 /// Graveyard entry written when a skill is deleted with `absorbed_into`.
@@ -63,16 +65,22 @@ impl SkillStore {
     }
 
     /// Create a new skill.
+    ///
+    /// `version` must be set; the `niles-capabilities` loader requires
+    /// it in the frontmatter. Default to `"0.1.0"` if the caller has
+    /// no other source for the value.
     pub fn create(
         &self,
         name: &str,
         description: &str,
+        version: &str,
         body: &str,
         provenance: Provenance,
     ) -> Result<()> {
         validate_skill_name(name)?;
         scan::scan(name)?;
         scan::scan(description)?;
+        scan::scan(version)?;
         scan::scan(body)?;
 
         let char_count = body.chars().count();
@@ -94,7 +102,7 @@ impl SkillStore {
             }
             std::fs::create_dir(&dir)?;
 
-            let skill_md = format_skill_md(name, description, body);
+            let skill_md = format_skill_md(name, description, version, body);
             atomic_write(&dir.join("SKILL.md"), skill_md.as_bytes())?;
 
             let sidecar = Sidecar::new(provenance);
@@ -175,6 +183,7 @@ impl SkillStore {
         Ok(Skill {
             name: meta.name,
             description: meta.description,
+            version: meta.version,
             body,
             sidecar,
         })
@@ -213,7 +222,7 @@ impl SkillStore {
             let raw = std::fs::read_to_string(dir.join("SKILL.md"))?;
             let (meta, _old_body) = parse_skill_md(&raw, &dir)?;
 
-            let skill_md = format_skill_md(&meta.name, &meta.description, new_body);
+            let skill_md = format_skill_md(&meta.name, &meta.description, &meta.version, new_body);
             atomic_write(&dir.join("SKILL.md"), skill_md.as_bytes())?;
 
             sidecar.patch_count += 1;
@@ -410,10 +419,11 @@ fn validate_skill_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn format_skill_md(name: &str, description: &str, body: &str) -> String {
+fn format_skill_md(name: &str, description: &str, version: &str, body: &str) -> String {
     let yaml = serde_yaml::to_string(&Frontmatter {
         name: name.to_string(),
         description: description.to_string(),
+        version: version.to_string(),
     })
     .unwrap();
     let yaml = yaml.trim_end_matches('\n');
@@ -506,6 +516,7 @@ mod tests {
             .create(
                 "my-skill",
                 "My skill",
+                "0.1.0",
                 "# Body\n\nHello.",
                 Provenance::UserCreated,
             )
@@ -521,10 +532,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("dup", "D", "B", Provenance::UserCreated)
+            .create("dup", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         let err = store
-            .create("dup", "D", "B", Provenance::UserCreated)
+            .create("dup", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap_err();
         assert!(matches!(err, Error::AlreadyExists { name } if name == "dup"));
     }
@@ -536,7 +547,7 @@ mod tests {
 
         for bad in ["Foo", "with spaces", "..", "kitchen.for.dinner"] {
             let err = store
-                .create(bad, "D", "B", Provenance::UserCreated)
+                .create(bad, "D", "0.1.0", "B", Provenance::UserCreated)
                 .unwrap_err();
             assert!(
                 matches!(err, Error::InvalidName { ref name, .. } if name == bad),
@@ -550,7 +561,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         let err = store
-            .create("ok", "D", "bad\u{200B}body", Provenance::UserCreated)
+            .create(
+                "ok",
+                "D",
+                "0.1.0",
+                "bad\u{200B}body",
+                Provenance::UserCreated,
+            )
             .unwrap_err();
         assert!(matches!(err, Error::ScanFailed { .. }));
     }
@@ -560,7 +577,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = SkillStore::open(tmp.path(), 10, 1_048_576).unwrap();
         let err = store
-            .create("ok", "D", "12345678901", Provenance::UserCreated)
+            .create("ok", "D", "0.1.0", "12345678901", Provenance::UserCreated)
             .unwrap_err();
         assert!(matches!(err, Error::TooLarge { .. }));
     }
@@ -570,7 +587,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = SkillStore::open(tmp.path(), 100_000, 10).unwrap();
         store
-            .create("ok", "D", "B", Provenance::UserCreated)
+            .create("ok", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
 
         // Write a supporting file that exceeds the limit.
@@ -585,7 +602,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "Desc", "Old", Provenance::UserCreated)
+            .create("s", "Desc", "0.1.0", "Old", Provenance::UserCreated)
             .unwrap();
 
         let created_at = store.load("s").unwrap().sidecar.created_at;
@@ -604,7 +621,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::AgentCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
         store.set_pinned("s", true).unwrap();
         let err = store.patch("s", "New").unwrap_err();
@@ -616,7 +633,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::UserCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         store.set_pinned("s", true).unwrap();
         store.patch("s", "New").unwrap();
@@ -628,7 +645,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::UserCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         store.delete("s", None).unwrap();
         assert!(!store.root.join("s").exists());
@@ -639,7 +656,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::UserCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         store.delete("s", Some("other")).unwrap();
 
@@ -656,7 +673,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::UserCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         store.set_pinned("s", true).unwrap();
         let err = store.delete("s", None).unwrap_err();
@@ -668,7 +685,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::UserCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         store.bump_use("s").unwrap();
         store.bump_use("s").unwrap();
@@ -689,7 +706,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::UserCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         std::fs::write(store.root.join("s").join(".usage.json"), "not json").unwrap();
         let err = store.bump_use("s").unwrap_err();
@@ -704,7 +721,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("s", "D", "B", Provenance::UserCreated)
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         store.set_pinned("s", true).unwrap();
         let err = store.delete("s", None).unwrap_err();
@@ -716,10 +733,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("zebra", "Z", "B", Provenance::UserCreated)
+            .create("zebra", "Z", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         store
-            .create("alpha", "A", "B", Provenance::UserCreated)
+            .create("alpha", "A", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
 
         let names = store.list().unwrap();
@@ -731,7 +748,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("skill", "D", "B", Provenance::UserCreated)
+            .create("skill", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
         std::fs::create_dir(store.root.join("not-a-skill")).unwrap();
 
@@ -776,9 +793,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
         store
-            .create("skill-a", "Desc", "Body", Provenance::UserCreated)
+            .create("skill-a", "Desc", "0.1.0", "Body", Provenance::UserCreated)
             .unwrap();
-        let tampered = format_skill_md("different-name", "Desc", "Body");
+        let tampered = format_skill_md("different-name", "Desc", "0.1.0", "Body");
         std::fs::write(store.root.join("skill-a").join("SKILL.md"), tampered).unwrap();
 
         let err = store.load("skill-a").unwrap_err();
@@ -790,9 +807,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = SkillStore::open(tmp.path(), 10, 1_048_576).unwrap();
         store
-            .create("skill", "Desc", "1234567890", Provenance::UserCreated)
+            .create(
+                "skill",
+                "Desc",
+                "0.1.0",
+                "1234567890",
+                Provenance::UserCreated,
+            )
             .unwrap();
-        let oversized = format_skill_md("skill", "Desc", "12345678901");
+        let oversized = format_skill_md("skill", "Desc", "0.1.0", "12345678901");
         std::fs::write(store.root.join("skill").join("SKILL.md"), oversized).unwrap();
 
         let err = store.load("skill").unwrap_err();
@@ -808,7 +831,7 @@ mod tests {
         for _ in 0..10 {
             let s = store.clone();
             handles.push(std::thread::spawn(move || {
-                s.create("contended", "D", "B", Provenance::UserCreated)
+                s.create("contended", "D", "0.1.0", "B", Provenance::UserCreated)
             }));
         }
 
@@ -828,5 +851,32 @@ mod tests {
             "remaining threads should see AlreadyExists"
         );
         assert_eq!(store.list().unwrap(), vec!["contended"]);
+    }
+
+    /// Regression: a skill minted by `SkillStore::create` MUST be loadable
+    /// by `niles_capabilities::load_capabilities` — they share the
+    /// agentskills.io on-disk format and PR 2 of Phase 8 will load
+    /// minted skills via the same loader.
+    #[test]
+    fn minted_skill_round_trips_through_capabilities_loader() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create(
+                "my-skill",
+                "What it does",
+                "0.1.0",
+                "# Body\n\nSomething useful.",
+                Provenance::AgentCreated,
+            )
+            .unwrap();
+
+        let loader = niles_capabilities::CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let cap = loader
+            .get("my-skill")
+            .expect("minted skill must be visible to niles-capabilities");
+        assert_eq!(cap.metadata.description, "What it does");
+        assert_eq!(cap.metadata.version, "0.1.0");
+        assert!(cap.body.contains("Something useful."));
     }
 }
