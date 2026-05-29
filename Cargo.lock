@@ -885,6 +885,7 @@ dependencies = [
  "niles-capabilities",
  "niles-config",
  "niles-core",
+ "niles-history",
  "niles-intent",
  "niles-llm",
  "niles-mqtt",
@@ -931,6 +932,19 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "niles-history"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "niles-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -1029,6 +1043,7 @@ dependencies = [
  "chrono",
  "niles-capabilities",
  "niles-core",
+ "niles-history",
  "niles-llm",
  "niles-mqtt",
  "niles-scheduler",

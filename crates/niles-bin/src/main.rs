@@ -7,6 +7,7 @@ use niles_api::{AppState, DevicePublisher};
 use niles_capabilities::CapabilityLoader;
 use niles_config::Config;
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
+use niles_history::{CommandEntry, CommandReader, CommandWriter};
 use niles_intent::{DeviceIndex, Intent, IntentRouter, RouterContext};
 use niles_llm::{ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, ToolChoice};
 use niles_mqtt::{
@@ -458,7 +459,7 @@ async fn set(args: SetArgs) -> anyhow::Result<()> {
     let (topic, payload) = format_set_command(&cfg.mqtt.z2m_prefix, &id, &target);
     println!("Publishing {topic}");
     println!("          {payload}");
-    client.publish(&topic, payload.into_bytes()).await?;
+    client.publish(&topic, payload).await?;
 
     // QoS::AtLeastOnce: publish() returns once the message is queued,
     // not once it's confirmed on the wire. Give the event loop a
@@ -1089,12 +1090,26 @@ fn spawn_dispatch_task(
     let piper = piper.clone();
     let sender = sender.clone();
     tokio::spawn(async move {
-        if let Some((peer, text)) = transcribe_session(&whisper, session).await
-            && let Some(say) = handle_transcript(&ctx, peer, &text).await
-        {
-            println!("[{peer}] say: {say}");
-            if let Err(e) = crate::speak::speak_back(&piper, &sender, peer, &say).await {
-                tracing::warn!("[{peer}] speak-back failed: {e:#}");
+        if let Some((peer, text)) = transcribe_session(&whisper, session).await {
+            let say = handle_transcript(&ctx, peer, &text).await;
+            let entry = CommandEntry {
+                ts: chrono::Utc::now(),
+                peer,
+                origin_room: ctx
+                    .satellites
+                    .room_for(peer)
+                    .map(|r| r.as_str().to_string()),
+                transcript: text.clone(),
+                spoken_response: say.clone(),
+            };
+            if let Err(e) = ctx.history.append(&entry) {
+                tracing::warn!("history append failed: {e:#}");
+            }
+            if let Some(say) = say {
+                println!("[{peer}] say: {say}");
+                if let Err(e) = crate::speak::speak_back(&piper, &sender, peer, &say).await {
+                    tracing::warn!("[{peer}] speak-back failed: {e:#}");
+                }
             }
         }
     });
@@ -1159,12 +1174,31 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .map(build_capability_index)
         .map(Arc::new);
 
-    let tools = Arc::new(build_tool_registry(
+    let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
         z2m_prefix.clone(),
         capability_loader.clone(),
-    ));
+    );
+    niles_tools::register_timer_tools(&mut tools, timers.clone());
+
+    let command_writer = match &cfg.history.directory {
+        Some(dir) => {
+            let w = CommandWriter::new(dir).context("opening command history writer")?;
+            if let Err(e) = w.prune(cfg.history.retention_days) {
+                tracing::warn!("history prune failed: {e:#}");
+            }
+            w
+        }
+        None => CommandWriter::disabled(),
+    };
+    let command_writer = Arc::new(command_writer);
+    let command_reader = match &cfg.history.directory {
+        Some(dir) => Arc::new(CommandReader::new(dir)),
+        None => Arc::new(CommandReader::disabled()),
+    };
+    niles_tools::register_history_tools(&mut tools, command_reader);
+    let tools = Arc::new(tools);
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
@@ -1202,6 +1236,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         capability_index,
         satellites,
         device_index: Arc::clone(&device_index),
+        history: command_writer.clone(),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1283,6 +1318,7 @@ struct DispatchCtx {
     capability_index: Option<Arc<niles_intent::CapabilityIndex>>,
     satellites: Arc<SatelliteRegistry>,
     device_index: Arc<RwLock<DeviceIndex>>,
+    history: Arc<CommandWriter>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1508,11 +1544,7 @@ async fn handle_transcript(
                 if ctx.dry_run {
                     println!("[{peer}] [dry-run] {topic}  {payload}");
                 } else {
-                    match ctx
-                        .publisher
-                        .publish(&topic, payload.as_bytes().to_vec())
-                        .await
-                    {
+                    match ctx.publisher.publish(&topic, payload.clone()).await {
                         Ok(()) => println!("[{peer}] published {topic}  {payload}"),
                         Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
                     }
@@ -1750,11 +1782,7 @@ async fn dispatch_to_targets(
             println!("[{peer}] [dry-run] {topic}  {payload}");
             continue;
         }
-        match ctx
-            .publisher
-            .publish(&topic, payload.as_bytes().to_vec())
-            .await
-        {
+        match ctx.publisher.publish(&topic, payload.clone()).await {
             Ok(()) => println!("[{peer}] published {topic}  {payload}"),
             Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
         }
@@ -1777,11 +1805,7 @@ async fn publish_single(
     if ctx.dry_run {
         println!("[{peer}] [dry-run] {topic}  {payload}");
     } else {
-        match ctx
-            .publisher
-            .publish(&topic, payload.as_bytes().to_vec())
-            .await
-        {
+        match ctx.publisher.publish(&topic, payload.clone()).await {
             Ok(()) => println!("[{peer}] published {topic}  {payload}"),
             Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
         }
@@ -2069,10 +2093,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         if observer_dry_run {
                             println!("[switch] [dry-run] {topic}  {payload}");
                         } else {
-                            match observer_publisher
-                                .publish(&topic, payload.as_bytes().to_vec())
-                                .await
-                            {
+                            match observer_publisher.publish(&topic, payload.clone()).await {
                                 Ok(()) => println!("[switch] published {topic}  {payload}"),
                                 Err(e) => tracing::warn!("[switch] publish to {topic} failed: {e}"),
                             }
@@ -2107,6 +2128,23 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         capability_loader.clone(),
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
+
+    let command_writer = match &cfg.history.directory {
+        Some(dir) => {
+            let w = CommandWriter::new(dir).context("opening command history writer")?;
+            if let Err(e) = w.prune(cfg.history.retention_days) {
+                tracing::warn!("history prune failed: {e:#}");
+            }
+            w
+        }
+        None => CommandWriter::disabled(),
+    };
+    let command_writer = Arc::new(command_writer);
+    let command_reader = match &cfg.history.directory {
+        Some(dir) => Arc::new(CommandReader::new(dir)),
+        None => Arc::new(CommandReader::disabled()),
+    };
+    niles_tools::register_history_tools(&mut tools, command_reader);
     let tools = Arc::new(tools);
 
     // Timer driver: shares the `timers` Arc registered with the LLM
@@ -2172,6 +2210,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         capability_index,
         satellites,
         device_index,
+        history: command_writer.clone(),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -2391,7 +2430,7 @@ async fn run_curve_tick(
             tracing::info!("[curve {minute_of_day}] [dry-run] {topic}  {payload}");
             true
         } else {
-            match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+            match publisher.publish(&topic, payload.clone()).await {
                 Ok(()) => {
                     tracing::info!("[curve {minute_of_day}] {topic}  {payload}");
                     true
@@ -2463,9 +2502,7 @@ async fn run_morning_routine_tick(
                     let (topic, payload) = format_set_command(z2m_prefix, id, &target);
                     if dry_run {
                         tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
-                    } else if let Err(e) =
-                        publisher.publish(&topic, payload.as_bytes().to_vec()).await
-                    {
+                    } else if let Err(e) = publisher.publish(&topic, payload.clone()).await {
                         tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
                     } else {
                         tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
@@ -2512,7 +2549,7 @@ async fn run_morning_routine_tick(
                 tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
                 true
             } else {
-                match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+                match publisher.publish(&topic, payload.clone()).await {
                     Ok(()) => {
                         tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
                         true
@@ -2569,7 +2606,7 @@ async fn run_morning_routine_tick(
         if dry_run {
             tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
         } else {
-            match publisher.publish(&topic, payload.as_bytes().to_vec()).await {
+            match publisher.publish(&topic, payload.clone()).await {
                 Ok(()) => {
                     tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
                 }
