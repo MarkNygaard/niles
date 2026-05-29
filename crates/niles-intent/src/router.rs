@@ -1937,6 +1937,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn media_next_room_first_bare() {
+        assert_eq!(
+            parse("kitchen next"),
+            Some(Intent::MediaNext {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
     // ---- Media previous ----
 
     #[test]
@@ -1970,9 +1980,29 @@ mod tests {
     }
 
     #[test]
+    fn media_previous_track_in_room() {
+        assert_eq!(
+            parse("previous track in the bedroom"),
+            Some(Intent::MediaPrevious {
+                room: "bedroom".into(),
+            })
+        );
+    }
+
+    #[test]
     fn media_previous_room_first_phrasing() {
         assert_eq!(
             parse("kitchen previous song"),
+            Some(Intent::MediaPrevious {
+                room: "kitchen".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_previous_room_first_bare() {
+        assert_eq!(
+            parse("kitchen previous"),
             Some(Intent::MediaPrevious {
                 room: "kitchen".into(),
             })
@@ -2007,6 +2037,7 @@ mod tests {
     fn media_previous_alone_rejected() {
         assert_eq!(parse("previous song"), None);
         assert_eq!(parse("go back"), None);
+        assert_eq!(parse("back"), None);
     }
 
     // ---- Media volume set ----
@@ -2112,6 +2143,16 @@ mod tests {
         assert_eq!(
             parse("PAUSE the Living Room."),
             Some(Intent::MediaPause {
+                room: "living room".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn media_next_normalizes_case_and_trailing_punctuation() {
+        assert_eq!(
+            parse("SKIP Track in the Living Room."),
+            Some(Intent::MediaNext {
                 room: "living room".into(),
             })
         );
