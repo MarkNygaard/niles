@@ -38,7 +38,7 @@ pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
-pub use skills::SkillsConfig;
+pub use skills::{SkillsConfig, SkillsCuratorConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
@@ -1147,5 +1147,117 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn skills_curator_defaults_when_omitted() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.skills.curator.enabled);
+        assert_eq!(cfg.skills.curator.interval_hours, 24);
+        assert_eq!(cfg.skills.curator.stale_after_days, 30);
+        assert_eq!(cfg.skills.curator.archive_after_days, 90);
+    }
+
+    #[test]
+    fn skills_curator_explicit_overrides_parse() {
+        let toml = format!(
+            "{}\n[skills.curator]\nenabled = false\ninterval_hours = 12\nstale_after_days = 15\narchive_after_days = 45\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.skills.curator.enabled);
+        assert_eq!(cfg.skills.curator.interval_hours, 12);
+        assert_eq!(cfg.skills.curator.stale_after_days, 15);
+        assert_eq!(cfg.skills.curator.archive_after_days, 45);
+    }
+
+    #[test]
+    fn skills_curator_disabled() {
+        let toml = format!(
+            "{}\n[skills.curator]\nenabled = false\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.skills.curator.enabled);
+    }
+
+    #[test]
+    fn rejects_archive_after_less_than_stale_after() {
+        let toml = format!(
+            "{}\n[skills.curator]\narchive_after_days = 10\nstale_after_days = 20\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_stale_after_days() {
+        let toml = format!(
+            "{}\n[skills.curator]\nstale_after_days = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_interval_hours() {
+        let toml = format!(
+            "{}\n[skills.curator]\ninterval_hours = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_too_large_interval_hours() {
+        let toml = format!(
+            "{}\n[skills.curator]\ninterval_hours = 9000\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_curator_field() {
+        let toml = format!(
+            "{}\n[skills.curator]\nunknown_field = 42\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        assert!(Config::load_from_str(&toml).is_err());
     }
 }
