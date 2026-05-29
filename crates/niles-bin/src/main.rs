@@ -677,6 +677,7 @@ fn origin_context(room: &RoomName) -> String {
     )
 }
 
+#[cfg(test)]
 fn persona_with_origin(origin_room: Option<&RoomName>) -> String {
     let mut out = NILES_SYSTEM_PERSONA.to_string();
     if let Some(room) = origin_room {
@@ -696,6 +697,7 @@ fn join_memory_entries(entries: &[niles_memory::Entry]) -> Option<String> {
     if s.trim().is_empty() { None } else { Some(s) }
 }
 
+#[cfg(test)]
 fn assemble_system_prompt(
     transcript: &str,
     index: &niles_intent::CapabilityIndex,
@@ -705,39 +707,15 @@ fn assemble_system_prompt(
     agent_mem: Option<&str>,
     skill_summaries: Option<&[SkillSummary]>,
 ) -> String {
-    let mut out = String::from(NILES_SYSTEM_PERSONA);
-
-    // Inject memory sections before capability references for cache warmth.
-    if let Some(mem) = user_mem
-        && !mem.trim().is_empty()
-    {
-        out.push_str("\n\n# User memory\n\n");
-        out.push_str(mem);
-    }
-    if let Some(mem) = agent_mem
-        && !mem.trim().is_empty()
-    {
-        out.push_str("\n\n# Agent memory\n\n");
-        out.push_str(mem);
-    }
-
-    if let Some(summaries) = skill_summaries
-        && !summaries.is_empty()
-    {
-        out.push_str("\n\n# Available skills\n\n");
-        for s in summaries {
-            out.push_str(&format!(
-                "- {} (v{}) — {}\n",
-                s.name, s.version, s.description,
-            ));
-        }
-    }
-
-    append_capability_references(&mut out, transcript, index, loader);
-    if let Some(room) = origin_room {
-        out.push_str(&origin_context(room));
-    }
-    out
+    assemble_system_prompt_with_optional_capabilities(
+        transcript,
+        Some(index),
+        Some(loader),
+        origin_room,
+        user_mem,
+        agent_mem,
+        skill_summaries,
+    )
 }
 
 fn append_capability_references(
