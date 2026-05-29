@@ -54,30 +54,24 @@ pub fn apply_automatic_transitions(
             report.skipped_pinned += 1;
             continue;
         }
-        // Load the full sidecar so we can compare to current status
-        // and to created_at (not exposed on SkillSummary).
-        let skill = match store.load(&s.name) {
-            Ok(sk) => sk,
+        let target = match store.update_status(&s.name, |sidecar| {
+            let last_activity = sidecar.latest_activity_at().unwrap_or(sidecar.created_at);
+            let age = now.signed_duration_since(last_activity);
+            let target = target_status_for_age(age, thresholds);
+            if target == sidecar.status {
+                None
+            } else {
+                Some(target)
+            }
+        }) {
+            Ok(Some(t)) => t,
+            Ok(None) => continue,
             Err(e) => {
                 tracing::warn!(skill = %s.name, error = %e,
-                    "curator: failed to load skill, skipping");
+                    "curator: failed to update status, skipping");
                 continue;
             }
         };
-        let last_activity = skill
-            .sidecar
-            .latest_activity_at()
-            .unwrap_or(skill.sidecar.created_at);
-        let age = now.signed_duration_since(last_activity);
-        let target = target_status_for_age(age, thresholds);
-        if target == skill.sidecar.status {
-            continue;
-        }
-        if let Err(e) = store.set_status(&s.name, target) {
-            tracing::warn!(skill = %s.name, error = %e,
-                "curator: failed to set status, skipping");
-            continue;
-        }
         match target {
             SkillStatus::Stale => report.became_stale += 1,
             SkillStatus::Archived => report.became_archived += 1,
@@ -409,6 +403,68 @@ mod tests {
         assert_eq!(report.revived, 1);
         assert_eq!(report.skipped_pinned, 1);
         assert_eq!(report.skipped_user_created, 1);
+    }
+
+    #[test]
+    fn equal_thresholds_skips_stale_goes_straight_to_archived() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
+            .unwrap();
+        let created = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let mut sidecar = Sidecar::new(Provenance::AgentCreated);
+        sidecar.created_at = created;
+        sidecar
+            .write(&tmp.path().join("s").join(".usage.json"))
+            .unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap(); // ~104 days
+        let report = apply_automatic_transitions(
+            &store,
+            now,
+            CuratorThresholds {
+                stale_after: Duration::days(90),
+                archive_after: Duration::days(90),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.became_stale, 0);
+        assert_eq!(report.became_archived, 1);
+        assert_eq!(
+            store.load("s").unwrap().sidecar.status,
+            SkillStatus::Archived
+        );
+    }
+
+    #[test]
+    fn archived_skill_with_fresh_activity_revives_to_active() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
+            .unwrap();
+        let created = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let mut sidecar = Sidecar::new(Provenance::AgentCreated);
+        sidecar.created_at = created;
+        sidecar.status = SkillStatus::Archived;
+        sidecar.last_used_at = Some(Utc.with_ymd_and_hms(2026, 4, 10, 12, 0, 0).unwrap()); // 5 days ago
+        sidecar
+            .write(&tmp.path().join("s").join(".usage.json"))
+            .unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
+        let report = apply_automatic_transitions(
+            &store,
+            now,
+            CuratorThresholds {
+                stale_after: Duration::days(30),
+                archive_after: Duration::days(90),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.revived, 1);
+        assert_eq!(store.load("s").unwrap().sidecar.status, SkillStatus::Active);
     }
 
     #[test]

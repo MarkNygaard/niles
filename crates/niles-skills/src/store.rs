@@ -502,6 +502,33 @@ impl SkillStore {
         })
     }
 
+    /// Atomically read the sidecar, run the closure, and write back
+    /// only when the closure returns a different status.
+    /// Returns `Some(new_status)` if a write occurred, `None` otherwise.
+    pub fn update_status<F>(&self, name: &str, f: F) -> Result<Option<SkillStatus>>
+    where
+        F: FnOnce(&Sidecar) -> Option<SkillStatus>,
+    {
+        validate_skill_name(name)?;
+        self.with_store_lock(|| {
+            let dir = self.root.join(name);
+            if !dir.exists() {
+                return Err(Error::NotFound {
+                    name: name.to_string(),
+                });
+            }
+            let mut sidecar = Sidecar::read(&dir.join(".usage.json"))?;
+            if let Some(new_status) = f(&sidecar)
+                && sidecar.status != new_status
+            {
+                sidecar.status = new_status;
+                sidecar.write(&dir.join(".usage.json"))?;
+                return Ok(Some(new_status));
+            }
+            Ok(None)
+        })
+    }
+
     // ------------------------------------------------------------------
     // Lock helper
     // ------------------------------------------------------------------
@@ -1338,5 +1365,59 @@ mod tests {
         store.patch("s", "new body").unwrap();
         let skill = store.load("s").unwrap();
         assert_eq!(skill.sidecar.status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn update_status_changes_and_returns_new() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let result = store
+            .update_status("s", |sidecar| {
+                assert_eq!(sidecar.status, SkillStatus::Active);
+                Some(SkillStatus::Stale)
+            })
+            .unwrap();
+        assert_eq!(result, Some(SkillStatus::Stale));
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Stale);
+    }
+
+    #[test]
+    fn update_status_returns_none_when_closure_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let result = store.update_status("s", |_sidecar| None).unwrap();
+        assert_eq!(result, None);
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn update_status_returns_none_when_already_target() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let result = store
+            .update_status("s", |_sidecar| Some(SkillStatus::Active))
+            .unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn update_status_not_found_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        let err = store
+            .update_status("nope", |_sidecar| Some(SkillStatus::Archived))
+            .unwrap_err();
+        assert!(matches!(err, Error::NotFound { name } if name == "nope"));
     }
 }

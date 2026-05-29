@@ -112,10 +112,16 @@ impl SkillsConfig {
                 reason: "curator.interval_hours must be in 1..=8760".into(),
             });
         }
-        if self.curator.stale_after_days == 0 {
+        if self.curator.stale_after_days == 0 || self.curator.stale_after_days > 3650 {
             return Err(Error::InvalidSection {
                 section: "skills",
-                reason: "curator.stale_after_days must be > 0".into(),
+                reason: "curator.stale_after_days must be in 1..=3650".into(),
+            });
+        }
+        if self.curator.archive_after_days == 0 || self.curator.archive_after_days > 3650 {
+            return Err(Error::InvalidSection {
+                section: "skills",
+                reason: "curator.archive_after_days must be in 1..=3650".into(),
             });
         }
         if self.curator.archive_after_days < self.curator.stale_after_days {

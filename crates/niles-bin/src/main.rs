@@ -878,9 +878,13 @@ fn render_skills_section(out: &mut String, summaries: &[SkillSummary]) {
     let now = Utc::now();
     for s in summaries {
         let annotation = if s.status == SkillStatus::Stale {
-            let last = s.last_activity_at.unwrap_or(now);
-            let days = (now - last).num_days().max(0);
-            format!(" [stale: {days} days unused]")
+            match s.last_activity_at {
+                Some(last) => {
+                    let days = (now - last).num_days().max(0);
+                    format!(" [stale: {days} days unused]")
+                }
+                None => " [stale]".to_string(),
+            }
         } else {
             String::new()
         };
@@ -4182,6 +4186,23 @@ mod system_prompt_tests {
         render_skills_section(&mut out, &summaries);
         assert!(!out.contains("[stale:"));
         assert!(out.contains("- active-skill (v0.1.0) — Does something"));
+    }
+
+    #[test]
+    fn system_prompt_renders_stale_without_days_when_no_activity() {
+        let summaries = vec![SkillSummary {
+            name: "stale-skill".into(),
+            description: "Does something".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::AgentCreated,
+            status: SkillStatus::Stale,
+            last_activity_at: None,
+        }];
+        let mut out = String::new();
+        render_skills_section(&mut out, &summaries);
+        assert!(out.contains("[stale]"));
+        assert!(!out.contains("days unused"));
     }
 
     #[test]

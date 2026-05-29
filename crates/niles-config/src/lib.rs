@@ -1260,4 +1260,38 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
         );
         assert!(Config::load_from_str(&toml).is_err());
     }
+
+    #[test]
+    fn rejects_too_large_stale_after_days() {
+        let toml = format!(
+            "{}\n[skills.curator]\nstale_after_days = 4000\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_too_large_archive_after_days() {
+        let toml = format!(
+            "{}\n[skills.curator]\narchive_after_days = 4000\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
 }
