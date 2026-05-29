@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 /// can thread origin context into the Tier 1 system prompt.
 #[derive(Debug, Default, Clone)]
 pub struct SatelliteRegistry {
-    by_ip: HashMap<IpAddr, RoomName>,
+    pub by_ip: HashMap<IpAddr, RoomName>,
 }
 
 impl SatelliteRegistry {
