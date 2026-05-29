@@ -102,7 +102,7 @@ pub(crate) async fn try_duck(
         Ok(TransportState::Playing) => {}
         Ok(_) => return None,
         Err(e) => {
-            tracing::debug!("[duck] transport read failed: {e:#}");
+            tracing::warn!("[duck] transport read failed: {e:#}");
             return None;
         }
     }
@@ -111,7 +111,7 @@ pub(crate) async fn try_duck(
         Ok(v) if v > DUCK_VOLUME => v,
         Ok(_) => return None,
         Err(e) => {
-            tracing::debug!("[duck] volume read failed: {e:#}");
+            tracing::warn!("[duck] volume read failed: {e:#}");
             return None;
         }
     };
@@ -507,6 +507,19 @@ mod tests {
         let room = RoomName::parse("living_room").unwrap();
         let mock =
             RecordingTransport::with_responses(vec![Ok(xml_transport_info("TRANSITIONING"))]);
+        let speakers = make_speaker_registry(room.clone(), mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+
+        let result = try_duck(&speakers, &satellites, peer).await;
+        assert!(result.is_none());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duck_unknown_returns_none() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mock = RecordingTransport::with_responses(vec![Ok(xml_transport_info("UNKNOWN"))]);
         let speakers = make_speaker_registry(room.clone(), mock.clone());
         let satellites = make_satellite_registry(peer.ip(), room);
 
