@@ -135,15 +135,19 @@ pub async fn speak_back(
     satellites: &SatelliteRegistry,
 ) -> Result<()> {
     let duck_handle = try_duck(speakers, satellites, peer).await;
-    let synth = piper.synthesize(text, None).await?;
-    let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
-    sender.send_audio(peer, &pcm, format).await?;
+    let result = async {
+        let synth = piper.synthesize(text, None).await?;
+        let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
+        sender.send_audio(peer, &pcm, format).await
+    }
+    .await;
+
     if let Some((sonos, original)) = duck_handle
         && let Err(e) = sonos.set_volume(original).await
     {
         tracing::warn!("[{peer}] duck restore failed: {e:#}");
     }
-    Ok(())
+    result
 }
 
 #[cfg(test)]
