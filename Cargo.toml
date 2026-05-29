@@ -39,6 +39,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
 serde_yaml = "0.9"
 tempfile = "3"
+fs2 = "0.4"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
@@ -56,3 +57,4 @@ niles-llm = { path = "crates/niles-llm" }
 niles-tools = { path = "crates/niles-tools" }
 niles-capabilities = { path = "crates/niles-capabilities" }
 niles-history = { path = "crates/niles-history" }
+niles-skills = { path = "crates/niles-skills" }
