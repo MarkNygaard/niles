@@ -169,7 +169,10 @@ fn split_locale(locale: &str) -> Option<(&str, &str)> {
 }
 
 fn locale_segment(locale: &str, index: usize) -> Option<&str> {
-    locale.split(['_', '-']).nth(index).filter(|segment| !segment.is_empty())
+    locale
+        .split(['_', '-'])
+        .nth(index)
+        .filter(|segment| !segment.is_empty())
 }
 
 #[cfg(test)]
