@@ -1,7 +1,6 @@
 //! SkillStore — atomic write-side storage for agent-mintable skills.
 
 use std::fs::{OpenOptions, read_dir};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -11,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::scan;
 use crate::sidecar::{Provenance, Sidecar};
+use crate::util::atomic_write;
 
 /// A loaded skill with metadata, body, and telemetry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,28 +472,6 @@ fn parse_skill_md(raw: &str, _dir: &Path) -> Result<(Frontmatter, String)> {
     })?;
 
     Ok((meta, body))
-}
-
-fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
-    let suffix = format!(
-        "tmp.{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let tmp = path.with_extension(&suffix);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&tmp)?;
-    file.write_all(content)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 // ------------------------------------------------------------------
