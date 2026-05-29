@@ -8,28 +8,35 @@ use crate::error::{Error, Result};
 /// Scan `text` for disallowed characters.
 /// Returns `Ok(())` if clean, `Err(Error::ScanFailed)` if not.
 pub fn scan(text: &str) -> Result<()> {
-    for (idx, ch) in text.chars().enumerate() {
-        if let Some(reason) = disallowed_reason(ch, idx) {
+    for (byte_offset, ch) in text.char_indices() {
+        if let Some(reason) = disallowed_reason(ch, byte_offset) {
             return Err(Error::ScanFailed { reason });
         }
     }
     Ok(())
 }
 
-fn disallowed_reason(ch: char, idx: usize) -> Option<String> {
+fn disallowed_reason(ch: char, byte_offset: usize) -> Option<String> {
     match ch {
-        '\0' => Some(format!("null byte at byte offset {}", idx)),
-        '\u{FEFF}' => Some(format!("BOM at byte offset {}", idx)),
-        '\u{202E}' => Some(format!("RTL override at byte offset {}", idx)),
-        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' => {
-            Some(format!("zero-width space or joiner at byte offset {}", idx))
-        }
+        '\0' => Some(format!("null byte at byte offset {}", byte_offset)),
+        '\u{FEFF}' => Some(format!("BOM at byte offset {}", byte_offset)),
+        '\u{202E}' => Some(format!("RTL override at byte offset {}", byte_offset)),
+        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' => Some(format!(
+            "zero-width space or joiner at byte offset {}",
+            byte_offset
+        )),
         _ => {
             let cp = ch as u32;
             if (0x01..=0x1F).contains(&cp) && !matches!(ch, '\n' | '\r' | '\t') {
-                Some(format!("C0 control character at byte offset {}", idx))
+                Some(format!(
+                    "C0 control character at byte offset {}",
+                    byte_offset
+                ))
             } else if (0x80..=0x9F).contains(&cp) {
-                Some(format!("C1 control character at byte offset {}", idx))
+                Some(format!(
+                    "C1 control character at byte offset {}",
+                    byte_offset
+                ))
             } else {
                 None
             }

@@ -114,7 +114,22 @@ impl SkillStore {
             });
         }
 
-        let raw = std::fs::read_to_string(dir.join("SKILL.md"))?;
+        let skill_md_path = dir.join("SKILL.md");
+        let md_meta = std::fs::metadata(&skill_md_path)?;
+        // Guard against externally bloated files before reading into memory.
+        let max_bytes = self.skill_max_chars as u64 * 4 + 4096;
+        if md_meta.len() > max_bytes {
+            return Err(Error::TooLarge {
+                reason: format!(
+                    "SKILL.md is {} bytes (max ~{} bytes for {} chars)",
+                    md_meta.len(),
+                    max_bytes,
+                    self.skill_max_chars
+                ),
+            });
+        }
+
+        let raw = std::fs::read_to_string(skill_md_path)?;
         let (meta, body) = parse_skill_md(&raw, &dir)?;
 
         // Enforce supporting-file size limit.
@@ -268,11 +283,14 @@ impl SkillStore {
             let sidecar_path = dir.join(".usage.json");
             let mut sidecar = match Sidecar::read(&sidecar_path) {
                 Ok(s) => s,
-                Err(_) => return Ok(()),
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e),
             };
             sidecar.usage_count += 1;
             sidecar.last_used_at = Some(Utc::now());
-            let _ = sidecar.write(&sidecar_path);
+            if let Err(e) = sidecar.write(&sidecar_path) {
+                tracing::warn!(skill = name, error = %e, "failed to write usage sidecar");
+            }
             Ok(())
         })
     }
@@ -672,6 +690,21 @@ mod tests {
     }
 
     #[test]
+    fn bump_use_on_corrupt_sidecar_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "B", Provenance::UserCreated)
+            .unwrap();
+        std::fs::write(store.root.join("s").join(".usage.json"), "not json").unwrap();
+        let err = store.bump_use("s").unwrap_err();
+        assert!(
+            matches!(err, Error::Json(..)),
+            "expected JSON parse error, got {err:?}"
+        );
+    }
+
+    #[test]
     fn set_pinned_then_delete_errors() {
         let tmp = TempDir::new().unwrap();
         let store = store(&tmp);
@@ -744,23 +777,33 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_creates_are_atomic() {
+    fn concurrent_same_skill_create_is_atomic() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(store(&tmp));
         let mut handles = Vec::new();
 
-        for t in 0..10 {
+        for _ in 0..10 {
             let s = store.clone();
             handles.push(std::thread::spawn(move || {
-                let name = format!("skill-{t}");
-                s.create(&name, "D", "B", Provenance::UserCreated).unwrap();
+                s.create("contended", "D", "B", Provenance::UserCreated)
             }));
         }
+
+        let mut successes = 0;
+        let mut already_exists = 0;
         for h in handles {
-            h.join().unwrap();
+            match h.join().unwrap() {
+                Ok(()) => successes += 1,
+                Err(Error::AlreadyExists { .. }) => already_exists += 1,
+                Err(e) => panic!("unexpected error: {e:?}"),
+            }
         }
 
-        let names = store.list().unwrap();
-        assert_eq!(names.len(), 10);
+        assert_eq!(successes, 1, "exactly one thread should succeed");
+        assert_eq!(
+            already_exists, 9,
+            "remaining threads should see AlreadyExists"
+        );
+        assert_eq!(store.list().unwrap(), vec!["contended"]);
     }
 }
