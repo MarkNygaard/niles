@@ -55,6 +55,12 @@ pub fn apply_automatic_transitions(
             continue;
         }
         let target = match store.update_status(&s.name, |sidecar| {
+            // Re-check mutable sidecar fields under the store lock to avoid
+            // transitioning a skill that was pinned (or provenance-changed
+            // via manual edits) after list_summaries() returned.
+            if matches!(sidecar.provenance, Provenance::UserCreated) || sidecar.pinned {
+                return None;
+            }
             let last_activity = sidecar.latest_activity_at().unwrap_or(sidecar.created_at);
             let age = now.signed_duration_since(last_activity);
             let target = target_status_for_age(age, thresholds);
