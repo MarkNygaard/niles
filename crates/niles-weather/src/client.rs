@@ -27,7 +27,12 @@ impl Default for OpenMeteoConfig {
             base_url: "https://api.open-meteo.com".into(),
             geocoding_base_url: GEOCODING_BASE_URL.into(),
             request_timeout: Duration::from_secs(10),
-            user_agent: "niles/0.1 (https://github.com/MarkNygaard/niles)".into(),
+            user_agent: concat!(
+                "niles/",
+                env!("CARGO_PKG_VERSION"),
+                " (https://github.com/MarkNygaard/niles)"
+            )
+            .into(),
         }
     }
 }
@@ -41,7 +46,10 @@ pub struct OpenMeteoClient {
 impl OpenMeteoClient {
     /// Create a client using the default [`HttpTransport`].
     pub fn new(config: OpenMeteoConfig) -> Result<Self> {
-        let transport = Arc::new(HttpTransport::new(&config.user_agent));
+        let transport = Arc::new(HttpTransport::new(
+            &config.user_agent,
+            config.request_timeout,
+        ));
         Ok(Self::with_transport(transport, config))
     }
 
@@ -557,5 +565,146 @@ mod tests {
         let url = mock.last_url().unwrap();
         assert!(!url.contains("København"));
         assert!(url.contains("K%C3%B8benhavn"));
+    }
+
+    #[tokio::test]
+    async fn daily_array_length_mismatch_errors() {
+        let json = r#"{
+            "utc_offset_seconds": 0,
+            "current": {
+                "time": "2024-06-01T14:00",
+                "temperature_2m": 15.3,
+                "relative_humidity_2m": 65,
+                "weather_code": 1,
+                "wind_speed_10m": 3.5
+            },
+            "daily": {
+                "time": ["2024-06-01", "2024-06-02"],
+                "weather_code": [1],
+                "temperature_2m_max": [18.0, 19.5],
+                "temperature_2m_min": [12.0, 13.0],
+                "sunrise": ["2024-06-01T05:30", "2024-06-02T05:29"],
+                "sunset": ["2024-06-01T21:45", "2024-06-02T21:46"],
+                "precipitation_sum": [0.0, 2.5]
+            }
+        }"#
+        .into();
+        let (_, client) = client_with(Ok(json));
+        let loc = Location {
+            name: None,
+            latitude: 0.0,
+            longitude: 0.0,
+            country: None,
+        };
+        let err = client
+            .fetch_forecast(&loc, 1, Units::Metric, true)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Parse { reason } if reason.contains("daily array lengths do not match"))
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_current_time_errors() {
+        let json = r#"{
+            "utc_offset_seconds": 0,
+            "current": {
+                "time": "not-a-time",
+                "temperature_2m": 15.3,
+                "relative_humidity_2m": 65,
+                "weather_code": 1,
+                "wind_speed_10m": 3.5
+            },
+            "daily": {
+                "time": ["2024-06-01"],
+                "weather_code": [1],
+                "temperature_2m_max": [18.0],
+                "temperature_2m_min": [12.0],
+                "sunrise": ["2024-06-01T05:30"],
+                "sunset": ["2024-06-01T21:45"],
+                "precipitation_sum": [0.0]
+            }
+        }"#
+        .into();
+        let (_, client) = client_with(Ok(json));
+        let loc = Location {
+            name: None,
+            latitude: 0.0,
+            longitude: 0.0,
+            country: None,
+        };
+        let err = client
+            .fetch_forecast(&loc, 1, Units::Metric, true)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse { reason } if reason.contains("invalid current.time")));
+    }
+
+    #[tokio::test]
+    async fn invalid_utc_offset_errors() {
+        let json = r#"{
+            "utc_offset_seconds": 86401,
+            "current": {
+                "time": "2024-06-01T14:00",
+                "temperature_2m": 15.3,
+                "relative_humidity_2m": 65,
+                "weather_code": 1,
+                "wind_speed_10m": 3.5
+            },
+            "daily": {
+                "time": ["2024-06-01"],
+                "weather_code": [1],
+                "temperature_2m_max": [18.0],
+                "temperature_2m_min": [12.0],
+                "sunrise": ["2024-06-01T05:30"],
+                "sunset": ["2024-06-01T21:45"],
+                "precipitation_sum": [0.0]
+            }
+        }"#
+        .into();
+        let (_, client) = client_with(Ok(json));
+        let loc = Location {
+            name: None,
+            latitude: 0.0,
+            longitude: 0.0,
+            country: None,
+        };
+        let err = client
+            .fetch_forecast(&loc, 1, Units::Metric, true)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Parse { reason } if reason.contains("invalid utc_offset_seconds"))
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_sunrise_format_errors() {
+        let json = r#"{
+            "utc_offset_seconds": 0,
+            "daily": {
+                "time": ["2024-06-01"],
+                "weather_code": [1],
+                "temperature_2m_max": [18.0],
+                "temperature_2m_min": [12.0],
+                "sunrise": ["bad-time"],
+                "sunset": ["2024-06-01T21:45"],
+                "precipitation_sum": [0.0]
+            }
+        }"#
+        .into();
+        let (_, client) = client_with(Ok(json));
+        let loc = Location {
+            name: None,
+            latitude: 0.0,
+            longitude: 0.0,
+            country: None,
+        };
+        let err = client
+            .fetch_forecast(&loc, 1, Units::Metric, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse { reason } if reason.contains("invalid time")));
     }
 }

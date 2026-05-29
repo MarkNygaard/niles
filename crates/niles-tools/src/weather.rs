@@ -70,11 +70,7 @@ impl Tool for WeatherTool {
 
     async fn execute(&self, args: Value) -> Result<Value> {
         let location_query = args.get("location").and_then(|v| v.as_str());
-        let days = args
-            .get("days")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u8)
-            .unwrap_or(1);
+        let days = args.get("days").and_then(|v| v.as_u64()).unwrap_or(1);
         let include_current = args
             .get("include_current")
             .and_then(|v| v.as_bool())
@@ -86,7 +82,7 @@ impl Tool for WeatherTool {
                 reason: "days must be >= 1".into(),
             });
         }
-        let days = days.min(16);
+        let days = days.min(16) as u8;
 
         let location = if let Some(q) = location_query {
             map_weather_err(self.client.geocode(q).await)?
@@ -249,5 +245,47 @@ mod tests {
         assert!(result.get("units").is_some());
         assert!(result.get("current").is_some());
         assert!(result.get("daily").is_some());
+    }
+
+    #[tokio::test]
+    async fn geocode_error_propagates() {
+        let (mock, tool) = tool_with(vec![Err(niles_weather::Error::GeocodeEmpty {
+            query: "Nowhere".into(),
+        })]);
+        let err = tool
+            .execute(json!({"location": "Nowhere"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Weather(reason) if reason.contains("Nowhere")));
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("geocoding-api"));
+    }
+
+    #[tokio::test]
+    async fn include_current_false_omits_current() {
+        let (mock, tool) = tool_with(vec![Ok(forecast_json_no_current())]);
+        let result = tool
+            .execute(json!({"include_current": false}))
+            .await
+            .unwrap();
+        assert!(result.get("current").unwrap().is_null());
+        let url = mock.last_url().unwrap();
+        assert!(!url.contains("current="));
+    }
+
+    fn forecast_json_no_current() -> String {
+        r#"{
+            "utc_offset_seconds": 0,
+            "daily": {
+                "time": ["2024-06-01"],
+                "weather_code": [0],
+                "temperature_2m_max": [20.0],
+                "temperature_2m_min": [10.0],
+                "sunrise": ["2024-06-01T06:00"],
+                "sunset": ["2024-06-01T20:00"],
+                "precipitation_sum": [0.0]
+            }
+        }"#
+        .into()
     }
 }

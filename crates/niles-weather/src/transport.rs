@@ -2,6 +2,7 @@
 
 use crate::error::{Error, Result};
 use async_trait::async_trait;
+use std::time::Duration;
 
 /// Abstract transport for fetching weather data via HTTP GET.
 #[async_trait]
@@ -18,8 +19,9 @@ pub struct HttpTransport {
 }
 
 impl HttpTransport {
-    pub fn new(user_agent: impl Into<String>) -> Self {
+    pub fn new(user_agent: impl Into<String>, timeout: Duration) -> Self {
         let http = reqwest::Client::builder()
+            .timeout(timeout)
             .build()
             .expect("reqwest TLS init");
         Self {
