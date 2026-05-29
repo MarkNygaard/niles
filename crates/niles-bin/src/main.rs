@@ -787,6 +787,7 @@ fn assemble_system_prompt_with_optional_capabilities(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_tool_registry(
     registry: Arc<DeviceRegistry>,
     publisher: MqttPublisher,
@@ -794,6 +795,8 @@ fn build_tool_registry(
     capability_loader: Option<Arc<CapabilityLoader>>,
     memory_store: Option<Arc<MemoryStore>>,
     skill_store: Option<Arc<SkillStore>>,
+    weather_client: Option<Arc<niles_weather::OpenMeteoClient>>,
+    home: &niles_config::HomeConfig,
 ) -> ToolRegistry {
     let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
     if let Some(loader) = capability_loader {
@@ -804,6 +807,19 @@ fn build_tool_registry(
     }
     if let Some(store) = skill_store {
         niles_tools::register_skill_tools(&mut tools, store);
+    }
+    if let Some(client) = weather_client {
+        let units = match home.resolved_units() {
+            niles_config::Units::Metric => niles_weather::Units::Metric,
+            niles_config::Units::Imperial => niles_weather::Units::Imperial,
+        };
+        niles_tools::register_weather_tools(
+            &mut tools,
+            client,
+            home.latitude,
+            home.longitude,
+            units,
+        );
     }
     tools
 }
@@ -842,6 +858,17 @@ fn build_skill_store(cfg: &niles_config::SkillsConfig) -> Option<Arc<SkillStore>
             None
         }
     }
+}
+
+/// Build an `OpenMeteoClient`.
+/// Returns `None` when client construction fails.
+fn build_weather_client() -> Option<Arc<niles_weather::OpenMeteoClient>> {
+    niles_weather::OpenMeteoClient::new(niles_weather::OpenMeteoConfig::default())
+        .inspect_err(|e| {
+            tracing::warn!("Failed to build Open-Meteo client: {e}; weather tool disabled")
+        })
+        .ok()
+        .map(Arc::new)
 }
 
 /// Build a `PiperClient` from the `[tts]` section of an already-
@@ -1102,6 +1129,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     let memory_store = build_memory_store(&cfg.memory);
     let skill_store = build_skill_store(&cfg.skills);
+    let weather_client = build_weather_client();
     let tools_registry = build_tool_registry(
         registry.clone(),
         publisher,
@@ -1109,6 +1137,8 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         capability_loader.clone(),
         memory_store.clone(),
         skill_store.clone(),
+        weather_client.clone(),
+        &cfg.home,
     );
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
@@ -1391,6 +1421,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 
     let memory_store = build_memory_store(&cfg.memory);
     let skill_store = build_skill_store(&cfg.skills);
+    let weather_client = build_weather_client();
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
@@ -1398,6 +1429,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         capability_loader.clone(),
         memory_store.clone(),
         skill_store.clone(),
+        weather_client.clone(),
+        &cfg.home,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
@@ -2440,6 +2473,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let memory_store = build_memory_store(&cfg.memory);
     let skill_store = build_skill_store(&cfg.skills);
+    let weather_client = build_weather_client();
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
@@ -2447,6 +2481,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         capability_loader.clone(),
         memory_store.clone(),
         skill_store.clone(),
+        weather_client.clone(),
+        &cfg.home,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 

@@ -37,6 +37,9 @@ pub enum Error {
 
     #[error("skill error: {0}")]
     Skill(String),
+
+    #[error("weather error: {0}")]
+    Weather(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

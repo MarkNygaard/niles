@@ -10,6 +10,7 @@ pub mod error;
 pub mod registry;
 pub mod skill;
 pub mod tool;
+pub mod weather;
 
 pub use builtin::{
     CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState, GetTimerRemaining,
@@ -24,3 +25,4 @@ pub use skill::{
     DeleteSkillTool, MintSkillTool, PatchSkillTool, ViewSkillTool, register_skill_tools,
 };
 pub use tool::{Tool, ToolDescriptor};
+pub use weather::{WeatherTool, register_weather_tools};
