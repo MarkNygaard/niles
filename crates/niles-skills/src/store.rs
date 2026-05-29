@@ -22,6 +22,17 @@ pub struct Skill {
     pub sidecar: Sidecar,
 }
 
+/// One-line metadata used to render the system-prompt
+/// `Available skills` section without loading any body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub pinned: bool,
+    pub provenance: Provenance,
+}
+
 /// Write-side storage for skills.
 pub struct SkillStore {
     root: PathBuf,
@@ -297,8 +308,119 @@ impl SkillStore {
         Ok(names)
     }
 
+    /// List skill summaries (metadata only, no body) in alphabetical order.
+    /// Silently skips malformed skills rather than failing the whole list.
+    pub fn list_summaries(&self) -> Result<Vec<SkillSummary>> {
+        let mut summaries = Vec::new();
+        let entries = match read_dir(&self.root) {
+            Ok(it) => it,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let max_bytes = self.skill_max_chars as u64 * 4 + 4096;
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping unreadable directory entry in list_summaries");
+                    continue;
+                }
+            };
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str == ".absorbed" || name_str == ".lock" {
+                continue;
+            }
+            if validate_skill_name(&name_str).is_err() {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(skill = %name_str, error = %e, "skipping unreadable metadata in list_summaries");
+                    continue;
+                }
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            let skill_md_path = entry.path().join("SKILL.md");
+            if !skill_md_path.is_file() {
+                continue;
+            }
+
+            let raw = match std::fs::read_to_string(&skill_md_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(skill = %name_str, error = %e, "skipping malformed skill in list_summaries");
+                    continue;
+                }
+            };
+
+            if raw.len() as u64 > max_bytes {
+                tracing::warn!(skill = %name_str, "skipping oversized skill in list_summaries");
+                continue;
+            }
+
+            let (meta, _) = match parse_skill_md(&raw, &entry.path()) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(skill = %name_str, error = %e, "skipping malformed skill in list_summaries");
+                    continue;
+                }
+            };
+
+            if meta.name != name_str {
+                tracing::warn!(
+                    skill = %name_str,
+                    frontmatter_name = %meta.name,
+                    "skipping skill with mismatched frontmatter name in list_summaries"
+                );
+                continue;
+            }
+
+            let sidecar = match Sidecar::read(&entry.path().join(".usage.json")) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(skill = %name_str, error = %e, "skipping malformed skill in list_summaries");
+                    continue;
+                }
+            };
+
+            summaries.push(SkillSummary {
+                name: meta.name,
+                description: meta.description,
+                version: meta.version,
+                pinned: sidecar.pinned,
+                provenance: sidecar.provenance,
+            });
+        }
+
+        summaries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(summaries)
+    }
+
     /// Increment usage counter for a skill. Silently succeeds if the skill does not exist.
     pub fn bump_use(&self, name: &str) -> Result<()> {
+        self.bump(name, |s| {
+            s.usage_count += 1;
+            s.last_used_at = Some(Utc::now());
+        })
+    }
+
+    /// Increment view counter for a skill. Silently succeeds if the skill does not exist.
+    pub fn bump_view(&self, name: &str) -> Result<()> {
+        self.bump(name, |s| {
+            s.view_count += 1;
+            s.last_viewed_at = Some(Utc::now());
+        })
+    }
+
+    fn bump<F>(&self, name: &str, mut update: F) -> Result<()>
+    where
+        F: FnMut(&mut Sidecar),
+    {
         validate_skill_name(name)?;
 
         self.with_store_lock(|| {
@@ -312,10 +434,9 @@ impl SkillStore {
                 Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(e) => return Err(e),
             };
-            sidecar.usage_count += 1;
-            sidecar.last_used_at = Some(Utc::now());
+            update(&mut sidecar);
             if let Err(e) = sidecar.write(&sidecar_path) {
-                tracing::warn!(skill = name, error = %e, "failed to write usage sidecar");
+                tracing::warn!(skill = name, error = %e, "failed to write sidecar");
             }
             Ok(())
         })
@@ -878,5 +999,196 @@ mod tests {
         assert_eq!(cap.metadata.description, "What it does");
         assert_eq!(cap.metadata.version, "0.1.0");
         assert!(cap.body.contains("Something useful."));
+    }
+
+    #[test]
+    fn list_summaries_returns_metadata_per_skill() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create(
+                "zebra",
+                "Z desc",
+                "0.2.0",
+                "Z body",
+                Provenance::UserCreated,
+            )
+            .unwrap();
+        store
+            .create(
+                "alpha",
+                "A desc",
+                "0.1.0",
+                "A body",
+                Provenance::UserCreated,
+            )
+            .unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].name, "alpha");
+        assert_eq!(summaries[0].description, "A desc");
+        assert_eq!(summaries[0].version, "0.1.0");
+        assert_eq!(summaries[1].name, "zebra");
+        assert_eq!(summaries[1].description, "Z desc");
+        assert_eq!(summaries[1].version, "0.2.0");
+    }
+
+    #[test]
+    fn list_summaries_includes_pinned_and_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("user-skill", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .create("agent-skill", "D", "0.1.0", "B", Provenance::AgentCreated)
+            .unwrap();
+        store.set_pinned("user-skill", true).unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 2);
+
+        let user = summaries.iter().find(|s| s.name == "user-skill").unwrap();
+        assert!(user.pinned);
+        assert_eq!(user.provenance, Provenance::UserCreated);
+
+        let agent = summaries.iter().find(|s| s.name == "agent-skill").unwrap();
+        assert!(!agent.pinned);
+        assert_eq!(agent.provenance, Provenance::AgentCreated);
+    }
+
+    #[test]
+    fn list_summaries_skips_malformed_frontmatter() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("good", "Good desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .create("bad", "Bad desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        std::fs::write(store.root.join("bad").join("SKILL.md"), "not yaml at all").unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "good");
+    }
+
+    #[test]
+    fn list_summaries_skips_name_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("good", "Good desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .create("bad", "Bad desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let tampered = format_skill_md("different-name", "Bad desc", "0.1.0", "B");
+        std::fs::write(store.root.join("bad").join("SKILL.md"), tampered).unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "good");
+    }
+
+    #[test]
+    fn list_summaries_skips_invalid_name() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("good", "Good desc", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+
+        // Simulate a hand-created directory with an invalid name.
+        let hidden = store.root.join(".hidden");
+        std::fs::create_dir(&hidden).unwrap();
+        std::fs::write(
+            hidden.join("SKILL.md"),
+            "---\nname: .hidden\ndescription: H\nversion: 0.1.0\n---\nB",
+        )
+        .unwrap();
+        std::fs::write(
+            hidden.join(".usage.json"),
+            r#"{"created_at":"2026-01-01T12:00:00Z","provenance":"user-created"}"#,
+        )
+        .unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "good");
+    }
+
+    #[test]
+    fn list_summaries_skips_missing_sidecar() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("skill", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        std::fs::remove_file(store.root.join("skill").join(".usage.json")).unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn list_summaries_empty_when_no_skills() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        let summaries = store.list_summaries().unwrap();
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn bump_view_increments_counter_and_timestamp() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store.bump_view("s").unwrap();
+        store.bump_view("s").unwrap();
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.view_count, 2);
+        assert!(skill.sidecar.last_viewed_at.is_some());
+    }
+
+    #[test]
+    fn bump_view_on_missing_is_silent() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store.bump_view("missing").unwrap();
+    }
+
+    #[test]
+    fn bump_view_then_latest_activity_returns_view_ts() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store.bump_view("s").unwrap();
+        let skill = store.load("s").unwrap();
+        assert_eq!(
+            skill.sidecar.latest_activity_at(),
+            skill.sidecar.last_viewed_at
+        );
+    }
+
+    #[test]
+    fn sidecar_back_compat_old_format() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let old = r#"{"created_at":"2026-01-01T12:00:00Z","provenance":"user-created"}"#;
+        std::fs::write(store.root.join("s").join(".usage.json"), old).unwrap();
+
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.view_count, 0);
+        assert!(skill.sidecar.last_viewed_at.is_none());
     }
 }
