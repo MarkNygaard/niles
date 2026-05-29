@@ -1035,6 +1035,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "niles-skills"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "fs2",
+ "niles-capabilities",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "niles-speakers"
 version = "0.1.0"
 dependencies = [

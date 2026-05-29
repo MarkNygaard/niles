@@ -58,3 +58,4 @@ niles-tools = { path = "crates/niles-tools" }
 niles-capabilities = { path = "crates/niles-capabilities" }
 niles-history = { path = "crates/niles-history" }
 niles-memory = { path = "crates/niles-memory" }
+niles-skills = { path = "crates/niles-skills" }

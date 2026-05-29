@@ -248,7 +248,7 @@ impl MemoryStore {
         loop {
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(file),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(e) if is_lock_contention(&e) => {
                     if Instant::now() > deadline {
                         return Err(Error::Locked);
                     }
@@ -297,6 +297,23 @@ impl MemoryStore {
         }
         result
     }
+}
+
+/// True if `e` indicates "the lock is held by another process / thread" —
+/// the case we want to retry, not propagate.
+///
+/// On Linux, `try_lock_exclusive` reports this via
+/// `ErrorKind::WouldBlock`. On Windows, `LockFileEx` with
+/// `LOCKFILE_FAIL_IMMEDIATELY` instead surfaces as
+/// `ErrorKind::Uncategorized` with raw OS error 33
+/// (`ERROR_LOCK_VIOLATION`) — sometimes 997 (`ERROR_IO_PENDING`)
+/// under async-style overlapped I/O. Without recognizing those, the
+/// retry loop bails on the first contention on Windows.
+fn is_lock_contention(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    matches!(e.raw_os_error(), Some(33) | Some(997))
 }
 
 /// Parse raw file content into deduplicated, trimmed entries.
