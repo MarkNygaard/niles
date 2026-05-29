@@ -2260,6 +2260,28 @@ mod tests {
     }
 
     #[test]
+    fn light_kelvin_set_make_form_daylight() {
+        assert_eq!(
+            parse("make the kitchen daylight"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 5500,
+            })
+        );
+    }
+
+    #[test]
+    fn light_kelvin_set_the_prefix() {
+        assert_eq!(
+            parse("the kitchen lights warm white"),
+            Some(Intent::LightKelvinSet {
+                room: "kitchen".into(),
+                kelvin: 2200,
+            })
+        );
+    }
+
+    #[test]
     fn light_kelvin_set_rejects_pronouns() {
         assert_eq!(parse("make it warm white"), None);
         assert_eq!(parse("make them daylight"), None);
