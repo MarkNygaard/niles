@@ -16,6 +16,7 @@ pub mod llm;
 pub mod mqtt;
 pub mod persistence;
 pub mod satellites;
+pub mod skills;
 pub mod speakers;
 pub mod stt;
 pub mod tts;
@@ -35,6 +36,7 @@ pub use llm::LlmConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
+pub use skills::SkillsConfig;
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
@@ -59,6 +61,8 @@ pub struct Config {
     pub ambient_lights: AmbientLightsConfig,
     #[serde(default)]
     pub history: HistoryConfig,
+    #[serde(default)]
+    pub skills: SkillsConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -110,6 +114,7 @@ impl Config {
         self.speakers.validate()?;
         self.ambient_lights.validate()?;
         self.history.validate()?;
+        self.skills.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
@@ -914,6 +919,98 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
             err,
             Error::InvalidSection {
                 section: "history",
+                ..
+            }
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Skills section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn skills_section_absent_defaults_to_none() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.skills.directory.is_none());
+        assert_eq!(cfg.skills.skill_max_chars, 100_000);
+        assert_eq!(cfg.skills.supporting_file_max_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn skills_directory_parses_into_pathbuf() {
+        let toml = format!(
+            "{}\n[skills]\ndirectory = \"/var/niles/skills\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.skills.directory.as_deref(),
+            Some(std::path::Path::new("/var/niles/skills"))
+        );
+        assert_eq!(cfg.skills.skill_max_chars, 100_000);
+        assert_eq!(cfg.skills.supporting_file_max_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn skills_limits_explicit() {
+        let toml = format!(
+            "{}\n[skills]\ndirectory = \"/tmp\"\nskill_max_chars = 50_000\nsupporting_file_max_bytes = 524_288\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.skills.skill_max_chars, 50_000);
+        assert_eq!(cfg.skills.supporting_file_max_bytes, 524_288);
+    }
+
+    #[test]
+    fn rejects_empty_skills_directory() {
+        let toml = format!(
+            "{}\n[skills]\ndirectory = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_skill_max_chars() {
+        let toml = format!(
+            "{}\n[skills]\ndirectory = \"/tmp\"\nskill_max_chars = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_supporting_file_max_bytes() {
+        let toml = format!(
+            "{}\n[skills]\ndirectory = \"/tmp\"\nsupporting_file_max_bytes = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "skills",
                 ..
             }
         ));
