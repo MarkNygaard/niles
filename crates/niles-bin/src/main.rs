@@ -705,7 +705,6 @@ fn assemble_system_prompt(
     agent_mem: Option<&str>,
     skill_summaries: Option<&[SkillSummary]>,
 ) -> String {
-    let names = niles_intent::detect_topics(transcript, index);
     let mut out = String::from(NILES_SYSTEM_PERSONA);
 
     // Inject memory sections before capability references for cache warmth.
@@ -734,19 +733,75 @@ fn assemble_system_prompt(
         }
     }
 
-    if !names.is_empty() {
-        out.push_str(
-            "\n\n# Capability references\n\nThe following references \
-             are relevant to the current request:\n",
-        );
-        for name in &names {
-            if let Some(cap) = loader.get(name) {
-                out.push_str(&format!(
-                    "\n## {} (v{})\n{}\n",
-                    cap.metadata.name, cap.metadata.version, cap.body,
-                ));
-            }
+    append_capability_references(&mut out, transcript, index, loader);
+    if let Some(room) = origin_room {
+        out.push_str(&origin_context(room));
+    }
+    out
+}
+
+fn append_capability_references(
+    out: &mut String,
+    transcript: &str,
+    index: &niles_intent::CapabilityIndex,
+    loader: &CapabilityLoader,
+) {
+    let names = niles_intent::detect_topics(transcript, index);
+    if names.is_empty() {
+        return;
+    }
+
+    out.push_str(
+        "\n\n# Capability references\n\nThe following references \
+         are relevant to the current request:\n",
+    );
+    for name in &names {
+        if let Some(cap) = loader.get(name) {
+            out.push_str(&format!(
+                "\n## {} (v{})\n{}\n",
+                cap.metadata.name, cap.metadata.version, cap.body,
+            ));
         }
+    }
+}
+
+fn assemble_system_prompt_with_optional_capabilities(
+    transcript: &str,
+    capability_index: Option<&niles_intent::CapabilityIndex>,
+    capability_loader: Option<&CapabilityLoader>,
+    origin_room: Option<&RoomName>,
+    user_mem: Option<&str>,
+    agent_mem: Option<&str>,
+    skill_summaries: Option<&[SkillSummary]>,
+) -> String {
+    let mut out = String::from(NILES_SYSTEM_PERSONA);
+
+    if let Some(mem) = user_mem
+        && !mem.trim().is_empty()
+    {
+        out.push_str("\n\n# User memory\n\n");
+        out.push_str(mem);
+    }
+    if let Some(mem) = agent_mem
+        && !mem.trim().is_empty()
+    {
+        out.push_str("\n\n# Agent memory\n\n");
+        out.push_str(mem);
+    }
+    if let Some(summaries) = skill_summaries
+        && !summaries.is_empty()
+    {
+        out.push_str("\n\n# Available skills\n\n");
+        for s in summaries {
+            out.push_str(&format!(
+                "- {} (v{}) — {}\n",
+                s.name, s.version, s.description,
+            ));
+        }
+    }
+
+    if let (Some(index), Some(loader)) = (capability_index, capability_loader) {
+        append_capability_references(&mut out, transcript, index, loader);
     }
     if let Some(room) = origin_room {
         out.push_str(&origin_context(room));
@@ -1110,18 +1165,15 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         }
     });
 
-    let system_prompt = match (&capability_loader, &capability_index) {
-        (Some(loader), Some(index)) => assemble_system_prompt(
-            &args.prompt,
-            index,
-            loader,
-            None,
-            user_mem_str.as_deref(),
-            agent_mem_str.as_deref(),
-            skill_summaries.as_deref(),
-        ),
-        _ => NILES_SYSTEM_PERSONA.to_string(),
-    };
+    let system_prompt = assemble_system_prompt_with_optional_capabilities(
+        &args.prompt,
+        capability_index.as_ref(),
+        capability_loader.as_deref(),
+        None,
+        user_mem_str.as_deref(),
+        agent_mem_str.as_deref(),
+        skill_summaries.as_deref(),
+    );
 
     // Surface the actual error chain on failure. Both loop exhaustion
     // and a real LLM/network error end up here, but they're distinct
@@ -1578,18 +1630,15 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                         None
                     }
                 });
-            let system_prompt = match (&ctx.capability_loader, &ctx.capability_index) {
-                (Some(loader), Some(index)) => assemble_system_prompt(
-                    text,
-                    index,
-                    loader,
-                    origin_room,
-                    user_mem_str.as_deref(),
-                    agent_mem_str.as_deref(),
-                    skill_summaries.as_deref(),
-                ),
-                _ => persona_with_origin(origin_room),
-            };
+            let system_prompt = assemble_system_prompt_with_optional_capabilities(
+                text,
+                ctx.capability_index.as_deref(),
+                ctx.capability_loader.as_deref(),
+                origin_room,
+                user_mem_str.as_deref(),
+                agent_mem_str.as_deref(),
+                skill_summaries.as_deref(),
+            );
             match run_tool_calling_chat(
                 ctx.llm.as_ref(),
                 ctx.tools.as_ref(),
@@ -4018,5 +4067,46 @@ mod system_prompt_tests {
             a, b,
             "assemble_system_prompt must be deterministic with origin_room and skills"
         );
+    }
+
+    #[test]
+    fn assemble_optional_caps_includes_memory_and_skills_without_capabilities() {
+        let summaries = vec![SkillSummary {
+            name: "dinner-time".into(),
+            description: "Dim lights and start playlist".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::UserCreated,
+        }];
+        let out = assemble_system_prompt_with_optional_capabilities(
+            "turn on the lights",
+            None,
+            None,
+            None,
+            Some("Alice likes tea."),
+            Some("Learned about lighting."),
+            Some(&summaries),
+        );
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("# User memory"));
+        assert!(out.contains("# Agent memory"));
+        assert!(out.contains("# Available skills"));
+        assert!(!out.contains("# Capability references"));
+    }
+
+    #[test]
+    fn assemble_optional_caps_appends_origin_without_capabilities() {
+        let room = RoomName::parse("living_room").unwrap();
+        let out = assemble_system_prompt_with_optional_capabilities(
+            "hello",
+            None,
+            None,
+            Some(&room),
+            None,
+            None,
+            None,
+        );
+        assert!(out.contains("# Current context"));
+        assert!(out.contains("living_room"));
     }
 }
