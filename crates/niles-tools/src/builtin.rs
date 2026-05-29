@@ -535,10 +535,10 @@ impl Tool for MemoryTool {
                 "type": "object",
                 "required": ["action", "target"],
                 "properties": {
-                    "action": { "type": "string", "enum": ["add", "replace", "remove", "view"] },
-                    "target": { "type": "string", "enum": ["user", "agent"] },
-                    "content": { "type": "string" },
-                    "old_text": { "type": "string" }
+                    "action": { "type": "string", "enum": ["add", "replace", "remove", "view"], "description": "Action to perform." },
+                    "target": { "type": "string", "enum": ["user", "agent"], "description": "'user' for household facts (USER.md) or 'agent' for learnings (MEMORY.md)." },
+                    "content": { "type": "string", "description": "Text to add or replace with. Required for 'add' and 'replace'." },
+                    "old_text": { "type": "string", "description": "Snippet to match for 'replace' or 'remove'. Must uniquely identify one entry." }
                 }
             }),
         }

@@ -243,7 +243,9 @@ impl MemoryStore {
         }
     }
 
-    /// Read → apply `f` → scan → budget-check → atomic write.
+    /// Read → apply `f` → scan → atomic write.
+    ///
+    /// The closure `f` is responsible for budget checks (add/replace).
     /// Uses a separate `.lock` file so the advisory lock survives
     /// the rename of the target file.
     fn mutate_file(&self, target: Target, f: impl FnOnce(&str) -> Result<String>) -> Result<()> {
@@ -557,5 +559,37 @@ mod tests {
         .unwrap();
         let err = store.load(Target::User).unwrap_err();
         assert!(matches!(err, Error::ScanFailed { .. }), "{err}");
+    }
+
+    #[test]
+    fn exact_budget_is_allowed() {
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(MemoryConfig {
+            directory: tmp.path().to_path_buf(),
+            user_char_limit: 5,
+            agent_char_limit: 5,
+        })
+        .unwrap();
+        // "hello" is exactly 5 chars
+        store.add(Target::User, "hello").unwrap();
+        let entries = store.load(Target::User).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "hello");
+    }
+
+    #[test]
+    fn replace_over_budget_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(MemoryConfig {
+            directory: tmp.path().to_path_buf(),
+            user_char_limit: 10,
+            agent_char_limit: 10,
+        })
+        .unwrap();
+        store.add(Target::User, "short").unwrap();
+        let err = store
+            .replace(Target::User, "short", "way too long text")
+            .unwrap_err();
+        assert!(matches!(err, Error::OverBudget { .. }), "{err}");
     }
 }
