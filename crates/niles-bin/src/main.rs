@@ -1225,6 +1225,30 @@ async fn run_tool_calling_chat_with_messages(
             .and_then(|c| c.arguments.get("reason").and_then(|v| v.as_str()))
             .map(String::from);
 
+        if let Some(reason) = escalate_reason {
+            tracing::info!("Tier 1 requested escalation; skipping non-escalation tool execution");
+            for call in &resp.tool_calls {
+                let result = if call.name == niles_tools::escalate::ESCALATE_TOOL_NAME {
+                    call.arguments.clone()
+                } else {
+                    json!({
+                        "skipped": "deferred_to_tier2",
+                        "reason": "tier1 requested escalation in this turn"
+                    })
+                };
+                trace.push(review::ToolTrace {
+                    tool: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    result: result.clone(),
+                });
+                messages.push(Message::Tool {
+                    tool_call_id: call.id.clone(),
+                    content: result.to_string(),
+                });
+            }
+            return Ok((LoopOutcome::EscalateRequested { reason, messages }, trace));
+        }
+
         for call in &resp.tool_calls {
             let arg_keys: Vec<&str> = call
                 .arguments
@@ -1262,9 +1286,6 @@ async fn run_tool_calling_chat_with_messages(
             });
         }
 
-        if let Some(reason) = escalate_reason {
-            return Ok((LoopOutcome::EscalateRequested { reason, messages }, trace));
-        }
     }
 
     Err(anyhow::anyhow!(
@@ -3840,7 +3861,7 @@ mod chat_loop_tests {
     }
 
     #[tokio::test]
-    async fn escalate_mixed_with_other_tools_executes_both_then_escalates() {
+    async fn escalate_mixed_with_other_tools_skips_side_effect_tools() {
         let fake = FakeChat::new(vec![ChatResponse {
             content: None,
             tool_calls: vec![
@@ -3867,6 +3888,15 @@ mod chat_loop_tests {
             .unwrap();
         assert_eq!(trace.len(), 2);
         assert_eq!(trace[0].tool, "stub");
+        assert_eq!(
+            trace[0].result,
+            json!({
+                "skipped": "deferred_to_tier2",
+                "reason": "tier1 requested escalation in this turn"
+            })
+        );
+        assert_eq!(trace[1].tool, niles_tools::escalate::ESCALATE_TOOL_NAME);
+        assert_eq!(trace[1].result, json!({"reason": "complex"}));
         assert!(
             matches!(outcome, LoopOutcome::EscalateRequested { ref reason, .. } if reason == "complex"),
             "expected EscalateRequested, got {outcome:?}"
@@ -3874,6 +3904,13 @@ mod chat_loop_tests {
         match &outcome {
             LoopOutcome::EscalateRequested { messages, .. } => {
                 assert_eq!(messages.len(), 4); // User + Assistant + Tool(stub) + Tool(escalate)
+                match &messages[2] {
+                    Message::Tool { content, .. } => assert!(
+                        content.contains("deferred_to_tier2"),
+                        "expected deferred marker in stub tool response, got {content}"
+                    ),
+                    other => panic!("expected Tool message, got {other:?}"),
+                }
             }
             _ => panic!("expected EscalateRequested"),
         }
