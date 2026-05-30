@@ -35,11 +35,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 # the default features (notably `oldtime`, `wasmbind`) to keep deps
 # tight. `chrono-tz` ships the IANA database so we can resolve
 # `cfg.home.timezone` strings like "Europe/Copenhagen".
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10"
 serde_yaml = "0.9"
 tempfile = "3"
 fs2 = "0.4"
+urlencoding = "2"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
@@ -59,3 +60,4 @@ niles-capabilities = { path = "crates/niles-capabilities" }
 niles-history = { path = "crates/niles-history" }
 niles-memory = { path = "crates/niles-memory" }
 niles-skills = { path = "crates/niles-skills" }
+niles-weather = { path = "crates/niles-weather" }

@@ -1,0 +1,338 @@
+//! Weather tool — expose Open-Meteo to the LLM as `get_weather`.
+
+use crate::error::{Error, Result};
+use crate::registry::ToolRegistry;
+use crate::tool::{Tool, ToolDescriptor};
+use async_trait::async_trait;
+use niles_weather::{Location, OpenMeteoClient, Units};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+fn map_weather_err<T>(r: std::result::Result<T, niles_weather::Error>) -> Result<T> {
+    r.map_err(|e| Error::Weather(e.to_string()))
+}
+
+pub struct WeatherTool {
+    client: Arc<OpenMeteoClient>,
+    default_lat: f64,
+    default_lon: f64,
+    default_units: Units,
+}
+
+impl WeatherTool {
+    pub fn new(
+        client: Arc<OpenMeteoClient>,
+        default_lat: f64,
+        default_lon: f64,
+        default_units: Units,
+    ) -> Self {
+        Self {
+            client,
+            default_lat,
+            default_lon,
+            default_units,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for WeatherTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "get_weather".into(),
+            description: "Fetch a weather forecast for a location. When no location is provided, \
+                the forecast uses the home coordinates configured in niles."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "Place name to look up (e.g. 'Aarhus', 'Copenhagen'). \
+                            Omit to use the home location."
+                    },
+                    "days": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16,
+                        "default": 1,
+                        "description": "Number of forecast days (1–16)."
+                    },
+                    "include_current": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Include current conditions in the response."
+                    }
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let location_query = match args.get("location") {
+            Some(v) => Some(v.as_str().ok_or_else(|| Error::InvalidArgs {
+                tool: "get_weather".into(),
+                reason: "location must be a string".into(),
+            })?),
+            None => None,
+        };
+
+        let days = match args.get("days") {
+            Some(v) => v.as_u64().ok_or_else(|| Error::InvalidArgs {
+                tool: "get_weather".into(),
+                reason: "days must be an integer".into(),
+            })?,
+            None => 1,
+        };
+
+        let include_current = match args.get("include_current") {
+            Some(v) => v.as_bool().ok_or_else(|| Error::InvalidArgs {
+                tool: "get_weather".into(),
+                reason: "include_current must be a boolean".into(),
+            })?,
+            None => true,
+        };
+
+        if days < 1 {
+            return Err(Error::InvalidArgs {
+                tool: "get_weather".into(),
+                reason: "days must be >= 1".into(),
+            });
+        }
+        let days = days.min(16) as u8;
+
+        let location = if let Some(q) = location_query {
+            map_weather_err(self.client.geocode(q).await)?
+        } else {
+            Location {
+                name: None,
+                latitude: self.default_lat,
+                longitude: self.default_lon,
+                country: None,
+            }
+        };
+
+        let report = map_weather_err(
+            self.client
+                .fetch_forecast(&location, days, self.default_units, include_current)
+                .await,
+        )?;
+
+        serde_json::to_value(&report).map_err(Error::Json)
+    }
+}
+
+/// Register the weather tool onto an existing registry.
+pub fn register_weather_tools(
+    reg: &mut ToolRegistry,
+    client: Arc<OpenMeteoClient>,
+    lat: f64,
+    lon: f64,
+    units: Units,
+) {
+    reg.register(Box::new(WeatherTool::new(client, lat, lon, units)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use niles_weather::{Units, WeatherTransport};
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    struct MockTransport {
+        last_url: Arc<Mutex<Option<String>>>,
+        responses: Arc<Mutex<Vec<std::result::Result<String, niles_weather::Error>>>>,
+    }
+
+    impl MockTransport {
+        fn new(responses: Vec<std::result::Result<String, niles_weather::Error>>) -> Self {
+            Self {
+                last_url: Arc::new(Mutex::new(None)),
+                responses: Arc::new(Mutex::new(responses)),
+            }
+        }
+
+        fn last_url(&self) -> Option<String> {
+            self.last_url.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl WeatherTransport for MockTransport {
+        async fn get(&self, url: &str) -> std::result::Result<String, niles_weather::Error> {
+            *self.last_url.lock().unwrap() = Some(url.to_string());
+            self.responses.lock().unwrap().remove(0)
+        }
+    }
+
+    fn forecast_json() -> String {
+        r#"{
+            "utc_offset_seconds": 7200,
+            "current": {
+                "time": "2024-06-01T14:00",
+                "temperature_2m": 15.3,
+                "relative_humidity_2m": 65,
+                "weather_code": 1,
+                "wind_speed_10m": 3.5
+            },
+            "daily": {
+                "time": ["2024-06-01"],
+                "weather_code": [1],
+                "temperature_2m_max": [18.0],
+                "temperature_2m_min": [12.0],
+                "sunrise": ["2024-06-01T05:30"],
+                "sunset": ["2024-06-01T21:45"],
+                "precipitation_sum": [0.0]
+            }
+        }"#
+        .into()
+    }
+
+    fn geocode_json() -> String {
+        r#"{
+            "results": [
+                {
+                    "name": "Aarhus",
+                    "latitude": 56.1567,
+                    "longitude": 10.2108,
+                    "country": "Denmark"
+                }
+            ]
+        }"#
+        .into()
+    }
+
+    fn tool_with(
+        responses: Vec<std::result::Result<String, niles_weather::Error>>,
+    ) -> (MockTransport, WeatherTool) {
+        let mock = MockTransport::new(responses);
+        let client = Arc::new(OpenMeteoClient::with_transport(
+            Arc::new(mock.clone()),
+            Default::default(),
+        ));
+        let tool = WeatherTool::new(client, 55.0, 10.0, Units::Metric);
+        (mock, tool)
+    }
+
+    #[tokio::test]
+    async fn default_location_no_geocode() {
+        let (mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let result = tool.execute(json!({})).await.unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("latitude=55"));
+        assert!(url.contains("longitude=10"));
+        assert!(!url.contains("geocoding-api"));
+        assert!(result.get("location").is_some());
+    }
+
+    #[tokio::test]
+    async fn named_location_geocodes_first() {
+        let (mock, tool) = tool_with(vec![Ok(geocode_json()), Ok(forecast_json())]);
+        let result = tool.execute(json!({"location": "Aarhus"})).await.unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("forecast"));
+        assert!(result.get("location").is_some());
+    }
+
+    #[tokio::test]
+    async fn days_zero_errors() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let err = tool.execute(json!({"days": 0})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_weather" && reason.contains("days must be >= 1"))
+        );
+    }
+
+    #[tokio::test]
+    async fn days_clamped_to_16() {
+        let (mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        tool.execute(json!({"days": 50})).await.unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("forecast_days=16"));
+    }
+
+    #[tokio::test]
+    async fn returned_json_has_expected_keys() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let result = tool.execute(json!({})).await.unwrap();
+        assert!(result.get("location").is_some());
+        assert!(result.get("units").is_some());
+        assert!(result.get("current").is_some());
+        assert!(result.get("daily").is_some());
+    }
+
+    #[tokio::test]
+    async fn geocode_error_propagates() {
+        let (mock, tool) = tool_with(vec![Err(niles_weather::Error::GeocodeEmpty {
+            query: "Nowhere".into(),
+        })]);
+        let err = tool
+            .execute(json!({"location": "Nowhere"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Weather(reason) if reason.contains("Nowhere")));
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("geocoding-api"));
+    }
+
+    #[tokio::test]
+    async fn include_current_false_omits_current() {
+        let (mock, tool) = tool_with(vec![Ok(forecast_json_no_current())]);
+        let result = tool
+            .execute(json!({"include_current": false}))
+            .await
+            .unwrap();
+        assert!(result.get("current").unwrap().is_null());
+        let url = mock.last_url().unwrap();
+        assert!(!url.contains("current="));
+    }
+
+    #[tokio::test]
+    async fn days_wrong_type_errors() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let err = tool.execute(json!({"days": -1})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_weather" && reason.contains("days must be an integer"))
+        );
+    }
+
+    #[tokio::test]
+    async fn location_wrong_type_errors() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let err = tool.execute(json!({"location": 42})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_weather" && reason.contains("location must be a string"))
+        );
+    }
+
+    #[tokio::test]
+    async fn include_current_wrong_type_errors() {
+        let (_mock, tool) = tool_with(vec![Ok(forecast_json())]);
+        let err = tool
+            .execute(json!({"include_current": "yes"}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_weather" && reason.contains("include_current must be a boolean"))
+        );
+    }
+
+    fn forecast_json_no_current() -> String {
+        r#"{
+            "utc_offset_seconds": 0,
+            "daily": {
+                "time": ["2024-06-01"],
+                "weather_code": [0],
+                "temperature_2m_max": [20.0],
+                "temperature_2m_min": [10.0],
+                "sunrise": ["2024-06-01T06:00"],
+                "sunset": ["2024-06-01T20:00"],
+                "precipitation_sum": [0.0]
+            }
+        }"#
+        .into()
+    }
+}
