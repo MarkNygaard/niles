@@ -1926,6 +1926,9 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                                     return Some(response);
                                 }
                                 Ok((LoopOutcome::EscalateRequested { .. }, _)) => {
+                                    println!(
+                                        "[{peer}] \"{text}\" -> (Tier 2) escalation requested; ignoring"
+                                    );
                                     tracing::warn!(
                                         "[{peer}] Tier 2 also requested escalation; ignoring"
                                     );
@@ -1941,6 +1944,9 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                             }
                         }
                         None => {
+                            println!(
+                                "[{peer}] \"{text}\" -> (Tier 1) escalation requested but Tier 2 not configured"
+                            );
                             tracing::warn!("[{peer}] Tier 2 not configured, falling through");
                             return Some(
                                 "Sorry, I'm not able to escalate that request right now.".into(),
@@ -3810,6 +3816,104 @@ mod chat_loop_tests {
             [Message::User { content }] => assert_eq!(content, "hello"),
             other => panic!("expected [User] only, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn escalate_requested_when_model_calls_escalate_tool() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "call_1".into(),
+                name: niles_tools::escalate::ESCALATE_TOOL_NAME.into(),
+                arguments: json!({"reason": "too hard"}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+        }]);
+        let registry = ToolRegistry::new();
+        let (outcome, _trace) = run_tool_calling_chat(&fake, &registry, "go", None, 5)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, LoopOutcome::EscalateRequested { ref reason, .. } if reason == "too hard"),
+            "expected EscalateRequested, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn escalate_mixed_with_other_tools_executes_both_then_escalates() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: None,
+            tool_calls: vec![
+                ToolCall {
+                    id: "c1".into(),
+                    name: "stub".into(),
+                    arguments: json!({}),
+                },
+                ToolCall {
+                    id: "c2".into(),
+                    name: niles_tools::escalate::ESCALATE_TOOL_NAME.into(),
+                    arguments: json!({"reason": "complex"}),
+                },
+            ],
+            finish_reason: FinishReason::ToolCalls,
+        }]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "stub".into(),
+            result: json!({"value": 1}),
+        }));
+        let (outcome, trace) = run_tool_calling_chat(&fake, &registry, "go", None, 5)
+            .await
+            .unwrap();
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace[0].tool, "stub");
+        assert!(
+            matches!(outcome, LoopOutcome::EscalateRequested { ref reason, .. } if reason == "complex"),
+            "expected EscalateRequested, got {outcome:?}"
+        );
+        match &outcome {
+            LoopOutcome::EscalateRequested { messages, .. } => {
+                assert_eq!(messages.len(), 4); // User + Assistant + Tool(stub) + Tool(escalate)
+            }
+            _ => panic!("expected EscalateRequested"),
+        }
+    }
+
+    #[tokio::test]
+    async fn exclude_tool_removes_it_from_llm_tools() {
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: Some("ok".into()),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+        }]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "stub".into(),
+            result: json!({"ok": true}),
+        }));
+        // Register a fake escalate tool so it appears in llm_tools
+        registry.register(Box::new(StubTool {
+            name: niles_tools::escalate::ESCALATE_TOOL_NAME.into(),
+            result: json!({"reason": "test"}),
+        }));
+        let messages = vec![Message::User {
+            content: "hi".into(),
+        }];
+        run_tool_calling_chat_with_messages(
+            &fake,
+            &registry,
+            messages,
+            5,
+            Some(niles_tools::escalate::ESCALATE_TOOL_NAME),
+        )
+        .await
+        .unwrap();
+
+        let reqs = fake.captured_requests();
+        assert_eq!(reqs.len(), 1);
+        let tools = reqs[0].tools.as_ref().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "stub");
     }
 }
 

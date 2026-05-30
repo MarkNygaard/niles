@@ -32,11 +32,9 @@ impl OpenAiClient {
             .build()?;
         Ok(Self { http, cfg })
     }
-}
 
-#[async_trait::async_trait]
-impl LlmBackend for OpenAiClient {
-    async fn chat(&self, req: ChatRequest) -> Result<ChatResponse> {
+    /// Send a chat-completion request and return the model's reply.
+    pub async fn chat(&self, req: ChatRequest) -> Result<ChatResponse> {
         debug!(model = %self.cfg.model, "sending OpenAI chat-completion request");
         crate::chat::post_chat_completions(
             &self.http,
@@ -46,6 +44,13 @@ impl LlmBackend for OpenAiClient {
             &req,
         )
         .await
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmBackend for OpenAiClient {
+    async fn chat(&self, req: ChatRequest) -> Result<ChatResponse> {
+        OpenAiClient::chat(self, req).await
     }
 }
 
