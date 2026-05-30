@@ -74,7 +74,7 @@ impl WireEvent {
 /// - `device_state_changed`, `device_added`, `device_removed` events
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
 /// - Slow-consumer detection: if the cumulative number of dropped events
-///   exceeds 256, the connection is closed with `{"type":"close"}`
+///   reaches 256, the connection is closed with `{"type":"close"}`
 pub async fn events_stream(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(|socket| handle_socket(socket, state.event_bus))
 }
@@ -104,8 +104,8 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        dropped += n;
-                        if dropped > BROADCAST_BUFFER as u64 {
+                        dropped = dropped.saturating_add(n);
+                        if dropped >= BROADCAST_BUFFER as u64 {
                             let close = WireEvent::Close {
                                 reason: "slow_consumer".to_string(),
                                 dropped,
