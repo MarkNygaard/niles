@@ -114,6 +114,12 @@ impl HomeConfig {
                 reason: "timezone must not be empty".into(),
             });
         }
+        if let Err(e) = self.timezone.parse::<chrono_tz::Tz>() {
+            return Err(Error::InvalidSection {
+                section: "home",
+                reason: format!("timezone '{}' is not a valid IANA zone: {e}", self.timezone),
+            });
+        }
         if self.locale.trim().is_empty() {
             return Err(Error::InvalidSection {
                 section: "home",
@@ -520,6 +526,21 @@ default_language = "da"
             longitude: 0.0,
             timezone: "UTC".into(),
             locale: "".into(),
+            units: None,
+            country: None,
+            default_language: None,
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_timezone() {
+        let cfg = HomeConfig {
+            name: "Test".into(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: "Not/A/Real/Timezone".into(),
+            locale: "en_US".into(),
             units: None,
             country: None,
             default_language: None,

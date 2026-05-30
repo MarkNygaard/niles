@@ -933,6 +933,7 @@ name = "niles-config"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "chrono-tz",
  "niles-core",
  "niles-scheduler",
  "serde",
