@@ -157,14 +157,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[derive(Debug)]
     struct DummyChat;
 
     #[async_trait::async_trait]
-    impl crate::ChatProvider for DummyChat {
+    impl niles_llm::LlmBackend for DummyChat {
         async fn chat(
             &self,
             _req: niles_llm::ChatRequest,
-        ) -> anyhow::Result<niles_llm::ChatResponse> {
+        ) -> niles_llm::Result<niles_llm::ChatResponse> {
             unreachable!("short-circuit should not call chat")
         }
     }

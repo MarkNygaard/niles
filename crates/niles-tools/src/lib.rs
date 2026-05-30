@@ -8,6 +8,7 @@
 pub mod builtin;
 pub mod datetime;
 pub mod error;
+pub mod escalate;
 pub mod registry;
 pub mod skill;
 pub mod tool;
@@ -23,6 +24,7 @@ pub use builtin::{
 };
 pub use datetime::{CurrentDatetimeTool, register_datetime_tool};
 pub use error::{Error, Result};
+pub use escalate::{EscalateToTier2Tool, register_escalate_tool};
 pub use registry::ToolRegistry;
 pub use skill::{
     DeleteSkillTool, MintSkillTool, PatchSkillTool, ViewSkillTool, register_skill_tools,

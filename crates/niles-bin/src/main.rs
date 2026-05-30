@@ -11,7 +11,10 @@ use niles_history::{
     CommandEntry, CommandReader, CommandWriter, StateEntry, StateReader, StateWriter,
 };
 use niles_intent::{DeviceIndex, Intent, IntentRouter, RouterContext};
-use niles_llm::{ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, ToolChoice};
+use niles_llm::{
+    ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, OpenAiClient, OpenAiConfig,
+    ToolChoice,
+};
 use niles_memory::MemoryStore;
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
@@ -611,6 +614,24 @@ fn build_groq_client(cfg: &Config) -> anyhow::Result<GroqClient> {
     GroqClient::new(groq_cfg).context("building Groq HTTP client")
 }
 
+/// Build an OpenAI client for Tier 2, or `None` when `[llm.tier2]` is absent.
+fn build_tier2_client(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ChatProvider>>> {
+    let Some(tier2_cfg) = &cfg.llm.tier2 else {
+        return Ok(None);
+    };
+    let api_key = tier2_cfg
+        .resolve_api_key()
+        .context("resolving Tier 2 API key from environment")?;
+    let openai_cfg = OpenAiConfig {
+        api_key,
+        base_url: tier2_cfg.base_url.clone(),
+        model: tier2_cfg.model.clone(),
+        request_timeout: Duration::from_secs(tier2_cfg.timeout_seconds),
+    };
+    let client = OpenAiClient::new(openai_cfg).context("building OpenAI HTTP client")?;
+    Ok(Some(Arc::new(client)))
+}
+
 /// Build a `CapabilityLoader` from config, or `None` if capabilities
 /// are not configured or fail to load. A loader failure is **not
 /// fatal** — niles starts without the `look_up_capability` tool and
@@ -1148,38 +1169,37 @@ pub(crate) trait ChatProvider: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl ChatProvider for GroqClient {
+impl<T: niles_llm::LlmBackend> ChatProvider for T {
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
-        Ok(GroqClient::chat(self, req).await?)
+        Ok(niles_llm::LlmBackend::chat(self, req).await?)
     }
 }
 
-/// Drive a chat conversation with tool calling until the model emits
-/// a final text response or `max_iterations` is exhausted.
-///
-/// Each iteration sends the full message history to `client`. If the
-/// response carries no tool calls, the function returns the assistant
-/// content (or empty string if `content` is `None`). Otherwise the
-/// tool calls are dispatched through `registry` and their results are
-/// fed back as `Message::Tool` for the next iteration.
-pub(crate) async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
-    client: &C,
+/// Outcome of a tool-calling chat loop. The loop may complete with a
+/// final text response, or abort early when the model requests
+/// escalation to Tier 2.
+#[derive(Debug)]
+pub(crate) enum LoopOutcome {
+    Done(String),
+    EscalateRequested {
+        reason: String,
+        messages: Vec<Message>,
+    },
+}
+
+/// Internal helper that starts from an existing message history.
+async fn run_tool_calling_chat_with_messages(
+    client: &dyn ChatProvider,
     registry: &ToolRegistry,
-    prompt: &str,
-    system_prompt: Option<&str>,
+    mut messages: Vec<Message>,
     max_iterations: usize,
-) -> anyhow::Result<(String, Vec<review::ToolTrace>)> {
-    let llm_tools = registry.llm_tools();
-    let mut messages = Vec::new();
-    let mut trace: Vec<review::ToolTrace> = Vec::new();
-    if let Some(sys) = system_prompt {
-        messages.push(Message::System {
-            content: sys.to_string(),
-        });
+    exclude_tool: Option<&str>,
+) -> anyhow::Result<(LoopOutcome, Vec<review::ToolTrace>)> {
+    let mut llm_tools = registry.llm_tools();
+    if let Some(name) = exclude_tool {
+        llm_tools.retain(|t| t.name != name);
     }
-    messages.push(Message::User {
-        content: prompt.to_string(),
-    });
+    let mut trace: Vec<review::ToolTrace> = Vec::new();
 
     for _ in 0..max_iterations {
         let req = ChatRequest {
@@ -1190,13 +1210,20 @@ pub(crate) async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
         let resp = client.chat(req).await.context("calling LLM")?;
 
         if resp.tool_calls.is_empty() {
-            return Ok((resp.content.unwrap_or_default(), trace));
+            return Ok((LoopOutcome::Done(resp.content.unwrap_or_default()), trace));
         }
 
         messages.push(Message::Assistant {
             content: None,
             tool_calls: Some(resp.tool_calls.clone()),
         });
+
+        let escalate_reason = resp
+            .tool_calls
+            .iter()
+            .find(|c| c.name == niles_tools::escalate::ESCALATE_TOOL_NAME)
+            .and_then(|c| c.arguments.get("reason").and_then(|v| v.as_str()))
+            .map(String::from);
 
         for call in &resp.tool_calls {
             let arg_keys: Vec<&str> = call
@@ -1211,9 +1238,13 @@ pub(crate) async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
                 keys = arg_keys.join(",")
             );
 
-            let result = match registry.execute(call).await {
-                Ok(v) => v,
-                Err(e) => json!({ "error": format!("{e}") }),
+            let result = if call.name == niles_tools::escalate::ESCALATE_TOOL_NAME {
+                call.arguments.clone()
+            } else {
+                match registry.execute(call).await {
+                    Ok(v) => v,
+                    Err(e) => json!({ "error": format!("{e}") }),
+                }
             };
             tracing::info!(
                 "tool_result {name} -> {body}",
@@ -1230,11 +1261,42 @@ pub(crate) async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
                 content: result.to_string(),
             });
         }
+
+        if let Some(reason) = escalate_reason {
+            return Ok((LoopOutcome::EscalateRequested { reason, messages }, trace));
+        }
     }
 
     Err(anyhow::anyhow!(
         "chat tool-calling loop exhausted after {max_iterations} iterations without a final text answer"
     ))
+}
+
+/// Drive a chat conversation with tool calling until the model emits
+/// a final text response or `max_iterations` is exhausted.
+///
+/// Each iteration sends the full message history to `client`. If the
+/// response carries no tool calls, the function returns the assistant
+/// content (or empty string if `content` is `None`). Otherwise the
+/// tool calls are dispatched through `registry` and their results are
+/// fed back as `Message::Tool` for the next iteration.
+pub(crate) async fn run_tool_calling_chat(
+    client: &dyn ChatProvider,
+    registry: &ToolRegistry,
+    prompt: &str,
+    system_prompt: Option<&str>,
+    max_iterations: usize,
+) -> anyhow::Result<(LoopOutcome, Vec<review::ToolTrace>)> {
+    let mut messages = Vec::new();
+    if let Some(sys) = system_prompt {
+        messages.push(Message::System {
+            content: sys.to_string(),
+        });
+    }
+    messages.push(Message::User {
+        content: prompt.to_string(),
+    });
+    run_tool_calling_chat_with_messages(client, registry, messages, max_iterations, None).await
 }
 
 async fn chat(args: ChatArgs) -> anyhow::Result<()> {
@@ -1336,7 +1398,12 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     )
     .await
     {
-        Ok((text, _trace)) => println!("{text}"),
+        Ok((LoopOutcome::Done(text), _trace)) => println!("{text}"),
+        Ok((LoopOutcome::EscalateRequested { reason, .. }, _trace)) => {
+            eprintln!(
+                "[niles chat] Tier 1 requested escalation ({reason}) but Tier 2 is not available in chat mode"
+            );
+        }
         Err(e) => eprintln!("[niles chat] {e:#}"),
     }
 
@@ -1598,6 +1665,11 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let state_reader = build_state_reader(&cfg);
     niles_tools::register_state_history_tools(&mut tools, state_reader, registry.clone());
 
+    let tier2 = build_tier2_client(&cfg)?;
+    if tier2.is_some() {
+        niles_tools::register_escalate_tool(&mut tools);
+    }
+
     let tools = Arc::new(tools);
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
@@ -1631,6 +1703,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         timers,
         speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
         llm,
+        tier2,
         tools,
         capability_loader,
         capability_index,
@@ -1721,6 +1794,7 @@ struct DispatchCtx {
     timers: Arc<TimerStore>,
     speakers: Arc<speakers::SpeakerRegistry>,
     llm: Arc<GroqClient>,
+    tier2: Option<Arc<dyn ChatProvider>>,
     tools: Arc<ToolRegistry>,
     capability_loader: Option<Arc<CapabilityLoader>>,
     capability_index: Option<Arc<niles_intent::CapabilityIndex>>,
@@ -1807,7 +1881,7 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
             )
             .await
             {
-                Ok((response, tool_trace)) => {
+                Ok((LoopOutcome::Done(response), tool_trace)) => {
                     println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
                     let memory_for_review = ctx.memory.is_enabled().then(|| ctx.memory.clone());
                     let snapshot = review::ReviewSnapshot {
@@ -1832,6 +1906,47 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                         );
                     }
                     return Some(response);
+                }
+                Ok((LoopOutcome::EscalateRequested { reason, messages }, _tool_trace)) => {
+                    tracing::info!("[{peer}] Tier 1 requested escalation: {reason}");
+                    match &ctx.tier2 {
+                        Some(tier2) => {
+                            println!("[{peer}] \"{text}\" -> escalating to Tier 2 ({reason})");
+                            match run_tool_calling_chat_with_messages(
+                                tier2.as_ref(),
+                                ctx.tools.as_ref(),
+                                messages,
+                                MAX_TOOL_ITERATIONS,
+                                Some(niles_tools::escalate::ESCALATE_TOOL_NAME),
+                            )
+                            .await
+                            {
+                                Ok((LoopOutcome::Done(response), _)) => {
+                                    println!("[{peer}] \"{text}\" -> (Tier 2) {response}");
+                                    return Some(response);
+                                }
+                                Ok((LoopOutcome::EscalateRequested { .. }, _)) => {
+                                    tracing::warn!(
+                                        "[{peer}] Tier 2 also requested escalation; ignoring"
+                                    );
+                                    return Some(
+                                        "Sorry, I'm not able to handle that request.".into(),
+                                    );
+                                }
+                                Err(e) => {
+                                    println!("[{peer}] \"{text}\" -> (Tier 2) error: {e:#}");
+                                    tracing::warn!("[{peer}] Tier 2 dispatch failed: {e:#}");
+                                    return Some("Sorry, something went wrong.".into());
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::warn!("[{peer}] Tier 2 not configured, falling through");
+                            return Some(
+                                "Sorry, I'm not able to escalate that request right now.".into(),
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     // Mirror the success-path stdout line so a Tier 1
@@ -2682,6 +2797,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let state_reader = build_state_reader(&cfg);
     niles_tools::register_state_history_tools(&mut tools, state_reader, registry.clone());
 
+    let tier2 = build_tier2_client(&cfg)?;
+    if tier2.is_some() {
+        niles_tools::register_escalate_tool(&mut tools);
+    }
+
     let tools = Arc::new(tools);
 
     // Timer driver: shares the `timers` Arc registered with the LLM
@@ -2742,6 +2862,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         timers,
         speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
         llm,
+        tier2,
         tools,
         capability_loader,
         capability_index,
@@ -3444,6 +3565,7 @@ mod chat_loop_tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    #[derive(Debug)]
     struct FakeChat {
         responses: Mutex<VecDeque<ChatResponse>>,
         requests: Mutex<Vec<ChatRequest>>,
@@ -3463,12 +3585,14 @@ mod chat_loop_tests {
     }
 
     #[async_trait::async_trait]
-    impl ChatProvider for FakeChat {
-        async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+    impl niles_llm::LlmBackend for FakeChat {
+        async fn chat(&self, req: ChatRequest) -> niles_llm::Result<ChatResponse> {
             self.requests.lock().unwrap().push(req);
             let mut q = self.responses.lock().unwrap();
             q.pop_front()
-                .ok_or_else(|| anyhow::anyhow!("FakeChat ran out of canned responses"))
+                .ok_or_else(|| niles_llm::Error::InvalidResponse {
+                    reason: "FakeChat ran out of canned responses".into(),
+                })
         }
     }
 
@@ -3499,10 +3623,10 @@ mod chat_loop_tests {
             finish_reason: FinishReason::Stop,
         }]);
         let registry = ToolRegistry::new();
-        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
+        let (outcome, _trace) = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
             .await
             .unwrap();
-        assert_eq!(out, "hello world");
+        assert!(matches!(outcome, LoopOutcome::Done(ref s) if s == "hello world"));
     }
 
     #[tokio::test]
@@ -3528,10 +3652,10 @@ mod chat_loop_tests {
             name: "stub".into(),
             result: json!({"value": 42}),
         }));
-        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "ask the stub", None, 5)
+        let (outcome, _trace) = run_tool_calling_chat(&fake, &registry, "ask the stub", None, 5)
             .await
             .unwrap();
-        assert_eq!(out, "the answer is 42");
+        assert!(matches!(outcome, LoopOutcome::Done(ref s) if s == "the answer is 42"));
     }
 
     #[tokio::test]
@@ -3573,10 +3697,10 @@ mod chat_loop_tests {
             finish_reason: FinishReason::Stop,
         }]);
         let registry = ToolRegistry::new();
-        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
+        let (outcome, _trace) = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
             .await
             .unwrap();
-        assert_eq!(out, "");
+        assert!(matches!(outcome, LoopOutcome::Done(ref s) if s.is_empty()));
     }
 
     #[tokio::test]
@@ -3598,10 +3722,10 @@ mod chat_loop_tests {
             },
         ]);
         let registry = ToolRegistry::new();
-        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "go", None, 5)
+        let (outcome, _trace) = run_tool_calling_chat(&fake, &registry, "go", None, 5)
             .await
             .unwrap();
-        assert_eq!(out, "ok we recovered");
+        assert!(matches!(outcome, LoopOutcome::Done(ref s) if s == "ok we recovered"));
     }
 
     #[tokio::test]
@@ -3634,7 +3758,7 @@ mod chat_loop_tests {
             name: "stub".into(),
             result: json!({"ok": true}),
         }));
-        let (_out, trace) = run_tool_calling_chat(&fake, &registry, "multi", None, 5)
+        let (_outcome, trace) = run_tool_calling_chat(&fake, &registry, "multi", None, 5)
             .await
             .unwrap();
         assert_eq!(trace.len(), 2);
