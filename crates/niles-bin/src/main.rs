@@ -1285,7 +1285,6 @@ async fn run_tool_calling_chat_with_messages(
                 content: result.to_string(),
             });
         }
-
     }
 
     Err(anyhow::anyhow!(
