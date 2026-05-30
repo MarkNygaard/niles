@@ -43,6 +43,11 @@ impl SearXngClient {
                 reason: "query must not be empty".into(),
             });
         }
+        if !(1..=20).contains(&request.num_results) {
+            return Err(Error::InvalidInput {
+                reason: "num_results must be between 1 and 20".into(),
+            });
+        }
 
         let sep = if self.config.base_url.contains('?') {
             '&'
@@ -239,6 +244,36 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(err, Error::InvalidInput { reason } if reason.contains("query must not be empty"))
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_num_results_rejected() {
+        let (_, client) = client_with(vec![]);
+        let err = client
+            .search(&SearchRequest {
+                query: "test".into(),
+                num_results: 0,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { reason } if reason.contains("num_results must be between 1 and 20"))
+        );
+    }
+
+    #[tokio::test]
+    async fn too_many_num_results_rejected() {
+        let (_, client) = client_with(vec![]);
+        let err = client
+            .search(&SearchRequest {
+                query: "test".into(),
+                num_results: 21,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { reason } if reason.contains("num_results must be between 1 and 20"))
         );
     }
 
