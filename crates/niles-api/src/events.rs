@@ -25,6 +25,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 /// variants are forwarded; others are silently dropped.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WireEvent {
     DeviceStateChanged {
         id: String,
@@ -83,14 +84,14 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut dropped: u64 = 0;
 
-    loop {
+    let close_reason = loop {
         select! {
             _ = heartbeat.tick() => {
                 let ping = WireEvent::Ping {
                     ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 };
                 if send_json(&mut socket, &ping).await.is_err() {
-                    break;
+                    break "send_error";
                 }
             }
             result = rx.recv() => {
@@ -99,7 +100,7 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                         if let Some(wire) = WireEvent::from_event(event)
                             && send_json(&mut socket, &wire).await.is_err()
                         {
-                            break;
+                            break "send_error";
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -110,23 +111,28 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                                 dropped,
                             };
                             let _ = send_json(&mut socket, &close).await;
-                            break;
+                            break "slow_consumer";
                         }
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => break "bus_closed",
                 }
             }
             msg = socket.recv() => {
                 match msg {
-                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Close(_))) => break "client_close",
+                    None => break "client_disconnect",
                     Some(Ok(_)) => {} // ignore other client messages
-                    Some(Err(_)) => break,
+                    Some(Err(_)) => break "protocol_error",
                 }
             }
         }
-    }
+    };
 
-    debug!("WebSocket event stream closed");
+    if close_reason == "slow_consumer" {
+        warn!("WebSocket event stream closed: {close_reason} ({dropped} events dropped)");
+    } else {
+        debug!("WebSocket event stream closed: {close_reason}");
+    }
 }
 
 async fn send_json(socket: &mut WebSocket, event: &WireEvent) -> Result<(), ()> {
