@@ -33,7 +33,9 @@ impl Tool for CurrentDatetimeTool {
                 .into(),
             parameters: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
             }),
         }
     }
@@ -165,6 +167,13 @@ mod tests {
             iso_utc, iso_local,
             "local time in Europe/Copenhagen should differ from UTC"
         );
+    }
+
+    #[tokio::test]
+    async fn timezone_field_matches_canonical_name() {
+        let tool = tool_with("Europe/Copenhagen");
+        let result = tool.execute(json!({})).await.unwrap();
+        assert_eq!(result["timezone"], "Europe/Copenhagen");
     }
 
     #[test]
