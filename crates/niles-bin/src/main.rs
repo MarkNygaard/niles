@@ -3603,6 +3603,47 @@ mod chat_loop_tests {
     }
 
     #[tokio::test]
+    async fn trace_records_tool_calls() {
+        let fake = FakeChat::new(vec![
+            ChatResponse {
+                content: None,
+                tool_calls: vec![
+                    ToolCall {
+                        id: "c1".into(),
+                        name: "stub".into(),
+                        arguments: json!({"x": 1}),
+                    },
+                    ToolCall {
+                        id: "c2".into(),
+                        name: "stub".into(),
+                        arguments: json!({"x": 2}),
+                    },
+                ],
+                finish_reason: FinishReason::ToolCalls,
+            },
+            ChatResponse {
+                content: Some("done".into()),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Stop,
+            },
+        ]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "stub".into(),
+            result: json!({"ok": true}),
+        }));
+        let (_out, trace) = run_tool_calling_chat(&fake, &registry, "multi", None, 5)
+            .await
+            .unwrap();
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace[0].tool, "stub");
+        assert_eq!(trace[0].arguments, json!({"x": 1}));
+        assert_eq!(trace[0].result, json!({"ok": true}));
+        assert_eq!(trace[1].tool, "stub");
+        assert_eq!(trace[1].arguments, json!({"x": 2}));
+    }
+
+    #[tokio::test]
     async fn system_prompt_is_prepended_to_messages() {
         let fake = FakeChat::new(vec![ChatResponse {
             content: Some("ok".into()),

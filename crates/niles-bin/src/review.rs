@@ -77,7 +77,7 @@ pub fn format_review_user_message(snapshot: &ReviewSnapshot) -> String {
         (user, agent) => {
             out.push_str("USER.md:\n");
             out.push_str(user.as_deref().unwrap_or("(none)"));
-            out.push_str("\nAGENT.md:\n");
+            out.push_str("\nMEMORY.md:\n");
             out.push_str(agent.as_deref().unwrap_or("(none)"));
             out.push('\n');
         }
@@ -135,6 +135,18 @@ pub fn spawn_skill_review(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    struct DummyChat;
+
+    #[async_trait::async_trait]
+    impl crate::ChatProvider for DummyChat {
+        async fn chat(
+            &self,
+            _req: niles_llm::ChatRequest,
+        ) -> anyhow::Result<niles_llm::ChatResponse> {
+            unreachable!("short-circuit should not call chat")
+        }
+    }
 
     #[test]
     fn skill_review_prompt_smoke() {
@@ -224,7 +236,37 @@ mod tests {
         };
         let msg = format_review_user_message(&snapshot);
         assert!(msg.contains("USER.md:\nUser likes tea."));
-        assert!(msg.contains("AGENT.md:\nAgent learned Danish."));
+        assert!(msg.contains("MEMORY.md:\nAgent learned Danish."));
+    }
+
+    #[test]
+    fn format_review_shows_user_memory_when_agent_is_none() {
+        let snapshot = ReviewSnapshot {
+            transcript: "hi".into(),
+            spoken_response: "hello".into(),
+            tool_trace: vec![],
+            user_memory: Some("User likes tea.".into()),
+            agent_memory: None,
+            skill_summaries: vec![],
+        };
+        let msg = format_review_user_message(&snapshot);
+        assert!(msg.contains("USER.md:\nUser likes tea."));
+        assert!(msg.contains("MEMORY.md:\n(none)"));
+    }
+
+    #[test]
+    fn format_review_shows_agent_memory_when_user_is_none() {
+        let snapshot = ReviewSnapshot {
+            transcript: "hi".into(),
+            spoken_response: "hello".into(),
+            tool_trace: vec![],
+            user_memory: None,
+            agent_memory: Some("Agent learned Danish.".into()),
+            skill_summaries: vec![],
+        };
+        let msg = format_review_user_message(&snapshot);
+        assert!(msg.contains("USER.md:\n(none)"));
+        assert!(msg.contains("MEMORY.md:\nAgent learned Danish."));
     }
 
     #[test]
@@ -247,5 +289,39 @@ mod tests {
         };
         let msg = format_review_user_message(&snapshot);
         assert!(msg.contains("- lights: Control lights"));
+    }
+
+    #[tokio::test]
+    async fn spawn_skill_review_short_circuits_when_both_stores_none() {
+        let snapshot = ReviewSnapshot {
+            transcript: "hi".into(),
+            spoken_response: "hello".into(),
+            tool_trace: vec![],
+            user_memory: None,
+            agent_memory: None,
+            skill_summaries: vec![],
+        };
+        let handle = spawn_skill_review(
+            snapshot,
+            None,
+            None,
+            Arc::new(DummyChat),
+            Arc::new(niles_config::HomeConfig {
+                name: "test".into(),
+                latitude: 0.0,
+                longitude: 0.0,
+                timezone: "UTC".into(),
+                locale: "en_US".into(),
+                units: None,
+                country: None,
+                default_language: None,
+            }),
+            1,
+        );
+        // The handle should resolve immediately because both stores are None.
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), handle)
+            .await
+            .expect("handle should resolve immediately")
+            .expect("task should not panic");
     }
 }
