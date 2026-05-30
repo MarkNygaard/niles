@@ -63,7 +63,7 @@ pub fn register_datetime_tool(reg: &mut ToolRegistry, timezone_str: &str) {
         tracing::warn!("Failed to parse timezone '{timezone_str}'; current_datetime tool disabled");
         return;
     };
-    let name: Arc<str> = timezone_str.into();
+    let name: Arc<str> = tz.name().into();
     reg.register(Box::new(CurrentDatetimeTool::new(tz, name)));
 }
 
@@ -142,11 +142,17 @@ mod tests {
         let result = tool.execute(json!({})).await.unwrap();
         let iso_utc = result["iso_utc"].as_str().unwrap();
         let iso_local = result["iso_local"].as_str().unwrap();
-        // RFC 3339 requires a 'T' separator and a timezone offset/Z
-        assert!(iso_utc.contains('T'));
-        assert!(iso_utc.ends_with('Z') || iso_utc.contains('+'));
-        assert!(iso_local.contains('T'));
-        assert!(iso_local.ends_with('Z') || iso_local.contains('+'));
+        chrono::DateTime::parse_from_rfc3339(iso_utc).expect("iso_utc is valid RFC 3339");
+        chrono::DateTime::parse_from_rfc3339(iso_local).expect("iso_local is valid RFC 3339");
+    }
+
+    #[tokio::test]
+    async fn negative_offset_tz_produces_valid_rfc3339() {
+        let tool = tool_with("America/New_York");
+        let result = tool.execute(json!({})).await.unwrap();
+        let iso_local = result["iso_local"].as_str().unwrap();
+        chrono::DateTime::parse_from_rfc3339(iso_local)
+            .expect("iso_local for negative-offset tz is valid RFC 3339");
     }
 
     #[test]
