@@ -155,6 +155,18 @@ mod tests {
             .expect("iso_local for negative-offset tz is valid RFC 3339");
     }
 
+    #[tokio::test]
+    async fn non_utc_tz_local_differs_from_utc() {
+        let tool = tool_with("Europe/Copenhagen");
+        let result = tool.execute(json!({})).await.unwrap();
+        let iso_utc = result["iso_utc"].as_str().unwrap();
+        let iso_local = result["iso_local"].as_str().unwrap();
+        assert_ne!(
+            iso_utc, iso_local,
+            "local time in Europe/Copenhagen should differ from UTC"
+        );
+    }
+
     #[test]
     fn register_valid_tz_adds_tool() {
         let mut reg = ToolRegistry::new();
