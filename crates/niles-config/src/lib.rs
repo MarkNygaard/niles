@@ -21,6 +21,7 @@ pub mod skills;
 pub mod speakers;
 pub mod stt;
 pub mod tts;
+pub mod web_search;
 pub mod wyoming;
 
 use serde::Deserialize;
@@ -42,6 +43,7 @@ pub use skills::{SkillsConfig, SkillsCuratorConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
+pub use web_search::WebSearchConfig;
 pub use wyoming::WyomingConfig;
 
 /// Top-level Niles configuration.
@@ -67,6 +69,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -120,6 +124,7 @@ impl Config {
         self.history.validate()?;
         self.memory.validate()?;
         self.skills.validate()?;
+        self.web_search.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
@@ -1293,5 +1298,150 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
                 ..
             }
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // Web search section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn web_search_section_absent_defaults_to_none() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.web_search.base_url.is_none());
+        assert_eq!(cfg.web_search.timeout_seconds, 15);
+        assert_eq!(cfg.web_search.default_num_results, 5);
+    }
+
+    #[test]
+    fn web_search_base_url_parses() {
+        let toml = format!(
+            "{}\n[web_search]\nbase_url = \"https://search.mnygaard.io/search\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.web_search.base_url,
+            Some("https://search.mnygaard.io/search".into())
+        );
+    }
+
+    #[test]
+    fn rejects_empty_web_search_base_url() {
+        let toml = format!(
+            "{}\n[web_search]\nbase_url = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "web_search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_web_search_base_url_without_http_scheme() {
+        let toml = format!(
+            "{}\n[web_search]\nbase_url = \"search.example.com\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "web_search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_web_search_timeout() {
+        let toml = format!(
+            "{}\n[web_search]\ntimeout_seconds = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "web_search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_too_large_web_search_timeout() {
+        let toml = format!(
+            "{}\n[web_search]\ntimeout_seconds = 601\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "web_search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_web_search_num_results() {
+        let toml = format!(
+            "{}\n[web_search]\ndefault_num_results = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "web_search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_too_large_web_search_num_results() {
+        let toml = format!(
+            "{}\n[web_search]\ndefault_num_results = 50\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "web_search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn web_search_section_explicit_overrides_parse() {
+        let toml = format!(
+            "{}\n[web_search]\nbase_url = \"https://search.example.com/search\"\ntimeout_seconds = 30\ndefault_num_results = 10\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.web_search.base_url,
+            Some("https://search.example.com/search".into())
+        );
+        assert_eq!(cfg.web_search.timeout_seconds, 30);
+        assert_eq!(cfg.web_search.default_num_results, 10);
     }
 }

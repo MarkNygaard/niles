@@ -838,6 +838,8 @@ fn build_tool_registry(
     memory_store: Option<Arc<MemoryStore>>,
     skill_store: Option<Arc<SkillStore>>,
     weather_client: Option<Arc<niles_weather::OpenMeteoClient>>,
+    websearch_client: Option<Arc<niles_websearch::SearXngClient>>,
+    websearch_default_num_results: u8,
     home: &niles_config::HomeConfig,
 ) -> ToolRegistry {
     let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
@@ -862,6 +864,9 @@ fn build_tool_registry(
             home.longitude,
             units,
         );
+    }
+    if let Some(client) = websearch_client {
+        niles_tools::register_web_search_tool(&mut tools, client, websearch_default_num_results);
     }
     tools
 }
@@ -908,6 +913,30 @@ fn build_weather_client() -> Option<Arc<niles_weather::OpenMeteoClient>> {
     niles_weather::OpenMeteoClient::new(niles_weather::OpenMeteoConfig::default())
         .inspect_err(|e| {
             tracing::warn!("Failed to build Open-Meteo client: {e}; weather tool disabled")
+        })
+        .ok()
+        .map(Arc::new)
+}
+
+/// Build a `SearXngClient` from the `[web_search]` section.
+/// Returns `None` when `base_url` is not configured or when client construction fails.
+fn build_websearch_client(
+    cfg: &niles_config::WebSearchConfig,
+) -> Option<Arc<niles_websearch::SearXngClient>> {
+    let base_url = cfg.base_url.as_ref()?;
+    let config = niles_websearch::SearXngConfig {
+        base_url: base_url.clone(),
+        request_timeout: Duration::from_secs(cfg.timeout_seconds),
+        user_agent: concat!(
+            "niles/",
+            env!("CARGO_PKG_VERSION"),
+            " (https://github.com/MarkNygaard/niles)"
+        )
+        .into(),
+    };
+    niles_websearch::SearXngClient::new(config)
+        .inspect_err(|e| {
+            tracing::warn!("Failed to build SearXNG client: {e}; web_search tool disabled")
         })
         .ok()
         .map(Arc::new)
@@ -1229,6 +1258,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let memory_store = build_memory_store(&cfg.memory);
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
+    let websearch_client = build_websearch_client(&cfg.web_search);
     let tools_registry = build_tool_registry(
         registry.clone(),
         publisher,
@@ -1237,6 +1267,8 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         memory_store.clone(),
         skill_store.clone(),
         weather_client.clone(),
+        websearch_client.clone(),
+        cfg.web_search.default_num_results,
         &cfg.home,
     );
     let client = build_groq_client(&cfg)?;
@@ -1522,6 +1554,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let memory_store = build_memory_store(&cfg.memory);
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
+    let websearch_client = build_websearch_client(&cfg.web_search);
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
@@ -1530,6 +1563,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         memory_store.clone(),
         skill_store.clone(),
         weather_client.clone(),
+        websearch_client.clone(),
+        cfg.web_search.default_num_results,
         &cfg.home,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -2580,6 +2615,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let _skill_curator_handle = skill_store
         .clone()
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
+    let websearch_client = build_websearch_client(&cfg.web_search);
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
@@ -2588,6 +2624,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         memory_store.clone(),
         skill_store.clone(),
         weather_client.clone(),
+        websearch_client.clone(),
+        cfg.web_search.default_num_results,
         &cfg.home,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
