@@ -1345,6 +1345,23 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
     }
 
     #[test]
+    fn rejects_web_search_base_url_without_http_scheme() {
+        let toml = format!(
+            "{}\n[web_search]\nbase_url = \"search.example.com\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "web_search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn rejects_zero_web_search_timeout() {
         let toml = format!(
             "{}\n[web_search]\ntimeout_seconds = 0\n",

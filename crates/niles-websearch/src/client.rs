@@ -44,9 +44,15 @@ impl SearXngClient {
             });
         }
 
+        let sep = if self.config.base_url.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
         let url = format!(
-            "{}?q={}&format=json",
+            "{}{}q={}&format=json",
             self.config.base_url,
+            sep,
             urlencoding::encode(&request.query),
         );
 
@@ -319,5 +325,29 @@ mod tests {
             .unwrap();
         let url = mock.last_url().unwrap();
         assert!(url.contains("rust%20async"));
+    }
+
+    #[tokio::test]
+    async fn url_with_existing_query_params() {
+        let mock = MockTransport::new(vec![Ok(search_json())]);
+        let config = SearXngConfig {
+            base_url: "https://search.example.com/search?categories=general".into(),
+            request_timeout: Duration::from_secs(10),
+            user_agent: "test".into(),
+        };
+        let client = SearXngClient::with_transport(Arc::new(mock.clone()), config);
+        client
+            .search(&SearchRequest {
+                query: "rust".into(),
+                num_results: 5,
+            })
+            .await
+            .unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("categories=general"));
+        assert!(url.contains("q=rust"));
+        assert!(url.contains("format=json"));
+        // Verify there is exactly one '?' separating path and query.
+        assert_eq!(url.matches('?').count(), 1);
     }
 }

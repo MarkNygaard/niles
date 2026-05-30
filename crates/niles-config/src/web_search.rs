@@ -40,13 +40,19 @@ impl Default for WebSearchConfig {
 
 impl WebSearchConfig {
     pub fn validate(&self) -> Result<()> {
-        if let Some(url) = &self.base_url
-            && url.trim().is_empty()
-        {
-            return Err(Error::InvalidSection {
-                section: "web_search",
-                reason: "base_url must not be empty if present".into(),
-            });
+        if let Some(url) = &self.base_url {
+            if url.trim().is_empty() {
+                return Err(Error::InvalidSection {
+                    section: "web_search",
+                    reason: "base_url must not be empty if present".into(),
+                });
+            }
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(Error::InvalidSection {
+                    section: "web_search",
+                    reason: format!("base_url '{}' must start with http:// or https://", url),
+                });
+            }
         }
         if self.timeout_seconds == 0 || self.timeout_seconds > 600 {
             return Err(Error::InvalidSection {
