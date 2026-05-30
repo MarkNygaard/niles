@@ -677,6 +677,48 @@ fn origin_context(room: &RoomName) -> String {
     )
 }
 
+fn home_context(home: &niles_config::HomeConfig) -> String {
+    fn prompt_field(value: &str) -> String {
+        value
+            .chars()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    let units_label = match home.resolved_units() {
+        niles_config::Units::Metric => "metric (°C, km)",
+        niles_config::Units::Imperial => "imperial (°F, miles)",
+    };
+    let country = home.resolved_country();
+    let language = home.resolved_language();
+    let name = prompt_field(&home.name);
+    let locale = prompt_field(&home.locale);
+    let timezone = prompt_field(&home.timezone);
+    let country = country
+        .as_deref()
+        .map(prompt_field)
+        .unwrap_or_else(|| "unknown".to_string());
+    let language = prompt_field(&language);
+    format!(
+        "\n\n# Household context\n\n\
+         - Home: {name}\n\
+         - Country: {country}\n\
+         - Locale: {locale}\n\
+         - Timezone: {tz}\n\
+         - Units: {units}\n\
+         - Spoken language: {lang}\n",
+        name = name,
+        country = country,
+        locale = locale,
+        tz = timezone,
+        units = units_label,
+        lang = language,
+    )
+}
+
 #[cfg(test)]
 fn persona_with_origin(origin_room: Option<&RoomName>) -> String {
     let mut out = NILES_SYSTEM_PERSONA.to_string();
@@ -698,8 +740,10 @@ fn join_memory_entries(entries: &[niles_memory::Entry]) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn assemble_system_prompt(
     transcript: &str,
+    home: &niles_config::HomeConfig,
     index: &niles_intent::CapabilityIndex,
     loader: &CapabilityLoader,
     origin_room: Option<&RoomName>,
@@ -709,6 +753,7 @@ fn assemble_system_prompt(
 ) -> String {
     assemble_system_prompt_with_optional_capabilities(
         transcript,
+        home,
         Some(index),
         Some(loader),
         origin_room,
@@ -743,8 +788,10 @@ fn append_capability_references(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assemble_system_prompt_with_optional_capabilities(
     transcript: &str,
+    home: &niles_config::HomeConfig,
     capability_index: Option<&niles_intent::CapabilityIndex>,
     capability_loader: Option<&CapabilityLoader>,
     origin_room: Option<&RoomName>,
@@ -753,6 +800,7 @@ fn assemble_system_prompt_with_optional_capabilities(
     skill_summaries: Option<&[SkillSummary]>,
 ) -> String {
     let mut out = String::from(NILES_SYSTEM_PERSONA);
+    out.push_str(&home_context(home));
 
     if let Some(mem) = user_mem
         && !mem.trim().is_empty()
@@ -1258,6 +1306,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     let system_prompt = assemble_system_prompt_with_optional_capabilities(
         &args.prompt,
+        &cfg.home,
         capability_index.as_ref(),
         capability_loader.as_deref(),
         None,
@@ -1582,6 +1631,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
+        home: Arc::new(cfg.home.clone()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1670,6 +1720,7 @@ struct DispatchCtx {
     history: Arc<CommandWriter>,
     memory: Arc<MemoryStore>,
     skill_store: Option<Arc<SkillStore>>,
+    home: Arc<niles_config::HomeConfig>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1729,6 +1780,7 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                 });
             let system_prompt = assemble_system_prompt_with_optional_capabilities(
                 text,
+                &ctx.home,
                 ctx.capability_index.as_deref(),
                 ctx.capability_loader.as_deref(),
                 origin_room,
@@ -2666,6 +2718,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
+        home: Arc::new(cfg.home.clone()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -3572,6 +3625,19 @@ mod system_prompt_tests {
         fs::write(dir.join("SKILL.md"), content).unwrap();
     }
 
+    fn fixture_home() -> niles_config::HomeConfig {
+        niles_config::HomeConfig {
+            name: "Hjemmet".into(),
+            latitude: 0.0,
+            longitude: 0.0,
+            locale: "da_DK".into(),
+            timezone: "Europe/Copenhagen".into(),
+            country: None,
+            units: None,
+            default_language: None,
+        }
+    }
+
     #[test]
     fn assemble_persona_only_when_loader_is_empty() {
         let tmp = TempDir::new().unwrap();
@@ -3579,6 +3645,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3586,7 +3653,8 @@ mod system_prompt_tests {
             None,
             None,
         );
-        assert_eq!(out, NILES_SYSTEM_PERSONA);
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("# Household context"));
     }
 
     #[test]
@@ -3603,6 +3671,7 @@ mod system_prompt_tests {
         // "weather" doesn't intersect with "lighting" or "Control smart lights"
         let out = assemble_system_prompt(
             "what is the weather today",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3610,7 +3679,8 @@ mod system_prompt_tests {
             None,
             None,
         );
-        assert_eq!(out, NILES_SYSTEM_PERSONA);
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("# Household context"));
     }
 
     #[test]
@@ -3626,6 +3696,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "how does the lighting curve decide brightness",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3660,6 +3731,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "tell me about scenes",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3694,6 +3766,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "tell me about my capability",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3720,6 +3793,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let a = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3729,6 +3803,7 @@ mod system_prompt_tests {
         );
         let b = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3747,6 +3822,7 @@ mod system_prompt_tests {
         let room = RoomName::parse("living_room").unwrap();
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             Some(&room),
@@ -3773,6 +3849,7 @@ mod system_prompt_tests {
         let room = RoomName::parse("kitchen").unwrap();
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             Some(&room),
@@ -3807,6 +3884,7 @@ mod system_prompt_tests {
         let room = RoomName::parse("bedroom").unwrap();
         let a = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             Some(&room),
@@ -3816,6 +3894,7 @@ mod system_prompt_tests {
         );
         let b = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             Some(&room),
@@ -3869,6 +3948,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3876,7 +3956,8 @@ mod system_prompt_tests {
             None,
             None,
         );
-        assert_eq!(out, NILES_SYSTEM_PERSONA);
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("# Household context"));
     }
 
     #[test]
@@ -3886,6 +3967,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3905,6 +3987,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3924,6 +4007,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3952,6 +4036,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3974,6 +4059,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -3981,7 +4067,8 @@ mod system_prompt_tests {
             Some(""),
             None,
         );
-        assert_eq!(out, NILES_SYSTEM_PERSONA);
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
+        assert!(out.contains("# Household context"));
     }
 
     #[test]
@@ -3991,6 +4078,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -4008,6 +4096,7 @@ mod system_prompt_tests {
         let index = build_capability_index(&loader);
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -4040,6 +4129,7 @@ mod system_prompt_tests {
         }];
         let out = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -4086,8 +4176,16 @@ mod system_prompt_tests {
                 last_activity_at: None,
             },
         ];
-        let out =
-            assemble_system_prompt("hello", &index, &loader, None, None, None, Some(&summaries));
+        let out = assemble_system_prompt(
+            "hello",
+            &fixture_home(),
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            Some(&summaries),
+        );
         let zebra_pos = out.find("zebra").unwrap();
         let alpha_pos = out.find("alpha").unwrap();
         assert!(
@@ -4118,6 +4216,7 @@ mod system_prompt_tests {
         }];
         let a = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -4127,6 +4226,7 @@ mod system_prompt_tests {
         );
         let b = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             None,
@@ -4163,6 +4263,7 @@ mod system_prompt_tests {
         }];
         let a = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             Some(&room),
@@ -4172,6 +4273,7 @@ mod system_prompt_tests {
         );
         let b = assemble_system_prompt(
             "turn on the lights",
+            &fixture_home(),
             &index,
             &loader,
             Some(&room),
@@ -4198,6 +4300,7 @@ mod system_prompt_tests {
         }];
         let out = assemble_system_prompt_with_optional_capabilities(
             "turn on the lights",
+            &fixture_home(),
             None,
             None,
             None,
@@ -4217,6 +4320,7 @@ mod system_prompt_tests {
         let room = RoomName::parse("living_room").unwrap();
         let out = assemble_system_prompt_with_optional_capabilities(
             "hello",
+            &fixture_home(),
             None,
             None,
             Some(&room),
@@ -4300,6 +4404,135 @@ mod system_prompt_tests {
                 cfg,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn home_context_includes_all_fields() {
+        let home = fixture_home();
+        let out = home_context(&home);
+        assert!(out.contains("Home: Hjemmet"), "expected home name: {out}");
+        assert!(out.contains("Country: DK"), "expected country DK: {out}");
+        assert!(
+            out.contains("Locale: da_DK"),
+            "expected locale da_DK: {out}"
+        );
+        assert!(
+            out.contains("Timezone: Europe/Copenhagen"),
+            "expected timezone: {out}"
+        );
+        assert!(
+            out.contains("Units: metric (°C, km)"),
+            "expected metric units: {out}"
+        );
+        assert!(
+            out.contains("Spoken language: da"),
+            "expected language da: {out}"
+        );
+    }
+
+    #[test]
+    fn home_context_imperial_for_en_us() {
+        let mut home = fixture_home();
+        home.locale = "en_US".into();
+        let out = home_context(&home);
+        assert!(
+            out.contains("Units: imperial (°F, miles)"),
+            "expected imperial units: {out}"
+        );
+        assert!(out.contains("Country: US"), "expected country US: {out}");
+        assert!(
+            out.contains("Locale: en_US"),
+            "expected locale en_US: {out}"
+        );
+    }
+
+    #[test]
+    fn home_context_unknown_country_when_bare_locale() {
+        let mut home = fixture_home();
+        home.locale = "en".into();
+        home.country = None;
+        let out = home_context(&home);
+        assert!(out.contains("unknown"), "expected unknown country: {out}");
+    }
+
+    #[test]
+    fn home_context_sanitizes_control_characters() {
+        let mut home = fixture_home();
+        home.name = "Hjemmet\n# injected".into();
+        home.locale = "da_DK\r\nignore".into();
+        home.timezone = "Europe/Copenhagen\t# hidden".into();
+        let out = home_context(&home);
+        assert!(
+            out.contains("Home: Hjemmet # injected"),
+            "expected sanitized home field: {out}"
+        );
+        assert!(
+            out.contains("Locale: da_DK ignore"),
+            "expected sanitized locale field: {out}"
+        );
+        assert!(
+            out.contains("Timezone: Europe/Copenhagen # hidden"),
+            "expected sanitized timezone field: {out}"
+        );
+    }
+
+    #[test]
+    fn system_prompt_includes_household_context_after_persona_before_memory() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt(
+            "turn on the lights",
+            &fixture_home(),
+            &index,
+            &loader,
+            None,
+            Some("Alice likes tea."),
+            None,
+            None,
+        );
+        let persona_pos = out.find(NILES_SYSTEM_PERSONA).unwrap();
+        let home_idx = out.find("# Household context").unwrap();
+        let memory_idx = out.find("# User memory").unwrap();
+        assert!(
+            persona_pos < home_idx,
+            "persona should come before household context"
+        );
+        assert!(
+            home_idx < memory_idx,
+            "household context should come before memory"
+        );
+    }
+
+    #[test]
+    fn assemble_system_prompt_is_deterministic_with_home() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let a = assemble_system_prompt(
+            "turn on the lights",
+            &fixture_home(),
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
+        let b = assemble_system_prompt(
+            "turn on the lights",
+            &fixture_home(),
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            a, b,
+            "assemble_system_prompt must be deterministic with home"
         );
     }
 }
