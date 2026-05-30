@@ -868,6 +868,7 @@ fn build_tool_registry(
     if let Some(client) = websearch_client {
         niles_tools::register_web_search_tool(&mut tools, client, websearch_default_num_results);
     }
+    niles_tools::register_datetime_tool(&mut tools, &home.timezone);
     tools
 }
 
