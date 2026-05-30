@@ -40,6 +40,9 @@ pub enum Error {
 
     #[error("weather error: {0}")]
     Weather(String),
+
+    #[error("web search error: {0}")]
+    WebSearch(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

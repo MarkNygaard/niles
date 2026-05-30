@@ -11,6 +11,7 @@ pub mod registry;
 pub mod skill;
 pub mod tool;
 pub mod weather;
+pub mod web_search;
 
 pub use builtin::{
     CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState, GetTimerRemaining,
@@ -26,3 +27,4 @@ pub use skill::{
 };
 pub use tool::{Tool, ToolDescriptor};
 pub use weather::{WeatherTool, register_weather_tools};
+pub use web_search::{WebSearchTool, register_web_search_tool};
