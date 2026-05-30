@@ -1578,7 +1578,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
-        home: cfg.home.clone(),
+        home: Arc::new(cfg.home.clone()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1667,7 +1667,7 @@ struct DispatchCtx {
     history: Arc<CommandWriter>,
     memory: Arc<MemoryStore>,
     skill_store: Option<Arc<SkillStore>>,
-    home: niles_config::HomeConfig,
+    home: Arc<niles_config::HomeConfig>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -2662,7 +2662,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
-        home: cfg.home.clone(),
+        home: Arc::new(cfg.home.clone()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -4355,15 +4355,24 @@ mod system_prompt_tests {
     fn home_context_includes_all_fields() {
         let home = fixture_home();
         let out = home_context(&home);
-        assert!(out.contains("Hjemmet"), "expected home name: {out}");
-        assert!(out.contains("DK"), "expected country DK: {out}");
-        assert!(out.contains("da_DK"), "expected locale da_DK: {out}");
+        assert!(out.contains("Home: Hjemmet"), "expected home name: {out}");
+        assert!(out.contains("Country: DK"), "expected country DK: {out}");
         assert!(
-            out.contains("Europe/Copenhagen"),
+            out.contains("Locale: da_DK"),
+            "expected locale da_DK: {out}"
+        );
+        assert!(
+            out.contains("Timezone: Europe/Copenhagen"),
             "expected timezone: {out}"
         );
-        assert!(out.contains("metric"), "expected metric units: {out}");
-        assert!(out.contains("da"), "expected language da: {out}");
+        assert!(
+            out.contains("Units: metric (°C, km)"),
+            "expected metric units: {out}"
+        );
+        assert!(
+            out.contains("Spoken language: da"),
+            "expected language da: {out}"
+        );
     }
 
     #[test]
@@ -4371,8 +4380,15 @@ mod system_prompt_tests {
         let mut home = fixture_home();
         home.locale = "en_US".into();
         let out = home_context(&home);
-        assert!(out.contains("imperial"), "expected imperial units: {out}");
-        assert!(out.contains("US"), "expected country US: {out}");
+        assert!(
+            out.contains("Units: imperial (°F, miles)"),
+            "expected imperial units: {out}"
+        );
+        assert!(out.contains("Country: US"), "expected country US: {out}");
+        assert!(
+            out.contains("Locale: en_US"),
+            "expected locale en_US: {out}"
+        );
     }
 
     #[test]
