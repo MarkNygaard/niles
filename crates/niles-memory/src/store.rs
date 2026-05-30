@@ -88,6 +88,11 @@ impl MemoryStore {
         })
     }
 
+    /// Whether the store is enabled (has a backing directory).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// No-op store for when memory is disabled.
     pub fn disabled() -> Self {
         Self {
@@ -569,6 +574,23 @@ mod tests {
         }
         let entries = store.load(Target::User).unwrap();
         assert_eq!(entries.len(), 200);
+    }
+
+    #[test]
+    fn is_enabled_true_for_open_store() {
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(MemoryConfig {
+            directory: tmp.path().to_path_buf(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(store.is_enabled());
+    }
+
+    #[test]
+    fn is_enabled_false_for_disabled_store() {
+        let store = MemoryStore::disabled();
+        assert!(!store.is_enabled());
     }
 
     #[test]

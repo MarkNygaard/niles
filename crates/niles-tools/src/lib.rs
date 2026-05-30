@@ -19,7 +19,7 @@ pub use builtin::{
     ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
     QueryCommandHistory, QueryDeviceStateHistory, SetDevice, default_registry,
     register_history_tools, register_memory_tools, register_state_history_tools,
-    register_timer_tools,
+    register_timer_tools, restricted_registry_for_review,
 };
 pub use datetime::{CurrentDatetimeTool, register_datetime_tool};
 pub use error::{Error, Result};

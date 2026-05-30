@@ -39,7 +39,7 @@ pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
-pub use skills::{SkillsConfig, SkillsCuratorConfig};
+pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;

@@ -2,6 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::registry::ToolRegistry;
+use crate::skill::register_skill_tools;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -1033,6 +1034,25 @@ pub fn default_registry<P: Publisher + 'static>(
     reg
 }
 
+/// Build a `ToolRegistry` containing only memory + skill tools.
+/// Used by `niles-bin`'s per-turn background-review fork. Excludes
+/// device, weather, web_search, timer, capability, and history
+/// tools — anything that could take a user-facing action or fan
+/// out to external services.
+pub fn restricted_registry_for_review(
+    memory_store: Option<Arc<niles_memory::MemoryStore>>,
+    skill_store: Option<Arc<niles_skills::SkillStore>>,
+) -> ToolRegistry {
+    let mut reg = ToolRegistry::new();
+    if let Some(s) = memory_store {
+        register_memory_tools(&mut reg, s);
+    }
+    if let Some(s) = skill_store {
+        register_skill_tools(&mut reg, s);
+    }
+    reg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2029,5 +2049,79 @@ mod tests {
         let names: Vec<String> = registry.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"query_device_state_history".to_string()));
         assert!(names.contains(&"device_state_snapshot_at".to_string()));
+    }
+
+    #[test]
+    fn restricted_registry_for_review_with_both_stores_has_exact_tools() {
+        let tmp = TempDir::new().unwrap();
+        let memory = Arc::new(
+            niles_memory::MemoryStore::open(niles_memory::MemoryConfig {
+                directory: tmp.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let skill_tmp = TempDir::new().unwrap();
+        let skill =
+            Arc::new(niles_skills::SkillStore::open(skill_tmp.path(), 100_000, 1_048_576).unwrap());
+        let reg = restricted_registry_for_review(Some(memory), Some(skill));
+        let names: std::collections::HashSet<String> =
+            reg.llm_tools().into_iter().map(|t| t.name).collect();
+        let expected: std::collections::HashSet<String> = [
+            "memory",
+            "mint_skill",
+            "patch_skill",
+            "delete_skill",
+            "view_skill",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn restricted_registry_for_review_with_none_is_empty() {
+        let reg = restricted_registry_for_review(None, None);
+        assert!(reg.llm_tools().is_empty());
+    }
+
+    #[test]
+    fn restricted_registry_for_review_excludes_device_tools() {
+        let tmp = TempDir::new().unwrap();
+        let memory = Arc::new(
+            niles_memory::MemoryStore::open(niles_memory::MemoryConfig {
+                directory: tmp.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let skill_tmp = TempDir::new().unwrap();
+        let skill =
+            Arc::new(niles_skills::SkillStore::open(skill_tmp.path(), 100_000, 1_048_576).unwrap());
+        let reg = restricted_registry_for_review(Some(memory), Some(skill));
+        let names: Vec<String> = reg.llm_tools().into_iter().map(|t| t.name).collect();
+        for excluded in [
+            "get_device_state",
+            "explain_device_state",
+            "list_devices_in_room",
+            "list_all_devices",
+            "set_device",
+            "look_up_capability",
+            "query_command_history",
+            "query_device_state_history",
+            "device_state_snapshot_at",
+            "list_timers",
+            "cancel_timer",
+            "get_timer_remaining",
+            "weather",
+            "web_search",
+        ] {
+            assert!(
+                !names.contains(&excluded.to_string()),
+                "restricted registry should not contain '{}'",
+                excluded
+            );
+        }
     }
 }

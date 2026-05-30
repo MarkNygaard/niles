@@ -37,6 +37,7 @@ use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 mod response;
+mod review;
 mod satellites;
 mod speak;
 mod speakers;
@@ -677,7 +678,7 @@ fn origin_context(room: &RoomName) -> String {
     )
 }
 
-fn home_context(home: &niles_config::HomeConfig) -> String {
+pub(crate) fn home_context(home: &niles_config::HomeConfig) -> String {
     fn prompt_field(value: &str) -> String {
         value
             .chars()
@@ -1142,7 +1143,7 @@ view_skill to read its full body.";
 /// tool-calling loop is testable without spinning up an HTTP server.
 /// `GroqClient` is the only real implementor; tests use a fake.
 #[async_trait::async_trait]
-trait ChatProvider: Send + Sync {
+pub(crate) trait ChatProvider: Send + Sync {
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse>;
 }
 
@@ -1161,15 +1162,16 @@ impl ChatProvider for GroqClient {
 /// content (or empty string if `content` is `None`). Otherwise the
 /// tool calls are dispatched through `registry` and their results are
 /// fed back as `Message::Tool` for the next iteration.
-async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
+pub(crate) async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
     client: &C,
     registry: &ToolRegistry,
     prompt: &str,
     system_prompt: Option<&str>,
     max_iterations: usize,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Vec<review::ToolTrace>)> {
     let llm_tools = registry.llm_tools();
     let mut messages = Vec::new();
+    let mut trace: Vec<review::ToolTrace> = Vec::new();
     if let Some(sys) = system_prompt {
         messages.push(Message::System {
             content: sys.to_string(),
@@ -1188,7 +1190,7 @@ async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
         let resp = client.chat(req).await.context("calling LLM")?;
 
         if resp.tool_calls.is_empty() {
-            return Ok(resp.content.unwrap_or_default());
+            return Ok((resp.content.unwrap_or_default(), trace));
         }
 
         messages.push(Message::Assistant {
@@ -1218,6 +1220,11 @@ async fn run_tool_calling_chat<C: ChatProvider + ?Sized>(
                 name = call.name,
                 body = result.to_string()
             );
+            trace.push(review::ToolTrace {
+                tool: call.name.clone(),
+                arguments: call.arguments.clone(),
+                result: result.clone(),
+            });
             messages.push(Message::Tool {
                 tool_call_id: call.id.clone(),
                 content: result.to_string(),
@@ -1329,7 +1336,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     )
     .await
     {
-        Ok(text) => println!("{text}"),
+        Ok((text, _trace)) => println!("{text}"),
         Err(e) => eprintln!("[niles chat] {e:#}"),
     }
 
@@ -1633,6 +1640,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
+        review: cfg.skills.review.clone(),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1722,6 +1730,7 @@ struct DispatchCtx {
     memory: Arc<MemoryStore>,
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
+    review: niles_config::SkillsReviewConfig,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -1798,8 +1807,30 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
             )
             .await
             {
-                Ok(response) => {
+                Ok((response, tool_trace)) => {
                     println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
+                    let memory_for_review = ctx.memory.is_enabled().then(|| ctx.memory.clone());
+                    let snapshot = review::ReviewSnapshot {
+                        transcript: text.to_string(),
+                        spoken_response: response.clone(),
+                        tool_trace,
+                        user_memory: user_mem_str.clone(),
+                        agent_memory: agent_mem_str.clone(),
+                        skill_summaries: skill_summaries.clone().unwrap_or_default(),
+                    };
+                    if ctx.review.enabled
+                        && (memory_for_review.is_some() || ctx.skill_store.is_some())
+                        && review::is_reviewable_turn(&snapshot)
+                    {
+                        let _handle = review::spawn_skill_review(
+                            snapshot,
+                            memory_for_review,
+                            ctx.skill_store.clone(),
+                            ctx.llm.clone(),
+                            ctx.home.clone(),
+                            ctx.review.max_iters as usize,
+                        );
+                    }
                     return Some(response);
                 }
                 Err(e) => {
@@ -2720,6 +2751,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
+        review: cfg.skills.review.clone(),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -3467,7 +3499,7 @@ mod chat_loop_tests {
             finish_reason: FinishReason::Stop,
         }]);
         let registry = ToolRegistry::new();
-        let out = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
+        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "hello world");
@@ -3496,7 +3528,7 @@ mod chat_loop_tests {
             name: "stub".into(),
             result: json!({"value": 42}),
         }));
-        let out = run_tool_calling_chat(&fake, &registry, "ask the stub", None, 5)
+        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "ask the stub", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "the answer is 42");
@@ -3541,7 +3573,7 @@ mod chat_loop_tests {
             finish_reason: FinishReason::Stop,
         }]);
         let registry = ToolRegistry::new();
-        let out = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
+        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "hi", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "");
@@ -3566,10 +3598,51 @@ mod chat_loop_tests {
             },
         ]);
         let registry = ToolRegistry::new();
-        let out = run_tool_calling_chat(&fake, &registry, "go", None, 5)
+        let (out, _trace) = run_tool_calling_chat(&fake, &registry, "go", None, 5)
             .await
             .unwrap();
         assert_eq!(out, "ok we recovered");
+    }
+
+    #[tokio::test]
+    async fn trace_records_tool_calls() {
+        let fake = FakeChat::new(vec![
+            ChatResponse {
+                content: None,
+                tool_calls: vec![
+                    ToolCall {
+                        id: "c1".into(),
+                        name: "stub".into(),
+                        arguments: json!({"x": 1}),
+                    },
+                    ToolCall {
+                        id: "c2".into(),
+                        name: "stub".into(),
+                        arguments: json!({"x": 2}),
+                    },
+                ],
+                finish_reason: FinishReason::ToolCalls,
+            },
+            ChatResponse {
+                content: Some("done".into()),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Stop,
+            },
+        ]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "stub".into(),
+            result: json!({"ok": true}),
+        }));
+        let (_out, trace) = run_tool_calling_chat(&fake, &registry, "multi", None, 5)
+            .await
+            .unwrap();
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace[0].tool, "stub");
+        assert_eq!(trace[0].arguments, json!({"x": 1}));
+        assert_eq!(trace[0].result, json!({"ok": true}));
+        assert_eq!(trace[1].tool, "stub");
+        assert_eq!(trace[1].arguments, json!({"x": 2}));
     }
 
     #[tokio::test]
