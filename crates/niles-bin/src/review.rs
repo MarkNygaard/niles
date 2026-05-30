@@ -95,6 +95,27 @@ pub fn format_review_user_message(snapshot: &ReviewSnapshot) -> String {
     out
 }
 
+/// Whether the main turn is eligible for background review.
+///
+/// Guard rails here enforce the prompt's "do not capture failures or
+/// sorry turns" rule before spawning any review LLM work.
+pub fn is_reviewable_turn(snapshot: &ReviewSnapshot) -> bool {
+    let spoken = snapshot.spoken_response.trim();
+    if spoken.is_empty() {
+        return false;
+    }
+
+    let spoken_lower = spoken.to_ascii_lowercase();
+    if spoken_lower.contains("sorry") {
+        return false;
+    }
+
+    !snapshot
+        .tool_trace
+        .iter()
+        .any(|t| t.result.get("error").is_some())
+}
+
 /// Spawn a detached background review task.
 ///
 /// Short-circuits (returns a handle that resolves immediately) when
@@ -289,6 +310,53 @@ mod tests {
         };
         let msg = format_review_user_message(&snapshot);
         assert!(msg.contains("- lights: Control lights"));
+    }
+
+    #[test]
+    fn is_reviewable_turn_accepts_normal_success() {
+        let snapshot = ReviewSnapshot {
+            transcript: "hi".into(),
+            spoken_response: "done".into(),
+            tool_trace: vec![ToolTrace {
+                tool: "memory".into(),
+                arguments: json!({"action": "add"}),
+                result: json!({"ok": true}),
+            }],
+            user_memory: None,
+            agent_memory: None,
+            skill_summaries: vec![],
+        };
+        assert!(is_reviewable_turn(&snapshot));
+    }
+
+    #[test]
+    fn is_reviewable_turn_rejects_sorry_response() {
+        let snapshot = ReviewSnapshot {
+            transcript: "hi".into(),
+            spoken_response: "Sorry, something went wrong.".into(),
+            tool_trace: vec![],
+            user_memory: None,
+            agent_memory: None,
+            skill_summaries: vec![],
+        };
+        assert!(!is_reviewable_turn(&snapshot));
+    }
+
+    #[test]
+    fn is_reviewable_turn_rejects_tool_error_trace() {
+        let snapshot = ReviewSnapshot {
+            transcript: "hi".into(),
+            spoken_response: "done".into(),
+            tool_trace: vec![ToolTrace {
+                tool: "memory".into(),
+                arguments: json!({"action": "add"}),
+                result: json!({"error": "boom"}),
+            }],
+            user_memory: None,
+            agent_memory: None,
+            skill_summaries: vec![],
+        };
+        assert!(!is_reviewable_turn(&snapshot));
     }
 
     #[tokio::test]

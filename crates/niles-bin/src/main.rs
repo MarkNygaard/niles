@@ -1809,17 +1809,18 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                 Ok((response, tool_trace)) => {
                     println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
                     let memory_for_review = ctx.memory.is_enabled().then(|| ctx.memory.clone());
+                    let snapshot = review::ReviewSnapshot {
+                        transcript: text.to_string(),
+                        spoken_response: response.clone(),
+                        tool_trace,
+                        user_memory: user_mem_str.clone(),
+                        agent_memory: agent_mem_str.clone(),
+                        skill_summaries: skill_summaries.clone().unwrap_or_default(),
+                    };
                     if ctx.review.enabled
                         && (memory_for_review.is_some() || ctx.skill_store.is_some())
+                        && review::is_reviewable_turn(&snapshot)
                     {
-                        let snapshot = review::ReviewSnapshot {
-                            transcript: text.to_string(),
-                            spoken_response: response.clone(),
-                            tool_trace,
-                            user_memory: user_mem_str.clone(),
-                            agent_memory: agent_mem_str.clone(),
-                            skill_summaries: skill_summaries.clone().unwrap_or_default(),
-                        };
                         let _handle = review::spawn_skill_review(
                             snapshot,
                             memory_for_review,
