@@ -505,6 +505,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
         registry.clone(),
         Arc::new(publisher) as Arc<dyn DevicePublisher>,
         Arc::new(cfg.mqtt.z2m_prefix.clone()),
+        bus.clone(),
     );
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(bind, state).await {
@@ -2695,6 +2696,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         registry.clone(),
         Arc::new(publisher.clone()) as Arc<dyn DevicePublisher>,
         z2m_prefix.clone(),
+        bus.clone(),
     );
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(api_bind, api_state).await {
