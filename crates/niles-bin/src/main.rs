@@ -678,12 +678,30 @@ fn origin_context(room: &RoomName) -> String {
 }
 
 fn home_context(home: &niles_config::HomeConfig) -> String {
+    fn prompt_field(value: &str) -> String {
+        value
+            .chars()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     let units_label = match home.resolved_units() {
         niles_config::Units::Metric => "metric (°C, km)",
         niles_config::Units::Imperial => "imperial (°F, miles)",
     };
     let country = home.resolved_country();
     let language = home.resolved_language();
+    let name = prompt_field(&home.name);
+    let locale = prompt_field(&home.locale);
+    let timezone = prompt_field(&home.timezone);
+    let country = country
+        .as_deref()
+        .map(prompt_field)
+        .unwrap_or_else(|| "unknown".to_string());
+    let language = prompt_field(&language);
     format!(
         "\n\n# Household context\n\n\
          - Home: {name}\n\
@@ -692,10 +710,10 @@ fn home_context(home: &niles_config::HomeConfig) -> String {
          - Timezone: {tz}\n\
          - Units: {units}\n\
          - Spoken language: {lang}\n",
-        name = home.name,
-        country = country.as_deref().unwrap_or("unknown"),
-        locale = home.locale,
-        tz = home.timezone,
+        name = name,
+        country = country,
+        locale = locale,
+        tz = timezone,
         units = units_label,
         lang = language,
     )
@@ -4398,6 +4416,27 @@ mod system_prompt_tests {
         home.country = None;
         let out = home_context(&home);
         assert!(out.contains("unknown"), "expected unknown country: {out}");
+    }
+
+    #[test]
+    fn home_context_sanitizes_control_characters() {
+        let mut home = fixture_home();
+        home.name = "Hjemmet\n# injected".into();
+        home.locale = "da_DK\r\nignore".into();
+        home.timezone = "Europe/Copenhagen\t# hidden".into();
+        let out = home_context(&home);
+        assert!(
+            out.contains("Home: Hjemmet # injected"),
+            "expected sanitized home field: {out}"
+        );
+        assert!(
+            out.contains("Locale: da_DK ignore"),
+            "expected sanitized locale field: {out}"
+        );
+        assert!(
+            out.contains("Timezone: Europe/Copenhagen # hidden"),
+            "expected sanitized timezone field: {out}"
+        );
     }
 
     #[test]
