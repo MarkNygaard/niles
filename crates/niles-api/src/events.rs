@@ -73,8 +73,8 @@ impl WireEvent {
 /// Supports:
 /// - `device_state_changed`, `device_added`, `device_removed` events
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
-/// - Slow-consumer detection: if >256 events queue up, the connection
-///   is closed with `{"type":"close","reason":"slow_consumer"}`
+/// - Slow-consumer detection: if the cumulative number of dropped events
+///   exceeds 256, the connection is closed with `{"type":"close"}`
 pub async fn events_stream(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(|socket| handle_socket(socket, state.event_bus))
 }
@@ -139,10 +139,9 @@ async fn send_json(socket: &mut WebSocket, event: &WireEvent) -> Result<(), ()> 
     let json = serde_json::to_string(event).map_err(|e| {
         warn!("Failed to serialize WireEvent: {e}");
     })?;
-    socket
-        .send(Message::Text(json.into()))
-        .await
-        .map_err(|_| ())
+    socket.send(Message::Text(json.into())).await.map_err(|e| {
+        debug!("WebSocket send failed: {e}");
+    })
 }
 
 #[cfg(test)]
