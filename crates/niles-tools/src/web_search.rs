@@ -304,6 +304,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn whitespace_only_query_errors() {
+        let (_mock, tool) = tool_with(vec![]);
+        let err = tool.execute(json!({"query": "   "})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "web_search" && reason.contains("query must not be empty"))
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_results_from_upstream() {
+        let (_mock, tool) = tool_with(vec![Ok(r#"{"results": []}"#.into())]);
+        let result = tool.execute(json!({"query": "test"})).await.unwrap();
+        assert_eq!(result["query"], "test");
+        let results = result["results"].as_array().unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
     async fn client_error_propagates() {
         let (_mock, tool) = tool_with(vec![Err(niles_websearch::Error::BadStatus {
             status: 500,

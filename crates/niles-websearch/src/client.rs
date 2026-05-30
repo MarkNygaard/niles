@@ -350,4 +350,30 @@ mod tests {
         // Verify there is exactly one '?' separating path and query.
         assert_eq!(url.matches('?').count(), 1);
     }
+
+    #[tokio::test]
+    async fn empty_results_array_ok() {
+        let (_, client) = client_with(vec![Ok(r#"{"results": []}"#.into())]);
+        let resp = client
+            .search(&SearchRequest {
+                query: "test".into(),
+                num_results: 5,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.results.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn missing_results_field_returns_parse_error() {
+        let (_, client) = client_with(vec![Ok(r#"{"query": "test"}"#.into())]);
+        let err = client
+            .search(&SearchRequest {
+                query: "test".into(),
+                num_results: 5,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }));
+    }
 }
