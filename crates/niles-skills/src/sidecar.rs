@@ -15,6 +15,16 @@ pub enum Provenance {
     UserCreated,
 }
 
+/// Lifecycle status of a skill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillStatus {
+    #[default]
+    Active,
+    Stale,
+    Archived,
+}
+
 /// Telemetry sidecar stored as `<skill-dir>/.usage.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Sidecar {
@@ -34,6 +44,8 @@ pub struct Sidecar {
     pub view_count: u64,
     #[serde(default)]
     pub last_viewed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub status: SkillStatus,
 }
 
 impl Sidecar {
@@ -48,6 +60,7 @@ impl Sidecar {
             pinned: false,
             view_count: 0,
             last_viewed_at: None,
+            status: SkillStatus::Active,
         }
     }
 
@@ -92,6 +105,7 @@ mod tests {
             pinned: true,
             view_count: 2,
             last_viewed_at: Some(Utc.with_ymd_and_hms(2026, 1, 4, 12, 0, 0).unwrap()),
+            status: SkillStatus::Stale,
         };
 
         let tmp = TempDir::new().unwrap();
@@ -110,6 +124,18 @@ mod tests {
         assert!(!sidecar.pinned);
         assert!(sidecar.last_patched_at.is_none());
         assert!(sidecar.last_used_at.is_none());
+    }
+
+    #[test]
+    fn back_compat_missing_status_field() {
+        let json = r#"{"created_at":"2026-01-01T12:00:00Z","provenance":"agent-created"}"#;
+        let sidecar: Sidecar = serde_json::from_str(json).unwrap();
+        assert_eq!(sidecar.status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn skill_status_default_is_active() {
+        assert_eq!(SkillStatus::default(), SkillStatus::Active);
     }
 
     #[test]

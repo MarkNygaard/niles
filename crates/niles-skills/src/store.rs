@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::scan;
-use crate::sidecar::{Provenance, Sidecar};
+use crate::sidecar::{Provenance, Sidecar, SkillStatus};
 use crate::util::atomic_write;
 
 /// A loaded skill with metadata, body, and telemetry.
@@ -31,6 +31,15 @@ pub struct SkillSummary {
     pub version: String,
     pub pinned: bool,
     pub provenance: Provenance,
+    pub status: SkillStatus,
+    pub last_activity_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillStatusFilter {
+    /// Excludes Archived. Default for the system-prompt list.
+    Default,
+    All,
 }
 
 /// Write-side storage for skills.
@@ -238,6 +247,7 @@ impl SkillStore {
 
             sidecar.patch_count += 1;
             sidecar.last_patched_at = Some(Utc::now());
+            sidecar.status = SkillStatus::Active;
             sidecar.write(&dir.join(".usage.json"))?;
 
             Ok(())
@@ -310,7 +320,14 @@ impl SkillStore {
 
     /// List skill summaries (metadata only, no body) in alphabetical order.
     /// Silently skips malformed skills rather than failing the whole list.
+    /// Excludes Archived skills by default.
     pub fn list_summaries(&self) -> Result<Vec<SkillSummary>> {
+        self.list_summaries_filtered(SkillStatusFilter::Default)
+    }
+
+    /// List skill summaries with a status filter.
+    /// Silently skips malformed skills rather than failing the whole list.
+    pub fn list_summaries_filtered(&self, filter: SkillStatusFilter) -> Result<Vec<SkillSummary>> {
         let mut summaries = Vec::new();
         let entries = match read_dir(&self.root) {
             Ok(it) => it,
@@ -388,12 +405,19 @@ impl SkillStore {
                 }
             };
 
+            if filter == SkillStatusFilter::Default && sidecar.status == SkillStatus::Archived {
+                continue;
+            }
+
+            let last_activity_at = sidecar.latest_activity_at();
             summaries.push(SkillSummary {
                 name: meta.name,
                 description: meta.description,
                 version: meta.version,
                 pinned: sidecar.pinned,
                 provenance: sidecar.provenance,
+                status: sidecar.status,
+                last_activity_at,
             });
         }
 
@@ -435,6 +459,7 @@ impl SkillStore {
                 Err(e) => return Err(e),
             };
             update(&mut sidecar);
+            sidecar.status = SkillStatus::Active;
             if let Err(e) = sidecar.write(&sidecar_path) {
                 tracing::warn!(skill = name, error = %e, "failed to write sidecar");
             }
@@ -457,6 +482,50 @@ impl SkillStore {
             sidecar.pinned = pinned;
             sidecar.write(&dir.join(".usage.json"))?;
             Ok(())
+        })
+    }
+
+    /// Set the lifecycle status on a skill.
+    pub fn set_status(&self, name: &str, status: SkillStatus) -> Result<()> {
+        validate_skill_name(name)?;
+        self.with_store_lock(|| {
+            let dir = self.root.join(name);
+            if !dir.exists() {
+                return Err(Error::NotFound {
+                    name: name.to_string(),
+                });
+            }
+            let mut sidecar = Sidecar::read(&dir.join(".usage.json"))?;
+            sidecar.status = status;
+            sidecar.write(&dir.join(".usage.json"))?;
+            Ok(())
+        })
+    }
+
+    /// Atomically read the sidecar, run the closure, and write back
+    /// only when the closure returns a different status.
+    /// Returns `Some(new_status)` if a write occurred, `None` otherwise.
+    pub fn update_status<F>(&self, name: &str, f: F) -> Result<Option<SkillStatus>>
+    where
+        F: FnOnce(&Sidecar) -> Option<SkillStatus>,
+    {
+        validate_skill_name(name)?;
+        self.with_store_lock(|| {
+            let dir = self.root.join(name);
+            if !dir.exists() {
+                return Err(Error::NotFound {
+                    name: name.to_string(),
+                });
+            }
+            let mut sidecar = Sidecar::read(&dir.join(".usage.json"))?;
+            if let Some(new_status) = f(&sidecar)
+                && sidecar.status != new_status
+            {
+                sidecar.status = new_status;
+                sidecar.write(&dir.join(".usage.json"))?;
+                return Ok(Some(new_status));
+            }
+            Ok(None)
         })
     }
 
@@ -1029,9 +1098,13 @@ mod tests {
         assert_eq!(summaries[0].name, "alpha");
         assert_eq!(summaries[0].description, "A desc");
         assert_eq!(summaries[0].version, "0.1.0");
+        assert_eq!(summaries[0].status, SkillStatus::Active);
+        assert!(summaries[0].last_activity_at.is_none());
         assert_eq!(summaries[1].name, "zebra");
         assert_eq!(summaries[1].description, "Z desc");
         assert_eq!(summaries[1].version, "0.2.0");
+        assert_eq!(summaries[1].status, SkillStatus::Active);
+        assert!(summaries[1].last_activity_at.is_none());
     }
 
     #[test]
@@ -1052,10 +1125,14 @@ mod tests {
         let user = summaries.iter().find(|s| s.name == "user-skill").unwrap();
         assert!(user.pinned);
         assert_eq!(user.provenance, Provenance::UserCreated);
+        assert_eq!(user.status, SkillStatus::Active);
+        assert!(user.last_activity_at.is_none());
 
         let agent = summaries.iter().find(|s| s.name == "agent-skill").unwrap();
         assert!(!agent.pinned);
         assert_eq!(agent.provenance, Provenance::AgentCreated);
+        assert_eq!(agent.status, SkillStatus::Active);
+        assert!(agent.last_activity_at.is_none());
     }
 
     #[test]
@@ -1190,5 +1267,157 @@ mod tests {
         let skill = store.load("s").unwrap();
         assert_eq!(skill.sidecar.view_count, 0);
         assert!(skill.sidecar.last_viewed_at.is_none());
+    }
+
+    #[test]
+    fn list_summaries_default_excludes_archived() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("active-skill", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .create("archived-skill", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .set_status("archived-skill", SkillStatus::Archived)
+            .unwrap();
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "active-skill");
+    }
+
+    #[test]
+    fn list_summaries_filtered_all_includes_archived() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("active-skill", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .create("archived-skill", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store
+            .set_status("archived-skill", SkillStatus::Archived)
+            .unwrap();
+
+        let summaries = store
+            .list_summaries_filtered(SkillStatusFilter::All)
+            .unwrap();
+        assert_eq!(summaries.len(), 2);
+    }
+
+    #[test]
+    fn set_status_writes_to_disk() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store.set_status("s", SkillStatus::Stale).unwrap();
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Stale);
+    }
+
+    #[test]
+    fn set_status_not_found_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        let err = store.set_status("nope", SkillStatus::Archived).unwrap_err();
+        assert!(matches!(err, Error::NotFound { name } if name == "nope"));
+    }
+
+    #[test]
+    fn bump_use_revives_stale_skill() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store.set_status("s", SkillStatus::Stale).unwrap();
+        store.bump_use("s").unwrap();
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn bump_view_revives_archived_skill() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store.set_status("s", SkillStatus::Archived).unwrap();
+        store.bump_view("s").unwrap();
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn patch_revives_stale_skill() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        store.set_status("s", SkillStatus::Stale).unwrap();
+        store.patch("s", "new body").unwrap();
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn update_status_changes_and_returns_new() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let result = store
+            .update_status("s", |sidecar| {
+                assert_eq!(sidecar.status, SkillStatus::Active);
+                Some(SkillStatus::Stale)
+            })
+            .unwrap();
+        assert_eq!(result, Some(SkillStatus::Stale));
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Stale);
+    }
+
+    #[test]
+    fn update_status_returns_none_when_closure_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let result = store.update_status("s", |_sidecar| None).unwrap();
+        assert_eq!(result, None);
+        let skill = store.load("s").unwrap();
+        assert_eq!(skill.sidecar.status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn update_status_returns_none_when_already_target() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        store
+            .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
+            .unwrap();
+        let result = store
+            .update_status("s", |_sidecar| Some(SkillStatus::Active))
+            .unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn update_status_not_found_errors() {
+        let tmp = TempDir::new().unwrap();
+        let store = store(&tmp);
+        let err = store
+            .update_status("nope", |_sidecar| Some(SkillStatus::Archived))
+            .unwrap_err();
+        assert!(matches!(err, Error::NotFound { name } if name == "nope"));
     }
 }
