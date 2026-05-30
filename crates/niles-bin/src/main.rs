@@ -21,7 +21,7 @@ use niles_scheduler::{
     SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
     classify_action, color_temp_at, routine_brightness_at, should_fire_today,
 };
-use niles_skills::{SkillStore, SkillSummary};
+use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
 use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::{LookUpCapability, ToolRegistry};
@@ -769,13 +769,7 @@ fn assemble_system_prompt_with_optional_capabilities(
     if let Some(summaries) = skill_summaries
         && !summaries.is_empty()
     {
-        out.push_str("\n\n# Available skills\n\n");
-        for s in summaries {
-            out.push_str(&format!(
-                "- {} (v{}) — {}\n",
-                s.name, s.version, s.description,
-            ));
-        }
+        render_skills_section(&mut out, summaries);
     }
 
     if let (Some(index), Some(loader)) = (capability_index, capability_loader) {
@@ -841,6 +835,63 @@ fn build_skill_store(cfg: &niles_config::SkillsConfig) -> Option<Arc<SkillStore>
             );
             None
         }
+    }
+}
+
+fn spawn_skill_curator(
+    store: Arc<SkillStore>,
+    curator_cfg: niles_config::SkillsCuratorConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !curator_cfg.enabled {
+        tracing::info!("skill curator disabled by config");
+        return None;
+    }
+    let interval = Duration::from_secs(curator_cfg.interval_hours * 3600);
+    let thresholds = niles_skills::curator::CuratorThresholds {
+        stale_after: chrono::Duration::days(curator_cfg.stale_after_days as i64),
+        archive_after: chrono::Duration::days(curator_cfg.archive_after_days as i64),
+    };
+    Some(tokio::spawn(async move {
+        // Defer the first sweep so startup work isn't competed with.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        loop {
+            match niles_skills::curator::apply_automatic_transitions(&store, Utc::now(), thresholds)
+            {
+                Ok(r) => tracing::info!(
+                    examined = r.examined,
+                    became_stale = r.became_stale,
+                    became_archived = r.became_archived,
+                    revived = r.revived,
+                    skipped_pinned = r.skipped_pinned,
+                    skipped_user_created = r.skipped_user_created,
+                    "skill curator swept",
+                ),
+                Err(e) => tracing::warn!("skill curator sweep failed: {e:#}"),
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }))
+}
+
+fn render_skills_section(out: &mut String, summaries: &[SkillSummary]) {
+    out.push_str("\n\n# Available skills\n\n");
+    let now = Utc::now();
+    for s in summaries {
+        let annotation = if s.status == SkillStatus::Stale {
+            match s.last_activity_at {
+                Some(last) => {
+                    let days = (now - last).num_days().max(0);
+                    format!(" [stale: {days} days unused]")
+                }
+                None => " [stale]".to_string(),
+            }
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "- {} (v{}) — {}{}\n",
+            s.name, s.version, s.description, annotation,
+        ));
     }
 }
 
@@ -2440,6 +2491,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let memory_store = build_memory_store(&cfg.memory);
     let skill_store = build_skill_store(&cfg.skills);
+    let _skill_curator_handle = skill_store
+        .clone()
+        .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
@@ -3907,6 +3961,8 @@ mod system_prompt_tests {
             version: "0.1.0".into(),
             pinned: false,
             provenance: niles_skills::Provenance::UserCreated,
+            status: SkillStatus::Active,
+            last_activity_at: None,
         }];
         let out = assemble_system_prompt(
             "turn on the lights",
@@ -3943,6 +3999,8 @@ mod system_prompt_tests {
                 version: "1.0.0".into(),
                 pinned: false,
                 provenance: niles_skills::Provenance::UserCreated,
+                status: SkillStatus::Active,
+                last_activity_at: None,
             },
             SkillSummary {
                 name: "alpha".into(),
@@ -3950,6 +4008,8 @@ mod system_prompt_tests {
                 version: "1.0.0".into(),
                 pinned: false,
                 provenance: niles_skills::Provenance::UserCreated,
+                status: SkillStatus::Active,
+                last_activity_at: None,
             },
         ];
         let out =
@@ -3979,6 +4039,8 @@ mod system_prompt_tests {
             version: "0.1.0".into(),
             pinned: false,
             provenance: niles_skills::Provenance::UserCreated,
+            status: SkillStatus::Active,
+            last_activity_at: None,
         }];
         let a = assemble_system_prompt(
             "turn on the lights",
@@ -4022,6 +4084,8 @@ mod system_prompt_tests {
             version: "0.1.0".into(),
             pinned: false,
             provenance: niles_skills::Provenance::UserCreated,
+            status: SkillStatus::Active,
+            last_activity_at: None,
         }];
         let a = assemble_system_prompt(
             "turn on the lights",
@@ -4055,6 +4119,8 @@ mod system_prompt_tests {
             version: "0.1.0".into(),
             pinned: false,
             provenance: niles_skills::Provenance::UserCreated,
+            status: SkillStatus::Active,
+            last_activity_at: None,
         }];
         let out = assemble_system_prompt_with_optional_capabilities(
             "turn on the lights",
@@ -4086,5 +4152,80 @@ mod system_prompt_tests {
         );
         assert!(out.contains("# Current context"));
         assert!(out.contains("living_room"));
+    }
+
+    #[test]
+    fn system_prompt_renders_stale_annotation() {
+        let fixed_now = chrono::Utc::now();
+        let summaries = vec![SkillSummary {
+            name: "stale-skill".into(),
+            description: "Does something".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::AgentCreated,
+            status: SkillStatus::Stale,
+            last_activity_at: Some(fixed_now - chrono::Duration::days(35)),
+        }];
+        let mut out = String::new();
+        render_skills_section(&mut out, &summaries);
+        assert!(out.contains("[stale: 35 days unused]"));
+    }
+
+    #[test]
+    fn system_prompt_omits_annotation_for_active() {
+        let summaries = vec![SkillSummary {
+            name: "active-skill".into(),
+            description: "Does something".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::AgentCreated,
+            status: SkillStatus::Active,
+            last_activity_at: None,
+        }];
+        let mut out = String::new();
+        render_skills_section(&mut out, &summaries);
+        assert!(!out.contains("[stale:"));
+        assert!(out.contains("- active-skill (v0.1.0) — Does something"));
+    }
+
+    #[test]
+    fn system_prompt_renders_stale_without_days_when_no_activity() {
+        let summaries = vec![SkillSummary {
+            name: "stale-skill".into(),
+            description: "Does something".into(),
+            version: "0.1.0".into(),
+            pinned: false,
+            provenance: niles_skills::Provenance::AgentCreated,
+            status: SkillStatus::Stale,
+            last_activity_at: None,
+        }];
+        let mut out = String::new();
+        render_skills_section(&mut out, &summaries);
+        assert!(out.contains("[stale]"));
+        assert!(!out.contains("days unused"));
+    }
+
+    #[test]
+    fn spawn_skill_curator_disabled_returns_none() {
+        let cfg = niles_config::SkillsCuratorConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        // No tokio runtime needed — the enabled branch returns None
+        // before any spawn.
+        assert!(
+            spawn_skill_curator(
+                Arc::new(
+                    niles_skills::SkillStore::open(
+                        std::env::temp_dir().join("niles-test-curator-noop"),
+                        100_000,
+                        1_048_576,
+                    )
+                    .unwrap()
+                ),
+                cfg,
+            )
+            .is_none()
+        );
     }
 }
