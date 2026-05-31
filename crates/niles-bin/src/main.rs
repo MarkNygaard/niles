@@ -19,6 +19,7 @@ use niles_memory::MemoryStore;
 use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
+use niles_notifications::NotificationCenter;
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
@@ -35,6 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -901,6 +903,63 @@ fn build_tool_registry(
     tools
 }
 
+/// Build a `NotificationCenter` from the `[notifications]` section.
+fn build_notification_center(
+    cfg: &niles_config::NotificationsConfig,
+    timezone_str: &str,
+) -> NotificationCenter {
+    let mut center = NotificationCenter::new(cfg.capacity);
+    if let Some(quiet) = cfg.to_quiet_hours_config(timezone_str) {
+        center = center.with_quiet_hours(quiet);
+    }
+    center
+}
+
+/// Wyoming-backed delivery for the notification center.
+struct WyomingDelivery {
+    piper: Arc<niles_tts::PiperClient>,
+    sender: niles_wyoming::WyomingSender,
+    speakers: Arc<speakers::SpeakerRegistry>,
+    satellites: Arc<SatelliteRegistry>,
+    peer_index: Mutex<HashMap<RoomName, SocketAddr>>,
+}
+
+impl niles_notifications::NotificationDelivery for WyomingDelivery {
+    fn deliver(
+        &self,
+        text: &str,
+        room: Option<&str>,
+        _priority: niles_notifications::Priority,
+    ) -> bool {
+        let Some(room_str) = room else {
+            return false;
+        };
+        let Ok(room_name) = RoomName::parse(room_str) else {
+            return false;
+        };
+        let peer = {
+            let index = self.peer_index.lock().unwrap_or_else(|e| e.into_inner());
+            index.get(&room_name).copied()
+        };
+        let Some(peer) = peer else {
+            return false;
+        };
+        let piper = self.piper.clone();
+        let sender = self.sender.clone();
+        let speakers = self.speakers.clone();
+        let satellites = self.satellites.clone();
+        let text = text.to_string();
+        tokio::spawn(async move {
+            if let Err(e) =
+                crate::speak::speak_back(&piper, &sender, peer, &text, &speakers, &satellites).await
+            {
+                tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
+            }
+        });
+        true
+    }
+}
+
 /// Build a `MemoryStore` from the `[memory]` section.
 /// Returns `None` when no directory is configured or when opening the store fails.
 fn build_memory_store(cfg: &niles_config::MemoryConfig) -> Option<Arc<MemoryStore>> {
@@ -1697,11 +1756,52 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         niles_tools::register_escalate_tool(&mut tools);
     }
 
-    let tools = Arc::new(tools);
-
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
+
+    let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
+    let speakers = Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers));
+
+    // Notification center
+    let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
+    let peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let wyoming_delivery = Arc::new(WyomingDelivery {
+        piper: piper.clone(),
+        sender: server.sender(),
+        speakers: speakers.clone(),
+        satellites: satellites.clone(),
+        peer_index: Mutex::new(HashMap::new()),
+    });
+    notifications.set_delivery(wyoming_delivery);
+    let notifications = Arc::new(notifications);
+    niles_tools::register_notification_tools(&mut tools, notifications.clone());
+
+    // Notification subscriber for timer expiry.
+    let _timer_notification_handle = {
+        let center = notifications.clone();
+        let satellites = satellites.clone();
+        let mut bus_rx = bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match bus_rx.recv().await {
+                    Ok(Event::TimerFired { name, origin, .. }) => {
+                        let room = satellites.room_for(origin).map(|r| r.as_str().to_string());
+                        let text = match name {
+                            Some(n) => format!("'{n}' timer finished"),
+                            None => "Timer finished".to_string(),
+                        };
+                        center.deliver(text, room, niles_notifications::Priority::Important);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    _ => {}
+                }
+            }
+        })
+    };
+
+    let tools = Arc::new(tools);
 
     let mode_note = if args.dry_run {
         " (dry-run: nothing will be published)"
@@ -1719,7 +1819,6 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let wyoming_sender = server.sender();
     let server_handle = tokio::spawn(server.run());
     let mut tracker = SessionTracker::new();
-    let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let ctx = DispatchCtx {
         publisher,
         registry: registry.clone(),
@@ -1728,19 +1827,20 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         tracker: Arc::new(ManualModeTracker::new()),
         scenes: Arc::new(SceneStore::new()),
         timers,
-        speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
+        speakers,
         llm,
         tier2,
         tools,
         capability_loader,
         capability_index,
-        satellites,
+        satellites: satellites.clone(),
         device_index: Arc::clone(&device_index),
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
+        notifications: Some(notifications.clone()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1778,6 +1878,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
             biased;
             incoming = rx.recv() => match incoming {
                 Some(incoming) => {
+                    if let Some(room) = satellites.room_for(incoming.from) {
+                        peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
+                    }
                     if let Some(session) = tracker.feed(incoming) {
                         // Same unbounded fan-out as voice-tap — fine
                         // for a dev tool, replaced by a bounded
@@ -1811,6 +1914,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 /// Shared by every spawned dispatch task. Cheaply cloneable —
 /// `MqttPublisher`, `Arc`, `bool` all clone in constant time.
 #[derive(Clone)]
+#[allow(dead_code)]
 struct DispatchCtx {
     publisher: MqttPublisher,
     registry: Arc<DeviceRegistry>,
@@ -1832,6 +1936,7 @@ struct DispatchCtx {
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
     review: niles_config::SkillsReviewConfig,
+    notifications: Option<Arc<NotificationCenter>>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -2835,6 +2940,28 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         niles_tools::register_escalate_tool(&mut tools);
     }
 
+    let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
+        .await
+        .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
+
+    let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
+    let speakers = Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers));
+
+    // Notification center
+    let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
+    let peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let wyoming_delivery = Arc::new(WyomingDelivery {
+        piper: piper.clone(),
+        sender: server.sender(),
+        speakers: speakers.clone(),
+        satellites: satellites.clone(),
+        peer_index: Mutex::new(HashMap::new()),
+    });
+    notifications.set_delivery(wyoming_delivery);
+    let notifications = Arc::new(notifications);
+    niles_tools::register_notification_tools(&mut tools, notifications.clone());
+
     let tools = Arc::new(tools);
 
     // Timer driver: shares the `timers` Arc registered with the LLM
@@ -2842,6 +2969,29 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // timers set via voice in `serve` actually fire. See
     // `spawn_timer_driver` for behavior + the 60 s sleep-cap caveat.
     let timer_handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
+
+    // Notification subscriber for timer expiry.
+    let _timer_notification_handle = {
+        let center = notifications.clone();
+        let satellites = satellites.clone();
+        let mut bus_rx = bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match bus_rx.recv().await {
+                    Ok(Event::TimerFired { name, origin, .. }) => {
+                        let room = satellites.room_for(origin).map(|r| r.as_str().to_string());
+                        let text = match name {
+                            Some(n) => format!("'{n}' timer finished"),
+                            None => "Timer finished".to_string(),
+                        };
+                        center.deliver(text, room, niles_notifications::Priority::Important);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    _ => {}
+                }
+            }
+        })
+    };
 
     // HTTP API
     let api_state = AppState::new(
@@ -2857,9 +3007,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     });
 
     // Wyoming + STT + Intent dispatch
-    let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
-        .await
-        .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
     let wyoming_sender = server.sender();
     let server_handle = tokio::spawn(server.run());
 
@@ -2886,7 +3033,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     let mut session_tracker = SessionTracker::new();
-    let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let ctx = DispatchCtx {
         publisher: publisher.clone(),
         registry: registry.clone(),
@@ -2895,19 +3041,20 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tracker: tracker.clone(),
         scenes,
         timers,
-        speakers: Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers)),
+        speakers,
         llm,
         tier2,
         tools,
         capability_loader,
         capability_index,
-        satellites,
+        satellites: satellites.clone(),
         device_index,
         history: command_writer,
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
+        notifications: Some(notifications.clone()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -2919,6 +3066,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             biased;
             incoming = rx.recv() => match incoming {
                 Some(incoming) => {
+                    if let Some(room) = satellites.room_for(incoming.from) {
+                        peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
+                    }
                     if let Some(session) = session_tracker.feed(incoming) {
                         spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session);
                     }
