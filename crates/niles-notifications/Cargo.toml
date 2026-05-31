@@ -9,3 +9,14 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+chrono-tz.workspace = true
+rand.workspace = true
+tracing.workspace = true
+niles-core.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

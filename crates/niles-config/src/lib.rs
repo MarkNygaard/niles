@@ -15,6 +15,7 @@ pub mod lighting;
 pub mod llm;
 pub mod memory;
 pub mod mqtt;
+pub mod notifications;
 pub mod persistence;
 pub mod recognition;
 pub mod satellites;
@@ -38,6 +39,7 @@ pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config};
 pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
+pub use notifications::NotificationsConfig;
 pub use persistence::PersistenceConfig;
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use satellites::{SatelliteConfig, SatellitesConfig};
@@ -71,6 +73,8 @@ pub struct Config {
     pub history: HistoryConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
     #[serde(default)]
@@ -128,6 +132,7 @@ impl Config {
         self.ambient_lights.validate()?;
         self.history.validate()?;
         self.memory.validate()?;
+        self.notifications.validate()?;
         self.skills.validate()?;
         self.web_search.validate()?;
         self.wyoming.validate()?;

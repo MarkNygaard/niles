@@ -5,16 +5,19 @@
 //! tool surface the Tier-1 LLM can call. See `builtin` for the five
 //! built-ins this crate ships with.
 
+pub mod announce;
 pub mod builtin;
 pub mod datetime;
 pub mod error;
 pub mod escalate;
+pub mod list_recent_notifications;
 pub mod registry;
 pub mod skill;
 pub mod tool;
 pub mod weather;
 pub mod web_search;
 
+pub use announce::{AnnounceTool, register_announce_tool};
 pub use builtin::{
     CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState, GetTimerRemaining,
     ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
@@ -25,6 +28,18 @@ pub use builtin::{
 pub use datetime::{CurrentDatetimeTool, register_datetime_tool};
 pub use error::{Error, Result};
 pub use escalate::{EscalateToTier2Tool, register_escalate_tool};
+pub use list_recent_notifications::{
+    ListRecentNotificationsTool, register_list_recent_notifications_tool,
+};
+
+/// Register both notification tools (announce + list_recent) on a registry.
+pub fn register_notification_tools(
+    reg: &mut ToolRegistry,
+    center: std::sync::Arc<niles_notifications::NotificationCenter>,
+) {
+    register_announce_tool(reg, center.clone());
+    register_list_recent_notifications_tool(reg, center);
+}
 pub use registry::ToolRegistry;
 pub use skill::{
     DeleteSkillTool, MintSkillTool, PatchSkillTool, ViewSkillTool, register_skill_tools,

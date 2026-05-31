@@ -15,5 +15,6 @@ toml.workspace = true
 niles-core.workspace = true
 niles-scheduler.workspace = true
 niles-recognition.workspace = true
+niles-notifications.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
