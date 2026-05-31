@@ -24,7 +24,11 @@ impl RecognitionConfig {
                     reason: "model_path must not be empty if present".into(),
                 });
             }
-            if !p.is_absolute() {
+            // Use `has_root` instead of `is_absolute` so the same
+            // config TOML works cross-platform — `/var/niles/ecapa.onnx`
+            // is rooted (and thus accepted) on both Linux and Windows,
+            // even though Windows `is_absolute` requires a drive prefix.
+            if !p.has_root() {
                 return Err(Error::InvalidSection {
                     section: "recognition",
                     reason: "model_path must be absolute".into(),

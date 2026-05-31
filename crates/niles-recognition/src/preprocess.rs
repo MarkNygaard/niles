@@ -65,7 +65,12 @@ pub fn log_mel(pcm_f32: &[f32]) -> Vec<f32> {
                 let power = c.re * c.re + c.im * c.im;
                 energy += power * mel_fb[[mel_idx, freq_idx]];
             }
-            mel_energies[mel_idx * n_frames + frame_idx] = energy.ln_1p();
+            // SpeechBrain / librosa default: ln(energy + ε) with a tiny
+            // floor. NOT ln(1+energy) — the two diverge dramatically
+            // for the small magnitudes the mel filterbank produces and
+            // would feed out-of-distribution features to any model
+            // trained on the standard preprocessing.
+            mel_energies[mel_idx * n_frames + frame_idx] = (energy + 1e-10).ln();
         }
     }
 
