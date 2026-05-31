@@ -508,6 +508,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
         registry.clone(),
         Arc::new(publisher) as Arc<dyn DevicePublisher>,
         Arc::new(cfg.mqtt.z2m_prefix.clone()),
+        bus.clone(),
     );
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(bind, state).await {
@@ -516,7 +517,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     });
 
     eprintln!(
-        "Z2M source running on {prefix}/+/+; API listening on http://{bind}\n  GET  /devices   /rooms/<room>   /healthz\n  POST /rooms/<room>/<device>\nPress Ctrl-C to exit.",
+        "Z2M source running on {prefix}/+/+; API listening on http://{bind}\n  GET  /devices   /rooms/<room>   /healthz\n  WS   /events/stream\n  POST /rooms/<room>/<device>\nPress Ctrl-C to exit.",
         prefix = cfg.mqtt.z2m_prefix
     );
 
@@ -2841,6 +2842,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         registry.clone(),
         Arc::new(publisher.clone()) as Arc<dyn DevicePublisher>,
         z2m_prefix.clone(),
+        bus.clone(),
     );
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(api_bind, api_state).await {
@@ -2858,6 +2860,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let mode_note = if args.dry_run { " (dry-run)" } else { "" };
     eprintln!(
         "niles serve\n  Z2M:     {prefix}/+/+\n  API:     http://{api_bind}\n  \
+         WS:      ws://{api_bind}/events/stream\n  \
          Wyoming: tcp://{wyoming_bind}\n  STT:     {stt_url} ({model})\n  \
          Curve:   tick every {tick}s in {tz}{mode}\nPress Ctrl-C to exit.\n",
         prefix = cfg.mqtt.z2m_prefix,

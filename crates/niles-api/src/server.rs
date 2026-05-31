@@ -17,6 +17,7 @@ pub fn router(state: AppState) -> Router {
         .route("/devices", get(handlers::list_devices))
         .route("/rooms/{room}", get(handlers::devices_in_room))
         .route("/rooms/{room}/{device}", post(handlers::set_device))
+        .route("/events/stream", get(crate::events::events_stream))
         .with_state(state)
 }
 
@@ -37,7 +38,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use niles_core::{
-        Device, DeviceClass, DeviceId, DeviceName, DeviceRegistry, DeviceState, RoomName,
+        Device, DeviceClass, DeviceId, DeviceName, DeviceRegistry, DeviceState, EventBus, RoomName,
     };
     use serde_json::Value;
     use std::sync::{Arc, Mutex};
@@ -78,7 +79,18 @@ mod tests {
             Arc::new(DeviceRegistry::new()),
             Arc::new(MockPublisher::default()),
             Arc::new("zigbee2mqtt".into()),
+            EventBus::default(),
         )
+    }
+
+    fn app_with(registry: Arc<DeviceRegistry>, publisher: Arc<dyn DevicePublisher>) -> Router {
+        let state = AppState::new(
+            registry,
+            publisher,
+            Arc::new("zigbee2mqtt".into()),
+            EventBus::default(),
+        );
+        router(state)
     }
 
     fn make_device(room: &str, name: &str) -> Device {
@@ -286,8 +298,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -309,8 +320,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -331,8 +341,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -354,8 +363,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -376,8 +384,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -397,8 +404,7 @@ mod tests {
     async fn post_to_missing_device_returns_not_found() {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -415,8 +421,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_sensor("kitchen", "thermometer"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -433,8 +438,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_switch("hallway", "dimmer"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -451,8 +455,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(app, "/rooms/office/desk_lamp", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -464,8 +467,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         // 0 and 100 are the inclusive bounds.
         for &pct in [0, 100].iter() {
@@ -489,8 +491,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -507,8 +508,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         // 1000 and 10000 are the inclusive bounds.
         for &k in [1000, 10000].iter() {
@@ -532,8 +532,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -550,8 +549,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -568,8 +566,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         // Hyphen is rejected by DeviceName validation.
         let (status, _body) = post(
@@ -587,8 +584,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(registry, mock.clone(), Arc::new("zigbee2mqtt".into()));
-        let app = router(state);
+        let app = app_with(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -604,12 +600,7 @@ mod tests {
     async fn post_failing_publisher_returns_bad_gateway() {
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
-        let state = AppState::new(
-            registry,
-            Arc::new(FailingPublisher),
-            Arc::new("zigbee2mqtt".into()),
-        );
-        let app = router(state);
+        let app = app_with(registry, Arc::new(FailingPublisher));
 
         let (status, _body) = post(
             app,
