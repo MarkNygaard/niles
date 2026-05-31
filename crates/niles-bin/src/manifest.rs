@@ -124,7 +124,7 @@ fn is_valid_id(s: &str) -> bool {
     true
 }
 
-/// Hand-rolled validation: `^[a-z]+(\.[a-z-]+)*$`
+/// Hand-rolled validation: `^[a-z]+(\.[a-z][a-z-]*)*$`
 fn is_valid_category(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.is_empty() {
@@ -141,7 +141,7 @@ fn is_valid_category(s: &str) -> bool {
         i += 1;
     }
 
-    // remaining segments: (\.[a-z-]+)*
+    // remaining segments: (\.[a-z][a-z-]*)*
     while i < bytes.len() {
         if bytes[i] != b'.' {
             return false;
