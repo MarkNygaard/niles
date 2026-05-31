@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Catalog {
     #[serde(default)]
     pub preamble: Preamble,
@@ -12,6 +13,7 @@ pub struct Catalog {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Preamble {
     #[serde(default)]
     pub text: String,
@@ -317,6 +319,36 @@ category = "voice.lighting"
 summary = "x"
 since_pr = 1
 foo = "bar"
+"#;
+        assert!(Catalog::from_toml(raw).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_top_level_field() {
+        let raw = r#"
+foo = "bar"
+
+[[feature]]
+id = "test"
+category = "voice.lighting"
+summary = "x"
+since_pr = 1
+"#;
+        assert!(Catalog::from_toml(raw).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_preamble_field() {
+        let raw = r#"
+[preamble]
+text = "hello"
+extra = "nope"
+
+[[feature]]
+id = "test"
+category = "voice.lighting"
+summary = "x"
+since_pr = 1
 "#;
         assert!(Catalog::from_toml(raw).is_err());
     }
