@@ -12,6 +12,7 @@ pub mod capabilities;
 pub mod error;
 pub mod history;
 pub mod home;
+pub mod integrations;
 pub mod lighting;
 pub mod llm;
 pub mod memory;
@@ -38,6 +39,7 @@ pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
+pub use integrations::{ArchonConfigDto, IntegrationsConfig};
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config};
 pub use memory::MemoryConfig;
@@ -85,6 +87,8 @@ pub struct Config {
     pub skills: SkillsConfig,
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    #[serde(default)]
+    pub integrations: IntegrationsConfig,
     pub wyoming: WyomingConfig,
     pub stt: SttConfig,
     pub tts: TtsConfig,
@@ -144,6 +148,7 @@ impl Config {
         self.presence.validate()?;
         self.skills.validate()?;
         self.web_search.validate()?;
+        self.integrations.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
         self.tts.validate()?;
@@ -1999,5 +2004,116 @@ actions = [{{ do = "notify", body = "hi" }}]
             valid_toml().trim_end_matches('\n')
         );
         assert!(Config::load_from_str(&toml).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Integrations section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn integrations_section_absent_is_none() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.integrations.archon.is_none());
+    }
+
+    #[test]
+    fn integrations_archon_section_parses() {
+        let toml = format!(
+            "{}\n[integrations.archon]\nbase_url = \"https://archon.mnygaard.io\"\ncodebase_id = \"fb05cf4e-07da-41cc-bba9-6d770107a7cb\"\ncwd = \"/tmp\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let archon = cfg.integrations.archon.as_ref().unwrap();
+        assert_eq!(archon.base_url, "https://archon.mnygaard.io");
+        assert_eq!(archon.codebase_id, "fb05cf4e-07da-41cc-bba9-6d770107a7cb");
+        assert_eq!(archon.cwd, Some("/tmp".into()));
+        assert_eq!(archon.timeout_seconds, 15);
+    }
+
+    #[test]
+    fn integrations_archon_bad_base_url_rejected() {
+        let toml = format!(
+            "{}\n[integrations.archon]\nbase_url = \"no-scheme\"\ncodebase_id = \"x\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "integrations.archon",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn integrations_archon_empty_codebase_id_rejected() {
+        let toml = format!(
+            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "integrations.archon",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn integrations_archon_timeout_zero_rejected() {
+        let toml = format!(
+            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"x\"\ntimeout_seconds = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "integrations.archon",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn integrations_archon_timeout_too_large_rejected() {
+        let toml = format!(
+            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"x\"\ntimeout_seconds = 121\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "integrations.archon",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn integrations_archon_empty_cwd_rejected() {
+        let toml = format!(
+            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"x\"\ncwd = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "integrations.archon",
+                ..
+            }
+        ));
     }
 }

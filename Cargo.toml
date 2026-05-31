@@ -73,3 +73,4 @@ niles-websearch = { path = "crates/niles-websearch" }
 niles-notifications = { path = "crates/niles-notifications" }
 niles-presence = { path = "crates/niles-presence" }
 niles-automations = { path = "crates/niles-automations" }
+niles-integration-archon = { path = "crates/niles-integration-archon" }

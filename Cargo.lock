@@ -1182,6 +1182,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-history",
+ "niles-integration-archon",
  "niles-intent",
  "niles-llm",
  "niles-memory",
@@ -1257,6 +1258,16 @@ dependencies = [
 [[package]]
 name = "niles-integration-archon"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "urlencoding",
+]
 
 [[package]]
 name = "niles-intent"
@@ -1414,6 +1425,7 @@ dependencies = [
  "niles-capabilities",
  "niles-core",
  "niles-history",
+ "niles-integration-archon",
  "niles-llm",
  "niles-memory",
  "niles-mqtt",

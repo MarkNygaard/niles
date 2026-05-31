@@ -6,6 +6,7 @@
 //! built-ins this crate ships with.
 
 pub mod announce;
+pub mod archon;
 pub mod builtin;
 pub mod datetime;
 pub mod error;
@@ -42,6 +43,10 @@ pub fn register_notification_tools(
     register_announce_tool(reg, center.clone());
     register_list_recent_notifications_tool(reg, center);
 }
+pub use archon::{
+    CancelWorkflowRunTool, GetWorkflowRunTool, ListWorkflowRunsTool, ListWorkflowsTool,
+    RunWorkflowTool, register_archon_tools,
+};
 pub use registry::ToolRegistry;
 pub use skill::{
     DeleteSkillTool, MintSkillTool, PatchSkillTool, ViewSkillTool, register_skill_tools,
