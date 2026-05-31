@@ -58,13 +58,13 @@ pub fn log_mel(pcm_f32: &[f32]) -> Vec<f32> {
             .expect("FFT process failed");
 
         // Power spectrum (computed once per freq bin)
-        let mut power_spec = vec![0.0_f32; n_freq_bins];
+        let mut power_spec = [0.0f32; N_FFT / 2 + 1];
         for freq_idx in 0..n_freq_bins {
             let c = spectrum[freq_idx];
             power_spec[freq_idx] = c.re * c.re + c.im * c.im;
         }
 
-        // Apply mel filterbank (no intermediate power vec)
+        // Apply mel filterbank
         for mel_idx in 0..N_MEL {
             let mut energy = 0.0_f32;
             for freq_idx in 0..n_freq_bins {
