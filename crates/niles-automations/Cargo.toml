@@ -9,3 +9,15 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+niles-core.workspace = true
+niles-config.workspace = true
+serde.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }

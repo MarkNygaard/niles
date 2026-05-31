@@ -1154,6 +1154,17 @@ dependencies = [
 [[package]]
 name = "niles-automations"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "niles-config",
+ "niles-core",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "niles-bin"
@@ -1166,6 +1177,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "niles-api",
+ "niles-automations",
  "niles-capabilities",
  "niles-config",
  "niles-core",
