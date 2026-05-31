@@ -39,9 +39,9 @@ fn sine_wave_2s() -> Vec<i16> {
     (0..samples)
         .map(|i| {
             let t = i as f32 / sample_rate as f32;
-            (t * freq * 2.0 * std::f32::consts::PI).sin() * (i16::MAX as f32 * 0.5)
+            let sample = (t * freq * 2.0 * std::f32::consts::PI).sin() * (i16::MAX as f32 * 0.5);
+            sample as i16
         })
-        .map(|f| f as i16)
         .collect()
 }
 
