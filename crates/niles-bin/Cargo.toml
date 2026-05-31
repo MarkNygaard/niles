@@ -42,6 +42,7 @@ niles-skills.workspace = true
 niles-weather.workspace = true
 niles-websearch.workspace = true
 niles-notifications.workspace = true
+niles-presence.workspace = true
 niles-automations.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
