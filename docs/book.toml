@@ -5,10 +5,10 @@ description = "Documentation for Niles — Neural Intelligence, Lightweight Edge
 language = "en"
 multilingual = false
 src = "src"
-create-missing = false
 
 [build]
 build-dir = "../target/mdbook"
+create-missing = false
 
 [output.html]
 default-theme = "navy"
