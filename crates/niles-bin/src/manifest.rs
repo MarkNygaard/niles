@@ -61,7 +61,7 @@ impl Catalog {
                 errors.push(format!("{label}: category is empty"));
             } else if !is_valid_category(&feature.category) {
                 errors.push(format!(
-                    "{label}: category `{}` is invalid (must match ^[a-z]+(\\.[a-z-]+)*$)",
+                    "{label}: category `{}` is invalid (must match ^[a-z]+(\\.[a-z][a-z-]*)*$)",
                     feature.category
                 ));
             }
@@ -72,6 +72,9 @@ impl Catalog {
                 let summary_len = feature.summary.chars().count();
                 if summary_len > 120 {
                     errors.push(format!("{label}: summary is {summary_len} chars (max 120)"));
+                }
+                if feature.summary.contains('\n') || feature.summary.contains('\r') {
+                    errors.push(format!("{label}: summary contains newline"));
                 }
                 if feature.summary.contains('|') {
                     errors.push(format!("{label}: summary contains '|'"));
@@ -544,6 +547,69 @@ since_pr = 1
             }],
         };
         catalog.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_64_char_id_passes() {
+        let catalog = Catalog {
+            preamble: Preamble::default(),
+            features: vec![Feature {
+                id: "a".repeat(64),
+                category: "a.b".into(),
+                summary: "x".into(),
+                phrasings: vec![],
+                since_pr: 1,
+                hardware_required: false,
+            }],
+        };
+        catalog.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_valid_multi_segment_category_passes() {
+        for good in [
+            "a",
+            "a.b",
+            "a.b.c",
+            "voice.lighting",
+            "api.read",
+            "ambient.manual-mode",
+        ] {
+            let catalog = Catalog {
+                preamble: Preamble::default(),
+                features: vec![Feature {
+                    id: "test".into(),
+                    category: good.into(),
+                    summary: "x".into(),
+                    phrasings: vec![],
+                    since_pr: 1,
+                    hardware_required: false,
+                }],
+            };
+            catalog.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn validate_rejects_newline_in_summary() {
+        for bad in ["has \n newline", "has \r carriage return", "has \r\n crlf"] {
+            let catalog = Catalog {
+                preamble: Preamble::default(),
+                features: vec![Feature {
+                    id: "test".into(),
+                    category: "a.b".into(),
+                    summary: bad.into(),
+                    phrasings: vec![],
+                    since_pr: 1,
+                    hardware_required: false,
+                }],
+            };
+            let err = catalog.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("summary contains newline"),
+                "expected newline error for {bad:?}"
+            );
+        }
     }
 
     // ── renderer tests ─────────────────────────────────────────────
