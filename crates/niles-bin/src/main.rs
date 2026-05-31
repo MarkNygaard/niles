@@ -921,7 +921,7 @@ struct WyomingDelivery {
     sender: niles_wyoming::WyomingSender,
     speakers: Arc<speakers::SpeakerRegistry>,
     satellites: Arc<SatelliteRegistry>,
-    peer_index: Mutex<HashMap<RoomName, SocketAddr>>,
+    peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>>,
 }
 
 impl niles_notifications::NotificationDelivery for WyomingDelivery {
@@ -1772,7 +1772,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         sender: server.sender(),
         speakers: speakers.clone(),
         satellites: satellites.clone(),
-        peer_index: Mutex::new(HashMap::new()),
+        peer_index: peer_index.clone(),
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);
@@ -2956,7 +2956,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         sender: server.sender(),
         speakers: speakers.clone(),
         satellites: satellites.clone(),
-        peer_index: Mutex::new(HashMap::new()),
+        peer_index: peer_index.clone(),
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);

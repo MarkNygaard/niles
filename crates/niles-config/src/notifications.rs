@@ -188,4 +188,18 @@ mod tests {
         };
         assert!(cfg.to_quiet_hours_config("Not/A/Tz").is_none());
     }
+
+    #[test]
+    fn disabled_quiet_hours_returns_config_with_enabled_false() {
+        let cfg = NotificationsConfig {
+            capacity: 50,
+            quiet_hours: Some(QuietHoursDto {
+                enabled: false,
+                start: "22:00".into(),
+                end: "07:00".into(),
+            }),
+        };
+        let quiet = cfg.to_quiet_hours_config("Europe/Copenhagen").unwrap();
+        assert!(!quiet.enabled);
+    }
 }

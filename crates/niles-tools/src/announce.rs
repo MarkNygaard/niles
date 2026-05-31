@@ -44,7 +44,7 @@ impl Tool for AnnounceTool {
                     },
                     "room": {
                         "type": "string",
-                        "description": "Optional target room name. If omitted, the system chooses a default."
+                        "description": "Optional target room name. If omitted, the notification is recorded but not spoken (no target satellite is known)."
                     }
                 },
                 "required": ["text", "priority"],

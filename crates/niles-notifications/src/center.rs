@@ -23,7 +23,12 @@ pub struct NotificationCenter {
 
 impl NotificationCenter {
     /// Create a new center with the given ring-buffer capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `capacity` is zero.
     pub fn new(capacity: usize) -> Self {
+        debug_assert!(capacity > 0, "NotificationCenter capacity must be > 0");
         Self {
             buffer: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
@@ -54,7 +59,7 @@ impl NotificationCenter {
     ///
     /// * `Routine` → suppressed if quiet hours are active (floored to
     ///   `Important` and recorded as `Suppressed`).
-    /// * `Important` → delivered unless quiet hours are active.
+    /// * `Important` → delivered even during quiet hours.
     /// * `Urgent` → always delivered.
     pub fn deliver(
         &self,

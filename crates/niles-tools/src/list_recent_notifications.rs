@@ -150,6 +150,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zero_limit_clamps_to_one() {
+        let center = make_center();
+        center.deliver("first", None, niles_notifications::Priority::Routine);
+        center.deliver("second", None, niles_notifications::Priority::Routine);
+        let tool = ListRecentNotificationsTool::new(center);
+        let result = tool.execute(json!({"limit": 0})).await.unwrap();
+        let arr = result["notifications"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["text"], "second");
+    }
+
+    #[tokio::test]
     async fn negative_limit_defaults_to_ten() {
         let center = make_center();
         for i in 0..15 {
