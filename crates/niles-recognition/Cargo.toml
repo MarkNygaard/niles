@@ -14,3 +14,12 @@ ort.workspace = true
 realfft.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+fs2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true

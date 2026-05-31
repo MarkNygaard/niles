@@ -46,6 +46,8 @@ serde_yaml = "0.9"
 tempfile = "3"
 fs2 = "0.4"
 urlencoding = "2"
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+rand_chacha = "0.9"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
@@ -65,5 +67,6 @@ niles-capabilities = { path = "crates/niles-capabilities" }
 niles-history = { path = "crates/niles-history" }
 niles-memory = { path = "crates/niles-memory" }
 niles-skills = { path = "crates/niles-skills" }
+niles-recognition = { path = "crates/niles-recognition" }
 niles-weather = { path = "crates/niles-weather" }
 niles-websearch = { path = "crates/niles-websearch" }

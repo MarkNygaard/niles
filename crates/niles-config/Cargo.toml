@@ -14,5 +14,6 @@ serde.workspace = true
 toml.workspace = true
 niles-core.workspace = true
 niles-scheduler.workspace = true
+niles-recognition.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
