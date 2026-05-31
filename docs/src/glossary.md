@@ -54,5 +54,5 @@ The local text-to-speech (TTS) engine that renders Niles's text responses into a
 ## Memory
 Persistent user-specific or agent-specific notes stored across sessions. Accessed via `memory-add`, `memory-remove`, `memory-replace`, and `memory-view`.
 
-## Tier-2 escalation
+## Tier 2 escalation
 The hand-off from Tier 1 to Tier 2 via the `escalate_to_tier2` tool, carrying full conversation context and capability references.

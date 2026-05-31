@@ -29,4 +29,4 @@ The system prompt is assembled in a stable-to-volatile order so that common comm
 
 After every Tier 1 turn, a background-review fork evaluates the conversation for lessons learned. If a command was mis-routed, a skill could have handled it, or the user corrected Niles, the fork extracts a suggestion and queues it for review. The user can accept, edit, or reject these suggestions via the `skill-background-review` tool.
 
-For the deep dive on every subsystem, see the canonical [ARCHITECTURE.md](../../ARCHITECTURE.md) at the repo root.
+For the deep dive on every subsystem, see the canonical [Overall architecture](./architecture.md) chapter.

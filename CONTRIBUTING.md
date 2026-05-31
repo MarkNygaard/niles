@@ -41,4 +41,4 @@ Smaller PRs (bug fixes, new tools, additional integrations) are welcome directly
 
 ## Code of conduct
 
-Project participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Project participation is governed by [CODE_OF_CONDUCT.md](https://github.com/MarkNygaard/niles/blob/main/CODE_OF_CONDUCT.md).

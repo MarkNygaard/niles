@@ -44,7 +44,9 @@ jobs:
         run: cargo build --workspace --release
 
       - name: Install mdBook
-        run: cargo install mdbook --locked --version ^0.4
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: '0.4.52'
 
       - name: Build docs site
         run: mdbook build docs
