@@ -7,17 +7,9 @@ spec:
     spec:
       containers:
         - name: niles
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
           volumeMounts:
             - name: data
               mountPath: /data
       volumes:
         - name: data
-          persistentVolumeClaim:
-            claimName: niles-data
+          emptyDir: {}

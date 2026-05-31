@@ -94,16 +94,17 @@ kubectl logs -n niles -l app.kubernetes.io/name=niles
 deploy/kustomize/
 ├── base/
 │   ├── kustomization.yaml      # Base resources
-│   ├── deployment.yaml         # Niles Deployment (placeholder image, emptyDir data)
+│   ├── deployment.yaml         # Niles Deployment (placeholder image, config volume)
 │   ├── service.yaml            # ClusterIP Service (8080 + 10300)
 │   └── configmap.yaml          # Placeholder ConfigMap
 ├── overlays/
 │   ├── production/
 │   │   ├── kustomization.yaml  # Production patches + configMapGenerator
 │   │   ├── niles.toml          # Aarhus home config, da_DK locale
-│   │   └── deployment-prod.yaml  # Bumps resources + replaces emptyDir with PVC
+│   │   └── deployment-prod.yaml  # Bumps resources + adds PVC data volume
 │   └── dev/
 │       ├── kustomization.yaml  # Dev patches + configMapGenerator
+│       ├── deployment-dev.yaml # Adds emptyDir data volume
 │       └── niles.toml          # Dev-cluster config
 ```
 

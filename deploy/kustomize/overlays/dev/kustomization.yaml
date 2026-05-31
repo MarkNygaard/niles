@@ -17,6 +17,9 @@ configMapGenerator:
     files:
       - niles.toml
 
+patches:
+  - path: deployment-dev.yaml
+
 labels:
   - pairs:
       app.kubernetes.io/instance: dev
