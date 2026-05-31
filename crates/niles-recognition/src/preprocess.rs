@@ -57,13 +57,18 @@ pub fn log_mel(pcm_f32: &[f32]) -> Vec<f32> {
         fft.process(&mut time_buf, &mut spectrum)
             .expect("FFT process failed");
 
-        // Apply mel filterbank directly from spectrum (no intermediate power vec)
+        // Power spectrum (computed once per freq bin)
+        let mut power_spec = [0.0f32; N_FFT / 2 + 1];
+        for freq_idx in 0..n_freq_bins {
+            let c = spectrum[freq_idx];
+            power_spec[freq_idx] = c.re * c.re + c.im * c.im;
+        }
+
+        // Apply mel filterbank
         for mel_idx in 0..N_MEL {
             let mut energy = 0.0_f32;
             for freq_idx in 0..n_freq_bins {
-                let c = spectrum[freq_idx];
-                let power = c.re * c.re + c.im * c.im;
-                energy += power * mel_fb[[mel_idx, freq_idx]];
+                energy += power_spec[freq_idx] * mel_fb[[mel_idx, freq_idx]];
             }
             // SpeechBrain / librosa default: ln(energy + ε) with a tiny
             // floor. NOT ln(1+energy) — the two diverge dramatically
@@ -113,11 +118,11 @@ fn mel_filterbank() -> &'static Array2<f32> {
             .collect();
 
         for mel_idx in 0..N_MEL {
+            let left = bin_points[mel_idx];
+            let center = bin_points[mel_idx + 1];
+            let right = bin_points[mel_idx + 2];
             for freq_idx in 0..n_freq_bins {
                 let f = freq_idx as f32;
-                let left = bin_points[mel_idx];
-                let center = bin_points[mel_idx + 1];
-                let right = bin_points[mel_idx + 2];
 
                 if f >= left && f <= center && center != left {
                     fb[[mel_idx, freq_idx]] = (f - left) / (center - left);

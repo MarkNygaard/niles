@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: niles
+
+resources:
+  - ../../base
+
+images:
+  - name: niles
+    newName: ghcr.io/marknygaard/niles
+    newTag: v0.1.0
+
+configMapGenerator:
+  - name: niles-config
+    behavior: replace
+    files:
+      - niles.toml
+
+patches:
+  - path: deployment-prod.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/instance: production
+    includeSelectors: true
