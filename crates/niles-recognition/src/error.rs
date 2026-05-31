@@ -43,6 +43,24 @@ pub enum Error {
 
     #[error("inference returned unexpected embedding length {actual}; expected 192")]
     UnexpectedEmbeddingLength { actual: usize },
+
+    #[error("expected 192-dim embedding, got {actual}")]
+    WrongEmbeddingDim { actual: usize },
+
+    #[error("invalid speaker `{name}`: {reason}")]
+    InvalidName { name: String, reason: String },
+
+    #[error("I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("JSON failed: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("enrollment store is locked by another process")]
+    Locked,
+
+    #[error("speaker `{speaker}` not found")]
+    NotFound { speaker: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

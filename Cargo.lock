@@ -1210,6 +1210,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "niles-core",
+ "niles-recognition",
  "niles-scheduler",
  "serde",
  "thiserror",
@@ -1302,9 +1303,16 @@ version = "0.1.0"
 name = "niles-recognition"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "fs2",
  "ndarray 0.16.1",
  "ort",
+ "rand",
+ "rand_chacha",
  "realfft",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
 ]

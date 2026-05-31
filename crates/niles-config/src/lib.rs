@@ -39,7 +39,7 @@ pub use llm::{LlmConfig, LlmTier2Config};
 pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
-pub use recognition::RecognitionConfig;
+pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use satellites::{SatelliteConfig, SatellitesConfig};
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
@@ -1636,6 +1636,104 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
             err,
             Error::InvalidSection {
                 section: "recognition",
+                ..
+            }
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Recognition matcher section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn recognition_matcher_section_absent_defaults() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!((cfg.recognition.matcher.threshold - 0.65).abs() < 1e-6);
+        assert_eq!(
+            cfg.recognition.matcher.strategy,
+            MatchStrategy::MaxSimilarity
+        );
+        assert!(cfg.recognition.matcher.enrollment_dir.is_none());
+    }
+
+    #[test]
+    fn recognition_matcher_threshold_parses() {
+        let toml = format!(
+            "{}\n[recognition.matcher]\nthreshold = 0.8\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert!((cfg.recognition.matcher.threshold - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rejects_threshold_above_one() {
+        let toml = format!(
+            "{}\n[recognition.matcher]\nthreshold = 1.5\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "recognition.matcher",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_threshold_below_zero() {
+        let toml = format!(
+            "{}\n[recognition.matcher]\nthreshold = -0.1\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "recognition.matcher",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn recognition_matcher_strategy_parses_centroid() {
+        let toml = format!(
+            "{}\n[recognition.matcher]\nstrategy = \"centroid\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.recognition.matcher.strategy, MatchStrategy::Centroid);
+    }
+
+    #[test]
+    fn rejects_unknown_matcher_field() {
+        let toml = format!(
+            "{}\n[recognition.matcher]\nunknown_field = 42\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        assert!(Config::load_from_str(&toml).is_err());
+    }
+
+    #[test]
+    fn rejects_relative_enrollment_dir() {
+        let toml = format!(
+            "{}\n[recognition.matcher]\nenrollment_dir = \"./enrolled\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "recognition.matcher",
                 ..
             }
         ));
