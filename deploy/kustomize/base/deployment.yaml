@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: niles
+  labels:
+    app.kubernetes.io/component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: niles
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: niles
+        app.kubernetes.io/component: app
+    spec:
+      containers:
+        - name: niles
+          image: niles:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --config
+            - /etc/niles/niles.toml
+          ports:
+            - name: http-api
+              containerPort: 8080
+              protocol: TCP
+            - name: wyoming
+              containerPort: 10300
+              protocol: TCP
+          env:
+            - name: NILES_MQTT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: mqtt-username
+            - name: NILES_MQTT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: mqtt-password
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: groq-api-key
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: openai-api-key
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http-api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/niles
+              readOnly: true
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: niles-config
+        - name: data
+          emptyDir: {}
