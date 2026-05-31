@@ -221,9 +221,9 @@ struct RunsListResp {
 struct RunWire {
     id: String,
     status: String,
-    #[serde(default)]
+    #[serde(default, alias = "workflowName")]
     workflow_name: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "userMessage")]
     user_message: Option<String>,
 }
 
@@ -411,6 +411,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_workflow_runs_accepts_camel_case_fields() {
+        let (_, client) = client_with(vec![Ok(
+            r#"{"runs":[{"id":"r1","status":"done","workflowName":"deploy","userMessage":"hi"}]}"#
+                .into(),
+        )]);
+        let runs = client.list_workflow_runs(5).await.unwrap();
+        assert_eq!(runs[0].workflow_name, Some("deploy".into()));
+        assert_eq!(runs[0].message_preview, Some("hi".into()));
+    }
+
+    #[tokio::test]
     async fn get_workflow_run_parses_run_envelope() {
         let (_, client) = client_with(vec![Ok(r#"{"run":{"id":"r1","status":"done","workflow_name":"deploy","user_message":"hi"},"events":[{"step":"build"}]}"#.into())]);
         let run = client.get_workflow_run("r1").await.unwrap();
@@ -418,6 +429,14 @@ mod tests {
         assert_eq!(run.status, "done");
         assert_eq!(run.workflow_name, Some("deploy".into()));
         assert_eq!(run.steps.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_workflow_run_accepts_camel_case_fields() {
+        let (_, client) = client_with(vec![Ok(r#"{"run":{"id":"r1","status":"done","workflowName":"deploy","userMessage":"hi"},"events":[]}"#.into())]);
+        let run = client.get_workflow_run("r1").await.unwrap();
+        assert_eq!(run.workflow_name, Some("deploy".into()));
+        assert_eq!(run.message_preview, Some("hi".into()));
     }
 
     #[tokio::test]
