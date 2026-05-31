@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use ort::ep::ExecutionProvider;
 use ort::session::Session;
-use ort::value::{Tensor, ValueType};
+use ort::value::{Tensor, TensorElementType, ValueType};
 
 use crate::error::{Error, Result};
 use crate::preprocess;
@@ -67,7 +67,14 @@ impl EcapaTdnnEmbedder {
         let input_name = input.name().to_string();
 
         let input_kind = match input.dtype() {
-            ValueType::Tensor { shape, .. } => {
+            ValueType::Tensor { ty, shape, .. } => {
+                if *ty != TensorElementType::Float32 {
+                    return Err(Error::UnsupportedInputType {
+                        path: cfg.model_path.clone(),
+                        actual: ty.as_str(),
+                    });
+                }
+
                 let dims: Vec<i64> = shape.iter().copied().collect();
                 match dims.len() {
                     2 => InputKind::RawPcm,
@@ -100,7 +107,13 @@ impl EcapaTdnnEmbedder {
         let output_name = output.name().to_string();
 
         match output.dtype() {
-            ValueType::Tensor { shape, .. } => {
+            ValueType::Tensor { ty, shape, .. } => {
+                if *ty != TensorElementType::Float32 {
+                    return Err(Error::UnexpectedOutputType {
+                        path: cfg.model_path.clone(),
+                        actual: ty.as_str(),
+                    });
+                }
                 if shape.is_empty() {
                     return Err(Error::UnexpectedOutputShape {
                         path: cfg.model_path.clone(),
@@ -190,6 +203,12 @@ impl EcapaTdnnEmbedder {
             .map_err(|source| Error::Inference { source })?;
 
         let mut embedding: Vec<f32> = view.iter().copied().collect();
+        if embedding.len() != self.embedding_dim() {
+            return Err(Error::UnexpectedEmbeddingLength {
+                actual: embedding.len(),
+            });
+        }
+
         l2_normalize(&mut embedding);
         Ok(embedding)
     }

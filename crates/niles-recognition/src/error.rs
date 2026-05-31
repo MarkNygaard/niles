@@ -20,6 +20,18 @@ pub enum Error {
     #[error("model {} has unsupported input shape {actual:?}; expected [_, samples] or [_, 80, frames]", path.display())]
     UnsupportedInputShape { path: PathBuf, actual: Vec<i64> },
 
+    #[error("model {} has unsupported input type {actual}; expected f32", path.display())]
+    UnsupportedInputType {
+        path: PathBuf,
+        actual: &'static str,
+    },
+
+    #[error("model {} has unexpected output type {actual}; expected f32", path.display())]
+    UnexpectedOutputType {
+        path: PathBuf,
+        actual: &'static str,
+    },
+
     #[error("expected 16000 Hz audio, got {got}")]
     WrongSampleRate { got: u32 },
 
@@ -34,6 +46,9 @@ pub enum Error {
         #[source]
         source: ort::Error,
     },
+
+    #[error("inference returned unexpected embedding length {actual}; expected 192")]
+    UnexpectedEmbeddingLength { actual: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
