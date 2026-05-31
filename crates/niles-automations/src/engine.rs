@@ -65,9 +65,11 @@ impl AutomationEngine {
     pub async fn handle_event(&self, event: &Event, now: DateTime<Utc>) {
         for rule in &self.rules {
             if !rule.enabled {
+                tracing::debug!("automation '{}' disabled, skipping", rule.id);
                 continue;
             }
             if !rule.trigger.matches(event) {
+                tracing::debug!("automation '{}' trigger mismatch", rule.id);
                 continue;
             }
             if !rule
@@ -258,6 +260,140 @@ mod tests {
     }
 
     // ---- dispatch tests --------------------------------------------
+
+    #[tokio::test]
+    async fn trigger_mismatch_no_dispatch() {
+        let registry = Arc::new(DeviceRegistry::new());
+        let id = device_id("kitchen", "motion");
+        let target = device_id("kitchen", "light");
+        registry.upsert(make_device(&id, true));
+
+        let rule = Rule {
+            id: "r1".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::DeviceState {
+                device: Some(id.clone()),
+                room: None,
+                on: Some(true),
+            },
+            conditions: vec![],
+            actions: vec![Action::SetDevice {
+                device: target.clone(),
+                on: Some(true),
+                brightness: None,
+                kelvin: None,
+            }],
+        };
+
+        let (engine, sink, _notifier) = engine_with_rules(vec![rule], registry);
+        // Wrong device in event — trigger should not match
+        let ev = Event::DeviceStateChanged {
+            id: device_id("hallway", "motion"),
+            state: state(true),
+        };
+        engine.handle_event(&ev, fixed_now()).await;
+
+        assert!(sink.calls().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mixed_actions_fire_both() {
+        let registry = Arc::new(DeviceRegistry::new());
+        let id = device_id("kitchen", "motion");
+        let target = device_id("kitchen", "light");
+        registry.upsert(make_device(&id, true));
+
+        let rule = Rule {
+            id: "r1".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::DeviceState {
+                device: Some(id.clone()),
+                room: None,
+                on: Some(true),
+            },
+            conditions: vec![],
+            actions: vec![
+                Action::SetDevice {
+                    device: target.clone(),
+                    on: Some(true),
+                    brightness: Some(50),
+                    kelvin: None,
+                },
+                Action::Notify {
+                    body: "motion detected".into(),
+                    room: Some("kitchen".into()),
+                    priority: Priority::Important,
+                },
+            ],
+        };
+
+        let (engine, sink, notifier) = engine_with_rules(vec![rule], registry);
+        let ev = Event::DeviceStateChanged {
+            id,
+            state: state(true),
+        };
+        engine.handle_event(&ev, fixed_now()).await;
+
+        assert_eq!(sink.calls().await.len(), 1);
+        assert_eq!(sink.calls().await[0].0, target);
+
+        let note_calls = notifier.calls().await;
+        assert_eq!(note_calls.len(), 1);
+        assert_eq!(note_calls[0].0, "motion detected");
+    }
+
+    #[tokio::test]
+    async fn missing_notifier_does_not_block_set_device() {
+        let registry = Arc::new(DeviceRegistry::new());
+        let id = device_id("kitchen", "motion");
+        let target = device_id("kitchen", "light");
+        registry.upsert(make_device(&id, true));
+
+        let rule = Rule {
+            id: "r1".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::DeviceState {
+                device: Some(id.clone()),
+                room: None,
+                on: Some(true),
+            },
+            conditions: vec![],
+            actions: vec![
+                Action::SetDevice {
+                    device: target.clone(),
+                    on: Some(true),
+                    brightness: None,
+                    kelvin: None,
+                },
+                Action::Notify {
+                    body: "motion!".into(),
+                    room: None,
+                    priority: Priority::Routine,
+                },
+            ],
+        };
+
+        let sink = Arc::new(RecordingSink::new());
+        let engine = Arc::new(AutomationEngine::new(
+            vec![rule],
+            registry,
+            Tz::UTC,
+            sink.clone(),
+            None::<Arc<dyn Notifier>>,
+        ));
+
+        let ev = Event::DeviceStateChanged {
+            id,
+            state: state(true),
+        };
+        engine.handle_event(&ev, fixed_now()).await;
+
+        assert_eq!(sink.calls().await.len(), 1);
+        assert_eq!(sink.calls().await[0].0, target);
+    }
 
     #[tokio::test]
     async fn matching_trigger_no_conditions_dispatches() {

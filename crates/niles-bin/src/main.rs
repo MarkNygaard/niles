@@ -2777,8 +2777,10 @@ fn build_automation_engine(
         }
     }
     if rules.is_empty() {
+        tracing::info!("no valid automations loaded — automation engine disabled");
         return None;
     }
+    tracing::info!("automation engine loaded with {} rule(s)", rules.len());
     Some(Arc::new(AutomationEngine::new(
         rules, registry, tz, sink, notifier,
     )))
