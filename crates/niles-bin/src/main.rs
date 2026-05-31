@@ -39,12 +39,14 @@ use std::sync::RwLock;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
+mod manifest;
 mod response;
 mod review;
 mod satellites;
 mod speak;
 mod speakers;
 
+use manifest::{GenerateManifestArgs, generate_manifest};
 use satellites::SatelliteRegistry;
 
 #[derive(Parser)]
@@ -118,6 +120,9 @@ enum Commands {
     /// on. In standalone mode no flags are set, so the curve runs for
     /// all on-lights; use `niles serve` for manual-mode integration.
     Lighting(LightingArgs),
+    /// Regenerate MANIFEST.md from features.toml. Use --check to
+    /// verify the committed MANIFEST.md is in sync (CI mode).
+    GenerateManifest(GenerateManifestArgs),
 }
 
 #[derive(Subcommand)]
@@ -297,6 +302,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::VoiceTap(args) => voice_tap(args).await,
         Commands::VoiceDispatch(args) => voice_dispatch(args).await,
         Commands::Lighting(args) => lighting(args).await,
+        Commands::GenerateManifest(args) => generate_manifest(args),
     }
 }
 

@@ -37,5 +37,8 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      - name: Manifest freshness check
+        run: cargo run -p niles-bin -- generate-manifest --check
+
       - name: cargo build --release
         run: cargo build --workspace --release
