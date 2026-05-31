@@ -269,7 +269,10 @@ pub fn generate_manifest(args: GenerateManifestArgs) -> anyhow::Result<()> {
     if args.check {
         let existing = std::fs::read_to_string(&args.output)
             .with_context(|| format!("reading {}", args.output.display()))?;
-        if existing != rendered {
+        // Normalize line endings so Windows checkouts with git
+        // autocrlf don't trip the comparison against the LF-only
+        // generator output.
+        if existing.replace("\r\n", "\n") != rendered.replace("\r\n", "\n") {
             eprintln!("MANIFEST.md is out of date with features.toml.");
             eprintln!("Run `cargo run -p niles-bin -- generate-manifest` to update.");
             std::process::exit(1);
@@ -872,8 +875,10 @@ since_pr = 1
         let raw = std::fs::read_to_string(&catalog_path).unwrap();
         let catalog = Catalog::from_toml(&raw).unwrap();
         catalog.validate().unwrap();
-        let rendered = render(&catalog);
-        let committed = std::fs::read_to_string(&manifest_path).unwrap();
+        let rendered = render(&catalog).replace("\r\n", "\n");
+        let committed = std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("\r\n", "\n");
         assert_eq!(
             rendered,
             committed,

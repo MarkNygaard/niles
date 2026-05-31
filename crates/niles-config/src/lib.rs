@@ -16,6 +16,7 @@ pub mod llm;
 pub mod memory;
 pub mod mqtt;
 pub mod persistence;
+pub mod recognition;
 pub mod satellites;
 pub mod skills;
 pub mod speakers;
@@ -38,6 +39,7 @@ pub use llm::{LlmConfig, LlmTier2Config};
 pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
+pub use recognition::RecognitionConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
@@ -57,6 +59,8 @@ pub struct Config {
     pub capabilities: CapabilitiesConfig,
     #[serde(default)]
     pub persistence: PersistenceConfig,
+    #[serde(default)]
+    pub recognition: RecognitionConfig,
     #[serde(default)]
     pub satellites: SatellitesConfig,
     #[serde(default)]
@@ -118,6 +122,7 @@ impl Config {
         self.api.validate()?;
         self.capabilities.validate()?;
         self.persistence.validate()?;
+        self.recognition.validate()?;
         self.satellites.validate()?;
         self.speakers.validate()?;
         self.ambient_lights.validate()?;
@@ -1563,5 +1568,76 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
         );
         assert_eq!(cfg.web_search.timeout_seconds, 30);
         assert_eq!(cfg.web_search.default_num_results, 10);
+    }
+
+    // ------------------------------------------------------------------
+    // Recognition section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn recognition_section_absent_defaults_to_none() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.recognition.model_path.is_none());
+        assert!(!cfg.recognition.use_gpu);
+    }
+
+    #[test]
+    fn recognition_model_path_parses_when_absolute() {
+        let toml = format!(
+            "{}\n[recognition]\nmodel_path = \"/var/niles/ecapa.onnx\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.recognition.model_path.as_deref(),
+            Some(std::path::Path::new("/var/niles/ecapa.onnx"))
+        );
+    }
+
+    #[test]
+    fn recognition_use_gpu_explicit() {
+        let toml = format!(
+            "{}\n[recognition]\nmodel_path = \"/var/niles/ecapa.onnx\"\nuse_gpu = true\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.recognition.use_gpu);
+    }
+
+    #[test]
+    fn rejects_relative_recognition_model_path() {
+        let toml = format!(
+            "{}\n[recognition]\nmodel_path = \"./ecapa.onnx\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "recognition",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_recognition_model_path() {
+        let toml = format!(
+            "{}\n[recognition]\nmodel_path = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "recognition",
+                ..
+            }
+        ));
     }
 }
