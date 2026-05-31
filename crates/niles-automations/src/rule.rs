@@ -32,6 +32,9 @@ pub enum Trigger {
     TimerFired {
         name: Option<String>,
     },
+    Presence {
+        state: Option<PresenceFilter>,
+    },
 }
 
 /// Gate that must pass after the trigger fires.
@@ -63,6 +66,15 @@ pub enum Action {
         room: Option<String>,
         priority: Priority,
     },
+}
+
+/// Optional filter for the `Presence` trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PresenceFilter {
+    Home,
+    Away,
+    Unknown,
 }
 
 /// Local priority enum — kept inside `niles-automations` so the crate
@@ -134,6 +146,13 @@ impl Trigger {
                 Event::TimerFired { name: ev_name, .. } => {
                     name.is_none() || name.as_ref() == ev_name.as_ref()
                 }
+                _ => false,
+            },
+            Trigger::Presence { state } => match ev {
+                Event::PresenceChanged { state: new_state } => match state {
+                    None => true,
+                    Some(want) => presence_filter_matches(*want, *new_state),
+                },
                 _ => false,
             },
         }
@@ -214,6 +233,9 @@ fn parse_trigger(
         niles_config::TriggerDto::TimerFired { name } => {
             Ok(Trigger::TimerFired { name: name.clone() })
         }
+        niles_config::TriggerDto::Presence { state } => Ok(Trigger::Presence {
+            state: parse_presence_filter(id, state.as_deref())?,
+        }),
     }
 }
 
@@ -316,6 +338,28 @@ fn parse_priority(id: &str, value: Option<&str>) -> Result<Priority> {
             value: other.to_string(),
         }),
     }
+}
+
+fn parse_presence_filter(id: &str, value: Option<&str>) -> Result<Option<PresenceFilter>> {
+    match value.map(|s| s.to_ascii_lowercase()).as_deref() {
+        None => Ok(None),
+        Some("home") => Ok(Some(PresenceFilter::Home)),
+        Some("away") => Ok(Some(PresenceFilter::Away)),
+        Some("unknown") => Ok(Some(PresenceFilter::Unknown)),
+        Some(other) => Err(Error::InvalidPresenceState {
+            id: id.to_string(),
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn presence_filter_matches(filter: PresenceFilter, state: niles_core::PresenceState) -> bool {
+    matches!(
+        (filter, state),
+        (PresenceFilter::Home, niles_core::PresenceState::Home)
+            | (PresenceFilter::Away, niles_core::PresenceState::Away)
+            | (PresenceFilter::Unknown, niles_core::PresenceState::Unknown)
+    )
 }
 
 /// Returns `true` if `t` falls inside the window `[after, before]`.
@@ -911,6 +955,108 @@ mod tests {
             origin: "127.0.0.1:1".parse().unwrap(),
         };
         assert!(!trigger.matches(&ev));
+    }
+
+    #[test]
+    fn presence_trigger_no_filter_matches_any() {
+        let trigger = Trigger::Presence { state: None };
+        let ev_away = Event::PresenceChanged {
+            state: niles_core::PresenceState::Away,
+        };
+        let ev_home = Event::PresenceChanged {
+            state: niles_core::PresenceState::Home,
+        };
+        assert!(trigger.matches(&ev_away));
+        assert!(trigger.matches(&ev_home));
+    }
+
+    #[test]
+    fn presence_trigger_filter_matches_same() {
+        let trigger = Trigger::Presence {
+            state: Some(PresenceFilter::Away),
+        };
+        let ev = Event::PresenceChanged {
+            state: niles_core::PresenceState::Away,
+        };
+        assert!(trigger.matches(&ev));
+    }
+
+    #[test]
+    fn presence_trigger_filter_mismatch() {
+        let trigger = Trigger::Presence {
+            state: Some(PresenceFilter::Away),
+        };
+        let ev = Event::PresenceChanged {
+            state: niles_core::PresenceState::Home,
+        };
+        assert!(!trigger.matches(&ev));
+    }
+
+    #[test]
+    fn presence_trigger_no_match_non_presence_event() {
+        let trigger = Trigger::Presence { state: None };
+        let ev = Event::DeviceStateChanged {
+            id: device_id("kitchen", "switch"),
+            state: DeviceState::default(),
+        };
+        assert!(!trigger.matches(&ev));
+    }
+
+    #[test]
+    fn dto_presence_no_state_round_trips() {
+        let dto = rule_dto(
+            "presence-any",
+            niles_config::TriggerDto::Presence { state: None },
+            vec![niles_config::ActionDto::Notify {
+                body: "x".into(),
+                room: None,
+                priority: None,
+            }],
+        );
+        let rule = Rule::from_dto(&dto, "z2m").unwrap();
+        assert!(matches!(rule.trigger, Trigger::Presence { state: None }));
+    }
+
+    #[test]
+    fn dto_presence_away_round_trips() {
+        let dto = rule_dto(
+            "presence-away",
+            niles_config::TriggerDto::Presence {
+                state: Some("away".into()),
+            },
+            vec![niles_config::ActionDto::Notify {
+                body: "x".into(),
+                room: None,
+                priority: None,
+            }],
+        );
+        let rule = Rule::from_dto(&dto, "z2m").unwrap();
+        assert!(matches!(
+            rule.trigger,
+            Trigger::Presence {
+                state: Some(PresenceFilter::Away)
+            }
+        ));
+    }
+
+    #[test]
+    fn dto_presence_invalid_state_rejected() {
+        let dto = rule_dto(
+            "presence-bad",
+            niles_config::TriggerDto::Presence {
+                state: Some("nonsense".into()),
+            },
+            vec![niles_config::ActionDto::Notify {
+                body: "x".into(),
+                room: None,
+                priority: None,
+            }],
+        );
+        let err = Rule::from_dto(&dto, "z2m").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidPresenceState { .. }),
+            "expected InvalidPresenceState, got {err:?}"
+        );
     }
 
     #[test]

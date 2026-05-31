@@ -63,3 +63,41 @@ pub struct PresenceSnapshot {
     pub r#override: Override,
     pub sources: Vec<SourceReading>,
 }
+
+impl From<HomeState> for niles_core::PresenceState {
+    #[allow(unreachable_patterns)]
+    fn from(value: HomeState) -> Self {
+        match value {
+            HomeState::Home => niles_core::PresenceState::Home,
+            HomeState::Away => niles_core::PresenceState::Away,
+            HomeState::Unknown => niles_core::PresenceState::Unknown,
+            // HomeState is #[non_exhaustive]; future variants surface
+            // as Unknown until a richer mapping is added.
+            _ => niles_core::PresenceState::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod presence_state_conv_tests {
+    use super::*;
+    use niles_core::PresenceState;
+
+    #[test]
+    fn home_maps_to_home() {
+        assert_eq!(PresenceState::from(HomeState::Home), PresenceState::Home);
+    }
+
+    #[test]
+    fn away_maps_to_away() {
+        assert_eq!(PresenceState::from(HomeState::Away), PresenceState::Away);
+    }
+
+    #[test]
+    fn unknown_maps_to_unknown() {
+        assert_eq!(
+            PresenceState::from(HomeState::Unknown),
+            PresenceState::Unknown
+        );
+    }
+}

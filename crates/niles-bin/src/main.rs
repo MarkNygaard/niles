@@ -1062,9 +1062,11 @@ fn spawn_presence_poll_loop(
     aggregator: Arc<PresenceAggregator>,
     sources: Vec<Arc<dyn PresenceSource>>,
     poll_seconds: u64,
+    bus: EventBus,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(poll_seconds.max(10)));
+        let mut last_published: Option<niles_presence::HomeState> = None;
         loop {
             ticker.tick().await;
             for src in &sources {
@@ -1073,8 +1075,29 @@ fn spawn_presence_poll_loop(
                     Err(e) => tracing::warn!("presence source '{}' poll failed: {e}", src.name()),
                 }
             }
+            let resolved = aggregator.resolve(chrono::Utc::now());
+            if let Some(state) = presence_transition(&mut last_published, resolved) {
+                bus.publish(Event::PresenceChanged {
+                    state: state.into(),
+                });
+            }
         }
     })
+}
+
+/// Pure transition detector — returns `Some(state)` when `resolved`
+/// differs from `*last` (and updates `*last`), `None` otherwise.
+/// First call (last is None) always returns Some(resolved).
+fn presence_transition(
+    last: &mut Option<niles_presence::HomeState>,
+    resolved: niles_presence::HomeState,
+) -> Option<niles_presence::HomeState> {
+    if *last != Some(resolved) {
+        *last = Some(resolved);
+        Some(resolved)
+    } else {
+        None
+    }
 }
 
 fn build_websearch_client(
@@ -1489,6 +1512,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
             p.aggregator.clone(),
             p.sources.clone(),
             cfg.presence.poll_seconds,
+            bus.clone(),
         )
     });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
@@ -1803,6 +1827,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
             p.aggregator.clone(),
             p.sources.clone(),
             cfg.presence.poll_seconds,
+            bus.clone(),
         )
     });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
@@ -3079,6 +3104,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             p.aggregator.clone(),
             p.sources.clone(),
             cfg.presence.poll_seconds,
+            bus.clone(),
         )
     });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
@@ -5038,6 +5064,44 @@ mod system_prompt_tests {
         );
         assert!(out.contains("# Current context"));
         assert!(out.contains("living_room"));
+    }
+
+    #[test]
+    fn presence_transition_first_resolve_publishes() {
+        let mut last = None;
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            Some(niles_presence::HomeState::Home),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Home));
+    }
+
+    #[test]
+    fn presence_transition_same_state_no_publish() {
+        let mut last = Some(niles_presence::HomeState::Home);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            None,
+        );
+    }
+
+    #[test]
+    fn presence_transition_home_to_away_publishes() {
+        let mut last = Some(niles_presence::HomeState::Home);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Away,),
+            Some(niles_presence::HomeState::Away),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Away));
+    }
+
+    #[test]
+    fn presence_transition_away_to_home_publishes() {
+        let mut last = Some(niles_presence::HomeState::Away);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            Some(niles_presence::HomeState::Home),
+        );
     }
 
     #[test]
