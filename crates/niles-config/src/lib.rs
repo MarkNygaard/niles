@@ -2099,4 +2099,21 @@ actions = [{{ do = "notify", body = "hi" }}]
             }
         ));
     }
+
+    #[test]
+    fn integrations_archon_empty_cwd_rejected() {
+        let toml = format!(
+            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"x\"\ncwd = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "integrations.archon",
+                ..
+            }
+        ));
+    }
 }

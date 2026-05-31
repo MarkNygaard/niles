@@ -87,7 +87,7 @@ impl ArchonClient {
         })?;
         let conversation_id = conv.conversation_id;
 
-        let run_url = self.url(&format!("/api/workflows/{}/run", name));
+        let run_url = self.url(&format!("/api/workflows/{}/run", urlencoding::encode(name)));
         let run_body = json!({ "conversationId": conversation_id, "message": message }).to_string();
         let run_resp = self.transport.post(&run_url, &run_body).await?;
         let run: RunAcceptedResp = serde_json::from_str(&run_resp).map_err(|e| Error::Parse {
@@ -123,7 +123,10 @@ impl ArchonClient {
 
     /// Get the full status of a single workflow run.
     pub async fn get_workflow_run(&self, run_id: &str) -> Result<RunDetail> {
-        let url = self.url(&format!("/api/workflows/runs/{}", run_id));
+        let url = self.url(&format!(
+            "/api/workflows/runs/{}",
+            urlencoding::encode(run_id)
+        ));
         let body = self.transport.get(&url).await.map_err(|e| match e {
             Error::BadStatus { status: 404, .. } => Error::RunNotFound { id: run_id.into() },
             other => other,
@@ -143,7 +146,10 @@ impl ArchonClient {
 
     /// Cancel a running workflow.
     pub async fn cancel_workflow_run(&self, run_id: &str) -> Result<CancelOutcome> {
-        let url = self.url(&format!("/api/workflows/runs/{}/cancel", run_id));
+        let url = self.url(&format!(
+            "/api/workflows/runs/{}/cancel",
+            urlencoding::encode(run_id)
+        ));
         let body = self.transport.post(&url, "{}").await?;
         let parsed: CancelResp = serde_json::from_str(&body).map_err(|e| Error::Parse {
             reason: e.to_string(),
@@ -157,6 +163,9 @@ impl ArchonClient {
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
     if s.chars().count() <= max {
         s.to_string()
     } else {
@@ -455,5 +464,39 @@ mod tests {
         client.list_workflows().await.unwrap();
         let url = mock.last_url().unwrap();
         assert_eq!(url, "https://archon.example.com/api/workflows");
+    }
+
+    #[tokio::test]
+    async fn run_workflow_encodes_name_in_path() {
+        let (mock, client) = client_with(vec![
+            Ok(r#"{"conversationId":"c1"}"#.into()),
+            Ok(r#"{"accepted":true}"#.into()),
+        ]);
+        client.run_workflow("deploy/prod", "go").await.unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("/api/workflows/deploy%2Fprod/run"));
+    }
+
+    #[tokio::test]
+    async fn get_workflow_run_encodes_run_id_in_path() {
+        let (mock, client) = client_with(vec![Ok(
+            r#"{"run":{"id":"r/1","status":"done"},"events":[]}"#.into(),
+        )]);
+        client.get_workflow_run("r/1").await.unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("/api/workflows/runs/r%2F1"));
+    }
+
+    #[tokio::test]
+    async fn cancel_workflow_run_encodes_run_id_in_path() {
+        let (mock, client) = client_with(vec![Ok(r#"{"success":true}"#.into())]);
+        client.cancel_workflow_run("r/1").await.unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("/api/workflows/runs/r%2F1/cancel"));
+    }
+
+    #[test]
+    fn truncate_chars_zero_max_returns_empty() {
+        assert_eq!(truncate_chars("hello", 0), "");
     }
 }

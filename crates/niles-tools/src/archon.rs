@@ -401,12 +401,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_workflow_runs_tool_clamps_limit() {
+    async fn run_workflow_tool_non_string_name_errors() {
+        let client = tool_client(vec![]);
+        let tool = RunWorkflowTool::new(client);
+        let err = tool
+            .execute(json!({"name": 42, "message": "go"}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "run_workflow" && reason.contains("name must be a string"))
+        );
+    }
+
+    #[tokio::test]
+    async fn run_workflow_tool_non_string_message_errors() {
+        let client = tool_client(vec![]);
+        let tool = RunWorkflowTool::new(client);
+        let err = tool
+            .execute(json!({"name": "deploy", "message": 42}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "run_workflow" && reason.contains("message must be a string"))
+        );
+    }
+
+    #[tokio::test]
+    async fn list_workflow_runs_tool_default_limit() {
         let client = tool_client(vec![Ok(r#"{"runs":[]}"#.into())]);
         let tool = ListWorkflowRunsTool::new(client);
         let result = tool.execute(json!({})).await.unwrap();
         let runs = result["runs"].as_array().unwrap();
         assert!(runs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_workflow_runs_tool_rejects_zero_limit() {
+        let client = tool_client(vec![]);
+        let tool = ListWorkflowRunsTool::new(client);
+        let err = tool.execute(json!({"limit": 0})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "list_workflow_runs" && reason.contains("limit must be between 1 and 20"))
+        );
     }
 
     #[tokio::test]
@@ -431,11 +467,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_workflow_run_tool_not_found_propagates() {
+        let client = tool_client(vec![Err(niles_integration_archon::Error::RunNotFound {
+            id: "r-missing".into(),
+        })]);
+        let tool = GetWorkflowRunTool::new(client);
+        let err = tool
+            .execute(json!({"run_id": "r-missing"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Archon(reason) if reason.contains("r-missing")));
+    }
+
+    #[tokio::test]
     async fn cancel_workflow_run_tool_happy_path() {
         let client = tool_client(vec![Ok(r#"{"success":true,"message":"cancelled"}"#.into())]);
         let tool = CancelWorkflowRunTool::new(client);
         let result = tool.execute(json!({"run_id": "r1"})).await.unwrap();
         assert_eq!(result["success"], true);
+    }
+
+    #[tokio::test]
+    async fn cancel_workflow_run_tool_propagates_error() {
+        let client = tool_client(vec![Err(niles_integration_archon::Error::BadStatus {
+            status: 500,
+            body: "server error".into(),
+        })]);
+        let tool = CancelWorkflowRunTool::new(client);
+        let err = tool.execute(json!({"run_id": "r1"})).await.unwrap_err();
+        assert!(matches!(err, Error::Archon(reason) if reason.contains("500")));
     }
 
     #[tokio::test]

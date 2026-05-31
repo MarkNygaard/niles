@@ -59,6 +59,12 @@ impl ArchonConfigDto {
                 reason: "codebase_id must not be empty".into(),
             });
         }
+        if let Some(cwd) = &self.cwd && cwd.trim().is_empty() {
+            return Err(Error::InvalidSection {
+                section: "integrations.archon",
+                reason: "cwd must not be empty".into(),
+            });
+        }
         if self.timeout_seconds == 0 || self.timeout_seconds > 120 {
             return Err(Error::InvalidSection {
                 section: "integrations.archon",
