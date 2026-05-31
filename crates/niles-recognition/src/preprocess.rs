@@ -8,7 +8,7 @@ const SAMPLE_RATE: u32 = 16_000;
 const WIN_LEN: usize = 400; // 25 ms × 16 kHz
 const HOP: usize = 160; // 10 ms × 16 kHz
 const N_FFT: usize = 512; // next power of two ≥ WIN_LEN
-const N_MEL: usize = 80;
+pub const N_MEL: usize = 80;
 const MEL_FMIN: f32 = 0.0;
 const MEL_FMAX: f32 = 8_000.0;
 

@@ -71,7 +71,9 @@ impl EcapaTdnnEmbedder {
                 let dims: Vec<i64> = shape.iter().copied().collect();
                 match dims.len() {
                     2 => InputKind::RawPcm,
-                    3 if dims.get(1).copied().unwrap_or(-1) == 80 => InputKind::LogMel,
+                    3 if dims.get(1).copied().unwrap_or(-1) == preprocess::N_MEL as i64 => {
+                        InputKind::LogMel
+                    }
                     _ => {
                         return Err(Error::UnsupportedInputShape {
                             path: cfg.model_path.clone(),
@@ -99,6 +101,12 @@ impl EcapaTdnnEmbedder {
 
         match output.dtype() {
             ValueType::Tensor { shape, .. } => {
+                if shape.is_empty() {
+                    return Err(Error::UnexpectedOutputShape {
+                        path: cfg.model_path.clone(),
+                        actual: vec![],
+                    });
+                }
                 let last_dim = shape.last().copied().unwrap_or(-1);
                 if last_dim != 192 && last_dim != -1 {
                     let actual = shape.iter().copied().collect();
@@ -129,6 +137,10 @@ impl EcapaTdnnEmbedder {
         192
     }
 
+    /// Extract a 192-dim speaker embedding from 16 kHz PCM.
+    ///
+    /// The returned vector is L2-normalized in-place before being returned,
+    /// so it is safe to pass directly to [`crate::cosine_similarity`].
     pub fn extract(&self, pcm: &[i16], sample_rate_hz: u32) -> Result<Vec<f32>> {
         if sample_rate_hz != 16_000 {
             return Err(Error::WrongSampleRate {
@@ -160,8 +172,9 @@ impl EcapaTdnnEmbedder {
             }
             InputKind::LogMel => {
                 let log_mel = preprocess::log_mel(&pcm_f32);
-                let n_frames = preprocess::num_frames(samples);
-                let shape = vec![1i64, 80i64, n_frames as i64];
+                let n_frames = log_mel.len() / preprocess::N_MEL;
+                debug_assert_eq!(n_frames, preprocess::num_frames(samples));
+                let shape = vec![1i64, preprocess::N_MEL as i64, n_frames as i64];
                 Tensor::from_array((shape, log_mel))
                     .map_err(|source| Error::Inference { source })?
             }

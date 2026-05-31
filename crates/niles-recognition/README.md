@@ -12,8 +12,9 @@ repo. Point `[recognition].model_path` at the file.
 ## Testing
 
 Set `NILES_ECAPA_MODEL_PATH=/abs/path/to/model.onnx` to enable inference-level
-tests; without it, those tests skip and print a `(model not configured)`
-notice. Pure-math helpers always run.
+tests; without it, those tests skip and print a
+`(NILES_ECAPA_MODEL_PATH not set; skipping)` notice. Pure-math helpers always
+run.
 
 ## Scope
 
