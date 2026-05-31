@@ -61,6 +61,11 @@ pub enum TriggerDto {
         #[serde(default)]
         name: Option<String>,
     },
+    Presence {
+        /// "home" | "away" | "unknown". Omit to fire on any change.
+        #[serde(default)]
+        state: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]

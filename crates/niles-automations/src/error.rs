@@ -28,6 +28,9 @@ pub enum Error {
     #[error("automation '{id}': invalid priority '{value}'")]
     InvalidPriority { id: String, value: String },
 
+    #[error("automation '{id}': unknown presence state '{value}', expected home|away|unknown")]
+    InvalidPresenceState { id: String, value: String },
+
     #[error("automation '{id}': invalid device id '{value}': {source}")]
     InvalidDeviceId {
         id: String,

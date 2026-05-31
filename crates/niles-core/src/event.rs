@@ -3,6 +3,18 @@
 use crate::device::{Device, DeviceId, DeviceState};
 use tokio::sync::broadcast;
 
+/// Resolved household presence state. Mirrors `niles_presence::HomeState`
+/// — kept local to `niles-core` so the bus can carry presence transitions
+/// without an upward dep on `niles-presence`. The conversion lives in
+/// `niles-presence`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PresenceState {
+    Home,
+    Away,
+    Unknown,
+}
+
 /// Events that flow on the internal bus.
 ///
 /// `#[non_exhaustive]` lets new variants be added without breaking
@@ -25,6 +37,9 @@ pub enum Event {
         /// vocabulary; consumers parse what they care about.
         action: String,
     },
+    /// The household's resolved presence state changed. Emitted by the
+    /// presence subsystem only on a genuine transition (not per poll).
+    PresenceChanged { state: PresenceState },
     /// A timer registered via `Intent::TimerSet` has reached its
     /// `expires_at`. Emitted once when the driver flips the entry from
     /// `Pending` to `Ringing`. Future consumer: satellite alarm playback.
@@ -156,5 +171,30 @@ mod tests {
             }
             _ => panic!("expected TimerFired"),
         }
+    }
+
+    #[tokio::test]
+    async fn publish_reaches_subscriber_presence_changed() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+        bus.publish(Event::PresenceChanged {
+            state: PresenceState::Away,
+        });
+        match rx.recv().await.unwrap() {
+            Event::PresenceChanged { state } => assert_eq!(state, PresenceState::Away),
+            _ => panic!("expected PresenceChanged"),
+        }
+    }
+
+    #[test]
+    fn presence_state_clone_eq() {
+        let a = PresenceState::Home;
+        let b = a;
+        assert_eq!(a, b);
+        assert_eq!(PresenceState::Away, PresenceState::Away);
+        assert_eq!(PresenceState::Unknown, PresenceState::Unknown);
+        assert_ne!(PresenceState::Home, PresenceState::Away);
+        assert_ne!(PresenceState::Home, PresenceState::Unknown);
+        assert_ne!(PresenceState::Away, PresenceState::Unknown);
     }
 }

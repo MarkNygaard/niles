@@ -1062,9 +1062,11 @@ fn spawn_presence_poll_loop(
     aggregator: Arc<PresenceAggregator>,
     sources: Vec<Arc<dyn PresenceSource>>,
     poll_seconds: u64,
+    bus: EventBus,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(poll_seconds.max(10)));
+        let mut last_published: Option<niles_presence::HomeState> = None;
         loop {
             ticker.tick().await;
             for src in &sources {
@@ -1073,8 +1075,48 @@ fn spawn_presence_poll_loop(
                     Err(e) => tracing::warn!("presence source '{}' poll failed: {e}", src.name()),
                 }
             }
+            let resolved = aggregator.resolve(chrono::Utc::now());
+            if let Some(state) = presence_transition(&mut last_published, resolved) {
+                bus.publish(Event::PresenceChanged {
+                    state: state.into(),
+                });
+            }
         }
     })
+}
+
+/// Pure transition detector — returns `Some(state)` when `resolved`
+/// differs from `*last` (and updates `*last`), `None` otherwise.
+/// First call (last is None) always returns Some(resolved).
+/// Decide whether a freshly-resolved presence state warrants
+/// publishing a `PresenceChanged` event.
+///
+/// The FIRST resolve after startup seeds `last` WITHOUT publishing:
+/// `PresenceChanged` is an edge-triggered transition between two
+/// known states, not the initial unknown→known resolution. Without
+/// this, every service restart would re-fire presence-triggered
+/// automations ("welcome home", "everyone left") even though nobody
+/// actually arrived or left. niles has no persisted pre-restart
+/// state to diff against, so suppressing the one initial edge is the
+/// safe choice — on-demand `get_presence` still reflects reality
+/// immediately; only the edge-triggered automation is skipped for
+/// that first resolution.
+fn presence_transition(
+    last: &mut Option<niles_presence::HomeState>,
+    resolved: niles_presence::HomeState,
+) -> Option<niles_presence::HomeState> {
+    match *last {
+        // First resolve after startup: seed, don't publish.
+        None => {
+            *last = Some(resolved);
+            None
+        }
+        Some(prev) if prev == resolved => None,
+        Some(_) => {
+            *last = Some(resolved);
+            Some(resolved)
+        }
+    }
 }
 
 fn build_websearch_client(
@@ -1489,6 +1531,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
             p.aggregator.clone(),
             p.sources.clone(),
             cfg.presence.poll_seconds,
+            bus.clone(),
         )
     });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
@@ -1803,6 +1846,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
             p.aggregator.clone(),
             p.sources.clone(),
             cfg.presence.poll_seconds,
+            bus.clone(),
         )
     });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
@@ -3079,6 +3123,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             p.aggregator.clone(),
             p.sources.clone(),
             cfg.presence.poll_seconds,
+            bus.clone(),
         )
     });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
@@ -5038,6 +5083,73 @@ mod system_prompt_tests {
         );
         assert!(out.contains("# Current context"));
         assert!(out.contains("living_room"));
+    }
+
+    #[test]
+    fn presence_transition_first_resolve_seeds_without_publishing() {
+        // First resolve after startup must NOT publish — it only
+        // seeds `last`. Otherwise presence automations would re-fire
+        // on every service restart.
+        let mut last = None;
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            None,
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Home));
+    }
+
+    #[test]
+    fn presence_transition_after_seed_publishes_on_change() {
+        // The first genuine transition after the startup seed does publish.
+        let mut last = None;
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            None,
+        );
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Away,),
+            Some(niles_presence::HomeState::Away),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Away));
+    }
+
+    #[test]
+    fn presence_transition_same_state_no_publish() {
+        let mut last = Some(niles_presence::HomeState::Home);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            None,
+        );
+    }
+
+    #[test]
+    fn presence_transition_home_to_away_publishes() {
+        let mut last = Some(niles_presence::HomeState::Home);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Away,),
+            Some(niles_presence::HomeState::Away),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Away));
+    }
+
+    #[test]
+    fn presence_transition_away_to_home_publishes() {
+        let mut last = Some(niles_presence::HomeState::Away);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            Some(niles_presence::HomeState::Home),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Home));
+    }
+
+    #[test]
+    fn presence_transition_home_to_unknown_publishes() {
+        let mut last = Some(niles_presence::HomeState::Home);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Unknown,),
+            Some(niles_presence::HomeState::Unknown),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Unknown));
     }
 
     #[test]
