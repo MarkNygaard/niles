@@ -1794,8 +1794,11 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                         };
                         center.deliver(text, room, niles_notifications::Priority::Important);
                     }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("notification subscriber lagged by {n} events");
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    _ => {}
                 }
             }
         })
@@ -2985,8 +2988,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         };
                         center.deliver(text, room, niles_notifications::Priority::Important);
                     }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("notification subscriber lagged by {n} events");
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    _ => {}
                 }
             }
         })
