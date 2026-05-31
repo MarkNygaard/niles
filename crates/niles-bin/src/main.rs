@@ -1019,8 +1019,8 @@ struct PresenceSetup {
     sources: Vec<Arc<dyn PresenceSource>>,
 }
 
-/// Build a `SearXngClient` from the `[web_search]` section.
-/// Returns `None` when `base_url` is not configured or when client construction fails.
+/// Build a `PresenceSetup` from the `[presence]` section.
+/// Returns `None` when presence is disabled or no sources could be constructed.
 fn build_presence(cfg: &niles_config::PresenceConfig) -> Option<PresenceSetup> {
     if !cfg.enabled {
         return None;
