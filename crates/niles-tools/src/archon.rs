@@ -104,6 +104,12 @@ impl Tool for RunWorkflowTool {
                 });
             }
         };
+        if name.trim().is_empty() {
+            return Err(Error::InvalidArgs {
+                tool: "run_workflow".into(),
+                reason: "name must not be empty".into(),
+            });
+        }
         let message = match args.get("message") {
             Some(v) => v.as_str().ok_or_else(|| Error::InvalidArgs {
                 tool: "run_workflow".into(),
@@ -116,6 +122,12 @@ impl Tool for RunWorkflowTool {
                 });
             }
         };
+        if message.trim().is_empty() {
+            return Err(Error::InvalidArgs {
+                tool: "run_workflow".into(),
+                reason: "message must not be empty".into(),
+            });
+        }
 
         let outcome = map_archon_err(self.client.run_workflow(name, message).await)?;
         Ok(json!({
@@ -234,6 +246,12 @@ impl Tool for GetWorkflowRunTool {
                 });
             }
         };
+        if run_id.trim().is_empty() {
+            return Err(Error::InvalidArgs {
+                tool: "get_workflow_run".into(),
+                reason: "run_id must not be empty".into(),
+            });
+        }
 
         let run = map_archon_err(self.client.get_workflow_run(run_id).await)?;
         Ok(json!({
@@ -288,6 +306,12 @@ impl Tool for CancelWorkflowRunTool {
                 });
             }
         };
+        if run_id.trim().is_empty() {
+            return Err(Error::InvalidArgs {
+                tool: "cancel_workflow_run".into(),
+                reason: "run_id must not be empty".into(),
+            });
+        }
 
         let outcome = map_archon_err(self.client.cancel_workflow_run(run_id).await)?;
         Ok(json!({
@@ -427,6 +451,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_workflow_tool_empty_name_errors() {
+        let client = tool_client(vec![]);
+        let tool = RunWorkflowTool::new(client);
+        let err = tool
+            .execute(json!({"name": "", "message": "go"}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "run_workflow" && reason.contains("name must not be empty"))
+        );
+    }
+
+    #[tokio::test]
+    async fn run_workflow_tool_empty_message_errors() {
+        let client = tool_client(vec![]);
+        let tool = RunWorkflowTool::new(client);
+        let err = tool
+            .execute(json!({"name": "deploy", "message": ""}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "run_workflow" && reason.contains("message must not be empty"))
+        );
+    }
+
+    #[tokio::test]
     async fn list_workflow_runs_tool_default_limit() {
         let client = tool_client(vec![Ok(r#"{"runs":[]}"#.into())]);
         let tool = ListWorkflowRunsTool::new(client);
@@ -480,6 +530,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_workflow_run_tool_empty_run_id_errors() {
+        let client = tool_client(vec![]);
+        let tool = GetWorkflowRunTool::new(client);
+        let err = tool.execute(json!({"run_id": ""})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "get_workflow_run" && reason.contains("run_id must not be empty"))
+        );
+    }
+
+    #[tokio::test]
     async fn cancel_workflow_run_tool_happy_path() {
         let client = tool_client(vec![Ok(r#"{"success":true,"message":"cancelled"}"#.into())]);
         let tool = CancelWorkflowRunTool::new(client);
@@ -496,6 +556,16 @@ mod tests {
         let tool = CancelWorkflowRunTool::new(client);
         let err = tool.execute(json!({"run_id": "r1"})).await.unwrap_err();
         assert!(matches!(err, Error::Archon(reason) if reason.contains("500")));
+    }
+
+    #[tokio::test]
+    async fn cancel_workflow_run_tool_empty_run_id_errors() {
+        let client = tool_client(vec![]);
+        let tool = CancelWorkflowRunTool::new(client);
+        let err = tool.execute(json!({"run_id": ""})).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "cancel_workflow_run" && reason.contains("run_id must not be empty"))
+        );
     }
 
     #[tokio::test]
