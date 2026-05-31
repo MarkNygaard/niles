@@ -21,16 +21,10 @@ pub enum Error {
     UnsupportedInputShape { path: PathBuf, actual: Vec<i64> },
 
     #[error("model {} has unsupported input type {actual}; expected f32", path.display())]
-    UnsupportedInputType {
-        path: PathBuf,
-        actual: &'static str,
-    },
+    UnsupportedInputType { path: PathBuf, actual: String },
 
     #[error("model {} has unexpected output type {actual}; expected f32", path.display())]
-    UnexpectedOutputType {
-        path: PathBuf,
-        actual: &'static str,
-    },
+    UnexpectedOutputType { path: PathBuf, actual: String },
 
     #[error("expected 16000 Hz audio, got {got}")]
     WrongSampleRate { got: u32 },

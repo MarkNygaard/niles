@@ -71,7 +71,7 @@ impl EcapaTdnnEmbedder {
                 if *ty != TensorElementType::Float32 {
                     return Err(Error::UnsupportedInputType {
                         path: cfg.model_path.clone(),
-                        actual: ty.as_str(),
+                        actual: format!("{ty:?}"),
                     });
                 }
 
@@ -111,7 +111,7 @@ impl EcapaTdnnEmbedder {
                 if *ty != TensorElementType::Float32 {
                     return Err(Error::UnexpectedOutputType {
                         path: cfg.model_path.clone(),
-                        actual: ty.as_str(),
+                        actual: format!("{ty:?}"),
                     });
                 }
                 if shape.is_empty() {

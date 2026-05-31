@@ -20,10 +20,10 @@ pub fn log_mel(pcm_f32: &[f32]) -> Vec<f32> {
         return Vec::new();
     }
 
-    // Hann window
+    // Symmetric Hann window: w[i] = 0.5 - 0.5*cos(2π*i/(N-1))
     let window: Vec<f32> = (0..WIN_LEN)
         .map(|i| {
-            let phase = std::f32::consts::PI * i as f32 / (WIN_LEN - 1) as f32;
+            let phase = 2.0 * std::f32::consts::PI * i as f32 / (WIN_LEN - 1) as f32;
             0.5 - 0.5 * phase.cos()
         })
         .collect();
