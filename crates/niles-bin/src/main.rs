@@ -20,6 +20,7 @@ use niles_mqtt::{
     MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
 };
 use niles_notifications::NotificationCenter;
+use niles_presence::{PresenceAggregator, PresenceSource, TadoConfig, TadoSource};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
@@ -871,6 +872,7 @@ fn build_tool_registry(
     weather_client: Option<Arc<niles_weather::OpenMeteoClient>>,
     websearch_client: Option<Arc<niles_websearch::SearXngClient>>,
     websearch_default_num_results: u8,
+    presence: Option<Arc<PresenceAggregator>>,
     home: &niles_config::HomeConfig,
 ) -> ToolRegistry {
     let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
@@ -898,6 +900,9 @@ fn build_tool_registry(
     }
     if let Some(client) = websearch_client {
         niles_tools::register_web_search_tool(&mut tools, client, websearch_default_num_results);
+    }
+    if let Some(agg) = presence {
+        niles_tools::register_presence_tools(&mut tools, agg);
     }
     niles_tools::register_datetime_tool(&mut tools, &home.timezone);
     tools
@@ -1007,8 +1012,68 @@ fn build_weather_client() -> Option<Arc<niles_weather::OpenMeteoClient>> {
         .map(Arc::new)
 }
 
+/// Bundle produced by `build_presence` so callers don't juggle a
+/// complex tuple.
+struct PresenceSetup {
+    aggregator: Arc<PresenceAggregator>,
+    sources: Vec<Arc<dyn PresenceSource>>,
+}
+
 /// Build a `SearXngClient` from the `[web_search]` section.
 /// Returns `None` when `base_url` is not configured or when client construction fails.
+fn build_presence(cfg: &niles_config::PresenceConfig) -> Option<PresenceSetup> {
+    if !cfg.enabled {
+        return None;
+    }
+    let mut sources: Vec<Arc<dyn PresenceSource>> = Vec::new();
+    if let Some(tado_cfg) = &cfg.tado {
+        match tado_cfg.resolve_env() {
+            Ok((username, password)) => {
+                match TadoSource::new(TadoConfig {
+                    username,
+                    password,
+                    home_id: tado_cfg.home_id,
+                    base_url: tado_cfg.base_url.clone(),
+                    ..TadoConfig::default()
+                }) {
+                    Ok(s) => sources.push(Arc::new(s)),
+                    Err(e) => tracing::error!("Tado source build failed: {e}"),
+                }
+            }
+            Err(e) => tracing::error!("Tado env-var resolution failed: {e}"),
+        }
+    }
+    if sources.is_empty() {
+        return None;
+    }
+    let aggregator = Arc::new(PresenceAggregator::new(chrono::Duration::minutes(
+        cfg.away_debounce_minutes as i64,
+    )));
+    Some(PresenceSetup {
+        aggregator,
+        sources,
+    })
+}
+
+fn spawn_presence_poll_loop(
+    aggregator: Arc<PresenceAggregator>,
+    sources: Vec<Arc<dyn PresenceSource>>,
+    poll_seconds: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(poll_seconds.max(10)));
+        loop {
+            ticker.tick().await;
+            for src in &sources {
+                match src.poll().await {
+                    Ok(signal) => aggregator.ingest(signal),
+                    Err(e) => tracing::warn!("presence source '{}' poll failed: {e}", src.name()),
+                }
+            }
+        }
+    })
+}
+
 fn build_websearch_client(
     cfg: &niles_config::WebSearchConfig,
 ) -> Option<Arc<niles_websearch::SearXngClient>> {
@@ -1415,6 +1480,8 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
+    let presence = build_presence(&cfg.presence);
+    let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
     let tools_registry = build_tool_registry(
         registry.clone(),
         publisher,
@@ -1425,6 +1492,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
+        presence_agg,
         &cfg.home,
     );
     let client = build_groq_client(&cfg)?;
@@ -1716,6 +1784,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
+    let presence = build_presence(&cfg.presence);
+    let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
@@ -1726,6 +1796,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
+        presence_agg.clone(),
         &cfg.home,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -1836,6 +1907,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         tools,
         capability_loader,
         capability_index,
+        presence: presence_agg,
         satellites: satellites.clone(),
         device_index: Arc::clone(&device_index),
         history: command_writer,
@@ -1932,6 +2004,8 @@ struct DispatchCtx {
     tools: Arc<ToolRegistry>,
     capability_loader: Option<Arc<CapabilityLoader>>,
     capability_index: Option<Arc<niles_intent::CapabilityIndex>>,
+    #[allow(dead_code)]
+    presence: Option<Arc<PresenceAggregator>>,
     satellites: Arc<SatelliteRegistry>,
     device_index: Arc<RwLock<DeviceIndex>>,
     history: Arc<CommandWriter>,
@@ -2903,6 +2977,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .clone()
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
     let websearch_client = build_websearch_client(&cfg.web_search);
+    let presence = build_presence(&cfg.presence);
+    let _presence_handle = presence.as_ref().map(|p| {
+        spawn_presence_poll_loop(
+            p.aggregator.clone(),
+            p.sources.clone(),
+            cfg.presence.poll_seconds,
+        )
+    });
+    let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
@@ -2913,6 +2996,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
+        presence_agg.clone(),
         &cfg.home,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -3052,6 +3136,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tools,
         capability_loader,
         capability_index,
+        presence: presence_agg,
         satellites: satellites.clone(),
         device_index,
         history: command_writer,

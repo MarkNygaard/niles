@@ -11,6 +11,7 @@ pub mod datetime;
 pub mod error;
 pub mod escalate;
 pub mod list_recent_notifications;
+pub mod presence;
 pub mod registry;
 pub mod skill;
 pub mod tool;
@@ -31,6 +32,7 @@ pub use escalate::{EscalateToTier2Tool, register_escalate_tool};
 pub use list_recent_notifications::{
     ListRecentNotificationsTool, register_list_recent_notifications_tool,
 };
+pub use presence::{GetPresenceTool, SetPresenceTool, register_presence_tools};
 
 /// Register both notification tools (announce + list_recent) on a registry.
 pub fn register_notification_tools(

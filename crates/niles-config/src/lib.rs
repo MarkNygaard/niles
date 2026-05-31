@@ -17,6 +17,7 @@ pub mod memory;
 pub mod mqtt;
 pub mod notifications;
 pub mod persistence;
+pub mod presence;
 pub mod recognition;
 pub mod satellites;
 pub mod skills;
@@ -41,6 +42,7 @@ pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use notifications::NotificationsConfig;
 pub use persistence::PersistenceConfig;
+pub use presence::{PresenceConfig, TadoConfigDto};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use satellites::{SatelliteConfig, SatellitesConfig};
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
@@ -75,6 +77,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    #[serde(default)]
+    pub presence: PresenceConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
     #[serde(default)]
@@ -133,6 +137,7 @@ impl Config {
         self.history.validate()?;
         self.memory.validate()?;
         self.notifications.validate()?;
+        self.presence.validate()?;
         self.skills.validate()?;
         self.web_search.validate()?;
         self.wyoming.validate()?;
@@ -1742,5 +1747,161 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
                 ..
             }
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // Presence section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn presence_section_absent_defaults_to_disabled() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.presence.enabled);
+        assert_eq!(cfg.presence.poll_seconds, 60);
+        assert_eq!(cfg.presence.away_debounce_minutes, 5);
+        assert!(cfg.presence.tado.is_none());
+    }
+
+    #[test]
+    fn presence_with_tado_parses_and_validates() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"TADO_USER\"\npassword_env = \"TADO_PASS\"\nhome_id = 123\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.presence.enabled);
+        let tado = cfg.presence.tado.as_ref().unwrap();
+        assert_eq!(tado.username_env, "TADO_USER");
+        assert_eq!(tado.home_id, 123);
+    }
+
+    #[test]
+    fn rejects_presence_enabled_without_source() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "presence",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_presence_poll_seconds_too_small() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\npoll_seconds = 5\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "presence",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_presence_poll_seconds_too_large() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\npoll_seconds = 4000\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "presence",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_presence_away_debounce_too_large() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\naway_debounce_minutes = 121\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "presence",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_tado_username_env() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"\"\npassword_env = \"P\"\nhome_id = 1\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "presence.tado",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_tado_home_id() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "presence.tado",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_tado_base_url_without_http_scheme() {
+        let toml = format!(
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\nbase_url = \"my.tado.com\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "presence.tado",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_presence_field() {
+        let toml = format!(
+            "{}\n[presence]\nunknown_field = 42\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        assert!(Config::load_from_str(&toml).is_err());
     }
 }

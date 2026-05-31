@@ -71,3 +71,4 @@ niles-recognition = { path = "crates/niles-recognition" }
 niles-weather = { path = "crates/niles-weather" }
 niles-websearch = { path = "crates/niles-websearch" }
 niles-notifications = { path = "crates/niles-notifications" }
+niles-presence = { path = "crates/niles-presence" }
