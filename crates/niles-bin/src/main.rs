@@ -1088,15 +1088,34 @@ fn spawn_presence_poll_loop(
 /// Pure transition detector — returns `Some(state)` when `resolved`
 /// differs from `*last` (and updates `*last`), `None` otherwise.
 /// First call (last is None) always returns Some(resolved).
+/// Decide whether a freshly-resolved presence state warrants
+/// publishing a `PresenceChanged` event.
+///
+/// The FIRST resolve after startup seeds `last` WITHOUT publishing:
+/// `PresenceChanged` is an edge-triggered transition between two
+/// known states, not the initial unknown→known resolution. Without
+/// this, every service restart would re-fire presence-triggered
+/// automations ("welcome home", "everyone left") even though nobody
+/// actually arrived or left. niles has no persisted pre-restart
+/// state to diff against, so suppressing the one initial edge is the
+/// safe choice — on-demand `get_presence` still reflects reality
+/// immediately; only the edge-triggered automation is skipped for
+/// that first resolution.
 fn presence_transition(
     last: &mut Option<niles_presence::HomeState>,
     resolved: niles_presence::HomeState,
 ) -> Option<niles_presence::HomeState> {
-    if *last != Some(resolved) {
-        *last = Some(resolved);
-        Some(resolved)
-    } else {
-        None
+    match *last {
+        // First resolve after startup: seed, don't publish.
+        None => {
+            *last = Some(resolved);
+            None
+        }
+        Some(prev) if prev == resolved => None,
+        Some(_) => {
+            *last = Some(resolved);
+            Some(resolved)
+        }
     }
 }
 
@@ -5067,13 +5086,31 @@ mod system_prompt_tests {
     }
 
     #[test]
-    fn presence_transition_first_resolve_publishes() {
+    fn presence_transition_first_resolve_seeds_without_publishing() {
+        // First resolve after startup must NOT publish — it only
+        // seeds `last`. Otherwise presence automations would re-fire
+        // on every service restart.
         let mut last = None;
         assert_eq!(
             presence_transition(&mut last, niles_presence::HomeState::Home,),
-            Some(niles_presence::HomeState::Home),
+            None,
         );
         assert_eq!(last, Some(niles_presence::HomeState::Home));
+    }
+
+    #[test]
+    fn presence_transition_after_seed_publishes_on_change() {
+        // The first genuine transition after the startup seed does publish.
+        let mut last = None;
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Home,),
+            None,
+        );
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Away,),
+            Some(niles_presence::HomeState::Away),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Away));
     }
 
     #[test]
