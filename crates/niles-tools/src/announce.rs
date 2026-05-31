@@ -23,11 +23,10 @@ impl Tool for AnnounceTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "announce".into(),
-            description:
-                "Speak an unprompted notification to a specific room or the default satellite. \
+            description: "Speak an unprompted notification to a specific room. \
                 Use this when the system needs to proactively inform the user of something \
                 (e.g., a timer finished, a device state changed, a reminder)."
-                    .into(),
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -94,6 +93,7 @@ impl Tool for AnnounceTool {
             niles_notifications::DeliveryOutcome::Failed => {
                 ("failed", Some("delivery backend unavailable".to_string()))
             }
+            _ => ("failed", Some("unknown delivery outcome".to_string())),
         };
 
         Ok(json!({

@@ -1840,7 +1840,6 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
-        notifications: Some(notifications.clone()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -1896,6 +1895,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
             disconnect = disconnects_rx.recv() => {
                 if let Some(peer) = disconnect {
                     tracker.drop_peer(peer);
+                    let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
+                    index.retain(|_, addr| *addr != peer);
                 }
             }
             _ = tokio::signal::ctrl_c() => {
@@ -1914,7 +1915,6 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 /// Shared by every spawned dispatch task. Cheaply cloneable —
 /// `MqttPublisher`, `Arc`, `bool` all clone in constant time.
 #[derive(Clone)]
-#[allow(dead_code)]
 struct DispatchCtx {
     publisher: MqttPublisher,
     registry: Arc<DeviceRegistry>,
@@ -1936,7 +1936,6 @@ struct DispatchCtx {
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
     review: niles_config::SkillsReviewConfig,
-    notifications: Option<Arc<NotificationCenter>>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -3054,7 +3053,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
-        notifications: Some(notifications.clone()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -3081,6 +3079,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             disconnect = disconnects_rx.recv() => {
                 if let Some(peer) = disconnect {
                     session_tracker.drop_peer(peer);
+                    let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
+                    index.retain(|_, addr| *addr != peer);
                 }
             }
             _ = ticker.tick() => {

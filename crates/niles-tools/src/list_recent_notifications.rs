@@ -62,12 +62,14 @@ impl Tool for ListRecentNotificationsTool {
                         niles_notifications::Priority::Routine => "routine",
                         niles_notifications::Priority::Important => "important",
                         niles_notifications::Priority::Urgent => "urgent",
+                        _ => "unknown",
                     },
                     "room": n.room,
                     "outcome": match n.outcome {
                         niles_notifications::DeliveryOutcome::Delivered => "delivered",
                         niles_notifications::DeliveryOutcome::Suppressed => "suppressed",
                         niles_notifications::DeliveryOutcome::Failed => "failed",
+                        _ => "unknown",
                     },
                     "created_at": n.created_at.to_rfc3339(),
                 })
