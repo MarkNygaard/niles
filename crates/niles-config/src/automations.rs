@@ -37,6 +37,7 @@ pub struct AutomationRuleDto {
     pub trigger: TriggerDto,
     #[serde(default)]
     pub conditions: Vec<ConditionDto>,
+    #[serde(default)]
     pub actions: Vec<ActionDto>,
 }
 

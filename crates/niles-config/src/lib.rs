@@ -1812,6 +1812,22 @@ priority = "routine"
     }
 
     #[test]
+    fn automations_omitted_actions_defaults_to_empty() {
+        let toml = format!(
+            r#"{}
+[[automation]]
+id = "no-actions"
+trigger = {{ type = "timer_fired" }}
+"#,
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.automations.rules.len(), 1);
+        assert!(cfg.automations.rules[0].actions.is_empty());
+    }
+
+    #[test]
     fn rejects_unknown_automation_field() {
         let toml = format!(
             r#"{}
