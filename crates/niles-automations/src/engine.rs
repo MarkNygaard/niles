@@ -75,6 +75,7 @@ impl AutomationEngine {
                 .iter()
                 .all(|c| c.evaluate(&self.registry, now, self.tz))
             {
+                tracing::debug!("automation '{}' conditions not met", rule.id);
                 continue;
             }
 
@@ -91,6 +92,7 @@ impl AutomationEngine {
                         let key = (rule.id.clone(), device.clone());
                         let mut dedup = self.dedup.lock().await;
                         if let Some(&last) = dedup.get(&key)
+                            && now >= last
                             && now - last < self.dedup_window
                         {
                             tracing::debug!(
@@ -577,5 +579,147 @@ mod tests {
         engine.handle_event(&ev, fixed_now()).await;
 
         assert!(sink.calls().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multiple_conditions_all_must_pass() {
+        let registry = Arc::new(DeviceRegistry::new());
+        let motion = device_id("hallway", "motion");
+        let light = device_id("hallway", "light");
+        registry.upsert(make_device(&motion, true));
+        registry.upsert(make_device(&light, true));
+
+        let rule = Rule {
+            id: "r1".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::DeviceState {
+                device: Some(motion.clone()),
+                room: None,
+                on: Some(true),
+            },
+            conditions: vec![
+                Condition::TimeOfDay {
+                    after: Some(NaiveTime::from_hms_opt(10, 0, 0).unwrap()),
+                    before: Some(NaiveTime::from_hms_opt(14, 0, 0).unwrap()),
+                },
+                Condition::DeviceIs {
+                    device: light.clone(),
+                    on: true,
+                },
+            ],
+            actions: vec![Action::SetDevice {
+                device: light.clone(),
+                on: Some(false),
+                brightness: None,
+                kelvin: None,
+            }],
+        };
+
+        let (engine, sink, _notifier) = engine_with_rules(vec![rule], registry);
+        let ev = Event::DeviceStateChanged {
+            id: motion,
+            state: state(true),
+        };
+        engine.handle_event(&ev, fixed_now()).await;
+
+        assert_eq!(sink.calls().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn multiple_conditions_one_fails_blocks_dispatch() {
+        let registry = Arc::new(DeviceRegistry::new());
+        let motion = device_id("hallway", "motion");
+        let light = device_id("hallway", "light");
+        registry.upsert(make_device(&motion, true));
+        registry.upsert(make_device(&light, false));
+
+        let rule = Rule {
+            id: "r1".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::DeviceState {
+                device: Some(motion.clone()),
+                room: None,
+                on: Some(true),
+            },
+            conditions: vec![
+                Condition::TimeOfDay {
+                    after: Some(NaiveTime::from_hms_opt(10, 0, 0).unwrap()),
+                    before: Some(NaiveTime::from_hms_opt(14, 0, 0).unwrap()),
+                },
+                Condition::DeviceIs {
+                    device: light.clone(),
+                    on: true,
+                },
+            ],
+            actions: vec![Action::SetDevice {
+                device: light.clone(),
+                on: Some(false),
+                brightness: None,
+                kelvin: None,
+            }],
+        };
+
+        let (engine, sink, _notifier) = engine_with_rules(vec![rule], registry);
+        let ev = Event::DeviceStateChanged {
+            id: motion,
+            state: state(true),
+        };
+        engine.handle_event(&ev, fixed_now()).await;
+
+        assert!(sink.calls().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dedup_allows_dispatch_after_clock_skew() {
+        let registry = Arc::new(DeviceRegistry::new());
+        let id = device_id("kitchen", "motion");
+        let target = device_id("kitchen", "light");
+        registry.upsert(make_device(&id, true));
+
+        let rule = Rule {
+            id: "r1".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::DeviceState {
+                device: Some(id.clone()),
+                room: None,
+                on: Some(true),
+            },
+            conditions: vec![],
+            actions: vec![Action::SetDevice {
+                device: target.clone(),
+                on: Some(true),
+                brightness: None,
+                kelvin: None,
+            }],
+        };
+
+        let sink = Arc::new(RecordingSink::new());
+        let engine = Arc::new(
+            AutomationEngine::new(
+                vec![rule],
+                registry,
+                Tz::UTC,
+                sink.clone(),
+                None::<Arc<dyn Notifier>>,
+            )
+            .with_dedup_window(Duration::from_secs(60)),
+        );
+
+        let ev = Event::DeviceStateChanged {
+            id: id.clone(),
+            state: state(true),
+        };
+
+        let first = fixed_now();
+        engine.handle_event(&ev, first).await;
+        assert_eq!(sink.calls().await.len(), 1);
+
+        // Clock goes backwards — should still allow dispatch because now <= last
+        let skewed = first - chrono::Duration::seconds(10);
+        engine.handle_event(&ev, skewed).await;
+        assert_eq!(sink.calls().await.len(), 2);
     }
 }

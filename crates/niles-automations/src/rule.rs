@@ -816,4 +816,119 @@ mod tests {
             NaiveTime::from_hms_opt(13, 0, 0).unwrap()
         ));
     }
+
+    #[test]
+    fn covers_non_wrapping_window() {
+        let start = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(14, 0, 0).unwrap();
+        assert!(covers(
+            Some(start),
+            Some(end),
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+        ));
+        assert!(covers(
+            Some(start),
+            Some(end),
+            NaiveTime::from_hms_opt(10, 0, 0).unwrap()
+        ));
+        assert!(covers(
+            Some(start),
+            Some(end),
+            NaiveTime::from_hms_opt(14, 0, 0).unwrap()
+        ));
+        assert!(!covers(
+            Some(start),
+            Some(end),
+            NaiveTime::from_hms_opt(9, 59, 0).unwrap()
+        ));
+        assert!(!covers(
+            Some(start),
+            Some(end),
+            NaiveTime::from_hms_opt(14, 1, 0).unwrap()
+        ));
+    }
+
+    #[test]
+    fn rejects_trailing_hyphen_id() {
+        let dto = rule_dto(
+            "bad-",
+            niles_config::TriggerDto::TimerFired { name: None },
+            vec![niles_config::ActionDto::Notify {
+                body: "x".into(),
+                room: None,
+                priority: None,
+            }],
+        );
+        assert!(Rule::from_dto(&dto, "z2m").is_err());
+    }
+
+    #[test]
+    fn device_action_no_match_wrong_device() {
+        let trigger = Trigger::DeviceAction {
+            device: device_id("kitchen", "switch"),
+            action: None,
+        };
+        let ev = Event::DeviceAction {
+            id: device_id("hallway", "switch"),
+            action: "on_press".into(),
+        };
+        assert!(!trigger.matches(&ev));
+    }
+
+    #[test]
+    fn device_state_no_match_non_state_event() {
+        let trigger = Trigger::DeviceState {
+            device: None,
+            room: None,
+            on: None,
+        };
+        let ev = Event::DeviceAction {
+            id: device_id("kitchen", "switch"),
+            action: "on_press".into(),
+        };
+        assert!(!trigger.matches(&ev));
+    }
+
+    #[test]
+    fn timer_fired_matches_both_none() {
+        let trigger = Trigger::TimerFired { name: None };
+        let ev = Event::TimerFired {
+            id: 1,
+            name: None,
+            origin: "127.0.0.1:1".parse().unwrap(),
+        };
+        assert!(trigger.matches(&ev));
+    }
+
+    #[test]
+    fn timer_fired_no_match_named_vs_none() {
+        let trigger = Trigger::TimerFired {
+            name: Some("pasta".into()),
+        };
+        let ev = Event::TimerFired {
+            id: 1,
+            name: None,
+            origin: "127.0.0.1:1".parse().unwrap(),
+        };
+        assert!(!trigger.matches(&ev));
+    }
+
+    #[test]
+    fn device_is_present_false_matches() {
+        let registry = DeviceRegistry::new();
+        let id = device_id("kitchen", "light");
+        registry.upsert(niles_core::Device::new(
+            id.clone(),
+            DeviceState {
+                on: Some(false),
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        ));
+        let cond = Condition::DeviceIs {
+            device: id,
+            on: false,
+        };
+        assert!(cond.evaluate(&registry, Utc::now(), Tz::UTC));
+    }
 }

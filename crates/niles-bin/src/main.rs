@@ -2727,6 +2727,7 @@ struct MqttDeviceSink {
 impl DeviceSink for MqttDeviceSink {
     async fn set(&self, device: &DeviceId, desired: &DeviceState) {
         if !is_actionable(desired) {
+            tracing::debug!("[automation] skipped set for {device}: no actionable fields");
             return;
         }
         let (topic, payload) = format_set_command(&self.z2m_prefix, device, desired);
@@ -2752,7 +2753,10 @@ impl Notifier for CenterNotifier {
             AutomationPriority::Routine => niles_notifications::Priority::Routine,
             AutomationPriority::Important => niles_notifications::Priority::Important,
             AutomationPriority::Urgent => niles_notifications::Priority::Urgent,
-            _ => niles_notifications::Priority::Routine,
+            _ => {
+                tracing::warn!("[automation] unknown priority variant, falling back to Routine");
+                niles_notifications::Priority::Routine
+            }
         };
         self.center.deliver(body, room.map(String::from), p);
     }
