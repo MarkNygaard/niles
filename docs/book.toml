@@ -1,0 +1,24 @@
+[book]
+title = "Niles Documentation"
+authors = ["Mark Nygaard"]
+description = "Documentation for Niles — Neural Intelligence, Lightweight Edge System"
+language = "en"
+multilingual = false
+src = "src"
+create-missing = false
+
+[build]
+build-dir = "../target/mdbook"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/MarkNygaard/niles"
+edit-url-template = "https://github.com/MarkNygaard/niles/edit/main/docs/src/{path}"
+
+[output.html.search]
+enable = true
+
+[output.html.fold]
+enable = true
+level = 1

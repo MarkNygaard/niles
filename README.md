@@ -8,6 +8,8 @@ It runs locally on small hardware (a Linux host or Kubernetes cluster), bridges 
 
 ## Documentation
 
+A navigable docs site lives at [docs/](docs/). Build locally with `mdbook serve docs` and browse at <http://localhost:3000>.
+
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architectural spec: hardware, voice pipeline, lighting model, scenes, timers, integrations, permissions, deployment.
 - **[CLAUDE.md](CLAUDE.md)** — project orientation for Claude Code and other AI coding agents.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
