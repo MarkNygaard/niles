@@ -1785,6 +1785,13 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let presence = build_presence(&cfg.presence);
+    let _presence_handle = presence.as_ref().map(|p| {
+        spawn_presence_poll_loop(
+            p.aggregator.clone(),
+            p.sources.clone(),
+            cfg.presence.poll_seconds,
+        )
+    });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
     let mut tools = build_tool_registry(
         registry.clone(),
@@ -1984,6 +1991,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     server_handle.abort();
     source_handle.abort();
     timer_handle.abort();
+    if let Some(h) = _presence_handle {
+        h.abort();
+    }
     Ok(())
 }
 

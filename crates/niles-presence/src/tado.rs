@@ -149,7 +149,8 @@ impl PresenceSource for TadoSource {
         let token = self.ensure_token().await?;
         let url = format!(
             "{}/api/v2/homes/{}/mobileDevices",
-            self.cfg.base_url, self.cfg.home_id
+            self.cfg.base_url.trim_end_matches('/'),
+            self.cfg.home_id
         );
 
         let (status, body) = self.transport.get_bearer(&url, &token).await?;
@@ -357,5 +358,39 @@ mod tests {
         let (_mock, source) = source_with(vec![auth_ok(), Ok((200, "[]".into()))]);
         let sig = source.poll().await.unwrap();
         assert!(!sig.anyone_home);
+    }
+
+    #[tokio::test]
+    async fn token_refreshed_when_expired() {
+        let (mock, source) = source_with(vec![auth_ok(), devices_home()]);
+        // Seed an expired token directly into the cache.
+        {
+            let mut cache = source.token.lock().await;
+            *cache = Some(CachedToken {
+                access_token: "expired".into(),
+                expires_at: Utc::now() - chrono::Duration::seconds(60),
+            });
+        }
+        let sig = source.poll().await.unwrap();
+        assert!(sig.anyone_home);
+        assert_eq!(mock.post_count(), 1); // re-authed
+        assert_eq!(mock.get_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn trims_trailing_slash_from_base_url() {
+        let mock = MockTransport::new(vec![auth_ok(), devices_home()]);
+        let cfg = TadoConfig {
+            username: "u".into(),
+            password: "p".into(),
+            home_id: 123,
+            base_url: "https://my.tado.com/".into(),
+            ..Default::default()
+        };
+        let source = TadoSource::with_transport(cfg, Arc::new(mock.clone()));
+        let _ = source.poll().await.unwrap();
+        let urls = mock.get_calls.lock().unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(!urls[0].contains("://my.tado.com//api"));
     }
 }
