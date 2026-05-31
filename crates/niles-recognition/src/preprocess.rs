@@ -41,6 +41,7 @@ pub fn log_mel(pcm_f32: &[f32]) -> Vec<f32> {
 
     // Compute log-mel features frame by frame
     let mut mel_energies = vec![0.0_f32; N_MEL * n_frames];
+    let mut time_buf = vec![0.0_f32; N_FFT];
 
     for frame_idx in 0..n_frames {
         let start = frame_idx * HOP;
@@ -48,7 +49,7 @@ pub fn log_mel(pcm_f32: &[f32]) -> Vec<f32> {
         let frame_len = end - start;
 
         // Windowed frame, zero-padded to N_FFT
-        let mut time_buf = vec![0.0_f32; N_FFT];
+        time_buf.fill(0.0);
         for i in 0..frame_len {
             time_buf[i] = pcm_f32[start + i] * window[i];
         }
@@ -56,17 +57,13 @@ pub fn log_mel(pcm_f32: &[f32]) -> Vec<f32> {
         fft.process(&mut time_buf, &mut spectrum)
             .expect("FFT process failed");
 
-        // Power spectrum
-        let mut power = vec![0.0_f32; n_freq_bins];
-        for (i, c) in spectrum.iter().enumerate().take(n_freq_bins) {
-            power[i] = c.re * c.re + c.im * c.im;
-        }
-
-        // Apply mel filterbank
+        // Apply mel filterbank directly from spectrum (no intermediate power vec)
         for mel_idx in 0..N_MEL {
             let mut energy = 0.0_f32;
             for freq_idx in 0..n_freq_bins {
-                energy += power[freq_idx] * mel_fb[[mel_idx, freq_idx]];
+                let c = spectrum[freq_idx];
+                let power = c.re * c.re + c.im * c.im;
+                energy += power * mel_fb[[mel_idx, freq_idx]];
             }
             mel_energies[mel_idx * n_frames + frame_idx] = energy.ln_1p();
         }
@@ -132,6 +129,26 @@ fn mel_filterbank() -> &'static Array2<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn num_frames_zero_samples() {
+        assert_eq!(num_frames(0), 0);
+    }
+
+    #[test]
+    fn num_frames_just_below_window() {
+        assert_eq!(num_frames(WIN_LEN - 1), 0);
+    }
+
+    #[test]
+    fn num_frames_exactly_window() {
+        assert_eq!(num_frames(WIN_LEN), 1);
+    }
+
+    #[test]
+    fn num_frames_window_plus_hop() {
+        assert_eq!(num_frames(WIN_LEN + HOP), 2);
+    }
 
     #[test]
     fn num_frames_one_second() {

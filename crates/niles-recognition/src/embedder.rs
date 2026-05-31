@@ -147,7 +147,10 @@ impl EcapaTdnnEmbedder {
 
         let pcm_f32: Vec<f32> = pcm.iter().map(|&s| s as f32 / 32768.0).collect();
 
-        let mut session = self.session.lock().unwrap();
+        let mut session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let input_tensor = match self.input_kind {
             InputKind::RawPcm => {

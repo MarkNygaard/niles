@@ -60,4 +60,12 @@ mod tests {
         l2_normalize(&mut v);
         assert_eq!(v, [0.0, 0.0]);
     }
+
+    #[test]
+    fn cosine_similarity_of_zero_vectors() {
+        let a = [0.0_f32, 0.0, 0.0];
+        let b = [0.0_f32, 0.0, 0.0];
+        // l2_normalize is a no-op for zero vectors, so dot product is 0
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
 }
