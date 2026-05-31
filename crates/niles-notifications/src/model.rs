@@ -17,11 +17,6 @@ pub enum Priority {
 }
 
 impl Priority {
-    /// Returns true if this priority should be suppressed during quiet hours.
-    pub fn is_suppressed_by_quiet_hours(&self) -> bool {
-        matches!(self, Priority::Routine)
-    }
-
     /// Floor priority during quiet hours: Routine → Important.
     pub fn quiet_floor(&self) -> Self {
         match self {

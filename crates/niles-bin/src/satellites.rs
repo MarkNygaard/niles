@@ -51,18 +51,6 @@ impl SatelliteRegistry {
     pub fn room_for(&self, peer: SocketAddr) -> Option<&RoomName> {
         self.by_ip.get(&peer.ip())
     }
-
-    /// Reverse lookup: find a peer address for a given room name.
-    ///
-    /// Returns the first matching IP with port 0 (caller should
-    /// resolve the current port via the Wyoming outbound map).
-    #[allow(dead_code)]
-    pub fn peer_for_room(&self, room: &RoomName) -> Option<SocketAddr> {
-        self.by_ip
-            .iter()
-            .find(|(_, r)| *r == room)
-            .map(|(ip, _)| SocketAddr::new(*ip, 0))
-    }
 }
 
 #[cfg(test)]
