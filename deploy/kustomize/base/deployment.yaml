@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: niles
-          image: niles:latest
+          image: niles:v0.1.0
           imagePullPolicy: IfNotPresent
           args:
             - serve

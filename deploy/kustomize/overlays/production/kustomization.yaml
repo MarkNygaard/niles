@@ -9,7 +9,7 @@ resources:
 images:
   - name: niles
     newName: ghcr.io/marknygaard/niles
-    newTag: latest
+    newTag: v0.1.0
 
 configMapGenerator:
   - name: niles-config
