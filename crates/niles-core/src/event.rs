@@ -192,6 +192,9 @@ mod tests {
         let b = a;
         assert_eq!(a, b);
         assert_eq!(PresenceState::Away, PresenceState::Away);
+        assert_eq!(PresenceState::Unknown, PresenceState::Unknown);
         assert_ne!(PresenceState::Home, PresenceState::Away);
+        assert_ne!(PresenceState::Home, PresenceState::Unknown);
+        assert_ne!(PresenceState::Away, PresenceState::Unknown);
     }
 }

@@ -993,6 +993,17 @@ mod tests {
     }
 
     #[test]
+    fn presence_trigger_filter_matches_unknown() {
+        let trigger = Trigger::Presence {
+            state: Some(PresenceFilter::Unknown),
+        };
+        let ev = Event::PresenceChanged {
+            state: niles_core::PresenceState::Unknown,
+        };
+        assert!(trigger.matches(&ev));
+    }
+
+    #[test]
     fn presence_trigger_no_match_non_presence_event() {
         let trigger = Trigger::Presence { state: None };
         let ev = Event::DeviceStateChanged {
@@ -1035,6 +1046,50 @@ mod tests {
             rule.trigger,
             Trigger::Presence {
                 state: Some(PresenceFilter::Away)
+            }
+        ));
+    }
+
+    #[test]
+    fn dto_presence_home_round_trips() {
+        let dto = rule_dto(
+            "presence-home",
+            niles_config::TriggerDto::Presence {
+                state: Some("home".into()),
+            },
+            vec![niles_config::ActionDto::Notify {
+                body: "x".into(),
+                room: None,
+                priority: None,
+            }],
+        );
+        let rule = Rule::from_dto(&dto, "z2m").unwrap();
+        assert!(matches!(
+            rule.trigger,
+            Trigger::Presence {
+                state: Some(PresenceFilter::Home)
+            }
+        ));
+    }
+
+    #[test]
+    fn dto_presence_unknown_round_trips() {
+        let dto = rule_dto(
+            "presence-unknown",
+            niles_config::TriggerDto::Presence {
+                state: Some("unknown".into()),
+            },
+            vec![niles_config::ActionDto::Notify {
+                body: "x".into(),
+                room: None,
+                priority: None,
+            }],
+        );
+        let rule = Rule::from_dto(&dto, "z2m").unwrap();
+        assert!(matches!(
+            rule.trigger,
+            Trigger::Presence {
+                state: Some(PresenceFilter::Unknown)
             }
         ));
     }

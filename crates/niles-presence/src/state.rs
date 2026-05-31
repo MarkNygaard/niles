@@ -65,15 +65,11 @@ pub struct PresenceSnapshot {
 }
 
 impl From<HomeState> for niles_core::PresenceState {
-    #[allow(unreachable_patterns)]
     fn from(value: HomeState) -> Self {
         match value {
             HomeState::Home => niles_core::PresenceState::Home,
             HomeState::Away => niles_core::PresenceState::Away,
             HomeState::Unknown => niles_core::PresenceState::Unknown,
-            // HomeState is #[non_exhaustive]; future variants surface
-            // as Unknown until a richer mapping is added.
-            _ => niles_core::PresenceState::Unknown,
         }
     }
 }

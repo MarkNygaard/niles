@@ -5102,6 +5102,17 @@ mod system_prompt_tests {
             presence_transition(&mut last, niles_presence::HomeState::Home,),
             Some(niles_presence::HomeState::Home),
         );
+        assert_eq!(last, Some(niles_presence::HomeState::Home));
+    }
+
+    #[test]
+    fn presence_transition_home_to_unknown_publishes() {
+        let mut last = Some(niles_presence::HomeState::Home);
+        assert_eq!(
+            presence_transition(&mut last, niles_presence::HomeState::Unknown,),
+            Some(niles_presence::HomeState::Unknown),
+        );
+        assert_eq!(last, Some(niles_presence::HomeState::Unknown));
     }
 
     #[test]
