@@ -12,4 +12,5 @@
 
 # Reference
 - [Contributing](contributing.md)
+- [Code of conduct](code-of-conduct.md)
 - [Glossary](glossary.md)
