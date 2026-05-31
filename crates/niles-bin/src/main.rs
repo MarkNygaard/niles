@@ -1481,6 +1481,13 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let presence = build_presence(&cfg.presence);
+    let presence_handle = presence.as_ref().map(|p| {
+        spawn_presence_poll_loop(
+            p.aggregator.clone(),
+            p.sources.clone(),
+            cfg.presence.poll_seconds,
+        )
+    });
     let presence_agg = presence.as_ref().map(|p| p.aggregator.clone());
     let tools_registry = build_tool_registry(
         registry.clone(),
@@ -1562,6 +1569,9 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     }
 
     source_handle.abort();
+    if let Some(h) = presence_handle {
+        h.abort();
+    }
     Ok(())
 }
 
