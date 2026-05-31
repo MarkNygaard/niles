@@ -147,7 +147,10 @@ impl ArchonClient {
             "/api/workflows/runs/{}/cancel",
             encode_path(run_id)
         ));
-        let body = self.transport.post(&url, "{}").await?;
+        let body = self.transport.post(&url, "{}").await.map_err(|e| match e {
+            Error::BadStatus { status: 404, .. } => Error::RunNotFound { id: run_id.into() },
+            other => other,
+        })?;
         let parsed: CancelResp = serde_json::from_str(&body).map_err(|e| Error::Parse {
             reason: e.to_string(),
         })?;
@@ -433,6 +436,16 @@ mod tests {
         let outcome = client.cancel_workflow_run("r1").await.unwrap();
         assert!(outcome.success);
         assert_eq!(outcome.message, Some("cancelled".into()));
+    }
+
+    #[tokio::test]
+    async fn cancel_workflow_run_404_maps_to_run_not_found() {
+        let (_, client) = client_with(vec![Err(Error::BadStatus {
+            status: 404,
+            body: "not found".into(),
+        })]);
+        let err = client.cancel_workflow_run("r-missing").await.unwrap_err();
+        assert!(matches!(err, Error::RunNotFound { id } if id == "r-missing"));
     }
 
     #[tokio::test]
