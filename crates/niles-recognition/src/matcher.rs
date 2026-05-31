@@ -98,10 +98,10 @@ impl Matcher {
             }
         }
 
-        if best_score >= self.threshold {
+        if best_score >= self.threshold && best.is_some() {
             let (speaker, display_name) = best
                 .map(|(s, d)| (s.to_string(), d.to_string()))
-                .unwrap_or_default();
+                .expect("best must be present when score passes threshold");
             MatchOutcome::Match {
                 speaker,
                 display_name,
@@ -322,6 +322,40 @@ mod tests {
         };
         let query = synth_one(1);
         let matcher = Matcher::new(vec![empty_speaker], 0.5, MatchStrategy::Centroid);
+        let outcome = matcher.classify(&query);
+        assert!(matches!(
+            outcome,
+            MatchOutcome::Unknown {
+                nearest_speaker: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn all_empty_speakers_never_match_even_with_low_threshold() {
+        let empty_a = EnrolledSpeaker {
+            speaker: "a".to_string(),
+            display_name: "A".to_string(),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            clip_count: 0,
+            embeddings: vec![],
+        };
+        let empty_b = EnrolledSpeaker {
+            speaker: "b".to_string(),
+            display_name: "B".to_string(),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            clip_count: 0,
+            embeddings: vec![],
+        };
+        let query = synth_one(7);
+        let matcher = Matcher::new(
+            vec![empty_a, empty_b],
+            f32::NEG_INFINITY,
+            MatchStrategy::MaxSimilarity,
+        );
         let outcome = matcher.classify(&query);
         assert!(matches!(
             outcome,
