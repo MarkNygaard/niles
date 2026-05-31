@@ -34,7 +34,7 @@ pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
-pub use llm::LlmConfig;
+pub use llm::{LlmConfig, LlmTier2Config};
 pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use persistence::PersistenceConfig;
@@ -553,6 +553,7 @@ kelvin = 2000
             base_url: "https://example".into(),
             model: "m".into(),
             timeout_seconds: 30,
+            tier2: None,
         };
         assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test_llm");
     }
@@ -568,9 +569,128 @@ kelvin = 2000
             base_url: "https://example".into(),
             model: "m".into(),
             timeout_seconds: 30,
+            tier2: None,
         };
         let err = cfg.resolve_api_key().unwrap_err();
         assert!(matches!(err, Error::InvalidSection { section: "llm", .. }));
+    }
+
+    #[test]
+    fn llm_tier2_absent_defaults_to_none() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        assert!(cfg.llm.tier2.is_none());
+    }
+
+    #[test]
+    fn llm_tier2_parses_with_defaults() {
+        let toml = format!(
+            "{}\n[llm.tier2]\napi_key_env = \"OPENAI_API_KEY\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let tier2 = cfg.llm.tier2.as_ref().unwrap();
+        assert_eq!(tier2.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(tier2.base_url, "https://api.openai.com/v1");
+        assert_eq!(tier2.model, "gpt-5.5");
+        assert_eq!(tier2.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn llm_tier2_explicit_overrides_parse() {
+        let toml = format!(
+            r#"{}
+[llm.tier2]
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://custom.openai.com/v1"
+model = "gpt-5.5-pro"
+timeout_seconds = 60
+"#,
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let tier2 = cfg.llm.tier2.as_ref().unwrap();
+        assert_eq!(tier2.base_url, "https://custom.openai.com/v1");
+        assert_eq!(tier2.model, "gpt-5.5-pro");
+        assert_eq!(tier2.timeout_seconds, 60);
+    }
+
+    #[test]
+    fn rejects_empty_llm_tier2_api_key_env() {
+        let toml = format!(
+            "{}\n[llm.tier2]\napi_key_env = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_llm_tier2_timeout() {
+        let toml = format!(
+            "{}\n[llm.tier2]\napi_key_env = \"OPENAI_API_KEY\"\ntimeout_seconds = 0\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_llm_tier2_base_url_without_http_scheme() {
+        let toml = format!(
+            "{}\n[llm.tier2]\napi_key_env = \"OPENAI_API_KEY\"\nbase_url = \"api.openai.com/v1\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_llm_tier2_model() {
+        let toml = format!(
+            "{}\n[llm.tier2]\napi_key_env = \"OPENAI_API_KEY\"\nmodel = \"\"\n",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn resolve_llm_tier2_api_key_reads_env_var() {
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::set_var("NILES_TEST_TIER2_KEY", "sk_test_tier2");
+        }
+        let cfg = LlmTier2Config {
+            api_key_env: "NILES_TEST_TIER2_KEY".into(),
+            base_url: "https://example".into(),
+            model: "m".into(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.resolve_api_key().unwrap(), "sk_test_tier2");
+    }
+
+    #[test]
+    fn resolve_llm_tier2_api_key_errors_when_missing() {
+        // SAFETY: in #[cfg(test)] only.
+        unsafe {
+            std::env::remove_var("NILES_TEST_DEFINITELY_NOT_SET_TIER2_KEY_XYZ");
+        }
+        let cfg = LlmTier2Config {
+            api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_TIER2_KEY_XYZ".into(),
+            base_url: "https://example".into(),
+            model: "m".into(),
+            timeout_seconds: 30,
+        };
+        let err = cfg.resolve_api_key().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidSection {
+                section: "llm.tier2",
+                ..
+            }
+        ));
     }
 
     #[test]

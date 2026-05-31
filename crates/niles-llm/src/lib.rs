@@ -1,18 +1,22 @@
-//! Tier 1 LLM adapter layer.
+//! Tier 1+2 LLM adapter layer.
 //!
 //! v0.1 ships one provider — Groq chat-completions (default model:
 //! `openai/gpt-oss-20b` per ARCHITECTURE.md model recommendations) —
 //! exposed through [`GroqClient::chat`]. Text in, text + tool-call
 //! responses out.
 //!
-//! No `Llm` trait yet — per repo convention, traits land alongside
-//! their second implementation, not the first.
+//! v0.2 adds [`OpenAiClient`] as a second backend behind the
+//! [`LlmBackend`] trait so `niles-bin` can hold `Arc<dyn LlmBackend>`
+//! for Tier 2 escalation.
 
+mod backend;
+mod chat;
 mod error;
 mod groq;
+mod openai;
 
+pub use backend::LlmBackend;
+pub use chat::{ChatRequest, ChatResponse, FinishReason, Message, Tool, ToolCall, ToolChoice};
 pub use error::{Error, Result};
-pub use groq::{
-    ChatRequest, ChatResponse, FinishReason, GroqClient, GroqConfig, Message, Tool, ToolCall,
-    ToolChoice,
-};
+pub use groq::{GroqClient, GroqConfig};
+pub use openai::{OpenAiClient, OpenAiConfig};
