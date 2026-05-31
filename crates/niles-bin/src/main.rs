@@ -3229,6 +3229,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     api_handle.abort();
     observer_handle.abort();
     timer_handle.abort();
+    if let Some(h) = _presence_handle {
+        h.abort();
+    }
     serve_result
 }
 
