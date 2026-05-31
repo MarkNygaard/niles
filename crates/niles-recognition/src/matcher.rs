@@ -54,6 +54,10 @@ impl Matcher {
     }
 
     /// Classify `query` against the roster.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `query` is not 192-dim.
     pub fn classify(&self, query: &[f32]) -> MatchOutcome {
         assert_eq!(query.len(), 192, "query embedding must be 192-dim");
 
@@ -69,11 +73,16 @@ impl Matcher {
 
         for (i, speaker) in self.speakers.iter().enumerate() {
             let score = match self.strategy {
-                MatchStrategy::MaxSimilarity => speaker
-                    .embeddings
-                    .iter()
-                    .map(|e| crate::similarity::cosine_similarity(query, &e.embedding))
-                    .fold(f32::NEG_INFINITY, f32::max),
+                MatchStrategy::MaxSimilarity => {
+                    if speaker.embeddings.is_empty() {
+                        continue;
+                    }
+                    speaker
+                        .embeddings
+                        .iter()
+                        .map(|e| crate::similarity::cosine_similarity(query, &e.embedding))
+                        .fold(f32::NEG_INFINITY, f32::max)
+                }
                 MatchStrategy::Centroid => {
                     let centroids = self.centroids.as_ref().unwrap();
                     match &centroids[i] {
@@ -277,6 +286,28 @@ mod tests {
             } => best_similarity,
         };
         assert!(centroid_conf >= max_conf);
+    }
+
+    #[test]
+    fn max_similarity_skips_empty_embeddings() {
+        let empty_speaker = EnrolledSpeaker {
+            speaker: "empty".to_string(),
+            display_name: "Empty".to_string(),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            clip_count: 0,
+            embeddings: vec![],
+        };
+        let query = synth_one(1);
+        let matcher = Matcher::new(vec![empty_speaker], 0.5, MatchStrategy::MaxSimilarity);
+        let outcome = matcher.classify(&query);
+        assert!(matches!(
+            outcome,
+            MatchOutcome::Unknown {
+                nearest_speaker: None,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -58,8 +58,8 @@ impl EnrollmentStore {
         }
 
         let _in_process = self.in_process_lock.lock().unwrap();
-        let _guard = lock_file(&self.store_lock_path(), Duration::from_secs(5))?;
-        drop(_guard);
+        let lock_path = self.lock_path_for(speaker);
+        let _guard = lock_file(&lock_path, Duration::from_secs(5))?;
 
         let mut e = embedding.to_vec();
         crate::similarity::l2_normalize(&mut e);
@@ -126,7 +126,11 @@ impl EnrollmentStore {
         let names = self.list()?;
         let mut out = Vec::with_capacity(names.len());
         for name in names {
-            out.push(self.load(&name)?);
+            match self.load(&name) {
+                Ok(s) => out.push(s),
+                Err(Error::NotFound { .. }) => {}
+                Err(e) => return Err(e),
+            }
         }
         Ok(out)
     }
@@ -135,11 +139,8 @@ impl EnrollmentStore {
     /// does not exist.
     pub fn bump_last_seen(&self, speaker: &str) -> Result<()> {
         validate_speaker_slug(speaker)?;
+        let _in_process = self.in_process_lock.lock().unwrap();
         let path = self.path_for(speaker);
-        if !path.exists() {
-            return Ok(());
-        }
-
         let lock_path = self.lock_path_for(speaker);
         let _lock = lock_file(&lock_path, Duration::from_secs(5))?;
 
@@ -160,8 +161,8 @@ impl EnrollmentStore {
     pub fn delete(&self, speaker: &str) -> Result<()> {
         validate_speaker_slug(speaker)?;
         let _in_process = self.in_process_lock.lock().unwrap();
-        let _guard = lock_file(&self.store_lock_path(), Duration::from_secs(5))?;
-        drop(_guard);
+        let lock_path = self.lock_path_for(speaker);
+        let _guard = lock_file(&lock_path, Duration::from_secs(5))?;
 
         let path = self.path_for(speaker);
         match std::fs::remove_file(&path) {
@@ -183,10 +184,6 @@ impl EnrollmentStore {
 
     fn lock_path_for(&self, slug: &str) -> PathBuf {
         self.dir.join(format!("{slug}.json.lock"))
-    }
-
-    fn store_lock_path(&self) -> PathBuf {
-        self.dir.join(".lock")
     }
 }
 
@@ -273,15 +270,16 @@ fn is_lock_contention(e: &std::io::Error) -> bool {
 
 /// Atomically write `bytes` to `path` using a temp file + rename.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let suffix = format!(
-        "tmp.{}_{}",
+    let tmp_name = format!(
+        "{}.tmp.{}_{}",
+        path.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     );
-    let tmp = path.with_extension(&suffix);
+    let tmp = path.with_file_name(&tmp_name);
     let result = (|| {
         let mut file = OpenOptions::new()
             .write(true)
@@ -405,6 +403,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = EnrollmentStore::open(tmp.path()).unwrap();
         let err = store.delete("nobody").unwrap_err();
+        assert!(matches!(err, Error::NotFound { speaker } if speaker == "nobody"));
+    }
+
+    #[test]
+    fn load_unknown_returns_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = EnrollmentStore::open(tmp.path()).unwrap();
+        let err = store.load("nobody").unwrap_err();
         assert!(matches!(err, Error::NotFound { speaker } if speaker == "nobody"));
     }
 

@@ -1,8 +1,8 @@
 //! niles-recognition — speaker identification via voice embeddings.
 //!
-//! v1 ships the inference layer only: an ECAPA-TDNN ONNX-Runtime
-//! embedder + cosine similarity helper. Enrollment + matching land in
-//! a follow-up PR.
+//! v1 ships the inference layer (ECAPA-TDNN ONNX-Runtime embedder +
+//! cosine similarity helper); v2 adds enrollment persistence and
+//! speaker matching.
 
 pub mod embedder;
 pub mod enrollment;
