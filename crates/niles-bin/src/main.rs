@@ -4,6 +4,9 @@ use anyhow::Context;
 use chrono::{Timelike, Utc};
 use clap::{Args, Parser, Subcommand};
 use niles_api::{AppState, DevicePublisher};
+use niles_automations::{
+    AutomationEngine, DeviceSink, Notifier, Priority as AutomationPriority, Rule,
+};
 use niles_capabilities::CapabilityLoader;
 use niles_config::Config;
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
@@ -2710,6 +2713,79 @@ fn load_morning_claims(dir: Option<&Path>) -> MorningClaimTracker {
     }
 }
 
+// ------------------------------------------------------------------
+// Automation engine wiring
+// ------------------------------------------------------------------
+
+struct MqttDeviceSink {
+    publisher: MqttPublisher,
+    z2m_prefix: String,
+    dry_run: bool,
+}
+
+#[async_trait::async_trait]
+impl DeviceSink for MqttDeviceSink {
+    async fn set(&self, device: &DeviceId, desired: &DeviceState) {
+        if !is_actionable(desired) {
+            tracing::debug!("[automation] skipped set for {device}: no actionable fields");
+            return;
+        }
+        let (topic, payload) = format_set_command(&self.z2m_prefix, device, desired);
+        if self.dry_run {
+            tracing::info!("[automation] [dry-run] {topic}  {payload}");
+            return;
+        }
+        match self.publisher.publish(&topic, payload.clone()).await {
+            Ok(()) => tracing::info!("[automation] published {topic}  {payload}"),
+            Err(e) => tracing::warn!("[automation] publish to {topic} failed: {e}"),
+        }
+    }
+}
+
+struct CenterNotifier {
+    center: Arc<NotificationCenter>,
+}
+
+#[async_trait::async_trait]
+impl Notifier for CenterNotifier {
+    async fn notify(&self, body: &str, room: Option<&str>, priority: AutomationPriority) {
+        let p = match priority {
+            AutomationPriority::Routine => niles_notifications::Priority::Routine,
+            AutomationPriority::Important => niles_notifications::Priority::Important,
+            AutomationPriority::Urgent => niles_notifications::Priority::Urgent,
+            _ => {
+                tracing::warn!("[automation] unknown priority variant, falling back to Routine");
+                niles_notifications::Priority::Routine
+            }
+        };
+        self.center.deliver(body, room.map(String::from), p);
+    }
+}
+
+fn build_automation_engine(
+    cfg: &niles_config::AutomationsConfig,
+    registry: Arc<DeviceRegistry>,
+    tz: chrono_tz::Tz,
+    sink: Arc<dyn DeviceSink>,
+    notifier: Option<Arc<dyn Notifier>>,
+) -> Option<Arc<AutomationEngine>> {
+    let mut rules = Vec::new();
+    for dto in &cfg.rules {
+        match Rule::from_dto(dto, "z2m") {
+            Ok(rule) => rules.push(rule),
+            Err(e) => tracing::warn!("skipping automation '{}': {e}", dto.id),
+        }
+    }
+    if rules.is_empty() {
+        tracing::info!("no valid automations loaded — automation engine disabled");
+        return None;
+    }
+    tracing::info!("automation engine loaded with {} rule(s)", rules.len());
+    Some(Arc::new(AutomationEngine::new(
+        rules, registry, tz, sink, notifier,
+    )))
+}
+
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
     let publisher = mqtt_client.publisher();
@@ -2962,6 +3038,27 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);
+
+    // Automation engine
+    let automation_sink = Arc::new(MqttDeviceSink {
+        publisher: publisher.clone(),
+        z2m_prefix: cfg.mqtt.z2m_prefix.clone(),
+        dry_run: args.dry_run,
+    });
+    let automation_notifier = Arc::new(CenterNotifier {
+        center: notifications.clone(),
+    });
+    let automation_engine = build_automation_engine(
+        &cfg.automations,
+        registry.clone(),
+        tz,
+        automation_sink,
+        Some(automation_notifier),
+    );
+    let _automation_handle = automation_engine
+        .as_ref()
+        .map(|engine| engine.clone().spawn(bus.clone()));
+
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
 
     let tools = Arc::new(tools);

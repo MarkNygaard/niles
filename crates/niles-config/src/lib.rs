@@ -7,6 +7,7 @@
 
 pub mod ambient_lights;
 pub mod api;
+pub mod automations;
 pub mod capabilities;
 pub mod error;
 pub mod history;
@@ -31,6 +32,7 @@ use std::path::Path;
 
 pub use ambient_lights::AmbientLightsConfig;
 pub use api::ApiConfig;
+pub use automations::{ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, TriggerDto};
 pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
@@ -84,6 +86,8 @@ pub struct Config {
     pub tts: TtsConfig,
     pub llm: LlmConfig,
     pub lighting: LightingConfig,
+    #[serde(default, rename = "automation")]
+    pub automations: AutomationsConfig,
 }
 
 impl Config {
@@ -143,6 +147,7 @@ impl Config {
         if let Some(routine) = &self.lighting.morning_routine {
             let _ = routine.to_morning_routine_config()?;
         }
+        self.automations.validate()?;
         Ok(())
     }
 }
@@ -1742,5 +1747,97 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
                 ..
             }
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // Automations section tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn automations_section_absent_defaults_empty() {
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.automations.rules.is_empty());
+    }
+
+    #[test]
+    fn automations_two_rules_parse() {
+        let toml = format!(
+            r#"{}
+[[automation]]
+id = "hallway-motion-night"
+description = "Turn on hallway light at night"
+[automation.trigger]
+type = "device_state"
+device = "z2m:hallway/motion"
+on = true
+[[automation.conditions]]
+kind = "time_of_day"
+after = "21:00"
+before = "06:00"
+[[automation.actions]]
+do = "set_device"
+device = "z2m:hallway/ceiling"
+on = true
+brightness = 30
+
+[[automation]]
+id = "timer-greet"
+[automation.trigger]
+type = "timer_fired"
+name = "morning"
+[[automation.actions]]
+do = "notify"
+body = "Good morning!"
+priority = "routine"
+"#,
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.automations.rules.len(), 2);
+
+        let r1 = &cfg.automations.rules[0];
+        assert_eq!(r1.id, "hallway-motion-night");
+        assert!(matches!(r1.trigger, TriggerDto::DeviceState { .. }));
+        assert_eq!(r1.conditions.len(), 1);
+        assert!(matches!(r1.conditions[0], ConditionDto::TimeOfDay { .. }));
+        assert_eq!(r1.actions.len(), 1);
+        assert!(matches!(r1.actions[0], ActionDto::SetDevice { .. }));
+
+        let r2 = &cfg.automations.rules[1];
+        assert_eq!(r2.id, "timer-greet");
+        assert!(matches!(r2.trigger, TriggerDto::TimerFired { .. }));
+        assert!(matches!(r2.actions[0], ActionDto::Notify { .. }));
+    }
+
+    #[test]
+    fn automations_omitted_actions_defaults_to_empty() {
+        let toml = format!(
+            r#"{}
+[[automation]]
+id = "no-actions"
+trigger = {{ type = "timer_fired" }}
+"#,
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.automations.rules.len(), 1);
+        assert!(cfg.automations.rules[0].actions.is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_automation_field() {
+        let toml = format!(
+            r#"{}
+[[automation]]
+idd = "x"
+trigger = {{ type = "timer_fired" }}
+actions = [{{ do = "notify", body = "hi" }}]
+"#,
+            valid_toml().trim_end_matches('\n')
+        );
+        assert!(Config::load_from_str(&toml).is_err());
     }
 }
