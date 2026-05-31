@@ -26,9 +26,9 @@ impl NotificationCenter {
     ///
     /// # Panics
     ///
-    /// Panics in debug builds if `capacity` is zero.
+    /// Panics if `capacity` is zero.
     pub fn new(capacity: usize) -> Self {
-        debug_assert!(capacity > 0, "NotificationCenter capacity must be > 0");
+        assert!(capacity > 0, "NotificationCenter capacity must be > 0");
         Self {
             buffer: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
@@ -255,5 +255,11 @@ mod tests {
         let parts: Vec<&str> = n.id.split('-').collect();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[1].len(), 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "NotificationCenter capacity must be > 0")]
+    fn new_panics_when_capacity_zero() {
+        let _ = NotificationCenter::new(0);
     }
 }
