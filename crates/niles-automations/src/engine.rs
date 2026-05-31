@@ -690,8 +690,6 @@ mod tests {
 
         assert_eq!(sink.calls().await.len(), 1);
 
-        // Wait out the dedup window, then fire again.
-        tokio::time::sleep(Duration::from_millis(60)).await;
         let later = fixed_now() + chrono::Duration::milliseconds(60);
         engine.handle_event(&ev, later).await;
 
