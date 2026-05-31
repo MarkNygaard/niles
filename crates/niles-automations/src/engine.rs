@@ -29,8 +29,17 @@ pub struct AutomationEngine {
     tz: Tz,
     device_sink: Arc<dyn DeviceSink>,
     notifier: Option<Arc<dyn Notifier>>,
-    dedup: Mutex<HashMap<(String, DeviceId), DateTime<Utc>>>,
+    dedup: Mutex<HashMap<DedupKey, DateTime<Utc>>>,
     dedup_window: chrono::Duration,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct DedupKey {
+    rule_id: String,
+    device: DeviceId,
+    on: Option<bool>,
+    brightness: Option<u8>,
+    kelvin: Option<u16>,
 }
 
 impl AutomationEngine {
@@ -91,7 +100,13 @@ impl AutomationEngine {
                         brightness,
                         kelvin,
                     } => {
-                        let key = (rule.id.clone(), device.clone());
+                        let key = DedupKey {
+                            rule_id: rule.id.clone(),
+                            device: device.clone(),
+                            on: *on,
+                            brightness: *brightness,
+                            kelvin: *kelvin,
+                        };
                         let mut dedup = self.dedup.lock().await;
                         if let Some(&last) = dedup.get(&key)
                             && now >= last
@@ -681,6 +696,63 @@ mod tests {
         engine.handle_event(&ev, later).await;
 
         assert_eq!(sink.calls().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn dedup_does_not_suppress_distinct_desired_state() {
+        let registry = Arc::new(DeviceRegistry::new());
+        let id = device_id("kitchen", "motion");
+        let target = device_id("kitchen", "light");
+        registry.upsert(make_device(&id, true));
+
+        let rule = Rule {
+            id: "r1".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::DeviceState {
+                device: Some(id.clone()),
+                room: None,
+                on: Some(true),
+            },
+            conditions: vec![],
+            actions: vec![
+                Action::SetDevice {
+                    device: target.clone(),
+                    on: Some(true),
+                    brightness: None,
+                    kelvin: None,
+                },
+                Action::SetDevice {
+                    device: target.clone(),
+                    on: Some(false),
+                    brightness: None,
+                    kelvin: None,
+                },
+            ],
+        };
+
+        let sink = Arc::new(RecordingSink::new());
+        let engine = Arc::new(
+            AutomationEngine::new(
+                vec![rule],
+                registry,
+                Tz::UTC,
+                sink.clone(),
+                None::<Arc<dyn Notifier>>,
+            )
+            .with_dedup_window(Duration::from_secs(5)),
+        );
+
+        let ev = Event::DeviceStateChanged {
+            id,
+            state: state(true),
+        };
+        engine.handle_event(&ev, fixed_now()).await;
+
+        let calls = sink.calls().await;
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1.on, Some(true));
+        assert_eq!(calls[1].1.on, Some(false));
     }
 
     #[tokio::test]
