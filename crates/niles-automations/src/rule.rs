@@ -993,6 +993,17 @@ mod tests {
     }
 
     #[test]
+    fn presence_trigger_filter_matches_home() {
+        let trigger = Trigger::Presence {
+            state: Some(PresenceFilter::Home),
+        };
+        let ev = Event::PresenceChanged {
+            state: niles_core::PresenceState::Home,
+        };
+        assert!(trigger.matches(&ev));
+    }
+
+    #[test]
     fn presence_trigger_filter_matches_unknown() {
         let trigger = Trigger::Presence {
             state: Some(PresenceFilter::Unknown),
