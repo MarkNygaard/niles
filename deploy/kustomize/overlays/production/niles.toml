@@ -1,0 +1,67 @@
+[home]
+name = "Aarhus"
+latitude = 56.1572
+longitude = 10.2107
+timezone = "Europe/Copenhagen"
+locale = "da_DK"
+
+[mqtt]
+host = "mosquitto.home-automation.svc.cluster.local"
+port = 1883
+username_env = "NILES_MQTT_USERNAME"
+password_env = "NILES_MQTT_PASSWORD"
+
+[api]
+bind_address = "0.0.0.0:8080"
+
+[wyoming]
+bind_address = "0.0.0.0:10300"
+
+[stt]
+api_key_env = "GROQ_API_KEY"
+
+[tts]
+base_url = "http://piper.home-automation.svc.cluster.local:5000"
+
+[llm]
+api_key_env = "GROQ_API_KEY"
+
+[lighting]
+morning_start = "05:45"
+morning_end   = "06:30"
+sunset_start  = "21:30"
+sunset_end    = "23:00"
+night_floor_brightness = 15
+daytime_brightness     = 100
+
+[[lighting.color_temp_anchors]]
+time = "00:00"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "05:45"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "06:30"
+kelvin = 2700
+
+[[lighting.color_temp_anchors]]
+time = "12:00"
+kelvin = 4500
+
+[[lighting.color_temp_anchors]]
+time = "17:00"
+kelvin = 3500
+
+[[lighting.color_temp_anchors]]
+time = "21:30"
+kelvin = 2700
+
+[[lighting.color_temp_anchors]]
+time = "23:00"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "23:59"
+kelvin = 2000

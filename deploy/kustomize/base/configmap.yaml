@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: niles-config
+data:
+  # Placeholder — overlays override via configMapGenerator with behavior: replace.
+  niles.toml: |
+    [home]
+    name = "your home name"
+    latitude = 0.0
+    longitude = 0.0
+    timezone = "UTC"
+
+    [mqtt]
+    host = "mosquitto.home-automation.svc.cluster.local"
+    port = 1883
+    username_env = "NILES_MQTT_USERNAME"
+    password_env = "NILES_MQTT_PASSWORD"
+
+    [api]
+    bind_address = "0.0.0.0:8080"
+
+    [wyoming]
+    bind_address = "0.0.0.0:10300"
+
+    [stt]
+    api_key_env = "GROQ_API_KEY"
+
+    [tts]
+    base_url = "http://piper.home-automation.svc.cluster.local:5000"
+
+    [llm]
+    api_key_env = "GROQ_API_KEY"

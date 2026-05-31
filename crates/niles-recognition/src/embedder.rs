@@ -120,8 +120,7 @@ impl EcapaTdnnEmbedder {
                         actual: vec![],
                     });
                 }
-                let last_dim = shape.last().copied().unwrap_or(-1);
-                if last_dim != 192 && last_dim != -1 {
+                if !matches!(shape.last().copied(), Some(192) | Some(-1)) {
                     let actual = shape.iter().copied().collect();
                     return Err(Error::UnexpectedOutputShape {
                         path: cfg.model_path.clone(),
