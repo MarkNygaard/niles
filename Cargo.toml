@@ -37,6 +37,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 # `cfg.home.timezone` strings like "Europe/Copenhagen".
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10"
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
 serde_yaml = "0.9"
 tempfile = "3"
 fs2 = "0.4"
