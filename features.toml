@@ -1,0 +1,359 @@
+[preamble]
+text = """
+Niles is an AI-first home-automation system for private homes. It listens to natural-language voice commands, dispatches them through a tiered intent router, and can escalate to an LLM when a request exceeds the deterministic tier. The feature catalog below tracks every user-observable capability shipped so far. For the full architecture spec see ARCHITECTURE.md.
+"""
+
+[[feature]]
+id = "light-on-off"
+category = "voice.lighting"
+summary = "Turn a single light on or off by room and name"
+phrasings = ["turn on the kitchen light", "switch off the bedroom lamp"]
+since_pr = 3
+
+[[feature]]
+id = "light-brightness"
+category = "voice.lighting"
+summary = "Set a light's brightness to a specific percent"
+phrasings = ["set the living room light to 50 percent", "dim the hallway to twenty percent"]
+since_pr = 25
+
+[[feature]]
+id = "light-step"
+category = "voice.lighting"
+summary = "Step a light brighter or dimmer by one increment"
+phrasings = ["make it brighter", "dim the light a little"]
+since_pr = 27
+
+[[feature]]
+id = "light-temp-step"
+category = "voice.lighting"
+summary = "Step a light warmer or cooler by one color-temperature increment"
+phrasings = ["make it warmer", "cool down the light"]
+since_pr = 72
+
+[[feature]]
+id = "light-named-white"
+category = "voice.lighting"
+summary = "Set a light to a named white such as warm or cool"
+phrasings = ["set the light to warm white", "switch to cool white"]
+since_pr = 74
+
+[[feature]]
+id = "light-all-on-off"
+category = "voice.lighting"
+summary = "Turn all lights in a room on or off at once"
+phrasings = ["turn on all the lights", "switch everything off"]
+since_pr = 3
+
+[[feature]]
+id = "light-all-brightness"
+category = "voice.lighting"
+summary = "Set brightness for every light in a room simultaneously"
+phrasings = ["set all lights to 75 percent"]
+since_pr = 25
+
+[[feature]]
+id = "light-all-temp"
+category = "voice.lighting"
+summary = "Set color temperature for every light in a room simultaneously"
+phrasings = ["make all the lights warmer"]
+since_pr = 72
+
+[[feature]]
+id = "scene-save"
+category = "voice.scenes"
+summary = "Save the current device states as a named scene"
+phrasings = ["save this as movie mode", "remember this scene as dinner"]
+since_pr = 43
+
+[[feature]]
+id = "scene-apply"
+category = "voice.scenes"
+summary = "Restore a previously saved scene by name"
+phrasings = ["activate movie mode", "set the scene to dinner"]
+since_pr = 43
+
+[[feature]]
+id = "scene-list"
+category = "voice.scenes"
+summary = "List all saved scenes"
+phrasings = ["what scenes do we have", "list my scenes"]
+since_pr = 45
+
+[[feature]]
+id = "scene-delete"
+category = "voice.scenes"
+summary = "Delete a saved scene by name"
+phrasings = ["delete the dinner scene", "remove movie mode"]
+since_pr = 45
+
+[[feature]]
+id = "media-play-pause"
+category = "voice.media"
+summary = "Play or pause media playback on the active speaker"
+phrasings = ["play music", "pause the music"]
+since_pr = 65
+
+[[feature]]
+id = "media-volume-set"
+category = "voice.media"
+summary = "Set the speaker volume to a specific level"
+phrasings = ["set the volume to thirty", "turn the music down to ten"]
+since_pr = 65
+
+[[feature]]
+id = "media-volume-step"
+category = "voice.media"
+summary = "Raise or lower the speaker volume by one step"
+phrasings = ["turn it up", "make it quieter"]
+since_pr = 65
+
+[[feature]]
+id = "media-next-previous"
+category = "voice.media"
+summary = "Skip to the next or previous track"
+phrasings = ["next song", "previous track"]
+since_pr = 75
+
+[[feature]]
+id = "media-duck"
+category = "voice.media"
+summary = "Temporarily lower volume for voice responses"
+phrasings = ["duck the music", "lower the music while you speak"]
+since_pr = 73
+
+[[feature]]
+id = "timer-set"
+category = "voice.timers"
+summary = "Set a timer for a given duration"
+phrasings = ["set a timer for five minutes", "timer ten minutes"]
+since_pr = 3
+
+[[feature]]
+id = "timer-cancel"
+category = "voice.timers"
+summary = "Cancel an active timer by name or duration"
+phrasings = ["cancel the five minute timer", "stop the timer"]
+since_pr = 3
+
+[[feature]]
+id = "timer-list"
+category = "voice.timers"
+summary = "List all currently active timers"
+phrasings = ["what timers are running", "list my timers"]
+since_pr = 3
+
+[[feature]]
+id = "memory-add"
+category = "voice.memory"
+summary = "Append a note to the user's persistent memory"
+phrasings = ["remember that I like the lights dim", "add to my memory"]
+since_pr = 77
+
+[[feature]]
+id = "memory-replace"
+category = "voice.memory"
+summary = "Replace an existing memory entry"
+phrasings = ["update my memory to say I prefer warm white"]
+since_pr = 77
+
+[[feature]]
+id = "memory-remove"
+category = "voice.memory"
+summary = "Remove a note from the user's persistent memory"
+phrasings = ["forget that I like dim lights", "remove from my memory"]
+since_pr = 77
+
+[[feature]]
+id = "memory-view"
+category = "voice.memory"
+summary = "Show the contents of the user's persistent memory"
+phrasings = ["what do you know about me", "read my memory"]
+since_pr = 77
+
+[[feature]]
+id = "skill-mint"
+category = "voice.skills"
+summary = "Create a new skill from a natural-language description"
+phrasings = ["save this as a skill called bedtime", "mint a skill named movie night"]
+since_pr = 78
+
+[[feature]]
+id = "skill-patch"
+category = "voice.skills"
+summary = "Update an existing skill's body while keeping its name"
+phrasings = ["update the bedtime skill", "patch movie night"]
+since_pr = 78
+
+[[feature]]
+id = "skill-delete"
+category = "voice.skills"
+summary = "Delete a saved skill by name"
+phrasings = ["delete the bedtime skill", "remove movie night"]
+since_pr = 78
+
+[[feature]]
+id = "skill-view"
+category = "voice.skills"
+summary = "Read the full body of a saved skill"
+phrasings = ["show me the bedtime skill", "what is in movie night"]
+since_pr = 78
+
+[[feature]]
+id = "skill-curator"
+category = "voice.skills"
+summary = "Automatic background transitions for stale and archived skills"
+phrasings = ["run the skill curator", "clean up old skills"]
+since_pr = 80
+
+[[feature]]
+id = "skill-background-review"
+category = "voice.skills"
+summary = "Review skill suggestions generated in the background"
+phrasings = ["review my pending skills", "show background skill suggestions"]
+since_pr = 85
+
+[[feature]]
+id = "tier-two-escalation"
+category = "voice.general"
+summary = "Escalate a voice request to the Tier 2 LLM when Tier 0/1 cannot answer"
+phrasings = ["ask the smart assistant", "escalate this to tier two"]
+since_pr = 87
+
+[[feature]]
+id = "tool-weather"
+category = "llm.tools"
+summary = "Fetch current weather and forecast via Open-Meteo"
+since_pr = 81
+
+[[feature]]
+id = "tool-web-search"
+category = "llm.tools"
+summary = "Search the web via SearXNG and return summarized results"
+since_pr = 83
+
+[[feature]]
+id = "tool-datetime"
+category = "llm.tools"
+summary = "Return the current date and time in the configured timezone"
+since_pr = 84
+
+[[feature]]
+id = "tool-command-history"
+category = "llm.tools"
+summary = "Query the command-history log for past user requests"
+since_pr = 70
+
+[[feature]]
+id = "tool-device-history"
+category = "llm.tools"
+summary = "Query the device-state history log for past state changes"
+since_pr = 71
+
+[[feature]]
+id = "tool-explain-device-state"
+category = "llm.tools"
+summary = "Provide a natural-language explanation of a device's current state"
+since_pr = 70
+
+[[feature]]
+id = "tool-look-up-capability"
+category = "llm.tools"
+summary = "Retrieve a capability reference document by name for the LLM context"
+since_pr = 84
+
+[[feature]]
+id = "tool-sonos-transport"
+category = "llm.tools"
+summary = "Control Sonos speaker transport state via the speakers subsystem"
+since_pr = 65
+
+[[feature]]
+id = "tool-timer"
+category = "llm.tools"
+summary = "Set, cancel, and list timers via structured tool calls"
+since_pr = 3
+
+[[feature]]
+id = "tool-light-control"
+category = "llm.tools"
+summary = "Turn lights on or off and set brightness or color temperature"
+since_pr = 3
+
+[[feature]]
+id = "tool-scene-control"
+category = "llm.tools"
+summary = "Apply or delete saved scenes via structured tool calls"
+since_pr = 43
+
+[[feature]]
+id = "curve-brightness"
+category = "ambient.curve"
+summary = "Per-minute adaptive brightness curve based on time of day"
+since_pr = 5
+
+[[feature]]
+id = "curve-color-temp"
+category = "ambient.curve"
+summary = "Per-minute adaptive color-temperature curve based on time of day"
+since_pr = 7
+
+[[feature]]
+id = "curve-morning-routine"
+category = "ambient.curve"
+summary = "Gradual morning-routine ramp that respects per-room claims"
+since_pr = 24
+
+[[feature]]
+id = "manual-mode-override"
+category = "ambient.manual-mode"
+summary = "Clear manual-mode overrides after a configurable timeout"
+since_pr = 32
+
+[[feature]]
+id = "api-get-devices"
+category = "api.read"
+summary = "GET /devices returns the full device registry snapshot"
+since_pr = 13
+
+[[feature]]
+id = "api-get-room"
+category = "api.read"
+summary = "GET /rooms/{room} returns the devices in a single room"
+since_pr = 13
+
+[[feature]]
+id = "api-healthz"
+category = "api.read"
+summary = "GET /healthz returns a liveness probe for load balancers"
+since_pr = 13
+
+[[feature]]
+id = "api-post-device"
+category = "api.write"
+summary = "POST /rooms/{room}/{device} sends a state update to a device"
+since_pr = 59
+
+[[feature]]
+id = "api-events-stream"
+category = "api.events"
+summary = "WebSocket /events/stream pushes real-time device and system events"
+since_pr = 86
+
+[[feature]]
+id = "persistence-json-store"
+category = "runtime.persistence"
+summary = "JSON file persistence for timers, scenes, and morning-routine claims"
+since_pr = 64
+
+[[feature]]
+id = "observability-command-log"
+category = "runtime.observability"
+summary = "Structured command-history log for every voice and API request"
+since_pr = 70
+
+[[feature]]
+id = "observability-state-log"
+category = "runtime.observability"
+summary = "Structured device-state history log for every state change"
+since_pr = 71
