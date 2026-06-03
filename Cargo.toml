@@ -46,7 +46,7 @@ serde_yaml = "0.9"
 tempfile = "3"
 fs2 = "0.4"
 urlencoding = "2"
-rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 rand_chacha = "0.9"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
