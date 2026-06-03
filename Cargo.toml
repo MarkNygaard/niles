@@ -47,7 +47,7 @@ tempfile = "3"
 fs2 = "0.4"
 urlencoding = "2"
 rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "thread_rng"] }
-rand_chacha = "0.9"
+rand_chacha = "0.10"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
