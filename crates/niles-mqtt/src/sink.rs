@@ -157,6 +157,7 @@ mod tests {
                 on: Some(true),
                 brightness: Some(80),
                 color_temp_kelvin: Some(2700),
+                rgb: None,
                 // sensor fields — must be skipped:
                 temperature_celsius: Some(21.5),
                 humidity_percent: Some(50.0),
@@ -212,6 +213,10 @@ mod tests {
         }));
         assert!(is_actionable(&DeviceState {
             color_temp_kelvin: Some(3000),
+            ..Default::default()
+        }));
+        assert!(!is_actionable(&DeviceState {
+            rgb: Some([255, 128, 0]),
             ..Default::default()
         }));
         // Sensor-only state is not actionable:

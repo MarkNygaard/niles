@@ -144,6 +144,7 @@ impl Z2mState {
             on: self.state.as_deref().and_then(parse_on_off),
             brightness: self.brightness.map(z2m_brightness_to_percent),
             color_temp_kelvin: self.color_temp.and_then(mireds_to_kelvin),
+            rgb: None,
             temperature_celsius: self.temperature,
             humidity_percent: self.humidity,
             battery_percent: self.battery.map(|b| b.round().clamp(0.0, 100.0) as u8),

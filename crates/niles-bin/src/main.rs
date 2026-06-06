@@ -20,7 +20,8 @@ use niles_llm::{
 };
 use niles_memory::MemoryStore;
 use niles_mqtt::{
-    MqttClient, MqttOptions, MqttPublisher, Z2mSource, format_set_command, is_actionable,
+    CommandRouter, MqttClient, MqttOptions, MqttPublisher, WledSource, Z2mSource,
+    format_set_command, is_actionable,
 };
 use niles_notifications::NotificationCenter;
 use niles_presence::{PresenceAggregator, PresenceSource, TadoConfig, TadoSource};
@@ -333,6 +334,59 @@ fn build_ambient_set(cfg: &Config) -> Arc<HashSet<DeviceId>> {
         }
     }
     Arc::new(set)
+}
+fn parse_wled_id(name: &str) -> Option<DeviceId> {
+    DeviceId::parse(&format!("wled:{name}"))
+        .map_err(|e| tracing::warn!("wled device {name:?} failed to parse: {e}"))
+        .ok()
+}
+
+/// Build a `CommandRouter` from config.
+fn build_command_router(cfg: &Config) -> Arc<CommandRouter> {
+    let wled_map: HashMap<_, _> = cfg
+        .wled
+        .devices
+        .iter()
+        .filter_map(|dev| parse_wled_id(&dev.name).map(|id| (id, dev.topic.clone())))
+        .collect();
+    Arc::new(CommandRouter::new(cfg.mqtt.z2m_prefix.clone(), wled_map))
+}
+
+/// Spawn a `WledSource` when `[wled]` has at least one device.
+/// Returns `None` when WLED is not configured.
+async fn spawn_wled_source(
+    cfg: &Config,
+    registry: Arc<DeviceRegistry>,
+    bus: EventBus,
+    ambient_set: Arc<HashSet<DeviceId>>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if cfg.wled.devices.is_empty() {
+        return None;
+    }
+    let (username, password) = match cfg.mqtt.resolve_credentials() {
+        Ok(creds) => creds,
+        Err(e) => {
+            tracing::error!("WLED source: failed to resolve MQTT credentials: {e}");
+            return None;
+        }
+    };
+    let client_id = format!("{}-wled", cfg.mqtt.client_id);
+    let opts = MqttOptions::new(&cfg.mqtt.host, cfg.mqtt.port, &client_id)
+        .with_credentials(username, password);
+    let client = MqttClient::connect(opts);
+    let devices: Vec<_> = cfg
+        .wled
+        .devices
+        .iter()
+        .filter_map(|dev| parse_wled_id(&dev.name).map(|id| (id, dev.topic.clone())))
+        .collect();
+    let source = WledSource::new(client, registry, bus, devices, ambient_set);
+    tracing::info!("WLED source running: {} device(s)", cfg.wled.devices.len());
+    Some(tokio::spawn(async move {
+        if let Err(e) = source.run().await {
+            tracing::error!("WledSource exited: {e}");
+        }
+    }))
 }
 
 /// Build an `MqttClient` connected to the broker described in
@@ -869,7 +923,7 @@ fn assemble_system_prompt_with_optional_capabilities(
 fn build_tool_registry(
     registry: Arc<DeviceRegistry>,
     publisher: MqttPublisher,
-    z2m_prefix: Arc<String>,
+    router: Arc<CommandRouter>,
     capability_loader: Option<Arc<CapabilityLoader>>,
     memory_store: Option<Arc<MemoryStore>>,
     skill_store: Option<Arc<SkillStore>>,
@@ -881,7 +935,7 @@ fn build_tool_registry(
     home: &niles_config::HomeConfig,
     dry_run: bool,
 ) -> ToolRegistry {
-    let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix, dry_run);
+    let mut tools = niles_tools::default_registry(registry, publisher, router, dry_run);
     if let Some(loader) = capability_loader {
         tools.register(Box::new(LookUpCapability::new(loader)));
     }
@@ -1522,8 +1576,7 @@ pub(crate) async fn run_tool_calling_chat(
 async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
     let publisher = mqtt_client.publisher();
-    let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
-
+    let router = build_command_router(&cfg);
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
     let ambient_set = build_ambient_set(&cfg);
@@ -1532,14 +1585,14 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
-        ambient_set,
+        ambient_set.clone(),
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
         }
     });
-
+    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone(), ambient_set).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let capability_loader = build_capability_loader(&cfg.capabilities);
@@ -1563,7 +1616,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let tools_registry = build_tool_registry(
         registry.clone(),
         publisher,
-        z2m_prefix,
+        router,
         capability_loader.clone(),
         memory_store.clone(),
         skill_store.clone(),
@@ -1642,6 +1695,9 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     }
 
     source_handle.abort();
+    if let Some(h) = wled_handle {
+        h.abort();
+    }
     if let Some(h) = presence_handle {
         h.abort();
     }
@@ -1811,15 +1867,13 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // dispatch tasks can publish on the same connection.
     let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
     let publisher = mqtt_client.publisher();
-    let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
-
+    let router = build_command_router(&cfg);
     let bind = cfg
         .wyoming
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
     let whisper = Arc::new(build_whisper_client(&cfg)?);
     let piper = Arc::new(build_piper_client(&cfg)?);
-
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
     let registry = Arc::new(DeviceRegistry::new());
@@ -1835,13 +1889,14 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
-        ambient_set,
+        ambient_set.clone(),
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
         }
     });
+    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone(), ambient_set).await;
 
     // In-memory timer store, shared by the driver task (below) and
     // the dispatch context. The driver's behavior is documented on
@@ -1881,7 +1936,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
-        z2m_prefix.clone(),
+        router.clone(),
         capability_loader.clone(),
         memory_store.clone(),
         skill_store.clone(),
@@ -1990,7 +2045,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let ctx = DispatchCtx {
         publisher,
         registry: registry.clone(),
-        z2m_prefix,
+        router,
         dry_run: args.dry_run,
         tracker: Arc::new(ManualModeTracker::new()),
         scenes: Arc::new(SceneStore::new()),
@@ -2078,6 +2133,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 
     server_handle.abort();
     source_handle.abort();
+    if let Some(h) = wled_handle {
+        h.abort();
+    }
     timer_handle.abort();
     if let Some(h) = _presence_handle {
         h.abort();
@@ -2091,7 +2149,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 struct DispatchCtx {
     publisher: MqttPublisher,
     registry: Arc<DeviceRegistry>,
-    z2m_prefix: Arc<String>,
+    router: Arc<CommandRouter>,
     dry_run: bool,
     tracker: Arc<ManualModeTracker>,
     scenes: Arc<SceneStore>,
@@ -2525,8 +2583,10 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
                 return Some(response::scene_empty(&name));
             }
             for entry in entries {
-                let (topic, payload) =
-                    format_set_command(&ctx.z2m_prefix, &entry.device_id, &entry.state);
+                let Some((topic, payload)) = ctx.router.format(&entry.device_id, &entry.state)
+                else {
+                    continue;
+                };
                 if ctx.dry_run {
                     println!("[{peer}] [dry-run] {topic}  {payload}");
                 } else {
@@ -2777,7 +2837,9 @@ async fn dispatch_to_targets(
     );
 
     for device in targets {
-        let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, desired);
+        let Some((topic, payload)) = ctx.router.format(&device.id, desired) else {
+            continue;
+        };
         if ctx.dry_run {
             println!("[{peer}] [dry-run] {topic}  {payload}");
             continue;
@@ -2801,7 +2863,9 @@ async fn publish_single(
     device: &Device,
     desired: &DeviceState,
 ) {
-    let (topic, payload) = format_set_command(&ctx.z2m_prefix, &device.id, desired);
+    let Some((topic, payload)) = ctx.router.format(&device.id, desired) else {
+        return;
+    };
     if ctx.dry_run {
         println!("[{peer}] [dry-run] {topic}  {payload}");
     } else {
@@ -2944,18 +3008,17 @@ fn load_morning_claims(dir: Option<&Path>) -> MorningClaimTracker {
 
 struct MqttDeviceSink {
     publisher: MqttPublisher,
-    z2m_prefix: String,
+    router: Arc<CommandRouter>,
     dry_run: bool,
 }
 
 #[async_trait::async_trait]
 impl DeviceSink for MqttDeviceSink {
     async fn set(&self, device: &DeviceId, desired: &DeviceState) {
-        if !is_actionable(desired) {
+        let Some((topic, payload)) = self.router.format(device, desired) else {
             tracing::debug!("[automation] skipped set for {device}: no actionable fields");
             return;
-        }
-        let (topic, payload) = format_set_command(&self.z2m_prefix, device, desired);
+        };
         if self.dry_run {
             tracing::info!("[automation] [dry-run] {topic}  {payload}");
             return;
@@ -3014,8 +3077,8 @@ fn build_automation_engine(
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
     let publisher = mqtt_client.publisher();
+    let router = build_command_router(&cfg);
     let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
-
     let api_bind = cfg
         .api
         .socket_addr()
@@ -3068,24 +3131,24 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_registry = registry.clone();
     let observer_device_index = Arc::clone(&device_index);
     let observer_publisher = publisher.clone();
-    let observer_z2m_prefix = z2m_prefix.clone();
+    let observer_router = router.clone();
     let observer_dry_run = args.dry_run;
     let observer_state_writer = state_writer.clone();
     let mut bus_rx = bus.subscribe();
-
     let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
-        ambient_set,
+        ambient_set.clone(),
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
         }
     });
+    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone(), ambient_set).await;
 
     // EventBus observer — feeds tracker.observe() for off→on
     // auto-clear, and tracker.forget() so removed devices don't
@@ -3164,8 +3227,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         observer_tracker.flag(&d.id);
                     }
                     for d in &targets {
-                        let (topic, payload) =
-                            format_set_command(&observer_z2m_prefix, &d.id, &desired);
+                        let Some((topic, payload)) = observer_router.format(&d.id, &desired) else {
+                            continue;
+                        };
                         if observer_dry_run {
                             println!("[switch] [dry-run] {topic}  {payload}");
                         } else {
@@ -3218,7 +3282,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let mut tools = build_tool_registry(
         registry.clone(),
         publisher.clone(),
-        z2m_prefix.clone(),
+        router.clone(),
         capability_loader.clone(),
         memory_store.clone(),
         skill_store.clone(),
@@ -3281,7 +3345,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Automation engine
     let automation_sink = Arc::new(MqttDeviceSink {
         publisher: publisher.clone(),
-        z2m_prefix: cfg.mqtt.z2m_prefix.clone(),
+        router: router.clone(),
         dry_run: args.dry_run,
     });
     let automation_notifier = Arc::new(CenterNotifier {
@@ -3377,7 +3441,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let ctx = DispatchCtx {
         publisher: publisher.clone(),
         registry: registry.clone(),
-        z2m_prefix: z2m_prefix.clone(),
+        router: router.clone(),
         dry_run: args.dry_run,
         tracker: tracker.clone(),
         scenes,
@@ -3438,7 +3502,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     run_morning_routine_tick(
                         &registry,
                         &publisher,
-                        cfg.mqtt.z2m_prefix.as_str(),
+                        &router,
                         routine,
                         curve.morning_start,
                         curve.morning_end,
@@ -3451,7 +3515,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 run_curve_tick(
                     &registry,
                     &publisher,
-                    cfg.mqtt.z2m_prefix.as_str(),
+                        &router,
                     &curve,
                     tz,
                     args.dry_run,
@@ -3469,6 +3533,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     server_handle.abort();
     source_handle.abort();
+    if let Some(h) = wled_handle {
+        h.abort();
+    }
     api_handle.abort();
     observer_handle.abort();
     timer_handle.abort();
@@ -3545,7 +3612,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                 run_curve_tick(
                     &registry,
                     &publisher,
-                    &z2m_prefix,
+                    &CommandRouter::z2m_only(&z2m_prefix),
                     &curve,
                     tz,
                     args.dry_run,
@@ -3575,7 +3642,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
 async fn run_curve_tick(
     registry: &DeviceRegistry,
     publisher: &MqttPublisher,
-    z2m_prefix: &str,
+    router: &CommandRouter,
     curve: &niles_scheduler::CurveConfig,
     tz: chrono_tz::Tz,
     dry_run: bool,
@@ -3615,7 +3682,9 @@ async fn run_curve_tick(
         else {
             continue;
         };
-        let (topic, payload) = format_set_command(z2m_prefix, &device.id, &target_state);
+        let Some((topic, payload)) = router.format(&device.id, &target_state) else {
+            continue;
+        };
         debug_assert!(
             is_actionable(&target_state),
             "build_curve_target should only return actionable targets"
@@ -3660,7 +3729,7 @@ async fn run_curve_tick(
 async fn run_morning_routine_tick(
     registry: &DeviceRegistry,
     publisher: &MqttPublisher,
-    z2m_prefix: &str,
+    router: &CommandRouter,
     routine: &MorningRoutineConfig,
     morning_start: MinuteOfDay,
     morning_end: MinuteOfDay,
@@ -3693,7 +3762,9 @@ async fn run_morning_routine_tick(
                         brightness: Some(100),
                         ..Default::default()
                     };
-                    let (topic, payload) = format_set_command(z2m_prefix, id, &target);
+                    let Some((topic, payload)) = router.format(id, &target) else {
+                        continue;
+                    };
                     if dry_run {
                         tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
                     } else if let Err(e) = publisher.publish(&topic, payload.clone()).await {
@@ -3738,7 +3809,9 @@ async fn run_morning_routine_tick(
                 brightness: Some(0),
                 ..Default::default()
             };
-            let (topic, payload) = format_set_command(z2m_prefix, id, &target);
+            let Some((topic, payload)) = router.format(id, &target) else {
+                continue;
+            };
             let ok = if dry_run {
                 tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
                 true
@@ -3793,7 +3866,9 @@ async fn run_morning_routine_tick(
             brightness: Some(target_brightness),
             ..Default::default()
         };
-        let (topic, payload) = format_set_command(z2m_prefix, id, &target);
+        let Some((topic, payload)) = router.format(id, &target) else {
+            continue;
+        };
         if dry_run {
             tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
         } else {

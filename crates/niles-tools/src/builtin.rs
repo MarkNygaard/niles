@@ -10,7 +10,7 @@ use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
 use niles_history::{CommandQuery, CommandReader, StateQuery, StateReader};
 use niles_memory::{MemoryStore, Target as MemoryTarget};
-use niles_mqtt::{MqttPublisher, format_set_command, is_actionable};
+use niles_mqtt::{CommandRouter, MqttPublisher};
 use niles_scheduler::{TimerState, TimerStore, canonicalize_name};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -56,12 +56,52 @@ fn parse_required_rfc3339(tool: &'static str, args: &Value, key: &str) -> Result
         .map(|dt| dt.with_timezone(&Utc))
 }
 
+/// Parse an optional `[r, g, b]` JSON array into a 3-byte RGB tuple.
+fn parse_rgb(tool: &'static str, args: &Value) -> Result<Option<[u8; 3]>> {
+    let Some(v) = args.get("rgb") else {
+        return Ok(None);
+    };
+    let arr = v.as_array().ok_or_else(|| Error::InvalidArgs {
+        tool: tool.into(),
+        reason: "rgb must be an array [r, g, b]".into(),
+    })?;
+    if arr.len() != 3 {
+        return Err(Error::InvalidArgs {
+            tool: tool.into(),
+            reason: "rgb must have exactly 3 elements".into(),
+        });
+    }
+    let mut out = [0u8; 3];
+    for (i, item) in arr.iter().enumerate() {
+        let n = item.as_u64().ok_or_else(|| Error::InvalidArgs {
+            tool: tool.into(),
+            reason: "rgb values must be integers".into(),
+        })?;
+        if n > 255 {
+            return Err(Error::InvalidArgs {
+                tool: tool.into(),
+                reason: format!("rgb value {n} exceeds maximum 255"),
+            });
+        }
+        out[i] = n as u8;
+    }
+    Ok(Some(out))
+}
+
+fn has_set_device_field(state: &DeviceState) -> bool {
+    state.on.is_some()
+        || state.brightness.is_some()
+        || state.color_temp_kelvin.is_some()
+        || state.rgb.is_some()
+}
+
 fn device_summary(device: &niles_core::Device) -> Value {
     json!({
         "id": format!("{}/{}", device.id.room(), device.id.name()),
         "on": device.state.on,
         "brightness": device.state.brightness,
         "color_temp_kelvin": device.state.color_temp_kelvin,
+        "rgb": device.state.rgb,
     })
 }
 
@@ -88,7 +128,6 @@ fn state_entry_value(entry: &niles_history::StateEntry) -> Value {
 /// are out of range.
 pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
     let on = args.get("on").and_then(|v| v.as_bool());
-
     let brightness = match args.get("brightness") {
         Some(v) => {
             let n = v.as_u64().ok_or_else(|| Error::InvalidArgs {
@@ -105,7 +144,6 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
         }
         None => None,
     };
-
     let color_temp_kelvin = match args.get("color_temp_kelvin") {
         Some(v) => {
             let n = v.as_u64().ok_or_else(|| Error::InvalidArgs {
@@ -122,21 +160,20 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
         }
         None => None,
     };
-
+    let rgb = parse_rgb("set_device", args)?;
     let state = DeviceState {
         on,
         brightness,
         color_temp_kelvin,
+        rgb,
         ..Default::default()
     };
-
-    if !is_actionable(&state) {
+    if !has_set_device_field(&state) {
         return Err(Error::InvalidArgs {
             tool: "set_device".into(),
-            reason: "must specify at least one of on, brightness, color_temp_kelvin".into(),
+            reason: "must specify at least one of on, brightness, color_temp_kelvin, rgb".into(),
         });
     }
-
     Ok(state)
 }
 
@@ -164,6 +201,9 @@ fn explain_light(id: &str, state: &DeviceState) -> String {
             }
             if let Some(k) = state.color_temp_kelvin {
                 detail.push(format!("color temperature {k}K"));
+            }
+            if let Some(rgb) = state.rgb {
+                detail.push(format!("RGB {},{},{}", rgb[0], rgb[1], rgb[2]));
             }
             if detail.is_empty() {
                 format!("{id} is on")
@@ -403,12 +443,10 @@ impl Publisher for MqttPublisher {
     }
 }
 
-// ---------- SetDevice ----------
-
 pub struct SetDevice<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
     publisher: P,
-    z2m_prefix: Arc<String>,
+    router: Arc<CommandRouter>,
     dry_run: bool,
 }
 
@@ -416,13 +454,13 @@ impl<P: Publisher> SetDevice<P> {
     pub fn new(
         registry: Arc<DeviceRegistry>,
         publisher: P,
-        z2m_prefix: Arc<String>,
+        router: Arc<CommandRouter>,
         dry_run: bool,
     ) -> Self {
         Self {
             registry,
             publisher,
-            z2m_prefix,
+            router,
             dry_run,
         }
     }
@@ -433,14 +471,18 @@ impl<P: Publisher> Tool for SetDevice<P> {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "set_device".into(),
-            description: "Set the state of a device. At least one of on/brightness/color_temp_kelvin is required.".into(),
+            description: "Set the state of a device. At least one of on/brightness/color_temp_kelvin/rgb is required.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "device_id": { "type": "string", "description": "Room-qualified id, e.g. 'kitchen/ceiling_light'." },
+                    "device_id": {
+                        "type": "string",
+                        "description": "Room-qualified id, e.g. 'kitchen/ceiling_light'. If that name exists in multiple sources, use source-qualified form, e.g. 'wled:kitchen/ceiling_light'."
+                    },
                     "on": { "type": "boolean" },
                     "brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
-                    "color_temp_kelvin": { "type": "integer", "minimum": 1000, "maximum": 10000 }
+                    "color_temp_kelvin": { "type": "integer", "minimum": 1000, "maximum": 10000 },
+                    "rgb": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 3, "maxItems": 3 }
                 },
                 "required": ["device_id"]
             }),
@@ -449,12 +491,55 @@ impl<P: Publisher> Tool for SetDevice<P> {
 
     async fn execute(&self, args: Value) -> Result<Value> {
         let raw = required_str("set_device", &args, "device_id")?;
-        let id = parse_device_id("set_device", raw)?;
 
-        let device = self
-            .registry
-            .get(&id)
-            .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?;
+        let device = if raw.contains(':') {
+            let id = DeviceId::parse(raw).map_err(|e| Error::InvalidArgs {
+                tool: "set_device".into(),
+                reason: format!("invalid device_id '{raw}': {e}"),
+            })?;
+            self.registry
+                .get(&id)
+                .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?
+        } else {
+            // Resolve by room/name so any source (z2m, wled, ...) is addressable,
+            // but do not let HashMap iteration choose between duplicate sources.
+            let (room_str, name_str) = raw.split_once('/').ok_or_else(|| Error::InvalidArgs {
+                tool: "set_device".into(),
+                reason: format!("device_id must be room/name, got {raw:?}"),
+            })?;
+            let room = RoomName::parse(room_str).map_err(|_| Error::InvalidArgs {
+                tool: "set_device".into(),
+                reason: format!("invalid room name {room_str:?}"),
+            })?;
+            let matches: Vec<_> = self
+                .registry
+                .list_room(&room)
+                .into_iter()
+                .filter(|d| d.id.name().as_str() == name_str)
+                .collect();
+            match matches.as_slice() {
+                [] => return Err(Error::DeviceNotFound { id: raw.into() }),
+                [device] => device.clone(),
+                _ => {
+                    let mut sources: Vec<_> =
+                        matches.iter().map(|d| d.id.source().to_string()).collect();
+                    sources.sort();
+                    return Err(Error::InvalidArgs {
+                        tool: "set_device".into(),
+                        reason: format!(
+                            concat!(
+                                "device_id {:?} matches multiple sources: {}; ",
+                                "use source-qualified form like '{}:{}'"
+                            ),
+                            raw,
+                            sources.join(", "),
+                            sources[0],
+                            raw
+                        ),
+                    });
+                }
+            }
+        };
 
         if !device.is_light() {
             return Err(Error::WrongDeviceClass {
@@ -464,7 +549,13 @@ impl<P: Publisher> Tool for SetDevice<P> {
         }
 
         let target = extract_set_state(&args)?;
-        let (topic, payload) = format_set_command(&self.z2m_prefix, &id, &target);
+        let (topic, payload) =
+            self.router
+                .format(&device.id, &target)
+                .ok_or_else(|| Error::InvalidArgs {
+                    tool: "set_device".into(),
+                    reason: "nothing to set (no actionable fields provided)".into(),
+                })?;
         if self.dry_run {
             tracing::info!("[dry-run] would publish {topic} {payload}");
             return Ok(json!({ "ok": true, "topic": topic, "dry_run": true }));
@@ -1034,7 +1125,7 @@ pub fn register_state_history_tools(
 pub fn default_registry<P: Publisher + 'static>(
     registry: Arc<DeviceRegistry>,
     publisher: P,
-    z2m_prefix: Arc<String>,
+    router: Arc<CommandRouter>,
     dry_run: bool,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
@@ -1043,7 +1134,7 @@ pub fn default_registry<P: Publisher + 'static>(
     reg.register(Box::new(ListDevicesInRoom::new(registry.clone())));
     reg.register(Box::new(ListAllDevices::new(registry.clone())));
     reg.register(Box::new(SetDevice::new(
-        registry, publisher, z2m_prefix, dry_run,
+        registry, publisher, router, dry_run,
     )));
     reg
 }
@@ -1286,6 +1377,13 @@ mod tests {
         assert_eq!(state.color_temp_kelvin, Some(4000));
     }
 
+    #[test]
+    fn set_device_args_rgb_only_accepted() {
+        let args = json!({ "device_id": "kitchen/ceiling_light", "rgb": [255, 128, 0] });
+        let state = extract_set_state(&args).unwrap();
+        assert_eq!(state.rgb, Some([255, 128, 0]));
+    }
+
     #[tokio::test]
     async fn look_up_capability_known_name_returns_full_metadata_and_body() {
         let (_tmp, loader) = make_loader(&[(
@@ -1409,12 +1507,13 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockPublisher {
         topics: Arc<tokio::sync::Mutex<Vec<String>>>,
+        payloads: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     }
-
     #[async_trait]
     impl Publisher for MockPublisher {
-        async fn publish(&self, topic: &str, _payload: Vec<u8>) -> niles_mqtt::Result<()> {
+        async fn publish(&self, topic: &str, payload: Vec<u8>) -> niles_mqtt::Result<()> {
             self.topics.lock().await.push(topic.to_string());
+            self.payloads.lock().await.push(payload);
             Ok(())
         }
     }
@@ -1424,7 +1523,7 @@ mod tests {
         let tool = SetDevice::new(
             fixture_registry(),
             mock.clone(),
-            Arc::new("z2m".into()),
+            Arc::new(CommandRouter::z2m_only("z2m")),
             dry_run,
         );
         (mock, tool)
@@ -1505,6 +1604,126 @@ mod tests {
         assert_eq!(result["topic"], "z2m/kitchen/ceiling_light/set");
         assert_eq!(result["dry_run"], true);
         assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_z2m_rgb_only_does_not_publish_empty_payload() {
+        let (mock, tool) = set_device_setup(false);
+        let args = json!({ "device_id": "kitchen/ceiling_light", "rgb": [255, 128, 0] });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_device"));
+        assert!(mock.topics.lock().await.is_empty());
+        assert!(mock.payloads.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_duplicate_unqualified_id_errors_instead_of_picking_source() {
+        let reg = fixture_registry();
+        reg.upsert(Device::new(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        ));
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            "wled/kitchen".into(),
+        );
+        let mock = MockPublisher::default();
+        let tool = SetDevice::new(
+            reg,
+            mock.clone(),
+            Arc::new(CommandRouter::new("z2m", map)),
+            false,
+        );
+
+        let args = json!({ "device_id": "kitchen/ceiling_light", "on": true });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_device" && reason.contains("multiple sources"))
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_source_qualified_id_disambiguates_duplicate_sources() {
+        let reg = fixture_registry();
+        reg.upsert(Device::new(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        ));
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            "wled/kitchen".into(),
+        );
+        let mock = MockPublisher::default();
+        let tool = SetDevice::new(
+            reg,
+            mock.clone(),
+            Arc::new(CommandRouter::new("z2m", map)),
+            false,
+        );
+
+        let args = json!({ "device_id": "wled:kitchen/ceiling_light", "rgb": [255, 128, 0] });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["topic"], "wled/kitchen/api");
+        let topics = mock.topics.lock().await;
+        assert_eq!(topics.as_slice(), ["wled/kitchen/api"]);
+    }
+
+    /// Build a `SetDevice` backed by a `MockPublisher` with one WLED device registered.
+    fn wled_tool() -> (SetDevice<MockPublisher>, MockPublisher) {
+        let reg = Arc::new(DeviceRegistry::new());
+        let wled_device = Device::new(
+            DeviceId::parse("wled:office/desk_strip").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        );
+        reg.upsert(wled_device);
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::parse("wled:office/desk_strip").unwrap(),
+            "wled/office".into(),
+        );
+        let router = Arc::new(CommandRouter::new("z2m", map));
+        let mock = MockPublisher::default();
+        let tool = SetDevice::new(reg, mock.clone(), router, false);
+        (tool, mock)
+    }
+
+    #[tokio::test]
+    async fn set_device_resolves_wled_device_and_routes_to_api() {
+        let (tool, mock) = wled_tool();
+
+        let args = json!({ "device_id": "office/desk_strip", "on": true, "brightness": 50 });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["topic"], "wled/office/api");
+        let topics = mock.topics.lock().await;
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "wled/office/api");
+        let payloads = mock.payloads.lock().await;
+        let payload = std::str::from_utf8(&payloads[0]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(v["on"], true);
+        assert_eq!(v["bri"], 128);
+    }
+
+    #[tokio::test]
+    async fn set_device_rgb_arg_yields_seg_col() {
+        let (tool, mock) = wled_tool();
+
+        let args = json!({ "device_id": "office/desk_strip", "rgb": [255, 128, 0] });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        let payloads = mock.payloads.lock().await;
+        let payload = std::str::from_utf8(&payloads[0]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(v["seg"][0]["col"][0], json!([255, 128, 0]));
     }
 
     // ---------- explain_device_state tests ----------
@@ -1617,6 +1836,24 @@ mod tests {
         assert_eq!(
             explain_device(&d),
             "office/lightstrip is on at 0% brightness"
+        );
+    }
+
+    #[test]
+    fn explain_light_with_rgb() {
+        let d = device(
+            "office/lightstrip",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(true),
+                brightness: Some(80),
+                rgb: Some([255, 128, 0]),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/lightstrip is on at 80% brightness, RGB 255,128,0"
         );
     }
 
@@ -1753,11 +1990,15 @@ mod tests {
     #[test]
     fn default_registry_includes_explain_device_state() {
         let reg = fixture_registry();
-        let tools = default_registry(reg, MockPublisher::default(), Arc::new("z2m".into()), false);
+        let tools = default_registry(
+            reg,
+            MockPublisher::default(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            false,
+        );
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"explain_device_state".to_string()));
     }
-
     // ---------- timer tool tests ----------
 
     fn localhost() -> std::net::SocketAddr {

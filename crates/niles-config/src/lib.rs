@@ -27,10 +27,8 @@ pub mod speakers;
 pub mod stt;
 pub mod tts;
 pub mod web_search;
+pub mod wled;
 pub mod wyoming;
-
-use serde::Deserialize;
-use std::path::Path;
 
 pub use ambient_lights::AmbientLightsConfig;
 pub use api::ApiConfig;
@@ -49,11 +47,14 @@ pub use persistence::PersistenceConfig;
 pub use presence::{PresenceConfig, TadoConfigDto};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use satellites::{SatelliteConfig, SatellitesConfig};
+use serde::Deserialize;
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
+use std::path::Path;
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
 pub use web_search::WebSearchConfig;
+pub use wled::{WledConfig, WledDeviceConfig};
 pub use wyoming::WyomingConfig;
 
 /// Top-level Niles configuration.
@@ -87,6 +88,8 @@ pub struct Config {
     pub skills: SkillsConfig,
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    #[serde(default)]
+    pub wled: WledConfig,
     #[serde(default)]
     pub integrations: IntegrationsConfig,
     pub wyoming: WyomingConfig,
@@ -148,6 +151,7 @@ impl Config {
         self.presence.validate()?;
         self.skills.validate()?;
         self.web_search.validate()?;
+        self.wled.validate()?;
         self.integrations.validate()?;
         self.wyoming.validate()?;
         self.stt.validate()?;
