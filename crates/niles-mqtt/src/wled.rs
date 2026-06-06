@@ -3,8 +3,11 @@
 //! WLED publishes plain-text (not JSON) on a handful of MQTT topics:
 //!
 //! - `<topic>/g` — integer brightness `0..=255`
-//! - `<topic>/c` — hex color `#RRGGBB`
-//! - `<topic>/status` — `"online"` / `"offline"`
+//! - `<topic>/c` — hex color: `#RRGGBB`, or `#WWRRGGBB` when the white
+//!   channel is non-zero (per the WLED MQTT docs)
+//! - `<topic>/status` — `"online"` / `"offline"` (undocumented in the
+//!   WLED MQTT reference; we only log it, never mutate state, so a strip
+//!   that never publishes it is harmless)
 //!
 //! Commands are sent to `<topic>/api` as WLED JSON.
 
@@ -22,17 +25,21 @@ pub fn percent_to_wled_brightness(pct: u8) -> u8 {
     ((u16::from(pct.min(100)) * 255 + 50) / 100) as u8
 }
 
-/// Parse a hex color string. Accepts `#RRGGBB` or `RRGGBB`, case-insensitive.
+/// Parse a WLED color string into RGB. Accepts `#RRGGBB`/`RRGGBB` and
+/// WLED's 8-digit `#WWRRGGBB`/`WWRRGGBB` form, which `/c` publishes when the
+/// white channel is non-zero. The leading white byte is dropped — niles'
+/// canonical color is RGB-only. Case-insensitive; the `#` is optional.
 pub fn parse_hex_color(s: &str) -> Option<[u8; 3]> {
-    let s = s.trim();
-    let hex = s.strip_prefix('#').unwrap_or(s);
-    if hex.len() != 6 {
-        return None;
-    }
+    let hex = s.trim().strip_prefix('#').unwrap_or(s.trim()).as_bytes();
+    // WLED prefixes the white channel (#WWRRGGBB); keep the trailing RRGGBB.
+    let rgb = match hex.len() {
+        6 => hex,
+        8 => &hex[2..],
+        _ => return None,
+    };
     let mut out = [0u8; 3];
-    for (i, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
-        let byte = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
-        out[i] = byte;
+    for (i, chunk) in rgb.chunks_exact(2).enumerate() {
+        out[i] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
     }
     Some(out)
 }
@@ -131,8 +138,12 @@ mod tests {
         assert_eq!(parse_hex_color("#FF8800"), Some([255, 136, 0]));
         assert_eq!(parse_hex_color("ff8800"), Some([255, 136, 0]));
         assert_eq!(parse_hex_color("00FF00"), Some([0, 255, 0]));
+        // WLED's #WWRRGGBB (white channel non-zero): drop the leading WW.
+        assert_eq!(parse_hex_color("#80FF8800"), Some([255, 136, 0]));
+        assert_eq!(parse_hex_color("FF00FF00"), Some([0, 255, 0]));
         assert_eq!(parse_hex_color("bad"), None);
         assert_eq!(parse_hex_color("#GGGGGG"), None);
+        assert_eq!(parse_hex_color("#12345"), None);
     }
 
     #[test]
