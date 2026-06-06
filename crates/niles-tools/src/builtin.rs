@@ -10,7 +10,7 @@ use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
 use niles_history::{CommandQuery, CommandReader, StateQuery, StateReader};
 use niles_memory::{MemoryStore, Target as MemoryTarget};
-use niles_mqtt::{CommandRouter, MqttPublisher, is_actionable};
+use niles_mqtt::{CommandRouter, MqttPublisher};
 use niles_scheduler::{TimerState, TimerStore, canonicalize_name};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -88,6 +88,13 @@ fn parse_rgb(tool: &'static str, args: &Value) -> Result<Option<[u8; 3]>> {
     Ok(Some(out))
 }
 
+fn has_set_device_field(state: &DeviceState) -> bool {
+    state.on.is_some()
+        || state.brightness.is_some()
+        || state.color_temp_kelvin.is_some()
+        || state.rgb.is_some()
+}
+
 fn device_summary(device: &niles_core::Device) -> Value {
     json!({
         "id": format!("{}/{}", device.id.room(), device.id.name()),
@@ -161,7 +168,7 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
         rgb,
         ..Default::default()
     };
-    if !is_actionable(&state) {
+    if !has_set_device_field(&state) {
         return Err(Error::InvalidArgs {
             tool: "set_device".into(),
             reason: "must specify at least one of on, brightness, color_temp_kelvin, rgb".into(),
@@ -468,7 +475,10 @@ impl<P: Publisher> Tool for SetDevice<P> {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "device_id": { "type": "string", "description": "Room-qualified id, e.g. 'kitchen/ceiling_light'." },
+                    "device_id": {
+                        "type": "string",
+                        "description": "Room-qualified id, e.g. 'kitchen/ceiling_light'. If that name exists in multiple sources, use source-qualified form, e.g. 'wled:kitchen/ceiling_light'."
+                    },
                     "on": { "type": "boolean" },
                     "brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
                     "color_temp_kelvin": { "type": "integer", "minimum": 1000, "maximum": 10000 },
@@ -482,20 +492,54 @@ impl<P: Publisher> Tool for SetDevice<P> {
     async fn execute(&self, args: Value) -> Result<Value> {
         let raw = required_str("set_device", &args, "device_id")?;
 
-        // Resolve by room/name so any source (z2m, wled, …) is addressable.
-        let (room_str, name_str) = raw.split_once('/').ok_or_else(|| Error::InvalidArgs {
-            tool: "set_device".into(),
-            reason: format!("device_id must be room/name, got {raw:?}"),
-        })?;
-        let room = RoomName::parse(room_str).map_err(|_| Error::InvalidArgs {
-            tool: "set_device".into(),
-            reason: format!("invalid room name {room_str:?}"),
-        })?;
-        let devices = self.registry.list_room(&room);
-        let device = devices
-            .iter()
-            .find(|d| d.id.name().as_str() == name_str)
-            .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?;
+        let device = if raw.contains(':') {
+            let id = DeviceId::parse(raw).map_err(|e| Error::InvalidArgs {
+                tool: "set_device".into(),
+                reason: format!("invalid device_id '{raw}': {e}"),
+            })?;
+            self.registry
+                .get(&id)
+                .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?
+        } else {
+            // Resolve by room/name so any source (z2m, wled, ...) is addressable,
+            // but do not let HashMap iteration choose between duplicate sources.
+            let (room_str, name_str) = raw.split_once('/').ok_or_else(|| Error::InvalidArgs {
+                tool: "set_device".into(),
+                reason: format!("device_id must be room/name, got {raw:?}"),
+            })?;
+            let room = RoomName::parse(room_str).map_err(|_| Error::InvalidArgs {
+                tool: "set_device".into(),
+                reason: format!("invalid room name {room_str:?}"),
+            })?;
+            let matches: Vec<_> = self
+                .registry
+                .list_room(&room)
+                .into_iter()
+                .filter(|d| d.id.name().as_str() == name_str)
+                .collect();
+            match matches.as_slice() {
+                [] => return Err(Error::DeviceNotFound { id: raw.into() }),
+                [device] => device.clone(),
+                _ => {
+                    let mut sources: Vec<_> =
+                        matches.iter().map(|d| d.id.source().to_string()).collect();
+                    sources.sort();
+                    return Err(Error::InvalidArgs {
+                        tool: "set_device".into(),
+                        reason: format!(
+                            concat!(
+                                "device_id {:?} matches multiple sources: {}; ",
+                                "use source-qualified form like '{}:{}'"
+                            ),
+                            raw,
+                            sources.join(", "),
+                            sources[0],
+                            raw
+                        ),
+                    });
+                }
+            }
+        };
 
         if !device.is_light() {
             return Err(Error::WrongDeviceClass {
@@ -1560,6 +1604,74 @@ mod tests {
         assert_eq!(result["topic"], "z2m/kitchen/ceiling_light/set");
         assert_eq!(result["dry_run"], true);
         assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_z2m_rgb_only_does_not_publish_empty_payload() {
+        let (mock, tool) = set_device_setup(false);
+        let args = json!({ "device_id": "kitchen/ceiling_light", "rgb": [255, 128, 0] });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_device"));
+        assert!(mock.topics.lock().await.is_empty());
+        assert!(mock.payloads.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_duplicate_unqualified_id_errors_instead_of_picking_source() {
+        let reg = fixture_registry();
+        reg.upsert(Device::new(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        ));
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            "wled/kitchen".into(),
+        );
+        let mock = MockPublisher::default();
+        let tool = SetDevice::new(
+            reg,
+            mock.clone(),
+            Arc::new(CommandRouter::new("z2m", map)),
+            false,
+        );
+
+        let args = json!({ "device_id": "kitchen/ceiling_light", "on": true });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_device" && reason.contains("multiple sources"))
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_source_qualified_id_disambiguates_duplicate_sources() {
+        let reg = fixture_registry();
+        reg.upsert(Device::new(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        ));
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::parse("wled:kitchen/ceiling_light").unwrap(),
+            "wled/kitchen".into(),
+        );
+        let mock = MockPublisher::default();
+        let tool = SetDevice::new(
+            reg,
+            mock.clone(),
+            Arc::new(CommandRouter::new("z2m", map)),
+            false,
+        );
+
+        let args = json!({ "device_id": "wled:kitchen/ceiling_light", "rgb": [255, 128, 0] });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["topic"], "wled/kitchen/api");
+        let topics = mock.topics.lock().await;
+        assert_eq!(topics.as_slice(), ["wled/kitchen/api"]);
     }
 
     /// Build a `SetDevice` backed by a `MockPublisher` with one WLED device registered.

@@ -39,7 +39,10 @@ impl CommandRouter {
                 .wled
                 .get(id)
                 .and_then(|base_topic| format_wled_command(base_topic, target)),
-            _ => is_actionable(target).then(|| format_set_command(&self.z2m_prefix, id, target)),
+            "z2m" => {
+                is_actionable(target).then(|| format_set_command(&self.z2m_prefix, id, target))
+            }
+            _ => None,
         }
     }
 
@@ -129,5 +132,27 @@ mod tests {
         let router = CommandRouter::z2m_only("zigbee2mqtt");
         let id = z2m_id("kitchen", "ceiling_light");
         assert!(router.format(&id, &DeviceState::default()).is_none());
+    }
+
+    #[test]
+    fn z2m_rgb_only_returns_none() {
+        let router = CommandRouter::z2m_only("zigbee2mqtt");
+        let id = z2m_id("kitchen", "ceiling_light");
+        let target = DeviceState {
+            rgb: Some([255, 128, 0]),
+            ..Default::default()
+        };
+        assert!(router.format(&id, &target).is_none());
+    }
+
+    #[test]
+    fn unsupported_source_returns_none() {
+        let router = CommandRouter::z2m_only("zigbee2mqtt");
+        let id = DeviceId::parse("matter:kitchen/ceiling_light").unwrap();
+        let target = DeviceState {
+            on: Some(true),
+            ..Default::default()
+        };
+        assert!(router.format(&id, &target).is_none());
     }
 }
