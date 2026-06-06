@@ -27,6 +27,7 @@ struct DeviceStateDto {
     pub on: Option<bool>,
     pub brightness: Option<u8>,
     pub color_temp_kelvin: Option<u16>,
+    pub rgb: Option<[u8; 3]>,
     pub temperature_celsius: Option<f32>,
     pub humidity_percent: Option<f32>,
     pub battery_percent: Option<u8>,
@@ -38,6 +39,7 @@ impl From<&DeviceState> for DeviceStateDto {
             on: s.on,
             brightness: s.brightness,
             color_temp_kelvin: s.color_temp_kelvin,
+            rgb: s.rgb,
             temperature_celsius: s.temperature_celsius,
             humidity_percent: s.humidity_percent,
             battery_percent: s.battery_percent,
@@ -51,7 +53,7 @@ impl From<DeviceStateDto> for DeviceState {
             on: d.on,
             brightness: d.brightness,
             color_temp_kelvin: d.color_temp_kelvin,
-            rgb: None,
+            rgb: d.rgb,
             temperature_celsius: d.temperature_celsius,
             humidity_percent: d.humidity_percent,
             battery_percent: d.battery_percent,
@@ -394,6 +396,46 @@ mod tests {
         assert_eq!(entries[0].state.on, Some(true));
         assert_eq!(entries[0].state.brightness, Some(80));
         assert_eq!(entries[0].state.color_temp_kelvin, Some(2700));
+    }
+
+    #[test]
+    fn get_includes_rgb_field() {
+        let store = SceneStore::new();
+        let reg = DeviceRegistry::new();
+        reg.upsert(Device::new(
+            dev_in("kitchen", "a"),
+            DeviceState {
+                on: Some(true),
+                rgb: Some([255, 128, 0]),
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        ));
+        store.save("evening", &reg, None);
+        let entries = store.get("evening").unwrap();
+        assert_eq!(entries[0].state.rgb, Some([255, 128, 0]));
+    }
+
+    #[test]
+    fn persistence_roundtrips_rgb() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("scenes.json");
+        let store = SceneStore::new().with_persistence(path.clone());
+        let reg = DeviceRegistry::new();
+        reg.upsert(Device::new(
+            dev_in("kitchen", "a"),
+            DeviceState {
+                on: Some(true),
+                rgb: Some([255, 128, 0]),
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        ));
+        store.save("evening", &reg, None);
+
+        let loaded = SceneStore::load_from_file(&path).unwrap();
+        let entries = loaded.get("evening").unwrap();
+        assert_eq!(entries[0].state.rgb, Some([255, 128, 0]));
     }
 
     #[test]

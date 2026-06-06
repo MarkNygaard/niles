@@ -36,7 +36,10 @@ pub fn format_set_command(prefix: &str, id: &DeviceId, target: &DeviceState) -> 
 /// Returns `true` if a `DeviceState` has at least one field Z2M will
 /// honor as a command. Use this to skip publishing no-op messages.
 pub fn is_actionable(target: &DeviceState) -> bool {
-    target.on.is_some() || target.brightness.is_some() || target.color_temp_kelvin.is_some()
+    target.on.is_some()
+        || target.brightness.is_some()
+        || target.color_temp_kelvin.is_some()
+        || target.rgb.is_some()
 }
 
 #[derive(Debug, Serialize)]
@@ -213,6 +216,10 @@ mod tests {
         }));
         assert!(is_actionable(&DeviceState {
             color_temp_kelvin: Some(3000),
+            ..Default::default()
+        }));
+        assert!(is_actionable(&DeviceState {
+            rgb: Some([255, 128, 0]),
             ..Default::default()
         }));
         // Sensor-only state is not actionable:

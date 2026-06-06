@@ -94,6 +94,7 @@ fn device_summary(device: &niles_core::Device) -> Value {
         "on": device.state.on,
         "brightness": device.state.brightness,
         "color_temp_kelvin": device.state.color_temp_kelvin,
+        "rgb": device.state.rgb,
     })
 }
 
@@ -160,7 +161,7 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
         rgb,
         ..Default::default()
     };
-    if !is_actionable(&state) && state.rgb.is_none() {
+    if !is_actionable(&state) {
         return Err(Error::InvalidArgs {
             tool: "set_device".into(),
             reason: "must specify at least one of on, brightness, color_temp_kelvin, rgb".into(),
@@ -193,6 +194,9 @@ fn explain_light(id: &str, state: &DeviceState) -> String {
             }
             if let Some(k) = state.color_temp_kelvin {
                 detail.push(format!("color temperature {k}K"));
+            }
+            if let Some(rgb) = state.rgb {
+                detail.push(format!("RGB {},{},{}", rgb[0], rgb[1], rgb[2]));
             }
             if detail.is_empty() {
                 format!("{id} is on")
@@ -1329,6 +1333,13 @@ mod tests {
         assert_eq!(state.color_temp_kelvin, Some(4000));
     }
 
+    #[test]
+    fn set_device_args_rgb_only_accepted() {
+        let args = json!({ "device_id": "kitchen/ceiling_light", "rgb": [255, 128, 0] });
+        let state = extract_set_state(&args).unwrap();
+        assert_eq!(state.rgb, Some([255, 128, 0]));
+    }
+
     #[tokio::test]
     async fn look_up_capability_known_name_returns_full_metadata_and_body() {
         let (_tmp, loader) = make_loader(&[(
@@ -1713,6 +1724,24 @@ mod tests {
         assert_eq!(
             explain_device(&d),
             "office/lightstrip is on at 0% brightness"
+        );
+    }
+
+    #[test]
+    fn explain_light_with_rgb() {
+        let d = device(
+            "office/lightstrip",
+            DeviceClass::Light,
+            DeviceState {
+                on: Some(true),
+                brightness: Some(80),
+                rgb: Some([255, 128, 0]),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/lightstrip is on at 80% brightness, RGB 255,128,0"
         );
     }
 

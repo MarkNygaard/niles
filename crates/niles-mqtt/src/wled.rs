@@ -63,7 +63,7 @@ pub fn parse_c(payload: &[u8]) -> Option<DeviceState> {
 
 /// Parse the body of a `<topic>/status` message.
 pub fn parse_status(payload: &[u8]) -> Option<bool> {
-    match payload {
+    match payload.trim_ascii() {
         b"online" => Some(true),
         b"offline" => Some(false),
         _ => None,
@@ -160,6 +160,8 @@ mod tests {
         assert_eq!(parse_status(b"online"), Some(true));
         assert_eq!(parse_status(b"offline"), Some(false));
         assert_eq!(parse_status(b"unknown"), None);
+        assert_eq!(parse_status(b"online\n"), Some(true));
+        assert_eq!(parse_status(b" offline "), Some(false));
     }
 
     #[test]
