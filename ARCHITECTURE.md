@@ -261,6 +261,18 @@ Honest about the downsides:
 
 Because the registry is derived from upstream names at runtime, adding a UI later means adding a *view* of that registry — not migrating data into a new system. The naming convention remains canonical even with a UI on top.
 
+### WLED as a second device source (MQTT)
+
+WLED (WiFi addressable-LED controllers) is the first concrete *second* device source, and it reuses the MQTT layer Niles already speaks — no new transport. Conceptually it sits beside Z2M: a `WledSource` feeds the same `DeviceRegistry`, so a WLED strip behaves like any other light.
+
+- **Namespacing.** WLED devices are internally `wled:<room>/<device>` (per the fully-qualified-names model above). Users and the LLM see the unprefixed `<room>/<device>`; the prefix only disambiguates collisions with Z2M.
+- **Lights-only in v1.** Each configured WLED instance is exposed as a single light supporting **on/off, brightness, and RGB color** (and color temperature where the strip emulates it). It joins the `DeviceRegistry` exactly like a Z2M bulb, so room-scoped commands ("turn off the office lights") and the **ambient lighting curve drive it with no special-casing**. WLED's own effects, presets, segments, and per-segment control are explicitly **out of scope for v1** — a later slice can add an effects surface.
+- **Discovery is config, not auto.** Unlike Z2M, WLED publishes no `bridge/devices` list, so instances are declared in Niles config (a `[wled]` section: each entry names the device `<room>/<device>` and its base MQTT topic). This is one-time install-time text, consistent with the no-UI principle. Adding a strip = one config entry, not a code change.
+- **Commands + state over MQTT.** Niles publishes set-commands to the device's WLED MQTT topic and subscribes to its state topic for live updates feeding the registry (the lighting curve and manual-mode tracking both read that state, same as Z2M).
+- **Unit translation lives in the source crate.** WLED brightness is `0..=255`; the `WledSource` translates to/from Niles' canonical `0..=100` percent, mirroring the rule that Z2M's `0..=254` translation happens in its source crate, never in core types. RGB ↔ any internal color representation, and any mired↔Kelvin handling, likewise live in the WLED source.
+
+This keeps WLED a thin, self-contained addition: a new MQTT source + a config section, with the registry, intents, lighting curve, and voice paths all unchanged.
+
 ## Ambient lighting (the always-on circadian system)
 
 Adaptive lighting is a first-class concern in Niles, not a plugin. The goal is a home that smoothly shifts brightness and color temperature throughout the day to support natural circadian rhythms, with a gentle morning wake-up routine on selected days, and that respects manual control without fighting it.
