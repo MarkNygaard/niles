@@ -409,14 +409,21 @@ pub struct SetDevice<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
     publisher: P,
     z2m_prefix: Arc<String>,
+    dry_run: bool,
 }
 
 impl<P: Publisher> SetDevice<P> {
-    pub fn new(registry: Arc<DeviceRegistry>, publisher: P, z2m_prefix: Arc<String>) -> Self {
+    pub fn new(
+        registry: Arc<DeviceRegistry>,
+        publisher: P,
+        z2m_prefix: Arc<String>,
+        dry_run: bool,
+    ) -> Self {
         Self {
             registry,
             publisher,
             z2m_prefix,
+            dry_run,
         }
     }
 }
@@ -458,6 +465,10 @@ impl<P: Publisher> Tool for SetDevice<P> {
 
         let target = extract_set_state(&args)?;
         let (topic, payload) = format_set_command(&self.z2m_prefix, &id, &target);
+        if self.dry_run {
+            tracing::info!("[dry-run] would publish {topic} {payload}");
+            return Ok(json!({ "ok": true, "topic": topic, "dry_run": true }));
+        }
         tracing::debug!("publishing {topic} {payload}");
         self.publisher.publish(&topic, payload.into_bytes()).await?;
         Ok(json!({ "ok": true, "topic": topic }))
@@ -1024,13 +1035,16 @@ pub fn default_registry<P: Publisher + 'static>(
     registry: Arc<DeviceRegistry>,
     publisher: P,
     z2m_prefix: Arc<String>,
+    dry_run: bool,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(ExplainDeviceState::new(registry.clone())));
     reg.register(Box::new(GetDeviceState::new(registry.clone())));
     reg.register(Box::new(ListDevicesInRoom::new(registry.clone())));
     reg.register(Box::new(ListAllDevices::new(registry.clone())));
-    reg.register(Box::new(SetDevice::new(registry, publisher, z2m_prefix)));
+    reg.register(Box::new(SetDevice::new(
+        registry, publisher, z2m_prefix, dry_run,
+    )));
     reg
 }
 
@@ -1405,19 +1419,25 @@ mod tests {
         }
     }
 
-    fn set_device_setup() -> (MockPublisher, SetDevice<MockPublisher>) {
+    fn set_device_setup(dry_run: bool) -> (MockPublisher, SetDevice<MockPublisher>) {
         let mock = MockPublisher::default();
-        let tool = SetDevice::new(fixture_registry(), mock.clone(), Arc::new("z2m".into()));
+        let tool = SetDevice::new(
+            fixture_registry(),
+            mock.clone(),
+            Arc::new("z2m".into()),
+            dry_run,
+        );
         (mock, tool)
     }
 
     #[tokio::test]
     async fn set_device_light_publishes_and_returns_ok() {
-        let (mock, tool) = set_device_setup();
+        let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "kitchen/ceiling_light", "on": false });
         let result = tool.execute(args).await.unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["topic"], "z2m/kitchen/ceiling_light/set");
+        assert!(result.get("dry_run").is_none());
         let topics = mock.topics.lock().await;
         assert_eq!(topics.len(), 1);
         assert_eq!(topics[0], "z2m/kitchen/ceiling_light/set");
@@ -1425,7 +1445,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_device_switch_returns_wrong_device_class() {
-        let (mock, tool) = set_device_setup();
+        let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "hallway/wall_switch", "on": true });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
@@ -1436,7 +1456,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_device_sensor_returns_wrong_device_class() {
-        let (mock, tool) = set_device_setup();
+        let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "office/temp_sensor", "on": true });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
@@ -1447,7 +1467,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_device_unknown_returns_wrong_device_class() {
-        let (mock, tool) = set_device_setup();
+        let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "garage/unknown_thing", "on": true });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
@@ -1458,7 +1478,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_device_missing_id_returns_device_not_found() {
-        let (mock, tool) = set_device_setup();
+        let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "nonexistent/device", "on": true });
         let err = tool.execute(args).await.unwrap_err();
         assert!(matches!(err, Error::DeviceNotFound { id } if id == "nonexistent/device"));
@@ -1467,12 +1487,23 @@ mod tests {
 
     #[tokio::test]
     async fn set_device_sensor_with_no_args_returns_wrong_device_class_before_invalid_args() {
-        let (mock, tool) = set_device_setup();
+        let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "office/temp_sensor" });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
             matches!(err, Error::WrongDeviceClass { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
         );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_dry_run_skips_publish() {
+        let (mock, tool) = set_device_setup(true);
+        let args = json!({ "device_id": "kitchen/ceiling_light", "on": false });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["topic"], "z2m/kitchen/ceiling_light/set");
+        assert_eq!(result["dry_run"], true);
         assert!(mock.topics.lock().await.is_empty());
     }
 
@@ -1722,7 +1753,7 @@ mod tests {
     #[test]
     fn default_registry_includes_explain_device_state() {
         let reg = fixture_registry();
-        let tools = default_registry(reg, MockPublisher::default(), Arc::new("z2m".into()));
+        let tools = default_registry(reg, MockPublisher::default(), Arc::new("z2m".into()), false);
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"explain_device_state".to_string()));
     }
