@@ -878,8 +878,9 @@ fn build_tool_registry(
     archon_client: Option<Arc<niles_integration_archon::ArchonClient>>,
     presence: Option<Arc<PresenceAggregator>>,
     home: &niles_config::HomeConfig,
+    dry_run: bool,
 ) -> ToolRegistry {
-    let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix);
+    let mut tools = niles_tools::default_registry(registry, publisher, z2m_prefix, dry_run);
     if let Some(loader) = capability_loader {
         tools.register(Box::new(LookUpCapability::new(loader)));
     }
@@ -1571,6 +1572,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         archon_client.clone(),
         presence_agg,
         &cfg.home,
+        false,
     );
     let client = build_groq_client(&cfg)?;
     eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
@@ -1888,6 +1890,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         archon_client.clone(),
         presence_agg.clone(),
         &cfg.home,
+        args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
@@ -3173,6 +3176,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         archon_client.clone(),
         presence_agg.clone(),
         &cfg.home,
+        args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
