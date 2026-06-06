@@ -2112,12 +2112,58 @@ struct DispatchCtx {
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
+/// True if `text` is almost certainly a Whisper hallucination on
+/// silence/noise rather than a real command. Matches on the normalized
+/// transcript (lowercased, ASCII letters + single spaces only), so a
+/// genuine command that merely contains these words ("thank you for
+/// turning on the lights") is NOT dropped — only exact junk like "you."
+/// or "Thanks for watching!". A transcript that normalizes to nothing
+/// (pure punctuation / symbols / music notes) is also treated as noise.
+fn is_noise_transcript(text: &str) -> bool {
+    let mut normalized = String::with_capacity(text.len());
+    let mut prev_space = false;
+    for ch in text.to_lowercase().chars() {
+        if ch.is_ascii_alphabetic() {
+            normalized.push(ch);
+            prev_space = false;
+        } else if ch.is_whitespace() && !normalized.is_empty() && !prev_space {
+            normalized.push(' ');
+            prev_space = true;
+        }
+    }
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        return true;
+    }
+    const NOISE: &[&str] = &[
+        "you",
+        "thank you",
+        "thank you very much",
+        "thanks for watching",
+        "thanks for watching the video",
+        "thank you for watching",
+        "bye",
+        "bye bye",
+    ];
+    NOISE.contains(&normalized)
+}
+
 async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
     // a Groq round-trip on it — Tier 0 wouldn't match either.
     if text.is_empty() {
         tracing::debug!("[{peer}] empty transcript, skipping dispatch");
+        return None;
+    }
+
+    // Whisper hallucinates subtitle-style filler ("you", "Thank you",
+    // "Thanks for watching") on silence / background noise. Always-
+    // listening satellites feed a lot of near-silent audio to STT, so
+    // drop these before niles reacts — otherwise every bit of room
+    // noise draws an "I'm not sure what you want" reply.
+    if is_noise_transcript(text) {
+        tracing::debug!("[{peer}] dropping likely STT noise/hallucination: {text:?}");
         return None;
     }
 
@@ -3892,6 +3938,37 @@ fn format_intent(intent: &Intent) -> String {
         Intent::Stop => "Stop".into(),
         Intent::Cancel => "Cancel".into(),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod noise_transcript_tests {
+    use super::*;
+
+    #[test]
+    fn drops_whisper_silence_hallucinations() {
+        assert!(is_noise_transcript("you"));
+        assert!(is_noise_transcript("You."));
+        assert!(is_noise_transcript("Thank you."));
+        assert!(is_noise_transcript("Thank you very much."));
+        assert!(is_noise_transcript("Thanks for watching!"));
+        assert!(is_noise_transcript("Bye."));
+    }
+
+    #[test]
+    fn drops_punctuation_and_symbol_only() {
+        assert!(is_noise_transcript("..."));
+        assert!(is_noise_transcript("   "));
+        assert!(is_noise_transcript("♪"));
+        assert!(is_noise_transcript("!?"));
+    }
+
+    #[test]
+    fn keeps_real_commands_even_containing_noise_words() {
+        assert!(!is_noise_transcript("turn on the office light"));
+        assert!(!is_noise_transcript("thank you for turning on the lights"));
+        assert!(!is_noise_transcript("what's the weather tomorrow"));
+        assert!(!is_noise_transcript("stop"));
     }
 }
 
