@@ -86,6 +86,56 @@ rather than guess:
 
 ---
 
+## The shipped firmware: [`niles_satellite/niles_satellite.ino`](niles_satellite/niles_satellite.ino)
+
+Energy-VAD **always-listen** sketch — verified end-to-end on real
+hardware (2026-06-06): speak a command → niles acts → JARVIS replies,
+hands-free, no button. It is past Milestone 1 + 2 below; what's
+implemented:
+
+- **No wake word, no push-to-talk.** Reads I2S continuously, computes
+  mean-|sample| energy per ~32 ms frame, and starts streaming when
+  energy exceeds `START_RMS` for `START_FRAMES` consecutive frames. A
+  pre-roll ring buffer keeps ~256 ms before onset so the first word
+  isn't clipped; capture ends after `HANGOVER_FRAMES` of silence.
+- **Speak-back.** After `audio-stop` it reads niles' reply on the same
+  socket, reconfigures I2S to the reply's sample rate (Piper is 22050),
+  and plays it; the XVF3800 does AEC so the reply doesn't retrigger.
+- **The side button is privacy MUTE, not a talk button.** Muting kills
+  the mic → energy ~0 → VAD never triggers. Privacy is free.
+
+### Build & flash
+
+- Arduino IDE, board **XIAO_ESP32S3**, **USB CDC On Boot = Enabled**,
+  **PSRAM = OPI PSRAM**.
+- Install **arduino-audio-tools** (pschatzmann) via *Add .ZIP Library*
+  — it is **not** in the Library Manager.
+- Flash via the **XIAO module's own USB-C port**, not the carrier
+  board's (the carrier port doesn't enumerate while the XVF3800 is in
+  I2S mode). If no COM port appears, force the bootloader: hold **B**,
+  tap **R**, release **B**.
+- Edit the WiFi + `NILES_HOST` constants at the top before flashing.
+
+### Tuning
+
+Watch the `idle energy=` prints. The thresholds are per-unit/per-room:
+on the first satellite ambient idle was ~7, so `START_RMS=40` /
+`STOP_RMS=20`. If nothing triggers they're too high; if room noise
+triggers it, too low. Reject a transient (e.g. the mute click) by
+raising `START_FRAMES`, **not** with an amplitude ceiling — a ceiling
+would also drop loud speech.
+
+### Still ahead
+
+On-device **wake word** (microWakeWord — a custom "niles" model;
+training was upstream-blocked as of 2026-06-06, so VAD always-listen is
+the interim) and **multi-room** (replicate to other rooms; the
+`[satellites]` peer-IP → room map already supports it).
+
+The Milestones below are the original bring-up plan, kept for context.
+
+---
+
 ## Milestone 1 — dumbest possible end-to-end (no wake word)
 
 **Goal:** prove the listen→act loop on real hardware. One satellite,
@@ -109,16 +159,17 @@ On boot or button press:
 window → niles logs the transcript + Tier 0 intent + the MQTT
 dispatch → the bulb turns on.
 
-## Later layers (deferred, in order)
+## Later layers
 
-1. **On-device wake word** — microWakeWord "niles" model, so the
+1. ✅ **Continuous / VAD-bounded capture** — done; energy VAD replaced
+   the fixed window (see the shipped sketch above).
+2. ✅ **Speak-back (output)** — done; Piper TTS plays back over the same
+   socket, XVF3800 does AEC.
+3. ⏳ **On-device wake word** — microWakeWord "niles" model, so the
    satellite is silent until triggered (no streaming the whole house).
-2. **Continuous / VAD-bounded capture** — replace the fixed window with
-   wake-triggered start + silence-detected stop.
-3. **Speak-back (output)** — Piper TTS → satellite speaker. Gated on a
-   confirmed-working speaker (see the project notes; the XVF3800 mic
-   arrived 2026-06-06, speaker still unverified).
-4. **Multi-room** — replicate the proven satellite to other rooms;
+   Upstream training blocked as of 2026-06-06; VAD always-listen is the
+   interim.
+4. ⏳ **Multi-room** — replicate the proven satellite to other rooms;
    `[satellites]` already maps each peer IP to a room.
 
 ## References
