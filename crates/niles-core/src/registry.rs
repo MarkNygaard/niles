@@ -55,6 +55,7 @@ impl DeviceRegistry {
         s.on = partial.on.or(s.on);
         s.brightness = partial.brightness.or(s.brightness);
         s.color_temp_kelvin = partial.color_temp_kelvin.or(s.color_temp_kelvin);
+        s.rgb = partial.rgb.or(s.rgb);
         s.temperature_celsius = partial.temperature_celsius.or(s.temperature_celsius);
         s.humidity_percent = partial.humidity_percent.or(s.humidity_percent);
         s.battery_percent = partial.battery_percent.or(s.battery_percent);
@@ -180,6 +181,57 @@ mod tests {
             s.color_temp_kelvin,
             Some(4000),
             "color_temp must survive a brightness-only update"
+        );
+    }
+    /// RGB must survive a brightness-only delta, and a new RGB must
+    /// be applied when present.
+    #[test]
+    fn merge_state_preserves_and_updates_rgb() {
+        let registry = DeviceRegistry::new();
+        let device = make_device("kitchen", "ceiling_light");
+        registry.upsert(device.clone());
+
+        // Initial state with RGB.
+        registry.merge_state(
+            &device.id,
+            DeviceState {
+                on: Some(true),
+                rgb: Some([255, 128, 0]),
+                ..Default::default()
+            },
+        );
+
+        // Brightness-only delta must keep RGB.
+        registry.merge_state(
+            &device.id,
+            DeviceState {
+                brightness: Some(50),
+                ..Default::default()
+            },
+        );
+
+        let s = registry.get(&device.id).unwrap().state;
+        assert_eq!(s.brightness, Some(50));
+        assert_eq!(
+            s.rgb,
+            Some([255, 128, 0]),
+            "rgb must survive a brightness-only update"
+        );
+
+        // New RGB must overwrite old RGB.
+        registry.merge_state(
+            &device.id,
+            DeviceState {
+                rgb: Some([0, 255, 0]),
+                ..Default::default()
+            },
+        );
+
+        let s = registry.get(&device.id).unwrap().state;
+        assert_eq!(
+            s.rgb,
+            Some([0, 255, 0]),
+            "rgb must be overwritten by a new rgb"
         );
     }
 

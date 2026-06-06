@@ -168,6 +168,8 @@ pub struct DeviceState {
     pub on: Option<bool>,
     pub brightness: Option<u8>,
     pub color_temp_kelvin: Option<u16>,
+    /// RGB 0–255 per channel; source-specific, only RGB-capable sources set it.
+    pub rgb: Option<[u8; 3]>,
     pub temperature_celsius: Option<f32>,
     pub humidity_percent: Option<f32>,
     pub battery_percent: Option<u8>,

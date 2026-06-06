@@ -51,6 +51,7 @@ impl From<DeviceStateDto> for DeviceState {
             on: d.on,
             brightness: d.brightness,
             color_temp_kelvin: d.color_temp_kelvin,
+            rgb: None,
             temperature_celsius: d.temperature_celsius,
             humidity_percent: d.humidity_percent,
             battery_percent: d.battery_percent,
