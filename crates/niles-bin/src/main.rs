@@ -2269,8 +2269,14 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
         Intent::LightSet { room, on } => {
+            // Filter on device class, not observed state: a light can be
+            // switched on/off whether or not niles has seen its state yet.
+            // Filtering on `state.on.is_some()` made a freshly-started
+            // `serve` report "no devices support this action" until Z2M
+            // retained state arrived — while Tier 1's `set_device` (which
+            // filters on `is_light()`) and the all-lights arm worked fine.
             let (_canonical, targets) =
-                match resolve_room_targets(ctx, peer, &room, |d| d.state.on.is_some()) {
+                match resolve_room_targets(ctx, peer, &room, |d| d.is_light()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName => return Some(response::room_not_found(&room)),
                     RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
