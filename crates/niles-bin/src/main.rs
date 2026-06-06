@@ -2112,40 +2112,19 @@ struct DispatchCtx {
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
-/// True if `text` is almost certainly a Whisper hallucination on
-/// silence/noise rather than a real command. Matches on the normalized
-/// transcript (lowercased, ASCII letters + single spaces only), so a
-/// genuine command that merely contains these words ("thank you for
-/// turning on the lights") is NOT dropped — only exact junk like "you."
-/// or "Thanks for watching!". A transcript that normalizes to nothing
-/// (pure punctuation / symbols / music notes) is also treated as noise.
+/// True if `text` has no actual words — it's pure punctuation / symbols
+/// / music notes (e.g. "...", "♪") that Whisper sometimes emits for
+/// non-speech. Anything containing at least one letter is kept, including
+/// social phrases like "thank you" (which now earn a real reply).
+///
+/// We previously denylisted specific hallucinations ("you", "thank you",
+/// "thanks for watching", …) because an always-on mic fed silence and the
+/// mute-button click pop to Whisper, which turned them into those phrases.
+/// The satellite-side VAD now keeps silence and the brief click transient
+/// from ever reaching STT, so the phrase denylist is gone — only this
+/// letterless guard remains.
 fn is_noise_transcript(text: &str) -> bool {
-    let mut normalized = String::with_capacity(text.len());
-    let mut prev_space = false;
-    for ch in text.to_lowercase().chars() {
-        if ch.is_ascii_alphabetic() {
-            normalized.push(ch);
-            prev_space = false;
-        } else if ch.is_whitespace() && !normalized.is_empty() && !prev_space {
-            normalized.push(' ');
-            prev_space = true;
-        }
-    }
-    let normalized = normalized.trim();
-    if normalized.is_empty() {
-        return true;
-    }
-    const NOISE: &[&str] = &[
-        "you",
-        "thank you",
-        "thank you very much",
-        "thanks for watching",
-        "thanks for watching the video",
-        "thank you for watching",
-        "bye",
-        "bye bye",
-    ];
-    NOISE.contains(&normalized)
+    !text.chars().any(|c| c.is_alphabetic())
 }
 
 async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
@@ -2157,13 +2136,12 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
         return None;
     }
 
-    // Whisper hallucinates subtitle-style filler ("you", "Thank you",
-    // "Thanks for watching") on silence / background noise. Always-
-    // listening satellites feed a lot of near-silent audio to STT, so
-    // drop these before niles reacts — otherwise every bit of room
-    // noise draws an "I'm not sure what you want" reply.
+    // Drop transcripts with no words at all — pure punctuation / symbols
+    // Whisper occasionally emits for non-speech. The satellite VAD keeps
+    // silence and click noise out of STT, so we no longer denylist
+    // phrases like "thank you"; a real "thank you" gets a real reply.
     if is_noise_transcript(text) {
-        tracing::debug!("[{peer}] dropping likely STT noise/hallucination: {text:?}");
+        tracing::debug!("[{peer}] dropping wordless STT output: {text:?}");
         return None;
     }
 
@@ -3946,27 +3924,29 @@ mod noise_transcript_tests {
     use super::*;
 
     #[test]
-    fn drops_whisper_silence_hallucinations() {
-        assert!(is_noise_transcript("you"));
-        assert!(is_noise_transcript("You."));
-        assert!(is_noise_transcript("Thank you."));
-        assert!(is_noise_transcript("Thank you very much."));
-        assert!(is_noise_transcript("Thanks for watching!"));
-        assert!(is_noise_transcript("Bye."));
-    }
-
-    #[test]
-    fn drops_punctuation_and_symbol_only() {
+    fn drops_wordless_output() {
+        assert!(is_noise_transcript(""));
         assert!(is_noise_transcript("..."));
         assert!(is_noise_transcript("   "));
         assert!(is_noise_transcript("♪"));
         assert!(is_noise_transcript("!?"));
+        assert!(is_noise_transcript("123 - 456"));
     }
 
     #[test]
-    fn keeps_real_commands_even_containing_noise_words() {
+    fn keeps_social_phrases_so_niles_can_be_thanked() {
+        // The satellite VAD now keeps the silence/click noise that used to
+        // produce these out of STT, so they're real words again — no longer
+        // denylisted. Saying "thank you" should earn a "you're welcome".
+        assert!(!is_noise_transcript("you"));
+        assert!(!is_noise_transcript("Thank you."));
+        assert!(!is_noise_transcript("Thanks for watching!"));
+        assert!(!is_noise_transcript("Bye."));
+    }
+
+    #[test]
+    fn keeps_real_commands() {
         assert!(!is_noise_transcript("turn on the office light"));
-        assert!(!is_noise_transcript("thank you for turning on the lights"));
         assert!(!is_noise_transcript("what's the weather tomorrow"));
         assert!(!is_noise_transcript("stop"));
     }
