@@ -45,6 +45,7 @@ use std::sync::RwLock;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
+mod conversation;
 mod manifest;
 mod response;
 mod review;
@@ -2008,6 +2009,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
+        conversation: Arc::new(conversation::ConversationMemory::default()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -2109,6 +2111,7 @@ struct DispatchCtx {
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
     review: niles_config::SkillsReviewConfig,
+    conversation: Arc<conversation::ConversationMemory>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -2127,7 +2130,21 @@ fn is_noise_transcript(text: &str) -> bool {
     !text.chars().any(|c| c.is_alphabetic())
 }
 
+/// Dispatch a transcript and, if it produced a spoken response, record
+/// the exchange in short-term conversation memory so the next turn from
+/// the same room can resolve follow-ups ("turn it off again") against it.
+/// Empty/noise transcripts return `None` from the inner dispatch and are
+/// not recorded — only real exchanges become context.
 async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
+    let response = dispatch_transcript(ctx, peer, text).await;
+    if let Some(reply) = &response {
+        ctx.conversation
+            .record(ctx.satellites.room_for(peer), text, reply);
+    }
+    response
+}
+
+async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
     // a Groq round-trip on it — Tier 0 wouldn't match either.
@@ -2200,12 +2217,23 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
                 agent_mem_str.as_deref(),
                 skill_summaries.as_deref(),
             );
-            match run_tool_calling_chat(
+            // Splice recent turns from this room between the system
+            // prompt and the current utterance so the LLM can resolve
+            // follow-ups ("turn it off again") against what was just said.
+            let mut messages = Vec::new();
+            messages.push(Message::System {
+                content: system_prompt,
+            });
+            messages.extend(ctx.conversation.recent_messages(origin_room));
+            messages.push(Message::User {
+                content: text.to_string(),
+            });
+            match run_tool_calling_chat_with_messages(
                 ctx.llm.as_ref(),
                 ctx.tools.as_ref(),
-                text,
-                Some(system_prompt.as_str()),
+                messages,
                 MAX_TOOL_ITERATIONS,
+                None,
             )
             .await
             {
@@ -3368,6 +3396,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
+        conversation: Arc::new(conversation::ConversationMemory::default()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
