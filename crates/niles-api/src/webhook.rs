@@ -23,6 +23,14 @@ pub async fn handle_linear(
     if !niles_integration_linear::verify_signature(&wh.secret, &body, sig) {
         return StatusCode::UNAUTHORIZED;
     }
+    if headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|ua| ua != "Linear-Webhook")
+        .unwrap_or(false)
+    {
+        return StatusCode::UNAUTHORIZED;
+    }
     let payload = match niles_integration_linear::parse_webhook(&body) {
         Ok(p) => p,
         Err(_) => return StatusCode::BAD_REQUEST,
@@ -130,6 +138,43 @@ mod tests {
                     .uri("/webhooks/linear")
                     .header("linear-signature", "bad-sig")
                     .body(Body::from(body.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let recent = state.linear_webhook.unwrap().center.recent(1);
+        assert!(recent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bad_user_agent_rejected() {
+        let secret = b"shh";
+        let state = app_state_with_webhook(secret, "TEAM");
+        let body = serde_json::json!({
+            "action": "update",
+            "type": "Issue",
+            "data": {
+                "identifier": "TEAM-1",
+                "title": "Fix it",
+                "state": {"name": "In Review", "type": "started"},
+                "team": {"key": "TEAM", "name": "My Team"}
+            },
+            "updatedFrom": {"stateId": "old"}
+        })
+        .to_string();
+        let sig = sign(secret, body.as_bytes());
+
+        let app = router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/linear")
+                    .header("linear-signature", sig)
+                    .header("user-agent", "BadBot/1.0")
+                    .body(Body::from(body))
                     .unwrap(),
             )
             .await

@@ -98,7 +98,7 @@ impl NotificationLog {
 
     /// Load the most recent notifications, newest first.
     pub fn load_recent(&self, limit: usize) -> Result<Vec<Notification>> {
-        if !self.enabled {
+        if !self.enabled || limit == 0 {
             return Ok(Vec::new());
         }
         let notifications_dir = self.root.join("notifications");
@@ -108,27 +108,32 @@ impl NotificationLog {
             Err(e) => return Err(e.into()),
         };
 
+        let mut files: Vec<_> = dir_entries
+            .filter_map(|e| e.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                let stem = path.file_stem()?.to_str()?;
+                let date = NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()?;
+                Some((date, path))
+            })
+            .collect();
+        files.sort_by_key(|(date, _)| std::cmp::Reverse(*date));
+
         let mut results = Vec::new();
-
-        for entry in dir_entries {
-            let entry = entry?;
-            let path = entry.path();
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if NaiveDate::parse_from_str(stem, "%Y-%m-%d").is_err() {
-                continue;
+        for (_, path) in files {
+            if results.len() >= limit {
+                break;
             }
-
             let file = std::fs::File::open(&path)?;
             let reader = BufReader::new(file);
+            let mut day = Vec::new();
             for line in reader.lines() {
                 let line = line?;
                 if line.trim().is_empty() {
                     continue;
                 }
                 match serde_json::from_str::<Notification>(&line) {
-                    Ok(n) => results.push(n),
+                    Ok(n) => day.push(n),
                     Err(e) => {
                         tracing::warn!(
                             "skip malformed notification line in {}: {e}",
@@ -137,10 +142,13 @@ impl NotificationLog {
                     }
                 }
             }
+            for n in day.into_iter().rev() {
+                results.push(n);
+                if results.len() >= limit {
+                    break;
+                }
+            }
         }
-
-        results.sort_by_key(|n| std::cmp::Reverse(n.created_at));
-        results.truncate(limit);
         Ok(results)
     }
 }
