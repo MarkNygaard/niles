@@ -339,8 +339,6 @@ struct AttachmentList {
 #[derive(Deserialize)]
 struct AttachmentNode {
     url: String,
-    #[serde(default)]
-    _title: String,
 }
 
 #[cfg(test)]
