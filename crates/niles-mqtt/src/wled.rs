@@ -120,7 +120,7 @@ pub fn effect_to_fx(name: &str) -> Option<u8> {
 }
 
 /// Build the topic + JSON payload for a WLED effect command:
-/// `("<base_topic>/api", "{\"seg\":[{\"fx\":<fx>}]}"))`.
+/// `("<base_topic>/api", "{\"seg\":[{\"fx\":<fx>}]}"`).
 pub fn format_wled_effect(base_topic: &str, fx: u8) -> (String, String) {
     let json = serde_json::to_string(&WledApiPayload {
         on: None,

@@ -621,6 +621,12 @@ impl<P: Publisher> Tool for SetLightEffect<P> {
                 reason: "set_light_effect only works on WLED devices".into(),
             });
         }
+        if !device.is_light() {
+            return Err(Error::WrongDeviceClass {
+                id: raw.into(),
+                class: device.class,
+            });
+        }
         let effect = required_str("set_light_effect", &args, "effect")?;
         let (topic, payload) = self
             .router
@@ -1900,6 +1906,73 @@ mod tests {
         let args = json!({ "device": "office/ghost", "effect": "fire" });
         let err = tool.execute(args).await.unwrap_err();
         assert!(matches!(err, Error::DeviceNotFound { .. }));
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_light_effect_non_light_wled_device_errors() {
+        let reg = Arc::new(DeviceRegistry::new());
+        let wled_switch = Device::new(
+            DeviceId::parse("wled:hallway/switch").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Switch,
+        );
+        reg.upsert(wled_switch);
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::parse("wled:hallway/switch").unwrap(),
+            "wled/hallway".into(),
+        );
+        let router = Arc::new(CommandRouter::new("z2m", map));
+        let mock = MockPublisher::default();
+        let tool = SetLightEffect::new(reg, mock.clone(), router, false);
+        let args = json!({ "device": "hallway/switch", "effect": "fire" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::WrongDeviceClass { id, class } if id == "hallway/switch" && class == DeviceClass::Switch)
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+    #[tokio::test]
+    async fn set_light_effect_source_qualified_id_works() {
+        let (tool, mock) = set_light_effect_tool(false);
+        let args = json!({ "device": "wled:office/desk_strip", "effect": "rainbow" });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["topic"], "wled/office/api");
+        let payloads = mock.payloads.lock().await;
+        let payload = std::str::from_utf8(&payloads[0]).unwrap();
+        assert_eq!(payload, r#"{"seg":[{"fx":9}]}"#);
+    }
+    #[tokio::test]
+    async fn set_light_effect_malformed_device_errors() {
+        let (tool, mock) = set_light_effect_tool(false);
+        let args = json!({ "device": "no_slash", "effect": "fire" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_light_effect"));
+        assert!(mock.topics.lock().await.is_empty());
+    }
+    #[tokio::test]
+    async fn set_light_effect_ambiguous_device_errors() {
+        let reg = Arc::new(DeviceRegistry::new());
+        reg.upsert(Device::new(
+            DeviceId::parse("z2m:office/desk_strip").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        ));
+        reg.upsert(Device::new(
+            DeviceId::parse("wled:office/desk_strip").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        ));
+        let router = Arc::new(CommandRouter::z2m_only("z2m"));
+        let mock = MockPublisher::default();
+        let tool = SetLightEffect::new(reg, mock.clone(), router, false);
+        let args = json!({ "device": "office/desk_strip", "effect": "fire" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_light_effect" && reason.contains("multiple sources"))
+        );
         assert!(mock.topics.lock().await.is_empty());
     }
 
