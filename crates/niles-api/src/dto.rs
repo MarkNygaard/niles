@@ -70,6 +70,9 @@ pub struct DeviceStateDto {
     pub on: Option<bool>,
     pub brightness: Option<u8>,
     pub color_temp_kelvin: Option<u16>,
+    /// RGB color as `[r, g, b]`, each `0..=255`. Reported by color
+    /// sources like WLED; `null` for devices that don't report color.
+    pub rgb: Option<[u8; 3]>,
     pub temperature_celsius: Option<f32>,
     pub humidity_percent: Option<f32>,
     pub battery_percent: Option<u8>,
@@ -81,6 +84,7 @@ impl From<&DeviceState> for DeviceStateDto {
             on: s.on,
             brightness: s.brightness,
             color_temp_kelvin: s.color_temp_kelvin,
+            rgb: s.rgb,
             temperature_celsius: s.temperature_celsius,
             humidity_percent: s.humidity_percent,
             battery_percent: s.battery_percent,
