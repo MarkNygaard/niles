@@ -7,7 +7,7 @@ use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use niles_capabilities::CapabilityLoader;
-use niles_core::{DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
+use niles_core::{Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
 use niles_history::{CommandQuery, CommandReader, StateQuery, StateReader};
 use niles_memory::{MemoryStore, Target as MemoryTarget};
 use niles_mqtt::{CommandRouter, MqttPublisher};
@@ -21,6 +21,51 @@ fn parse_device_id(tool: &'static str, raw: &str) -> Result<DeviceId> {
         tool: tool.into(),
         reason: format!("invalid device_id '{raw}': {e}"),
     })
+}
+/// Resolve a `device_id` arg (source-qualified or unqualified `room/name`)
+/// to a `Device`. Errors on miss or ambiguous (multi-source) unqualified id.
+fn resolve_device(registry: &DeviceRegistry, tool: &'static str, raw: &str) -> Result<Device> {
+    if raw.contains(':') {
+        let id = DeviceId::parse(raw).map_err(|e| Error::InvalidArgs {
+            tool: tool.into(),
+            reason: format!("invalid device_id '{raw}': {e}"),
+        })?;
+        registry
+            .get(&id)
+            .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })
+    } else {
+        let (room_str, name_str) = raw.split_once('/').ok_or_else(|| Error::InvalidArgs {
+            tool: tool.into(),
+            reason: format!("device_id must be room/name, got {raw:?}"),
+        })?;
+        let room = RoomName::parse(room_str).map_err(|_| Error::InvalidArgs {
+            tool: tool.into(),
+            reason: format!("invalid room name {room_str:?}"),
+        })?;
+        let matches: Vec<_> = registry
+            .list_room(&room)
+            .into_iter()
+            .filter(|d| d.id.name().as_str() == name_str)
+            .collect();
+        match matches.as_slice() {
+            [] => Err(Error::DeviceNotFound { id: raw.into() }),
+            [device] => Ok(device.clone()),
+            _ => {
+                let mut sources: Vec<_> =
+                    matches.iter().map(|d| d.id.source().to_string()).collect();
+                sources.sort();
+                Err(Error::InvalidArgs {
+                    tool: tool.into(),
+                    reason: format!(
+                        "device_id {raw:?} matches multiple sources: {}; \
+                         use source-qualified form like '{}:{raw}'",
+                        sources.join(", "),
+                        sources[0],
+                    ),
+                })
+            }
+        }
+    }
 }
 
 fn required_str<'a>(tool: &'static str, args: &'a Value, key: &str) -> Result<&'a str> {
@@ -492,54 +537,7 @@ impl<P: Publisher> Tool for SetDevice<P> {
     async fn execute(&self, args: Value) -> Result<Value> {
         let raw = required_str("set_device", &args, "device_id")?;
 
-        let device = if raw.contains(':') {
-            let id = DeviceId::parse(raw).map_err(|e| Error::InvalidArgs {
-                tool: "set_device".into(),
-                reason: format!("invalid device_id '{raw}': {e}"),
-            })?;
-            self.registry
-                .get(&id)
-                .ok_or_else(|| Error::DeviceNotFound { id: raw.into() })?
-        } else {
-            // Resolve by room/name so any source (z2m, wled, ...) is addressable,
-            // but do not let HashMap iteration choose between duplicate sources.
-            let (room_str, name_str) = raw.split_once('/').ok_or_else(|| Error::InvalidArgs {
-                tool: "set_device".into(),
-                reason: format!("device_id must be room/name, got {raw:?}"),
-            })?;
-            let room = RoomName::parse(room_str).map_err(|_| Error::InvalidArgs {
-                tool: "set_device".into(),
-                reason: format!("invalid room name {room_str:?}"),
-            })?;
-            let matches: Vec<_> = self
-                .registry
-                .list_room(&room)
-                .into_iter()
-                .filter(|d| d.id.name().as_str() == name_str)
-                .collect();
-            match matches.as_slice() {
-                [] => return Err(Error::DeviceNotFound { id: raw.into() }),
-                [device] => device.clone(),
-                _ => {
-                    let mut sources: Vec<_> =
-                        matches.iter().map(|d| d.id.source().to_string()).collect();
-                    sources.sort();
-                    return Err(Error::InvalidArgs {
-                        tool: "set_device".into(),
-                        reason: format!(
-                            concat!(
-                                "device_id {:?} matches multiple sources: {}; ",
-                                "use source-qualified form like '{}:{}'"
-                            ),
-                            raw,
-                            sources.join(", "),
-                            sources[0],
-                            raw
-                        ),
-                    });
-                }
-            }
-        };
+        let device = resolve_device(&self.registry, "set_device", raw)?;
 
         if !device.is_light() {
             return Err(Error::WrongDeviceClass {
@@ -556,6 +554,81 @@ impl<P: Publisher> Tool for SetDevice<P> {
                     tool: "set_device".into(),
                     reason: "nothing to set (no actionable fields provided)".into(),
                 })?;
+        if self.dry_run {
+            tracing::info!("[dry-run] would publish {topic} {payload}");
+            return Ok(json!({ "ok": true, "topic": topic, "dry_run": true }));
+        }
+        tracing::debug!("publishing {topic} {payload}");
+        self.publisher.publish(&topic, payload.into_bytes()).await?;
+        Ok(json!({ "ok": true, "topic": topic }))
+    }
+}
+// ---------- SetLightEffect ----------
+
+pub struct SetLightEffect<P: Publisher = MqttPublisher> {
+    registry: Arc<DeviceRegistry>,
+    publisher: P,
+    router: Arc<CommandRouter>,
+    dry_run: bool,
+}
+
+impl<P: Publisher> SetLightEffect<P> {
+    pub fn new(
+        registry: Arc<DeviceRegistry>,
+        publisher: P,
+        router: Arc<CommandRouter>,
+        dry_run: bool,
+    ) -> Self {
+        Self {
+            registry,
+            publisher,
+            router,
+            dry_run,
+        }
+    }
+}
+
+#[async_trait]
+impl<P: Publisher> Tool for SetLightEffect<P> {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "set_light_effect".into(),
+            description: "Set an animated lighting effect on a WLED light. \
+                Supported effects: solid, blink, breathe, colorloop, rainbow, \
+                twinkle, sparkle, fire, candle, glitter. Use 'solid' to turn \
+                effects off and return the light to a static color. WLED-only."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "device": { "type": "string", "description":
+                        "Room-qualified id, e.g. 'living_room/ceiling'. Use source-qualified form (e.g. 'wled:living_room/ceiling') if the name exists in multiple sources." },
+                    "effect": { "type": "string",
+                        "enum": ["solid","blink","breathe","colorloop","rainbow","twinkle","sparkle","fire","candle","glitter"],
+                        "description": "Effect name. 'solid' turns effects off." }
+                },
+                "required": ["device", "effect"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let raw = required_str("set_light_effect", &args, "device")?;
+        let device = resolve_device(&self.registry, "set_light_effect", raw)?;
+        if device.id.source() != "wled" {
+            return Err(Error::InvalidArgs {
+                tool: "set_light_effect".into(),
+                reason: "set_light_effect only works on WLED devices".into(),
+            });
+        }
+        let effect = required_str("set_light_effect", &args, "effect")?;
+        let (topic, payload) = self
+            .router
+            .format_effect(&device.id, effect)
+            .ok_or_else(|| Error::InvalidArgs {
+                tool: "set_light_effect".into(),
+                reason: format!("unknown or unsupported effect '{effect}'"),
+            })?;
         if self.dry_run {
             tracing::info!("[dry-run] would publish {topic} {payload}");
             return Ok(json!({ "ok": true, "topic": topic, "dry_run": true }));
@@ -1122,7 +1195,7 @@ pub fn register_state_history_tools(
 /// `LookUpCapability` is not included here because it requires an
 /// `Arc<CapabilityLoader>`; callers that have one should register it
 /// onto the returned registry explicitly.
-pub fn default_registry<P: Publisher + 'static>(
+pub fn default_registry<P: Publisher + Clone + 'static>(
     registry: Arc<DeviceRegistry>,
     publisher: P,
     router: Arc<CommandRouter>,
@@ -1133,6 +1206,12 @@ pub fn default_registry<P: Publisher + 'static>(
     reg.register(Box::new(GetDeviceState::new(registry.clone())));
     reg.register(Box::new(ListDevicesInRoom::new(registry.clone())));
     reg.register(Box::new(ListAllDevices::new(registry.clone())));
+    reg.register(Box::new(SetLightEffect::new(
+        registry.clone(),
+        publisher.clone(),
+        router.clone(),
+        dry_run,
+    )));
     reg.register(Box::new(SetDevice::new(
         registry, publisher, router, dry_run,
     )));
@@ -1725,6 +1804,104 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(payload).unwrap();
         assert_eq!(v["seg"][0]["col"][0], json!([255, 128, 0]));
     }
+    fn set_light_effect_tool(dry_run: bool) -> (SetLightEffect<MockPublisher>, MockPublisher) {
+        let reg = Arc::new(DeviceRegistry::new());
+        let wled_device = Device::new(
+            DeviceId::parse("wled:office/desk_strip").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        );
+        reg.upsert(wled_device);
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::parse("wled:office/desk_strip").unwrap(),
+            "wled/office".into(),
+        );
+        let router = Arc::new(CommandRouter::new("z2m", map));
+        let mock = MockPublisher::default();
+        let tool = SetLightEffect::new(reg, mock.clone(), router, dry_run);
+        (tool, mock)
+    }
+
+    #[tokio::test]
+    async fn set_light_effect_publishes_and_returns_ok() {
+        let (tool, mock) = set_light_effect_tool(false);
+
+        let args = json!({ "device": "office/desk_strip", "effect": "fire" });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["topic"], "wled/office/api");
+        let topics = mock.topics.lock().await;
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0], "wled/office/api");
+        let payloads = mock.payloads.lock().await;
+        let payload = std::str::from_utf8(&payloads[0]).unwrap();
+        assert_eq!(payload, r#"{"seg":[{"fx":66}]}"#);
+    }
+
+    #[tokio::test]
+    async fn set_light_effect_solid_publishes_fx_zero() {
+        let (tool, mock) = set_light_effect_tool(false);
+
+        let args = json!({ "device": "office/desk_strip", "effect": "solid" });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        let payloads = mock.payloads.lock().await;
+        let payload = std::str::from_utf8(&payloads[0]).unwrap();
+        assert_eq!(payload, r#"{"seg":[{"fx":0}]}"#);
+    }
+
+    #[tokio::test]
+    async fn set_light_effect_dry_run_publishes_nothing() {
+        let (tool, mock) = set_light_effect_tool(true);
+
+        let args = json!({ "device": "office/desk_strip", "effect": "fire" });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["dry_run"], true);
+        assert!(mock.topics.lock().await.is_empty());
+        assert!(mock.payloads.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_light_effect_unknown_effect_errors() {
+        let (tool, mock) = set_light_effect_tool(false);
+
+        let args = json!({ "device": "office/desk_strip", "effect": "strobe" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_light_effect"));
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_light_effect_non_wled_device_errors() {
+        let reg = Arc::new(DeviceRegistry::new());
+        let z2m_device = Device::new(
+            DeviceId::parse("z2m:kitchen/ceiling_light").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        );
+        reg.upsert(z2m_device);
+        let router = Arc::new(CommandRouter::z2m_only("z2m"));
+        let mock = MockPublisher::default();
+        let tool = SetLightEffect::new(reg, mock.clone(), router, false);
+
+        let args = json!({ "device": "kitchen/ceiling_light", "effect": "fire" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { reason, .. } if reason.contains("WLED")));
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_light_effect_missing_device_errors() {
+        let (tool, mock) = set_light_effect_tool(false);
+
+        let args = json!({ "device": "office/ghost", "effect": "fire" });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::DeviceNotFound { .. }));
+        assert!(mock.topics.lock().await.is_empty());
+    }
 
     // ---------- explain_device_state tests ----------
 
@@ -1998,6 +2175,18 @@ mod tests {
         );
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"explain_device_state".to_string()));
+    }
+    #[test]
+    fn default_registry_includes_set_light_effect() {
+        let reg = fixture_registry();
+        let tools = default_registry(
+            reg,
+            MockPublisher::default(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            false,
+        );
+        let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
+        assert!(names.contains(&"set_light_effect".to_string()));
     }
     // ---------- timer tool tests ----------
 

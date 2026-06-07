@@ -23,7 +23,7 @@ pub use announce::{AnnounceTool, register_announce_tool};
 pub use builtin::{
     CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState, GetTimerRemaining,
     ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
-    QueryCommandHistory, QueryDeviceStateHistory, SetDevice, default_registry,
+    QueryCommandHistory, QueryDeviceStateHistory, SetDevice, SetLightEffect, default_registry,
     register_history_tools, register_memory_tools, register_state_history_tools,
     register_timer_tools, restricted_registry_for_review,
 };

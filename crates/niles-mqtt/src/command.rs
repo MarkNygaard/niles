@@ -6,7 +6,7 @@
 //! existing `/set` topic.
 
 use crate::sink::{format_set_command, is_actionable};
-use crate::wled::format_wled_command;
+use crate::wled::{effect_to_fx, format_wled_command, format_wled_effect};
 use niles_core::{DeviceId, DeviceState};
 use std::collections::HashMap;
 
@@ -41,6 +41,19 @@ impl CommandRouter {
                 .and_then(|base_topic| format_wled_command(base_topic, target)),
             "z2m" => {
                 is_actionable(target).then(|| format_set_command(&self.z2m_prefix, id, target))
+            }
+            _ => None,
+        }
+    }
+
+    /// WLED-only: map a curated effect name to its FX index and format the
+    /// `/api` command. Returns `None` for a non-WLED device or unknown effect.
+    pub fn format_effect(&self, id: &DeviceId, effect: &str) -> Option<(String, String)> {
+        match id.source() {
+            "wled" => {
+                let base_topic = self.wled.get(id)?;
+                let fx = effect_to_fx(effect)?;
+                Some(format_wled_effect(base_topic, fx))
             }
             _ => None,
         }
@@ -154,5 +167,40 @@ mod tests {
             ..Default::default()
         };
         assert!(router.format(&id, &target).is_none());
+    }
+    #[test]
+    fn format_effect_routes_wled() {
+        let mut map = HashMap::new();
+        map.insert(wled_id("office", "desk_strip"), "wled/office".into());
+        let router = CommandRouter::new("zigbee2mqtt", map);
+
+        let id = wled_id("office", "desk_strip");
+        let (topic, payload) = router.format_effect(&id, "fire").unwrap();
+        assert_eq!(topic, "wled/office/api");
+        assert_eq!(payload, r#"{"seg":[{"fx":66}]}"#);
+    }
+
+    #[test]
+    fn format_effect_returns_none_for_z2m() {
+        let router = CommandRouter::z2m_only("zigbee2mqtt");
+        let id = z2m_id("kitchen", "ceiling_light");
+        assert!(router.format_effect(&id, "fire").is_none());
+    }
+
+    #[test]
+    fn format_effect_returns_none_for_unknown_effect() {
+        let mut map = HashMap::new();
+        map.insert(wled_id("office", "desk_strip"), "wled/office".into());
+        let router = CommandRouter::new("zigbee2mqtt", map);
+
+        let id = wled_id("office", "desk_strip");
+        assert!(router.format_effect(&id, "bogus").is_none());
+    }
+
+    #[test]
+    fn format_effect_returns_none_for_unmapped_wled() {
+        let router = CommandRouter::new("zigbee2mqtt", HashMap::new());
+        let id = wled_id("office", "desk_strip");
+        assert!(router.format_effect(&id, "fire").is_none());
     }
 }

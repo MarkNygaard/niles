@@ -90,10 +90,48 @@ pub fn format_wled_command(base_topic: &str, target: &DeviceState) -> Option<(St
     let json = serde_json::to_string(&WledApiPayload {
         on: target.on,
         bri: target.brightness.map(percent_to_wled_brightness),
-        seg: target.rgb.map(|rgb| vec![WledSegment { col: vec![rgb] }]),
+        seg: target.rgb.map(|rgb| {
+            vec![WledSegment {
+                col: Some(vec![rgb]),
+                fx: None,
+            }]
+        }),
     })
     .ok()?;
     Some((format!("{base_topic}/api"), json))
+}
+
+/// Map a curated effect name to its WLED FX index. Case-insensitive.
+/// `solid` (0) is also how an effect is turned off / returned to static color.
+pub fn effect_to_fx(name: &str) -> Option<u8> {
+    match name {
+        n if n.eq_ignore_ascii_case("solid") => Some(0),
+        n if n.eq_ignore_ascii_case("blink") => Some(1),
+        n if n.eq_ignore_ascii_case("breathe") => Some(2),
+        n if n.eq_ignore_ascii_case("colorloop") => Some(8),
+        n if n.eq_ignore_ascii_case("rainbow") => Some(9),
+        n if n.eq_ignore_ascii_case("twinkle") => Some(17),
+        n if n.eq_ignore_ascii_case("sparkle") => Some(20),
+        n if n.eq_ignore_ascii_case("fire") => Some(66),
+        n if n.eq_ignore_ascii_case("candle") => Some(88),
+        n if n.eq_ignore_ascii_case("glitter") => Some(87),
+        _ => None,
+    }
+}
+
+/// Build the topic + JSON payload for a WLED effect command:
+/// `("<base_topic>/api", "{\"seg\":[{\"fx\":<fx>}]}"))`.
+pub fn format_wled_effect(base_topic: &str, fx: u8) -> (String, String) {
+    let json = serde_json::to_string(&WledApiPayload {
+        on: None,
+        bri: None,
+        seg: Some(vec![WledSegment {
+            col: None,
+            fx: Some(fx),
+        }]),
+    })
+    .expect("WledApiPayload serialization is infallible");
+    (format!("{base_topic}/api"), json)
 }
 
 #[derive(Debug, Serialize)]
@@ -108,7 +146,10 @@ struct WledApiPayload {
 
 #[derive(Debug, Serialize)]
 struct WledSegment {
-    col: Vec<[u8; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    col: Option<Vec<[u8; 3]>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fx: Option<u8>,
 }
 
 #[cfg(test)]
@@ -217,6 +258,60 @@ mod tests {
             ..Default::default()
         };
         assert!(format_wled_command("wled/office", &target).is_none());
+    }
+
+    #[test]
+    fn effect_to_fx_known_names() {
+        assert_eq!(effect_to_fx("solid"), Some(0));
+        assert_eq!(effect_to_fx("blink"), Some(1));
+        assert_eq!(effect_to_fx("breathe"), Some(2));
+        assert_eq!(effect_to_fx("colorloop"), Some(8));
+        assert_eq!(effect_to_fx("rainbow"), Some(9));
+        assert_eq!(effect_to_fx("twinkle"), Some(17));
+        assert_eq!(effect_to_fx("sparkle"), Some(20));
+        assert_eq!(effect_to_fx("fire"), Some(66));
+        assert_eq!(effect_to_fx("candle"), Some(88));
+        assert_eq!(effect_to_fx("glitter"), Some(87));
+    }
+
+    #[test]
+    fn effect_to_fx_case_insensitive() {
+        assert_eq!(effect_to_fx("Fire"), Some(66));
+        assert_eq!(effect_to_fx("FIRE"), Some(66));
+        assert_eq!(effect_to_fx("RaInBoW"), Some(9));
+    }
+
+    #[test]
+    fn effect_to_fx_unknown_returns_none() {
+        assert_eq!(effect_to_fx("strobe"), None);
+        assert_eq!(effect_to_fx(""), None);
+    }
+
+    #[test]
+    fn format_wled_effect_produces_correct_payload() {
+        let (topic, payload) = format_wled_effect("wled/office", 66);
+        assert_eq!(topic, "wled/office/api");
+        assert_eq!(payload, r#"{"seg":[{"fx":66}]}"#);
+    }
+
+    #[test]
+    fn format_wled_effect_fx_zero_is_valid() {
+        let (topic, payload) = format_wled_effect("wled/x", 0);
+        assert_eq!(topic, "wled/x/api");
+        assert_eq!(payload, r#"{"seg":[{"fx":0}]}"#);
+    }
+
+    #[test]
+    fn format_wled_command_still_serializes_col_without_fx() {
+        let target = DeviceState {
+            rgb: Some([255, 128, 0]),
+            ..Default::default()
+        };
+        let (topic, payload) = format_wled_command("wled/office", &target).unwrap();
+        assert_eq!(topic, "wled/office/api");
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["seg"][0]["col"][0], json!([255, 128, 0]));
+        assert!(!v["seg"][0].as_object().unwrap().contains_key("fx"));
     }
 
     use serde_json::json;

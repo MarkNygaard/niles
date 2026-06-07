@@ -30,6 +30,6 @@ pub use command::CommandRouter;
 pub use error::{Error, Result};
 pub use sink::{format_set_command, is_actionable};
 pub use source::Z2mSource;
-pub use wled::format_wled_command;
+pub use wled::{effect_to_fx, format_wled_command, format_wled_effect};
 pub use wled_source::WledSource;
 pub use z2m::{Z2mDevice, Z2mState};
