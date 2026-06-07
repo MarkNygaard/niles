@@ -2641,6 +2641,7 @@ mod tests {
             "list_devices_in_room",
             "list_all_devices",
             "set_device",
+            "set_light_effect",
             "look_up_capability",
             "query_command_history",
             "query_device_state_history",
