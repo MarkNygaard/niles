@@ -712,6 +712,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec9d92d097f4749b64e8cc33d924d9f40a2d4eb91402b458014b781f5733d60f"
 
 [[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1186,6 +1192,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "dotenvy",
+ "hound",
  "niles-api",
  "niles-automations",
  "niles-capabilities",
@@ -1199,6 +1206,7 @@ dependencies = [
  "niles-mqtt",
  "niles-notifications",
  "niles-presence",
+ "niles-recognition",
  "niles-scheduler",
  "niles-skills",
  "niles-speakers",

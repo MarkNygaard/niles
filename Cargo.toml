@@ -44,6 +44,7 @@ tokio-tungstenite = "0.29"
 futures-util = "0.3"
 serde_yaml = "0.9"
 tempfile = "3"
+hound = "3"
 fs2 = "0.4"
 urlencoding = "2"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }

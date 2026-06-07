@@ -12,6 +12,8 @@ pub use niles_recognition::MatchStrategy;
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RecognitionConfig {
+    #[serde(default)]
+    pub enabled: bool,
     pub model_path: Option<PathBuf>,
     #[serde(default)]
     pub use_gpu: bool,
@@ -21,6 +23,18 @@ pub struct RecognitionConfig {
 
 impl RecognitionConfig {
     pub fn validate(&self) -> Result<()> {
+        if self.enabled && self.model_path.is_none() {
+            return Err(Error::InvalidSection {
+                section: "recognition",
+                reason: "model_path is required when enabled".into(),
+            });
+        }
+        if self.enabled && self.matcher.enrollment_dir.is_none() {
+            return Err(Error::InvalidSection {
+                section: "recognition.matcher",
+                reason: "enrollment_dir is required when enabled".into(),
+            });
+        }
         if let Some(p) = &self.model_path {
             if p.as_os_str().is_empty() {
                 return Err(Error::InvalidSection {
@@ -28,10 +42,6 @@ impl RecognitionConfig {
                     reason: "model_path must not be empty if present".into(),
                 });
             }
-            // Use `has_root` instead of `is_absolute` so the same
-            // config TOML works cross-platform — `/var/niles/ecapa.onnx`
-            // is rooted (and thus accepted) on both Linux and Windows,
-            // even though Windows `is_absolute` requires a drive prefix.
             if !p.has_root() {
                 return Err(Error::InvalidSection {
                     section: "recognition",
@@ -88,4 +98,55 @@ impl Default for MatcherConfig {
 
 fn default_threshold() -> f32 {
     0.65
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn disabled_with_no_paths_ok() {
+        let cfg = RecognitionConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn enabled_without_model_path_err() {
+        let cfg = RecognitionConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("model_path is required when enabled"), "{err}");
+    }
+
+    #[test]
+    fn enabled_with_model_path_but_no_enrollment_dir_err() {
+        let cfg = RecognitionConfig {
+            enabled: true,
+            model_path: Some(PathBuf::from("/models/ecapa.onnx")),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("enrollment_dir is required when enabled"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn enabled_with_absolute_paths_ok() {
+        let cfg = RecognitionConfig {
+            enabled: true,
+            model_path: Some(PathBuf::from("/models/ecapa.onnx")),
+            use_gpu: false,
+            matcher: MatcherConfig {
+                enrollment_dir: Some(PathBuf::from("/data/enrollments")),
+                threshold: 0.65,
+                strategy: MatchStrategy::default(),
+            },
+        };
+        assert!(cfg.validate().is_ok());
+    }
 }
