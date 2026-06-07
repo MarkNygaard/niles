@@ -25,6 +25,7 @@ use niles_mqtt::{
 };
 use niles_notifications::NotificationCenter;
 use niles_presence::{PresenceAggregator, PresenceSource, TadoConfig, TadoSource};
+use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig, EnrollmentStore};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
@@ -48,6 +49,7 @@ use tracing_subscriber::EnvFilter;
 
 mod conversation;
 mod manifest;
+mod recognition;
 mod response;
 mod review;
 mod satellites;
@@ -55,6 +57,7 @@ mod speak;
 mod speakers;
 
 use manifest::{GenerateManifestArgs, generate_manifest};
+use recognition::{SpeakerIdentifier, build_speaker_identifier, pcm_bytes_to_i16};
 use satellites::SatelliteRegistry;
 
 #[derive(Parser)]
@@ -121,6 +124,9 @@ enum Commands {
     /// like "kitchen" resolve to real devices. Pass `--dry-run` to
     /// match and log without publishing.
     VoiceDispatch(VoiceDispatchArgs),
+    /// Enroll a speaker: extract a voice embedding from a 16 kHz mono
+    /// 16-bit WAV and store it for per-utterance speaker identification.
+    Enroll(EnrollArgs),
     /// Run the ambient-lighting curve driver: every minute, compute
     /// the curve's brightness + color-temperature target and publish
     /// it to every currently-on light. Per the architecture the curve
@@ -129,7 +135,6 @@ enum Commands {
     /// all on-lights; use `niles serve` for manual-mode integration.
     Lighting(LightingArgs),
     /// Regenerate MANIFEST.md from features.toml. Use --check to
-    /// verify the committed MANIFEST.md is in sync (CI mode).
     GenerateManifest(GenerateManifestArgs),
 }
 
@@ -272,6 +277,19 @@ struct LightingArgs {
 }
 
 #[derive(Args)]
+struct EnrollArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
+    /// Speaker slug (a-z, 0-9, hyphens), e.g. `mark`.
+    #[arg(long)]
+    name: String,
+    /// WAV file (16 kHz, mono, 16-bit) of the speaker talking.
+    #[arg(long)]
+    audio: PathBuf,
+}
+
+#[derive(Args)]
 struct ServeArgs {
     /// Path to the Niles config file.
     #[arg(short, long, default_value = "niles.toml")]
@@ -316,6 +334,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Chat(args) => chat(args).await,
         Commands::VoiceTap(args) => voice_tap(args).await,
         Commands::VoiceDispatch(args) => voice_dispatch(args).await,
+        Commands::Enroll(args) => enroll(args),
         Commands::Lighting(args) => lighting(args).await,
         Commands::GenerateManifest(args) => generate_manifest(args),
     }
@@ -778,6 +797,40 @@ fn origin_context(room: &RoomName) -> String {
     )
 }
 
+/// Outcome of per-utterance speaker ID, as surfaced to the LLM.
+#[derive(Debug)]
+enum SpeakerContext {
+    Disabled,
+    /// Confident match (display name).
+    Identified(String),
+    /// Recognition ran but found no confident match.
+    Unknown,
+}
+
+fn speaker_context(speaker: &SpeakerContext) -> Option<String> {
+    match speaker {
+        SpeakerContext::Disabled => None,
+        SpeakerContext::Identified(name) => Some(format!(
+            "\n\n# Speaker\n\nThe speaker is **{name}**. Use their name when it makes the reply more natural.\n"
+        )),
+        SpeakerContext::Unknown => {
+            Some("\n\n# Speaker\n\nThe speaker is not recognized.\n".to_string())
+        }
+    }
+}
+
+/// Map a raw identification result into a `SpeakerContext`.
+/// `attempted` is false when recognition is disabled or the audio
+/// format was unsupported, so the prompt stays unchanged.
+fn speaker_context_from(attempted: bool, ident: Option<(String, f32)>) -> SpeakerContext {
+    if !attempted {
+        return SpeakerContext::Disabled;
+    }
+    match ident {
+        Some((name, _)) => SpeakerContext::Identified(name),
+        None => SpeakerContext::Unknown,
+    }
+}
 pub(crate) fn home_context(home: &niles_config::HomeConfig) -> String {
     fn prompt_field(value: &str) -> String {
         value
@@ -861,6 +914,7 @@ fn assemble_system_prompt(
         user_mem,
         agent_mem,
         skill_summaries,
+        &SpeakerContext::Disabled,
     )
 }
 
@@ -899,6 +953,7 @@ fn assemble_system_prompt_with_optional_capabilities(
     user_mem: Option<&str>,
     agent_mem: Option<&str>,
     skill_summaries: Option<&[SkillSummary]>,
+    speaker: &SpeakerContext,
 ) -> String {
     let mut out = String::from(NILES_SYSTEM_PERSONA);
     out.push_str(&home_context(home));
@@ -926,6 +981,9 @@ fn assemble_system_prompt_with_optional_capabilities(
     }
     if let Some(room) = origin_room {
         out.push_str(&origin_context(room));
+    }
+    if let Some(section) = speaker_context(speaker) {
+        out.push_str(&section);
     }
     out
 }
@@ -1377,6 +1435,65 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+
+    if !cfg.recognition.enabled {
+        anyhow::bail!("[recognition] must be enabled with model_path and enrollment_dir set");
+    }
+    let model_path = cfg
+        .recognition
+        .model_path
+        .clone()
+        .expect("model_path guaranteed by config validation");
+    let enrollment_dir = cfg
+        .recognition
+        .matcher
+        .enrollment_dir
+        .clone()
+        .expect("enrollment_dir guaranteed by config validation");
+
+    let mut reader = hound::WavReader::open(&args.audio)
+        .with_context(|| format!("opening audio file {}", args.audio.display()))?;
+    let spec = reader.spec();
+    if spec.sample_rate != 16000 || spec.channels != 1 || spec.bits_per_sample != 16 {
+        anyhow::bail!(
+            "expected 16 kHz mono 16-bit WAV, got {} Hz {}-channel {}-bit",
+            spec.sample_rate,
+            spec.channels,
+            spec.bits_per_sample
+        );
+    }
+    let samples: Vec<i16> = reader
+        .samples::<i16>()
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| "decoding WAV samples")?;
+
+    let embedder = EcapaTdnnEmbedder::new(&EmbedderConfig {
+        model_path: model_path.clone(),
+        use_gpu: cfg.recognition.use_gpu,
+    })
+    .with_context(|| format!("loading model from {}", model_path.display()))?;
+    let embedding = embedder
+        .extract(&samples, 16000)
+        .with_context(|| "extracting speaker embedding")?;
+
+    let store = EnrollmentStore::open(&enrollment_dir)
+        .with_context(|| format!("opening enrollment store at {}", enrollment_dir.display()))?;
+    store
+        .enroll(&args.name, &embedding)
+        .context("enrolling speaker")?;
+
+    let record = store.load(&args.name).context("loading enrolled speaker")?;
+    println!(
+        "Enrolled speaker '{}' with {} clip(s).",
+        record.display_name, record.clip_count
+    );
+    Ok(())
+}
+
 async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
     let cfg = Config::load_from_path(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
@@ -1686,6 +1803,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         user_mem_str.as_deref(),
         agent_mem_str.as_deref(),
         skill_summaries.as_deref(),
+        &SpeakerContext::Disabled,
     );
 
     // Surface the actual error chain on failure. Both loop exhaustion
@@ -1842,8 +1960,33 @@ fn spawn_dispatch_task(
     let piper = piper.clone();
     let sender = sender.clone();
     tokio::spawn(async move {
+        let attempted = ctx.identifier.is_some() && session.format.bits_per_sample == 16;
+        let id_handle = attempted.then(|| {
+            let id = ctx
+                .identifier
+                .clone()
+                .expect("attempted implies identifier present");
+            let pcm = pcm_bytes_to_i16(&session.pcm);
+            let rate = session.format.sample_rate_hz;
+            tokio::task::spawn_blocking(move || id.identify(&pcm, rate))
+        });
         if let Some((peer, text)) = transcribe_session(&whisper, session).await {
-            let say = handle_transcript(&ctx, peer, &text).await;
+            let ident = match id_handle {
+                Some(h) => h.await.ok().flatten(),
+                None => None,
+            };
+            if attempted {
+                match &ident {
+                    Some((name, score)) => {
+                        tracing::info!("[{peer}] speaker: {name} (score {score:.3})");
+                    }
+                    None => {
+                        tracing::info!("[{peer}] speaker: not recognized");
+                    }
+                }
+            }
+            let speaker = speaker_context_from(attempted, ident);
+            let say = handle_transcript(&ctx, peer, &text, &speaker).await;
             let entry = CommandEntry {
                 ts: chrono::Utc::now(),
                 peer,
@@ -1991,6 +2134,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
+    let identifier =
+        build_speaker_identifier(&cfg.recognition).context("initializing speaker recognition")?;
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
@@ -2069,6 +2214,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         speakers,
         llm,
         tier2,
+        identifier,
         tools,
         capability_loader,
         capability_index,
@@ -2173,6 +2319,7 @@ struct DispatchCtx {
     speakers: Arc<speakers::SpeakerRegistry>,
     llm: Arc<GroqClient>,
     tier2: Option<Arc<dyn ChatProvider>>,
+    identifier: Option<Arc<dyn SpeakerIdentifier>>,
     tools: Arc<ToolRegistry>,
     capability_loader: Option<Arc<CapabilityLoader>>,
     capability_index: Option<Arc<niles_intent::CapabilityIndex>>,
@@ -2204,13 +2351,13 @@ fn is_noise_transcript(text: &str) -> bool {
     !text.chars().any(|c| c.is_alphabetic())
 }
 
-/// Dispatch a transcript and, if it produced a spoken response, record
-/// the exchange in short-term conversation memory so the next turn from
-/// the same room can resolve follow-ups ("turn it off again") against it.
-/// Empty/noise transcripts return `None` from the inner dispatch and are
-/// not recorded — only real exchanges become context.
-async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
-    let response = dispatch_transcript(ctx, peer, text).await;
+async fn handle_transcript(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    text: &str,
+    speaker: &SpeakerContext,
+) -> Option<String> {
+    let response = dispatch_transcript(ctx, peer, text, speaker).await;
     if let Some(reply) = &response {
         ctx.conversation
             .record(ctx.satellites.room_for(peer), text, reply);
@@ -2228,6 +2375,7 @@ async fn dispatch_tier1(
     peer: SocketAddr,
     text: &str,
     origin_room: Option<&RoomName>,
+    speaker: &SpeakerContext,
 ) -> Option<String> {
     tracing::info!("[{peer}] dispatching to Tier 1 LLM: {text:?}");
     let user_mem = match ctx.memory.load(niles_memory::Target::User) {
@@ -2265,8 +2413,8 @@ async fn dispatch_tier1(
         user_mem_str.as_deref(),
         agent_mem_str.as_deref(),
         skill_summaries.as_deref(),
+        speaker,
     );
-    // Splice recent turns from this room between the system prompt and the
     // current utterance so the LLM can resolve follow-ups ("turn it off
     // again") against what was just said.
     let mut messages = Vec::new();
@@ -2362,8 +2510,12 @@ async fn dispatch_tier1(
         }
     }
 }
-
-async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
+async fn dispatch_transcript(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    text: &str,
+    speaker: &SpeakerContext,
+) -> Option<String> {
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
     // a Groq round-trip on it — Tier 0 wouldn't match either.
@@ -2398,7 +2550,7 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
     let intent = match parsed {
         Some(i) => i,
         // Tier 0 miss — hand the raw transcript to the LLM.
-        None => return dispatch_tier1(ctx, peer, text, origin_room).await,
+        None => return dispatch_tier1(ctx, peer, text, origin_room, speaker).await,
     };
 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
@@ -2417,8 +2569,7 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
                         // Tier 0 matched a light intent but found no target
                         // (e.g. "living room ceiling light" parsed as room
                         // "living room ceiling"). Let the LLM resolve it
-                        // rather than dead-ending. See dispatch_tier1.
-                        return dispatch_tier1(ctx, peer, text, origin_room).await;
+                        return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
                     }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
@@ -2462,7 +2613,7 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
                         // (e.g. "living room ceiling light" parsed as room
                         // "living room ceiling"). Let the LLM resolve it
                         // rather than dead-ending. See dispatch_tier1.
-                        return dispatch_tier1(ctx, peer, text, origin_room).await;
+                        return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
                     }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
@@ -2491,7 +2642,7 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
                         // (e.g. "living room ceiling light" parsed as room
                         // "living room ceiling"). Let the LLM resolve it
                         // rather than dead-ending. See dispatch_tier1.
-                        return dispatch_tier1(ctx, peer, text, origin_room).await;
+                        return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
                     }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
@@ -2519,8 +2670,7 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
             }) {
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
-                    // No Tier 0 target — escalate to the LLM (see dispatch_tier1).
-                    return dispatch_tier1(ctx, peer, text, origin_room).await;
+                    return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
                 }
                 RoomResolve::WarmingUp => return Some(response::room_warming_up()),
             };
@@ -2549,7 +2699,7 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
                     // No Tier 0 target — escalate to the LLM (see dispatch_tier1).
-                    return dispatch_tier1(ctx, peer, text, origin_room).await;
+                    return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
                 }
                 RoomResolve::WarmingUp => return Some(response::room_warming_up()),
             };
@@ -3357,7 +3507,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
-
+    let identifier =
+        build_speaker_identifier(&cfg.recognition).context("initializing speaker recognition")?;
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
         .await
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
@@ -3486,6 +3637,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         speakers,
         llm,
         tier2,
+        identifier,
         tools,
         capability_loader,
         capability_index,
@@ -5296,8 +5448,8 @@ mod system_prompt_tests {
             Some("Alice likes tea."),
             Some("Learned about lighting."),
             Some(&summaries),
+            &SpeakerContext::Disabled,
         );
-        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
         assert!(out.contains("# User memory"));
         assert!(out.contains("# Agent memory"));
         assert!(out.contains("# Available skills"));
@@ -5316,8 +5468,8 @@ mod system_prompt_tests {
             None,
             None,
             None,
+            &SpeakerContext::Disabled,
         );
-        assert!(out.contains("# Current context"));
         assert!(out.contains("living_room"));
     }
 
@@ -5589,6 +5741,132 @@ mod system_prompt_tests {
         assert_eq!(
             a, b,
             "assemble_system_prompt must be deterministic with home"
+        );
+    }
+
+    #[test]
+    fn speaker_prompt_injection_identified() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt_with_optional_capabilities(
+            "turn on the lights",
+            &fixture_home(),
+            Some(&index),
+            Some(&loader),
+            None,
+            None,
+            None,
+            None,
+            &SpeakerContext::Identified("Mark".into()),
+        );
+        assert!(
+            out.contains("# Speaker"),
+            "expected # Speaker section: {out}"
+        );
+        assert!(out.contains("Mark"), "expected speaker name Mark: {out}");
+    }
+
+    #[test]
+    fn speaker_prompt_injection_unknown() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out = assemble_system_prompt_with_optional_capabilities(
+            "turn on the lights",
+            &fixture_home(),
+            Some(&index),
+            Some(&loader),
+            None,
+            None,
+            None,
+            None,
+            &SpeakerContext::Unknown,
+        );
+        assert!(
+            out.contains("# Speaker"),
+            "expected # Speaker section: {out}"
+        );
+        assert!(
+            out.contains("not recognized"),
+            "expected 'not recognized': {out}"
+        );
+    }
+
+    #[test]
+    fn speaker_prompt_disabled_no_injection() {
+        let tmp = TempDir::new().unwrap();
+        let loader = CapabilityLoader::load_from_dir(tmp.path()).unwrap();
+        let index = build_capability_index(&loader);
+        let out_direct = assemble_system_prompt_with_optional_capabilities(
+            "turn on the lights",
+            &fixture_home(),
+            Some(&index),
+            Some(&loader),
+            None,
+            None,
+            None,
+            None,
+            &SpeakerContext::Disabled,
+        );
+        let out_helper = assemble_system_prompt(
+            "turn on the lights",
+            &fixture_home(),
+            &index,
+            &loader,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !out_direct.contains("# Speaker"),
+            "expected no # Speaker when disabled: {out_direct}"
+        );
+        assert_eq!(
+            out_direct, out_helper,
+            "Disabled path must match the test helper"
+        );
+    }
+
+    struct MockIdentifier {
+        result: Option<(String, f32)>,
+    }
+
+    impl SpeakerIdentifier for MockIdentifier {
+        fn identify(&self, _pcm: &[i16], _sample_rate_hz: u32) -> Option<(String, f32)> {
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn speaker_context_from_attempted_match() {
+        let mock = MockIdentifier {
+            result: Some(("Mark".into(), 0.95)),
+        };
+        let ctx = speaker_context_from(true, mock.identify(&[], 16000));
+        assert!(matches!(ctx, SpeakerContext::Identified(ref name) if name == "Mark"),);
+    }
+
+    #[test]
+    fn speaker_context_from_attempted_unknown() {
+        let mock = MockIdentifier { result: None };
+        let ctx = speaker_context_from(true, mock.identify(&[], 16000));
+        assert!(
+            matches!(ctx, SpeakerContext::Unknown),
+            "expected Unknown, got {ctx:?}"
+        );
+    }
+
+    #[test]
+    fn speaker_context_from_not_attempted_disabled() {
+        let mock = MockIdentifier {
+            result: Some(("Mark".into(), 0.95)),
+        };
+        let ctx = speaker_context_from(false, mock.identify(&[], 16000));
+        assert!(
+            matches!(ctx, SpeakerContext::Disabled),
+            "expected Disabled when attempted=false, got {ctx:?}"
         );
     }
 }
