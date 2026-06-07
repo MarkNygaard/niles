@@ -1192,7 +1192,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-history",
- "niles-integration-archon",
+ "niles-integration-linear",
  "niles-intent",
  "niles-llm",
  "niles-memory",
@@ -1266,17 +1266,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "niles-integration-archon"
+name = "niles-integration-linear"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing",
- "urlencoding",
 ]
 
 [[package]]
@@ -1435,7 +1435,7 @@ dependencies = [
  "niles-capabilities",
  "niles-core",
  "niles-history",
- "niles-integration-archon",
+ "niles-integration-linear",
  "niles-llm",
  "niles-memory",
  "niles-mqtt",
@@ -1445,6 +1445,7 @@ dependencies = [
  "niles-skills",
  "niles-weather",
  "niles-websearch",
+ "parking_lot",
  "serde",
  "serde_json",
  "tempfile",
@@ -1591,6 +1592,29 @@ dependencies = [
  "hmac-sha256",
  "lzma-rust2",
  "ureq",
+]
+
+[[package]]
+name = "parking_lot"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
+dependencies = [
+ "lock_api",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "redox_syscall",
+ "smallvec",
+ "windows-link",
 ]
 
 [[package]]
@@ -1829,6 +1853,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f821338fddb99d089116342c46e9f1fbf3828dba077674613e734e01d6ea8677"
 dependencies = [
  "rustfft",
+]
+
+[[package]]
+name = "redox_syscall"
+version = "0.5.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags",
 ]
 
 [[package]]
@@ -2328,7 +2361,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
