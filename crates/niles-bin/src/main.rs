@@ -831,6 +831,10 @@ fn speaker_context_from(attempted: bool, ident: Option<(String, f32)>) -> Speake
         None => SpeakerContext::Unknown,
     }
 }
+
+fn supports_speaker_identification(format: niles_wyoming::AudioFormat) -> bool {
+    format.sample_rate_hz == 16_000 && format.bits_per_sample == 16 && format.channels == 1
+}
 pub(crate) fn home_context(home: &niles_config::HomeConfig) -> String {
     fn prompt_field(value: &str) -> String {
         value
@@ -1960,9 +1964,7 @@ fn spawn_dispatch_task(
     let piper = piper.clone();
     let sender = sender.clone();
     tokio::spawn(async move {
-        let attempted = ctx.identifier.is_some()
-            && session.format.bits_per_sample == 16
-            && session.format.sample_rate_hz == 16000;
+        let attempted = ctx.identifier.is_some() && supports_speaker_identification(session.format);
         let id_handle = attempted.then(|| {
             let id = ctx
                 .identifier
@@ -5880,5 +5882,30 @@ mod system_prompt_tests {
             matches!(ctx, SpeakerContext::Disabled),
             "expected Disabled when attempted=false, got {ctx:?}"
         );
+    }
+
+    #[test]
+    fn speaker_identification_accepts_16khz_mono_16bit() {
+        let format = niles_wyoming::AudioFormat::new(16_000, 16, 1);
+        assert!(supports_speaker_identification(format));
+    }
+
+    #[test]
+    fn speaker_identification_rejects_stereo_pcm() {
+        let format = niles_wyoming::AudioFormat::new(16_000, 16, 2);
+        assert!(
+            !supports_speaker_identification(format),
+            "speaker embeddings expect mono PCM, not interleaved stereo"
+        );
+    }
+
+    #[test]
+    fn speaker_identification_rejects_wrong_rate_or_width() {
+        assert!(!supports_speaker_identification(
+            niles_wyoming::AudioFormat::new(8_000, 16, 1)
+        ));
+        assert!(!supports_speaker_identification(
+            niles_wyoming::AudioFormat::new(16_000, 24, 1)
+        ));
     }
 }
