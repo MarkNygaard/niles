@@ -15,6 +15,9 @@ pub enum Error {
     #[error("upstream returned HTTP {status}: {body}")]
     BadStatus { status: u16, body: String },
 
+    #[error("invalid Linear HTTP header {name}: {reason}")]
+    InvalidHeader { name: &'static str, reason: String },
+
     #[error("parse error: {reason}")]
     Parse { reason: String },
 

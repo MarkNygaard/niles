@@ -44,7 +44,7 @@ impl LinearClient {
                 " (https://github.com/MarkNygaard/niles)"
             ),
             cfg.request_timeout,
-        ));
+        )?);
         Ok(Self::with_transport(transport, cfg))
     }
 
@@ -393,6 +393,16 @@ mod tests {
         (mock, client)
     }
 
+    fn cfg() -> LinearConfig {
+        LinearConfig {
+            api_key: "lin_test_key".into(),
+            team: "NILES".into(),
+            trigger_label: "AI Eligible".into(),
+            todo_state: "Todo".into(),
+            request_timeout: Duration::from_secs(10),
+        }
+    }
+
     fn resolve_json() -> String {
         json!({
             "data": {
@@ -445,6 +455,17 @@ mod tests {
         assert!(body.contains("issueCreate"));
         assert!(body.contains("Fix bug"));
         assert!(body.contains("desc"));
+    }
+
+    #[test]
+    fn new_rejects_invalid_api_key_header() {
+        let mut cfg = cfg();
+        cfg.api_key = "lin_test_key\n".into();
+        let err = match LinearClient::new(cfg) {
+            Ok(_) => panic!("invalid api key header should be rejected"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, Error::InvalidHeader { name, .. } if name == "authorization"));
     }
 
     #[tokio::test]
