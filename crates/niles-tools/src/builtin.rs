@@ -488,6 +488,13 @@ impl Publisher for MqttPublisher {
     }
 }
 
+#[async_trait]
+impl<P: Publisher + ?Sized> Publisher for Arc<P> {
+    async fn publish(&self, topic: &str, payload: Vec<u8>) -> niles_mqtt::Result<()> {
+        (**self).publish(topic, payload).await
+    }
+}
+
 pub struct SetDevice<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
     publisher: P,
@@ -1201,13 +1208,14 @@ pub fn register_state_history_tools(
 /// `LookUpCapability` is not included here because it requires an
 /// `Arc<CapabilityLoader>`; callers that have one should register it
 /// onto the returned registry explicitly.
-pub fn default_registry<P: Publisher + Clone + 'static>(
+pub fn default_registry<P: Publisher + 'static>(
     registry: Arc<DeviceRegistry>,
     publisher: P,
     router: Arc<CommandRouter>,
     dry_run: bool,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
+    let publisher = Arc::new(publisher);
     reg.register(Box::new(ExplainDeviceState::new(registry.clone())));
     reg.register(Box::new(GetDeviceState::new(registry.clone())));
     reg.register(Box::new(ListDevicesInRoom::new(registry.clone())));
@@ -1599,6 +1607,15 @@ mod tests {
         async fn publish(&self, topic: &str, payload: Vec<u8>) -> niles_mqtt::Result<()> {
             self.topics.lock().await.push(topic.to_string());
             self.payloads.lock().await.push(payload);
+            Ok(())
+        }
+    }
+
+    struct NonClonePublisher;
+
+    #[async_trait]
+    impl Publisher for NonClonePublisher {
+        async fn publish(&self, _topic: &str, _payload: Vec<u8>) -> niles_mqtt::Result<()> {
             Ok(())
         }
     }
@@ -2261,6 +2278,21 @@ mod tests {
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"set_light_effect".to_string()));
     }
+
+    #[test]
+    fn default_registry_does_not_require_clone_publisher() {
+        let reg = fixture_registry();
+        let tools = default_registry(
+            reg,
+            NonClonePublisher,
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            false,
+        );
+        let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
+        assert!(names.contains(&"set_device".to_string()));
+        assert!(names.contains(&"set_light_effect".to_string()));
+    }
+
     // ---------- timer tool tests ----------
 
     fn localhost() -> std::net::SocketAddr {
