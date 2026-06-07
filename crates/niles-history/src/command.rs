@@ -23,6 +23,9 @@ pub struct CommandEntry {
     /// Spoken response returned to the user (None = no response / error).
     #[serde(default)]
     pub spoken_response: Option<String>,
+    /// Identified speaker display name, if recognition ran and matched.
+    #[serde(default)]
+    pub speaker: Option<String>,
 }
 
 /// Filter for [`CommandReader::query`].
@@ -246,6 +249,7 @@ mod tests {
             origin_room: room.map(|s| s.to_string()),
             transcript: transcript.to_string(),
             spoken_response: None,
+            speaker: None,
         }
     }
 

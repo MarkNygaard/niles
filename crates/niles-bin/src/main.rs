@@ -1960,7 +1960,9 @@ fn spawn_dispatch_task(
     let piper = piper.clone();
     let sender = sender.clone();
     tokio::spawn(async move {
-        let attempted = ctx.identifier.is_some() && session.format.bits_per_sample == 16;
+        let attempted = ctx.identifier.is_some()
+            && session.format.bits_per_sample == 16
+            && session.format.sample_rate_hz == 16000;
         let id_handle = attempted.then(|| {
             let id = ctx
                 .identifier
@@ -1972,7 +1974,13 @@ fn spawn_dispatch_task(
         });
         if let Some((peer, text)) = transcribe_session(&whisper, session).await {
             let ident = match id_handle {
-                Some(h) => h.await.ok().flatten(),
+                Some(h) => match h.await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        tracing::warn!("[{peer}] speaker identification task failed: {e}");
+                        None
+                    }
+                },
                 None => None,
             };
             if attempted {
@@ -1996,6 +2004,10 @@ fn spawn_dispatch_task(
                     .map(|r| r.as_str().to_string()),
                 transcript: text.clone(),
                 spoken_response: say.clone(),
+                speaker: match &speaker {
+                    SpeakerContext::Identified(name) => Some(name.clone()),
+                    _ => None,
+                },
             };
             if let Err(e) = ctx.history.append(&entry) {
                 tracing::warn!("history append failed: {e:#}");
