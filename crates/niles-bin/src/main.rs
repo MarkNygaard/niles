@@ -941,7 +941,7 @@ fn build_tool_registry(
     weather_client: Option<Arc<niles_weather::OpenMeteoClient>>,
     websearch_client: Option<Arc<niles_websearch::SearXngClient>>,
     websearch_default_num_results: u8,
-    archon_client: Option<Arc<niles_integration_archon::ArchonClient>>,
+    linear_client: Option<Arc<niles_integration_linear::LinearClient>>,
     presence: Option<Arc<PresenceAggregator>>,
     home: &niles_config::HomeConfig,
     dry_run: bool,
@@ -972,8 +972,8 @@ fn build_tool_registry(
     if let Some(client) = websearch_client {
         niles_tools::register_web_search_tool(&mut tools, client, websearch_default_num_results);
     }
-    if let Some(client) = archon_client {
-        niles_tools::register_archon_tools(&mut tools, client);
+    if let Some(client) = linear_client {
+        niles_tools::register_linear_tools(&mut tools, client);
     }
     if let Some(agg) = presence {
         niles_tools::register_presence_tools(&mut tools, agg);
@@ -1212,19 +1212,24 @@ fn build_websearch_client(
         .map(Arc::new)
 }
 
-fn build_archon_client(
+fn build_linear_client(
     cfg: &niles_config::IntegrationsConfig,
-) -> Option<Arc<niles_integration_archon::ArchonClient>> {
-    let archon = cfg.archon.as_ref()?;
-    let config = niles_integration_archon::ArchonConfig {
-        base_url: archon.base_url.clone(),
-        codebase_id: archon.codebase_id.clone(),
-        cwd: archon.cwd.clone(),
-        request_timeout: Duration::from_secs(archon.timeout_seconds),
+) -> Option<Arc<niles_integration_linear::LinearClient>> {
+    let linear = cfg.linear.as_ref()?;
+    let api_key = linear
+        .resolve_api_key()
+        .inspect_err(|e| tracing::warn!("Linear integration disabled: {e}"))
+        .ok()?;
+    let config = niles_integration_linear::LinearConfig {
+        api_key,
+        team: linear.team.clone(),
+        trigger_label: linear.trigger_label.clone(),
+        todo_state: linear.todo_state.clone(),
+        request_timeout: Duration::from_secs(linear.timeout_seconds),
     };
-    niles_integration_archon::ArchonClient::new(config)
+    niles_integration_linear::LinearClient::new(config)
         .inspect_err(|e| {
-            tracing::warn!("Failed to build Archon client: {e}; archon tools disabled")
+            tracing::warn!("Failed to build Linear client: {e}; linear tools disabled")
         })
         .ok()
         .map(Arc::new)
@@ -1613,7 +1618,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
-    let archon_client = build_archon_client(&cfg.integrations);
+    let linear_client = build_linear_client(&cfg.integrations);
     let presence = build_presence(&cfg.presence);
     let presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
@@ -1634,7 +1639,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
-        archon_client.clone(),
+        linear_client.clone(),
         presence_agg,
         &cfg.home,
         false,
@@ -1933,7 +1938,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
-    let archon_client = build_archon_client(&cfg.integrations);
+    let linear_client = build_linear_client(&cfg.integrations);
     let presence = build_presence(&cfg.presence);
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
@@ -1954,7 +1959,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
-        archon_client.clone(),
+        linear_client.clone(),
         presence_agg.clone(),
         &cfg.home,
         args.dry_run,
@@ -3300,7 +3305,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .clone()
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
     let websearch_client = build_websearch_client(&cfg.web_search);
-    let archon_client = build_archon_client(&cfg.integrations);
+    let linear_client = build_linear_client(&cfg.integrations);
     let presence = build_presence(&cfg.presence);
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
@@ -3321,7 +3326,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
-        archon_client.clone(),
+        linear_client.clone(),
         presence_agg.clone(),
         &cfg.home,
         args.dry_run,

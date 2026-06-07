@@ -44,8 +44,8 @@ pub enum Error {
     #[error("web search error: {0}")]
     WebSearch(String),
 
-    #[error("archon error: {0}")]
-    Archon(String),
+    #[error("linear error: {0}")]
+    Linear(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

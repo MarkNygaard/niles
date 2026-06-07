@@ -37,7 +37,7 @@ pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
-pub use integrations::{ArchonConfigDto, IntegrationsConfig};
+pub use integrations::{IntegrationsConfig, LinearConfigDto};
 pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config};
 pub use memory::MemoryConfig;
@@ -2018,28 +2018,27 @@ actions = [{{ do = "notify", body = "hi" }}]
     fn integrations_section_absent_is_none() {
         let cfg = Config::load_from_str(valid_toml()).unwrap();
         cfg.validate().unwrap();
-        assert!(cfg.integrations.archon.is_none());
+        assert!(cfg.integrations.linear.is_none());
     }
-
     #[test]
-    fn integrations_archon_section_parses() {
+    fn integrations_linear_section_parses() {
         let toml = format!(
-            "{}\n[integrations.archon]\nbase_url = \"https://archon.mnygaard.io\"\ncodebase_id = \"fb05cf4e-07da-41cc-bba9-6d770107a7cb\"\ncwd = \"/tmp\"\n",
+            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"NILES\"\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
         cfg.validate().unwrap();
-        let archon = cfg.integrations.archon.as_ref().unwrap();
-        assert_eq!(archon.base_url, "https://archon.mnygaard.io");
-        assert_eq!(archon.codebase_id, "fb05cf4e-07da-41cc-bba9-6d770107a7cb");
-        assert_eq!(archon.cwd, Some("/tmp".into()));
-        assert_eq!(archon.timeout_seconds, 15);
+        let linear = cfg.integrations.linear.as_ref().unwrap();
+        assert_eq!(linear.api_key_env, "LINEAR_API_KEY");
+        assert_eq!(linear.team, "NILES");
+        assert_eq!(linear.trigger_label, "AI Eligible");
+        assert_eq!(linear.todo_state, "Todo");
+        assert_eq!(linear.timeout_seconds, 15);
     }
-
     #[test]
-    fn integrations_archon_bad_base_url_rejected() {
+    fn integrations_linear_empty_api_key_env_rejected() {
         let toml = format!(
-            "{}\n[integrations.archon]\nbase_url = \"no-scheme\"\ncodebase_id = \"x\"\n",
+            "{}\n[integrations.linear]\napi_key_env = \"\"\nteam = \"NILES\"\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2047,16 +2046,15 @@ actions = [{{ do = "notify", body = "hi" }}]
         assert!(matches!(
             err,
             Error::InvalidSection {
-                section: "integrations.archon",
+                section: "integrations.linear",
                 ..
             }
         ));
     }
-
     #[test]
-    fn integrations_archon_empty_codebase_id_rejected() {
+    fn integrations_linear_empty_team_rejected() {
         let toml = format!(
-            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"\"\n",
+            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"\"\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2064,16 +2062,15 @@ actions = [{{ do = "notify", body = "hi" }}]
         assert!(matches!(
             err,
             Error::InvalidSection {
-                section: "integrations.archon",
+                section: "integrations.linear",
                 ..
             }
         ));
     }
-
     #[test]
-    fn integrations_archon_timeout_zero_rejected() {
+    fn integrations_linear_timeout_zero_rejected() {
         let toml = format!(
-            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"x\"\ntimeout_seconds = 0\n",
+            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"NILES\"\ntimeout_seconds = 0\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2081,16 +2078,15 @@ actions = [{{ do = "notify", body = "hi" }}]
         assert!(matches!(
             err,
             Error::InvalidSection {
-                section: "integrations.archon",
+                section: "integrations.linear",
                 ..
             }
         ));
     }
-
     #[test]
-    fn integrations_archon_timeout_too_large_rejected() {
+    fn integrations_linear_timeout_too_large_rejected() {
         let toml = format!(
-            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"x\"\ntimeout_seconds = 121\n",
+            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"NILES\"\ntimeout_seconds = 121\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2098,24 +2094,7 @@ actions = [{{ do = "notify", body = "hi" }}]
         assert!(matches!(
             err,
             Error::InvalidSection {
-                section: "integrations.archon",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn integrations_archon_empty_cwd_rejected() {
-        let toml = format!(
-            "{}\n[integrations.archon]\nbase_url = \"https://archon.example.com\"\ncodebase_id = \"x\"\ncwd = \"\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "integrations.archon",
+                section: "integrations.linear",
                 ..
             }
         ));
