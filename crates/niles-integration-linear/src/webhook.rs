@@ -24,6 +24,8 @@ pub struct WebhookPayload {
     #[serde(rename = "type")]
     pub kind: String,
     #[serde(default)]
+    pub webhook_timestamp: Option<i64>,
+    #[serde(default)]
     pub data: Option<IssueData>,
     #[serde(default)]
     pub updated_from: Option<serde_json::Value>,
@@ -142,6 +144,7 @@ mod tests {
         WebhookPayload {
             action: "update".into(),
             kind: "Issue".into(),
+            webhook_timestamp: Some(1_767_644_800_000),
             data: Some(IssueData {
                 identifier: Some("TEAM-123".into()),
                 title: Some("Fix bug".into()),
@@ -211,6 +214,7 @@ mod tests {
         let payload = parse_webhook(json.to_string().as_bytes()).unwrap();
         assert_eq!(payload.action, "update");
         assert_eq!(payload.kind, "Issue");
+        assert!(payload.webhook_timestamp.is_none());
         let data = payload.data.unwrap();
         assert_eq!(data.title, Some("Do thing".into()));
         let state = data.state.unwrap();

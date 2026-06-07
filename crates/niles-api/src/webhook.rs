@@ -4,7 +4,11 @@ use crate::state::AppState;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use chrono::Utc;
+use niles_integration_linear::WebhookPayload;
 use niles_notifications::Priority;
+
+const LINEAR_WEBHOOK_TIMESTAMP_TOLERANCE_MS: u64 = 60_000;
 
 pub async fn handle_linear(
     State(state): State<AppState>,
@@ -35,11 +39,21 @@ pub async fn handle_linear(
         Ok(p) => p,
         Err(_) => return StatusCode::BAD_REQUEST,
     };
+    if !webhook_timestamp_is_current(&payload) {
+        return StatusCode::UNAUTHORIZED;
+    }
     if let Some(n) = niles_integration_linear::notification_for(&payload, &wh.team) {
         wh.center
             .deliver(n.text, wh.notify_room.clone(), Priority::Important);
     }
     StatusCode::OK
+}
+
+fn webhook_timestamp_is_current(payload: &WebhookPayload) -> bool {
+    let Some(sent_at) = payload.webhook_timestamp else {
+        return false;
+    };
+    sent_at.abs_diff(Utc::now().timestamp_millis()) <= LINEAR_WEBHOOK_TIMESTAMP_TOLERANCE_MS
 }
 
 #[cfg(test)]
@@ -87,6 +101,10 @@ mod tests {
         })))
     }
 
+    fn webhook_timestamp() -> i64 {
+        Utc::now().timestamp_millis()
+    }
+
     #[tokio::test]
     async fn valid_signed_webhook_delivers() {
         let secret = b"shh";
@@ -94,6 +112,7 @@ mod tests {
         let body = serde_json::json!({
             "action": "update",
             "type": "Issue",
+            "webhookTimestamp": webhook_timestamp(),
             "data": {
                 "identifier": "TEAM-1",
                 "title": "Fix it",
@@ -155,6 +174,7 @@ mod tests {
         let body = serde_json::json!({
             "action": "update",
             "type": "Issue",
+            "webhookTimestamp": webhook_timestamp(),
             "data": {
                 "identifier": "TEAM-1",
                 "title": "Fix it",
@@ -212,6 +232,7 @@ mod tests {
         let body = serde_json::json!({
             "action": "create",
             "type": "Issue",
+            "webhookTimestamp": webhook_timestamp(),
             "data": {
                 "identifier": "TEAM-1",
                 "title": "New issue",
@@ -237,6 +258,79 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        let recent = state.linear_webhook.unwrap().center.recent(1);
+        assert!(recent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_webhook_replay_rejected() {
+        let secret = b"shh";
+        let state = app_state_with_webhook(secret, "TEAM");
+        let body = serde_json::json!({
+            "action": "update",
+            "type": "Issue",
+            "webhookTimestamp": webhook_timestamp() - 120_000,
+            "data": {
+                "identifier": "TEAM-1",
+                "title": "Fix it",
+                "state": {"name": "In Review", "type": "started"},
+                "team": {"key": "TEAM", "name": "My Team"}
+            },
+            "updatedFrom": {"stateId": "old"}
+        })
+        .to_string();
+        let sig = sign(secret, body.as_bytes());
+
+        let app = router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/linear")
+                    .header("linear-signature", sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let recent = state.linear_webhook.unwrap().center.recent(1);
+        assert!(recent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn missing_webhook_timestamp_rejected() {
+        let secret = b"shh";
+        let state = app_state_with_webhook(secret, "TEAM");
+        let body = serde_json::json!({
+            "action": "update",
+            "type": "Issue",
+            "data": {
+                "identifier": "TEAM-1",
+                "title": "Fix it",
+                "state": {"name": "In Review", "type": "started"},
+                "team": {"key": "TEAM", "name": "My Team"}
+            },
+            "updatedFrom": {"stateId": "old"}
+        })
+        .to_string();
+        let sig = sign(secret, body.as_bytes());
+
+        let app = router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/linear")
+                    .header("linear-signature", sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let recent = state.linear_webhook.unwrap().center.recent(1);
         assert!(recent.is_empty());
     }
