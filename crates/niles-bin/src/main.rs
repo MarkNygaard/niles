@@ -136,7 +136,14 @@ enum Commands {
 #[derive(Subcommand)]
 enum ConfigAction {
     /// Validate the Niles config file.
-    Validate,
+    Validate(ConfigValidateArgs),
+}
+
+#[derive(Args)]
+struct ConfigValidateArgs {
+    /// Path to the Niles config file.
+    #[arg(short, long, default_value = "niles.toml")]
+    config: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -294,7 +301,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::MigrateFromHa => todo!("implement `migrate-from-ha`"),
         Commands::FlashSatellite => todo!("implement `flash-satellite`"),
         Commands::Config { action } => match action {
-            ConfigAction::Validate => config_validate().await,
+            ConfigAction::Validate(args) => config_validate(args),
         },
         Commands::Tools { action } => match action {
             ToolsAction::List => todo!("implement `tools list`"),
@@ -314,8 +321,12 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn config_validate() -> anyhow::Result<()> {
-    todo!("implement `config validate`")
+fn config_validate(args: ConfigValidateArgs) -> anyhow::Result<()> {
+    let cfg = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    cfg.validate().context("validating config")?;
+    println!("{} is valid.", args.config.display());
+    Ok(())
 }
 
 /// Build a `HashSet<DeviceId>` from the `[ambient_lights]` config
