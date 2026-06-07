@@ -273,6 +273,16 @@ WLED (WiFi addressable-LED controllers) is the first concrete *second* device so
 
 This keeps WLED a thin, self-contained addition: a new MQTT source + a config section, with the registry, intents, lighting curve, and voice paths all unchanged.
 
+### WLED effects (v1.1)
+
+Beyond on/off/brightness/color, WLED's signature feature is its animated **effects** (fire, rainbow, twinkle, …). v1.1 adds the ability to set one by voice, deliberately scoped small:
+
+- **The LLM picks the effect, niles maps it to a number.** A Tier 1 tool `set_light_effect { device, effect }` advertises a curated set of effect *names*; the model resolves a fuzzy request ("make the tv light a cozy fire", "rainbow") to one of those names — its strength — and niles maps the name → WLED's FX index, publishing `{"seg":[{"fx":<index>}]}` to `<topic>/api` (reusing the same MQTT command path as the rest of WLED). Tier 0 stays out of effects; fuzzy → effect mapping belongs in the LLM.
+- **Curated, not exhaustive.** WLED ships 100+ effects; niles supports a hand-picked, voice-natural subset (e.g. solid, breathe, blink, rainbow, colorloop, fire, candle, twinkle). The name→index table is pinned to WLED's standard FX indices and documented as firmware-coupled — a new effect is one table entry, not new machinery. `solid` (index 0) is how you turn an effect *off* (back to a static color).
+- **Write-only.** The simple `/g` `/c` state topics don't carry the active effect (it's only in the XML `/v` payload, which niles doesn't parse), so niles sends effects fire-and-forget and doesn't track "current effect." Acceptable for v1.1.
+- **WLED-only.** The tool/command routes through the source-aware `CommandRouter`; a non-WLED target is rejected (Z2M lights have no effect concept here).
+- **Out of scope:** WLED presets (`ps`), segments / per-segment control, custom palettes, and effect speed/intensity tuning — all clean later slices.
+
 ## Ambient lighting (the always-on circadian system)
 
 Adaptive lighting is a first-class concern in Niles, not a plugin. The goal is a home that smoothly shifts brightness and color temperature throughout the day to support natural circadian rhythms, with a gentle morning wake-up routine on selected days, and that respects manual control without fighting it.
