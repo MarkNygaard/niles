@@ -860,7 +860,7 @@ This is a real subsystem with its own architectural concerns, separate from the 
 
 Niles needs to pick a satellite for each notification. Heuristics, in priority order:
 
-1. **Originating-satellite affinity.** If the notification relates to something the user started from a specific satellite (e.g. "this Archon workflow you kicked off in the office is done"), play it on that satellite first.
+1. **Originating-satellite affinity.** If the notification relates to something the user started from a specific satellite (e.g. "that task you filed in the office has a PR ready"), play it on that satellite first.
 2. **Last-active satellite.** Otherwise, the satellite the user most recently spoke to. Niles tracks this passively as a single mutable "last active" pointer.
 3. **All satellites.** Only if the notification is genuinely urgent and the user must hear it regardless of location (rare; explicit `priority: urgent` flag).
 
@@ -874,7 +874,7 @@ Notifications never auto-escalate to all satellites the way timer alarms do. The
 
 Example: *(chime)* "The dark mode workflow on ticket0 just finished. Pull request is ready."
 
-Not: *(chime)* "Hi Mark, I have an update for you about a coding workflow you started earlier today. The Archon workflow for the dark mode feature on the ticket0 project completed successfully and there is now a pull request available for your review at the following URL..."
+Not: *(chime)* "Hi Mark, I have an update for you about a coding task you filed earlier today. The dark mode task on the ticket0 project completed successfully and there is now a pull request available for your review at the following URL..."
 
 The chime gives the user time to mentally orient before the content; the message respects their attention.
 
@@ -888,7 +888,7 @@ Niles has a notion of *quiet hours* (default: 22:00 — 07:00), during which mos
 | `normal` | Played at low volume; still respects routing rules |
 | `urgent` | Played at normal volume; ignores quiet hours |
 
-The integration emitting the notification picks the priority. Archon workflow completion is `normal`. Security camera motion at 03:00 would be `urgent`. Most things are `low` or `normal`.
+The integration emitting the notification picks the priority. A task's PR-ready notification is `normal`. Security camera motion at 03:00 would be `urgent`. Most things are `low` or `normal`.
 
 ### Recall
 
@@ -896,7 +896,7 @@ Notifications are not transient — Niles remembers recent ones. The user can as
 
 - "What was the last notification?"
 - "What did I miss this morning?"
-- "Did Archon finish?"
+- "Did that task get a PR yet?"
 
 Notifications are stored in Postgres for ~7 days, then garbage-collected. The Tier 1 LLM has a `list_recent_notifications` tool for these queries.
 
@@ -944,107 +944,62 @@ Integrations are independent of each other and of the core. Adding a new integra
 
 ### Discovery and naming
 
-Integrations register themselves at startup with a stable name (e.g. `archon`, `calendar`, `github`). The LLM sees them via Tier B context when relevant. Users refer to them by their everyday names ("run an Archon workflow," "check my calendar"), and the LLM maps to the right integration.
+Integrations register themselves at startup with a stable name (e.g. `linear`, `calendar`, `github`). The LLM sees them via Tier B context when relevant. Users refer to them by their everyday names ("add a task," "check my calendar"), and the LLM maps to the right integration.
 
-### First concrete integration: Archon
+### First concrete integration: Linear (with the ai-harness as executor)
 
-[Archon](https://github.com/coleam00/Archon) is a workflow engine for AI agents. It runs YAML-defined workflows in isolated git worktrees with fire-and-forget execution. Workflows commonly handle coding (planning, implementation, validation, PR creation), but they can do anything that can be scripted with AI involvement — video generation (Archon ships `archon-remotion-generate`), content drafting, research, data analysis, documentation updates. Whatever the user wires up as a workflow.
+Niles's first coding-workflow integration is **Linear**, the task tracker — *not* a direct connection to a workflow engine. The user runs a self-hosted Rust **ai-harness** that watches Linear: any issue in the team's **"Todo"** column carrying the **"AI Eligible"** label is picked up, run through an idea-to-pr pipeline (plan → implement → review → PR) in an isolated worktree, and turned into a GitHub pull request linked back to the issue. Linear is also wired to GitHub, so every task and its PR are visible in one place.
 
-Perfect fit for voice triggering: kick off a long-running task, get notified when it's done.
+This decouples Niles cleanly: **Niles just files and queries Linear issues.** It does not talk to the harness, doesn't know its internals, and doesn't track workflow runs — the harness reacts to Linear declaratively. Triggering work is "create a well-formed issue with the right label," not "imperatively poke an engine." (An earlier draft of this spec made Archon the first integration and had Niles call it directly; that was dropped in favor of this Linear-driven model — cleaner, single source of truth, and the task/PR overview comes for free.)
 
-**Why Archon specifically as the first integration:**
+**Why Linear as the surface:**
 
-- It already has a platform-adapter architecture (Slack, Telegram, Discord, GitHub, Web UI). Niles becomes the voice adapter alongside these.
-- Fire-and-forget execution maps naturally to voice: "start the workflow, tell me when it's done."
-- Most users running Archon also self-host it, so it can live in the same cluster as Niles with clean internal networking.
-- The workflows are inherently long-running (minutes to hours), which is exactly when voice triggering is more valuable than typing.
-- Archon runs workflows through the user's existing Claude Code (or other AI assistant) subscription — there's no metered API cost for the actual AI work. Niles only pays Tier 1 LLM cost for parsing the trigger.
+- **Declarative trigger.** Label + column *is* the contract. No run IDs, no engine-specific API in Niles.
+- **Single source of truth.** Every voice-created task lands as a normal Linear issue alongside hand-created ones; the user sees them all, with linked PRs, in Linear's UI.
+- **Decoupled.** The harness can change, gain workflows, or be swapped entirely without touching Niles. Niles's contract is just Linear's API.
+- **Fits voice.** Coding tasks are long-running; "file it and tell me when the PR's up" is exactly the fire-and-forget shape voice is good at.
 
-**Why this is more than "coding integration":**
+**Interaction patterns:**
 
-The user doesn't have to know workflow names. The LLM maps natural-language intent to the right Archon workflow:
+The LLM turns a spoken request into a well-formed Linear issue — a clear title plus a description that reads as a task brief — and files it in the right team, in "Todo", with "AI Eligible" so the harness runs it.
 
-- "Create a task in ticket0: add summary generation to ticket conversations" → `archon-idea-to-pr` on `ticket0`
-- "Fix issue 42 in ticket0" → `archon-fix-github-issue`
-- "Review PR 47" → `archon-smart-pr-review`
-- "Make a product video about the spring campaign" → `archon-remotion-generate` (or whatever video workflow is configured)
-- "Research how other voice assistants handle multi-user setups, save it to my notes" → a configured research workflow
-
-The integration shape is generic. Whatever workflows Archon has configured, Niles can trigger.
-
-**Three interaction patterns:**
-
-**Pattern 1 — Workflow-name driven** (user knows the workflow):
-> "Niles, run the idea-to-pr workflow on ticket0 with brief: add summary generation."
-
-Niles extracts project, workflow, brief; calls Archon; confirms.
-
-**Pattern 2 — Intent driven** (user describes the goal, LLM picks the workflow):
-> "Niles, create a task in ticket0: add summary generation to ticket conversations."
-
-The LLM, seeing Archon's project list and workflow catalog (with descriptions) in Tier B context, maps "create a task" + "implement a feature" → `archon-idea-to-pr`. Calls Archon with the brief. This is the most common and most powerful pattern.
-
-**Pattern 3 — Question driven** (user has a problem, not a task yet):
-> "Niles, ticket0 has a bug where users see the wrong avatar."
-
-LLM recognizes this is "problem reported, no task yet" and picks `archon-create-issue` (which investigates and files a GitHub issue), or asks: "Should I have Archon investigate and file an issue, or try to fix it directly?"
-
-**Brief refinement (used sparingly):**
-
-Before kicking off a workflow, Niles can ask one clarifying question if the brief is genuinely ambiguous:
-
-> User: "Niles, create a task in ticket0: add summary generation."
-> Niles: "Got it. Summaries for individual tickets, or for whole conversations?"
-> User: "Whole conversations."
-> Niles: "Starting the idea-to-pr workflow on ticket0: add conversation-summary generation. I'll let you know when there's a PR."
-
-The LLM is conservative: only one clarifying question, only when genuinely ambiguous, default to letting Archon's planning step resolve ambiguity rather than asking. Niles is not a design conversation surface.
-
-**Discoverability:**
-
-- "Niles, what workflows do I have for ticket0?"
-- "Niles, what coding projects do I have?"
-- "Niles, what's Archon doing right now?"
-- "Niles, cancel the dark mode workflow"
+- **Create a task** (most common): "Niles, add a task: WLED effects should support presets." → files an issue (Todo + AI Eligible). Niles confirms: "Filed it. The harness will open a PR."
+- **Status / query:** "What's in my todo?" / "Did the WLED effects task get a PR yet?" → lists issues or reports an issue's state + its linked PR.
+- **Brief refinement (sparingly):** one clarifying question only when genuinely ambiguous, then file. Niles writes the brief; it does not hold a design conversation — the harness's planning step resolves the rest.
 
 **Completion notifications:**
 
-Unprompted notifications when workflows complete:
+When an issue's linked PR opens or its state changes (e.g. → "In Review"), Niles can surface it unprompted via the notifications subsystem:
 
-- *(chime)* "Your ticket0 conversation-summary workflow finished. Pull request is ready for review."
-- *(chime)* "The spring campaign video just finished rendering. Output is in the notification log."
+- *(chime)* "The WLED-effects task has a pull request ready for review."
 
-Notification content is concise. Where to find the result comes first; URLs are referenced via the notification log rather than read verbatim ("PR is ready" not "P R hash 1 2 3 slash you slash ticket zero slash...").
+Notification content is concise; the result location comes first, URLs go to the notification log rather than being read verbatim.
 
 **Integration shape:**
 
-The `niles-integration-archon` crate:
+The `niles-integration-linear` crate:
 
-- Connects to Archon's HTTP API (or cluster-internal address when co-deployed)
-- Subscribes to Archon's webhook events for workflow status updates
-- Caches the list of projects and available workflows (including their YAML descriptions); refreshes on Archon-side changes
+- Talks to **Linear's GraphQL API** with an API token (env var; never leaves the central Niles service).
+- Resolves the configured team, the trigger **label** ("AI Eligible"), and the initial **state** ("Todo") by name at startup, so config stays human-readable.
 - Exposes LLM tools:
-  - `archon_list_projects()`
-  - `archon_list_workflows(project?)`
-  - `archon_run_workflow(project, workflow, brief)`
-  - `archon_get_status(workflow_run_id?)` — current activity, or status of a specific run
-  - `archon_cancel_workflow(workflow_run_id)`
-- Publishes notification events on workflow completion, failure, or human-approval-gate
-- Surfaces Archon's interactive approval gates as voice prompts: "The dark mode workflow needs your approval to continue. Want me to summarize the changes?"
+  - `create_task(title, description)` — files an issue in the team, in "Todo", with "AI Eligible" (so the harness runs it). Returns the issue identifier/URL.
+  - `list_tasks(status?)` — open tasks and their states.
+  - `get_task(id)` — one issue's state plus its linked PR, if any.
+- (Later) subscribes to Linear webhooks to publish notification events on state changes / PR-linked, for the completion chimes above.
+
+**Configuration:**
+
+```toml
+[integrations.linear]
+api_key_env = "LINEAR_API_KEY"
+team        = "niles"          # team key or name
+trigger_label = "AI Eligible"  # label the harness watches for
+todo_state    = "Todo"         # column new tasks land in
+```
 
 **Resolving natural language:**
 
-The LLM does the work of mapping casual phrasings to specific projects and workflows. It has Archon's project list and workflow list (with `description` fields from the YAML) in Tier B context. Pattern-2 intent-driven invocations are the LLM's bread and butter — well within GPT-OSS 20B's capability, no Tier 2 needed.
-
-**Authentication:**
-
-For self-hosted, co-deployed Archon (e.g. both in the same k8s cluster), cluster-internal networking handles auth — no public exposure needed. For users with remote Archon instances, an API token in Niles's config provides access. Tokens never leave the central Niles service.
-
-**Approval gates:**
-
-Archon's workflows can include `interactive: true` nodes that pause for human input. Niles surfaces these as voice prompts via the notifications subsystem with `priority: normal`. The user can say "approve" / "reject" / "show me the diff" / "ask for more detail" — the LLM routes these back to the workflow.
-
-This preserves the human-in-the-loop discipline Archon was designed for, even when interacting via voice.
+The LLM maps a casual spoken request to a clean issue title + brief — well within GPT-OSS 20B's range, no Tier 2 needed. It does not need to know workflow names or the harness at all; "make it AI-eligible in Todo" is the whole contract.
 
 ### Future integrations (not v1)
 
@@ -1061,10 +1016,9 @@ Each is a self-contained crate. None require core architectural changes — that
 
 ### What this section does not specify
 
-- The exact protocol between Niles and Archon (HTTP+webhooks vs. WebSocket vs. NATS — pick whatever Archon exposes most cleanly)
-- How to handle Archon API auth-token rotation
-- Whether multiple Archon instances can be connected simultaneously (probably no for v1)
-- Voice-fingerprint gating of who can trigger destructive workflows (deferred to the upcoming "user recognition" capability — see separate section)
+- Whether Niles polls Linear for status or relies solely on webhooks (webhooks preferred; polling is the fallback)
+- How to handle Linear API-token rotation
+- Voice-fingerprint gating of who can file/trigger tasks (deferred to the upcoming "user recognition" capability — see separate section)
 
 ## User recognition
 
@@ -1144,7 +1098,7 @@ users
   is_admin (boolean)
   calendar_id (which calendar maps to this user, optional)
   github_username (optional)
-  archon_user (optional)
+  linear_user (optional)
   bedroom (which room is this user's bedroom, for "wake me up" routing)
   created_at
 ```
@@ -1153,7 +1107,7 @@ The LLM uses these when a personal reference appears:
 
 - "What's on my calendar?" → looks up `speaker.calendar_id`, queries that calendar
 - "Wake me up at 06:30 tomorrow" → looks up `speaker.bedroom`, creates a routine targeting that room
-- "Did Archon finish my workflow?" → looks up `speaker.archon_user`, queries Archon scoped to that user
+- "Did my task get a PR yet?" → looks up `speaker.linear_user`, queries Linear scoped to that user
 
 If the speaker is unknown and a personal reference is used, Niles prompts for identification before proceeding.
 
@@ -1271,7 +1225,7 @@ Niles ships with a small set of default rules that any admin can override:
 
 | Default rule | Rationale |
 |---|---|
-| Unknown speakers cannot run Archon workflows | Destructive; user must be known |
+| Unknown speakers cannot file AI-eligible tasks | Triggers real code-gen; user must be known |
 | Unknown speakers cannot access personal data ("my X") | No identity to route to |
 | Unknown speakers cannot modify rules | Obvious |
 | Unknown speakers cannot add or remove users | Obvious |
@@ -1661,7 +1615,7 @@ The Niles config TOML is the canonical configuration. Everything user-tunable li
 - Presence (sources, geofence, users)
 - Lighting curve (sunrise/sunset times, night floor, color temp anchors)
 - Feature toggles (which modules are enabled)
-- Integration endpoints (Archon URL, Sonos discovery hint, etc.)
+- Integration endpoints (Linear API token env, Sonos discovery hint, etc.)
 - Database connection (host, port, db name; credentials via env-var names)
 - Notification preferences (quiet hours, routing)
 - Automations defined at deploy time
@@ -1763,10 +1717,10 @@ Humans should read README.md instead.
   api_keys: { tado: required if using Tado source }
   default: disabled
 
-### archon_integration
-  description: Trigger Archon workflows (coding, content, video, research) by voice
-  requires: running Archon instance
-  api_keys: { archon: required if remote }
+### linear_integration
+  description: File and query coding tasks in Linear by voice; an ai-harness runs the AI-eligible ones
+  requires: a Linear workspace + API token
+  api_keys: { linear: required }
   default: disabled
 
 # ... etc, every feature
@@ -1809,7 +1763,7 @@ niles/
 │   ├── niles-capabilities/     # capability reference files for self-documentation
 │   ├── niles-scheduler/        # time-driven behaviors (lighting curve, routines, timers)
 │   ├── niles-notifications/    # unprompted speech: routing, chimes, quiet hours, recall
-│   ├── niles-integration-archon/ # Archon workflow engine integration (first integration)
+│   ├── niles-integration-linear/ # Linear task integration (first integration); ai-harness runs AI-eligible tasks
 │   ├── niles-recognition/      # speaker identification via voice embeddings
 │   ├── niles-permissions/      # rules engine and admin concept; enforces tool access
 │   ├── niles-presence/         # presence sources, aggregation, home-state events
@@ -2034,16 +1988,15 @@ niles:
 - Concrete first automation: "when home becomes occupied and it's dark, turn on hallway lights"
 - Verify: arrival lights work reliably; voice-created automation persists and fires correctly
 
-### Phase 10: First external integration — Archon (1–2 weekends)
-- `niles-integration-archon` crate
-- Connect to Archon's HTTP API + webhook events (cluster-internal where possible)
-- Cache projects and workflows; refresh on Archon-side changes
-- LLM tools: list projects, list workflows, run workflow, get status, cancel
-- Workflow-completion events flow through `niles-notifications`
-- Approval-gate handling: surface Archon interactive nodes as voice prompts
-- Capability reference for Archon, loaded into Tier B
-- Default rule: only admins can run destructive Archon workflows
-- Verify: full voice loop for kicking off and being notified about workflows on a real personal project
+### Phase 10: First external integration — Linear (1–2 weekends)
+- `niles-integration-linear` crate (talks to Linear's GraphQL API)
+- Resolve team + trigger label ("AI Eligible") + initial state ("Todo") by name at startup
+- LLM tools: `create_task(title, description)` (files Todo + AI Eligible so the ai-harness runs it), `list_tasks(status?)`, `get_task(id)` (state + linked PR)
+- (Later) Linear webhooks → PR-ready / state-change events flow through `niles-notifications`
+- Capability reference for Linear, loaded into Tier B
+- Default rule: only known users can file AI-eligible tasks
+- Verify: voice "add a task: …" files a Linear issue the harness picks up and turns into a PR; "did it get a PR?" reports status
+- Note: niles does NOT talk to the harness directly — Linear (label + column) is the whole contract. Archon is dropped.
 
 ### Phase 11: LLM-facing documentation and deployment polish (1 weekend)
 - `features.toml` canonical feature catalog at repo root
@@ -2079,7 +2032,7 @@ To keep scope honest:
 
 - **Not a Home Assistant replacement for everyone.** If your home has lots of vendor-specific WiFi devices, complex Z-Wave/Matter setups, or you want a polished UI for non-technical family members, stay on HA.
 - **Not a UI-driven system in v1.** Configuration is code, config files, and naming conventions in upstream sources. Adding a device means pairing and naming it correctly in Z2M — not clicking through Niles screens. If a UI is added later, it will be optional and used for monitoring/debugging, not required for setup.
-- **Not a design or planning surface.** Niles is voice. Voice is a poor medium for design discussions, code review, long-form planning, anything that benefits from reading, scanning, jumping between sections, or seeing code and structured content. That work belongs at a computer (with Claude Code, a real editor, etc.). Niles's role in project work is *triggering* (kick off an Archon workflow, file a task) and *being notified* (workflow finished, PR ready) — not thinking through the work itself.
+- **Not a design or planning surface.** Niles is voice. Voice is a poor medium for design discussions, code review, long-form planning, anything that benefits from reading, scanning, jumping between sections, or seeing code and structured content. That work belongs at a computer (with Claude Code, a real editor, etc.). Niles's role in project work is *filing tasks* (a Linear issue the ai-harness runs) and *being notified* (PR ready) — not thinking through the work itself.
 - **Not a voice OS.** Niles is the brain; satellites are dedicated hardware that talk to it. It is not a Linux audio stack you bolt onto existing speakers (though that's a reasonable future contribution).
 - **Not an LLM training framework.** Niles uses LLMs; it doesn't train them.
 
@@ -2132,7 +2085,7 @@ These are intentionally left open for the project owner / community to decide:
 - **Capability reference** — single source of truth for what Niles can do, stored as terse structured files in the repo; used both to ground LLM command execution and to answer user how-to questions
 - **Tiered context (A/B/C)** — Niles's strategy for assembling LLM system prompts: Tier A always loaded for fast common commands, Tier B loaded on-demand for topic-specific requests, Tier C loaded only for full-system overviews
 - **Notification** — an unprompted message Niles delivers to the user via voice, with chime + content, routed by satellite affinity and quiet-hours rules
-- **External integration** — a self-contained crate (`niles-integration-<name>`) connecting Niles to an outside service (Archon, calendar, GitHub, etc.); exposes LLM tools and publishes notification events
+- **External integration** — a self-contained crate (`niles-integration-<name>`) connecting Niles to an outside service (Linear, calendar, GitHub, etc.); exposes LLM tools and publishes notification events
 - **Last-active satellite** — the most recently-used satellite by the user; default target for notifications without other routing affinity
 - **Speaker recognition** — Niles's identification of who is speaking via voice embeddings; runs in parallel with STT, adds zero perceived latency
 - **Voice embedding** — fixed-length numerical representation of a person's voice (~192–512 floats), produced by a small neural model and stored locally for nearest-neighbor identity matching
