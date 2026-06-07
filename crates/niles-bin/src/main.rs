@@ -2213,6 +2213,151 @@ async fn handle_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> O
     response
 }
 
+/// Run the Tier 1 LLM (with Tier 2 escalation) for `text` and return the
+/// spoken response. Invoked on a Tier 0 miss, and also when a Tier 0 intent
+/// matched but resolved no target device — e.g. "living room ceiling light"
+/// makes Tier 0 grab "living room ceiling" as the room (no such devices);
+/// rather than dead-ending, the LLM resolves the real `living_room/ceiling`.
+async fn dispatch_tier1(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    text: &str,
+    origin_room: Option<&RoomName>,
+) -> Option<String> {
+    tracing::info!("[{peer}] dispatching to Tier 1 LLM: {text:?}");
+    let user_mem = match ctx.memory.load(niles_memory::Target::User) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!("[{peer}] failed to load user memory: {e}");
+            None
+        }
+    };
+    let agent_mem = match ctx.memory.load(niles_memory::Target::Memory) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!("[{peer}] failed to load agent memory: {e}");
+            None
+        }
+    };
+    let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
+    let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
+    let skill_summaries = ctx
+        .skill_store
+        .as_ref()
+        .and_then(|s| match s.list_summaries() {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!("[{peer}] failed to list skills: {e}");
+                None
+            }
+        });
+    let system_prompt = assemble_system_prompt_with_optional_capabilities(
+        text,
+        &ctx.home,
+        ctx.capability_index.as_deref(),
+        ctx.capability_loader.as_deref(),
+        origin_room,
+        user_mem_str.as_deref(),
+        agent_mem_str.as_deref(),
+        skill_summaries.as_deref(),
+    );
+    // Splice recent turns from this room between the system prompt and the
+    // current utterance so the LLM can resolve follow-ups ("turn it off
+    // again") against what was just said.
+    let mut messages = Vec::new();
+    messages.push(Message::System {
+        content: system_prompt,
+    });
+    messages.extend(ctx.conversation.recent_messages(origin_room));
+    messages.push(Message::User {
+        content: text.to_string(),
+    });
+    match run_tool_calling_chat_with_messages(
+        ctx.llm.as_ref(),
+        ctx.tools.as_ref(),
+        messages,
+        MAX_TOOL_ITERATIONS,
+        None,
+    )
+    .await
+    {
+        Ok((LoopOutcome::Done(response), tool_trace)) => {
+            println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
+            let memory_for_review = ctx.memory.is_enabled().then(|| ctx.memory.clone());
+            let snapshot = review::ReviewSnapshot {
+                transcript: text.to_string(),
+                spoken_response: response.clone(),
+                tool_trace,
+                user_memory: user_mem_str.clone(),
+                agent_memory: agent_mem_str.clone(),
+                skill_summaries: skill_summaries.clone().unwrap_or_default(),
+            };
+            if ctx.review.enabled
+                && (memory_for_review.is_some() || ctx.skill_store.is_some())
+                && review::is_reviewable_turn(&snapshot)
+            {
+                let _handle = review::spawn_skill_review(
+                    snapshot,
+                    memory_for_review,
+                    ctx.skill_store.clone(),
+                    ctx.llm.clone(),
+                    ctx.home.clone(),
+                    ctx.review.max_iters as usize,
+                );
+            }
+            Some(response)
+        }
+        Ok((LoopOutcome::EscalateRequested { reason, messages }, _tool_trace)) => {
+            tracing::info!("[{peer}] Tier 1 requested escalation: {reason}");
+            match &ctx.tier2 {
+                Some(tier2) => {
+                    println!("[{peer}] \"{text}\" -> escalating to Tier 2 ({reason})");
+                    match run_tool_calling_chat_with_messages(
+                        tier2.as_ref(),
+                        ctx.tools.as_ref(),
+                        messages,
+                        MAX_TOOL_ITERATIONS,
+                        Some(niles_tools::escalate::ESCALATE_TOOL_NAME),
+                    )
+                    .await
+                    {
+                        Ok((LoopOutcome::Done(response), _)) => {
+                            println!("[{peer}] \"{text}\" -> (Tier 2) {response}");
+                            Some(response)
+                        }
+                        Ok((LoopOutcome::EscalateRequested { .. }, _)) => {
+                            println!(
+                                "[{peer}] \"{text}\" -> (Tier 2) escalation requested; ignoring"
+                            );
+                            tracing::warn!("[{peer}] Tier 2 also requested escalation; ignoring");
+                            Some("Sorry, I'm not able to handle that request.".into())
+                        }
+                        Err(e) => {
+                            println!("[{peer}] \"{text}\" -> (Tier 2) error: {e:#}");
+                            tracing::warn!("[{peer}] Tier 2 dispatch failed: {e:#}");
+                            Some("Sorry, something went wrong.".into())
+                        }
+                    }
+                }
+                None => {
+                    println!(
+                        "[{peer}] \"{text}\" -> (Tier 1) escalation requested but Tier 2 not configured"
+                    );
+                    tracing::warn!("[{peer}] Tier 2 not configured, falling through");
+                    Some("Sorry, I'm not able to escalate that request right now.".into())
+                }
+            }
+        }
+        Err(e) => {
+            // Mirror the success-path stdout line so a Tier 1 failure is
+            // visible without enabling tracing.
+            println!("[{peer}] \"{text}\" -> (Tier 1) error: {e:#}");
+            tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e:#}");
+            Some("Sorry, something went wrong.".into())
+        }
+    }
+}
+
 async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
@@ -2247,147 +2392,8 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
 
     let intent = match parsed {
         Some(i) => i,
-        None => {
-            // Tier 0 miss — escalate to Tier 1 LLM with the tool registry.
-            tracing::info!("[{peer}] Tier 0 miss, escalating to LLM: {text:?}");
-            let user_mem = match ctx.memory.load(niles_memory::Target::User) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!("[{peer}] failed to load user memory: {e}");
-                    None
-                }
-            };
-            let agent_mem = match ctx.memory.load(niles_memory::Target::Memory) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!("[{peer}] failed to load agent memory: {e}");
-                    None
-                }
-            };
-            let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
-            let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
-            let skill_summaries = ctx
-                .skill_store
-                .as_ref()
-                .and_then(|s| match s.list_summaries() {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        tracing::warn!("[{peer}] failed to list skills: {e}");
-                        None
-                    }
-                });
-            let system_prompt = assemble_system_prompt_with_optional_capabilities(
-                text,
-                &ctx.home,
-                ctx.capability_index.as_deref(),
-                ctx.capability_loader.as_deref(),
-                origin_room,
-                user_mem_str.as_deref(),
-                agent_mem_str.as_deref(),
-                skill_summaries.as_deref(),
-            );
-            // Splice recent turns from this room between the system
-            // prompt and the current utterance so the LLM can resolve
-            // follow-ups ("turn it off again") against what was just said.
-            let mut messages = Vec::new();
-            messages.push(Message::System {
-                content: system_prompt,
-            });
-            messages.extend(ctx.conversation.recent_messages(origin_room));
-            messages.push(Message::User {
-                content: text.to_string(),
-            });
-            match run_tool_calling_chat_with_messages(
-                ctx.llm.as_ref(),
-                ctx.tools.as_ref(),
-                messages,
-                MAX_TOOL_ITERATIONS,
-                None,
-            )
-            .await
-            {
-                Ok((LoopOutcome::Done(response), tool_trace)) => {
-                    println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
-                    let memory_for_review = ctx.memory.is_enabled().then(|| ctx.memory.clone());
-                    let snapshot = review::ReviewSnapshot {
-                        transcript: text.to_string(),
-                        spoken_response: response.clone(),
-                        tool_trace,
-                        user_memory: user_mem_str.clone(),
-                        agent_memory: agent_mem_str.clone(),
-                        skill_summaries: skill_summaries.clone().unwrap_or_default(),
-                    };
-                    if ctx.review.enabled
-                        && (memory_for_review.is_some() || ctx.skill_store.is_some())
-                        && review::is_reviewable_turn(&snapshot)
-                    {
-                        let _handle = review::spawn_skill_review(
-                            snapshot,
-                            memory_for_review,
-                            ctx.skill_store.clone(),
-                            ctx.llm.clone(),
-                            ctx.home.clone(),
-                            ctx.review.max_iters as usize,
-                        );
-                    }
-                    return Some(response);
-                }
-                Ok((LoopOutcome::EscalateRequested { reason, messages }, _tool_trace)) => {
-                    tracing::info!("[{peer}] Tier 1 requested escalation: {reason}");
-                    match &ctx.tier2 {
-                        Some(tier2) => {
-                            println!("[{peer}] \"{text}\" -> escalating to Tier 2 ({reason})");
-                            match run_tool_calling_chat_with_messages(
-                                tier2.as_ref(),
-                                ctx.tools.as_ref(),
-                                messages,
-                                MAX_TOOL_ITERATIONS,
-                                Some(niles_tools::escalate::ESCALATE_TOOL_NAME),
-                            )
-                            .await
-                            {
-                                Ok((LoopOutcome::Done(response), _)) => {
-                                    println!("[{peer}] \"{text}\" -> (Tier 2) {response}");
-                                    return Some(response);
-                                }
-                                Ok((LoopOutcome::EscalateRequested { .. }, _)) => {
-                                    println!(
-                                        "[{peer}] \"{text}\" -> (Tier 2) escalation requested; ignoring"
-                                    );
-                                    tracing::warn!(
-                                        "[{peer}] Tier 2 also requested escalation; ignoring"
-                                    );
-                                    return Some(
-                                        "Sorry, I'm not able to handle that request.".into(),
-                                    );
-                                }
-                                Err(e) => {
-                                    println!("[{peer}] \"{text}\" -> (Tier 2) error: {e:#}");
-                                    tracing::warn!("[{peer}] Tier 2 dispatch failed: {e:#}");
-                                    return Some("Sorry, something went wrong.".into());
-                                }
-                            }
-                        }
-                        None => {
-                            println!(
-                                "[{peer}] \"{text}\" -> (Tier 1) escalation requested but Tier 2 not configured"
-                            );
-                            tracing::warn!("[{peer}] Tier 2 not configured, falling through");
-                            return Some(
-                                "Sorry, I'm not able to escalate that request right now.".into(),
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Mirror the success-path stdout line so a Tier 1
-                    // failure is visible without enabling tracing.
-                    println!("[{peer}] \"{text}\" -> (Tier 1) error: {e:#}");
-                    tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e:#}");
-                    return Some("Sorry, something went wrong.".into());
-                }
-            }
-        }
+        // Tier 0 miss — hand the raw transcript to the LLM.
+        None => return dispatch_tier1(ctx, peer, text, origin_room).await,
     };
 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
@@ -2402,8 +2408,13 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
             let (_canonical, targets) =
                 match resolve_room_targets(ctx, peer, &room, |d| d.is_light()) {
                     RoomResolve::Found(c, t) => (c, t),
-                    RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                    RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
+                    RoomResolve::BadName | RoomResolve::NoDevices => {
+                        // Tier 0 matched a light intent but found no target
+                        // (e.g. "living room ceiling light" parsed as room
+                        // "living room ceiling"). Let the LLM resolve it
+                        // rather than dead-ending. See dispatch_tier1.
+                        return dispatch_tier1(ctx, peer, text, origin_room).await;
+                    }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
             let desired = DeviceState {
@@ -2441,8 +2452,13 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
             let (_canonical, targets) =
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
-                    RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                    RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
+                    RoomResolve::BadName | RoomResolve::NoDevices => {
+                        // Tier 0 matched a light intent but found no target
+                        // (e.g. "living room ceiling light" parsed as room
+                        // "living room ceiling"). Let the LLM resolve it
+                        // rather than dead-ending. See dispatch_tier1.
+                        return dispatch_tier1(ctx, peer, text, origin_room).await;
+                    }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
             // Flag each dimmable target *before* publishing so the
@@ -2465,8 +2481,13 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
             let (_canonical, targets) =
                 match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
                     RoomResolve::Found(c, t) => (c, t),
-                    RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                    RoomResolve::NoDevices => return Some(response::room_no_devices(&room)),
+                    RoomResolve::BadName | RoomResolve::NoDevices => {
+                        // Tier 0 matched a light intent but found no target
+                        // (e.g. "living room ceiling light" parsed as room
+                        // "living room ceiling"). Let the LLM resolve it
+                        // rather than dead-ending. See dispatch_tier1.
+                        return dispatch_tier1(ctx, peer, text, origin_room).await;
+                    }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
             // `resolve_room_targets` already filtered for devices with
@@ -2492,9 +2513,9 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
                 d.is_curve_driven() && d.supports_color_temperature()
             }) {
                 RoomResolve::Found(c, t) => (c, t),
-                RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                RoomResolve::NoDevices => {
-                    return Some(response::room_no_devices(&room));
+                RoomResolve::BadName | RoomResolve::NoDevices => {
+                    // No Tier 0 target — escalate to the LLM (see dispatch_tier1).
+                    return dispatch_tier1(ctx, peer, text, origin_room).await;
                 }
                 RoomResolve::WarmingUp => return Some(response::room_warming_up()),
             };
@@ -2521,9 +2542,9 @@ async fn dispatch_transcript(ctx: &DispatchCtx, peer: SocketAddr, text: &str) ->
                 d.is_curve_driven() && d.supports_color_temperature()
             }) {
                 RoomResolve::Found(c, t) => (c, t),
-                RoomResolve::BadName => return Some(response::room_not_found(&room)),
-                RoomResolve::NoDevices => {
-                    return Some(response::room_no_devices(&room));
+                RoomResolve::BadName | RoomResolve::NoDevices => {
+                    // No Tier 0 target — escalate to the LLM (see dispatch_tier1).
+                    return dispatch_tier1(ctx, peer, text, origin_room).await;
                 }
                 RoomResolve::WarmingUp => return Some(response::room_warming_up()),
             };

@@ -205,11 +205,6 @@ pub fn room_not_found(room: &str) -> String {
     format!("I couldn't find a room called {}.", spoken_room(room))
 }
 
-/// "I couldn't find any lights in the kitchen."
-pub fn room_no_devices(room: &str) -> String {
-    format!("I couldn't find any lights in the {}.", spoken_room(room))
-}
-
 /// "Still waking up, try again in a moment."
 pub fn room_warming_up() -> String {
     "Still waking up, try again in a moment.".into()
@@ -557,14 +552,6 @@ mod tests {
         assert_eq!(
             room_not_found("office"),
             "I couldn't find a room called office."
-        );
-    }
-
-    #[test]
-    fn room_no_devices_phrasing() {
-        assert_eq!(
-            room_no_devices("kitchen"),
-            "I couldn't find any lights in the kitchen."
         );
     }
 
