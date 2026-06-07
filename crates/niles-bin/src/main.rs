@@ -135,6 +135,7 @@ enum Commands {
     /// all on-lights; use `niles serve` for manual-mode integration.
     Lighting(LightingArgs),
     /// Regenerate MANIFEST.md from features.toml. Use --check to
+    /// verify the committed MANIFEST.md is in sync (CI mode).
     GenerateManifest(GenerateManifestArgs),
 }
 
@@ -2429,8 +2430,6 @@ async fn dispatch_tier1(
         skill_summaries.as_deref(),
         speaker,
     );
-    // current utterance so the LLM can resolve follow-ups ("turn it off
-    // again") against what was just said.
     let mut messages = Vec::new();
     messages.push(Message::System {
         content: system_prompt,
@@ -5464,6 +5463,7 @@ mod system_prompt_tests {
             Some(&summaries),
             &SpeakerContext::Disabled,
         );
+        assert!(out.starts_with(NILES_SYSTEM_PERSONA));
         assert!(out.contains("# User memory"));
         assert!(out.contains("# Agent memory"));
         assert!(out.contains("# Available skills"));
@@ -5484,6 +5484,7 @@ mod system_prompt_tests {
             None,
             &SpeakerContext::Disabled,
         );
+        assert!(out.contains("# Current context"));
         assert!(out.contains("living_room"));
     }
 
