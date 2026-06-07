@@ -2,7 +2,16 @@
 
 use crate::publish::DevicePublisher;
 use niles_core::{DeviceRegistry, EventBus};
+use niles_notifications::NotificationCenter;
 use std::sync::Arc;
+
+/// State required to verify and route Linear webhooks.
+pub struct LinearWebhookState {
+    pub secret: Vec<u8>,
+    pub team: String,
+    pub notify_room: Option<String>,
+    pub center: Arc<NotificationCenter>,
+}
 
 /// State shared with every request. `Clone` is cheap (just bumps
 /// reference counts).
@@ -12,6 +21,7 @@ pub struct AppState {
     pub publisher: Arc<dyn DevicePublisher>,
     pub z2m_prefix: Arc<String>,
     pub event_bus: EventBus,
+    pub linear_webhook: Option<Arc<LinearWebhookState>>,
 }
 
 impl AppState {
@@ -26,6 +36,12 @@ impl AppState {
             publisher,
             z2m_prefix,
             event_bus,
+            linear_webhook: None,
         }
+    }
+
+    pub fn with_linear_webhook(mut self, w: Option<Arc<LinearWebhookState>>) -> Self {
+        self.linear_webhook = w;
+        self
     }
 }
