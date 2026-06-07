@@ -147,14 +147,14 @@ impl LinearClient {
             }
         });
         let resp: CreateResp = self.graphql(query, variables).await?;
-        let issue = resp.issue_create.issue.ok_or(Error::Api {
-            reason: "issueCreate returned success=false".into(),
-        })?;
         if !resp.issue_create.success {
             return Err(Error::Api {
                 reason: "issueCreate returned success=false".into(),
             });
         }
+        let issue = resp.issue_create.issue.ok_or(Error::Api {
+            reason: "issueCreate returned success=true but issue was null".into(),
+        })?;
         Ok(TaskRef {
             id: issue.id,
             identifier: issue.identifier,
@@ -353,18 +353,21 @@ mod tests {
     struct MockTransport {
         last_post_body: Arc<Mutex<Option<String>>>,
         responses: Arc<Mutex<Vec<Result<String>>>>,
+        call_count: Arc<Mutex<usize>>,
     }
-
     impl MockTransport {
         fn new(responses: Vec<Result<String>>) -> Self {
             Self {
                 last_post_body: Arc::new(Mutex::new(None)),
                 responses: Arc::new(Mutex::new(responses)),
+                call_count: Arc::new(Mutex::new(0)),
             }
         }
-
         fn last_post_body(&self) -> Option<String> {
             self.last_post_body.lock().clone()
+        }
+        fn call_count(&self) -> usize {
+            *self.call_count.lock()
         }
     }
 
@@ -372,6 +375,7 @@ mod tests {
     impl LinearTransport for MockTransport {
         async fn post_graphql(&self, body: &str) -> Result<String> {
             *self.last_post_body.lock() = Some(body.to_string());
+            *self.call_count.lock() += 1;
             self.responses.lock().remove(0)
         }
     }
@@ -418,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_happy_path() {
-        let (_, client) = client_with(vec![
+        let (mock, client) = client_with(vec![
             Ok(resolve_json()),
             Ok(json!({
                 "data": {
@@ -437,6 +441,10 @@ mod tests {
         let task = client.create_task("Fix bug", "desc").await.unwrap();
         assert_eq!(task.identifier, "NILES-42");
         assert_eq!(task.url, "https://linear.app/issue/NILES-42");
+        let body = mock.last_post_body().unwrap();
+        assert!(body.contains("issueCreate"));
+        assert!(body.contains("Fix bug"));
+        assert!(body.contains("desc"));
     }
 
     #[tokio::test]
@@ -456,10 +464,28 @@ mod tests {
         let err = client.create_task("Fix bug", "desc").await.unwrap_err();
         assert!(matches!(err, Error::Api { .. }));
     }
-
+    #[tokio::test]
+    async fn create_task_success_with_null_issue() {
+        let (_, client) = client_with(vec![
+            Ok(resolve_json()),
+            Ok(json!({
+                "data": {
+                    "issueCreate": {
+                        "success": true,
+                        "issue": null
+                    }
+                }
+            })
+            .to_string()),
+        ]);
+        let err = client.create_task("Fix bug", "desc").await.unwrap_err();
+        assert!(
+            matches!(err, Error::Api { reason } if reason.contains("success=true but issue was null"))
+        );
+    }
     #[tokio::test]
     async fn list_tasks_happy_path() {
-        let (_, client) = client_with(vec![
+        let (mock, client) = client_with(vec![
             Ok(resolve_json()),
             Ok(json!({
                 "data": {
@@ -480,16 +506,19 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].identifier, "NILES-1");
         assert_eq!(tasks[0].state, "Todo");
+        let body = mock.last_post_body().unwrap();
+        assert!(body.contains("issues"));
     }
-
     #[tokio::test]
     async fn list_tasks_with_state_filter() {
-        let (_, client) = client_with(vec![
+        let (mock, client) = client_with(vec![
             Ok(resolve_json()),
             Ok(json!({ "data": { "issues": { "nodes": [] } } }).to_string()),
         ]);
         let tasks = client.list_tasks(Some("In Progress")).await.unwrap();
         assert!(tasks.is_empty());
+        let body = mock.last_post_body().unwrap();
+        assert!(body.contains("In Progress"));
     }
 
     #[tokio::test]
@@ -626,8 +655,8 @@ mod tests {
         ]);
         client.list_tasks(None).await.unwrap();
         client.list_tasks(None).await.unwrap();
-        // Only one resolve call should have been made
-        let body = mock.last_post_body().unwrap();
-        assert!(body.contains("issues")); // second call
+        // One resolve + two list queries = 3 total calls.
+        // Without caching it would be 4 (two resolves + two lists).
+        assert_eq!(mock.call_count(), 3);
     }
 }
