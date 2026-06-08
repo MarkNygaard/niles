@@ -1,0 +1,5 @@
+## Managed component dependencies (fetched by the IDF component manager).
+dependencies:
+  espressif/esp-tflite-micro: "*"
+  idf:
+    version: ">=5.0"

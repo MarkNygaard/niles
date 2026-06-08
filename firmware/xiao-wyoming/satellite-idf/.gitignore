@@ -1,0 +1,10 @@
+# ESP-IDF generated / downloaded artifacts — not source.
+/build/
+/managed_components/
+/sdkconfig
+/sdkconfig.old
+/dependencies.lock
+
+# Editor / IDE config with machine-specific absolute paths.
+/.vscode/
+/.clangd

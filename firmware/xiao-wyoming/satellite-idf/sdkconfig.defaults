@@ -1,0 +1,19 @@
+# XIAO ESP32-S3: 8 MB flash, 8 MB octal (OPI) PSRAM.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# Octal PSRAM (the XIAO ESP32-S3's "OPI PSRAM").
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Custom partition table — give the app room for TFLM + the model.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# A little extra headroom for the main task (TFLM arena is static, but
+# frontend + interpreter setup are stack-hungry during init).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# esp-tflite-micro builds its kernels with -O2; keep perf optimization.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
