@@ -1,6 +1,7 @@
 //! Notification center: in-memory ring buffer + delivery orchestration.
 
 // Error/Result unused in this module — kept for future expansion.
+use crate::log::NotificationLog;
 use crate::model::{DeliveryOutcome, Notification, Priority};
 use crate::quiet::QuietHoursConfig;
 use chrono::Utc;
@@ -13,12 +14,12 @@ pub trait NotificationDelivery: Send + Sync {
     fn deliver(&self, text: &str, room: Option<&str>, priority: Priority) -> bool;
 }
 
-/// In-memory ring buffer of notifications with quiet-hours awareness.
 pub struct NotificationCenter {
     buffer: Mutex<VecDeque<Notification>>,
     capacity: usize,
     quiet: Option<QuietHoursConfig>,
     delivery: Option<Arc<dyn NotificationDelivery>>,
+    log: Option<NotificationLog>,
 }
 
 impl NotificationCenter {
@@ -34,6 +35,7 @@ impl NotificationCenter {
             capacity,
             quiet: None,
             delivery: None,
+            log: None,
         }
     }
 
@@ -46,6 +48,26 @@ impl NotificationCenter {
     /// Attach a delivery backend.
     pub fn with_delivery(mut self, delivery: Arc<dyn NotificationDelivery>) -> Self {
         self.delivery = Some(delivery);
+        self
+    }
+
+    /// Attach a file-based notification log.
+    ///
+    /// Seeds the in-memory ring buffer with the most recent persisted
+    /// notifications so `recent()` is immediately useful after restart.
+    pub fn with_log(mut self, log: NotificationLog) -> Self {
+        match log.load_recent(self.capacity) {
+            Ok(recent) => {
+                let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+                for n in recent.into_iter().rev() {
+                    buffer.push_back(n);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to seed notification buffer from log: {e}");
+            }
+        }
+        self.log = Some(log);
         self
     }
 
@@ -97,6 +119,12 @@ impl NotificationCenter {
             buffer.pop_front();
         }
         buffer.push_back(notification.clone());
+        drop(buffer);
+        if let Some(ref log) = self.log
+            && let Err(e) = log.append(&notification)
+        {
+            tracing::warn!("failed to persist notification to log: {e}");
+        }
         notification
     }
 
@@ -261,5 +289,53 @@ mod tests {
     #[should_panic(expected = "NotificationCenter capacity must be > 0")]
     fn new_panics_when_capacity_zero() {
         let _ = NotificationCenter::new(0);
+    }
+    #[test]
+    fn persists_and_reloads_across_restart() {
+        use crate::model::Priority;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let log = NotificationLog::new(tmp.path()).unwrap();
+        let center = NotificationCenter::new(10).with_log(log);
+        center.deliver("first", None, Priority::Routine);
+        center.deliver("second", None, Priority::Routine);
+        assert_eq!(center.recent(10).len(), 2);
+
+        // Simulate restart: new center seeded from same log.
+        let log2 = NotificationLog::new(tmp.path()).unwrap();
+        let center2 = NotificationCenter::new(10).with_log(log2);
+        let recent = center2.recent(10);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].text, "second");
+        assert_eq!(recent[1].text, "first");
+    }
+
+    #[test]
+    fn seed_respects_capacity() {
+        use crate::model::{DeliveryOutcome, Priority};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let log = NotificationLog::new(tmp.path()).unwrap();
+        // Write 5 notifications directly to log.
+        for i in 1..=5 {
+            let n = crate::model::Notification {
+                id: format!("id-{i}"),
+                text: format!("msg {i}"),
+                priority: Priority::Routine,
+                room: None,
+                outcome: DeliveryOutcome::Delivered,
+                created_at: chrono::Utc::now() + chrono::Duration::seconds(i),
+            };
+            log.append(&n).unwrap();
+        }
+        // New center with capacity 3 should only keep the newest 3.
+        let center = NotificationCenter::new(3).with_log(log);
+        let recent = center.recent(10);
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].text, "msg 5");
+        assert_eq!(recent[1].text, "msg 4");
+        assert_eq!(recent[2].text, "msg 3");
     }
 }

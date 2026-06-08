@@ -12,13 +12,16 @@ use tracing::info;
 /// tests can drive it via `tower::ServiceExt::oneshot` without
 /// binding a port.
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let mut r = Router::new()
         .route("/healthz", get(handlers::healthz))
         .route("/devices", get(handlers::list_devices))
         .route("/rooms/{room}", get(handlers::devices_in_room))
         .route("/rooms/{room}/{device}", post(handlers::set_device))
-        .route("/events/stream", get(crate::events::events_stream))
-        .with_state(state)
+        .route("/events/stream", get(crate::events::events_stream));
+    if state.linear_webhook.is_some() {
+        r = r.route("/webhooks/linear", post(crate::webhook::handle_linear));
+    }
+    r.with_state(state)
 }
 
 /// Bind to `addr` and run the API server until the process exits
