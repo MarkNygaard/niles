@@ -8,3 +8,6 @@
 # Editor / IDE config with machine-specific absolute paths.
 /.vscode/
 /.clangd
+
+# Local secrets (WiFi creds, host) — copy from secrets.example.h.
+/main/secrets.h
