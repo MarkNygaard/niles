@@ -34,8 +34,17 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "nvs_flash.h"
+#include "lwip/sockets.h"
+#include "lwip/inet.h"
+
+#include "secrets.h"
 
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -62,7 +71,7 @@ static constexpr gpio_num_t PIN_WS = GPIO_NUM_7;
 static constexpr gpio_num_t PIN_DIN = GPIO_NUM_43;
 
 // ---- microWakeWord "Hey Jarvis" v2 (from hey_jarvis.json) ----
-static constexpr float PROB_CUTOFF = 0.30f; // tuning; wake word peaks ~0.45, noise <0.1
+static constexpr float PROB_CUTOFF = 0.22f; // wake word peaks ~0.45, noise <0.12; lower = more sensitive
 static constexpr int WINDOW_AVG = 5;
 
 // The XVF3800 mono downmix is low-level (~6.6% of full scale on loud
@@ -173,7 +182,138 @@ static void push_slice() {
   for (int f = frames; f < STRIDE_SAMPLES; f++) tail[f] = 0;
 }
 
+// ---- Wyoming streaming to niles (Stage 2) ----
+static bool send_all(int sock, const void* buf, size_t len) {
+  const uint8_t* p = static_cast<const uint8_t*>(buf);
+  while (len) {
+    int n = send(sock, p, len, 0);
+    if (n <= 0) return false;
+    p += n;
+    len -= n;
+  }
+  return true;
+}
+
+// After wake detection, open a Wyoming TCP connection to niles and stream the
+// spoken command as mono 16 kHz 16-bit PCM (raw downmix, no MIC_GAIN — cleaner
+// for STT), ending on silence (energy VAD) or a hard cap. No playback yet.
+static void stream_utterance() {
+  struct sockaddr_in dest = {};
+  dest.sin_family = AF_INET;
+  dest.sin_port = htons(NILES_PORT);
+  if (inet_pton(AF_INET, NILES_HOST, &dest.sin_addr) != 1) {
+    ESP_LOGE(TAG, "bad NILES_HOST '%s'", NILES_HOST);
+    return;
+  }
+  int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+  if (sock < 0) {
+    ESP_LOGE(TAG, "socket() failed");
+    return;
+  }
+  if (connect(sock, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest)) != 0) {
+    ESP_LOGE(TAG, "connect %s:%d failed (errno %d)", NILES_HOST, NILES_PORT, errno);
+    close(sock);
+    return;
+  }
+
+  const char* start =
+      "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,\"channels\":1}}\n";
+  if (!send_all(sock, start, strlen(start))) {
+    close(sock);
+    return;
+  }
+
+  // mean |sample| (raw, ungained) below this = silence. Ambient measures
+  // ~15-24, real speech reaches thousands, so 60 separates them cleanly.
+  // Lower it if quiet commands get cut off; raise if it never ends.
+  static const int STOP_RMS = 60;
+  static const int HANGOVER_FRAMES = 50; // ~500 ms of silence ends the utterance
+  static const int MAX_FRAMES = 600;     // ~6 s hard cap
+
+  int16_t slice[STRIDE_SAMPLES];
+  char hdr[64];
+  int silent = 0, total = 0;
+  long emin = 1 << 30, emax = 0;
+  while (silent < HANGOVER_FRAMES && total < MAX_FRAMES) {
+    size_t got = 0;
+    i2s_channel_read(rx_chan, i2s_buf, sizeof(i2s_buf), &got, portMAX_DELAY);
+    int frames = got / (sizeof(int32_t) * 2);
+    if (frames > STRIDE_SAMPLES) frames = STRIDE_SAMPLES;
+    long sum = 0;
+    for (int f = 0; f < frames; f++) {
+      int16_t v = (int16_t)(i2s_buf[f * 2] >> 16); // raw mono, no gain
+      slice[f] = v;
+      sum += v < 0 ? -v : v;
+    }
+    for (int f = frames; f < STRIDE_SAMPLES; f++) slice[f] = 0;
+    long energy = frames ? sum / frames : 0;
+    if (energy < emin) emin = energy;
+    if (energy > emax) emax = energy;
+
+    int pb = STRIDE_SAMPLES * (int)sizeof(int16_t);
+    int n = snprintf(hdr, sizeof(hdr), "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
+    if (!send_all(sock, hdr, n) || !send_all(sock, slice, pb)) break;
+
+    if (energy < STOP_RMS) silent++;
+    else silent = 0;
+    total++;
+  }
+
+  const char* stop = "{\"type\":\"audio-stop\"}\n";
+  send_all(sock, stop, strlen(stop));
+  close(sock);
+  ESP_LOGI(TAG, "utterance streamed (%d frames, ~%d ms) energy[min=%ld max=%ld] (STOP_RMS=%d)",
+           total, total * 10, emin, emax, STOP_RMS);
+}
+
+// ---- WiFi (station) ----
+static EventGroupHandle_t s_wifi_events;
+static constexpr int WIFI_CONNECTED_BIT = BIT0;
+
+static void wifi_event_handler(void*, esp_event_base_t base, int32_t id, void* data) {
+  if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+    esp_wifi_connect();
+  } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    ESP_LOGW(TAG, "wifi disconnected — reconnecting");
+    esp_wifi_connect();
+  } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+    auto* e = static_cast<ip_event_got_ip_t*>(data);
+    ESP_LOGI(TAG, "wifi connected, IP=" IPSTR, IP2STR(&e->ip_info.ip));
+    xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
+  }
+}
+
+static void wifi_init_sta() {
+  s_wifi_events = xEventGroupCreate();
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_create_default_wifi_sta();
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                      &wifi_event_handler, nullptr, nullptr));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                      &wifi_event_handler, nullptr, nullptr));
+  wifi_config_t wc = {};
+  strncpy(reinterpret_cast<char*>(wc.sta.ssid), WIFI_SSID, sizeof(wc.sta.ssid) - 1);
+  strncpy(reinterpret_cast<char*>(wc.sta.password), WIFI_PASS, sizeof(wc.sta.password) - 1);
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+  ESP_ERROR_CHECK(esp_wifi_start());
+  ESP_LOGI(TAG, "wifi connecting to '%s'...", WIFI_SSID);
+  xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+}
+
 extern "C" void app_main(void) {
+  // NVS is required by WiFi.
+  esp_err_t nvs = nvs_flash_init();
+  if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ESP_ERROR_CHECK(nvs_flash_init());
+  }
+  wifi_init_sta();
+
   tflite::InitializeTarget();
   if (InitializeMicroFeatures() != kTfLiteOk) {
     ESP_LOGE(TAG, "InitializeMicroFeatures failed");
@@ -239,7 +379,12 @@ extern "C" void app_main(void) {
         int64_t now_ms = esp_log_timestamp();
         if (prob >= PROB_CUTOFF && now_ms - last_fire_ms > 1500) {
           last_fire_ms = now_ms;
-          ESP_LOGI(TAG, ">>> WAKE WORD DETECTED: Hey Jarvis <<< (prob=%.3f)", (double)prob);
+          ESP_LOGI(TAG, ">>> WAKE WORD DETECTED (prob=%.3f) — streaming command <<<",
+                   (double)prob);
+          stream_utterance();
+          // Reset wake state so stale slices don't immediately re-fire.
+          slot = 0;
+          last_fire_ms = esp_log_timestamp();
         }
       }
     }
