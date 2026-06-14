@@ -50,7 +50,7 @@ urlencoding = "2"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 rand_chacha = "0.10"
 parking_lot = "0.12"
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 hex = "0.4"
 
