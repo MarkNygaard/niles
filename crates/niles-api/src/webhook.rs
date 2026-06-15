@@ -80,7 +80,7 @@ mod tests {
 
     fn sign(secret: &[u8], body: &[u8]) -> String {
         type HmacSha256 = hmac::Hmac<sha2::Sha256>;
-        let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(secret).unwrap();
+        let mut mac = <HmacSha256 as hmac::digest::KeyInit>::new_from_slice(secret).unwrap();
         hmac::Mac::update(&mut mac, body);
         hex::encode(hmac::Mac::finalize(mac).into_bytes())
     }
