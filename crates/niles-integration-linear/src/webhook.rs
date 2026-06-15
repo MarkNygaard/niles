@@ -9,7 +9,7 @@ pub fn verify_signature(secret: &[u8], body: &[u8], signature_hex: &str) -> bool
     let Ok(sig) = hex::decode(signature_hex) else {
         return false;
     };
-    let Ok(mut mac) = <HmacSha256 as hmac::Mac>::new_from_slice(secret) else {
+    let Ok(mut mac) = <HmacSha256 as hmac::digest::KeyInit>::new_from_slice(secret) else {
         return false;
     };
     hmac::Mac::update(&mut mac, body);
@@ -117,7 +117,7 @@ mod tests {
         let secret = b"my-secret";
         let body = b"hello world";
         type HmacSha256 = hmac::Hmac<sha2::Sha256>;
-        let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(secret).unwrap();
+        let mut mac = <HmacSha256 as hmac::digest::KeyInit>::new_from_slice(secret).unwrap();
         hmac::Mac::update(&mut mac, body);
         let sig = hex::encode(hmac::Mac::finalize(mac).into_bytes());
         assert!(verify_signature(secret, body, &sig));
@@ -128,7 +128,7 @@ mod tests {
         let secret = b"my-secret";
         let body = b"hello world";
         type HmacSha256 = hmac::Hmac<sha2::Sha256>;
-        let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(secret).unwrap();
+        let mut mac = <HmacSha256 as hmac::digest::KeyInit>::new_from_slice(secret).unwrap();
         hmac::Mac::update(&mut mac, body);
         let sig = hex::encode(hmac::Mac::finalize(mac).into_bytes());
         assert!(!verify_signature(secret, b"tampered", &sig));
