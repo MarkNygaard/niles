@@ -73,13 +73,12 @@ static constexpr gpio_num_t PIN_DIN = GPIO_NUM_43;
 static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 
 // ---- microWakeWord "nyles" v2 (custom model, from nyles.json) ----
-// nyles.json recommends probability_cutoff 0.98, but that assumes a 5-window
-// average; we fire on the single-invoke probability instead, and the interim
-// "Hey Jarvis" model only peaked ~0.45 through this same preprocessor/cadence.
-// So START here and TUNE from the heartbeat: say "nyles" a few times, read the
-// `maxprob` it logs, then set this to roughly 60-70% of that peak — comfortably
-// above the maxprob you see for ambient noise and look-alikes (miles/files).
-static constexpr float PROB_CUTOFF = 0.50f;
+// On hardware, a real "nyles" peaks ~0.89-0.99 while ambient noise and
+// look-alikes (miles/files) top out ~0.42. 0.80 sits in that gap: rejects the
+// false hits, comfortably below real detections. nyles.json suggests 0.98, but
+// that assumes a 5-window average; we fire on the single-invoke probability.
+// Lower toward 0.7 if real "nyles" ever gets missed; raise if "files" sneaks in.
+static constexpr float PROB_CUTOFF = 0.80f;
 static constexpr int WINDOW_AVG = 5;
 
 // The XVF3800 mono downmix is low-level; the wake-word preprocessor expects
@@ -369,8 +368,8 @@ static void stream_utterance() {
   // ~15-24, real speech reaches thousands, so 60 separates them cleanly.
   // Lower it if quiet commands get cut off; raise if it never ends.
   static const int STOP_RMS = 60;
-  static const int HANGOVER_FRAMES = 50; // ~500 ms of silence ends the utterance
-  static const int MAX_FRAMES = 600;     // ~6 s hard cap
+  static const int HANGOVER_FRAMES = 35; // ~350 ms of silence ends the utterance
+  static const int MAX_FRAMES = 400;     // ~4 s hard cap (was 6 s — too slow)
 
   int16_t slice[STRIDE_SAMPLES];
   char hdr[64];
@@ -518,8 +517,12 @@ extern "C" void app_main(void) {
       if (interpreter->Invoke() != kTfLiteOk) {
         ESP_LOGE(TAG, "wake Invoke failed");
       } else {
-        float prob =
-            (output->data.int8[0] - output->params.zero_point) * output->params.scale;
+        // microWakeWord's probability output is an UNSIGNED byte [0,255]
+        // (255 ~= 1.0), but TFLM types the tensor int8. Reading it signed
+        // wraps high-confidence detections (byte > 127) to negative, hiding
+        // every strong hit and capping the visible prob at ~0.496 (=127/256).
+        // Read it unsigned.
+        float prob = output->data.uint8[0] * output->params.scale;
         if (prob > hb_maxprob) hb_maxprob = prob;
         int64_t now_ms = esp_log_timestamp();
         if (prob >= PROB_CUTOFF && now_ms - last_fire_ms > 1500) {
