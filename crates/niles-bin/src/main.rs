@@ -2366,6 +2366,43 @@ fn is_noise_transcript(text: &str) -> bool {
     !text.chars().any(|c| c.is_alphabetic())
 }
 
+/// True if `c` belongs to a CJK script (Han, Hiragana, Katakana, Hangul, or
+/// CJK symbols/punctuation) — the scripts Whisper hallucinates into when fed
+/// near-silent audio.
+fn is_cjk_char(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x11FF   // Hangul Jamo
+        | 0x3000..=0x303F // CJK symbols and punctuation
+        | 0x3040..=0x30FF // Hiragana + Katakana
+        | 0x3130..=0x318F // Hangul compatibility Jamo
+        | 0x3400..=0x4DBF // CJK Unified Ideographs Ext A
+        | 0x4E00..=0x9FFF // CJK Unified Ideographs
+        | 0xAC00..=0xD7A3 // Hangul syllables
+        | 0xF900..=0xFAFF // CJK compatibility ideographs
+    )
+}
+
+/// True when `text` is predominantly CJK while the household language (`lang`,
+/// resolved two-letter code) is not CJK. Whisper invents CJK stock phrases
+/// (Korean/Japanese/Chinese news intros, etc.) when given quiet/noisy audio;
+/// in a non-CJK household those are always hallucinations, never real input.
+/// Skipped entirely if the household actually speaks a CJK language.
+fn is_foreign_script_hallucination(text: &str, lang: &str) -> bool {
+    if matches!(lang, "ja" | "ko" | "zh") {
+        return false;
+    }
+    let mut cjk = 0usize;
+    let mut latin = 0usize;
+    for c in text.chars() {
+        if is_cjk_char(c) {
+            cjk += 1;
+        } else if c.is_alphabetic() {
+            latin += 1;
+        }
+    }
+    cjk > 0 && cjk >= latin
+}
+
 async fn handle_transcript(
     ctx: &DispatchCtx,
     peer: SocketAddr,
@@ -2543,6 +2580,14 @@ async fn dispatch_transcript(
     // phrases like "thank you"; a real "thank you" gets a real reply.
     if is_noise_transcript(text) {
         tracing::debug!("[{peer}] dropping wordless STT output: {text:?}");
+        return None;
+    }
+
+    // Whisper hallucinates CJK stock phrases on quiet/noisy audio; in a
+    // non-CJK household those are never real commands. Drop them before they
+    // burn a Tier 1 round-trip and a spoken non-sequitur reply.
+    if is_foreign_script_hallucination(text, &ctx.home.resolved_language()) {
+        tracing::debug!("[{peer}] dropping foreign-script hallucination: {text:?}");
         return None;
     }
 
@@ -4255,6 +4300,48 @@ mod noise_transcript_tests {
         assert!(!is_noise_transcript("turn on the office light"));
         assert!(!is_noise_transcript("what's the weather tomorrow"));
         assert!(!is_noise_transcript("stop"));
+    }
+
+    #[test]
+    fn drops_cjk_hallucinations_in_non_cjk_household() {
+        // The exact phrase Whisper invented on the satellite's quiet audio.
+        assert!(is_foreign_script_hallucination(
+            "MBC 뉴스 김성현입니다.",
+            "en"
+        ));
+        // Other common Whisper CJK hallucinations.
+        assert!(is_foreign_script_hallucination(
+            "ご視聴ありがとうございました",
+            "en"
+        ));
+        assert!(is_foreign_script_hallucination("请不吝点赞", "da"));
+        // A lone ideograph is alphabetic (so is_noise_transcript keeps it) but
+        // is still a hallucination here.
+        assert!(is_foreign_script_hallucination("中", "en"));
+    }
+
+    #[test]
+    fn keeps_real_commands_in_non_cjk_household() {
+        assert!(!is_foreign_script_hallucination(
+            "turn on the office light",
+            "en"
+        ));
+        assert!(!is_foreign_script_hallucination(
+            "sluk lyset i kontoret",
+            "da"
+        ));
+        assert!(!is_foreign_script_hallucination("stop", "en"));
+        assert!(!is_foreign_script_hallucination("", "en"));
+    }
+
+    #[test]
+    fn keeps_cjk_when_household_speaks_cjk() {
+        // A Korean-speaking household must still be understood.
+        assert!(!is_foreign_script_hallucination("불 꺼", "ko"));
+        assert!(!is_foreign_script_hallucination(
+            "MBC 뉴스 김성현입니다.",
+            "ja"
+        ));
     }
 }
 
