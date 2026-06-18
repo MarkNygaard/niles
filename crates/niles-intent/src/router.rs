@@ -1009,14 +1009,17 @@ fn timer_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         // Two phrasings:
-        //   "(set a )?timer for <n> <unit>[s] (called <name>)?"
+        //   "(set|start|create|make)? (a|an|the|my)? timer for <n> <unit>[s] (called <name>)?"
         //   "<n> <unit>[s] timer (called <name>)?"
+        // The leading verb + article are both optional so natural phrasings
+        // ("set the timer for…", "start a timer for…", bare "timer for…") all
+        // hit Tier 0 instead of falling through to the LLM.
         // Units: seconds / minutes / hours (+ common short forms).
         Regex::new(
             r"(?x)
               ^
               (?:
-                (?:set\s+a\s+)?timer\s+for\s+(?P<n1>\d+)\s+(?P<unit1>seconds?|secs?|minutes?|mins?|hours?|hrs?)
+                (?:(?:set|start|create|make)\s+)?(?:(?:a|an|the|my)\s+)?timer\s+for\s+(?P<n1>\d+)\s+(?P<unit1>seconds?|secs?|minutes?|mins?|hours?|hrs?)
                 (?:\s+called\s+(?P<name1>.+))?
               |
                 (?P<n2>\d+)\s+(?P<unit2>seconds?|secs?|minutes?|mins?|hours?|hrs?)\s+timer
@@ -1064,7 +1067,7 @@ fn timer_cancel_regex() -> &'static Regex {
         Regex::new(
             r"(?x)
               ^
-              (?:cancel|stop)\s+(?:the\s+)?(?P<name>.+?)\s+timer
+              (?:cancel|stop)\s+(?:the\s+|my\s+)?(?P<name>.+?)\s+timer
               $",
         )
         .expect("timer_cancel regex compiles")
@@ -1074,7 +1077,7 @@ fn timer_cancel_regex() -> &'static Regex {
 fn match_timer_cancel(t: &str) -> Option<Intent> {
     let caps = timer_cancel_regex().captures(t)?;
     let name = caps.name("name")?.as_str().trim();
-    if name.is_empty() || name == "the" || name == "lights" {
+    if name.is_empty() || name == "the" || name == "my" || name == "lights" {
         return None;
     }
     Some(Intent::TimerCancel {
@@ -1109,10 +1112,8 @@ fn match_timer_list(t: &str) -> Option<Intent> {
 
 fn match_stop_cancel(t: &str) -> Option<Intent> {
     match t {
-        "stop" => Some(Intent::Stop),
-        "stop the timer" => Some(Intent::Stop),
-        "cancel" => Some(Intent::Cancel),
-        "cancel the timer" => Some(Intent::Cancel),
+        "stop" | "stop timer" | "stop the timer" | "stop my timer" => Some(Intent::Stop),
+        "cancel" | "cancel timer" | "cancel the timer" | "cancel my timer" => Some(Intent::Cancel),
         _ => None,
     }
 }
@@ -1507,17 +1508,48 @@ mod tests {
     }
 
     #[test]
-    fn cancel_timer_without_name_falls_through() {
-        // "cancel timer" lacks a name segment, so it must NOT match
-        // timer_cancel. "cancel" alone should still hit Intent::Cancel.
-        assert_eq!(parse("cancel timer"), None);
+    fn cancel_timer_without_name_maps_to_cancel() {
+        // "cancel timer" has no name segment, so it isn't a named TimerCancel;
+        // it (and bare "cancel") resolves to the generic Intent::Cancel.
+        assert_eq!(parse("cancel timer"), Some(Intent::Cancel));
         assert_eq!(parse("cancel"), Some(Intent::Cancel));
     }
 
     #[test]
     fn stop_or_cancel_the_timer_maps_to_ack_intents() {
+        // All the natural unnamed phrasings resolve to the generic ack intents
+        // at Tier 0 — they never reach the LLM.
         assert_eq!(parse("stop the timer"), Some(Intent::Stop));
+        assert_eq!(parse("stop timer"), Some(Intent::Stop));
+        assert_eq!(parse("stop my timer"), Some(Intent::Stop));
         assert_eq!(parse("cancel the timer"), Some(Intent::Cancel));
+        assert_eq!(parse("cancel my timer"), Some(Intent::Cancel));
+    }
+
+    #[test]
+    fn set_timer_natural_phrasings_hit_tier0() {
+        // The exact command that previously fell through to the LLM.
+        assert_eq!(
+            parse("Set the timer for 10 seconds."),
+            Some(Intent::TimerSet {
+                duration: Duration::from_secs(10),
+                name: None,
+            })
+        );
+        assert_eq!(
+            parse("start a timer for 5 minutes"),
+            Some(Intent::TimerSet {
+                duration: Duration::from_secs(300),
+                name: None,
+            })
+        );
+        assert_eq!(
+            parse("set my timer for 1 minute"),
+            Some(Intent::TimerSet {
+                duration: Duration::from_secs(60),
+                name: None,
+            })
+        );
     }
 
     #[test]
