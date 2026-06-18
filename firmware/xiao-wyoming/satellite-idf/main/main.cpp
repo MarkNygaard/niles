@@ -65,10 +65,12 @@ static constexpr int SAMPLE_RATE = kAudioSampleFrequency;                 // 160
 static constexpr int WINDOW_SAMPLES = kFeatureDurationMs * SAMPLE_RATE / 1000; // 480 (30 ms)
 static constexpr int STRIDE_SAMPLES = 10 * SAMPLE_RATE / 1000;            // 160 (10 ms)
 
-// XVF3800 I2S pins (match the proven VAD wiring): BCLK 8, WS 7, DIN 43.
+// XVF3800 I2S pins (match the proven VAD wiring): BCLK 8, WS 7, DIN 43,
+// DOUT 44 (playback — the XVF3800 plays I2S-TX audio on its speaker).
 static constexpr gpio_num_t PIN_BCLK = GPIO_NUM_8;
 static constexpr gpio_num_t PIN_WS = GPIO_NUM_7;
 static constexpr gpio_num_t PIN_DIN = GPIO_NUM_43;
+static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 
 // ---- microWakeWord "Hey Jarvis" v2 (from hey_jarvis.json) ----
 static constexpr float PROB_CUTOFF = 0.22f; // wake word peaks ~0.45, noise <0.12; lower = more sensitive
@@ -111,6 +113,48 @@ static void i2s_init() {
   };
   ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
   ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
+}
+
+// Playback uses a TX channel at the reply's sample rate. The I2S port has one
+// active direction at a time, so we tear down RX, play, then restore RX. (True
+// duplex / barge-in is a later stage.)
+static i2s_chan_handle_t tx_chan = nullptr;
+
+static void i2s_deinit_rx() {
+  if (rx_chan) {
+    i2s_channel_disable(rx_chan);
+    i2s_del_channel(rx_chan);
+    rx_chan = nullptr;
+  }
+}
+
+static void i2s_start_tx(int rate) {
+  i2s_deinit_rx();
+  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_chan, nullptr));
+  i2s_std_config_t std_cfg = {
+      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG((uint32_t)rate),
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
+                                                      I2S_SLOT_MODE_STEREO),
+      .gpio_cfg = {
+          .mclk = I2S_GPIO_UNUSED,
+          .bclk = PIN_BCLK,
+          .ws = PIN_WS,
+          .dout = PIN_DOUT,
+          .din = I2S_GPIO_UNUSED,
+          .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
+      },
+  };
+  ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &std_cfg));
+  ESP_ERROR_CHECK(i2s_channel_enable(tx_chan));
+}
+
+static void i2s_stop_tx() {
+  if (tx_chan) {
+    i2s_channel_disable(tx_chan);
+    i2s_del_channel(tx_chan);
+    tx_chan = nullptr;
+  }
 }
 
 static void model_init() {
@@ -194,6 +238,96 @@ static bool send_all(int sock, const void* buf, size_t len) {
   return true;
 }
 
+// ---- Reply playback (Stage 3) ----
+// Read a newline-terminated line from the socket (Wyoming headers are JSON
+// lines). Returns length, or -1 on EOF/timeout.
+static int sock_read_line(int sock, char* buf, int max) {
+  int idx = 0;
+  while (idx < max - 1) {
+    char c;
+    int n = recv(sock, &c, 1, 0);
+    if (n <= 0) return -1;
+    if (c == '\n') break;
+    buf[idx++] = c;
+  }
+  buf[idx] = 0;
+  return idx;
+}
+
+static bool sock_read_full(int sock, uint8_t* buf, int n) {
+  int got = 0;
+  while (got < n) {
+    int r = recv(sock, buf + got, n - got, 0);
+    if (r <= 0) return false;
+    got += r;
+  }
+  return true;
+}
+
+// Parse the integer right after `key` in a JSON header line (e.g. "\"rate\":").
+static long json_int_after(const char* s, const char* key) {
+  const char* p = strstr(s, key);
+  if (!p) return -1;
+  return atol(p + strlen(key));
+}
+
+// After audio-stop, niles runs STT + intent + TTS and streams its spoken reply
+// back over the same socket (audio-start{rate} / audio-chunk+PCM / audio-stop).
+// Play it via I2S TX (mono 16-bit -> stereo 32-bit, L=R), reconfiguring the
+// I2S rate to the reply's rate, then restore RX for wake detection.
+static void play_reply(int sock) {
+  struct timeval tv = {.tv_sec = 10, .tv_usec = 0}; // niles needs time to think
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  char line[192];
+  uint8_t pcm[1024];
+  static int32_t stereo[512 * 2]; // up to 512 mono samples -> stereo32
+  bool playing = false;
+
+  while (true) {
+    int len = sock_read_line(sock, line, sizeof(line));
+    if (len < 0) {
+      ESP_LOGW(TAG, "no reply / timeout");
+      break;
+    }
+    if (strstr(line, "audio-start")) {
+      long rate = json_int_after(line, "\"rate\":");
+      if (rate <= 0) rate = 22050;
+      ESP_LOGI(TAG, "reply audio-start rate=%ld", rate);
+      i2s_start_tx((int)rate);
+      playing = true;
+    } else if (strstr(line, "audio-chunk")) {
+      long rem = json_int_after(line, "\"payload_length\":");
+      if (rem <= 0) continue;
+      while (rem > 0) {
+        int want = rem < (long)sizeof(pcm) ? (int)rem : (int)sizeof(pcm);
+        if (!sock_read_full(sock, pcm, want)) {
+          ESP_LOGW(TAG, "reply chunk read failed");
+          rem = 0;
+          break;
+        }
+        if (playing && tx_chan) {
+          const int16_t* s = reinterpret_cast<const int16_t*>(pcm);
+          int ns = want / (int)sizeof(int16_t);
+          for (int i = 0; i < ns; i++) {
+            int32_t v = (int32_t)s[i] << 16;
+            stereo[i * 2] = v;
+            stereo[i * 2 + 1] = v;
+          }
+          size_t wrote = 0;
+          i2s_channel_write(tx_chan, stereo, ns * 2 * sizeof(int32_t), &wrote, portMAX_DELAY);
+        }
+        rem -= want;
+      }
+    } else if (strstr(line, "audio-stop")) {
+      ESP_LOGI(TAG, "reply done");
+      break;
+    }
+  }
+  i2s_stop_tx();
+  i2s_init(); // restore RX @ 16 kHz for wake detection
+}
+
 // After wake detection, open a Wyoming TCP connection to niles and stream the
 // spoken command as mono 16 kHz 16-bit PCM (raw downmix, no MIC_GAIN — cleaner
 // for STT), ending on silence (energy VAD) or a hard cap. No playback yet.
@@ -261,9 +395,12 @@ static void stream_utterance() {
 
   const char* stop = "{\"type\":\"audio-stop\"}\n";
   send_all(sock, stop, strlen(stop));
-  close(sock);
   ESP_LOGI(TAG, "utterance streamed (%d frames, ~%d ms) energy[min=%ld max=%ld] (STOP_RMS=%d)",
            total, total * 10, emin, emax, STOP_RMS);
+
+  // Read + play niles' spoken reply on the same socket (Stage 3), then close.
+  play_reply(sock);
+  close(sock);
 }
 
 // ---- WiFi (station) ----
