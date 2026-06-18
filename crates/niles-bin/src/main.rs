@@ -961,6 +961,15 @@ fn assemble_system_prompt_with_optional_capabilities(
     speaker: &SpeakerContext,
 ) -> String {
     let mut out = String::from(NILES_SYSTEM_PERSONA);
+    // Only advertise optional tools that are actually registered, gated on the
+    // same conditions as registration (capability_loader / skill_store). The
+    // provider 400s if the model calls a tool absent from request.tools.
+    if capability_loader.is_some() {
+        out.push_str(CAPABILITY_GUIDANCE);
+    }
+    if skill_summaries.is_some() {
+        out.push_str(SKILL_GUIDANCE);
+    }
     out.push_str(&home_context(home));
 
     if let Some(mem) = user_mem
@@ -1533,24 +1542,37 @@ const MAX_TOOL_ITERATIONS: usize = 5;
 
 /// Tier A — stable system persona. Same on every LLM call so it
 /// stays at the front of the system prompt where prompt caching
-/// is most effective.
+/// is most effective. Only describes the always-present core tools;
+/// guidance for optional tool groups is appended conditionally (see
+/// `CAPABILITY_GUIDANCE` / `SKILL_GUIDANCE`) so we never advertise a
+/// tool that isn't in `request.tools` — the provider 400s on that.
 const NILES_SYSTEM_PERSONA: &str = "\
 You are Niles, a home-automation assistant. You control lights, \
 switches, scenes, and timers in a private home via the tools \
 provided. Be concise and action-oriented: when the user asks you \
 to do something, call the appropriate tool rather than describing \
-what you would do. When you lack domain context for a request, \
-you may have been given relevant capability references below; use \
-them. If a needed capability isn't present, call \
-look_up_capability to fetch one by name. Never invent device \
-names — use the listing tools to discover what exists. You can \
-save persistent skills using the mint_skill tool, but only when \
-the user explicitly asks niles to remember or save a routine. \
-Prefer patch_skill over mint_skill when an existing skill \
-overlaps. Skill bodies should describe the how-to, not the \
-conversation that produced them. When the Available skills \
-section below lists a skill relevant to the request, call \
-view_skill to read its full body.";
+what you would do. Never invent device names — use the listing \
+tools to discover what exists.";
+
+/// Appended to the persona only when the `look_up_capability` tool is
+/// registered (a capabilities directory is configured). Advertising it
+/// otherwise makes the model emit a call to a tool absent from
+/// `request.tools`, which the provider rejects with a 400.
+const CAPABILITY_GUIDANCE: &str = " \
+When you lack domain context for a request, you may have been given \
+relevant capability references below; use them. If a needed capability \
+isn't present, call look_up_capability to fetch one by name.";
+
+/// Appended to the persona only when the skill tools (`mint_skill` /
+/// `patch_skill` / `view_skill`) are registered (a skill store is
+/// configured). Same 400-avoidance rationale as `CAPABILITY_GUIDANCE`.
+const SKILL_GUIDANCE: &str = " \
+You can save persistent skills using the mint_skill tool, but only when \
+the user explicitly asks niles to remember or save a routine. Prefer \
+patch_skill over mint_skill when an existing skill overlaps. Skill bodies \
+should describe the how-to, not the conversation that produced them. When \
+the Available skills section below lists a skill relevant to the request, \
+call view_skill to read its full body.";
 
 /// A minimal abstraction over the chat-completions endpoint so the
 /// tool-calling loop is testable without spinning up an HTTP server.
