@@ -171,7 +171,7 @@ static void model_init() {
     abort();
   }
   // Streaming microWakeWord op set. Add any op Invoke() reports missing.
-  static tflite::MicroMutableOpResolver<20> resolver;
+  static tflite::MicroMutableOpResolver<21> resolver;
   resolver.AddCallOnce();
   resolver.AddVarHandle();
   resolver.AddReadVariable();
@@ -185,6 +185,7 @@ static void model_init() {
   resolver.AddStridedSlice();
   resolver.AddConcatenation();
   resolver.AddSplit();
+  resolver.AddSplitV(); // nyles model splits with SPLIT_V (hey_jarvis didn't)
   resolver.AddMul();
   resolver.AddAdd();
   resolver.AddMean();
