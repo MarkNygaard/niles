@@ -10,6 +10,15 @@
 //! `_release` variants are deliberately mapped to `None` — the
 //! leading-edge events (`*_press`) and per-repeat events
 //! (`*_hold`) have already driven the effect.
+//!
+//! Two device vocabularies are handled:
+//! - **Hue dimmer (RWL, 4 buttons):** `on_press` / `off_press` /
+//!   `up_*` / `down_*`.
+//! - **Hue Smart Button (ROM001, 1 button):** bare `on` / `off`,
+//!   which the button alternates on successive presses. Its
+//!   `press` / `release` / `hold` fire on *every* press regardless
+//!   of toggle direction, so they're ignored (→ `None`) to avoid
+//!   double-acting with the `on` / `off` it emits alongside.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitchEffect {
@@ -27,6 +36,10 @@ pub enum SwitchEffect {
 /// unknown strings, empty).
 pub fn classify_action(action: &str) -> Option<SwitchEffect> {
     match action {
+        // Hue Smart Button (1-button) toggles with bare on/off.
+        "on" => Some(SwitchEffect::TurnOnRoom),
+        "off" => Some(SwitchEffect::TurnOffRoom),
+        // Hue dimmer (RWL, 4-button).
         "on_press" => Some(SwitchEffect::TurnOnRoom),
         "off_press" => Some(SwitchEffect::TurnOffRoom),
         "up_press" => Some(SwitchEffect::StepBrightness { delta_percent: 25 }),
@@ -98,6 +111,23 @@ mod tests {
     fn hold_release_variants_are_none() {
         assert!(classify_action("up_hold_release").is_none());
         assert!(classify_action("down_hold_release").is_none());
+    }
+
+    #[test]
+    fn hue_smart_button_bare_on_off() {
+        // The 1-button Hue Smart Button alternates bare on/off.
+        assert_eq!(classify_action("on"), Some(SwitchEffect::TurnOnRoom));
+        assert_eq!(classify_action("off"), Some(SwitchEffect::TurnOffRoom));
+    }
+
+    #[test]
+    fn hue_smart_button_press_release_hold_ignored() {
+        // These fire on every press regardless of toggle direction, so
+        // they must not double-act with the on/off emitted alongside.
+        assert!(classify_action("press").is_none());
+        assert!(classify_action("release").is_none());
+        assert!(classify_action("hold").is_none());
+        assert!(classify_action("hold_release").is_none());
     }
 
     #[test]
