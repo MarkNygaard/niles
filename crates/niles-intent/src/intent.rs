@@ -169,6 +169,10 @@ pub enum Intent {
     /// "list my timers" / "what timers do I have"
     TimerList,
 
+    /// "how long is left on the timer" / "how much time is left" —
+    /// query the remaining time on the soonest pending timer.
+    TimerRemaining,
+
     /// Acknowledgments used to stop an in-progress alarm.
     Stop,
     Cancel,

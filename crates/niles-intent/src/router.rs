@@ -68,6 +68,7 @@ impl IntentRouter {
             .or_else(|| match_timer(&t))
             .or_else(|| match_timer_cancel(&t))
             .or_else(|| match_timer_list(&t))
+            .or_else(|| match_timer_remaining(&t))
             .or_else(|| match_stop_cancel(&t))
     }
 
@@ -1105,6 +1106,36 @@ fn match_timer_list(t: &str) -> Option<Intent> {
     timer_list_regex().is_match(t).then_some(Intent::TimerList)
 }
 
+// ---- Timer remaining (query time left) -----------------------------------
+
+fn timer_remaining_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // "how long [time] [is] left/remaining [on the/my timer]"
+        // "how much time [is] left/remaining …"  /  "how much longer …"
+        // "[the] time [is] left/remaining …"  /  "time left …"
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                how\s+long\s+(?:time\s+)?(?:is\s+)?(?:left|remaining)
+              | how\s+much\s+time\s+(?:is\s+)?(?:left|remaining)
+              | how\s+much\s+longer
+              | (?:the\s+)?time\s+(?:is\s+)?(?:left|remaining)
+              )
+              (?:\s+(?:on|for)\s+(?:the\s+|my\s+)?timer)?
+              $",
+        )
+        .expect("timer_remaining regex compiles")
+    })
+}
+
+fn match_timer_remaining(t: &str) -> Option<Intent> {
+    timer_remaining_regex()
+        .is_match(t)
+        .then_some(Intent::TimerRemaining)
+}
+
 // ---- Stop / cancel ---------------------------------------------------------
 
 fn match_stop_cancel(t: &str) -> Option<Intent> {
@@ -1533,6 +1564,45 @@ mod tests {
     #[test]
     fn what_timers_do_i_have_returns_timer_list() {
         assert_eq!(parse("what timers do I have"), Some(Intent::TimerList));
+    }
+
+    // ---- Timer remaining (query) ----
+
+    #[test]
+    fn timer_remaining_natural_phrasings() {
+        // The user's exact phrasing, plus common variants — all Tier 0.
+        assert_eq!(
+            parse("how long time is left on the timer"),
+            Some(Intent::TimerRemaining)
+        );
+        assert_eq!(parse("how much time is left"), Some(Intent::TimerRemaining));
+        assert_eq!(parse("how long is left"), Some(Intent::TimerRemaining));
+        assert_eq!(
+            parse("how much longer on the timer"),
+            Some(Intent::TimerRemaining)
+        );
+        assert_eq!(
+            parse("how much time is remaining on my timer"),
+            Some(Intent::TimerRemaining)
+        );
+        assert_eq!(
+            parse("time left on the timer"),
+            Some(Intent::TimerRemaining)
+        );
+    }
+
+    #[test]
+    fn timer_remaining_does_not_swallow_other_commands() {
+        // Must not be mistaken for set/cancel/list, and unrelated speech
+        // shouldn't match.
+        assert_ne!(
+            parse("set a timer for 5 minutes"),
+            Some(Intent::TimerRemaining)
+        );
+        assert_ne!(
+            parse("turn off the kitchen light"),
+            Some(Intent::TimerRemaining)
+        );
     }
 
     // ---- Back to normal ----
