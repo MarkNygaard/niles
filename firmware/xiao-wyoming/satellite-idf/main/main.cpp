@@ -74,11 +74,13 @@ static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 
 // ---- microWakeWord "nyles" v2 (custom model, from nyles.json) ----
 // On hardware, a real "nyles" peaks ~0.89-0.99 while ambient noise and
-// look-alikes (miles/files) top out ~0.42. 0.80 sits in that gap: rejects the
-// false hits, comfortably below real detections. nyles.json suggests 0.98, but
-// that assumes a 5-window average; we fire on the single-invoke probability.
-// Lower toward 0.7 if real "nyles" ever gets missed; raise if "files" sneaks in.
-static constexpr float PROB_CUTOFF = 0.80f;
+// look-alikes top out ~0.42. At 0.80, background speech occasionally crossed
+// the bar and false-woke; real detections never drop below ~0.89, so 0.85
+// leaves margin for true hits while rejecting more of the background.
+// nyles.json suggests 0.98, but that assumes a 5-window average; we fire on the
+// single-invoke probability. Lower toward 0.8 if real "nyles" gets missed;
+// raise toward 0.9 (or add 5-frame averaging) if background still false-wakes.
+static constexpr float PROB_CUTOFF = 0.85f;
 static constexpr int WINDOW_AVG = 5;
 
 // The XVF3800 mono downmix is low-level; the wake-word preprocessor expects
@@ -368,42 +370,76 @@ static void stream_utterance() {
   // ~15-24, real speech reaches thousands, so 60 separates them cleanly.
   // Lower it if quiet commands get cut off; raise if it never ends.
   static const int STOP_RMS = 60;
-  static const int HANGOVER_FRAMES = 35; // ~350 ms of silence ends the utterance
+  static const int HANGOVER_FRAMES = 35; // ~350 ms of trailing silence ends it
   static const int MAX_FRAMES = 400;     // ~4 s hard cap (was 6 s — too slow)
+
+  // Speech-onset gate: don't start the end-of-utterance countdown until speech
+  // actually BEGINS. Otherwise a slow start after the wake word ends the
+  // capture on leading silence, and niles transcribes a near-empty clip (which
+  // Whisper turns into hallucinated stock phrases). Wait up to
+  // ONSET_TIMEOUT_FRAMES for energy to cross ONSET_RMS (well above ambient ~24,
+  // below normal speech); if the user never speaks, abort without a real clip.
+  static const int ONSET_RMS = 120;
+  static const int ONSET_TIMEOUT_FRAMES = 250; // ~2.5 s to start talking
+
+  // The XVF3800 downmix is low-level: raw command speech peaks only ~700-4600
+  // (~2-14% of full scale). Whisper HALLUCINATES on near-silent audio (it
+  // invents stock phrases — e.g. Korean news intros). Amplify the outgoing
+  // PCM so it lands at a healthy level; speech ~3000 raw * 6 ~= 55% FS, and
+  // the loudest observed (~4600) stays just under clipping. VAD still measures
+  // the RAW level so STOP_RMS tuning is unaffected.
+  static const int STREAM_GAIN = 6;
 
   int16_t slice[STRIDE_SAMPLES];
   char hdr[64];
-  int silent = 0, total = 0;
+  int silent = 0, total = 0, lead = 0;
+  bool started = false;
   long emin = 1 << 30, emax = 0;
-  while (silent < HANGOVER_FRAMES && total < MAX_FRAMES) {
+  while (total < MAX_FRAMES) {
     size_t got = 0;
     i2s_channel_read(rx_chan, i2s_buf, sizeof(i2s_buf), &got, portMAX_DELAY);
     int frames = got / (sizeof(int32_t) * 2);
     if (frames > STRIDE_SAMPLES) frames = STRIDE_SAMPLES;
     long sum = 0;
     for (int f = 0; f < frames; f++) {
-      int16_t v = (int16_t)(i2s_buf[f * 2] >> 16); // raw mono, no gain
-      slice[f] = v;
-      sum += v < 0 ? -v : v;
+      int32_t raw = (int32_t)(i2s_buf[f * 2] >> 16); // raw mono
+      sum += raw < 0 ? -raw : raw;                   // VAD measures raw level
+      int32_t g = raw * STREAM_GAIN;                 // amplify for STT
+      if (g > 32767) g = 32767;
+      else if (g < -32768) g = -32768;
+      slice[f] = (int16_t)g;
     }
     for (int f = frames; f < STRIDE_SAMPLES; f++) slice[f] = 0;
     long energy = frames ? sum / frames : 0;
     if (energy < emin) emin = energy;
     if (energy > emax) emax = energy;
 
+    // Stream from the start so we keep a little pre-roll (no clipped first
+    // word), but only the post-onset silence counts toward the endpoint.
     int pb = STRIDE_SAMPLES * (int)sizeof(int16_t);
     int n = snprintf(hdr, sizeof(hdr), "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
     if (!send_all(sock, hdr, n) || !send_all(sock, slice, pb)) break;
-
-    if (energy < STOP_RMS) silent++;
-    else silent = 0;
     total++;
+
+    if (!started) {
+      if (energy >= ONSET_RMS) {
+        started = true;
+      } else if (++lead >= ONSET_TIMEOUT_FRAMES) {
+        ESP_LOGW(TAG, "no speech after wake — aborting capture");
+        break;
+      }
+    } else if (energy < STOP_RMS) {
+      if (++silent >= HANGOVER_FRAMES) break;
+    } else {
+      silent = 0;
+    }
   }
 
   const char* stop = "{\"type\":\"audio-stop\"}\n";
   send_all(sock, stop, strlen(stop));
-  ESP_LOGI(TAG, "utterance streamed (%d frames, ~%d ms) energy[min=%ld max=%ld] (STOP_RMS=%d)",
-           total, total * 10, emin, emax, STOP_RMS);
+  ESP_LOGI(TAG,
+           "utterance streamed (%d frames, ~%d ms, %s) energy[min=%ld max=%ld] (STOP_RMS=%d)",
+           total, total * 10, started ? "spoke" : "no-speech", emin, emax, STOP_RMS);
 
   // Read + play niles' spoken reply on the same socket (Stage 3), then close.
   play_reply(sock);
