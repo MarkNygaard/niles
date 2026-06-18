@@ -1,6 +1,6 @@
 // niles voice satellite (XIAO ESP32-S3) — ESP-IDF firmware.
 //
-// STAGE 1 (this file): microWakeWord "Hey Jarvis" detection only.
+// STAGE 1 (this file): microWakeWord "nyles" detection only.
 // Reads the XVF3800 I2S mic, runs the microWakeWord pipeline, and prints
 // the detection probability so we can confirm + tune before building
 // streaming / barge-in around it.
@@ -9,7 +9,7 @@
 //   I2S mic 16 kHz mono -> 30 ms sliding window (slid 10 ms) -> the
 //   AUDIO PREPROCESSOR model (audio_preprocessor_int8_model_data.h, via
 //   micro_features_generator) emits 40 int8 spectrogram features per slice
-//   -> streaming wake-word model (hey_jarvis.tflite, internal state) ->
+//   -> streaming wake-word model (nyles.tflite, internal state) ->
 //   sigmoid -> 5-frame average -> fire if > 0.97.
 //
 // NOTE: current esp-tflite-micro dropped the C microfrontend in favour of
@@ -23,7 +23,7 @@
 // === Iteration surface (from-scratch port; expect tuning) ===
 //   1) Invoke() error / frozen prob on the WAKE-WORD model -> its op set
 //      (kResolver below) or kNumResourceVars.
-//   2) Random prob / never rises on "Hey Jarvis" -> a feature-quantization
+//   2) Random prob / never rises on "nyles" -> a feature-quantization
 //      mismatch between the preprocessor output and the wake-word model
 //      input (requantize using their scale/zero_point), or the I2S slot
 //      format (Philips vs MSB).
@@ -55,8 +55,8 @@
 #include "micro_features_generator.h"  // GenerateFeatures, InitializeMicroFeatures, Features
 #include "micro_model_settings.h"      // kFeatureSize, kAudioSampleFrequency, kFeatureDurationMs
 
-// Embedded wake-word model (EMBED_FILES "hey_jarvis.tflite").
-extern const uint8_t g_model_start[] asm("_binary_hey_jarvis_tflite_start");
+// Embedded wake-word model (EMBED_FILES "nyles.tflite").
+extern const uint8_t g_model_start[] asm("_binary_nyles_tflite_start");
 
 static const char* TAG = "niles-ww";
 
@@ -72,8 +72,14 @@ static constexpr gpio_num_t PIN_WS = GPIO_NUM_7;
 static constexpr gpio_num_t PIN_DIN = GPIO_NUM_43;
 static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 
-// ---- microWakeWord "Hey Jarvis" v2 (from hey_jarvis.json) ----
-static constexpr float PROB_CUTOFF = 0.22f; // wake word peaks ~0.45, noise <0.12; lower = more sensitive
+// ---- microWakeWord "nyles" v2 (custom model, from nyles.json) ----
+// nyles.json recommends probability_cutoff 0.98, but that assumes a 5-window
+// average; we fire on the single-invoke probability instead, and the interim
+// "Hey Jarvis" model only peaked ~0.45 through this same preprocessor/cadence.
+// So START here and TUNE from the heartbeat: say "nyles" a few times, read the
+// `maxprob` it logs, then set this to roughly 60-70% of that peak — comfortably
+// above the maxprob you see for ambient noise and look-alikes (miles/files).
+static constexpr float PROB_CUTOFF = 0.50f;
 static constexpr int WINDOW_AVG = 5;
 
 // The XVF3800 mono downmix is low-level (~6.6% of full scale on loud
@@ -459,7 +465,7 @@ extern "C" void app_main(void) {
   model_init();
   i2s_init();
   memset(window, 0, sizeof(window));
-  ESP_LOGI(TAG, "listening — say 'Hey Jarvis'");
+  ESP_LOGI(TAG, "listening — say 'nyles'");
 
   float ring[WINDOW_AVG] = {0};
   int idx = 0;
@@ -528,7 +534,7 @@ extern "C" void app_main(void) {
 
     // ~1 s heartbeat (each iter is 10 ms): the MAX mic peak, MAX feature, and
     // MAX probability seen this second. featmax jumps when you speak; maxprob
-    // jumps when you say "Hey Jarvis".
+    // jumps when you say "nyles". Use this to set PROB_CUTOFF (see above).
     if (++iter % 100 == 0) {
       ESP_LOGI(TAG, "peak=%ld featmax=%d maxprob=%.3f", (long)hb_peak, hb_featmax,
                (double)hb_maxprob);
