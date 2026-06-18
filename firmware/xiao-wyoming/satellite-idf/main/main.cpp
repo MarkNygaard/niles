@@ -82,12 +82,13 @@ static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 static constexpr float PROB_CUTOFF = 0.50f;
 static constexpr int WINDOW_AVG = 5;
 
-// The XVF3800 mono downmix is low-level (~6.6% of full scale on loud
-// speech); the wake-word preprocessor expects normal-level PCM, so we
-// amplify before feature extraction. TUNE THIS: raise it until the
-// heartbeat's featmax clearly rises above the quiet floor when you speak
-// (try 8 / 16 / 32). Too high = clipping distortion.
-static constexpr int MIC_GAIN = 8;
+// The XVF3800 mono downmix is low-level; the wake-word preprocessor expects
+// normal-level PCM, so we amplify before feature extraction. TUNE THIS: too
+// low and features floor at -128; too high and speech CLIPS (heartbeat peak
+// pins at 32768), which smears the spectrogram and suppresses maxprob. Aim
+// for speech peaks well under 32768. Gain 8 clipped hard on "nyles"; 4 keeps
+// loud speech ~mid-scale.
+static constexpr int MIC_GAIN = 4;
 
 static i2s_chan_handle_t rx_chan = nullptr;
 static int32_t i2s_buf[STRIDE_SAMPLES * 2]; // XVF3800 = 2ch / 32-bit
