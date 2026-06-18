@@ -1,0 +1,22 @@
+# Build artifacts — rebuilt inside the image.
+/target
+**/target
+
+# VCS + CI + tooling not needed to compile the binary.
+.git
+.github
+.claude
+.vscode
+
+# Firmware (ESP-IDF / Arduino) — unrelated to the Rust build.
+firmware
+
+# Docs site + deploy manifests — not compiled into the binary.
+docs/book
+deploy/compose
+deploy/kubernetes
+
+# Local-only working notes (also gitignored).
+ROADMAP.md
+CLAUDE.local.md
+*.log

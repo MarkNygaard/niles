@@ -19,6 +19,9 @@ bind_address = "0.0.0.0:10300"
 
 [stt]
 api_key_env = "GROQ_API_KEY"
+# Pin Whisper to English so it can't drift into other scripts on quiet
+# audio. Drop/adjust for a non-English household.
+language = "en"
 
 [tts]
 base_url = "http://piper.home-automation.svc.cluster.local:5000"
