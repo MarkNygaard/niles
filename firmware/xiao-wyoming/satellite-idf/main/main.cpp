@@ -1,6 +1,6 @@
 // niles voice satellite (XIAO ESP32-S3) — ESP-IDF firmware.
 //
-// STAGE 1 (this file): microWakeWord "Hey Jarvis" detection only.
+// STAGE 1 (this file): microWakeWord "nyles" detection only.
 // Reads the XVF3800 I2S mic, runs the microWakeWord pipeline, and prints
 // the detection probability so we can confirm + tune before building
 // streaming / barge-in around it.
@@ -9,7 +9,7 @@
 //   I2S mic 16 kHz mono -> 30 ms sliding window (slid 10 ms) -> the
 //   AUDIO PREPROCESSOR model (audio_preprocessor_int8_model_data.h, via
 //   micro_features_generator) emits 40 int8 spectrogram features per slice
-//   -> streaming wake-word model (hey_jarvis.tflite, internal state) ->
+//   -> streaming wake-word model (nyles.tflite, internal state) ->
 //   sigmoid -> 5-frame average -> fire if > 0.97.
 //
 // NOTE: current esp-tflite-micro dropped the C microfrontend in favour of
@@ -23,7 +23,7 @@
 // === Iteration surface (from-scratch port; expect tuning) ===
 //   1) Invoke() error / frozen prob on the WAKE-WORD model -> its op set
 //      (kResolver below) or kNumResourceVars.
-//   2) Random prob / never rises on "Hey Jarvis" -> a feature-quantization
+//   2) Random prob / never rises on "nyles" -> a feature-quantization
 //      mismatch between the preprocessor output and the wake-word model
 //      input (requantize using their scale/zero_point), or the I2S slot
 //      format (Philips vs MSB).
@@ -55,8 +55,8 @@
 #include "micro_features_generator.h"  // GenerateFeatures, InitializeMicroFeatures, Features
 #include "micro_model_settings.h"      // kFeatureSize, kAudioSampleFrequency, kFeatureDurationMs
 
-// Embedded wake-word model (EMBED_FILES "hey_jarvis.tflite").
-extern const uint8_t g_model_start[] asm("_binary_hey_jarvis_tflite_start");
+// Embedded wake-word model (EMBED_FILES "nyles.tflite").
+extern const uint8_t g_model_start[] asm("_binary_nyles_tflite_start");
 
 static const char* TAG = "niles-ww";
 
@@ -72,16 +72,24 @@ static constexpr gpio_num_t PIN_WS = GPIO_NUM_7;
 static constexpr gpio_num_t PIN_DIN = GPIO_NUM_43;
 static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 
-// ---- microWakeWord "Hey Jarvis" v2 (from hey_jarvis.json) ----
-static constexpr float PROB_CUTOFF = 0.22f; // wake word peaks ~0.45, noise <0.12; lower = more sensitive
+// ---- microWakeWord "nyles" v2 (custom model, from nyles.json) ----
+// On hardware, a real "nyles" peaks ~0.89-0.99 while ambient noise and
+// look-alikes top out ~0.42. At 0.80, background speech occasionally crossed
+// the bar and false-woke; real detections never drop below ~0.89, so 0.85
+// leaves margin for true hits while rejecting more of the background.
+// nyles.json suggests 0.98, but that assumes a 5-window average; we fire on the
+// single-invoke probability. Lower toward 0.8 if real "nyles" gets missed;
+// raise toward 0.9 (or add 5-frame averaging) if background still false-wakes.
+static constexpr float PROB_CUTOFF = 0.85f;
 static constexpr int WINDOW_AVG = 5;
 
-// The XVF3800 mono downmix is low-level (~6.6% of full scale on loud
-// speech); the wake-word preprocessor expects normal-level PCM, so we
-// amplify before feature extraction. TUNE THIS: raise it until the
-// heartbeat's featmax clearly rises above the quiet floor when you speak
-// (try 8 / 16 / 32). Too high = clipping distortion.
-static constexpr int MIC_GAIN = 8;
+// The XVF3800 mono downmix is low-level; the wake-word preprocessor expects
+// normal-level PCM, so we amplify before feature extraction. TUNE THIS: too
+// low and features floor at -128; too high and speech CLIPS (heartbeat peak
+// pins at 32768), which smears the spectrogram and suppresses maxprob. Aim
+// for speech peaks well under 32768. Gain 8 clipped hard on "nyles"; 4 keeps
+// loud speech ~mid-scale.
+static constexpr int MIC_GAIN = 4;
 
 static i2s_chan_handle_t rx_chan = nullptr;
 static int32_t i2s_buf[STRIDE_SAMPLES * 2]; // XVF3800 = 2ch / 32-bit
@@ -165,7 +173,7 @@ static void model_init() {
     abort();
   }
   // Streaming microWakeWord op set. Add any op Invoke() reports missing.
-  static tflite::MicroMutableOpResolver<20> resolver;
+  static tflite::MicroMutableOpResolver<21> resolver;
   resolver.AddCallOnce();
   resolver.AddVarHandle();
   resolver.AddReadVariable();
@@ -179,6 +187,7 @@ static void model_init() {
   resolver.AddStridedSlice();
   resolver.AddConcatenation();
   resolver.AddSplit();
+  resolver.AddSplitV(); // nyles model splits with SPLIT_V (hey_jarvis didn't)
   resolver.AddMul();
   resolver.AddAdd();
   resolver.AddMean();
@@ -361,42 +370,76 @@ static void stream_utterance() {
   // ~15-24, real speech reaches thousands, so 60 separates them cleanly.
   // Lower it if quiet commands get cut off; raise if it never ends.
   static const int STOP_RMS = 60;
-  static const int HANGOVER_FRAMES = 50; // ~500 ms of silence ends the utterance
-  static const int MAX_FRAMES = 600;     // ~6 s hard cap
+  static const int HANGOVER_FRAMES = 35; // ~350 ms of trailing silence ends it
+  static const int MAX_FRAMES = 400;     // ~4 s hard cap (was 6 s — too slow)
+
+  // Speech-onset gate: don't start the end-of-utterance countdown until speech
+  // actually BEGINS. Otherwise a slow start after the wake word ends the
+  // capture on leading silence, and niles transcribes a near-empty clip (which
+  // Whisper turns into hallucinated stock phrases). Wait up to
+  // ONSET_TIMEOUT_FRAMES for energy to cross ONSET_RMS (well above ambient ~24,
+  // below normal speech); if the user never speaks, abort without a real clip.
+  static const int ONSET_RMS = 120;
+  static const int ONSET_TIMEOUT_FRAMES = 250; // ~2.5 s to start talking
+
+  // The XVF3800 downmix is low-level: raw command speech peaks only ~700-4600
+  // (~2-14% of full scale). Whisper HALLUCINATES on near-silent audio (it
+  // invents stock phrases — e.g. Korean news intros). Amplify the outgoing
+  // PCM so it lands at a healthy level; speech ~3000 raw * 6 ~= 55% FS, and
+  // the loudest observed (~4600) stays just under clipping. VAD still measures
+  // the RAW level so STOP_RMS tuning is unaffected.
+  static const int STREAM_GAIN = 6;
 
   int16_t slice[STRIDE_SAMPLES];
   char hdr[64];
-  int silent = 0, total = 0;
+  int silent = 0, total = 0, lead = 0;
+  bool started = false;
   long emin = 1 << 30, emax = 0;
-  while (silent < HANGOVER_FRAMES && total < MAX_FRAMES) {
+  while (total < MAX_FRAMES) {
     size_t got = 0;
     i2s_channel_read(rx_chan, i2s_buf, sizeof(i2s_buf), &got, portMAX_DELAY);
     int frames = got / (sizeof(int32_t) * 2);
     if (frames > STRIDE_SAMPLES) frames = STRIDE_SAMPLES;
     long sum = 0;
     for (int f = 0; f < frames; f++) {
-      int16_t v = (int16_t)(i2s_buf[f * 2] >> 16); // raw mono, no gain
-      slice[f] = v;
-      sum += v < 0 ? -v : v;
+      int32_t raw = (int32_t)(i2s_buf[f * 2] >> 16); // raw mono
+      sum += raw < 0 ? -raw : raw;                   // VAD measures raw level
+      int32_t g = raw * STREAM_GAIN;                 // amplify for STT
+      if (g > 32767) g = 32767;
+      else if (g < -32768) g = -32768;
+      slice[f] = (int16_t)g;
     }
     for (int f = frames; f < STRIDE_SAMPLES; f++) slice[f] = 0;
     long energy = frames ? sum / frames : 0;
     if (energy < emin) emin = energy;
     if (energy > emax) emax = energy;
 
+    // Stream from the start so we keep a little pre-roll (no clipped first
+    // word), but only the post-onset silence counts toward the endpoint.
     int pb = STRIDE_SAMPLES * (int)sizeof(int16_t);
     int n = snprintf(hdr, sizeof(hdr), "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
     if (!send_all(sock, hdr, n) || !send_all(sock, slice, pb)) break;
-
-    if (energy < STOP_RMS) silent++;
-    else silent = 0;
     total++;
+
+    if (!started) {
+      if (energy >= ONSET_RMS) {
+        started = true;
+      } else if (++lead >= ONSET_TIMEOUT_FRAMES) {
+        ESP_LOGW(TAG, "no speech after wake — aborting capture");
+        break;
+      }
+    } else if (energy < STOP_RMS) {
+      if (++silent >= HANGOVER_FRAMES) break;
+    } else {
+      silent = 0;
+    }
   }
 
   const char* stop = "{\"type\":\"audio-stop\"}\n";
   send_all(sock, stop, strlen(stop));
-  ESP_LOGI(TAG, "utterance streamed (%d frames, ~%d ms) energy[min=%ld max=%ld] (STOP_RMS=%d)",
-           total, total * 10, emin, emax, STOP_RMS);
+  ESP_LOGI(TAG,
+           "utterance streamed (%d frames, ~%d ms, %s) energy[min=%ld max=%ld] (STOP_RMS=%d)",
+           total, total * 10, started ? "spoke" : "no-speech", emin, emax, STOP_RMS);
 
   // Read + play niles' spoken reply on the same socket (Stage 3), then close.
   play_reply(sock);
@@ -459,7 +502,7 @@ extern "C" void app_main(void) {
   model_init();
   i2s_init();
   memset(window, 0, sizeof(window));
-  ESP_LOGI(TAG, "listening — say 'Hey Jarvis'");
+  ESP_LOGI(TAG, "listening — say 'nyles'");
 
   float ring[WINDOW_AVG] = {0};
   int idx = 0;
@@ -510,8 +553,12 @@ extern "C" void app_main(void) {
       if (interpreter->Invoke() != kTfLiteOk) {
         ESP_LOGE(TAG, "wake Invoke failed");
       } else {
-        float prob =
-            (output->data.int8[0] - output->params.zero_point) * output->params.scale;
+        // microWakeWord's probability output is an UNSIGNED byte [0,255]
+        // (255 ~= 1.0), but TFLM types the tensor int8. Reading it signed
+        // wraps high-confidence detections (byte > 127) to negative, hiding
+        // every strong hit and capping the visible prob at ~0.496 (=127/256).
+        // Read it unsigned.
+        float prob = output->data.uint8[0] * output->params.scale;
         if (prob > hb_maxprob) hb_maxprob = prob;
         int64_t now_ms = esp_log_timestamp();
         if (prob >= PROB_CUTOFF && now_ms - last_fire_ms > 1500) {
@@ -528,7 +575,7 @@ extern "C" void app_main(void) {
 
     // ~1 s heartbeat (each iter is 10 ms): the MAX mic peak, MAX feature, and
     // MAX probability seen this second. featmax jumps when you speak; maxprob
-    // jumps when you say "Hey Jarvis".
+    // jumps when you say "nyles". Use this to set PROB_CUTOFF (see above).
     if (++iter % 100 == 0) {
       ESP_LOGI(TAG, "peak=%ld featmax=%d maxprob=%.3f", (long)hb_peak, hb_featmax,
                (double)hb_maxprob);
