@@ -17,8 +17,12 @@ spec:
     spec:
       containers:
         - name: niles
-          image: niles:v0.1.0
-          imagePullPolicy: IfNotPresent
+          # Published by .github/workflows/image.yml. Pin a version tag
+          # (e.g. :0.1.0) in an overlay for production; :latest is fine for
+          # a homelab. GHCR packages default to PRIVATE — either make the
+          # package public or add an imagePullSecret (see deploy/docker/README.md).
+          image: ghcr.io/marknygaard/niles:latest
+          imagePullPolicy: Always
           args:
             - serve
             - --config
