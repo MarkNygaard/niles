@@ -273,6 +273,23 @@ impl TimerStore {
         entry
     }
 
+    /// Remove the soonest-expiring *pending* timer and return it.
+    /// Returns `None` if no timer is pending. Used by a generic
+    /// "stop"/"cancel" to abort a counting-down timer when none is
+    /// ringing yet.
+    pub fn cancel_soonest_pending(&self) -> Option<TimerEntry> {
+        let mut inner = self.inner_write();
+        let id = inner
+            .timers
+            .values()
+            .filter(|e| e.is_pending())
+            .min_by_key(|e| e.expires_at)
+            .map(|e| e.id)?;
+        let entry = inner.timers.remove(&id);
+        self.maybe_save(&inner);
+        entry
+    }
+
     /// Transition `Pending → Ringing` for `id`. Returns the updated
     /// entry on the first call; returns `None` if the timer is already
     /// ringing or absent.
@@ -479,6 +496,27 @@ mod tests {
         store.set(Duration::from_secs(60), None, localhost(), now);
         assert!(store.stop_most_recent_ringing().is_none());
         assert!(store.stop_most_recent_ringing().is_none());
+    }
+
+    #[test]
+    fn cancel_soonest_pending_removes_earliest_pending() {
+        let store = TimerStore::new();
+        let now = Utc::now();
+        let soonest = store.set(Duration::from_secs(60), None, localhost(), now);
+        let _later = store.set(Duration::from_secs(300), None, localhost(), now);
+        let cancelled = store.cancel_soonest_pending().expect("a pending timer");
+        assert_eq!(cancelled.id, soonest);
+        assert_eq!(store.list().len(), 1);
+    }
+
+    #[test]
+    fn cancel_soonest_pending_none_when_no_pending() {
+        let store = TimerStore::new();
+        let now = Utc::now();
+        let id = store.set(Duration::from_secs(60), None, localhost(), now);
+        store.mark_ringing(id); // only a ringing timer remains
+        assert!(store.cancel_soonest_pending().is_none());
+        assert_eq!(store.list().len(), 1, "ringing timer is left in place");
     }
 
     #[test]

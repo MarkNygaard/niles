@@ -2987,13 +2987,23 @@ async fn dispatch_transcript(
             Some(response::timer_started(duration, name.as_deref()))
         }
         Intent::Stop | Intent::Cancel => {
-            let stopped_entry = ctx.timers.stop_most_recent_ringing();
-            if let Some(entry) = &stopped_entry {
-                println!("[{peer}] stopped {}", timer_label(entry));
+            // Prefer stopping a ringing alarm; otherwise cancel the soonest
+            // counting-down timer, so "stop the timer" works before it fires
+            // (previously this only stopped a *ringing* timer).
+            if let Some(entry) = ctx.timers.stop_most_recent_ringing() {
+                println!("[{peer}] stopped {}", timer_label(&entry));
+                Some(response::stop_outcome(
+                    response::StopOutcome::StoppedRinging,
+                ))
+            } else if let Some(entry) = ctx.timers.cancel_soonest_pending() {
+                println!("[{peer}] cancelled pending {}", timer_label(&entry));
+                Some(response::stop_outcome(
+                    response::StopOutcome::CancelledPending,
+                ))
             } else {
-                println!("[{peer}] nothing ringing to stop");
+                println!("[{peer}] nothing to stop");
+                Some(response::stop_outcome(response::StopOutcome::Nothing))
             }
-            Some(response::stopped(stopped_entry.is_some()))
         }
         Intent::TimerCancel { name } => {
             let n = ctx.timers.cancel_by_name(&name);
@@ -3021,6 +3031,22 @@ async fn dispatch_transcript(
                 }
             }
             Some(response::timer_list(entries.len()))
+        }
+        Intent::TimerRemaining => {
+            let now = Utc::now();
+            let entries = ctx.timers.list(); // sorted soonest-first
+            let seconds_left = if let Some(e) = entries.iter().find(|e| e.is_pending()) {
+                let secs = (e.expires_at - now).num_seconds().max(0) as u64;
+                println!("[{peer}] {} has {secs}s left", timer_label(e));
+                Some(secs)
+            } else if entries.iter().any(|e| e.is_ringing()) {
+                println!("[{peer}] timer is ringing (0s left)");
+                Some(0)
+            } else {
+                println!("[{peer}] no timer for remaining query");
+                None
+            };
+            Some(response::timer_remaining(seconds_left))
         }
         _ => {
             tracing::info!("{peer}: unknown intent variant, skipping dispatch");
@@ -4160,16 +4186,17 @@ async fn run_morning_routine_tick(
 /// for any future consumer (satellite-alarm playback is
 /// XVF3800-blocked, out of scope here).
 ///
-/// The sleep is capped at 60 s — without a notify mechanism, a
-/// timer added during a long sleep would otherwise miss its
-/// deadline. The cap means a shorter timer added late is at
-/// worst ~60 s overdue, which is acceptable for v0.1.
+/// The sleep is capped at 1 s — without a notify mechanism, a timer
+/// added during a long sleep would otherwise miss its deadline (a 10 s
+/// timer set while the driver slept could fire tens of seconds late).
+/// Re-checking at least once a second means a freshly-added short timer
+/// is at worst ~1 s overdue; the idle poll is negligible CPU.
 ///
 /// Shared by `voice_dispatch` and `serve`.
 fn spawn_timer_driver(timers: Arc<TimerStore>, bus: EventBus) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::time::sleep;
-        const MAX_SLEEP: std::time::Duration = std::time::Duration::from_secs(60);
+        const MAX_SLEEP: std::time::Duration = std::time::Duration::from_secs(1);
         loop {
             let now = Utc::now();
             let sleep_for = match timers.next_expiry() {
@@ -4286,6 +4313,7 @@ fn format_intent(intent: &Intent) -> String {
         Intent::SceneDelete { name } => format!("SceneDelete({name:?})"),
         Intent::TimerCancel { name } => format!("TimerCancel({name:?})"),
         Intent::TimerList => "TimerList".into(),
+        Intent::TimerRemaining => "TimerRemaining".into(),
         Intent::Stop => "Stop".into(),
         Intent::Cancel => "Cancel".into(),
         other => format!("{other:?}"),

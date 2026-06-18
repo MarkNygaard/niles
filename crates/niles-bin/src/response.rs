@@ -192,11 +192,55 @@ pub fn timer_list(count: usize) -> String {
     }
 }
 
-/// "Stopped." / "Nothing's running."
-pub fn stopped(was_ringing: bool) -> String {
-    match was_ringing {
-        true => "Stopped.".into(),
-        false => "Nothing's running.".into(),
+/// Outcome of a generic "stop"/"cancel": stopped a ringing alarm,
+/// cancelled a counting-down timer, or found nothing.
+pub enum StopOutcome {
+    StoppedRinging,
+    CancelledPending,
+    Nothing,
+}
+
+/// "Stopped." / "Okay, cancelled the timer." / "Nothing's running."
+pub fn stop_outcome(outcome: StopOutcome) -> String {
+    match outcome {
+        StopOutcome::StoppedRinging => "Stopped.".into(),
+        StopOutcome::CancelledPending => "Okay, cancelled the timer.".into(),
+        StopOutcome::Nothing => "Nothing's running.".into(),
+    }
+}
+
+/// Spoken time-remaining readout for the soonest pending timer.
+/// `None` = no timers; `Some(0)` = already firing.
+/// "7 minutes left." / "1 minute and 30 seconds left." /
+/// "The timer's going off now." / "No timers running."
+pub fn timer_remaining(seconds_left: Option<u64>) -> String {
+    let Some(total) = seconds_left else {
+        return "No timers running.".into();
+    };
+    if total == 0 {
+        return "The timer's going off now.".into();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        parts.push(plural_unit(h, "hour"));
+    }
+    if m > 0 {
+        parts.push(plural_unit(m, "minute"));
+    }
+    if s > 0 {
+        parts.push(plural_unit(s, "second"));
+    }
+    format!("{} left.", join_spoken(&parts))
+}
+
+fn plural_unit(n: u64, unit: &str) -> String {
+    if n == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{n} {unit}s")
     }
 }
 
@@ -538,16 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn stopped_was_ringing() {
-        assert_eq!(stopped(true), "Stopped.");
-    }
-
-    #[test]
-    fn stopped_idle() {
-        assert_eq!(stopped(false), "Nothing's running.");
-    }
-
-    #[test]
     fn room_not_found_phrasing() {
         assert_eq!(
             room_not_found("office"),
@@ -602,6 +636,30 @@ mod tests {
             format_duration_phrase(Duration::from_secs(300)),
             (5, "minute")
         );
+    }
+
+    #[test]
+    fn timer_remaining_phrasings() {
+        assert_eq!(timer_remaining(None), "No timers running.");
+        assert_eq!(timer_remaining(Some(0)), "The timer's going off now.");
+        assert_eq!(timer_remaining(Some(7)), "7 seconds left.");
+        assert_eq!(timer_remaining(Some(1)), "1 second left.");
+        assert_eq!(timer_remaining(Some(300)), "5 minutes left.");
+        assert_eq!(timer_remaining(Some(90)), "1 minute and 30 seconds left.");
+        assert_eq!(
+            timer_remaining(Some(3661)),
+            "1 hour, 1 minute, and 1 second left."
+        );
+    }
+
+    #[test]
+    fn stop_outcome_phrasings() {
+        assert_eq!(stop_outcome(StopOutcome::StoppedRinging), "Stopped.");
+        assert_eq!(
+            stop_outcome(StopOutcome::CancelledPending),
+            "Okay, cancelled the timer."
+        );
+        assert_eq!(stop_outcome(StopOutcome::Nothing), "Nothing's running.");
     }
 
     #[test]
