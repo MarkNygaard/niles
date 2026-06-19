@@ -4053,7 +4053,10 @@ async fn run_morning_routine_tick(
     // Effective target set: an empty `target_devices` means "every
     // curve-managed light" (all non-ambient lights, same set the curve
     // drives), resolved fresh each tick so newly-added lights are included.
-    // A non-empty list is used verbatim.
+    // A non-empty list is used verbatim. `exclude_devices` is then removed
+    // from whichever base we picked — so empty target + exclude = "all
+    // lights except these".
+    let exclude: HashSet<&DeviceId> = routine.exclude_devices.iter().collect();
     let target_ids: Vec<DeviceId> = if routine.target_devices.is_empty() {
         registry
             .list_all()
@@ -4064,6 +4067,10 @@ async fn run_morning_routine_tick(
     } else {
         routine.target_devices.clone()
     };
+    let target_ids: Vec<DeviceId> = target_ids
+        .into_iter()
+        .filter(|id| !exclude.contains(id))
+        .collect();
 
     // Phase 1 — at exact end-minute, force 100% once then release.
     // After the end-minute, only release leftovers.

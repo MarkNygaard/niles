@@ -20,8 +20,12 @@ use crate::time::MinuteOfDay;
 pub struct MorningRoutineConfig {
     /// Weekdays on which the routine should fire (e.g. Mon–Fri).
     pub fire_days: Vec<Weekday>,
-    /// Devices to claim and ramp.
+    /// Devices to claim and ramp. Empty = all curve-managed lights.
     pub target_devices: Vec<DeviceId>,
+    /// Lights to exclude from the routine, applied after target
+    /// resolution. Most useful with an empty `target_devices` — i.e.
+    /// "all lights except these".
+    pub exclude_devices: Vec<DeviceId>,
     /// Dates on which the routine should be skipped even if the
     /// weekday matches.
     pub skip_overrides: Vec<NaiveDate>,
@@ -210,6 +214,7 @@ mod tests {
         let cfg = MorningRoutineConfig {
             fire_days: vec![Weekday::Mon],
             target_devices: vec![],
+            exclude_devices: vec![],
             skip_overrides: vec![],
         };
         assert!(should_fire_today(
@@ -223,6 +228,7 @@ mod tests {
         let cfg = MorningRoutineConfig {
             fire_days: vec![Weekday::Mon],
             target_devices: vec![],
+            exclude_devices: vec![],
             skip_overrides: vec![],
         };
         assert!(!should_fire_today(
@@ -237,6 +243,7 @@ mod tests {
         let cfg = MorningRoutineConfig {
             fire_days: vec![Weekday::Mon],
             target_devices: vec![],
+            exclude_devices: vec![],
             skip_overrides: vec![skip],
         };
         assert!(!should_fire_today(&cfg, skip));

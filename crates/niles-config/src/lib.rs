@@ -915,6 +915,34 @@ fire_days = ["mon", "sat", "sun"]
     }
 
     #[test]
+    fn routine_exclude_devices_parses() {
+        // "all lights except the TV light": omit target_devices, exclude one.
+        let toml = format!(
+            r#"{}
+[lighting.morning_routine]
+fire_days = ["mon"]
+exclude_devices = ["wled:living_room/tv_light"]
+"#,
+            valid_toml()
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let typed = cfg
+            .lighting
+            .morning_routine
+            .as_ref()
+            .unwrap()
+            .to_morning_routine_config()
+            .unwrap();
+        assert!(typed.target_devices.is_empty());
+        assert_eq!(typed.exclude_devices.len(), 1);
+        assert_eq!(
+            typed.exclude_devices[0].to_string(),
+            "wled:living_room/tv_light"
+        );
+    }
+
+    #[test]
     fn rejects_bad_weekday() {
         let bad = valid_toml_with_routine().replace(
             "fire_days = [\"mon\", \"tue\", \"wed\", \"thu\", \"fri\"]",

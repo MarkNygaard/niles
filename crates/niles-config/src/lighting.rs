@@ -37,6 +37,11 @@ pub struct MorningRoutineConfigDto {
     /// qualified device id (e.g. `wled:living_room/ceiling`).
     #[serde(default)]
     pub target_devices: Vec<String>,
+    /// Lights to exclude, applied after `target_devices` resolves — so
+    /// an empty `target_devices` plus `exclude_devices` means "all
+    /// lights except these". Fully qualified ids.
+    #[serde(default)]
+    pub exclude_devices: Vec<String>,
     #[serde(default)]
     pub skip_overrides: Vec<String>,
 }
@@ -55,6 +60,11 @@ impl MorningRoutineConfigDto {
             .iter()
             .map(|s| parse_device_id(s))
             .collect::<Result<Vec<_>>>()?;
+        let exclude_devices = self
+            .exclude_devices
+            .iter()
+            .map(|s| parse_device_id(s))
+            .collect::<Result<Vec<_>>>()?;
         let skip_overrides = self
             .skip_overrides
             .iter()
@@ -64,6 +74,7 @@ impl MorningRoutineConfigDto {
         Ok(MorningRoutineConfig {
             fire_days,
             target_devices,
+            exclude_devices,
             skip_overrides,
         })
     }
