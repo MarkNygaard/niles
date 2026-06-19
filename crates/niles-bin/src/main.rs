@@ -3400,6 +3400,18 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 .context("converting [lighting.morning_routine] to MorningRoutineConfig")
         })
         .transpose()?;
+    match &morning_routine {
+        Some(r) if r.target_devices.is_empty() => tracing::info!(
+            "morning routine: ALL curve-managed lights, fires {:?}",
+            r.fire_days
+        ),
+        Some(r) => tracing::info!(
+            "morning routine: {} device(s), fires {:?}",
+            r.target_devices.len(),
+            r.fire_days
+        ),
+        None => tracing::info!("morning routine: not configured (no wake-up light)"),
+    }
 
     let whisper = Arc::new(build_whisper_client(&cfg)?);
     let piper = Arc::new(build_piper_client(&cfg)?);
@@ -4038,10 +4050,32 @@ async fn run_morning_routine_tick(
     };
     let today = now.date_naive();
 
+    // Effective target set: an empty `target_devices` means "every
+    // curve-managed light" (all non-ambient lights, same set the curve
+    // drives), resolved fresh each tick so newly-added lights are included.
+    // A non-empty list is used verbatim. `exclude_devices` is then removed
+    // from whichever base we picked — so empty target + exclude = "all
+    // lights except these".
+    let exclude: HashSet<&DeviceId> = routine.exclude_devices.iter().collect();
+    let target_ids: Vec<DeviceId> = if routine.target_devices.is_empty() {
+        registry
+            .list_all()
+            .into_iter()
+            .filter(|d| d.is_curve_driven())
+            .map(|d| d.id)
+            .collect()
+    } else {
+        routine.target_devices.clone()
+    };
+    let target_ids: Vec<DeviceId> = target_ids
+        .into_iter()
+        .filter(|id| !exclude.contains(id))
+        .collect();
+
     // Phase 1 — at exact end-minute, force 100% once then release.
     // After the end-minute, only release leftovers.
     if minute_of_day >= morning_end {
-        for id in &routine.target_devices {
+        for id in &target_ids {
             if !claim_tracker.is_claimed(id) {
                 continue;
             }
@@ -4083,7 +4117,7 @@ async fn run_morning_routine_tick(
     let mut just_kicked_on = HashSet::new();
     let firing = should_fire_today(routine, today);
     if minute_of_day == morning_start && firing {
-        for id in &routine.target_devices {
+        for id in &target_ids {
             if tracker.is_flagged(id) {
                 continue;
             }
@@ -4134,7 +4168,7 @@ async fn run_morning_routine_tick(
     else {
         return;
     };
-    for id in &routine.target_devices {
+    for id in &target_ids {
         if tracker.is_flagged(id) {
             continue;
         }
