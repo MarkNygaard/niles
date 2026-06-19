@@ -31,6 +31,11 @@ pub struct LightingConfig {
 #[serde(deny_unknown_fields)]
 pub struct MorningRoutineConfigDto {
     pub fire_days: Vec<String>,
+    /// Devices to wake up. **Omit (or leave empty) to target every
+    /// curve-managed light** (all non-ambient lights, honoring
+    /// `[ambient_lights]`). When set, each entry must be a fully
+    /// qualified device id (e.g. `wled:living_room/ceiling`).
+    #[serde(default)]
     pub target_devices: Vec<String>,
     #[serde(default)]
     pub skip_overrides: Vec<String>,

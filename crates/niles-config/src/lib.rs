@@ -891,6 +891,30 @@ skip_overrides = ["2026-12-25", "2026-12-31"]
     }
 
     #[test]
+    fn routine_target_devices_default_empty_means_all_lights() {
+        // Omitting target_devices is valid and yields an empty list, which
+        // the tick interprets as "every curve-managed light".
+        let toml = format!(
+            r#"{}
+[lighting.morning_routine]
+fire_days = ["mon", "sat", "sun"]
+"#,
+            valid_toml()
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let typed = cfg
+            .lighting
+            .morning_routine
+            .as_ref()
+            .unwrap()
+            .to_morning_routine_config()
+            .unwrap();
+        assert!(typed.target_devices.is_empty());
+        assert_eq!(typed.fire_days.len(), 3);
+    }
+
+    #[test]
     fn rejects_bad_weekday() {
         let bad = valid_toml_with_routine().replace(
             "fire_days = [\"mon\", \"tue\", \"wed\", \"thu\", \"fri\"]",
