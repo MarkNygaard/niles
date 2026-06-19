@@ -3481,14 +3481,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         // Includes _release variants and unknown strings.
                         continue;
                     };
-                    let room = id.room().clone();
-                    let targets: Vec<Device> = observer_registry
-                        .list_room(&room)
-                        .into_iter()
-                        .filter(|d| d.is_light() && d.id != id)
-                        .collect();
+                    let targets = switch_target_lights(&observer_registry, &id);
                     if targets.is_empty() {
-                        tracing::debug!("switch {id} pressed but no actionable lights in {room}");
+                        tracing::debug!(
+                            "switch {id} pressed but no actionable lights for room {}",
+                            id.room()
+                        );
                         continue;
                     }
                     let desired = match effect {
@@ -4230,6 +4228,75 @@ fn spawn_timer_driver(timers: Arc<TimerStore>, bus: EventBus) -> tokio::task::Jo
             }
         }
     })
+}
+
+/// Room name reserved for whole-home switches: a switch in room `all`
+/// (e.g. `all/bedroom_switch`) controls every light in the house, not
+/// just one room's — handy for a bedside "all off" or a door "leaving"
+/// button.
+const ALL_ROOMS: &str = "all";
+
+/// Lights a switch press should act on. A switch in the reserved `all`
+/// room targets every light in the home; any other room targets just
+/// that room's lights. The switch itself is always excluded.
+fn switch_target_lights(registry: &DeviceRegistry, switch_id: &DeviceId) -> Vec<Device> {
+    let room = switch_id.room();
+    let candidates = if room.as_str() == ALL_ROOMS {
+        registry.list_all()
+    } else {
+        registry.list_room(room)
+    };
+    candidates
+        .into_iter()
+        .filter(|d| d.is_light() && &d.id != switch_id)
+        .collect()
+}
+
+#[cfg(test)]
+mod switch_target_tests {
+    use super::*;
+    use niles_core::{DeviceClass, DeviceState};
+
+    fn light(id: &str) -> Device {
+        Device::new(
+            DeviceId::parse(id).unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        )
+    }
+
+    #[test]
+    fn room_switch_targets_only_its_room() {
+        let reg = DeviceRegistry::new();
+        reg.upsert(light("z2m:bedroom/lamp"));
+        reg.upsert(light("z2m:kitchen/ceiling"));
+        let sw = DeviceId::parse("z2m:bedroom/main_switch").unwrap();
+        let targets = switch_target_lights(&reg, &sw);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id.to_string(), "z2m:bedroom/lamp");
+    }
+
+    #[test]
+    fn all_room_switch_targets_every_light() {
+        let reg = DeviceRegistry::new();
+        reg.upsert(light("z2m:bedroom/lamp"));
+        reg.upsert(light("wled:living_room/ceiling"));
+        let sw = DeviceId::parse("z2m:all/bedroom_switch").unwrap();
+        let mut names: Vec<String> = switch_target_lights(&reg, &sw)
+            .iter()
+            .map(|d| d.id.to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["wled:living_room/ceiling", "z2m:bedroom/lamp"]);
+    }
+
+    #[test]
+    fn switch_never_targets_itself() {
+        let reg = DeviceRegistry::new();
+        reg.upsert(light("z2m:all/lamp"));
+        let sw = DeviceId::parse("z2m:all/lamp").unwrap(); // same id as a light
+        assert!(switch_target_lights(&reg, &sw).iter().all(|d| d.id != sw));
+    }
 }
 
 /// Presentation helper for a timer entry — lives in the binary, not
