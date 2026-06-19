@@ -3493,7 +3493,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         // Includes _release variants and unknown strings.
                         continue;
                     };
-                    let targets = switch_target_lights(&observer_registry, &id);
+                    let targets = switch_targets(&observer_registry, &id);
                     if targets.is_empty() {
                         tracing::debug!(
                             "switch {id} pressed but no actionable lights for room {}",
@@ -4283,10 +4283,11 @@ fn spawn_timer_driver(timers: Arc<TimerStore>, bus: EventBus) -> tokio::task::Jo
 /// button.
 const ALL_ROOMS: &str = "all";
 
-/// Lights a switch press should act on. A switch in the reserved `all`
-/// room targets every light in the home; any other room targets just
-/// that room's lights. The switch itself is always excluded.
-fn switch_target_lights(registry: &DeviceRegistry, switch_id: &DeviceId) -> Vec<Device> {
+/// Devices a switch press should act on: switchable on/off devices —
+/// lights **and** outlets (smart plugs). A switch in the reserved `all`
+/// room targets the whole home; any other room targets just that room.
+/// The switch itself is always excluded.
+fn switch_targets(registry: &DeviceRegistry, switch_id: &DeviceId) -> Vec<Device> {
     let room = switch_id.room();
     let candidates = if room.as_str() == ALL_ROOMS {
         registry.list_all()
@@ -4295,7 +4296,7 @@ fn switch_target_lights(registry: &DeviceRegistry, switch_id: &DeviceId) -> Vec<
     };
     candidates
         .into_iter()
-        .filter(|d| d.is_light() && &d.id != switch_id)
+        .filter(|d| d.is_switchable() && &d.id != switch_id)
         .collect()
 }
 
@@ -4304,12 +4305,11 @@ mod switch_target_tests {
     use super::*;
     use niles_core::{DeviceClass, DeviceState};
 
+    fn dev(id: &str, class: DeviceClass) -> Device {
+        Device::new(DeviceId::parse(id).unwrap(), DeviceState::default(), class)
+    }
     fn light(id: &str) -> Device {
-        Device::new(
-            DeviceId::parse(id).unwrap(),
-            DeviceState::default(),
-            DeviceClass::Light,
-        )
+        dev(id, DeviceClass::Light)
     }
 
     #[test]
@@ -4318,23 +4318,50 @@ mod switch_target_tests {
         reg.upsert(light("z2m:bedroom/lamp"));
         reg.upsert(light("z2m:kitchen/ceiling"));
         let sw = DeviceId::parse("z2m:bedroom/main_switch").unwrap();
-        let targets = switch_target_lights(&reg, &sw);
+        let targets = switch_targets(&reg, &sw);
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id.to_string(), "z2m:bedroom/lamp");
     }
 
     #[test]
-    fn all_room_switch_targets_every_light() {
+    fn targets_include_outlets_not_sensors() {
         let reg = DeviceRegistry::new();
-        reg.upsert(light("z2m:bedroom/lamp"));
-        reg.upsert(light("wled:living_room/ceiling"));
-        let sw = DeviceId::parse("z2m:all/bedroom_switch").unwrap();
-        let mut names: Vec<String> = switch_target_lights(&reg, &sw)
+        reg.upsert(light("z2m:living_room/ceiling"));
+        reg.upsert(dev("z2m:living_room/corner_lamp", DeviceClass::Outlet)); // Hue plug
+        reg.upsert(dev("z2m:living_room/thermometer", DeviceClass::Sensor));
+        let sw = DeviceId::parse("z2m:living_room/main_switch").unwrap();
+        let mut names: Vec<String> = switch_targets(&reg, &sw)
             .iter()
             .map(|d| d.id.to_string())
             .collect();
         names.sort();
-        assert_eq!(names, ["wled:living_room/ceiling", "z2m:bedroom/lamp"]);
+        // The plug is included; the sensor is not.
+        assert_eq!(
+            names,
+            ["z2m:living_room/ceiling", "z2m:living_room/corner_lamp"]
+        );
+    }
+
+    #[test]
+    fn all_room_switch_targets_every_switchable() {
+        let reg = DeviceRegistry::new();
+        reg.upsert(light("z2m:bedroom/lamp"));
+        reg.upsert(light("wled:living_room/ceiling"));
+        reg.upsert(dev("z2m:living_room/corner_lamp", DeviceClass::Outlet));
+        let sw = DeviceId::parse("z2m:all/bedroom_switch").unwrap();
+        let mut names: Vec<String> = switch_targets(&reg, &sw)
+            .iter()
+            .map(|d| d.id.to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "wled:living_room/ceiling",
+                "z2m:bedroom/lamp",
+                "z2m:living_room/corner_lamp"
+            ]
+        );
     }
 
     #[test]
@@ -4342,7 +4369,7 @@ mod switch_target_tests {
         let reg = DeviceRegistry::new();
         reg.upsert(light("z2m:all/lamp"));
         let sw = DeviceId::parse("z2m:all/lamp").unwrap(); // same id as a light
-        assert!(switch_target_lights(&reg, &sw).iter().all(|d| d.id != sw));
+        assert!(switch_targets(&reg, &sw).iter().all(|d| d.id != sw));
     }
 }
 

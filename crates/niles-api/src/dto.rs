@@ -42,6 +42,7 @@ impl From<&Device> for DeviceDto {
 #[serde(rename_all = "lowercase")]
 pub enum DeviceClassDto {
     Light,
+    Outlet,
     Switch,
     Sensor,
     Unknown,
@@ -51,6 +52,7 @@ impl From<&DeviceClass> for DeviceClassDto {
     fn from(c: &DeviceClass) -> Self {
         match c {
             DeviceClass::Light => Self::Light,
+            DeviceClass::Outlet => Self::Outlet,
             DeviceClass::Switch => Self::Switch,
             DeviceClass::Sensor => Self::Sensor,
             DeviceClass::Unknown => Self::Unknown,
