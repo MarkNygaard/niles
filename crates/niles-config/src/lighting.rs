@@ -8,7 +8,7 @@
 use crate::error::{Error, Result};
 use chrono::{NaiveDate, Weekday};
 use niles_core::DeviceId;
-use niles_scheduler::{CurveConfig, MinuteOfDay, MorningRoutineConfig};
+use niles_scheduler::{CurveConfig, CurvePause, MinuteOfDay, MorningRoutineConfig, WeekInstant};
 use serde::Deserialize;
 use std::str::FromStr;
 
@@ -24,6 +24,13 @@ pub struct LightingConfig {
     pub daytime_brightness: u8,
     pub color_temp_anchors: Vec<ColorTempAnchor>,
     pub morning_routine: Option<MorningRoutineConfigDto>,
+    /// Optional recurring weekly window during which the curve is
+    /// suppressed (lights hold their last value). Both endpoints are
+    /// `"<weekday> HH:MM"` (e.g. `"fri 12:00"`) and must be set together.
+    #[serde(default)]
+    pub curve_pause_start: Option<String>,
+    #[serde(default)]
+    pub curve_pause_end: Option<String>,
 }
 
 /// `[lighting.morning_routine]` section of the config file.
@@ -99,6 +106,22 @@ impl LightingConfig {
             .map(|a| Ok((parse_time(&a.time)?, a.kelvin)))
             .collect::<Result<Vec<_>>>()?;
 
+        let pause = match (&self.curve_pause_start, &self.curve_pause_end) {
+            (Some(s), Some(e)) => Some(CurvePause {
+                start: parse_week_instant(s)?,
+                end: parse_week_instant(e)?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(Error::InvalidSection {
+                    section: "lighting",
+                    reason:
+                        "curve_pause_start and curve_pause_end must both be set or both omitted"
+                            .into(),
+                });
+            }
+        };
+
         let curve = CurveConfig {
             morning_start: parse_time(&self.morning_start)?,
             morning_end: parse_time(&self.morning_end)?,
@@ -107,6 +130,7 @@ impl LightingConfig {
             night_floor_brightness: self.night_floor_brightness,
             daytime_brightness: self.daytime_brightness,
             color_temp_anchors: anchors,
+            pause,
         };
 
         curve.validate().map_err(|e| Error::InvalidSection {
@@ -124,6 +148,19 @@ fn parse_time(s: &str) -> Result<MinuteOfDay> {
             section: "lighting",
             reason: format!("invalid time '{s}': {e}"),
         })
+}
+
+/// Parse a `"<weekday> HH:MM"` string (e.g. `"fri 12:00"`) into a
+/// `WeekInstant`.
+fn parse_week_instant(s: &str) -> Result<WeekInstant> {
+    let mut parts = s.split_whitespace();
+    let (Some(day), Some(time), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(Error::InvalidSection {
+            section: "lighting",
+            reason: format!("expected '<weekday> HH:MM', got '{s}'"),
+        });
+    };
+    Ok(WeekInstant::new(parse_weekday(day)?, parse_time(time)?))
 }
 
 fn parse_weekday(s: &str) -> Result<Weekday> {
