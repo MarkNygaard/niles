@@ -68,8 +68,10 @@ impl Z2mDevice {
     ///
     /// Rules (in priority order):
     /// - exposes contains `{"type": "light"}` → `Light`
-    /// - exposes contains `{"property": "action"}` (no light) → `Switch`
-    /// - non-empty exposes, neither light nor action → `Sensor`
+    /// - exposes contains `{"type": "switch"}` (a settable on/off relay /
+    ///   smart plug, no light) → `Outlet`
+    /// - exposes contains `{"property": "action"}` (a button/dimmer) → `Switch`
+    /// - non-empty exposes, none of the above → `Sensor`
     /// - missing/empty definition → `Unknown`
     pub fn classify(&self) -> DeviceClass {
         let exposes = match self.definition.as_ref() {
@@ -77,18 +79,24 @@ impl Z2mDevice {
             _ => return DeviceClass::Unknown,
         };
 
+        let mut has_outlet = false;
         let mut has_action = false;
 
         for expose in exposes {
             if Self::expose_is_light(expose) {
                 return DeviceClass::Light;
             }
+            if Self::expose_is_outlet(expose) {
+                has_outlet = true;
+            }
             if Self::expose_is_action(expose) {
                 has_action = true;
             }
         }
 
-        if has_action {
+        if has_outlet {
+            DeviceClass::Outlet
+        } else if has_action {
             DeviceClass::Switch
         } else {
             DeviceClass::Sensor
@@ -100,6 +108,12 @@ impl Z2mDevice {
             return true;
         }
         expose.features.iter().any(Self::expose_is_light)
+    }
+
+    /// A Z2M `switch`-type expose: a settable on/off relay or smart plug
+    /// (e.g. a Hue plug). Distinct from a *button* (which exposes `action`).
+    fn expose_is_outlet(expose: &Z2mExpose) -> bool {
+        expose.expose_type.as_deref() == Some("switch")
     }
 
     fn expose_is_action(expose: &Z2mExpose) -> bool {
@@ -356,6 +370,29 @@ mod tests {
             }),
         };
         assert_eq!(z2m.classify(), DeviceClass::Switch);
+    }
+
+    #[test]
+    fn classify_outlet_from_switch_expose() {
+        // A Hue smart plug: a `switch`-type expose with a settable
+        // on/off `state`, no light feature.
+        let z2m = Z2mDevice {
+            ieee_address: "0x123".into(),
+            friendly_name: "living_room/corner_lamp".into(),
+            device_type: "Router".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![Z2mExpose {
+                    expose_type: Some("switch".into()),
+                    property: None,
+                    features: vec![Z2mExpose {
+                        expose_type: Some("binary".into()),
+                        property: Some("state".into()),
+                        features: vec![],
+                    }],
+                }],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Outlet);
     }
 
     #[test]

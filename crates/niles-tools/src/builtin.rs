@@ -228,6 +228,7 @@ fn explain_device(device: &niles_core::Device) -> String {
     let id = format!("{}/{}", device.id.room(), device.id.name());
     match device.class {
         DeviceClass::Light => explain_light(&id, &device.state),
+        DeviceClass::Outlet => explain_outlet(&id, &device.state),
         DeviceClass::Switch => explain_switch(&id, &device.state),
         DeviceClass::Sensor => explain_sensor(&id, &device.state),
         // DeviceClass is #[non_exhaustive]; Unknown and future variants fall back to generic.
@@ -265,6 +266,14 @@ fn explain_light(id: &str, state: &DeviceState) -> String {
             // partial fields are still "not reported yet".
             format!("{id} is a light but its state hasn't been reported yet")
         }
+    }
+}
+
+fn explain_outlet(id: &str, state: &DeviceState) -> String {
+    match state.on {
+        Some(true) => format!("{id} is on"),
+        Some(false) => format!("{id} is off"),
+        None => format!("{id} is a plug but its state hasn't been reported yet"),
     }
 }
 

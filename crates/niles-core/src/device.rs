@@ -184,6 +184,9 @@ pub struct DeviceState {
 #[non_exhaustive]
 pub enum DeviceClass {
     Light,
+    /// An on/off outlet / smart plug — controllable, but with no
+    /// brightness or color (so the curve / morning routine skip it).
+    Outlet,
     Switch,
     Sensor,
     Unknown,
@@ -211,6 +214,14 @@ impl Device {
     /// True if this device is classified as a light.
     pub fn is_light(&self) -> bool {
         matches!(self.class, DeviceClass::Light)
+    }
+
+    /// True if a switch can turn this device on/off — lights and on/off
+    /// outlets (smart plugs). Broader than [`Self::is_light`], which the
+    /// brightness/color curve and morning routine use (an outlet can't
+    /// ramp brightness).
+    pub fn is_switchable(&self) -> bool {
+        matches!(self.class, DeviceClass::Light | DeviceClass::Outlet)
     }
 
     /// True if this device should be driven by the ambient lighting
@@ -340,6 +351,30 @@ mod tests {
     }
 
     #[test]
+    fn is_switchable_for_lights_and_outlets_only() {
+        let id = DeviceId::parse("z2m:living_room/corner_lamp").unwrap();
+        let outlet = Device::new(id.clone(), DeviceState::default(), DeviceClass::Outlet);
+        assert!(outlet.is_switchable(), "an outlet can be switched on/off");
+        assert!(
+            !outlet.is_light(),
+            "but it isn't a light (no brightness/curve)"
+        );
+        assert!(!outlet.is_curve_driven());
+
+        let light = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
+        assert!(light.is_switchable());
+
+        for class in [
+            DeviceClass::Switch,
+            DeviceClass::Sensor,
+            DeviceClass::Unknown,
+        ] {
+            let d = Device::new(id.clone(), DeviceState::default(), class);
+            assert!(!d.is_switchable(), "{class:?} is not switchable");
+        }
+    }
+
+    #[test]
     fn is_curve_driven_excludes_ambient_and_non_lights() {
         let id = DeviceId::parse("z2m:living_room/tv_lightstrip").unwrap();
 
@@ -350,6 +385,7 @@ mod tests {
 
         // Non-light classes → false regardless of is_ambient
         for class in [
+            DeviceClass::Outlet,
             DeviceClass::Sensor,
             DeviceClass::Switch,
             DeviceClass::Unknown,
