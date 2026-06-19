@@ -3402,7 +3402,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .transpose()?;
     match &morning_routine {
         Some(r) if r.target_devices.is_empty() => tracing::info!(
-            "morning routine: ALL curve-managed lights, fires {:?}",
+            "morning routine: ALL non-ambient lights + plugs, fires {:?}",
             r.fire_days
         ),
         Some(r) => tracing::info!(
@@ -4072,7 +4072,9 @@ async fn run_morning_routine_tick(
         registry
             .list_all()
             .into_iter()
-            .filter(|d| d.is_curve_driven())
+            // Non-ambient lights (ramped) + on/off outlets/plugs (switched
+            // on at the end-minute, since they can't ramp).
+            .filter(|d| d.is_switchable() && !d.is_ambient)
             .map(|d| d.id)
             .collect()
     } else {
@@ -4086,6 +4088,37 @@ async fn run_morning_routine_tick(
     // Phase 1 — at exact end-minute, force 100% once then release.
     // After the end-minute, only release leftovers.
     if minute_of_day >= morning_end {
+        // Outlets (plugs) can't ramp, so they switch ON once at the
+        // end-minute — by now the dimmable lights have reached full, so the
+        // plug joining in isn't a jarring jump. (An outlet is switchable but
+        // not a light; the curve never touches it, so there's no claim.)
+        if minute_of_day == morning_end {
+            for id in &target_ids {
+                let Some(device) = registry.get(id) else {
+                    continue;
+                };
+                if device.is_light() || !device.is_switchable() {
+                    continue; // lights handled below; non-switchables ignored
+                }
+                if tracker.is_flagged(id) || device.state.on == Some(true) {
+                    continue;
+                }
+                let target = DeviceState {
+                    on: Some(true),
+                    ..Default::default()
+                };
+                let Some((topic, payload)) = router.format(id, &target) else {
+                    continue;
+                };
+                if dry_run {
+                    tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
+                } else if let Err(e) = publisher.publish(&topic, payload.clone()).await {
+                    tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
+                } else {
+                    tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
+                }
+            }
+        }
         for id in &target_ids {
             if !claim_tracker.is_claimed(id) {
                 continue;
