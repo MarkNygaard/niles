@@ -1,7 +1,7 @@
 //! niles — AI-first home automation system.
 
 use anyhow::Context;
-use chrono::{Timelike, Utc};
+use chrono::{Datelike, Timelike, Utc};
 use clap::{Args, Parser, Subcommand};
 use niles_api::{AppState, DevicePublisher};
 use niles_automations::{
@@ -28,8 +28,8 @@ use niles_presence::{PresenceAggregator, PresenceSource, TadoConfig, TadoSource}
 use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig, EnrollmentStore};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
-    SceneStore, SwitchEffect, TimerEntry, TimerStore, brightness_at, build_curve_target,
-    classify_action, color_temp_at, routine_brightness_at, should_fire_today,
+    SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant, brightness_at,
+    build_curve_target, classify_action, color_temp_at, routine_brightness_at, should_fire_today,
 };
 use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
@@ -3945,9 +3945,22 @@ async fn run_curve_tick(
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
 ) {
-    let Some((minute_of_day, _)) = current_minute_of_day(tz) else {
+    let Some((minute_of_day, now)) = current_minute_of_day(tz) else {
         return;
     };
+    // Weekly pause window: hold the lights (don't publish) so e.g. weekend
+    // evenings stay bright. The morning routine is gated separately by
+    // fire_days, so this only affects the curve.
+    if let Some(pause) = &curve.pause {
+        let now_wi = WeekInstant::new(now.weekday(), minute_of_day);
+        if pause.is_paused(now_wi) {
+            tracing::debug!(
+                "curve paused at {minute_of_day} ({:?}) — holding",
+                now.weekday()
+            );
+            return;
+        }
+    }
     let target_brightness = brightness_at(curve, minute_of_day);
     let target_kelvin = color_temp_at(curve, minute_of_day);
     let curve_target = (target_brightness, target_kelvin);

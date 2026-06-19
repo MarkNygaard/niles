@@ -8,6 +8,52 @@
 
 use crate::error::{Error, Result};
 use crate::time::MinuteOfDay;
+use chrono::Weekday;
+
+/// A weekday + time-of-day instant within the weekly cycle, used to
+/// express recurring windows like the curve pause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeekInstant {
+    pub weekday: Weekday,
+    pub minute: MinuteOfDay,
+}
+
+impl WeekInstant {
+    pub fn new(weekday: Weekday, minute: MinuteOfDay) -> Self {
+        Self { weekday, minute }
+    }
+
+    /// Minutes since Monday 00:00 (`0..10080`).
+    pub fn minute_of_week(self) -> u32 {
+        self.weekday.num_days_from_monday() * 1440 + self.minute.total_minutes() as u32
+    }
+}
+
+/// A recurring weekly window during which the lighting curve is
+/// suppressed — lights hold their last value rather than following the
+/// curve. May wrap across the week boundary (e.g. Saturday → Monday).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurvePause {
+    pub start: WeekInstant,
+    pub end: WeekInstant,
+}
+
+impl CurvePause {
+    /// True when `now` falls in `[start, end)`, wrapping across the week
+    /// boundary when `start > end`.
+    pub fn is_paused(self, now: WeekInstant) -> bool {
+        let (s, e, n) = (
+            self.start.minute_of_week(),
+            self.end.minute_of_week(),
+            now.minute_of_week(),
+        );
+        if s <= e {
+            s <= n && n < e
+        } else {
+            n >= s || n < e
+        }
+    }
+}
 
 /// Inputs to the brightness curve.
 ///
@@ -33,6 +79,9 @@ pub struct CurveConfig {
     /// Must be non-empty; values are validated to be in the
     /// `1000..=10000` Kelvin range.
     pub color_temp_anchors: Vec<(MinuteOfDay, u16)>,
+    /// Optional recurring weekly window during which the curve is
+    /// suppressed (lights hold their last value). `None` = always active.
+    pub pause: Option<CurvePause>,
 }
 
 impl CurveConfig {
@@ -60,6 +109,7 @@ impl CurveConfig {
                 (MinuteOfDay::new(23, 0).expect("23:00 is valid"), 2000),
                 (MinuteOfDay::new(23, 59).expect("23:59 is valid"), 2000),
             ],
+            pause: None,
         }
     }
 
@@ -472,6 +522,7 @@ mod tests {
             night_floor_brightness: 15,
             daytime_brightness: 100,
             color_temp_anchors: cfg().color_temp_anchors,
+            pause: None,
         };
         assert!(c.validate().is_err());
     }
@@ -489,6 +540,7 @@ mod tests {
             night_floor_brightness: 15,
             daytime_brightness: 100,
             color_temp_anchors: cfg().color_temp_anchors,
+            pause: None,
         };
         c.validate().unwrap();
         // At the seam, phase is SunsetRamp (Day is the open interval).
@@ -595,5 +647,45 @@ mod tests {
         let mut c = cfg();
         c.color_temp_anchors = vec![(t(12, 0), 12000)]; // too hot
         assert!(c.validate().is_err());
+    }
+
+    // ---- CurvePause ------------------------------------------------
+
+    fn wi(weekday: Weekday, h: u8, m: u8) -> WeekInstant {
+        WeekInstant::new(weekday, t(h, m))
+    }
+
+    #[test]
+    fn pause_friday_noon_to_sunday_noon() {
+        // The user's case: keep weekend evenings bright.
+        let pause = CurvePause {
+            start: wi(Weekday::Fri, 12, 0),
+            end: wi(Weekday::Sun, 12, 0),
+        };
+        // Inside the window.
+        assert!(pause.is_paused(wi(Weekday::Fri, 12, 0))); // exact start
+        assert!(pause.is_paused(wi(Weekday::Fri, 21, 0))); // Fri evening — no dim
+        assert!(pause.is_paused(wi(Weekday::Sat, 20, 0)));
+        assert!(pause.is_paused(wi(Weekday::Sun, 11, 59)));
+        // Outside.
+        assert!(!pause.is_paused(wi(Weekday::Fri, 11, 59))); // before start
+        assert!(!pause.is_paused(wi(Weekday::Sun, 12, 0))); // exact end is active again
+        assert!(!pause.is_paused(wi(Weekday::Sun, 21, 0))); // Sun evening dims
+        assert!(!pause.is_paused(wi(Weekday::Mon, 8, 0)));
+    }
+
+    #[test]
+    fn pause_wraps_across_week_boundary() {
+        // Sat 18:00 → Mon 06:00 wraps past Sunday→Monday midnight.
+        let pause = CurvePause {
+            start: wi(Weekday::Sat, 18, 0),
+            end: wi(Weekday::Mon, 6, 0),
+        };
+        assert!(pause.is_paused(wi(Weekday::Sat, 23, 0)));
+        assert!(pause.is_paused(wi(Weekday::Sun, 12, 0)));
+        assert!(pause.is_paused(wi(Weekday::Mon, 5, 0)));
+        assert!(!pause.is_paused(wi(Weekday::Mon, 6, 0))); // exact end active
+        assert!(!pause.is_paused(wi(Weekday::Sat, 17, 0)));
+        assert!(!pause.is_paused(wi(Weekday::Wed, 12, 0)));
     }
 }

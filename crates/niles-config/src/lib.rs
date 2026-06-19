@@ -249,6 +249,31 @@ kelvin = 2000
     }
 
     #[test]
+    fn curve_pause_parses_into_config() {
+        // Injected into the [lighting] scalar block (before the anchor
+        // arrays) — TOML scalar keys can't follow an array-of-tables.
+        let toml = valid_toml().replace(
+            "daytime_brightness = 100",
+            "daytime_brightness = 100\ncurve_pause_start = \"fri 12:00\"\ncurve_pause_end = \"sun 12:00\"",
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let pause = cfg.lighting.to_curve_config().unwrap().pause.unwrap();
+        assert_eq!(pause.start.weekday, chrono::Weekday::Fri);
+        assert_eq!(pause.end.weekday, chrono::Weekday::Sun);
+    }
+
+    #[test]
+    fn curve_pause_requires_both_endpoints() {
+        let toml = valid_toml().replace(
+            "daytime_brightness = 100",
+            "daytime_brightness = 100\ncurve_pause_start = \"fri 12:00\"",
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
     fn rejects_unknown_top_level_field() {
         let bad = format!(
             "{}\n[unknown]\nfoo = 1\n",
