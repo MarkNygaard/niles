@@ -312,7 +312,14 @@ async fn main() -> anyhow::Result<()> {
     // Initialize tracing. Honors RUST_LOG; defaults to `info` for the
     // niles_* crates so dev subcommands give meaningful output.
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("niles_mqtt=info,niles_bin=info"));
+        .unwrap_or_else(|_| {
+            // The binary target is named `niles`, so its module path is
+            // `niles::` — an earlier `niles_bin=` directive matched nothing
+            // and silently swallowed every log line from this file.
+            EnvFilter::new(
+                "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_mqtt=info,niles_scheduler=info,niles_tools=info",
+            )
+        });
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cli = Cli::parse();
@@ -3460,27 +3467,53 @@ fn spawn_override_retry(store: Arc<ConfigStore>) {
     });
 }
 
+/// Choose where config overrides are kept.
+///
+/// A database wins over a directory, and a directory over memory. The
+/// order matters on Kubernetes: a local volume pins the pod to one node,
+/// so `[database]` is the option that lets Niles reschedule freely.
+///
+/// Only a *misconfigured* database is fatal — a DSN that will not parse,
+/// or an env var that is not set. One that merely cannot be reached right
+/// now is not: the store reports it and retries in the background.
+fn build_override_backend(cfg: &Config) -> anyhow::Result<Box<dyn niles_config::OverrideBackend>> {
+    if let Some(database) = &cfg.database {
+        let url = database
+            .resolve_url()
+            .context("resolving the database connection string")?;
+        let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+            // The DSN parser's error can quote the DSN, which holds a
+            // password. Say only that it was rejected.
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "the connection string in {} is not a valid database URL",
+                    database.url_env
+                )
+            })?;
+        return Ok(Box::new(backend));
+    }
+    match cfg.persistence.directory.as_ref() {
+        Some(dir) => Ok(Box::new(niles_config::FileBackend::new(dir.join("config")))),
+        None => Ok(Box::new(niles_config::MemoryBackend::new())),
+    }
+}
+
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Where the override document lives is deliberately *not* itself
     // overridable — it's how we find the overrides in the first place — so
     // it comes from a plain read of the base file.
     let bootstrap = Config::load_from_path(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
-    let backend: Box<dyn niles_config::OverrideBackend> =
-        match bootstrap.persistence.directory.as_ref() {
-            Some(dir) => Box::new(niles_config::FileBackend::new(dir.join("config"))),
-            None => Box::new(niles_config::MemoryBackend::new()),
-        };
+    let backend = build_override_backend(&bootstrap)?;
     let (store, outcome) = ConfigStore::open(&args.config, backend)
         .await
         .with_context(|| format!("loading config from {}", args.config.display()))?;
     let store = Arc::new(store);
     // Never fatal: the base still loaded. But say it loudly — the user's
     // tuning just silently reverted to file defaults.
+    tracing::info!("config state: {}", store.backend_description());
     match &outcome {
-        LoadOutcome::Clean => {
-            tracing::info!("config state: {}", store.backend_description());
-        }
+        LoadOutcome::Clean => {}
         LoadOutcome::OverridesRejected(why) => {
             tracing::warn!("config overrides rejected, using base config alone: {why}");
         }
@@ -6407,5 +6440,122 @@ mod system_prompt_tests {
         assert!(!supports_speaker_identification(
             niles_wyoming::AudioFormat::new(16_000, 24, 1)
         ));
+    }
+}
+
+#[cfg(test)]
+mod override_backend_tests {
+    use super::*;
+
+    const BASE: &str = r#"
+[home]
+name = "test home"
+latitude = 56.1572
+longitude = 10.2107
+timezone = "Europe/Copenhagen"
+
+[mqtt]
+host = "192.168.42.16"
+port = 1883
+username_env = "NILES_MQTT_USERNAME"
+password_env = "NILES_MQTT_PASSWORD"
+
+[api]
+bind_address = "0.0.0.0:8080"
+
+[wyoming]
+bind_address = "0.0.0.0:10300"
+
+[stt]
+api_key_env = "GROQ_API_KEY"
+
+[tts]
+
+[llm]
+api_key_env = "GROQ_API_KEY"
+
+[lighting]
+morning_start = "05:45"
+morning_end = "06:30"
+sunset_start = "21:30"
+sunset_end = "23:00"
+night_floor_brightness = 15
+daytime_brightness = 100
+
+[[lighting.color_temp_anchors]]
+time = "00:00"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "23:59"
+kelvin = 2000
+"#;
+
+    fn config_with(extra: &str) -> Config {
+        Config::load_from_str(&format!("{BASE}{extra}")).expect("fixture parses")
+    }
+
+    #[tokio::test]
+    async fn a_database_section_selects_the_postgres_backend() {
+        // The bug this test exists for: niles-db compiled, tested and
+        // shipped while nothing ever constructed it, so config lived in
+        // memory and the database stayed empty.
+        unsafe {
+            std::env::set_var(
+                "NILES_TEST_WIRING_DSN",
+                "postgres://niles:pw@postgres-rw.database.svc.cluster.local:5432/niles",
+            );
+        }
+        let cfg = config_with(
+            "
+[database]
+url_env = \"NILES_TEST_WIRING_DSN\"
+",
+        );
+        let backend = build_override_backend(&cfg).expect("backend builds");
+        let described = backend.describe();
+        assert!(
+            described.contains("niles database"),
+            "expected the postgres backend, got: {described}"
+        );
+        assert!(
+            !described.contains("pw@"),
+            "credentials must not appear in the description: {described}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_env_var_is_fatal_rather_than_silently_falling_back() {
+        // Falling back to memory here is how a database quietly goes unused.
+        let cfg = config_with(
+            "
+[database]
+url_env = \"NILES_TEST_DEFINITELY_NOT_SET\"
+",
+        );
+        // `Box<dyn OverrideBackend>` has no Debug, so unwrap the Result by hand.
+        let err = match build_override_backend(&cfg) {
+            Ok(backend) => panic!("must refuse to start, got {}", backend.describe()),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("connection string"));
+    }
+
+    #[tokio::test]
+    async fn without_a_database_a_persistence_directory_is_used() {
+        let cfg = config_with(
+            "
+[persistence]
+directory = \"/var/lib/niles\"
+",
+        );
+        let described = build_override_backend(&cfg).unwrap().describe();
+        assert!(described.contains("directory"), "got: {described}");
+    }
+
+    #[tokio::test]
+    async fn with_neither_it_falls_back_to_memory_and_says_so() {
+        let described = build_override_backend(&config_with("")).unwrap().describe();
+        assert!(described.contains("memory"), "got: {described}");
     }
 }
