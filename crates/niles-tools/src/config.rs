@@ -166,13 +166,14 @@ impl Tool for UpdateConfig {
         }
 
         let patch = patch_from_path(&path, value)?;
-        let applied =
-            self.store
-                .apply(&patch, ChangeSource::Voice)
-                .map_err(|e| Error::InvalidArgs {
-                    tool: "update_config".into(),
-                    reason: e.to_string(),
-                })?;
+        let applied = self
+            .store
+            .apply(&patch, ChangeSource::Voice)
+            .await
+            .map_err(|e| Error::InvalidArgs {
+                tool: "update_config".into(),
+                reason: e.to_string(),
+            })?;
         Ok(applied_json(&applied))
     }
 }
@@ -214,13 +215,14 @@ impl Tool for ResetConfig {
 
     async fn execute(&self, args: Value) -> Result<Value> {
         let path = str_arg(&args, "reset_config", "path")?;
-        let applied =
-            self.store
-                .reset(&path, ChangeSource::Voice)
-                .map_err(|e| Error::InvalidArgs {
-                    tool: "reset_config".into(),
-                    reason: e.to_string(),
-                })?;
+        let applied = self
+            .store
+            .reset(&path, ChangeSource::Voice)
+            .await
+            .map_err(|e| Error::InvalidArgs {
+                tool: "reset_config".into(),
+                reason: e.to_string(),
+            })?;
         if applied.is_noop() {
             return Ok(json!({
                 "changed": false,
@@ -261,7 +263,7 @@ impl Tool for UndoConfigChange {
     }
 
     async fn execute(&self, _args: Value) -> Result<Value> {
-        match self.store.undo() {
+        match self.store.undo().await {
             Ok(Some(applied)) => Ok(applied_json(&applied)),
             Ok(None) => Ok(json!({
                 "changed": false,

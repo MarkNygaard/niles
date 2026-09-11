@@ -18,6 +18,9 @@ niles-recognition.workspace = true
 niles-notifications.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+tokio = { workspace = true }
+async-trait.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

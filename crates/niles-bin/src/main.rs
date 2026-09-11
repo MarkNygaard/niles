@@ -3426,35 +3426,75 @@ impl Lighting {
     }
 }
 
+/// Keep trying to load config overrides after the backend was unreachable
+/// at startup.
+///
+/// Without this, a pod that restarted while its backend was down — a
+/// Postgres failover during a node drain, say, which happens on roughly
+/// every cluster upgrade — would run on base defaults for the rest of its
+/// life. The lights would be subtly wrong and nothing would ever say why.
+///
+/// Adopting is safe whenever it succeeds: while the backend is down every
+/// write fails, so there is no local change for a late load to clobber.
+fn spawn_override_retry(store: Arc<ConfigStore>) {
+    tokio::spawn(async move {
+        let mut delay = Duration::from_secs(5);
+        loop {
+            tokio::time::sleep(delay).await;
+            match store.reload().await {
+                Ok(found) => {
+                    tracing::info!(
+                        "config overrides loaded from {} after an earlier failure{}",
+                        store.backend_description(),
+                        if found { "" } else { " (nothing stored yet)" }
+                    );
+                    return;
+                }
+                Err(e) => tracing::debug!("config override retry failed: {e}"),
+            }
+            // Back off to a minute and stay there: this is a background
+            // repair, and hammering a database that is failing over helps
+            // nobody.
+            delay = (delay * 2).min(Duration::from_secs(60));
+        }
+    });
+}
+
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Where the override document lives is deliberately *not* itself
     // overridable — it's how we find the overrides in the first place — so
     // it comes from a plain read of the base file.
-    let store_dir = Config::load_from_path(&args.config)
-        .with_context(|| format!("loading config from {}", args.config.display()))?
-        .persistence
-        .directory
-        .map(|dir| dir.join("config"));
-    let (store, outcome) = ConfigStore::open(&args.config, store_dir)
+    let bootstrap = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    let backend: Box<dyn niles_config::OverrideBackend> =
+        match bootstrap.persistence.directory.as_ref() {
+            Some(dir) => Box::new(niles_config::FileBackend::new(dir.join("config"))),
+            None => Box::new(niles_config::MemoryBackend::new()),
+        };
+    let (store, outcome) = ConfigStore::open(&args.config, backend)
+        .await
         .with_context(|| format!("loading config from {}", args.config.display()))?;
     let store = Arc::new(store);
     // Never fatal: the base still loaded. But say it loudly — the user's
     // tuning just silently reverted to file defaults.
     match &outcome {
-        LoadOutcome::Clean => {}
+        LoadOutcome::Clean => {
+            tracing::info!("config state: {}", store.backend_description());
+        }
         LoadOutcome::OverridesRejected(why) => {
             tracing::warn!("config overrides rejected, using base config alone: {why}");
         }
-        LoadOutcome::OverridesUnreadable(why) => {
-            tracing::warn!("config overrides unreadable, using base config alone: {why}");
+        LoadOutcome::BackendUnavailable(why) => {
+            tracing::error!(
+                "could not load config overrides ({why}); running on base config.                  Retrying in the background — tuning will be picked up when the                  backend returns."
+            );
+            spawn_override_retry(store.clone());
         }
         other => tracing::warn!("config overrides not applied ({other:?})"),
     }
-
     if !store.is_persistent() {
         tracing::warn!(
-            "no [persistence] directory configured — config changes apply immediately \
-             but are lost on restart"
+            "config changes apply immediately but are lost on restart —              no persistent backend is configured"
         );
     }
 

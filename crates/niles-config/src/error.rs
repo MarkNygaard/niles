@@ -15,6 +15,9 @@ pub enum Error {
     #[error("could not parse config TOML: {0}")]
     Parse(#[from] toml::de::Error),
 
+    #[error("could not reach {backend}: {reason}")]
+    Backend { backend: String, reason: String },
+
     #[error("invalid [{section}] section: {reason}")]
     InvalidSection {
         section: &'static str,

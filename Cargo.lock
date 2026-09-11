@@ -1354,6 +1354,7 @@ dependencies = [
 name = "niles-config"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "chrono-tz",
  "niles-core",
@@ -1363,6 +1364,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror",
+ "tokio",
  "toml",
 ]
 
