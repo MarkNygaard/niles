@@ -31,6 +31,12 @@ pub fn router(state: AppState) -> Router {
     if state.linear_webhook.is_some() {
         r = r.route("/webhooks/linear", post(crate::webhook::handle_linear));
     }
+    // Registered last so every API route above wins; the UI takes what is
+    // left over, including unknown paths (it routes them client-side).
+    #[cfg(feature = "ui")]
+    {
+        r = r.fallback(crate::web::serve_asset);
+    }
     r.with_state(state)
 }
 

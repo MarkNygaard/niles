@@ -4,10 +4,22 @@
 # .github/workflows/image.yml; consumed by the kustomize manifests under
 # deploy/kustomize/. See deploy/docker/README.md.
 
+# ---- web bundle -------------------------------------------------------
+# The config UI is bundled separately and embedded into the binary by the
+# `ui` feature. Kept in its own stage so a Rust-only change doesn't
+# reinstall node_modules, and so the Rust builder needs no JS toolchain.
+FROM oven/bun:1 AS web
+WORKDIR /web
+COPY web/package.json web/bun.lock* ./
+RUN bun install --frozen-lockfile
+COPY web/ ./
+RUN bun run build
+
 # ---- builder ----------------------------------------------------------
 FROM rust:1-bookworm AS builder
 WORKDIR /src
 COPY . .
+COPY --from=web /web/dist ./web/dist
 # Cache the cargo registry + target dir across builds (BuildKit cache
 # mounts). The binary must be copied OUT of the cache mount within the
 # same RUN, since cache-mount contents aren't part of the image layer.
@@ -19,7 +31,7 @@ COPY . .
 # for lighting / switch / voice-idle deployments).
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release -p niles-bin \
+    cargo build --release -p niles-bin --features ui \
  && cp target/release/niles /usr/local/bin/niles
 
 # ---- runtime ----------------------------------------------------------

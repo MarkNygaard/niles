@@ -12,6 +12,11 @@ workspace = true
 name = "niles"
 path = "src/main.rs"
 
+[features]
+# Pass through to niles-api: embeds the built web UI into the binary.
+# The container image builds with `--features ui`.
+ui = ["niles-api/ui"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio.workspace = true

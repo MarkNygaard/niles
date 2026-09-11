@@ -26,6 +26,8 @@ pub mod handlers;
 pub mod publish;
 pub mod server;
 pub mod state;
+#[cfg(feature = "ui")]
+pub mod web;
 pub mod webhook;
 
 pub use publish::DevicePublisher;

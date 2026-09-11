@@ -44,6 +44,8 @@ tokio-tungstenite = "0.29"
 futures-util = "0.3"
 serde_yaml = "0.9"
 tempfile = "3"
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
 hound = "3"
 fs2 = "0.4"
 urlencoding = "2"

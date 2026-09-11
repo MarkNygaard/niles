@@ -50,3 +50,35 @@ jobs:
 
       - name: Build docs site
         run: mdbook build docs
+
+  web:
+    name: web ui (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install web dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck + bundle
+        working-directory: web
+        run: bun run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      # The `ui` feature is off by default, so the embedding code is not
+      # compiled by the job above. Without this it would rot unnoticed
+      # until an image build failed.
+      - name: cargo test --features ui
+        run: |
+          cargo test -p niles-api --features ui
+          cargo check -p niles-bin --features ui
