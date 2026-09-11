@@ -103,7 +103,14 @@ static TfLiteTensor* input = nullptr;
 static TfLiteTensor* output = nullptr;
 static constexpr int kNumResourceVars = 20; // streaming state vars
 
+static void i2s_deinit_rx();
+
+// Safe to call whether or not RX is already up. It is called again after
+// every reply, and on the timeout path playback never ran — so nothing had
+// released the RX channel, and creating a second one on the same controller
+// aborted the firmware. A failed reply used to reboot the satellite.
 static void i2s_init() {
+  i2s_deinit_rx();
   i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, nullptr, &rx_chan));
   i2s_std_config_t std_cfg = {
