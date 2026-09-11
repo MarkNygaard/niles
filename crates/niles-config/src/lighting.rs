@@ -24,8 +24,9 @@ pub struct LightingConfig {
     pub daytime_brightness: u8,
     pub color_temp_anchors: Vec<ColorTempAnchor>,
     pub morning_routine: Option<MorningRoutineConfigDto>,
-    /// Optional recurring weekly window during which the curve is
-    /// suppressed (lights hold their last value). Both endpoints are
+    /// Optional recurring weekly window during which the curve freezes
+    /// at the level it held when the window opened — so lights switched
+    /// on mid-window land on that level too. Both endpoints are
     /// `"<weekday> HH:MM"` (e.g. `"fri 12:00"`) and must be set together.
     #[serde(default)]
     pub curve_pause_start: Option<String>,

@@ -22,7 +22,8 @@ pub mod time;
 pub mod timer;
 
 pub use curve::{
-    CurveConfig, CurvePause, Phase, WeekInstant, brightness_at, color_temp_at, phase_at,
+    CurveConfig, CurvePause, Phase, WeekInstant, brightness_at, color_temp_at, effective_minute,
+    phase_at,
 };
 pub use error::{Error, Result};
 pub use manual_mode::ManualModeTracker;
