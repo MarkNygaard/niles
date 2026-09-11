@@ -1327,6 +1327,7 @@ dependencies = [
  "niles-recognition",
  "niles-scheduler",
  "serde",
+ "tempfile",
  "thiserror",
  "toml",
 ]

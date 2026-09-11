@@ -24,6 +24,7 @@ pub mod recognition;
 pub mod satellites;
 pub mod skills;
 pub mod speakers;
+pub mod store;
 pub mod stt;
 pub mod tts;
 pub mod web_search;
@@ -51,11 +52,121 @@ use serde::Deserialize;
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 use std::path::Path;
+pub use store::{ConfigStore, LoadOutcome, SectionChange};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
 pub use web_search::WebSearchConfig;
 pub use wled::{WledConfig, WledDeviceConfig};
 pub use wyoming::WyomingConfig;
+
+/// Shared test fixture. Lives outside `mod tests` so sibling modules
+/// (notably `store`) can build on the same known-valid config.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    pub fn valid_toml() -> &'static str {
+        r#"
+[home]
+name = "test home"
+latitude = 56.1572
+longitude = 10.2107
+timezone = "Europe/Copenhagen"
+
+[mqtt]
+host = "192.168.42.16"
+port = 1883
+username_env = "NILES_MQTT_USERNAME"
+password_env = "NILES_MQTT_PASSWORD"
+
+[api]
+bind_address = "0.0.0.0:8080"
+
+[wyoming]
+bind_address = "0.0.0.0:10300"
+
+[stt]
+api_key_env = "GROQ_API_KEY"
+
+[tts]
+
+[llm]
+api_key_env = "GROQ_API_KEY"
+
+[lighting]
+morning_start = "05:45"
+morning_end = "06:30"
+sunset_start = "21:30"
+sunset_end = "23:00"
+night_floor_brightness = 15
+daytime_brightness = 100
+
+[[lighting.color_temp_anchors]]
+time = "00:00"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "05:45"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "06:30"
+kelvin = 2700
+
+[[lighting.color_temp_anchors]]
+time = "12:00"
+kelvin = 4500
+
+[[lighting.color_temp_anchors]]
+time = "21:30"
+kelvin = 2700
+
+[[lighting.color_temp_anchors]]
+time = "23:00"
+kelvin = 2000
+
+[[lighting.color_temp_anchors]]
+time = "23:59"
+kelvin = 2000
+"#
+    }
+}
+
+/// Whether a change to a config section is picked up by the running
+/// process, or needs a restart.
+///
+/// This is a property of the *consumer*, not of the data. A section is
+/// [`Hot`](Reload::Hot) only when something re-reads the live snapshot as
+/// it runs; almost everything in Niles is instead built once at startup
+/// and moved into a task that owns it — an MQTT connection, a spawned
+/// poll loop, an embedded model — and cannot be re-pointed by writing a
+/// new value.
+///
+/// So today exactly one section is hot: `lighting`, which the curve
+/// dispatcher re-reads each tick. Others join it only when their consumer
+/// is deliberately rewired to take a fresh snapshot, which is a code
+/// change, not a config change.
+///
+/// The distinction exists so a write can be *refused or flagged* rather
+/// than silently accepted and ignored — the worst outcome being a user
+/// who changes a value, hears nothing, and cannot tell whether it took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Reload {
+    /// Re-read from the live snapshot; a write takes effect within a tick.
+    Hot,
+    /// Consumed once at startup; a write needs a process restart.
+    Boot,
+}
+
+/// How a change to `section` (a top-level TOML key) reaches the running
+/// process. Unknown sections are reported as [`Reload::Boot`] — the
+/// conservative answer, since a section nothing re-reads is exactly the
+/// case we must not claim is live.
+pub fn section_reload(section: &str) -> Reload {
+    match section {
+        "lighting" => Reload::Hot,
+        _ => Reload::Boot,
+    }
+}
 
 /// Top-level Niles configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -170,71 +281,7 @@ impl Config {
 mod tests {
     use super::*;
 
-    fn valid_toml() -> &'static str {
-        r#"
-[home]
-name = "test home"
-latitude = 56.1572
-longitude = 10.2107
-timezone = "Europe/Copenhagen"
-
-[mqtt]
-host = "192.168.42.16"
-port = 1883
-username_env = "NILES_MQTT_USERNAME"
-password_env = "NILES_MQTT_PASSWORD"
-
-[api]
-bind_address = "0.0.0.0:8080"
-
-[wyoming]
-bind_address = "0.0.0.0:10300"
-
-[stt]
-api_key_env = "GROQ_API_KEY"
-
-[tts]
-
-[llm]
-api_key_env = "GROQ_API_KEY"
-
-[lighting]
-morning_start = "05:45"
-morning_end = "06:30"
-sunset_start = "21:30"
-sunset_end = "23:00"
-night_floor_brightness = 15
-daytime_brightness = 100
-
-[[lighting.color_temp_anchors]]
-time = "00:00"
-kelvin = 2000
-
-[[lighting.color_temp_anchors]]
-time = "05:45"
-kelvin = 2000
-
-[[lighting.color_temp_anchors]]
-time = "06:30"
-kelvin = 2700
-
-[[lighting.color_temp_anchors]]
-time = "12:00"
-kelvin = 4500
-
-[[lighting.color_temp_anchors]]
-time = "21:30"
-kelvin = 2700
-
-[[lighting.color_temp_anchors]]
-time = "23:00"
-kelvin = 2000
-
-[[lighting.color_temp_anchors]]
-time = "23:59"
-kelvin = 2000
-"#
-    }
+    use crate::tests_support::valid_toml;
 
     #[test]
     fn loads_and_validates_a_full_config() {
