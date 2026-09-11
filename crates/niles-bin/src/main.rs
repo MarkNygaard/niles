@@ -3984,6 +3984,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     &publisher,
                     &router,
                     &lighting.curve,
+                    lighting.snapshot.lighting.ambient_target(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4018,6 +4019,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     &publisher,
                     &router,
                     &lighting.curve,
+                    lighting.snapshot.lighting.ambient_target(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4120,6 +4122,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     &publisher,
                     &CommandRouter::z2m_only(&z2m_prefix),
                     &curve,
+                    cfg.lighting.ambient_target(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4140,6 +4143,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     &publisher,
                     &CommandRouter::z2m_only(&z2m_prefix),
                     &curve,
+                    cfg.lighting.ambient_target(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4170,6 +4174,7 @@ async fn run_curve_tick(
     publisher: &MqttPublisher,
     router: &CommandRouter,
     curve: &niles_scheduler::CurveConfig,
+    ambient_target: Option<(Option<u8>, Option<u16>)>,
     tz: chrono_tz::Tz,
     dry_run: bool,
     last_published: &mut HashMap<DeviceId, (u8, u16)>,
@@ -4201,9 +4206,24 @@ async fn run_curve_tick(
         if device.state.on != Some(true) {
             continue;
         }
-        if !device.is_curve_driven() {
+        // Ambient lights sit out the curve and are held at a fixed warm,
+        // dim setting instead. With no ambient target configured they are
+        // left alone entirely, which is how they behaved before.
+        let target = if device.is_curve_driven() {
+            Some(curve_target)
+        } else if device.is_light() {
+            ambient_target.map(|(brightness, kelvin)| {
+                (
+                    brightness.unwrap_or(curve_target.0),
+                    kelvin.unwrap_or(curve_target.1),
+                )
+            })
+        } else {
+            None
+        };
+        let Some(device_target) = target else {
             continue;
-        }
+        };
         if tracker.is_flagged(&device.id) {
             continue;
         }
@@ -4213,11 +4233,11 @@ async fn run_curve_tick(
         // If we already published this exact curve target for this
         // device, skip — even if its reported state hasn't caught
         // up yet (Z2M acks lag the set command).
-        if last_published.get(&device.id) == Some(&curve_target) {
+        if last_published.get(&device.id) == Some(&device_target) {
             continue;
         }
         let Some(target_state) =
-            build_curve_target(&device.state, target_brightness, target_kelvin)
+            build_curve_target(&device.state, device_target.0, device_target.1)
         else {
             continue;
         };
@@ -4244,7 +4264,7 @@ async fn run_curve_tick(
             }
         };
         if ok {
-            last_published.insert(device.id.clone(), curve_target);
+            last_published.insert(device.id.clone(), device_target);
         }
         publish_count += 1;
     }

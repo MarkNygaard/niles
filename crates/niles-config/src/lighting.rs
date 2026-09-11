@@ -28,6 +28,21 @@ pub struct LightingConfig {
     /// at the level it held when the window opened — so lights switched
     /// on mid-window land on that level too. Both endpoints are
     /// `"<weekday> HH:MM"` (e.g. `"fri 12:00"`) and must be set together.
+    /// Brightness for lights listed in `[ambient_lights]`, which sit out
+    /// the curve. Omit to leave them wherever they were — the behaviour
+    /// before this existed.
+    ///
+    /// These live here rather than in `[ambient_lights]` for a practical
+    /// reason: `[lighting]` is the one section a running Niles re-reads,
+    /// so these can be tuned from the UI or by voice and take effect on
+    /// the next tick. Which lights are ambient is wired into the device
+    /// sources at startup, so that list still needs a restart.
+    #[serde(default)]
+    pub ambient_brightness: Option<u8>,
+    /// Colour temperature for ambient lights, in Kelvin. Low is the point
+    /// — 2000-2200 K is candle-to-lamp warm.
+    #[serde(default)]
+    pub ambient_kelvin: Option<u16>,
     #[serde(default)]
     pub curve_pause_start: Option<String>,
     #[serde(default)]
@@ -99,6 +114,15 @@ pub struct ColorTempAnchor {
 }
 
 impl LightingConfig {
+    /// The fixed `(brightness, kelvin)` ambient lights are held at, if
+    /// configured. `None` for either field means "leave that alone".
+    pub fn ambient_target(&self) -> Option<(Option<u8>, Option<u16>)> {
+        match (self.ambient_brightness, self.ambient_kelvin) {
+            (None, None) => None,
+            pair => Some(pair),
+        }
+    }
+
     /// Parse times and anchors, then validate the resulting `CurveConfig`.
     pub fn to_curve_config(&self) -> Result<CurveConfig> {
         let anchors = self
@@ -138,6 +162,23 @@ impl LightingConfig {
             section: "lighting",
             reason: e.to_string(),
         })?;
+
+        if let Some(brightness) = self.ambient_brightness
+            && brightness > 100
+        {
+            return Err(Error::InvalidSection {
+                section: "lighting",
+                reason: format!("ambient_brightness {brightness} is above 100"),
+            });
+        }
+        if let Some(kelvin) = self.ambient_kelvin
+            && !(1000..=10000).contains(&kelvin)
+        {
+            return Err(Error::InvalidSection {
+                section: "lighting",
+                reason: format!("ambient_kelvin {kelvin}K is outside 1000..=10000"),
+            });
+        }
 
         Ok(curve)
     }
@@ -184,4 +225,67 @@ fn parse_naive_date(s: &str) -> Result<NaiveDate> {
         section: "lighting",
         reason: format!("invalid skip_override date '{s}': {e}"),
     })
+}
+
+#[cfg(test)]
+mod ambient_tests {
+    use super::*;
+
+    fn lighting_with(extra: &str) -> LightingConfig {
+        let base = r#"
+morning_start = "05:45"
+morning_end = "06:30"
+sunset_start = "21:30"
+sunset_end = "23:00"
+night_floor_brightness = 15
+daytime_brightness = 100
+
+[[color_temp_anchors]]
+time = "00:00"
+kelvin = 2000
+
+[[color_temp_anchors]]
+time = "23:59"
+kelvin = 2000
+"#;
+        toml::from_str(&format!("{extra}{base}")).expect("fixture parses")
+    }
+
+    #[test]
+    fn no_ambient_settings_means_no_ambient_target() {
+        // The behaviour before this existed: ambient lights sit out the
+        // curve and are otherwise left exactly as they were.
+        assert_eq!(lighting_with("").ambient_target(), None);
+    }
+
+    #[test]
+    fn brightness_alone_is_a_target() {
+        // Dim it, but leave whatever colour it is showing.
+        let cfg = lighting_with("ambient_brightness = 25\n");
+        assert_eq!(cfg.ambient_target(), Some((Some(25), None)));
+        cfg.to_curve_config().expect("valid");
+    }
+
+    #[test]
+    fn brightness_and_kelvin_together() {
+        let cfg = lighting_with("ambient_brightness = 25\nambient_kelvin = 2200\n");
+        assert_eq!(cfg.ambient_target(), Some((Some(25), Some(2200))));
+        cfg.to_curve_config().expect("valid");
+    }
+
+    #[test]
+    fn brightness_above_100_is_rejected() {
+        let err = lighting_with("ambient_brightness = 120\n")
+            .to_curve_config()
+            .expect_err("out of range");
+        assert!(err.to_string().contains("ambient_brightness"), "{err}");
+    }
+
+    #[test]
+    fn kelvin_outside_the_sane_range_is_rejected() {
+        let err = lighting_with("ambient_kelvin = 500\n")
+            .to_curve_config()
+            .expect_err("out of range");
+        assert!(err.to_string().contains("ambient_kelvin"), "{err}");
+    }
 }
