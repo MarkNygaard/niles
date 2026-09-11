@@ -91,6 +91,17 @@ api_key_env = "GROQ_API_KEY"
 # [capabilities]
 # directory = "docs/capabilities"
 
+# Optional. Where Niles keeps the config changes made through the web UI
+# and by voice, so they survive a restart. Without this section, and
+# without [persistence], those changes apply immediately but are lost when
+# the process exits — Niles says so at startup.
+#
+# url_env names the environment variable holding the connection string; it
+# is never the string itself, which would put a password in this file.
+# [database]
+# url_env = "NILES_DATABASE_URL"
+# max_connections = 5
+
 [lighting]
 # Times are HH:MM in local wall-clock. See ARCHITECTURE.md for the
 # semantics of each phase.

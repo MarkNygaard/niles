@@ -30,6 +30,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 niles-core.workspace = true
 niles-config.workspace = true
+niles-db.workspace = true
 niles-mqtt.workspace = true
 niles-api.workspace = true
 niles-capabilities.workspace = true

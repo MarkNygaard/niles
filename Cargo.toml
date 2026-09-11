@@ -44,6 +44,7 @@ tokio-tungstenite = "0.29"
 futures-util = "0.3"
 serde_yaml = "0.9"
 tempfile = "3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
 hound = "3"
@@ -60,6 +61,7 @@ hex = "0.4"
 # any crate that depends on another workspace crate.
 niles-core = { path = "crates/niles-core" }
 niles-config = { path = "crates/niles-config" }
+niles-db = { path = "crates/niles-db" }
 niles-mqtt = { path = "crates/niles-mqtt" }
 niles-api = { path = "crates/niles-api" }
 niles-scheduler = { path = "crates/niles-scheduler" }
