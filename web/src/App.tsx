@@ -34,6 +34,16 @@ const LIGHTING_FIELDS: Array<{ key: string; label: string; hint?: string }> = [
     hint: "0–100%, held between the ramps",
   },
   {
+    key: "ambient_brightness",
+    label: "Ambient light brightness",
+    hint: "0–100%. Ambient lights sit out the curve and hold this instead",
+  },
+  {
+    key: "ambient_kelvin",
+    label: "Ambient light colour",
+    hint: "Kelvin — 2000–2200 is candle-to-lamp warm",
+  },
+  {
     key: "curve_pause_start",
     label: "Curve pause starts",
     hint: "e.g. fri 12:00 — the curve freezes at this value until the pause ends",

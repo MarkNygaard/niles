@@ -102,6 +102,14 @@ api_key_env = "GROQ_API_KEY"
 # url_env = "NILES_DATABASE_URL"
 # max_connections = 5
 
+# Lights that should sit out the adaptive curve — a TV backlight, a shelf
+# strip — and hold a fixed warm, dim setting instead. List them here; set
+# how they look with `ambient_brightness` / `ambient_kelvin` under
+# [lighting]. Changing this list needs a restart: it is wired into the
+# device sources at startup. The brightness and colour are live.
+# [ambient_lights]
+# devices = ["living_room/tv_light", "bedroom/shelf_strip"]
+
 [lighting]
 # Times are HH:MM in local wall-clock. See ARCHITECTURE.md for the
 # semantics of each phase.
@@ -110,6 +118,10 @@ morning_end   = "06:30"
 sunset_start  = "21:30"
 sunset_end    = "23:00"
 night_floor_brightness = 15
+# Held by lights listed in [ambient_lights]. Omit both and those lights are
+# left alone entirely.
+# ambient_brightness = 25
+# ambient_kelvin = 2200
 daytime_brightness     = 100
 
 # Color temperature anchors throughout the day. Linear interpolation
