@@ -8,6 +8,7 @@
 pub mod ambient_lights;
 pub mod api;
 pub mod automations;
+pub mod backend;
 pub mod capabilities;
 pub mod error;
 pub mod history;
@@ -34,6 +35,7 @@ pub mod wyoming;
 pub use ambient_lights::AmbientLightsConfig;
 pub use api::ApiConfig;
 pub use automations::{ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, TriggerDto};
+pub use backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
 pub use capabilities::CapabilitiesConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;

@@ -35,19 +35,14 @@
 //! store keeps its previous state. The effective config is therefore
 //! valid at every observable moment, including after a rejected write.
 
+use crate::backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
 use crate::error::{Error, Result};
 use crate::{Config, Reload, section_reload};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-/// The file name of the override document inside the store's directory.
-const OVERRIDES_FILE: &str = "overrides.toml";
-
-/// Companion journal, alongside the override document.
-const REVISIONS_FILE: &str = "revisions.toml";
-
 /// How much history to keep. Long enough to walk back a session's worth
-/// of tuning, short enough that the file stays readable by a human.
+/// of tuning, short enough that the stored journal stays readable.
 const MAX_REVISIONS: usize = 50;
 
 /// Base config plus an override document, kept as a validated snapshot.
@@ -58,14 +53,16 @@ pub struct ConfigStore {
     /// Parsed base, kept so overrides can be re-layered from scratch on
     /// every write — cheaper to reason about than unwinding a merge.
     base: toml::Table,
-    /// Where `overrides.toml` lives. `None` disables persistence: writes
-    /// apply in memory and are lost on restart. That is the right
-    /// behaviour for tests and for a deployment with no writable volume,
-    /// and it is reported by [`is_persistent`](Self::is_persistent) so
-    /// callers can say so out loud rather than silently losing edits.
-    dir: Option<PathBuf>,
-    /// Current override document. Guarded together with `current` so a
-    /// reader can never see overrides that disagree with the snapshot.
+    /// Where the override document is kept. See [`OverrideBackend`].
+    backend: Box<dyn OverrideBackend>,
+    /// Held for the length of a write, which spans an await while the
+    /// backend persists. `inner`'s `RwLock` cannot do that job: a std
+    /// lock must not be held across an await, and two writers
+    /// interleaving there would each validate against state the other was
+    /// about to replace.
+    write_lock: tokio::sync::Mutex<()>,
+    /// Current state. Guarded together so a reader can never see
+    /// overrides that disagree with the snapshot they produced.
     inner: RwLock<Inner>,
 }
 
@@ -76,83 +73,121 @@ struct Inner {
 }
 
 impl ConfigStore {
-    /// Load `base_path`, layer any overrides found in `dir`, and validate
-    /// the result.
+    /// Load `base_path`, layer whatever `backend` holds, and validate.
     ///
-    /// A malformed or rejected override document is **not** fatal: it is
-    /// reported through the returned [`LoadOutcome`] and the store falls
-    /// back to the base alone. Refusing to boot because a tuning value
-    /// was bad would take the whole house down over a brightness number.
-    pub fn open(base_path: impl AsRef<Path>, dir: Option<PathBuf>) -> Result<(Self, LoadOutcome)> {
+    /// A backend that fails, or that holds a document producing an
+    /// invalid config, is **not** fatal: it is reported through the
+    /// returned [`LoadOutcome`] and the store falls back to the base
+    /// alone. Refusing to boot because a tuning value was bad — or
+    /// because a database was mid-failover — would take the whole house
+    /// down with it. An invalid *base* is still fatal; there is nothing
+    /// safe to fall back to.
+    pub async fn open(
+        base_path: impl AsRef<Path>,
+        backend: Box<dyn OverrideBackend>,
+    ) -> Result<(Self, LoadOutcome)> {
         let base_path = base_path.as_ref();
         let raw = std::fs::read_to_string(base_path).map_err(|source| Error::Read {
             path: base_path.to_path_buf(),
             source,
         })?;
         let base: toml::Table = toml::from_str(&raw)?;
-
-        // The base alone must be valid — that one *is* fatal.
         let base_config = deserialize_validated(&base)?;
 
         let mut outcome = LoadOutcome::Clean;
-        let mut overrides = toml::Table::new();
+        let mut state = StoredState::default();
         let mut current = Arc::new(base_config);
 
-        if let Some(dir) = &dir {
-            match read_overrides(dir) {
-                Ok(Some(found)) => match layer(&base, &found) {
-                    Ok(config) => {
-                        overrides = found;
-                        current = Arc::new(config);
-                    }
-                    Err(e) => outcome = LoadOutcome::OverridesRejected(e.to_string()),
-                },
-                Ok(None) => {}
-                Err(e) => outcome = LoadOutcome::OverridesUnreadable(e.to_string()),
-            }
+        match backend.load().await {
+            Ok(Some(stored)) => match layer(&base, &stored.overrides) {
+                Ok(config) => {
+                    state = stored;
+                    current = Arc::new(config);
+                }
+                Err(e) => outcome = LoadOutcome::OverridesRejected(e.to_string()),
+            },
+            Ok(None) => {}
+            Err(e) => outcome = LoadOutcome::BackendUnavailable(e),
         }
-
-        // A damaged journal costs history, not config — the override
-        // document is the source of truth for what's in force.
-        let revisions = dir
-            .as_ref()
-            .map(|dir| read_revisions(dir))
-            .transpose()
-            .unwrap_or_else(|e| {
-                tracing_unavailable(&format!("could not read config revisions: {e}"));
-                None
-            })
-            .flatten()
-            .unwrap_or_default();
 
         Ok((
             Self {
                 base,
-                dir,
+                backend,
+                write_lock: tokio::sync::Mutex::new(()),
                 inner: RwLock::new(Inner {
-                    overrides,
+                    overrides: state.overrides,
                     current,
-                    revisions,
+                    revisions: state.revisions,
                 }),
             },
             outcome,
         ))
     }
 
-    /// Build a store from TOML text with no backing directory. Writes
-    /// apply in memory only.
+    /// A store over a directory of TOML files.
+    pub async fn open_with_dir(
+        base_path: impl AsRef<Path>,
+        dir: impl Into<std::path::PathBuf>,
+    ) -> Result<(Self, LoadOutcome)> {
+        Self::open(base_path, Box::new(FileBackend::new(dir))).await
+    }
+
+    /// A store whose writes apply but are never persisted.
+    pub async fn open_in_memory(base_path: impl AsRef<Path>) -> Result<(Self, LoadOutcome)> {
+        Self::open(base_path, Box::new(MemoryBackend::new())).await
+    }
+
+    /// Build a store from TOML text, backed by memory. Writes apply and
+    /// are lost on drop.
     pub fn from_str_in_memory(base_toml: &str) -> Result<Self> {
         let base: toml::Table = toml::from_str(base_toml)?;
         let config = deserialize_validated(&base)?;
         Ok(Self {
             base,
-            dir: None,
+            backend: Box::new(MemoryBackend::new()),
+            write_lock: tokio::sync::Mutex::new(()),
             inner: RwLock::new(Inner {
                 overrides: toml::Table::new(),
                 current: Arc::new(config),
                 revisions: Vec::new(),
             }),
         })
+    }
+
+    /// Replace the in-memory state with `state`, validating first.
+    ///
+    /// For the case where a backend was unreachable at startup and has
+    /// since come back. Without it, a pod that restarted during a
+    /// database failover would run on base defaults for the rest of its
+    /// life, silently ignoring everything the user had tuned.
+    ///
+    /// Does not write back — the state came *from* the backend.
+    pub fn adopt(&self, state: StoredState) -> Result<()> {
+        let config = layer(&self.base, &state.overrides)?;
+        let mut guard = self.write();
+        guard.overrides = state.overrides;
+        guard.current = Arc::new(config);
+        guard.revisions = state.revisions;
+        Ok(())
+    }
+
+    /// Re-read the backend and adopt what it holds.
+    ///
+    /// Returns whether anything was found. Used by the retry loop that
+    /// runs when the backend was unavailable at startup.
+    pub async fn reload(&self) -> Result<bool> {
+        let loaded = self.backend.load().await.map_err(|reason| Error::Backend {
+            backend: self.backend.describe(),
+            reason,
+        })?;
+        match loaded {
+            Some(state) => {
+                self.adopt(state)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// The effective config right now.
@@ -181,38 +216,33 @@ impl ConfigStore {
         layer_table(&self.base, &self.read().overrides)
     }
 
-    /// Whether writes survive a restart. False when the store has no
-    /// directory, e.g. a deployment with no writable volume.
+    /// Whether writes outlive the process.
     pub fn is_persistent(&self) -> bool {
-        self.dir.is_some()
+        self.backend.is_persistent()
     }
 
-    /// Merge `patch` into the overrides, validate, and swap the snapshot.
+    /// Human-readable description of where state is kept, for logs.
+    pub fn backend_description(&self) -> String {
+        self.backend.describe()
+    }
+
+    /// Merge `patch` into the overrides, validate, persist, and swap the
+    /// snapshot.
     ///
     /// The returned [`Applied`] carries the per-value diff, so a caller
     /// can report *what actually changed* rather than echoing back what
-    /// it asked for — the difference between a confirmation and a
-    /// no-op nobody noticed. On any error the store is untouched.
-    pub fn apply(&self, patch: &toml::Table, source: ChangeSource) -> Result<Applied> {
+    /// it asked for — the difference between a confirmation and a no-op
+    /// nobody noticed. On any error the store is untouched.
+    pub async fn apply(&self, patch: &toml::Table, source: ChangeSource) -> Result<Applied> {
         if patch.is_empty() {
             return Ok(Applied::empty());
         }
-        let mut guard = self.write();
-        let mut next = guard.overrides.clone();
-        merge(&mut next, patch);
-        self.commit(&mut guard, next, source, |before, after| {
-            // Diff against the *effective* config, not the override
-            // document: "from" should be the value the user actually had,
-            // whether it came from the base or an earlier override.
-            flatten(patch)
-                .into_iter()
-                .map(|(path, to)| Change {
-                    from: lookup(before, &path).cloned(),
-                    to: lookup(after, &path).cloned().unwrap_or(to),
-                    path,
-                })
-                .collect()
+        self.commit(source, |overrides| {
+            let mut next = overrides.clone();
+            merge(&mut next, patch);
+            (next, flatten(patch).into_iter().map(|(p, _)| p).collect())
         })
+        .await
     }
 
     /// Drop the override for a dotted path, returning that value to
@@ -221,21 +251,13 @@ impl ConfigStore {
     /// Removing a key that isn't overridden is not an error — the end
     /// state is what the caller asked for either way — but it is also not
     /// a revision, since nothing changed.
-    pub fn reset(&self, path: &str, source: ChangeSource) -> Result<Applied> {
-        let mut guard = self.write();
-        let mut next = guard.overrides.clone();
-        if !remove_path(&mut next, path) {
-            return Ok(Applied::empty());
-        }
-        self.commit(&mut guard, next, source, |before, after| {
-            vec![Change {
-                from: lookup(before, path).cloned(),
-                to: lookup(after, path)
-                    .cloned()
-                    .unwrap_or(toml::Value::String(String::new())),
-                path: path.to_string(),
-            }]
+    pub async fn reset(&self, path: &str, source: ChangeSource) -> Result<Applied> {
+        self.commit(source, |overrides| {
+            let mut next = overrides.clone();
+            remove_path(&mut next, path);
+            (next, vec![path.to_string()])
         })
+        .await
     }
 
     /// Undo the most recent change, restoring the override document as it
@@ -244,47 +266,42 @@ impl ConfigStore {
     /// Returns `None` when there is nothing to undo. Undo is a pop, not a
     /// new revision: undoing twice walks two changes back rather than
     /// oscillating between two states.
-    pub fn undo(&self) -> Result<Option<Applied>> {
-        let mut guard = self.write();
-        let Some(last) = guard.revisions.last().cloned() else {
+    pub async fn undo(&self) -> Result<Option<Applied>> {
+        let _write = self.write_lock.lock().await;
+        let (overrides, revisions) = self.snapshot();
+        let Some(last) = revisions.last().cloned() else {
             return Ok(None);
         };
-        let restored = last.overrides_before.clone();
-        let before = layer_table(&self.base, &guard.overrides);
-        let after = layer_table(&self.base, &restored);
-        let config = layer(&self.base, &restored)?;
 
-        let mut revisions = guard.revisions.clone();
-        revisions.pop();
-        if let Some(dir) = &self.dir {
-            write_overrides(dir, &restored)?;
-            write_revisions(dir, &revisions)?;
-        }
+        let restored = last.overrides_before.clone();
+        let config = layer(&self.base, &restored)?;
+        let before = layer_table(&self.base, &overrides);
+        let after = layer_table(&self.base, &restored);
+
+        let mut remaining = revisions;
+        remaining.pop();
+        self.persist(&restored, &remaining).await?;
 
         // The diff of an undo is the inverse of the revision it removes.
-        let changes = last
+        let changes: Vec<Change> = last
             .changed_paths
             .iter()
-            .filter_map(|path| {
-                Some(Change {
-                    path: path.clone(),
-                    from: lookup(&before, path).cloned(),
-                    to: lookup(&after, path).cloned()?,
-                })
+            .map(|path| Change {
+                path: path.clone(),
+                from: lookup(&before, path).cloned(),
+                to: lookup(&after, path)
+                    .cloned()
+                    .unwrap_or(toml::Value::String(String::new())),
             })
             .collect();
 
+        let mut guard = self.write();
         guard.overrides = restored;
         guard.current = Arc::new(config);
-        guard.revisions = revisions;
+        guard.revisions = remaining;
         Ok(Some(Applied {
             revision: last.id,
-            sections: last
-                .changed_paths
-                .iter()
-                .filter_map(|p| p.split('.').next())
-                .map(SectionChange::new)
-                .collect(),
+            sections: sections_of(&changes),
             changes,
         }))
     }
@@ -294,28 +311,44 @@ impl ConfigStore {
         self.read().revisions.clone()
     }
 
-    /// Validate `next`, persist it, swap the snapshot, and journal the
-    /// change. The single place any write becomes visible.
+    /// The single place any write becomes visible.
     ///
-    /// `diff` is handed the effective config table before and after, so
-    /// each caller describes its own change without duplicating the
-    /// commit sequence.
-    fn commit(
+    /// `next` produces the new override document and the paths it claims
+    /// to touch; everything after — validating, diffing, journalling,
+    /// persisting, swapping — is identical for every caller.
+    ///
+    /// Ordering is deliberate: **persist before swapping**. A write that
+    /// reached memory but not durable storage would silently revert on
+    /// the next restart, which is worse than refusing it outright.
+    async fn commit(
         &self,
-        guard: &mut std::sync::RwLockWriteGuard<'_, Inner>,
-        next: toml::Table,
         source: ChangeSource,
-        diff: impl FnOnce(&toml::Table, &toml::Table) -> Vec<Change>,
+        next: impl FnOnce(&toml::Table) -> (toml::Table, Vec<String>),
     ) -> Result<Applied> {
+        // Serialises writers across the await below. Without it, two
+        // concurrent writes would each validate against a document the
+        // other was about to replace, and the loser's change would vanish
+        // with no error anywhere.
+        let _write = self.write_lock.lock().await;
+        let (overrides, revisions) = self.snapshot();
+
+        let (next, paths) = next(&overrides);
         // Validate against the *base*, not the running config: the
         // override document is the whole delta, so this is what a fresh
         // boot would produce.
         let config = layer(&self.base, &next)?;
 
-        let before = layer_table(&self.base, &guard.overrides);
+        let before = layer_table(&self.base, &overrides);
         let after = layer_table(&self.base, &next);
-        let changes: Vec<Change> = diff(&before, &after)
+        let changes: Vec<Change> = paths
             .into_iter()
+            .map(|path| Change {
+                from: lookup(&before, &path).cloned(),
+                to: lookup(&after, &path)
+                    .cloned()
+                    .unwrap_or(toml::Value::String(String::new())),
+                path,
+            })
             .filter(|c| c.from.as_ref() != Some(&c.to))
             .collect();
         if changes.is_empty() {
@@ -324,7 +357,7 @@ impl ConfigStore {
             return Ok(Applied::empty());
         }
 
-        let mut revisions = guard.revisions.clone();
+        let mut revisions = revisions;
         let id = revisions.last().map_or(1, |r| r.id + 1);
         revisions.push(Revision {
             id,
@@ -332,36 +365,47 @@ impl ConfigStore {
             source,
             summary: summarize(&changes),
             changed_paths: changes.iter().map(|c| c.path.clone()).collect(),
-            overrides_before: guard.overrides.clone(),
+            overrides_before: overrides,
         });
         if revisions.len() > MAX_REVISIONS {
             revisions.remove(0);
         }
 
-        // Persist before swapping. A write that reaches memory but not
-        // disk would silently revert on the next restart, which is worse
-        // than refusing it.
-        if let Some(dir) = &self.dir {
-            write_overrides(dir, &next)?;
-            write_revisions(dir, &revisions)?;
-        }
+        self.persist(&next, &revisions).await?;
 
+        let mut guard = self.write();
         guard.overrides = next;
         guard.current = Arc::new(config);
         guard.revisions = revisions;
-
-        let mut sections: Vec<SectionChange> = Vec::new();
-        for change in &changes {
-            let section = change.path.split('.').next().unwrap_or(&change.path);
-            if !sections.iter().any(|s| s.section == section) {
-                sections.push(SectionChange::new(section));
-            }
-        }
         Ok(Applied {
             revision: id,
+            sections: sections_of(&changes),
             changes,
-            sections,
         })
+    }
+
+    /// Hand the whole state to the backend.
+    ///
+    /// Always a full replacement rather than an incremental edit, which
+    /// makes the write idempotent: a retry after a dropped connection — a
+    /// Postgres failover, say — cannot apply anything twice.
+    async fn persist(&self, overrides: &toml::Table, revisions: &[Revision]) -> Result<()> {
+        let state = StoredState {
+            overrides: overrides.clone(),
+            revisions: revisions.to_vec(),
+        };
+        self.backend
+            .save(&state)
+            .await
+            .map_err(|reason| Error::Backend {
+                backend: self.backend.describe(),
+                reason,
+            })
+    }
+
+    fn snapshot(&self) -> (toml::Table, Vec<Revision>) {
+        let guard = self.read();
+        (guard.overrides.clone(), guard.revisions.clone())
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Inner> {
@@ -473,8 +517,11 @@ pub enum LoadOutcome {
     Clean,
     /// Overrides parsed but produced an invalid config; base used alone.
     OverridesRejected(String),
-    /// Overrides could not be read or parsed; base used alone.
-    OverridesUnreadable(String),
+    /// The backend could not be reached, or its content could not be
+    /// parsed; base used alone. Distinct from `OverridesRejected`: the
+    /// stored document may be perfectly good and merely out of reach,
+    /// which is transient and worth retrying.
+    BackendUnavailable(String),
 }
 
 impl LoadOutcome {
@@ -609,82 +656,24 @@ fn deserialize_validated(table: &toml::Table) -> Result<Config> {
     Ok(config)
 }
 
-fn read_overrides(dir: &Path) -> Result<Option<toml::Table>> {
-    let path = dir.join(OVERRIDES_FILE);
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => Ok(Some(toml::from_str(&raw)?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(Error::Read { path, source }),
-    }
-}
-
-/// Write the override document via a temp file + rename, so a crash
-/// mid-write can't leave a half-parsed file that fails the next boot.
-fn write_overrides(dir: &Path, overrides: &toml::Table) -> Result<()> {
-    let body = toml::to_string_pretty(overrides).map_err(|e| Error::InvalidSection {
-        section: "overrides",
-        reason: format!("could not serialize the override document: {e}"),
-    })?;
-    write_atomically(dir, OVERRIDES_FILE, &body)
-}
-
-fn write_atomically(dir: &Path, name: &str, body: &str) -> Result<()> {
-    std::fs::create_dir_all(dir).map_err(|source| Error::Read {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let path = dir.join(name);
-    let tmp = dir.join(format!("{name}.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, body).map_err(|source| Error::Read {
-        path: tmp.clone(),
-        source,
-    })?;
-    std::fs::rename(&tmp, &path).map_err(|source| {
-        let _ = std::fs::remove_file(&tmp);
-        Error::Read { path, source }
-    })
-}
-
-/// The journal is stored as an array of tables so it stays readable and
-/// diffable by hand, like everything else in the config directory.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct RevisionFile {
-    #[serde(default, rename = "revision")]
-    revisions: Vec<Revision>,
-}
-
-fn read_revisions(dir: &Path) -> Result<Option<Vec<Revision>>> {
-    let path = dir.join(REVISIONS_FILE);
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => {
-            let file: RevisionFile = toml::from_str(&raw)?;
-            Ok(Some(file.revisions))
+/// Top-level sections touched by a set of changes, in first-seen order,
+/// each carrying whether the running process will pick it up.
+fn sections_of(changes: &[Change]) -> Vec<SectionChange> {
+    let mut sections: Vec<SectionChange> = Vec::new();
+    for change in changes {
+        let section = change.path.split('.').next().unwrap_or(&change.path);
+        if !sections.iter().any(|s| s.section == section) {
+            sections.push(SectionChange::new(section));
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(Error::Read { path, source }),
     }
-}
-
-fn write_revisions(dir: &Path, revisions: &[Revision]) -> Result<()> {
-    let file = RevisionFile {
-        revisions: revisions.to_vec(),
-    };
-    let body = toml::to_string_pretty(&file).map_err(|e| Error::InvalidSection {
-        section: "revisions",
-        reason: format!("could not serialize the revision journal: {e}"),
-    })?;
-    write_atomically(dir, REVISIONS_FILE, &body)
-}
-
-/// `niles-config` has no logging dependency, and a damaged journal is not
-/// worth adding one for — the caller still gets a working store.
-fn tracing_unavailable(message: &str) {
-    eprintln!("warning: {message}");
+    sections
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{OVERRIDES_FILE, REVISIONS_FILE};
+    use std::path::PathBuf;
 
     /// A minimal config that `validate()` accepts, used as the base in
     /// every test here.
@@ -696,27 +685,28 @@ mod tests {
         toml::from_str(s).expect("test patch parses")
     }
 
-    #[test]
-    fn without_overrides_the_base_is_the_effective_config() {
+    #[tokio::test]
+    async fn without_overrides_the_base_is_the_effective_config() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 100);
         assert!(store.overrides().is_empty());
     }
 
-    #[test]
-    fn apply_changes_the_effective_config() {
+    #[tokio::test]
+    async fn apply_changes_the_effective_config() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 85);
     }
 
-    #[test]
-    fn apply_leaves_untouched_keys_at_their_base_values() {
+    #[tokio::test]
+    async fn apply_leaves_untouched_keys_at_their_base_values() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         let before = store.current();
         store
@@ -724,6 +714,7 @@ mod tests {
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         let after = store.current();
         // Same section, different key: must survive the merge.
@@ -736,14 +727,15 @@ mod tests {
         assert_eq!(after.home.name, before.home.name);
     }
 
-    #[test]
-    fn overrides_hold_only_the_changed_values() {
+    #[tokio::test]
+    async fn overrides_hold_only_the_changed_values() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         let overrides = store.overrides();
         let lighting = overrides["lighting"].as_table().unwrap();
@@ -751,41 +743,46 @@ mod tests {
         assert_eq!(lighting["daytime_brightness"].as_integer(), Some(85));
     }
 
-    #[test]
-    fn successive_applies_accumulate() {
+    #[tokio::test]
+    async fn successive_applies_accumulate() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         store
             .apply(
                 &patch("[lighting]\nnight_floor_brightness = 5"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         let current = store.current();
         assert_eq!(current.lighting.daytime_brightness, 85);
         assert_eq!(current.lighting.night_floor_brightness, 5);
     }
 
-    #[test]
-    fn an_invalid_write_is_refused_and_changes_nothing() {
+    #[tokio::test]
+    async fn an_invalid_write_is_refused_and_changes_nothing() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
 
         // morning_start after morning_end — CurveConfig::validate rejects it.
-        let err = store.apply(
-            &patch("[lighting]\nmorning_start = \"09:00\""),
-            ChangeSource::Api,
-        );
+        let err = store
+            .apply(
+                &patch("[lighting]\nmorning_start = \"09:00\""),
+                ChangeSource::Api,
+            )
+            .await;
         assert!(err.is_err(), "invalid config must be refused");
 
         // The earlier, valid override is still in force.
@@ -800,8 +797,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reset_returns_a_value_to_the_base() {
+    #[tokio::test]
+    async fn reset_returns_a_value_to_the_base() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         let original = store.current().lighting.daytime_brightness;
         store
@@ -809,24 +806,28 @@ mod tests {
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         store
             .reset("lighting.daytime_brightness", ChangeSource::Api)
+            .await
             .unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, original);
     }
 
-    #[test]
-    fn reset_prunes_the_emptied_section() {
+    #[tokio::test]
+    async fn reset_prunes_the_emptied_section() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         store
             .reset("lighting.daytime_brightness", ChangeSource::Api)
+            .await
             .unwrap();
         assert!(
             store.overrides().is_empty(),
@@ -834,44 +835,47 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reset_of_an_unoverridden_path_is_a_no_op() {
+    #[tokio::test]
+    async fn reset_of_an_unoverridden_path_is_a_no_op() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .reset("lighting.daytime_brightness", ChangeSource::Api)
+            .await
             .unwrap();
         assert!(store.overrides().is_empty());
     }
 
-    #[test]
-    fn apply_reports_the_sections_it_touched() {
+    #[tokio::test]
+    async fn apply_reports_the_sections_it_touched() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         let changed = store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 85"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         assert_eq!(changed.sections.len(), 1);
         assert_eq!(changed.sections[0].section, "lighting");
         assert_eq!(changed.sections[0].reload, Reload::Hot);
     }
 
-    #[test]
-    fn apply_flags_a_section_the_running_process_wont_pick_up() {
+    #[tokio::test]
+    async fn apply_flags_a_section_the_running_process_wont_pick_up() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         let changed = store
             .apply(
                 &patch("[api]\nbind_address = \"0.0.0.0:9090\""),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         assert_eq!(changed.sections[0].reload, Reload::Boot);
         assert_eq!(changed.needs_restart(), vec!["api"]);
     }
 
-    #[test]
-    fn a_misspelled_key_is_refused_rather_than_silently_stored() {
+    #[tokio::test]
+    async fn a_misspelled_key_is_refused_rather_than_silently_stored() {
         // `deny_unknown_fields` is what catches this. Without the
         // round-trip through `Config`, a typo would sit in the override
         // document forever, doing nothing and explaining nothing.
@@ -881,33 +885,35 @@ mod tests {
                 &patch("[api]\nbnid_address = \"0.0.0.0:9090\""),
                 ChangeSource::Api,
             )
+            .await
             .expect_err("unknown key must be refused");
         assert!(err.to_string().contains("bnid_address"));
         assert!(store.overrides().is_empty());
     }
 
-    #[test]
-    fn an_empty_patch_is_a_no_op() {
+    #[tokio::test]
+    async fn an_empty_patch_is_a_no_op() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         assert!(
             store
                 .apply(&toml::Table::new(), ChangeSource::Api)
+                .await
                 .unwrap()
                 .is_noop()
         );
         assert!(store.overrides().is_empty());
     }
 
-    #[test]
-    fn in_memory_store_reports_that_writes_are_not_persisted() {
+    #[tokio::test]
+    async fn in_memory_store_reports_that_writes_are_not_persisted() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         assert!(!store.is_persistent());
     }
 
     // ---- diffs, no-ops and undo -------------------------------------------
 
-    #[test]
-    fn apply_reports_the_value_it_replaced() {
+    #[tokio::test]
+    async fn apply_reports_the_value_it_replaced() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         let applied = store
             .apply(
@@ -917,6 +923,7 @@ daytime_brightness = 85",
                 ),
                 ChangeSource::Voice,
             )
+            .await
             .unwrap();
         assert_eq!(applied.changes.len(), 1);
         let change = &applied.changes[0];
@@ -926,8 +933,8 @@ daytime_brightness = 85",
         assert_eq!(applied.summary(), "lighting.daytime_brightness 100 → 85");
     }
 
-    #[test]
-    fn a_nested_patch_reads_back_as_a_dotted_path() {
+    #[tokio::test]
+    async fn a_nested_patch_reads_back_as_a_dotted_path() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         let applied = store
             .apply(
@@ -937,14 +944,15 @@ sunset_start = \"22:00\"",
                 ),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         assert_eq!(applied.changes[0].path, "lighting.sunset_start");
         // Strings are spoken and logged, so they lose their quoting.
         assert_eq!(applied.summary(), "lighting.sunset_start 21:30 → 22:00");
     }
 
-    #[test]
-    fn setting_a_value_to_what_it_already_is_changes_nothing() {
+    #[tokio::test]
+    async fn setting_a_value_to_what_it_already_is_changes_nothing() {
         // Otherwise "set brightness to 100" when it is already 100 would
         // report success and fill the undo history with no-ops.
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
@@ -956,6 +964,7 @@ daytime_brightness = 100",
                 ),
                 ChangeSource::Voice,
             )
+            .await
             .unwrap();
         assert!(applied.is_noop());
         assert_eq!(applied.revision, 0);
@@ -963,8 +972,8 @@ daytime_brightness = 100",
         assert!(store.overrides().is_empty());
     }
 
-    #[test]
-    fn each_accepted_write_becomes_a_revision() {
+    #[tokio::test]
+    async fn each_accepted_write_becomes_a_revision() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
@@ -974,6 +983,7 @@ daytime_brightness = 85",
                 ),
                 ChangeSource::Voice,
             )
+            .await
             .unwrap();
         store
             .apply(
@@ -983,6 +993,7 @@ night_floor_brightness = 5",
                 ),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         let history = store.history();
         assert_eq!(history.len(), 2);
@@ -993,21 +1004,23 @@ night_floor_brightness = 5",
         assert_eq!(history[1].summary, "lighting.night_floor_brightness 15 → 5");
     }
 
-    #[test]
-    fn a_refused_write_is_not_journalled() {
+    #[tokio::test]
+    async fn a_refused_write_is_not_journalled() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
-        let _ = store.apply(
-            &patch(
-                "[lighting]
+        let _ = store
+            .apply(
+                &patch(
+                    "[lighting]
 morning_start = \"09:00\"",
-            ),
-            ChangeSource::Voice,
-        );
+                ),
+                ChangeSource::Voice,
+            )
+            .await;
         assert!(store.history().is_empty());
     }
 
-    #[test]
-    fn undo_restores_the_previous_value() {
+    #[tokio::test]
+    async fn undo_restores_the_previous_value() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
@@ -1017,16 +1030,17 @@ daytime_brightness = 85",
                 ),
                 ChangeSource::Voice,
             )
+            .await
             .unwrap();
-        let undone = store.undo().unwrap().expect("something to undo");
+        let undone = store.undo().await.unwrap().expect("something to undo");
         assert_eq!(store.current().lighting.daytime_brightness, 100);
         assert_eq!(undone.changes[0].from, Some(toml::Value::Integer(85)));
         assert_eq!(undone.changes[0].to, toml::Value::Integer(100));
         assert!(store.history().is_empty(), "undo pops the revision");
     }
 
-    #[test]
-    fn undo_walks_back_one_change_at_a_time() {
+    #[tokio::test]
+    async fn undo_walks_back_one_change_at_a_time() {
         // Not an oscillation between two states: undoing twice should
         // land on the original, not back on the first change.
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
@@ -1038,6 +1052,7 @@ daytime_brightness = 85",
                 ),
                 ChangeSource::Voice,
             )
+            .await
             .unwrap();
         store
             .apply(
@@ -1047,22 +1062,26 @@ daytime_brightness = 70",
                 ),
                 ChangeSource::Voice,
             )
+            .await
             .unwrap();
-        store.undo().unwrap();
+        store.undo().await.unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 85);
-        store.undo().unwrap();
+        store.undo().await.unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 100);
-        assert!(store.undo().unwrap().is_none(), "nothing left to undo");
+        assert!(
+            store.undo().await.unwrap().is_none(),
+            "nothing left to undo"
+        );
     }
 
-    #[test]
-    fn undo_of_nothing_is_none_rather_than_an_error() {
+    #[tokio::test]
+    async fn undo_of_nothing_is_none_rather_than_an_error() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
-        assert!(store.undo().unwrap().is_none());
+        assert!(store.undo().await.unwrap().is_none());
     }
 
-    #[test]
-    fn reset_is_journalled_and_undoable() {
+    #[tokio::test]
+    async fn reset_is_journalled_and_undoable() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
             .apply(
@@ -1072,12 +1091,14 @@ daytime_brightness = 85",
                 ),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
         store
             .reset("lighting.daytime_brightness", ChangeSource::Api)
+            .await
             .unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 100);
-        store.undo().unwrap();
+        store.undo().await.unwrap();
         assert_eq!(
             store.current().lighting.daytime_brightness,
             85,
@@ -1085,8 +1106,8 @@ daytime_brightness = 85",
         );
     }
 
-    #[test]
-    fn history_is_capped() {
+    #[tokio::test]
+    async fn history_is_capped() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         for n in 0..(MAX_REVISIONS + 10) {
             let value = 20 + (n % 60);
@@ -1098,6 +1119,7 @@ daytime_brightness = {value}"
                     )),
                     ChangeSource::Api,
                 )
+                .await
                 .unwrap();
         }
         let history = store.history();
@@ -1117,44 +1139,50 @@ daytime_brightness = {value}"
         (tmp, base_path, dir)
     }
 
-    #[test]
-    fn open_without_an_override_file_uses_the_base() {
+    #[tokio::test]
+    async fn open_without_an_override_file_uses_the_base() {
         let (_tmp, base_path, dir) = on_disk();
-        let (store, outcome) = ConfigStore::open(&base_path, Some(dir)).unwrap();
+        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
         assert!(outcome.is_clean());
         assert_eq!(store.current().lighting.daytime_brightness, 100);
         assert!(store.is_persistent());
     }
 
-    #[test]
-    fn writes_survive_a_reopen() {
+    #[tokio::test]
+    async fn writes_survive_a_reopen() {
         let (_tmp, base_path, dir) = on_disk();
         {
-            let (store, _) = ConfigStore::open(&base_path, Some(dir.clone())).unwrap();
+            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
+                .await
+                .unwrap();
             store
                 .apply(
                     &patch("[lighting]\ndaytime_brightness = 72"),
                     ChangeSource::Api,
                 )
+                .await
                 .unwrap();
         }
-        let (reopened, outcome) = ConfigStore::open(&base_path, Some(dir)).unwrap();
+        let (reopened, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
         assert!(outcome.is_clean());
         assert_eq!(reopened.current().lighting.daytime_brightness, 72);
     }
 
-    #[test]
-    fn a_reopened_store_still_tracks_the_base_for_untouched_keys() {
+    #[tokio::test]
+    async fn a_reopened_store_still_tracks_the_base_for_untouched_keys() {
         // The override file holds only the delta, so a later change to
         // the ConfigMap must still flow through on the next boot.
         let (_tmp, base_path, dir) = on_disk();
         {
-            let (store, _) = ConfigStore::open(&base_path, Some(dir.clone())).unwrap();
+            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
+                .await
+                .unwrap();
             store
                 .apply(
                     &patch("[lighting]\ndaytime_brightness = 72"),
                     ChangeSource::Api,
                 )
+                .await
                 .unwrap();
         }
         // Simulate Flux reconciling a new base with a different floor.
@@ -1162,7 +1190,7 @@ daytime_brightness = {value}"
             base_toml().replace("night_floor_brightness = 15", "night_floor_brightness = 8");
         std::fs::write(&base_path, edited).unwrap();
 
-        let (reopened, _) = ConfigStore::open(&base_path, Some(dir)).unwrap();
+        let (reopened, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
         let current = reopened.current();
         assert_eq!(
             current.lighting.night_floor_brightness, 8,
@@ -1174,14 +1202,14 @@ daytime_brightness = {value}"
         );
     }
 
-    #[test]
-    fn unparseable_overrides_do_not_stop_the_boot() {
+    #[tokio::test]
+    async fn unparseable_overrides_do_not_stop_the_boot() {
         let (_tmp, base_path, dir) = on_disk();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(OVERRIDES_FILE), "this is not = = toml").unwrap();
 
-        let (store, outcome) = ConfigStore::open(&base_path, Some(dir)).unwrap();
-        assert!(matches!(outcome, LoadOutcome::OverridesUnreadable(_)));
+        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        assert!(matches!(outcome, LoadOutcome::BackendUnavailable(_)));
         assert_eq!(
             store.current().lighting.daytime_brightness,
             100,
@@ -1189,8 +1217,8 @@ daytime_brightness = {value}"
         );
     }
 
-    #[test]
-    fn overrides_that_fail_validation_do_not_stop_the_boot() {
+    #[tokio::test]
+    async fn overrides_that_fail_validation_do_not_stop_the_boot() {
         let (_tmp, base_path, dir) = on_disk();
         std::fs::create_dir_all(&dir).unwrap();
         // Parses fine, but inverts the morning ramp.
@@ -1200,54 +1228,63 @@ daytime_brightness = {value}"
         )
         .unwrap();
 
-        let (store, outcome) = ConfigStore::open(&base_path, Some(dir)).unwrap();
+        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
         assert!(matches!(outcome, LoadOutcome::OverridesRejected(_)));
         assert_eq!(store.current().lighting.morning_start, "05:45");
     }
 
-    #[test]
-    fn an_invalid_base_is_fatal() {
+    #[tokio::test]
+    async fn an_invalid_base_is_fatal() {
         // The override document is tuning; the base is the contract. A
         // broken base has no safe fallback to degrade to.
         let tmp = tempfile::TempDir::new().unwrap();
         let base_path = tmp.path().join("niles.toml");
         std::fs::write(&base_path, "[home]\nname = \"only this\"\n").unwrap();
-        assert!(ConfigStore::open(&base_path, None).is_err());
+        assert!(ConfigStore::open_in_memory(&base_path).await.is_err());
     }
 
-    #[test]
-    fn reset_is_persisted_too() {
+    #[tokio::test]
+    async fn reset_is_persisted_too() {
         let (_tmp, base_path, dir) = on_disk();
         {
-            let (store, _) = ConfigStore::open(&base_path, Some(dir.clone())).unwrap();
+            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
+                .await
+                .unwrap();
             store
                 .apply(
                     &patch("[lighting]\ndaytime_brightness = 72"),
                     ChangeSource::Api,
                 )
+                .await
                 .unwrap();
             store
                 .reset("lighting.daytime_brightness", ChangeSource::Api)
+                .await
                 .unwrap();
         }
-        let (reopened, _) = ConfigStore::open(&base_path, Some(dir)).unwrap();
+        let (reopened, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
         assert_eq!(reopened.current().lighting.daytime_brightness, 100);
     }
 
-    #[test]
-    fn a_refused_write_leaves_the_file_alone() {
+    #[tokio::test]
+    async fn a_refused_write_leaves_the_file_alone() {
         let (_tmp, base_path, dir) = on_disk();
-        let (store, _) = ConfigStore::open(&base_path, Some(dir.clone())).unwrap();
+        let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
+            .await
+            .unwrap();
         store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 72"),
                 ChangeSource::Api,
             )
+            .await
             .unwrap();
-        let _ = store.apply(
-            &patch("[lighting]\nmorning_start = \"09:00\""),
-            ChangeSource::Api,
-        );
+        let _ = store
+            .apply(
+                &patch("[lighting]\nmorning_start = \"09:00\""),
+                ChangeSource::Api,
+            )
+            .await;
 
         let raw = std::fs::read_to_string(dir.join(OVERRIDES_FILE)).unwrap();
         assert!(raw.contains("72"));
@@ -1257,11 +1294,13 @@ daytime_brightness = {value}"
         );
     }
 
-    #[test]
-    fn history_survives_a_reopen_and_can_still_be_undone() {
+    #[tokio::test]
+    async fn history_survives_a_reopen_and_can_still_be_undone() {
         let (_tmp, base_path, dir) = on_disk();
         {
-            let (store, _) = ConfigStore::open(&base_path, Some(dir.clone())).unwrap();
+            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
+                .await
+                .unwrap();
             store
                 .apply(
                     &patch(
@@ -1270,20 +1309,25 @@ daytime_brightness = 72",
                     ),
                     ChangeSource::Voice,
                 )
+                .await
                 .unwrap();
         }
-        let (reopened, _) = ConfigStore::open(&base_path, Some(dir)).unwrap();
+        let (reopened, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
         let history = reopened.history();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].source, ChangeSource::Voice);
         // The undo must work across the restart, not just in the session
         // that made the change.
-        reopened.undo().unwrap().expect("undoable after reopen");
+        reopened
+            .undo()
+            .await
+            .unwrap()
+            .expect("undoable after reopen");
         assert_eq!(reopened.current().lighting.daytime_brightness, 100);
     }
 
-    #[test]
-    fn a_damaged_journal_costs_history_not_config() {
+    #[tokio::test]
+    async fn a_damaged_journal_costs_history_not_config() {
         let (_tmp, base_path, dir) = on_disk();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1295,10 +1339,129 @@ daytime_brightness = 72
         .unwrap();
         std::fs::write(dir.join(REVISIONS_FILE), "not = = toml").unwrap();
 
-        let (store, outcome) = ConfigStore::open(&base_path, Some(dir)).unwrap();
+        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
         assert!(outcome.is_clean(), "the override document is still fine");
         assert_eq!(store.current().lighting.daytime_brightness, 72);
         assert!(store.history().is_empty());
+    }
+
+    // ---- an unreachable backend -------------------------------------------
+
+    /// A backend that is simply not there.
+    struct BrokenBackend;
+
+    #[async_trait::async_trait]
+    impl OverrideBackend for BrokenBackend {
+        async fn load(&self) -> std::result::Result<Option<StoredState>, String> {
+            Err("connection refused".into())
+        }
+        async fn save(&self, _: &StoredState) -> std::result::Result<(), String> {
+            Err("connection refused".into())
+        }
+        fn describe(&self) -> String {
+            "the broken backend".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_backend_does_not_stop_the_boot() {
+        let (_tmp, base_path, _dir) = on_disk();
+        let (store, outcome) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, LoadOutcome::BackendUnavailable(_)));
+        assert_eq!(
+            store.current().lighting.daytime_brightness,
+            100,
+            "runs on base config rather than refusing to start"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_to_an_unreachable_backend_fails_and_changes_nothing() {
+        // The alternative — applying in memory and hoping — would show the
+        // user a change that vanishes at the next restart.
+        let (_tmp, base_path, _dir) = on_disk();
+        let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+            .await
+            .unwrap();
+        let err = store
+            .apply(
+                &patch(
+                    "[lighting]
+daytime_brightness = 85",
+                ),
+                ChangeSource::Api,
+            )
+            .await
+            .expect_err("write must fail when it cannot be persisted");
+        assert!(err.to_string().contains("connection refused"));
+        assert_eq!(store.current().lighting.daytime_brightness, 100);
+        assert!(store.history().is_empty());
+    }
+
+    #[tokio::test]
+    async fn adopt_picks_up_state_that_arrives_late() {
+        // The repair path for a pod that started while its backend was
+        // down: without it the house runs on defaults until someone
+        // notices and restarts it.
+        let (_tmp, base_path, _dir) = on_disk();
+        let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+            .await
+            .unwrap();
+        store
+            .adopt(StoredState {
+                overrides: patch(
+                    "[lighting]
+daytime_brightness = 60",
+                ),
+                revisions: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(store.current().lighting.daytime_brightness, 60);
+    }
+
+    #[tokio::test]
+    async fn adopt_refuses_state_that_would_not_validate() {
+        let (_tmp, base_path, _dir) = on_disk();
+        let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .adopt(StoredState {
+                    overrides: patch(
+                        "[lighting]
+morning_start = \"09:00\""
+                    ),
+                    revisions: Vec::new(),
+                })
+                .is_err()
+        );
+        assert_eq!(store.current().lighting.morning_start, "05:45");
+    }
+
+    #[tokio::test]
+    async fn reload_adopts_what_the_backend_holds() {
+        let (_tmp, base_path, dir) = on_disk();
+        {
+            let (writer, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
+                .await
+                .unwrap();
+            writer
+                .apply(
+                    &patch(
+                        "[lighting]
+daytime_brightness = 42",
+                    ),
+                    ChangeSource::Api,
+                )
+                .await
+                .unwrap();
+        }
+        let (store, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        assert!(store.reload().await.unwrap());
+        assert_eq!(store.current().lighting.daytime_brightness, 42);
     }
 
     // ---- merge unit tests -------------------------------------------------

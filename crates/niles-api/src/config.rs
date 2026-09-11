@@ -137,7 +137,7 @@ pub async fn patch_config(
             );
         }
     };
-    match store.apply(&patch, ChangeSource::Api) {
+    match store.apply(&patch, ChangeSource::Api).await {
         Ok(applied) => applied_response(applied),
         // A rejected value is the caller's mistake, not a server fault,
         // and the message from `validate()` says which field and why.
@@ -152,7 +152,7 @@ pub async fn reset_config(State(state): State<AppState>, Path(path): Path<String
     let Some(store) = store(&state) else {
         return unconfigured();
     };
-    match store.reset(&path, ChangeSource::Api) {
+    match store.reset(&path, ChangeSource::Api).await {
         Ok(applied) => applied_response(applied),
         Err(e) => problem(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
     }
@@ -175,7 +175,7 @@ pub async fn undo_config(State(state): State<AppState>) -> Response {
     let Some(store) = store(&state) else {
         return unconfigured();
     };
-    match store.undo() {
+    match store.undo().await {
         Ok(Some(applied)) => applied_response(applied),
         Ok(None) => problem(StatusCode::NOT_FOUND, "no config changes to undo"),
         Err(e) => problem(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
