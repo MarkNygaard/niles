@@ -249,7 +249,7 @@ impl MemoryStore {
             .read(true)
             .write(true)
             .open(path)?;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(120); // DIAG
         loop {
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(file),
@@ -547,6 +547,62 @@ mod tests {
         assert_eq!(entries[0].text, "First entry.");
         assert_eq!(entries[1].text, "Second entry.");
         assert_eq!(entries[2].text, "Third entry.");
+    }
+
+    #[test]
+    fn diag_lock_timing() {
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(MemoryConfig {
+            directory: tmp.path().to_path_buf(),
+            user_char_limit: 100_000,
+            agent_char_limit: 100_000,
+        })
+        .unwrap();
+
+        // (a) Uncontended cost of one add, over 50 of them.
+        let t0 = Instant::now();
+        for i in 0..50 {
+            store.add(Target::User, &format!("serial-{i}")).unwrap();
+        }
+        let serial = t0.elapsed();
+
+        // (b) The same work the real test does, with a deadline wide
+        // enough that it completes instead of erroring.
+        let tmp2 = TempDir::new().unwrap();
+        let store2 = std::sync::Arc::new(
+            MemoryStore::open(MemoryConfig {
+                directory: tmp2.path().to_path_buf(),
+                user_char_limit: 100_000,
+                agent_char_limit: 100_000,
+            })
+            .unwrap(),
+        );
+        let t1 = Instant::now();
+        let mut handles = Vec::new();
+        for t in 0..10 {
+            let s = store2.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..20 {
+                    s.add(Target::User, &format!("thread-{t}-entry-{i}"))
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let concurrent = t1.elapsed();
+
+        panic!(
+            "DIAG cores={} serial_50={:?} ({:?}/op) concurrent_200={:?} ({:?}/op)",
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(0),
+            serial,
+            serial / 50,
+            concurrent,
+            concurrent / 200,
+        );
     }
 
     #[test]
