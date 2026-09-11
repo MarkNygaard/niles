@@ -40,8 +40,10 @@ fn outcome_to_identity(outcome: MatchOutcome, store: &EnrollmentStore) -> Option
 /// Trailing odd bytes are silently dropped.
 pub(crate) fn pcm_bytes_to_i16(bytes: &[u8]) -> Vec<i16> {
     bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c))
         .collect()
 }
 
