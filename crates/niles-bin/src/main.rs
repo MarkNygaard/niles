@@ -8,7 +8,7 @@ use niles_automations::{
     AutomationEngine, DeviceSink, Notifier, Priority as AutomationPriority, Rule,
 };
 use niles_capabilities::CapabilityLoader;
-use niles_config::Config;
+use niles_config::{Config, ConfigStore, LoadOutcome};
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
 use niles_history::{
     CommandEntry, CommandReader, CommandWriter, StateEntry, StateReader, StateWriter,
@@ -427,7 +427,14 @@ async fn connect_from_config(config_path: &Path) -> anyhow::Result<(Config, Mqtt
     let cfg = Config::load_from_path(config_path)
         .with_context(|| format!("loading config from {}", config_path.display()))?;
     cfg.validate().context("validating config")?;
+    let client = connect_with_config(&cfg).await?;
+    Ok((cfg, client))
+}
 
+/// Connect to the broker described by an already-loaded, already-validated
+/// config. Split out so `serve` can connect from a `ConfigStore` snapshot
+/// rather than re-reading the file.
+async fn connect_with_config(cfg: &Config) -> anyhow::Result<MqttClient> {
     let (username, password) = cfg
         .mqtt
         .resolve_credentials()
@@ -440,8 +447,7 @@ async fn connect_from_config(config_path: &Path) -> anyhow::Result<(Config, Mqtt
 
     let opts = MqttOptions::new(&cfg.mqtt.host, cfg.mqtt.port, &cfg.mqtt.client_id)
         .with_credentials(username, password);
-    let client = MqttClient::connect(opts);
-    Ok((cfg, client))
+    Ok(MqttClient::connect(opts))
 }
 
 async fn mqtt_tap(args: MqttTapArgs) -> anyhow::Result<()> {
@@ -3368,8 +3374,92 @@ fn build_automation_engine(
     )))
 }
 
+/// The typed lighting config the curve loop runs on, plus the snapshot it
+/// came from.
+///
+/// `[lighting]` is the one section a running Niles re-reads (see
+/// `niles_config::Reload`), so the loop has to notice when it changes.
+/// Deriving `CurveConfig` means parsing time strings and rebuilding the
+/// anchor list, which is wasteful once a second — so the snapshot pointer
+/// is compared first and the work happens only on an actual change.
+struct Lighting {
+    snapshot: Arc<Config>,
+    curve: niles_scheduler::CurveConfig,
+}
+
+impl Lighting {
+    fn derive(cfg: &Arc<Config>) -> anyhow::Result<Self> {
+        Ok(Self {
+            snapshot: Arc::clone(cfg),
+            curve: cfg
+                .lighting
+                .to_curve_config()
+                .context("converting [lighting] section to a CurveConfig")?,
+        })
+    }
+
+    /// Re-derive if the store has swapped in a new config. A store only
+    /// ever publishes validated snapshots, so a failure here would mean
+    /// `to_curve_config` disagreeing with `validate` — worth logging
+    /// rather than killing the loop, since the previous curve is still
+    /// perfectly usable.
+    fn refresh(&mut self, store: &ConfigStore) {
+        let snapshot = store.current();
+        if Arc::ptr_eq(&snapshot, &self.snapshot) {
+            return;
+        }
+        match snapshot.lighting.to_curve_config() {
+            Ok(curve) => {
+                self.snapshot = snapshot;
+                self.curve = curve;
+                tracing::info!("lighting curve reloaded from a config change");
+            }
+            Err(e) => {
+                tracing::error!(
+                    "new config passed validation but its [lighting] section would not convert ({e}); keeping the previous curve"
+                );
+                // Adopt the snapshot anyway: retrying the same broken
+                // conversion every tick would log forever.
+                self.snapshot = snapshot;
+            }
+        }
+    }
+}
+
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
+    // Where the override document lives is deliberately *not* itself
+    // overridable — it's how we find the overrides in the first place — so
+    // it comes from a plain read of the base file.
+    let store_dir = Config::load_from_path(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?
+        .persistence
+        .directory
+        .map(|dir| dir.join("config"));
+    let (store, outcome) = ConfigStore::open(&args.config, store_dir)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    let store = Arc::new(store);
+    // Never fatal: the base still loaded. But say it loudly — the user's
+    // tuning just silently reverted to file defaults.
+    match &outcome {
+        LoadOutcome::Clean => {}
+        LoadOutcome::OverridesRejected(why) => {
+            tracing::warn!("config overrides rejected, using base config alone: {why}");
+        }
+        LoadOutcome::OverridesUnreadable(why) => {
+            tracing::warn!("config overrides unreadable, using base config alone: {why}");
+        }
+        other => tracing::warn!("config overrides not applied ({other:?})"),
+    }
+
+    if !store.is_persistent() {
+        tracing::warn!(
+            "no [persistence] directory configured — config changes apply immediately \
+             but are lost on restart"
+        );
+    }
+
+    let cfg = store.current();
+    let mqtt_client = connect_with_config(&cfg).await?;
     let publisher = mqtt_client.publisher();
     let router = build_command_router(&cfg);
     let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
@@ -3388,10 +3478,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             cfg.home.timezone
         )
     })?;
-    let curve = cfg
-        .lighting
-        .to_curve_config()
-        .context("converting [lighting] section to a CurveConfig")?;
+    let mut lighting = Lighting::derive(&cfg)?;
     let morning_routine = cfg
         .lighting
         .morning_routine
@@ -3814,11 +3901,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 while let Ok(extra) = curve_nudge_rx.try_recv() {
                     last_published.remove(&extra);
                 }
+                lighting.refresh(&store);
                 run_curve_tick(
                     &registry,
                     &publisher,
                     &router,
-                    &curve,
+                    &lighting.curve,
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -3833,14 +3921,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                          being updated, so the curve would publish blindly. Bailing."
                     ));
                 }
+                lighting.refresh(&store);
                 if let Some(routine) = &morning_routine {
                     run_morning_routine_tick(
                         &registry,
                         &publisher,
                         &router,
                         routine,
-                        curve.morning_start,
-                        curve.morning_end,
+                        lighting.curve.morning_start,
+                        lighting.curve.morning_end,
                         tz,
                         args.dry_run,
                         &tracker,
@@ -3850,8 +3939,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 run_curve_tick(
                     &registry,
                     &publisher,
-                        &router,
-                    &curve,
+                    &router,
+                    &lighting.curve,
                     tz,
                     args.dry_run,
                     &mut last_published,

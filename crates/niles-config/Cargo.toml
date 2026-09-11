@@ -18,3 +18,6 @@ niles-recognition.workspace = true
 niles-notifications.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
