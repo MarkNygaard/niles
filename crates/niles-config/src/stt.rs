@@ -93,9 +93,6 @@ impl SttConfig {
     /// Read the API key from the env var named by `api_key_env`.
     /// Returns an `InvalidSection` error if it's unset.
     pub fn resolve_api_key(&self) -> Result<String> {
-        std::env::var(&self.api_key_env).map_err(|_| Error::InvalidSection {
-            section: "stt",
-            reason: format!("env var {} is not set", self.api_key_env),
-        })
+        crate::env::require_env("stt", &self.api_key_env)
     }
 }

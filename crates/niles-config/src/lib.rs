@@ -11,6 +11,7 @@ pub mod automations;
 pub mod backend;
 pub mod capabilities;
 pub mod database;
+mod env;
 pub mod error;
 pub mod history;
 pub mod home;

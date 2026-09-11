@@ -82,14 +82,8 @@ impl MqttConfig {
     /// named by `username_env` / `password_env`. Returns an
     /// `InvalidSection` error if either is unset.
     pub fn resolve_credentials(&self) -> Result<(String, String)> {
-        let username = std::env::var(&self.username_env).map_err(|_| Error::InvalidSection {
-            section: "mqtt",
-            reason: format!("env var {} is not set", self.username_env),
-        })?;
-        let password = std::env::var(&self.password_env).map_err(|_| Error::InvalidSection {
-            section: "mqtt",
-            reason: format!("env var {} is not set", self.password_env),
-        })?;
+        let username = crate::env::require_env("mqtt", &self.username_env)?;
+        let password = crate::env::require_env("mqtt", &self.password_env)?;
         Ok((username, password))
     }
 }

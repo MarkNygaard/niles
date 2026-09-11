@@ -107,10 +107,7 @@ fn validate_llm_fields(
 }
 
 fn resolve_api_key(api_key_env: &str, section: &'static str) -> Result<String> {
-    std::env::var(api_key_env).map_err(|_| Error::InvalidSection {
-        section,
-        reason: format!("env var {api_key_env} is not set"),
-    })
+    crate::env::require_env(section, api_key_env)
 }
 
 impl LlmConfig {

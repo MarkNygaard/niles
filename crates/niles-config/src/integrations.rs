@@ -82,9 +82,6 @@ impl LinearConfigDto {
     }
 
     pub fn resolve_api_key(&self) -> Result<String> {
-        std::env::var(&self.api_key_env).map_err(|_| Error::InvalidSection {
-            section: "integrations.linear",
-            reason: format!("env var {} is not set", self.api_key_env),
-        })
+        crate::env::require_env("integrations.linear", &self.api_key_env)
     }
 }

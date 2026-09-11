@@ -39,14 +39,8 @@ impl Default for TadoConfigDto {
 
 impl TadoConfigDto {
     pub fn resolve_env(&self) -> Result<(String, String)> {
-        let username = std::env::var(&self.username_env).map_err(|_| Error::InvalidSection {
-            section: "presence.tado",
-            reason: format!("env var {} not set", self.username_env),
-        })?;
-        let password = std::env::var(&self.password_env).map_err(|_| Error::InvalidSection {
-            section: "presence.tado",
-            reason: format!("env var {} not set", self.password_env),
-        })?;
+        let username = crate::env::require_env("presence.tado", &self.username_env)?;
+        let password = crate::env::require_env("presence.tado", &self.password_env)?;
         Ok((username, password))
     }
 }
