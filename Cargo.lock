@@ -1234,6 +1234,7 @@ dependencies = [
  "hex",
  "hmac",
  "http-body-util",
+ "niles-config",
  "niles-core",
  "niles-integration-linear",
  "niles-mqtt",
@@ -1243,6 +1244,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "tower",
  "tracing",
 ]

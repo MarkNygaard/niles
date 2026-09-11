@@ -3804,7 +3804,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         Arc::new(publisher.clone()) as Arc<dyn DevicePublisher>,
         z2m_prefix.clone(),
         bus.clone(),
-    );
+    )
+    .with_config_store(Some(store.clone()));
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(api_bind, api_state).await {
             tracing::error!("API server exited: {e}");
