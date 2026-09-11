@@ -241,7 +241,23 @@ impl MemoryStore {
         }
     }
 
-    /// Acquire an exclusive OS file lock with a ~5 s timeout.
+    /// Acquire an exclusive OS file lock, giving up after 30 s.
+    ///
+    /// Two constants matter here, and they answer different questions.
+    ///
+    /// The poll interval starts at 1 ms and doubles to a 10 ms ceiling.
+    /// The lock covers one read-modify-write — about 1.3 ms measured on a
+    /// CI runner — so the previous flat 50 ms interval left waiters
+    /// sleeping through a lock that had long since been released, and the
+    /// cost of that lands on every handoff.
+    ///
+    /// The deadline answers "is the holder wedged?", not "is this
+    /// contended?". 200 contended writes across 10 threads complete in
+    /// ~0.5 s on a CI runner, so the old 5 s budget was under an order of
+    /// magnitude of headroom over a burst that a stress test can produce
+    /// — close enough that CI intermittently reported [`Error::Locked`]
+    /// with nothing actually stuck. 30 s keeps the guard against a wedged
+    /// holder while putting a spurious timeout out of reach.
     fn lock_file(path: &Path) -> Result<File> {
         let file = OpenOptions::new()
             .create(true)
@@ -249,7 +265,8 @@ impl MemoryStore {
             .read(true)
             .write(true)
             .open(path)?;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut backoff = Duration::from_millis(1);
         loop {
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(file),
@@ -257,7 +274,8 @@ impl MemoryStore {
                     if Instant::now() > deadline {
                         return Err(Error::Locked);
                     }
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(Duration::from_millis(10));
                 }
                 Err(e) => return Err(Error::Io(e)),
             }
