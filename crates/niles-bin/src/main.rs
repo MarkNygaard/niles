@@ -3694,6 +3694,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
+    // Lets the user retune the curve by voice: "make the evenings
+    // brighter", "start the morning ramp half an hour later".
+    niles_tools::register_config_tools(&mut tools, store.clone());
 
     let command_writer = match &cfg.history.directory {
         Some(dir) => {
