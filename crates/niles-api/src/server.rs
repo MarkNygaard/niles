@@ -17,7 +17,17 @@ pub fn router(state: AppState) -> Router {
         .route("/devices", get(handlers::list_devices))
         .route("/rooms/{room}", get(handlers::devices_in_room))
         .route("/rooms/{room}/{device}", post(handlers::set_device))
-        .route("/events/stream", get(crate::events::events_stream));
+        .route("/events/stream", get(crate::events::events_stream))
+        .route(
+            "/config",
+            get(crate::config::get_config).patch(crate::config::patch_config),
+        )
+        .route("/config/history", get(crate::config::get_history))
+        .route("/config/undo", post(crate::config::undo_config))
+        .route(
+            "/config/{path}",
+            axum::routing::delete(crate::config::reset_config),
+        );
     if state.linear_webhook.is_some() {
         r = r.route("/webhooks/linear", post(crate::webhook::handle_linear));
     }

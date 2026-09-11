@@ -52,7 +52,7 @@ use serde::Deserialize;
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 use std::path::Path;
-pub use store::{ConfigStore, LoadOutcome, SectionChange};
+pub use store::{Applied, Change, ChangeSource, ConfigStore, LoadOutcome, Revision, SectionChange};
 pub use stt::SttConfig;
 pub use tts::TtsConfig;
 pub use web_search::WebSearchConfig;

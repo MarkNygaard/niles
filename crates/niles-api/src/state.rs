@@ -22,6 +22,9 @@ pub struct AppState {
     pub z2m_prefix: Arc<String>,
     pub event_bus: EventBus,
     pub linear_webhook: Option<Arc<LinearWebhookState>>,
+    /// Absent for subcommands that serve the device API without a config
+    /// store; the `/config` routes report that rather than 500ing.
+    pub config: Option<Arc<niles_config::ConfigStore>>,
 }
 
 impl AppState {
@@ -37,7 +40,13 @@ impl AppState {
             z2m_prefix,
             event_bus,
             linear_webhook: None,
+            config: None,
         }
+    }
+
+    pub fn with_config_store(mut self, store: Option<Arc<niles_config::ConfigStore>>) -> Self {
+        self.config = store;
+        self
     }
 
     pub fn with_linear_webhook(mut self, w: Option<Arc<LinearWebhookState>>) -> Self {

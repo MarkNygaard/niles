@@ -9,9 +9,17 @@
 //! GET  /rooms/{room}            -> JSON array of devices in that room
 //! POST /rooms/{room}/{device}   -> 202 Accepted (set light state)
 //! GET  /events/stream           -> WebSocket upgrade (live event stream)
+//! GET  /config                  -> effective config + overrides + reload info
+//! PATCH /config                 -> merge a partial config document
+//! DELETE /config/{path}         -> drop one override (dotted path)
+//! GET  /config/history          -> recorded changes, oldest first
+//! POST /config/undo             -> walk back one change
 //! POST /webhooks/linear         -> 200 OK (Linear webhook)
 //! ```
 
+pub mod config;
+#[cfg(test)]
+mod config_tests;
 pub mod dto;
 pub mod events;
 pub mod handlers;
