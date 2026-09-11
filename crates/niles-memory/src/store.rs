@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::scan;
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -242,6 +243,19 @@ impl MemoryStore {
     }
 
     /// Acquire an exclusive OS file lock with a ~5 s timeout.
+    ///
+    /// The lock is held for one read-modify-write — well under a
+    /// millisecond — so polling starts at 1 ms and doubles to a 10 ms
+    /// ceiling rather than sleeping through a lock that is already free.
+    ///
+    /// Each waiter also adds a fixed per-thread offset. `flock` grants no
+    /// fairness and keeps no queue, so waiters that retry on an identical
+    /// schedule wake in the same order every round and the one that wakes
+    /// last can lose every race — on a runner with fewer cores than
+    /// writers, long enough to exhaust the deadline and report
+    /// [`Error::Locked`] with no real deadlock in sight. Staggering the
+    /// schedules is what stops that, and the ceiling alone would not:
+    /// it would pull every waiter back into lockstep.
     fn lock_file(path: &Path) -> Result<File> {
         let file = OpenOptions::new()
             .create(true)
@@ -250,6 +264,8 @@ impl MemoryStore {
             .write(true)
             .open(path)?;
         let deadline = Instant::now() + Duration::from_secs(5);
+        let mut backoff = Duration::from_millis(1);
+        let stagger = thread_stagger();
         loop {
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(file),
@@ -257,7 +273,8 @@ impl MemoryStore {
                     if Instant::now() > deadline {
                         return Err(Error::Locked);
                     }
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(backoff + stagger);
+                    backoff = (backoff * 2).min(Duration::from_millis(10));
                 }
                 Err(e) => return Err(Error::Io(e)),
             }
@@ -314,6 +331,16 @@ impl MemoryStore {
 /// (`ERROR_LOCK_VIOLATION`) — sometimes 997 (`ERROR_IO_PENDING`)
 /// under async-style overlapped I/O. Without recognizing those, the
 /// retry loop bails on the first contention on Windows.
+/// A stable sub-millisecond offset, distinct per thread, added to every
+/// lock retry so concurrent waiters never poll on the same schedule.
+/// Derived from the thread id rather than a random source so a thread's
+/// wait pattern stays reproducible across runs.
+fn thread_stagger() -> Duration {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::thread::current().id().hash(&mut hasher);
+    Duration::from_micros(hasher.finish() % 900)
+}
+
 fn is_lock_contention(e: &std::io::Error) -> bool {
     if e.kind() == std::io::ErrorKind::WouldBlock {
         return true;
