@@ -22,6 +22,14 @@ niles-integration-linear.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+rust-embed = { workspace = true, optional = true }
+mime_guess = { workspace = true, optional = true }
+
+[features]
+# Embeds the built web UI (web/dist) into the binary. Off by default so
+# the ordinary `cargo build` needs no JavaScript toolchain; the container
+# image builds with it on.
+ui = ["dep:rust-embed", "dep:mime_guess"]
 
 [dev-dependencies]
 tower.workspace = true
