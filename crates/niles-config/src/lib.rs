@@ -10,6 +10,7 @@ pub mod api;
 pub mod automations;
 pub mod backend;
 pub mod capabilities;
+pub mod database;
 pub mod error;
 pub mod history;
 pub mod home;
@@ -37,6 +38,7 @@ pub use api::ApiConfig;
 pub use automations::{ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, TriggerDto};
 pub use backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
 pub use capabilities::CapabilitiesConfig;
+pub use database::DatabaseConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
@@ -181,6 +183,9 @@ pub struct Config {
     pub capabilities: CapabilitiesConfig,
     #[serde(default)]
     pub persistence: PersistenceConfig,
+    /// Optional. When present, config overrides live here instead of on
+    /// disk — see `niles-db`.
+    pub database: Option<DatabaseConfig>,
     #[serde(default)]
     pub recognition: RecognitionConfig,
     #[serde(default)]
@@ -254,6 +259,9 @@ impl Config {
         self.api.validate()?;
         self.capabilities.validate()?;
         self.persistence.validate()?;
+        if let Some(database) = &self.database {
+            database.validate()?;
+        }
         self.recognition.validate()?;
         self.satellites.validate()?;
         self.speakers.validate()?;
