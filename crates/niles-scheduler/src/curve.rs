@@ -29,9 +29,12 @@ impl WeekInstant {
     }
 }
 
-/// A recurring weekly window during which the lighting curve is
-/// suppressed — lights hold their last value rather than following the
-/// curve. May wrap across the week boundary (e.g. Saturday → Monday).
+/// A recurring weekly window during which the lighting curve is frozen:
+/// every evaluation inside the window returns the value the curve had at
+/// `start`, instead of following the clock. Lights therefore stay at the
+/// pause-start level — including lights switched on mid-window, which is
+/// the difference from simply leaving them alone. May wrap across the
+/// week boundary (e.g. Saturday → Monday). See [`effective_minute`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurvePause {
     pub start: WeekInstant,
@@ -79,8 +82,8 @@ pub struct CurveConfig {
     /// Must be non-empty; values are validated to be in the
     /// `1000..=10000` Kelvin range.
     pub color_temp_anchors: Vec<(MinuteOfDay, u16)>,
-    /// Optional recurring weekly window during which the curve is
-    /// suppressed (lights hold their last value). `None` = always active.
+    /// Optional recurring weekly window during which the curve freezes
+    /// at its `start` value. `None` = always follows the clock.
     pub pause: Option<CurvePause>,
 }
 
@@ -294,6 +297,20 @@ pub fn color_temp_at(config: &CurveConfig, time: MinuteOfDay) -> u16 {
         }
     }
     last.1 // unreachable for sorted anchors
+}
+
+/// The minute of day the curve should be evaluated at for `now`.
+///
+/// Outside a pause window this is just `now`'s own minute. Inside one
+/// the curve *freezes*: every evaluation returns the pause's start
+/// minute, so a light turned on mid-pause lands on the value the curve
+/// held when the pause began rather than keeping whatever level it was
+/// last left at.
+pub fn effective_minute(config: &CurveConfig, now: WeekInstant) -> MinuteOfDay {
+    match config.pause {
+        Some(pause) if pause.is_paused(now) => pause.start.minute,
+        _ => now.minute,
+    }
 }
 
 /// Linear interpolation between two brightness values.
@@ -687,5 +704,59 @@ mod tests {
         assert!(!pause.is_paused(wi(Weekday::Mon, 6, 0))); // exact end active
         assert!(!pause.is_paused(wi(Weekday::Sat, 17, 0)));
         assert!(!pause.is_paused(wi(Weekday::Wed, 12, 0)));
+    }
+
+    fn paused_cfg() -> CurveConfig {
+        CurveConfig {
+            pause: Some(CurvePause {
+                start: wi(Weekday::Fri, 12, 0),
+                end: wi(Weekday::Sun, 12, 0),
+            }),
+            ..cfg()
+        }
+    }
+
+    #[test]
+    fn effective_minute_is_now_without_a_pause() {
+        assert_eq!(effective_minute(&cfg(), wi(Weekday::Fri, 21, 0)), t(21, 0));
+    }
+
+    #[test]
+    fn effective_minute_is_now_outside_the_pause_window() {
+        assert_eq!(
+            effective_minute(&paused_cfg(), wi(Weekday::Thu, 21, 0)),
+            t(21, 0)
+        );
+        assert_eq!(
+            effective_minute(&paused_cfg(), wi(Weekday::Sun, 21, 0)),
+            t(21, 0)
+        );
+    }
+
+    #[test]
+    fn effective_minute_freezes_at_pause_start_during_the_window() {
+        // Friday evening and all weekend evaluate the curve as if it
+        // were still Friday noon.
+        for now in [
+            wi(Weekday::Fri, 12, 0),
+            wi(Weekday::Fri, 18, 30),
+            wi(Weekday::Sat, 3, 0),
+            wi(Weekday::Sun, 11, 59),
+        ] {
+            assert_eq!(effective_minute(&paused_cfg(), now), t(12, 0));
+        }
+    }
+
+    #[test]
+    fn frozen_curve_holds_the_pause_start_values() {
+        // The point of the freeze: Friday 22:00 is inside the sunset
+        // ramp, but while paused it reports the Friday-noon daytime
+        // values instead of dimming.
+        let paused = paused_cfg();
+        let held = effective_minute(&paused, wi(Weekday::Fri, 22, 0));
+        assert_eq!(brightness_at(&paused, held), paused.daytime_brightness);
+        assert_eq!(color_temp_at(&paused, held), 4500);
+        // Evaluated at the raw wall-clock minute it would be dimming.
+        assert!(brightness_at(&paused, t(22, 0)) < paused.daytime_brightness);
     }
 }

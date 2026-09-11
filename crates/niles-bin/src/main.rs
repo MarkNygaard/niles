@@ -29,7 +29,8 @@ use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig, EnrollmentStore};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant, brightness_at,
-    build_curve_target, classify_action, color_temp_at, routine_brightness_at, should_fire_today,
+    build_curve_target, classify_action, color_temp_at, effective_minute, routine_brightness_at,
+    should_fire_today,
 };
 use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
@@ -3431,6 +3432,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // last-seen on/off map — broadcast channels only deliver messages
     // sent after a receiver is bound.
     let state_writer = build_state_writer(&cfg)?;
+    // Off→on transitions spotted by the observer are forwarded here so the
+    // curve loop can re-assert the curve on the light straight away instead
+    // of leaving it at its restored level until the next tick.
+    let (curve_nudge_tx, mut curve_nudge_rx) = tokio::sync::mpsc::unbounded_channel::<DeviceId>();
     let observer_tracker = tracker.clone();
     let observer_claim_tracker = claim_tracker.clone();
     let observer_registry = registry.clone();
@@ -3465,7 +3470,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         loop {
             match bus_rx.recv().await {
                 Ok(Event::DeviceStateChanged { id, state }) => {
-                    observer_tracker.observe(&id, &state);
+                    if observer_tracker.observe(&id, &state) {
+                        // Turned on: ask the curve loop for an immediate pass.
+                        // A closed receiver just means we're shutting down.
+                        let _ = curve_nudge_tx.send(id.clone());
+                    }
                     // Mid-ramp off cancels the routine for the rest of today.
                     if state.on == Some(false) && observer_claim_tracker.is_claimed(&id) {
                         observer_claim_tracker.release(&id);
@@ -3796,6 +3805,27 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     index.retain(|_, addr| *addr != peer);
                 }
             }
+            Some(id) = curve_nudge_rx.recv() => {
+                // A light just came on. Drop its last-published entry so the
+                // tick can't mistake the stale target for "already applied",
+                // then run a pass immediately. Drain the queue first so a
+                // whole-room turn-on costs one pass, not one per light.
+                last_published.remove(&id);
+                while let Ok(extra) = curve_nudge_rx.try_recv() {
+                    last_published.remove(&extra);
+                }
+                run_curve_tick(
+                    &registry,
+                    &publisher,
+                    &router,
+                    &curve,
+                    tz,
+                    args.dry_run,
+                    &mut last_published,
+                    &tracker,
+                    &claim_tracker,
+                ).await;
+            }
             _ = ticker.tick() => {
                 if source_handle.is_finished() {
                     break Err(anyhow::anyhow!(
@@ -3869,14 +3899,16 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
         .context("converting [lighting] section to a CurveConfig")?;
 
     let registry = Arc::new(DeviceRegistry::new());
-    // Z2mSource requires an EventBus; nothing in this subcommand
-    // subscribes to events, so the bus is wired straight in and
-    // dropped once Z2mSource takes ownership.
+    // Subscribe before spawning the source: broadcast receivers only see
+    // messages sent after they bind, and we want every off→on transition
+    // from the first retained state onwards.
+    let bus = EventBus::default();
+    let mut bus_rx = bus.subscribe();
     let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
-        EventBus::default(),
+        bus,
         z2m_prefix.as_str(),
         ambient_set,
     );
@@ -3907,6 +3939,29 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     // curve to lights that are already on.
     loop {
         tokio::select! {
+            event = bus_rx.recv() => {
+                // Same idea as `serve`: a light that just came on gets the
+                // curve re-asserted immediately rather than at the next tick.
+                let Ok(Event::DeviceStateChanged { id, state }) = event else {
+                    continue;
+                };
+                if !tracker.observe(&id, &state) {
+                    continue;
+                }
+                last_published.remove(&id);
+                run_curve_tick(
+                    &registry,
+                    &publisher,
+                    &CommandRouter::z2m_only(&z2m_prefix),
+                    &curve,
+                    tz,
+                    args.dry_run,
+                    &mut last_published,
+                    &tracker,
+                    &claim_tracker,
+                )
+                .await;
+            }
             _ = ticker.tick() => {
                 if source_handle.is_finished() {
                     anyhow::bail!(
@@ -3958,21 +4013,21 @@ async fn run_curve_tick(
     let Some((minute_of_day, now)) = current_minute_of_day(tz) else {
         return;
     };
-    // Weekly pause window: hold the lights (don't publish) so e.g. weekend
-    // evenings stay bright. The morning routine is gated separately by
-    // fire_days, so this only affects the curve.
-    if let Some(pause) = &curve.pause {
-        let now_wi = WeekInstant::new(now.weekday(), minute_of_day);
-        if pause.is_paused(now_wi) {
-            tracing::debug!(
-                "curve paused at {minute_of_day} ({:?}) — holding",
-                now.weekday()
-            );
-            return;
-        }
+    // Weekly pause window: the curve freezes at the pause's start minute
+    // rather than going dark, so e.g. weekend evenings stay bright *and*
+    // a light switched on mid-pause still lands on the held value instead
+    // of whatever level it was last left at. The morning routine is gated
+    // separately by fire_days, so this only affects the curve.
+    let now_wi = WeekInstant::new(now.weekday(), minute_of_day);
+    let eval_minute = effective_minute(curve, now_wi);
+    if eval_minute != minute_of_day {
+        tracing::debug!(
+            "curve paused at {minute_of_day} ({:?}) — holding the {eval_minute} values",
+            now.weekday()
+        );
     }
-    let target_brightness = brightness_at(curve, minute_of_day);
-    let target_kelvin = color_temp_at(curve, minute_of_day);
+    let target_brightness = brightness_at(curve, eval_minute);
+    let target_kelvin = color_temp_at(curve, eval_minute);
     let curve_target = (target_brightness, target_kelvin);
 
     let mut publish_count = 0usize;

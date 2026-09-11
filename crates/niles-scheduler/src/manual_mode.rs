@@ -77,6 +77,10 @@ impl ManualModeTracker {
 
     /// Observe a state update and auto-clear the flag on off→on transitions.
     ///
+    /// Returns `true` exactly when this update was an off→on transition,
+    /// so the caller can re-assert the curve on the light immediately
+    /// instead of waiting for the next tick.
+    ///
     /// If `state.on` is `None` the observation is ignored — we only track
     /// the boolean on-state.  When `state.on` is `Some(new_on)`:
     ///
@@ -85,12 +89,16 @@ impl ManualModeTracker {
     ///   the manual-mode flag is cleared (off→on auto-clear).
     /// - In all `Some(new_on)` cases the last-seen value is updated.
     ///
+    /// The very first observation of a device (no `last_on` entry) is not
+    /// a transition: at startup every light reports its retained state,
+    /// and the driver's own tick covers those.
+    ///
     /// Lock ordering: `last_on` is always acquired before `flagged` so that
     /// any future code that needs both locks avoids deadlock.
-    pub fn observe(&self, id: &DeviceId, state: &DeviceState) {
+    pub fn observe(&self, id: &DeviceId, state: &DeviceState) -> bool {
         let new_on = match state.on {
             Some(v) => v,
-            None => return,
+            None => return false,
         };
 
         let prev = {
@@ -100,9 +108,11 @@ impl ManualModeTracker {
             prev
         };
 
-        if prev == Some(false) && new_on {
+        let turned_on = prev == Some(false) && new_on;
+        if turned_on {
             self.clear(id);
         }
+        turned_on
     }
 
     // ---- lock helpers -----------------------------------------------------
@@ -208,6 +218,20 @@ mod tests {
         assert!(t.is_flagged(&id));
         t.observe(&id, &on_state(true));
         assert!(t.is_flagged(&id));
+    }
+
+    #[test]
+    fn observe_reports_only_off_to_on_transitions() {
+        let t = ManualModeTracker::new();
+        let id = dev("light_h");
+        // First sighting is not a transition, in either direction.
+        assert!(!t.observe(&id, &on_state(true)));
+        assert!(!t.observe(&id, &on_state(true)));
+        assert!(!t.observe(&id, &on_state(false)));
+        assert!(t.observe(&id, &on_state(true)));
+        assert!(!t.observe(&id, &on_state(true)));
+        // A state carrying no on/off field tells us nothing.
+        assert!(!t.observe(&id, &DeviceState::default()));
     }
 
     #[test]
