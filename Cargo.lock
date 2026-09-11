@@ -1529,6 +1529,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "niles-capabilities",
+ "niles-config",
  "niles-core",
  "niles-history",
  "niles-integration-linear",
@@ -1547,6 +1548,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "toml",
  "tracing",
 ]
 
