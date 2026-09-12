@@ -176,6 +176,40 @@ pub fn section_reload(section: &str) -> Reload {
     }
 }
 
+/// Every section [`Config`] understands, whether or not the config file
+/// mentions it.
+///
+/// A section with no entry in the file still has a reload behaviour and
+/// can still be written to — so callers that enumerate sections must
+/// not enumerate the file. Reporting only what was present made an
+/// unset hot section read as needing a restart.
+pub const SECTIONS: &[&str] = &[
+    "home",
+    "mqtt",
+    "api",
+    "capabilities",
+    "persistence",
+    "database",
+    "recognition",
+    "satellites",
+    "speakers",
+    "ambient_lights",
+    "history",
+    "memory",
+    "notifications",
+    "presence",
+    "skills",
+    "web_search",
+    "wled",
+    "integrations",
+    "wyoming",
+    "stt",
+    "tts",
+    "llm",
+    "lighting",
+    "automation",
+];
+
 /// Top-level Niles configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

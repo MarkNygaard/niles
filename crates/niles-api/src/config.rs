@@ -88,9 +88,17 @@ pub async fn get_config(State(state): State<AppState>) -> Response {
     let effective = store.effective_table();
     let overrides = store.overrides();
 
-    let sections = effective
-        .keys()
-        .cloned()
+    // Every known section, not just the ones the file mentions: an
+    // unset section still has a reload behaviour, and reporting nothing
+    // for it made the UI call a hot section restart-only.
+    let mut names: std::collections::BTreeSet<String> = niles_config::SECTIONS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    names.extend(effective.keys().cloned());
+
+    let sections = names
+        .into_iter()
         .map(|name| SectionView {
             reload: match section_reload(&name) {
                 Reload::Hot => "hot",

@@ -357,9 +357,15 @@ export function App() {
                     )}
                     {section.overridden && <Badge>overridden</Badge>}
                   </div>
-                  <pre className="bg-muted/40 overflow-x-auto rounded-md p-3 text-xs">
-                    {JSON.stringify(view.effective[section.name], null, 2)}
-                  </pre>
+                  {view.effective[section.name] === undefined ? (
+                    <p className="text-muted-foreground text-xs">
+                      Not configured — Niles uses its defaults.
+                    </p>
+                  ) : (
+                    <pre className="bg-muted/40 overflow-x-auto rounded-md p-3 text-xs">
+                      {JSON.stringify(view.effective[section.name], null, 2)}
+                    </pre>
+                  )}
                 </div>
               ))}
             </CardContent>
