@@ -4,7 +4,14 @@ import { AmbientControls } from "@/components/AmbientControls";
 
 function setup(props: Partial<React.ComponentProps<typeof AmbientControls>> = {}) {
   const onChange = vi.fn();
-  render(<AmbientControls onChange={onChange} {...props} />);
+  render(
+    <AmbientControls
+      supportsRgb
+      supportsColorTemp
+      onChange={onChange}
+      {...props}
+    />,
+  );
   return { onChange };
 }
 
@@ -29,11 +36,25 @@ describe("AmbientControls", () => {
     ).toBeInTheDocument();
   });
 
-  it("leaves every control reachable while disabled is off", () => {
-    setup({ color: "#ff8000" });
-    for (const name of [/^Brightness/, /^Colour —/, /^Colour temperature/]) {
-      expect(screen.getByRole("button", { name })).toBeEnabled();
-    }
+  it("offers only what the chosen lights can act on", () => {
+    // A house of RGB strips has no use for a colour temperature, and
+    // offering one invites setting a value that goes nowhere.
+    setup({ supportsColorTemp: false });
+    expect(screen.getByRole("button", { name: /^Colour —/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Colour temperature/ })).toBeNull();
+  });
+
+  it("offers a colour temperature when a chosen light has no colour", () => {
+    setup({ supportsRgb: false });
+    expect(
+      screen.getByRole("button", { name: /^Colour temperature/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Colour —/ })).toBeNull();
+  });
+
+  it("always offers brightness, which every light has", () => {
+    setup({ supportsRgb: false, supportsColorTemp: false });
+    expect(screen.getByRole("button", { name: /^Brightness/ })).toBeInTheDocument();
   });
 
   it("disables the lot while a write is in flight", () => {

@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 import {
   Combobox,
   ComboboxChip,
@@ -10,9 +10,9 @@ import {
   ComboboxItem,
   ComboboxItemIndicator,
   ComboboxList,
-  ComboboxTrigger,
+  useComboboxAnchor,
 } from "@/components/ui/combobox";
-import { Check, ChevronDown, X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface DeviceOption {
@@ -24,6 +24,9 @@ export interface DeviceOption {
   room: string;
   /** Which integration it comes from. */
   source: string;
+  /** What it can be told to do; decides which ambient controls apply. */
+  supportsRgb: boolean;
+  supportsColorTemp: boolean;
 }
 
 export interface DevicePickerProps {
@@ -68,9 +71,7 @@ export function DevicePicker({
     return table;
   }, [options, value.join("|")]);
 
-  // The popup measures whatever it is anchored to; left alone that is
-  // the inner input, which is narrower than the box you see.
-  const anchor = useRef<HTMLDivElement | null>(null);
+  const anchor = useComboboxAnchor();
 
   const selected = value.map((device) => byId.get(device)!);
   const nameOf = (device: string) => {
@@ -119,9 +120,6 @@ export function DevicePicker({
           aria-label={ariaLabel}
           placeholder={value.length === 0 ? "Search lights…" : ""}
         />
-        <ComboboxTrigger aria-label="Show all lights">
-          <ChevronDown />
-        </ComboboxTrigger>
       </ComboboxChips>
 
       <ComboboxContent anchor={anchor}>
@@ -158,7 +156,14 @@ export function DevicePicker({
  */
 function unregistered(device: string): DeviceOption {
   // No room: the id is shown whole, and the dashed chip says the rest.
-  return { value: device, label: device, room: "", source: "" };
+  return {
+    value: device,
+    label: device,
+    room: "",
+    source: "",
+    supportsRgb: false,
+    supportsColorTemp: false,
+  };
 }
 
 /** Turn `GET /devices` into pickable options: lights, nicely named. */
@@ -169,6 +174,8 @@ export function deviceOptions(
     name: string;
     source: string;
     class: string;
+    supports_rgb?: boolean;
+    supports_color_temp?: boolean;
   }>,
 ): DeviceOption[] {
   return devices
@@ -178,6 +185,8 @@ export function deviceOptions(
       label: humanize(device.name),
       room: humanize(device.room),
       source: device.source,
+      supportsRgb: device.supports_rgb ?? false,
+      supportsColorTemp: device.supports_color_temp ?? false,
     }))
     .sort(
       (a, b) => a.room.localeCompare(b.room) || a.label.localeCompare(b.label),

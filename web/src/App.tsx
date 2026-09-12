@@ -218,6 +218,14 @@ export function App() {
     ? "Still asking Niles which lights it has…"
     : "Niles has no lights registered yet.";
 
+  // Only offer a control something can act on: a house of RGB strips
+  // has no use for a colour temperature, and offering one would invite
+  // setting a value that goes nowhere.
+  const chosen = new Set(
+    (valueAt(view.effective, "ambient_lights.devices") as string[] | undefined) ?? [],
+  );
+  const ambient = lights.filter((light) => chosen.has(light.value));
+
   function row({ label, description, settings: declared, joiner }: Row) {
     // The pickable lights come from the registry, which the page loads
     // separately — so they're attached here rather than in the static
@@ -333,6 +341,8 @@ export function App() {
                   </p>
                 </div>
                 <AmbientControls
+                  supportsRgb={ambient.some((light) => light.supportsRgb)}
+                  supportsColorTemp={ambient.some((light) => light.supportsColorTemp)}
                   brightness={numberAt(view.effective, "lighting.ambient_brightness")}
                   color={stringAt(view.effective, "lighting.ambient_color")}
                   kelvin={numberAt(view.effective, "lighting.ambient_kelvin")}

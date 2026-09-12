@@ -8,7 +8,9 @@
 use crate::Result;
 use crate::client::{Message, MqttClient};
 use crate::wled::{parse_c, parse_g, parse_status};
-use niles_core::{Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, EventBus};
+use niles_core::{
+    Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, EventBus, LightCapabilities,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -42,7 +44,13 @@ impl WledSource {
         // Upsert all configured devices first so state messages never race.
         let mut topic_index = HashMap::new();
         for (id, topic) in &self.devices {
-            let device = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
+            // A WLED strip is RGB by construction, and our command
+            // formatter has no colour-temperature path for one.
+            let device = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light)
+                .with_capabilities(LightCapabilities {
+                    color_temp: false,
+                    rgb: true,
+                });
             self.registry.upsert(device.clone());
             self.bus.publish(niles_core::Event::DeviceAdded { device });
 

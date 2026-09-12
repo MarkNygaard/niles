@@ -176,6 +176,21 @@ pub struct DeviceState {
     pub battery_percent: Option<u8>,
 }
 
+/// What a light can actually be told to do.
+///
+/// Taken from the source's own capability metadata — Z2M's
+/// `definition.exposes`, or what a WLED strip is by construction — not
+/// from what the device has happened to report. Inferring it from
+/// reported state is self-perpetuating: a strip sitting in white mode
+/// reports no colour, so nothing sends it one, so it never reports one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LightCapabilities {
+    /// Has a white channel that takes a colour temperature.
+    pub color_temp: bool,
+    /// Takes an arbitrary colour.
+    pub rgb: bool,
+}
+
 /// Classification of a device based on its upstream capabilities.
 ///
 /// Derived at registry-population time from Z2M's `definition.exposes`
@@ -198,12 +213,26 @@ pub struct Device {
     pub id: DeviceId,
     pub state: DeviceState,
     pub class: DeviceClass,
+    /// What the source says this device can be told to do. Defaults to
+    /// nothing; a source that knows fills it in.
+    pub capabilities: LightCapabilities,
 }
 
 impl Device {
     /// Construct a new device.
     pub fn new(id: DeviceId, state: DeviceState, class: DeviceClass) -> Self {
-        Self { id, state, class }
+        Self {
+            id,
+            state,
+            class,
+            capabilities: LightCapabilities::default(),
+        }
+    }
+
+    /// The same device, with what it can be told to do.
+    pub fn with_capabilities(mut self, capabilities: LightCapabilities) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     /// True if this device is classified as a light.
@@ -233,7 +262,12 @@ impl Device {
 
     /// True if this device reports a color temperature.
     pub fn supports_color_temperature(&self) -> bool {
-        self.state.color_temp_kelvin.is_some()
+        self.capabilities.color_temp
+    }
+
+    /// True if this device takes an arbitrary colour.
+    pub fn supports_rgb(&self) -> bool {
+        self.capabilities.rgb
     }
 }
 
@@ -397,10 +431,12 @@ mod tests {
     }
 
     #[test]
-    fn supports_color_temperature_checks_state_field() {
+    fn capabilities_come_from_the_source_not_from_reported_state() {
+        // Inferring from state is self-perpetuating: a strip in white
+        // mode reports no colour, so nothing sends it one, so it never
+        // reports one.
         let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
-
-        let with_ct = Device::new(
+        let reports_a_colour_temp = Device::new(
             id.clone(),
             DeviceState {
                 color_temp_kelvin: Some(2700),
@@ -408,16 +444,17 @@ mod tests {
             },
             DeviceClass::Light,
         );
-        assert!(with_ct.supports_color_temperature());
-
-        let without_ct = Device::new(
-            id,
-            DeviceState {
-                color_temp_kelvin: None,
-                ..Default::default()
-            },
-            DeviceClass::Light,
+        assert!(
+            !reports_a_colour_temp.supports_color_temperature(),
+            "reporting a value is not the same as declaring the channel"
         );
-        assert!(!without_ct.supports_color_temperature());
+
+        let declared = Device::new(id, DeviceState::default(), DeviceClass::Light)
+            .with_capabilities(LightCapabilities {
+                color_temp: true,
+                rgb: true,
+            });
+        assert!(declared.supports_color_temperature());
+        assert!(declared.supports_rgb());
     }
 }

@@ -11,7 +11,7 @@
 //! `serde(deny_unknown_fields)` is deliberately **not** used here —
 //! Z2M's schema evolves and we want forward compatibility.
 
-use niles_core::{Device, DeviceClass, DeviceId, DeviceState};
+use niles_core::{Device, DeviceClass, DeviceId, DeviceState, LightCapabilities};
 use serde::Deserialize;
 
 /// A single entry from `<prefix>/bridge/devices`.
@@ -130,7 +130,30 @@ impl Z2mDevice {
     /// valid `<room>/<device>` identifier.
     pub fn to_device(&self) -> crate::Result<Device> {
         let id = DeviceId::parse(&format!("z2m:{}", self.friendly_name))?;
-        Ok(Device::new(id, DeviceState::default(), self.classify()))
+        Ok(Device::new(id, DeviceState::default(), self.classify())
+            .with_capabilities(self.capabilities()))
+    }
+
+    /// What this device can be told to do, from the features Z2M
+    /// declares. Z2M names them `color_temp` for a white channel and
+    /// `color_xy` / `color_hs` for a colour one.
+    pub fn capabilities(&self) -> LightCapabilities {
+        let mut capabilities = LightCapabilities::default();
+        if let Some(definition) = &self.definition {
+            collect_capabilities(&definition.exposes, &mut capabilities);
+        }
+        capabilities
+    }
+}
+
+fn collect_capabilities(exposes: &[Z2mExpose], into: &mut LightCapabilities) {
+    for expose in exposes {
+        match expose.property.as_deref() {
+            Some("color_temp") => into.color_temp = true,
+            Some("color_xy" | "color_hs") => into.rgb = true,
+            _ => {}
+        }
+        collect_capabilities(&expose.features, into);
     }
 }
 

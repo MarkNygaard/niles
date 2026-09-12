@@ -9,6 +9,8 @@ const REGISTRY = [
     name: "desk_lamp",
     source: "z2m",
     class: "light",
+    supports_rgb: true,
+    supports_color_temp: true,
   },
   {
     id: "wled:living_room/tv_light",
@@ -16,6 +18,8 @@ const REGISTRY = [
     name: "tv_light",
     source: "wled",
     class: "light",
+    supports_rgb: true,
+    supports_color_temp: false,
   },
   {
     id: "z2m:office/switch",
@@ -23,6 +27,8 @@ const REGISTRY = [
     name: "switch",
     source: "z2m",
     class: "switch",
+    supports_rgb: false,
+    supports_color_temp: false,
   },
 ];
 

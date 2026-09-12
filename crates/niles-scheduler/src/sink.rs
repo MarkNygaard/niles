@@ -16,7 +16,7 @@
 //! Splitting it this way keeps the math testable in isolation and
 //! keeps `niles-scheduler` free of any async / I/O dependencies.
 
-use niles_core::DeviceState;
+use niles_core::{DeviceState, LightCapabilities};
 
 /// Don't bother publishing if the device is already within this
 /// many brightness points of the curve. Matches the curve test's
@@ -79,10 +79,17 @@ pub fn build_curve_target(
 /// forever.
 pub fn build_ambient_target(
     current: &DeviceState,
+    capabilities: LightCapabilities,
     brightness: Option<u8>,
     kelvin: Option<u16>,
     rgb: Option<[u8; 3]>,
 ) -> Option<DeviceState> {
+    // Each light takes the one it can actually act on. A strip with no
+    // white channel cannot use a colour temperature, and a bulb with no
+    // colour channel cannot use a colour — sending the wrong one is a
+    // command that quietly does nothing.
+    let rgb = rgb.filter(|_| capabilities.rgb);
+    let kelvin = kelvin.filter(|_| capabilities.color_temp && rgb.is_none());
     let brightness = match (brightness, current.brightness) {
         (Some(want), Some(cur)) if cur.abs_diff(want) <= BRIGHTNESS_DEBOUNCE => None,
         (want, _) => want,
@@ -110,6 +117,15 @@ pub fn build_ambient_target(
 mod tests {
     use super::*;
 
+    const RGB: LightCapabilities = LightCapabilities {
+        color_temp: true,
+        rgb: true,
+    };
+    const WHITE_ONLY: LightCapabilities = LightCapabilities {
+        color_temp: true,
+        rgb: false,
+    };
+
     fn state(brightness: Option<u8>, kelvin: Option<u16>) -> DeviceState {
         DeviceState {
             on: Some(true),
@@ -123,9 +139,14 @@ mod tests {
     fn ambient_sends_a_colour_a_light_has_never_reported() {
         // A strip in white mode reports no colour at all. Waiting for
         // it to report one before sending would wait forever.
-        let target =
-            build_ambient_target(&state(Some(40), None), Some(40), None, Some([255, 128, 0]))
-                .expect("should publish");
+        let target = build_ambient_target(
+            &state(Some(40), None),
+            RGB,
+            Some(40),
+            None,
+            Some([255, 128, 0]),
+        )
+        .expect("should publish");
         assert_eq!(target.rgb, Some([255, 128, 0]));
         assert_eq!(target.brightness, None, "already at 40");
     }
@@ -138,14 +159,47 @@ mod tests {
             rgb: Some([255, 128, 0]),
             ..Default::default()
         };
-        assert!(build_ambient_target(&current, Some(40), None, Some([255, 128, 0])).is_none());
+        assert!(build_ambient_target(&current, RGB, Some(40), None, Some([255, 128, 0])).is_none());
+    }
+
+    #[test]
+    fn a_white_only_light_gets_the_colour_temperature_instead() {
+        // Both are configured; each light takes the one it can use,
+        // rather than the whole house following whichever was set last.
+        let target = build_ambient_target(
+            &state(Some(40), Some(4000)),
+            WHITE_ONLY,
+            Some(40),
+            Some(2200),
+            Some([255, 128, 0]),
+        )
+        .expect("should publish");
+        assert_eq!(target.color_temp_kelvin, Some(2200));
+        assert_eq!(target.rgb, None, "it has no colour channel to send to");
+    }
+
+    #[test]
+    fn a_colour_light_gets_the_colour_and_not_both() {
+        let target = build_ambient_target(
+            &state(Some(40), Some(4000)),
+            RGB,
+            Some(40),
+            Some(2200),
+            Some([255, 128, 0]),
+        )
+        .expect("should publish");
+        assert_eq!(target.rgb, Some([255, 128, 0]));
+        assert_eq!(
+            target.color_temp_kelvin, None,
+            "a light is in one mode or the other"
+        );
     }
 
     #[test]
     fn ambient_leaves_unset_fields_alone() {
         // Brightness only: whatever colour it is showing stays.
         let target =
-            build_ambient_target(&state(Some(100), Some(2700)), Some(40), None, None).unwrap();
+            build_ambient_target(&state(Some(100), Some(2700)), RGB, Some(40), None, None).unwrap();
         assert_eq!(target.brightness, Some(40));
         assert_eq!(target.color_temp_kelvin, None);
         assert_eq!(target.rgb, None);

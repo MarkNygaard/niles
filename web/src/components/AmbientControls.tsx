@@ -14,10 +14,13 @@ import {
   SliderTrack,
   SliderValue,
 } from "@/components/ui/slider";
-import { ColorWheel, kelvinToCss, parseHex } from "@/components/ColorField";
+import { ColorWheel, parseHex } from "@/components/ColorField";
 import { cn } from "@/lib/utils";
 
 export interface AmbientControlsProps {
+  /** What the chosen ambient lights can be told to do. */
+  supportsRgb: boolean;
+  supportsColorTemp: boolean;
   brightness?: number;
   /** `#rrggbb`, or undefined when nothing is set. */
   color?: string;
@@ -40,17 +43,14 @@ const KELVIN_MAX = 6500;
  * for changing it rather than seeing it.
  */
 export function AmbientControls({
+  supportsRgb,
+  supportsColorTemp,
   brightness,
   color,
   kelvin,
   disabled,
   onChange,
 }: AmbientControlsProps) {
-  // Colour and colour temperature are two modes of one lamp, and the
-  // config resolves that by preferring colour. Saying so here is better
-  // than letting someone set a temperature that quietly does nothing.
-  const colorWins = color !== undefined;
-
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Control
@@ -71,9 +71,10 @@ export function AmbientControls({
         />
       </Control>
 
+      {supportsRgb && (
       <Control
         label="Colour"
-        hint="For RGB lights. Takes precedence over colour temperature."
+        hint="Applied to the ambient lights that can take a colour."
         disabled={disabled}
         summary={color ?? "not set"}
         face={<ColorFace value={color} />}
@@ -84,16 +85,13 @@ export function AmbientControls({
           onChange={(next) => onChange("lighting.ambient_color", next)}
         />
       </Control>
+      )}
 
+      {supportsColorTemp && (
       <Control
         label="Colour temperature"
-        hint={
-          colorWins
-            ? "Ignored while a colour is set — a light is in one mode or the other."
-            : "For lights with a white channel. Low is warm."
-        }
+        hint="Applied to the ambient lights that have a white channel. Low is warm."
         disabled={disabled}
-        muted={colorWins}
         summary={kelvin === undefined ? "not set" : `${kelvin}K`}
         face={<KelvinFace value={kelvin} />}
       >
@@ -108,6 +106,7 @@ export function AmbientControls({
           onCommit={(next) => onChange("lighting.ambient_kelvin", next)}
         />
       </Control>
+      )}
     </div>
   );
 }
@@ -118,7 +117,6 @@ function Control({
   summary,
   face,
   disabled,
-  muted,
   children,
 }: {
   label: string;
@@ -126,7 +124,6 @@ function Control({
   summary: string;
   face: React.ReactNode;
   disabled?: boolean;
-  muted?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -138,9 +135,6 @@ function Control({
           "ring-border flex size-9 items-center justify-center rounded-full ring-1 transition-[box-shadow,opacity]",
           "hover:ring-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
           disabled && "cursor-not-allowed opacity-50",
-          // Still reachable, still shows its value — just clearly not
-          // the one in force.
-          muted && "opacity-45",
         )}
       >
         {face}
@@ -212,37 +206,65 @@ function ValueSlider({
   );
 }
 
-/** A dial that fills to the level it holds. */
+/**
+ * A disc that fills from the bottom to the level it holds.
+ *
+ * Not a pie or a half-moon: those read as "which half", and the thing
+ * being shown is "how much". Filling upward is the same gesture as the
+ * slider inside.
+ */
 function BrightnessFace({ value }: { value?: number }) {
   const level = value ?? 0;
   return (
     <span
       aria-hidden
-      className="border-border size-6 rounded-full border"
+      className="border-border size-6 overflow-hidden rounded-full border"
       style={{
-        background: `conic-gradient(var(--foreground) ${level}%, var(--muted) ${level}%)`,
+        background: `linear-gradient(to top, var(--foreground) ${level}%, var(--muted) ${level}%)`,
       }}
     />
   );
 }
 
-/** The chosen colour, or the wheel itself when there isn't one. */
+/**
+ * The chosen colour, or the wheel itself when there isn't one.
+ *
+ * The unset face is the same wheel the popover opens: hue around the
+ * rim, white in the middle, so the button looks like the thing it
+ * leads to.
+ */
 function ColorFace({ value }: { value?: string }) {
   const rgb = value ? parseHex(value) : null;
   return (
     <span
       aria-hidden
       className="border-border size-6 rounded-full border"
-      style={{
-        background: rgb
-          ? value
-          : "conic-gradient(#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
-      }}
+      style={
+        rgb
+          ? { background: value }
+          : {
+              backgroundImage: [
+                "radial-gradient(circle closest-side, #ffffff, rgba(255,255,255,0) 78%)",
+                "conic-gradient(from 90deg, #ff0000, #ff00ff, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)",
+              ].join(", "),
+            }
+      }
     />
   );
 }
 
-/** The white it holds, over the warm-to-cool range it can hold. */
+/** Cool at one end, warm at the other, white through the middle. */
+const KELVIN_COOL = [166, 209, 255] as const;
+const KELVIN_WARM = [255, 160, 0] as const;
+
+/**
+ * The white it holds, over the warm-to-cool range it can hold.
+ *
+ * The swatch is taken from the same ramp the unset face shows, rather
+ * than from the blackbody curve the chart uses. A physically accurate
+ * 2200 K is a muddy brown at thumbnail size; this reads as a warm lamp,
+ * which is what the setting means.
+ */
 function KelvinFace({ value }: { value?: number }) {
   return (
     <span
@@ -250,9 +272,19 @@ function KelvinFace({ value }: { value?: number }) {
       className="border-border size-6 rounded-full border"
       style={{
         background: value
-          ? kelvinToCss(value)
-          : `linear-gradient(to bottom, ${kelvinToCss(KELVIN_MIN)}, ${kelvinToCss(KELVIN_MAX)})`,
+          ? kelvinSwatch(value)
+          : `linear-gradient(90deg, rgb(${KELVIN_WARM.join(", ")}) 0%, rgb(255, 255, 255) 50%, rgb(${KELVIN_COOL.join(", ")}) 100%)`,
       }}
     />
   );
+}
+
+function kelvinSwatch(kelvin: number): string {
+  const span = KELVIN_MAX - KELVIN_MIN;
+  const t = Math.min(Math.max((kelvin - KELVIN_MIN) / span, 0), 1);
+  const white = [255, 255, 255] as const;
+  const [from, to, mix] =
+    t < 0.5 ? [KELVIN_WARM, white, t * 2] : [white, KELVIN_COOL, (t - 0.5) * 2];
+  const channel = (i: number) => Math.round(from[i] + (to[i] - from[i]) * mix);
+  return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
 }
