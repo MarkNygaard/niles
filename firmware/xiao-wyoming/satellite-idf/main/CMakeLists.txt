@@ -8,5 +8,5 @@ idf_component_register(
   # pulled in as a managed component (idf_component.yml), auto-linked.
   # WiFi + sockets for streaming to niles (Stage 2): esp_wifi/nvs_flash/
   # esp_event/esp_netif (+ lwip sockets via esp_netif).
-  REQUIRES esp_driver_i2s esp_wifi nvs_flash esp_event esp_netif lwip
+  REQUIRES esp_driver_i2c esp_driver_i2s esp_wifi nvs_flash esp_event esp_netif lwip
 )

@@ -35,6 +35,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -102,6 +103,130 @@ static tflite::MicroInterpreter* interpreter = nullptr;
 static TfLiteTensor* input = nullptr;
 static TfLiteTensor* output = nullptr;
 static constexpr int kNumResourceVars = 20; // streaming state vars
+
+// ---- LED ring ----
+//
+// Left alone, the XVF3800 drives its own ring in direction-of-arrival
+// mode: it lights towards whatever it hears, all day, including the
+// television. That is motion in the corner of your eye reporting on
+// sound nobody asked it about. The ring is far more useful saying what
+// *niles* is doing, which is only ever one of four things.
+//
+// Control is I2C to the XMOS chip: [resource][command][byte count][data].
+// Resource 20 is the GPO servicer; effect 0=off, 1=breathing, 2=rainbow,
+// 3=solid, 4=DOA, 5=ring.
+static constexpr uint8_t XMOS_I2C_ADDR = 0x2C;
+static constexpr uint8_t XMOS_RES_GPO = 20;
+static constexpr uint8_t XMOS_CMD_LED_EFFECT = 12;
+static constexpr uint8_t XMOS_CMD_LED_BRIGHTNESS = 13;
+static constexpr uint8_t XMOS_CMD_LED_COLOR = 16;
+
+static constexpr uint8_t LED_EFFECT_OFF = 0;
+static constexpr uint8_t LED_EFFECT_BREATHING = 1;
+static constexpr uint8_t LED_EFFECT_SOLID = 3;
+
+// XIAO ESP32-S3's I2C pins, which is where the XVF3800's control
+// interface lands on this carrier.
+static constexpr gpio_num_t PIN_SDA = GPIO_NUM_5;
+static constexpr gpio_num_t PIN_SCL = GPIO_NUM_6;
+
+static i2c_master_dev_handle_t xmos_dev = nullptr;
+
+static void xmos_write(uint8_t res, uint8_t cmd, const uint8_t* data, uint8_t n) {
+  if (!xmos_dev) return;
+  uint8_t buf[8];
+  if (n > sizeof(buf) - 3) return;
+  buf[0] = res;
+  buf[1] = cmd;
+  buf[2] = n;
+  for (uint8_t i = 0; i < n; i++) buf[3 + i] = data[i];
+  esp_err_t err = i2c_master_transmit(xmos_dev, buf, 3 + n, 100);
+  if (err != ESP_OK) {
+    // The ring is decoration. Losing it must never take the voice loop
+    // down with it, so this is logged and dropped.
+    ESP_LOGW(TAG, "LED write (cmd %u) failed: %s", cmd, esp_err_to_name(err));
+  }
+}
+
+// What niles is doing, shown on the whole ring at once.
+enum class Leds { Idle, Listening, Thinking, Speaking };
+
+// LED_COLOR is a uint32, not three bytes — a three-byte write is
+// rejected outright, which is how every state came out the same stock
+// colour. The wire order is not documented; little-endian is the native
+// order on both sides of this bus. If the colours come out mirrored
+// (blue reading as orange), swap to big-endian here and nowhere else.
+static void led_color(uint8_t r, uint8_t g, uint8_t b) {
+  const uint32_t packed = (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+  const uint8_t bytes[4] = {
+      (uint8_t)(packed & 0xFF),
+      (uint8_t)(packed >> 8 & 0xFF),
+      (uint8_t)(packed >> 16 & 0xFF),
+      (uint8_t)(packed >> 24 & 0xFF),
+  };
+  xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_COLOR, bytes, sizeof(bytes));
+}
+
+static void leds_show(Leds state) {
+  uint8_t rgb[3];
+  uint8_t effect;
+  switch (state) {
+    case Leds::Listening:  // heard its name, capturing — steady white
+      effect = LED_EFFECT_SOLID;
+      rgb[0] = 255; rgb[1] = 255; rgb[2] = 255;
+      break;
+    case Leds::Thinking:  // waiting on niles — breathing, so the wait reads as work
+      effect = LED_EFFECT_BREATHING;
+      rgb[0] = 0; rgb[1] = 120; rgb[2] = 255;
+      break;
+    case Leds::Speaking:  // replying — steady, and a different colour from listening
+      effect = LED_EFFECT_SOLID;
+      rgb[0] = 0; rgb[1] = 180; rgb[2] = 90;
+      break;
+    case Leds::Idle:
+    default:
+      effect = LED_EFFECT_OFF;
+      rgb[0] = 0; rgb[1] = 0; rgb[2] = 0;
+      break;
+  }
+  // Colour first: setting the effect last means the ring never shows
+  // the new effect in the old colour, however briefly.
+  led_color(rgb[0], rgb[1], rgb[2]);
+  xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_EFFECT, &effect, 1);
+}
+
+static void leds_init() {
+  i2c_master_bus_config_t bus_cfg = {};
+  bus_cfg.i2c_port = I2C_NUM_0;
+  bus_cfg.sda_io_num = PIN_SDA;
+  bus_cfg.scl_io_num = PIN_SCL;
+  bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
+  bus_cfg.glitch_ignore_cnt = 7;
+  bus_cfg.flags.enable_internal_pullup = true;
+
+  i2c_master_bus_handle_t bus = nullptr;
+  esp_err_t err = i2c_new_master_bus(&bus_cfg, &bus);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "I2C bus init failed (%s) — ring stays as it is", esp_err_to_name(err));
+    return;
+  }
+
+  i2c_device_config_t dev_cfg = {};
+  dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  dev_cfg.device_address = XMOS_I2C_ADDR;
+  dev_cfg.scl_speed_hz = 100000;
+  err = i2c_master_bus_add_device(bus, &dev_cfg, &xmos_dev);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "XVF3800 not on I2C (%s) — ring stays as it is", esp_err_to_name(err));
+    xmos_dev = nullptr;
+    return;
+  }
+
+  uint8_t brightness = 40;  // full is glaring in a dark room
+  xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_BRIGHTNESS, &brightness, 1);
+  leds_show(Leds::Idle);
+  ESP_LOGI(TAG, "LED ring under our control (direction-of-arrival off)");
+}
 
 static void i2s_deinit_rx();
 
@@ -311,6 +436,7 @@ static void play_reply(int sock) {
       if (rate <= 0) rate = 22050;
       ESP_LOGI(TAG, "reply audio-start rate=%ld", rate);
       i2s_start_tx((int)rate);
+      leds_show(Leds::Speaking);
       playing = true;
     } else if (strstr(line, "audio-chunk")) {
       long rem = json_int_after(line, "\"payload_length\":");
@@ -444,6 +570,8 @@ static void stream_utterance() {
 
   const char* stop = "{\"type\":\"audio-stop\"}\n";
   send_all(sock, stop, strlen(stop));
+  // Nothing more to say; from here the wait is niles's.
+  leds_show(Leds::Thinking);
   ESP_LOGI(TAG,
            "utterance streamed (%d frames, ~%d ms, %s) energy[min=%ld max=%ld] (STOP_RMS=%d)",
            total, total * 10, started ? "spoke" : "no-speech", emin, emax, STOP_RMS);
@@ -508,6 +636,7 @@ extern "C" void app_main(void) {
   }
   model_init();
   i2s_init();
+  leds_init();
   memset(window, 0, sizeof(window));
   ESP_LOGI(TAG, "listening — say 'nyles'");
 
@@ -572,7 +701,12 @@ extern "C" void app_main(void) {
           last_fire_ms = now_ms;
           ESP_LOGI(TAG, ">>> WAKE WORD DETECTED (prob=%.3f) — streaming command <<<",
                    (double)prob);
+          // Before the socket: the ring is the acknowledgement that it
+          // heard its name, and it has to arrive while you are still
+          // speaking, not after the network has had its turn.
+          leds_show(Leds::Listening);
           stream_utterance();
+          leds_show(Leds::Idle);
           // Reset wake state so stale slices don't immediately re-fire.
           slot = 0;
           last_fire_ms = esp_log_timestamp();
