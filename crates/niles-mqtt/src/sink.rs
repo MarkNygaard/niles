@@ -20,7 +20,7 @@ use serde::Serialize;
 ///
 /// `prefix` is the Z2M topic root (typically `"zigbee2mqtt"`).
 /// Only the *settable* fields of `target` (`on`, `brightness`,
-/// `color_temp_kelvin`) end up in the payload; sensor fields are
+/// `color_temp_kelvin`, `rgb`) end up in the payload; sensor fields are
 /// silently ignored.
 ///
 /// If `target` has no settable fields set, the payload is `{}` —
@@ -36,7 +36,10 @@ pub fn format_set_command(prefix: &str, id: &DeviceId, target: &DeviceState) -> 
 /// Returns `true` if a `DeviceState` has at least one field Z2M will
 /// honor as a command. Use this to skip publishing no-op messages.
 pub fn is_actionable(target: &DeviceState) -> bool {
-    target.on.is_some() || target.brightness.is_some() || target.color_temp_kelvin.is_some()
+    target.on.is_some()
+        || target.brightness.is_some()
+        || target.color_temp_kelvin.is_some()
+        || target.rgb.is_some()
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +50,18 @@ struct Z2mSetPayload {
     brightness: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     color_temp: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: Option<Z2mColor>,
+}
+
+/// Z2M takes a colour as `{"color": {"r": .., "g": .., "b": ..}}`.
+/// Sending it also switches a light out of colour-temperature mode,
+/// which is what an RGB strip needs.
+#[derive(Debug, Serialize)]
+struct Z2mColor {
+    r: u8,
+    g: u8,
+    b: u8,
 }
 
 impl From<&DeviceState> for Z2mSetPayload {
@@ -54,7 +69,15 @@ impl From<&DeviceState> for Z2mSetPayload {
         Self {
             state: s.on.map(|on| if on { "ON" } else { "OFF" }),
             brightness: s.brightness.map(percent_to_z2m_brightness),
-            color_temp: s.color_temp_kelvin.and_then(kelvin_to_mireds),
+            // A light can be in colour mode or white mode, not both, and
+            // a payload carrying each would leave which one wins up to
+            // the firmware. An explicit colour is the more specific ask.
+            color_temp: if s.rgb.is_some() {
+                None
+            } else {
+                s.color_temp_kelvin.and_then(kelvin_to_mireds)
+            },
+            color: s.rgb.map(|[r, g, b]| Z2mColor { r, g, b }),
         }
     }
 }
@@ -215,7 +238,7 @@ mod tests {
             color_temp_kelvin: Some(3000),
             ..Default::default()
         }));
-        assert!(!is_actionable(&DeviceState {
+        assert!(is_actionable(&DeviceState {
             rgb: Some([255, 128, 0]),
             ..Default::default()
         }));

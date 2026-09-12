@@ -148,14 +148,39 @@ mod tests {
     }
 
     #[test]
-    fn z2m_rgb_only_returns_none() {
+    fn z2m_sends_a_colour() {
+        // RGB lights are the normal case for an accent strip, and this
+        // used to return None — Niles simply could not set one.
         let router = CommandRouter::z2m_only("zigbee2mqtt");
         let id = z2m_id("kitchen", "ceiling_light");
         let target = DeviceState {
             rgb: Some([255, 128, 0]),
             ..Default::default()
         };
-        assert!(router.format(&id, &target).is_none());
+        let (topic, payload) = router
+            .format(&id, &target)
+            .expect("an RGB target is actionable");
+        assert_eq!(topic, "zigbee2mqtt/kitchen/ceiling_light/set");
+        assert!(
+            payload.contains(r#""color":{"r":255,"g":128,"b":0}"#),
+            "{payload}"
+        );
+    }
+
+    #[test]
+    fn z2m_colour_wins_over_colour_temperature() {
+        // A light is in colour mode or white mode, never both; sending
+        // each would leave the winner up to the firmware.
+        let router = CommandRouter::z2m_only("zigbee2mqtt");
+        let id = z2m_id("kitchen", "ceiling_light");
+        let target = DeviceState {
+            rgb: Some([255, 128, 0]),
+            color_temp_kelvin: Some(2700),
+            ..Default::default()
+        };
+        let (_, payload) = router.format(&id, &target).unwrap();
+        assert!(payload.contains(r#""color""#), "{payload}");
+        assert!(!payload.contains("color_temp"), "{payload}");
     }
 
     #[test]

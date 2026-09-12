@@ -29,8 +29,8 @@ use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig, EnrollmentStore};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant, brightness_at,
-    build_curve_target, classify_action, color_temp_at, effective_minute, routine_brightness_at,
-    should_fire_today,
+    build_ambient_target, build_curve_target, classify_action, color_temp_at, effective_minute,
+    routine_brightness_at, should_fire_today,
 };
 use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
@@ -3911,7 +3911,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
-    let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
+    let mut config_changes = store.subscribe();
+    let mut last_published: HashMap<DeviceId, DeviceState> = HashMap::new();
     let mut ticker = tokio::time::interval(Duration::from_secs(args.tick_seconds.max(1)));
 
     let serve_result = loop {
@@ -3937,6 +3938,26 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
                     index.retain(|_, addr| *addr != peer);
                 }
+            }
+            Ok(()) = config_changes.changed() => {
+                // A tuning change should land on the lights now, not up
+                // to a tick later. What was published before was for the
+                // old target, so none of it is a reason to stay quiet.
+                last_published.clear();
+                lighting.refresh(&store);
+                run_curve_tick(
+                    &registry,
+                    &publisher,
+                    &router,
+                    &lighting.curve,
+                    lighting.snapshot.lighting.ambient_target(),
+                    lighting.ambient(),
+                    tz,
+                    args.dry_run,
+                    &mut last_published,
+                    &tracker,
+                    &claim_tracker,
+                ).await;
             }
             Some(id) = curve_nudge_rx.recv() => {
                 // A light just came on. Drop its last-published entry so the
@@ -4062,7 +4083,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     // skip re-sending the same set command while we wait for Z2M to
     // ack the state change — without this, a slow bulb keeps showing
     // its pre-publish brightness and we'd republish every tick.
-    let mut last_published: HashMap<DeviceId, (u8, u16)> = HashMap::new();
+    let mut last_published: HashMap<DeviceId, DeviceState> = HashMap::new();
     let tracker = ManualModeTracker::new();
     let claim_tracker = MorningClaimTracker::new();
 
@@ -4141,11 +4162,11 @@ async fn run_curve_tick(
     publisher: &MqttPublisher,
     router: &CommandRouter,
     curve: &niles_scheduler::CurveConfig,
-    ambient_target: Option<(Option<u8>, Option<u16>)>,
+    ambient_target: Option<niles_config::AmbientTarget>,
     ambient: &HashSet<DeviceId>,
     tz: chrono_tz::Tz,
     dry_run: bool,
-    last_published: &mut HashMap<DeviceId, (u8, u16)>,
+    last_published: &mut HashMap<DeviceId, DeviceState>,
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
 ) {
@@ -4174,41 +4195,41 @@ async fn run_curve_tick(
         if device.state.on != Some(true) {
             continue;
         }
-        // Ambient lights sit out the curve and are held at a fixed warm,
-        // dim setting instead. With no ambient target configured they are
-        // left alone entirely, which is how they behaved before.
-        let target = if device.is_curve_driven(ambient) {
-            Some(curve_target)
-        } else if device.is_light() {
-            ambient_target.map(|(brightness, kelvin)| {
-                (
-                    brightness.unwrap_or(curve_target.0),
-                    kelvin.unwrap_or(curve_target.1),
-                )
-            })
-        } else {
-            None
-        };
-        let Some(device_target) = target else {
-            continue;
-        };
         if tracker.is_flagged(&device.id) {
             continue;
         }
         if claim_tracker.is_claimed(&device.id) {
             continue;
         }
-        // If we already published this exact curve target for this
-        // device, skip — even if its reported state hasn't caught
-        // up yet (Z2M acks lag the set command).
-        if last_published.get(&device.id) == Some(&device_target) {
-            continue;
-        }
-        let Some(target_state) =
-            build_curve_target(&device.state, device_target.0, device_target.1)
-        else {
+        // Ambient lights sit out the curve and are held at one fixed
+        // setting instead. With nothing configured they are left alone
+        // entirely, which is how they behaved before.
+        let target_state = if device.is_curve_driven(ambient) {
+            build_curve_target(&device.state, curve_target.0, curve_target.1)
+        } else if device.is_light() {
+            match ambient_target {
+                Some(want) => build_ambient_target(
+                    &device.state,
+                    // Unset brightness follows the curve rather than
+                    // freezing wherever the light happened to be.
+                    Some(want.brightness.unwrap_or(curve_target.0)),
+                    want.kelvin,
+                    want.rgb,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let Some(target_state) = target_state else {
             continue;
         };
+        // If we already published exactly this, skip — even if the
+        // reported state hasn't caught up yet (Z2M acks lag the set
+        // command).
+        if last_published.get(&device.id) == Some(&target_state) {
+            continue;
+        }
         let Some((topic, payload)) = router.format(&device.id, &target_state) else {
             continue;
         };
@@ -4232,7 +4253,7 @@ async fn run_curve_tick(
             }
         };
         if ok {
-            last_published.insert(device.id.clone(), device_target);
+            last_published.insert(device.id.clone(), target_state);
         }
         publish_count += 1;
     }

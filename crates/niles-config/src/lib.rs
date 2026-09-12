@@ -44,7 +44,7 @@ pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
 pub use integrations::{IntegrationsConfig, LinearConfigDto};
-pub use lighting::{ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
+pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config};
 pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;

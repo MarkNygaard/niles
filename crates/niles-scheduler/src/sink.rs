@@ -67,6 +67,45 @@ pub fn build_curve_target(
     })
 }
 
+/// The command to hold an ambient light at a fixed setting, or `None`
+/// if it is already there.
+///
+/// Differs from [`build_curve_target`] in one deliberate way: an
+/// unknown current colour still gets a command. The curve reads "never
+/// reported" as "this device has no such channel", which is right when
+/// it is only maintaining a value — but an ambient light was explicitly
+/// told to be a colour, and a strip sitting in white mode reports no
+/// colour at all. Waiting for it to report one first would wait
+/// forever.
+pub fn build_ambient_target(
+    current: &DeviceState,
+    brightness: Option<u8>,
+    kelvin: Option<u16>,
+    rgb: Option<[u8; 3]>,
+) -> Option<DeviceState> {
+    let brightness = match (brightness, current.brightness) {
+        (Some(want), Some(cur)) if cur.abs_diff(want) <= BRIGHTNESS_DEBOUNCE => None,
+        (want, _) => want,
+    };
+    let kelvin = match (kelvin, current.color_temp_kelvin) {
+        (Some(want), Some(cur)) if cur.abs_diff(want) <= KELVIN_DEBOUNCE_K => None,
+        (want, _) => want,
+    };
+    let rgb = match (rgb, current.rgb) {
+        (Some(want), Some(cur)) if cur == want => None,
+        (want, _) => want,
+    };
+    if brightness.is_none() && kelvin.is_none() && rgb.is_none() {
+        return None;
+    }
+    Some(DeviceState {
+        brightness,
+        color_temp_kelvin: kelvin,
+        rgb,
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +117,38 @@ mod tests {
             color_temp_kelvin: kelvin,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn ambient_sends_a_colour_a_light_has_never_reported() {
+        // A strip in white mode reports no colour at all. Waiting for
+        // it to report one before sending would wait forever.
+        let target =
+            build_ambient_target(&state(Some(40), None), Some(40), None, Some([255, 128, 0]))
+                .expect("should publish");
+        assert_eq!(target.rgb, Some([255, 128, 0]));
+        assert_eq!(target.brightness, None, "already at 40");
+    }
+
+    #[test]
+    fn ambient_is_quiet_once_the_light_is_where_it_was_told() {
+        let current = DeviceState {
+            on: Some(true),
+            brightness: Some(40),
+            rgb: Some([255, 128, 0]),
+            ..Default::default()
+        };
+        assert!(build_ambient_target(&current, Some(40), None, Some([255, 128, 0])).is_none());
+    }
+
+    #[test]
+    fn ambient_leaves_unset_fields_alone() {
+        // Brightness only: whatever colour it is showing stays.
+        let target =
+            build_ambient_target(&state(Some(100), Some(2700)), Some(40), None, None).unwrap();
+        assert_eq!(target.brightness, Some(40));
+        assert_eq!(target.color_temp_kelvin, None);
+        assert_eq!(target.rgb, None);
     }
 
     #[test]
