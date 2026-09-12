@@ -1,14 +1,26 @@
 import { useMemo, useRef } from "react";
-import { Combobox } from "@base-ui/react/combobox";
+import {
+  Combobox,
+  ComboboxChip,
+  ComboboxChipRemove,
+  ComboboxChips,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxItemIndicator,
+  ComboboxList,
+  ComboboxTrigger,
+} from "@/components/ui/combobox";
 import { Check, ChevronDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface DeviceOption {
   /** What gets stored: a fully qualified id, `wled:living_room/tv`. */
   value: string;
-  /** The device, as a person says it: "TV lightstrip". */
+  /** The device, as a person says it: "Tv light". */
   label: string;
-  /** Where it is, for telling two "lamp"s apart. */
+  /** Where it is. Empty for a device the registry doesn't know. */
   room: string;
   /** Which integration it comes from. */
   source: string;
@@ -28,10 +40,9 @@ export interface DevicePickerProps {
 /**
  * Pick lights by name instead of typing their ids.
  *
- * The ids are the thing that actually goes in the config, and getting
- * one wrong fails silently — the light simply carries on following the
- * curve. So the list is the registry's own, and what you pick is what
- * is stored.
+ * The ids are what actually goes in the config, and getting one wrong
+ * fails silently — the light simply carries on following the curve. So
+ * the list is the registry's own, and what you pick is what is stored.
  *
  * A device that is in the config but no longer registered still shows
  * as a chip. Dropping it on sight would quietly rewrite the config
@@ -57,19 +68,19 @@ export function DevicePicker({
     return table;
   }, [options, value.join("|")]);
 
-  // The popup anchors to whatever it is told to; left alone it picks
-  // the inner text input, which is narrower than the box you see.
+  // The popup measures whatever it is anchored to; left alone that is
+  // the inner input, which is narrower than the box you see.
   const anchor = useRef<HTMLDivElement | null>(null);
 
   const selected = value.map((device) => byId.get(device)!);
-  const labelFor = (device: string) => {
+  const nameOf = (device: string) => {
     const option = byId.get(device);
     if (!option) return device;
     return option.room ? `${option.room} ${option.label}` : option.label;
   };
 
   return (
-    <Combobox.Root
+    <Combobox
       items={options}
       multiple
       value={selected}
@@ -78,89 +89,66 @@ export function DevicePicker({
       isItemEqualToValue={(item, other) => item.value === other.value}
       onValueChange={(next) => onChange(next.map((item) => item.value))}
     >
-      <Combobox.Chips
-        ref={anchor}
-        className={cn(
-          "border-input flex min-h-8 w-full flex-wrap items-center gap-1 rounded-lg border px-1.5 py-1 transition-colors",
-          "focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-3",
-          "dark:bg-input/30 disabled:opacity-50",
-        )}
-      >
+      <ComboboxChips ref={anchor}>
         {value.map((device) => (
-          <Combobox.Chip
+          <ComboboxChip
             key={device}
-            aria-label={labelFor(device)}
+            aria-label={nameOf(device)}
+            title={device}
             className={cn(
-              "bg-secondary text-secondary-foreground flex items-center gap-1 rounded-md py-0.5 pr-0.5 pl-2 text-xs",
               // A device the registry doesn't know is worth seeing, not
               // worth hiding: it is probably a typo or a dead light.
-              byId.get(device)?.source === "" && "text-muted-foreground border-input border border-dashed",
+              !byId.get(device)?.room &&
+                "border-input text-muted-foreground border border-dashed",
             )}
-            title={device}
           >
             {byId.get(device)?.room && (
-              <span className="text-muted-foreground">{byId.get(device)!.room}</span>
+              <span className="text-muted-foreground">
+                {byId.get(device)!.room}
+              </span>
             )}
             {byId.get(device)?.label ?? device}
-            <Combobox.ChipRemove
-              className="hover:bg-muted rounded-sm p-0.5"
-              aria-label={`Remove ${labelFor(device)}`}
-            >
+            <ComboboxChipRemove aria-label={`Remove ${nameOf(device)}`}>
               <X className="size-3" />
-            </Combobox.ChipRemove>
-          </Combobox.Chip>
+            </ComboboxChipRemove>
+          </ComboboxChip>
         ))}
 
-        <Combobox.Input
+        <ComboboxInput
           id={id}
           aria-label={ariaLabel}
           placeholder={value.length === 0 ? "Search lights…" : ""}
-          className="text-foreground placeholder:text-muted-foreground min-w-32 flex-1 bg-transparent px-1 py-0.5 text-sm outline-none"
         />
-        <Combobox.Trigger
-          className="text-muted-foreground hover:text-foreground ml-auto rounded-sm p-1"
-          aria-label="Show all lights"
-        >
-          <ChevronDown className="size-4" />
-        </Combobox.Trigger>
-      </Combobox.Chips>
+        <ComboboxTrigger aria-label="Show all lights">
+          <ChevronDown />
+        </ComboboxTrigger>
+      </ComboboxChips>
 
-      <Combobox.Portal>
-        <Combobox.Positioner
-          anchor={anchor}
-          align="start"
-          sideOffset={6}
-          className="z-50"
-        >
-          <Combobox.Popup className="bg-popover text-popover-foreground border-border max-h-64 w-(--anchor-width) overflow-y-auto rounded-lg border p-1 shadow-lg">
-            <Combobox.Empty className="text-muted-foreground px-2 py-3 text-xs">
-              {options.length === 0 ? emptyMessage : "No light matches that."}
-            </Combobox.Empty>
-            <Combobox.List>
-              {(option: DeviceOption) => (
-                <Combobox.Item
-                  key={option.value}
-                  // The whole option, not its id: the root's value type
-                  // is the option, and a bare string silently never
-                  // matches one.
-                  value={option}
-                  className="data-highlighted:bg-muted flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm"
-                >
-                  <Combobox.ItemIndicator className="text-muted-foreground">
-                    <Check className="size-3.5" />
-                  </Combobox.ItemIndicator>
-                  <span className="flex-1">{option.label}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {option.room}
-                    {option.source !== "z2m" && ` · ${option.source}`}
-                  </span>
-                </Combobox.Item>
-              )}
-            </Combobox.List>
-          </Combobox.Popup>
-        </Combobox.Positioner>
-      </Combobox.Portal>
-    </Combobox.Root>
+      <ComboboxContent anchor={anchor}>
+        <ComboboxEmpty>
+          {options.length === 0 ? emptyMessage : "No light matches that."}
+        </ComboboxEmpty>
+        <ComboboxList>
+          {(option: DeviceOption) => (
+            <ComboboxItem
+              key={option.value}
+              // The whole option, not its id: the root's value type is
+              // the option, and a bare string silently never matches one.
+              value={option}
+            >
+              <ComboboxItemIndicator>
+                <Check />
+              </ComboboxItemIndicator>
+              <span className="flex-1">{option.label}</span>
+              <span className="text-muted-foreground text-xs">
+                {option.room}
+                {option.source !== "z2m" && ` · ${option.source}`}
+              </span>
+            </ComboboxItem>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
   );
 }
 
@@ -175,7 +163,13 @@ function unregistered(device: string): DeviceOption {
 
 /** Turn `GET /devices` into pickable options: lights, nicely named. */
 export function deviceOptions(
-  devices: Array<{ id: string; room: string; name: string; source: string; class: string }>,
+  devices: Array<{
+    id: string;
+    room: string;
+    name: string;
+    source: string;
+    class: string;
+  }>,
 ): DeviceOption[] {
   return devices
     .filter((device) => device.class === "light")
@@ -185,7 +179,9 @@ export function deviceOptions(
       room: humanize(device.room),
       source: device.source,
     }))
-    .sort((a, b) => a.room.localeCompare(b.room) || a.label.localeCompare(b.label));
+    .sort(
+      (a, b) => a.room.localeCompare(b.room) || a.label.localeCompare(b.label),
+    );
 }
 
 /** `tv_lightstrip` → `Tv lightstrip`. Ids are snake_case by rule. */
