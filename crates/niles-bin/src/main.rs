@@ -1568,6 +1568,8 @@ to do something, call the appropriate tool rather than describing \
 what you would do. Never invent device names — use the listing \
 tools to discover what exists.
 
+You are listening to a room, not to a microphone someone is holding. What you receive may not have been said to you at all — a television, a conversation, a radio. If a request does not say what to do and what to do it to, ask instead of choosing for them; never pick a device because it was the only one that fit.
+
 Your reply is spoken aloud, not read. Answer in one or two short sentences — someone waiting for a light to come on is also waiting through every word you say. Say numbers the way a person would: 'about sixteen degrees', not '15.7'. Give what was asked and leave out the rest; a tool returning ten fields is not a request for ten facts.";
 
 /// Appended to the persona only when the `look_up_capability` tool is
@@ -2719,6 +2721,32 @@ async fn enroll_by_voice(
     }
 }
 
+/// Whether this is more likely something the room said than something
+/// said to Niles.
+///
+/// The satellite listens to a room, so a wake word is an invitation to
+/// transcribe whatever follows — including the television. One such
+/// turn transcribed "Dance." and the LLM, given a bare noun and an
+/// instruction to act rather than describe, picked a light and set an
+/// effect on it. The house changed because a programme said a word.
+///
+/// A lone word that Tier 0 did not recognise is far more likely to be
+/// overheard than addressed. Being wrong costs a "sorry?" and a repeat;
+/// being right avoids acting on the television. A question is exempt —
+/// "weather?" is a real thing to say — and Tier 0 has already had its
+/// turn, so "stop" and the rest still work.
+fn is_overheard(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.ends_with('?') {
+        return false;
+    }
+    trimmed
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .count()
+        <= 1
+}
+
 async fn dispatch_transcript(
     ctx: &DispatchCtx,
     peer: SocketAddr,
@@ -2770,7 +2798,12 @@ async fn dispatch_transcript(
 
     let intent = match parsed {
         Some(i) => i,
-        // Tier 0 miss — hand the raw transcript to the LLM.
+        // Tier 0 miss — hand the raw transcript to the LLM, unless it
+        // is too thin to be an instruction.
+        None if is_overheard(text) => {
+            tracing::info!("[{peer}] not acting on {text:?}: too little to be an instruction");
+            return Some(response::didnt_catch_that());
+        }
         None => return dispatch_tier1(ctx, peer, text, origin_room, speaker).await,
     };
 
@@ -6387,6 +6420,38 @@ mod system_prompt_tests {
                 cfg,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn a_lone_overheard_word_is_not_an_instruction() {
+        // A real turn: the satellite woke, the television said
+        // "Dance.", and the LLM set a light effect on the living room
+        // ceiling. The house changed because a programme said a word.
+        assert!(is_overheard("Dance."));
+        assert!(is_overheard("so"));
+        assert!(is_overheard("  right  "));
+    }
+
+    #[test]
+    fn a_question_is_always_worth_answering() {
+        // "Weather?" is a real thing to say to a house.
+        assert!(!is_overheard("Weather?"));
+        assert!(!is_overheard("Why?"));
+    }
+
+    #[test]
+    fn anything_with_two_words_still_reaches_the_llm() {
+        // The guard is for what a room emits, not for terse people.
+        assert!(!is_overheard("lights off"));
+        assert!(!is_overheard("play music"));
+    }
+
+    #[test]
+    fn the_persona_warns_that_it_is_listening_to_a_room() {
+        assert!(
+            NILES_SYSTEM_PERSONA.contains("listening to a room"),
+            "the model must know that what it hears may not be addressed to it"
         );
     }
 

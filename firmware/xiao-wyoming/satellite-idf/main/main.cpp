@@ -81,7 +81,13 @@ static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 // nyles.json suggests 0.98, but that assumes a 5-window average; we fire on the
 // single-invoke probability. Lower toward 0.8 if real "nyles" gets missed;
 // raise toward 0.9 (or add 5-frame averaging) if background still false-wakes.
-static constexpr float PROB_CUTOFF = 0.85f;
+//
+// 2026-09-12: it did. Background conversation during washing-up woke it on
+// "so", so 0.85 -> 0.90. That is close to the bottom of the real-detection
+// range (~0.89), so the next false-wake is an argument for 5-frame averaging
+// or more negative training data, not for raising this further — past ~0.92
+// there is nothing left between the two distributions.
+static constexpr float PROB_CUTOFF = 0.90f;
 static constexpr int WINDOW_AVG = 5;
 
 // The XVF3800 mono downmix is low-level; the wake-word preprocessor expects
