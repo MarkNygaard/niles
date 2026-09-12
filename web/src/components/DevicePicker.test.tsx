@@ -27,21 +27,6 @@ const REGISTRY = [
 ];
 
 describe("deviceOptions", () => {
-  it("qualifies only the names that collide", () => {
-    // Three rooms with a "Ceiling" in them is the normal case; a chip
-    // reading just "Ceiling" then names nothing. A "Desk lamp" that is
-    // the only one needs no such help.
-    const options = deviceOptions([
-      ...REGISTRY,
-      { id: "z2m:bedroom/ceiling", room: "bedroom", name: "ceiling", source: "z2m", class: "light" },
-      { id: "z2m:kitchen/ceiling", room: "kitchen", name: "ceiling", source: "z2m", class: "light" },
-    ]);
-    const byLabel = (label: string) => options.filter((o) => o.label === label);
-
-    expect(byLabel("Ceiling").every((o) => o.needsRoom)).toBe(true);
-    expect(byLabel("Desk lamp")[0].needsRoom).toBe(false);
-  });
-
   it("offers lights only — a switch can't be an ambient light", () => {
     const options = deviceOptions(REGISTRY);
     expect(options.map((o) => o.value)).toEqual([
@@ -84,30 +69,15 @@ function setup(value: string[]) {
 // from the list is verified by hand instead — which is how the bug
 // below got in, so it is worth saying out loud.
 describe("DevicePicker", () => {
-  it("shows each picked light as its own chip", () => {
+  it("names every chip by its room and its light", () => {
+    // Every house has more than one "Ceiling", and a chip that only
+    // said "Ceiling" named nothing.
     setup(["wled:living_room/tv_light", "z2m:office/desk_lamp"]);
     expect(screen.getByText("Tv light")).toBeInTheDocument();
-    expect(screen.getByText("Desk lamp")).toBeInTheDocument();
-  });
-
-  it("names the room on a chip whose light name is shared", () => {
-    const onChange = vi.fn();
-    render(
-      <DevicePicker
-        id="ambient_lights.devices"
-        aria-label="Ambient lights"
-        value={["z2m:bedroom/ceiling"]}
-        options={deviceOptions([
-          ...REGISTRY,
-          { id: "z2m:bedroom/ceiling", room: "bedroom", name: "ceiling", source: "z2m", class: "light" },
-          { id: "z2m:kitchen/ceiling", room: "kitchen", name: "ceiling", source: "z2m", class: "light" },
-        ])}
-        emptyMessage="none"
-        onChange={onChange}
-      />,
-    );
-    expect(screen.getByText("Bedroom")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Bedroom Ceiling" })).toBeInTheDocument();
+    expect(screen.getByText("Living room")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Remove Office Desk lamp" }),
+    ).toBeInTheDocument();
   });
 
   it("removes one light without touching the others", () => {
@@ -115,7 +85,9 @@ describe("DevicePicker", () => {
       "wled:living_room/tv_light",
       "z2m:office/desk_lamp",
     ]);
-    fireEvent.click(screen.getByRole("button", { name: "Remove Tv light" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove Living room Tv light" }),
+    );
     expect(onChange).toHaveBeenCalledWith(["z2m:office/desk_lamp"]);
   });
 

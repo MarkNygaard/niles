@@ -135,14 +135,15 @@ describe("SettingRow", () => {
               label: "Tv light",
               room: "Living room",
               source: "wled",
-              needsRoom: false,
             },
           ],
         },
       ],
       values: { "ambient_lights.devices": ["wled:living_room/tv_light"] },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Remove Tv light" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove Living room Tv light" }),
+    );
 
     // No ambient lights at all is a choice, unlike an empty number.
     expect(saveButton()).toBeEnabled();

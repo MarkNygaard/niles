@@ -12,12 +12,6 @@ export interface DeviceOption {
   room: string;
   /** Which integration it comes from. */
   source: string;
-  /**
-   * Whether another light shares this one's name. Three rooms with a
-   * "Ceiling" in them is the normal case, not an edge one, and a chip
-   * reading just "Ceiling" then names nothing.
-   */
-  needsRoom: boolean;
 }
 
 export interface DevicePickerProps {
@@ -71,7 +65,7 @@ export function DevicePicker({
   const labelFor = (device: string) => {
     const option = byId.get(device);
     if (!option) return device;
-    return option.needsRoom ? `${option.room} ${option.label}` : option.label;
+    return option.room ? `${option.room} ${option.label}` : option.label;
   };
 
   return (
@@ -104,7 +98,7 @@ export function DevicePicker({
             )}
             title={device}
           >
-            {byId.get(device)?.needsRoom && (
+            {byId.get(device)?.room && (
               <span className="text-muted-foreground">{byId.get(device)!.room}</span>
             )}
             {byId.get(device)?.label ?? device}
@@ -175,36 +169,22 @@ export function DevicePicker({
  * light that is currently offline. Shown as-is rather than dropped.
  */
 function unregistered(device: string): DeviceOption {
-  return {
-    value: device,
-    label: device,
-    room: "not registered",
-    source: "",
-    needsRoom: false,
-  };
+  // No room: the id is shown whole, and the dashed chip says the rest.
+  return { value: device, label: device, room: "", source: "" };
 }
 
 /** Turn `GET /devices` into pickable options: lights, nicely named. */
 export function deviceOptions(
   devices: Array<{ id: string; room: string; name: string; source: string; class: string }>,
 ): DeviceOption[] {
-  const lights = devices
+  return devices
     .filter((device) => device.class === "light")
     .map((device) => ({
       value: device.id,
       label: humanize(device.name),
       room: humanize(device.room),
       source: device.source,
-    }));
-
-  const shared = new Set(
-    lights
-      .map((light) => light.label)
-      .filter((label, index, all) => all.indexOf(label) !== index),
-  );
-
-  return lights
-    .map((light) => ({ ...light, needsRoom: shared.has(light.label) }))
+    }))
     .sort((a, b) => a.room.localeCompare(b.room) || a.label.localeCompare(b.label));
 }
 
