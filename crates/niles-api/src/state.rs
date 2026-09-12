@@ -25,6 +25,9 @@ pub struct AppState {
     /// Absent for subcommands that serve the device API without a config
     /// store; the `/config` routes report that rather than 500ing.
     pub config: Option<Arc<niles_config::ConfigStore>>,
+    /// Recent log lines, when the binary installed a buffer. Absent for
+    /// subcommands that don't, and `/logs` says so rather than 500ing.
+    pub logs: Option<crate::logs::LogBuffer>,
 }
 
 impl AppState {
@@ -41,7 +44,13 @@ impl AppState {
             event_bus,
             linear_webhook: None,
             config: None,
+            logs: None,
         }
+    }
+
+    pub fn with_logs(mut self, logs: Option<crate::logs::LogBuffer>) -> Self {
+        self.logs = logs;
+        self
     }
 
     pub fn with_config_store(mut self, store: Option<Arc<niles_config::ConfigStore>>) -> Self {

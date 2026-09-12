@@ -23,6 +23,7 @@ mod config_tests;
 pub mod dto;
 pub mod events;
 pub mod handlers;
+pub mod logs;
 pub mod publish;
 pub mod server;
 pub mod state;

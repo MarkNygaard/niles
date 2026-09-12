@@ -352,3 +352,33 @@ async fn the_device_api_still_works_without_a_store() {
     let (status, _) = send(&app, get("/healthz")).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+// ---- logs ------------------------------------------------------------
+
+#[tokio::test]
+async fn logs_report_when_no_buffer_was_installed() {
+    // A subcommand that serves devices without installing a log layer
+    // has nothing to show, and should say so rather than 500.
+    let app = app(false);
+    let (status, body) = send(&app, get("/logs")).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert!(
+        body["error"].as_str().unwrap().contains("log buffer"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_level_is_the_callers_mistake() {
+    let state = AppState::new(
+        Arc::new(DeviceRegistry::new()),
+        Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
+        Arc::new("zigbee2mqtt".into()),
+        EventBus::default(),
+    )
+    .with_logs(Some(crate::logs::LogBuffer::new()));
+    let app = router(state);
+    let (status, body) = send(&app, get("/logs?level=shouty")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("shouty"), "{body}");
+}
