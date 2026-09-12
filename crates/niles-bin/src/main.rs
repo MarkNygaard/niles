@@ -1566,7 +1566,9 @@ switches, scenes, and timers in a private home via the tools \
 provided. Be concise and action-oriented: when the user asks you \
 to do something, call the appropriate tool rather than describing \
 what you would do. Never invent device names — use the listing \
-tools to discover what exists.";
+tools to discover what exists.
+
+Your reply is spoken aloud, not read. Answer in one or two short sentences — someone waiting for a light to come on is also waiting through every word you say. Say numbers the way a person would: 'about sixteen degrees', not '15.7'. Give what was asked and leave out the rest; a tool returning ten fields is not a request for ten facts.";
 
 /// Appended to the persona only when the `look_up_capability` tool is
 /// registered (a capabilities directory is configured). Advertising it
@@ -6385,6 +6387,18 @@ mod system_prompt_tests {
                 cfg,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn the_persona_says_the_reply_is_spoken() {
+        // A measured turn spent 6.4 s speaking sixty words of weather
+        // with two decimal places. "Be concise" was already there and
+        // was not enough — the model had no idea anyone was listening
+        // rather than reading.
+        assert!(
+            NILES_SYSTEM_PERSONA.contains("spoken aloud"),
+            "the model has to know it is being listened to"
         );
     }
 
