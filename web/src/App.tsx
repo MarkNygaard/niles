@@ -129,7 +129,7 @@ const AMBIENT_ROWS: Row[] = [
   },
   {
     label: "Held at",
-    description: "What they show instead. Leave unset to not touch them at all.",
+    description: "How bright. Leave unset to not touch them at all.",
     settings: [
       {
         path: "lighting.ambient_brightness",
@@ -137,10 +137,30 @@ const AMBIENT_ROWS: Row[] = [
         caption: "brightness %",
         width: "w-28",
       },
+    ],
+  },
+  {
+    label: "Colour",
+    description:
+      "For RGB lights. Set one and it takes precedence over colour temperature — a light is in one mode or the other, never both.",
+    settings: [
+      {
+        path: "lighting.ambient_color",
+        kind: "color",
+        caption: "",
+        width: "w-auto",
+      },
+    ],
+  },
+  {
+    label: "Colour temperature",
+    description:
+      "For lights with a white channel. 2000–2200 K is candle-to-lamp warm. WLED strips never receive this.",
+    settings: [
       {
         path: "lighting.ambient_kelvin",
         kind: "number",
-        caption: "colour K",
+        caption: "kelvin",
         width: "w-28",
       },
     ],

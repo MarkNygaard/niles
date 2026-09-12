@@ -32,17 +32,26 @@ pub struct LightingConfig {
     /// the curve. Omit to leave them wherever they were — the behaviour
     /// before this existed.
     ///
-    /// These live here rather than in `[ambient_lights]` for a practical
-    /// reason: `[lighting]` is the one section a running Niles re-reads,
-    /// so these can be tuned from the UI or by voice and take effect on
-    /// the next tick. Which lights are ambient is wired into the device
-    /// sources at startup, so that list still needs a restart.
+    /// These live here rather than in `[ambient_lights]` so that one
+    /// section holds everything about how lights are driven, and the
+    /// other holds only which lights are exempt. Both are re-read on
+    /// every tick.
     #[serde(default)]
     pub ambient_brightness: Option<u8>,
     /// Colour temperature for ambient lights, in Kelvin. Low is the point
     /// — 2000-2200 K is candle-to-lamp warm.
+    ///
+    /// Only useful for a light that has a white channel. An RGB strip
+    /// can't act on it at all, and WLED never even receives it — use
+    /// [`Self::ambient_color`] for those.
     #[serde(default)]
     pub ambient_kelvin: Option<u16>,
+    /// Colour for ambient lights as `#rrggbb`. Takes precedence over
+    /// [`Self::ambient_kelvin`]: a light is in colour mode or white
+    /// mode, never both, so sending each would leave the winner up to
+    /// the firmware.
+    #[serde(default)]
+    pub ambient_color: Option<String>,
     #[serde(default)]
     pub curve_pause_start: Option<String>,
     #[serde(default)]
@@ -114,13 +123,22 @@ pub struct ColorTempAnchor {
 }
 
 impl LightingConfig {
-    /// The fixed `(brightness, kelvin)` ambient lights are held at, if
-    /// configured. `None` for either field means "leave that alone".
-    pub fn ambient_target(&self) -> Option<(Option<u8>, Option<u16>)> {
-        match (self.ambient_brightness, self.ambient_kelvin) {
-            (None, None) => None,
-            pair => Some(pair),
-        }
+    /// What ambient lights are held at, if anything is configured.
+    /// `None` for a field means "leave that alone".
+    pub fn ambient_target(&self) -> Option<AmbientTarget> {
+        let rgb = self.ambient_color.as_deref().and_then(parse_hex_color);
+        let target = AmbientTarget {
+            brightness: self.ambient_brightness,
+            // An explicit colour is the more specific ask, and a light
+            // cannot be in both modes at once.
+            kelvin: if rgb.is_some() {
+                None
+            } else {
+                self.ambient_kelvin
+            },
+            rgb,
+        };
+        (target != AmbientTarget::default()).then_some(target)
     }
 
     /// Parse times and anchors, then validate the resulting `CurveConfig`.
@@ -179,6 +197,14 @@ impl LightingConfig {
                 reason: format!("ambient_kelvin {kelvin}K is outside 1000..=10000"),
             });
         }
+        if let Some(color) = &self.ambient_color
+            && parse_hex_color(color).is_none()
+        {
+            return Err(Error::InvalidSection {
+                section: "lighting",
+                reason: format!("ambient_color {color:?} is not a #rrggbb colour"),
+            });
+        }
 
         Ok(curve)
     }
@@ -190,6 +216,24 @@ fn parse_time(s: &str) -> Result<MinuteOfDay> {
             section: "lighting",
             reason: format!("invalid time '{s}': {e}"),
         })
+}
+
+/// The fixed setting ambient lights are held at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AmbientTarget {
+    pub brightness: Option<u8>,
+    pub kelvin: Option<u16>,
+    pub rgb: Option<[u8; 3]>,
+}
+
+/// `#rrggbb` (or bare `rrggbb`) to channels. `None` for anything else.
+pub fn parse_hex_color(raw: &str) -> Option<[u8; 3]> {
+    let hex = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
 /// Parse a `"<weekday> HH:MM"` string (e.g. `"fri 12:00"`) into a
@@ -252,6 +296,40 @@ kelvin = 2000
     }
 
     #[test]
+    fn a_colour_is_read_as_channels() {
+        let cfg = lighting_with(
+            "ambient_color = \"#ff8000\"
+",
+        );
+        assert_eq!(cfg.ambient_target().unwrap().rgb, Some([255, 128, 0]));
+    }
+
+    #[test]
+    fn a_colour_wins_over_a_colour_temperature() {
+        // A light is in colour mode or white mode, never both. Sending
+        // each would leave the winner up to the firmware.
+        let cfg = lighting_with(
+            "ambient_kelvin = 2200
+ambient_color = \"#ff8000\"
+",
+        );
+        let target = cfg.ambient_target().unwrap();
+        assert_eq!(target.rgb, Some([255, 128, 0]));
+        assert_eq!(target.kelvin, None);
+    }
+
+    #[test]
+    fn a_colour_that_is_not_one_is_rejected() {
+        let err = lighting_with(
+            "ambient_color = \"burnt orange\"
+",
+        )
+        .to_curve_config()
+        .expect_err("not a colour");
+        assert!(err.to_string().contains("ambient_color"), "{err}");
+    }
+
+    #[test]
     fn no_ambient_settings_means_no_ambient_target() {
         // The behaviour before this existed: ambient lights sit out the
         // curve and are otherwise left exactly as they were.
@@ -262,14 +340,17 @@ kelvin = 2000
     fn brightness_alone_is_a_target() {
         // Dim it, but leave whatever colour it is showing.
         let cfg = lighting_with("ambient_brightness = 25\n");
-        assert_eq!(cfg.ambient_target(), Some((Some(25), None)));
+        let target = cfg.ambient_target().unwrap();
+        assert_eq!(target.brightness, Some(25));
+        assert_eq!((target.kelvin, target.rgb), (None, None));
         cfg.to_curve_config().expect("valid");
     }
 
     #[test]
     fn brightness_and_kelvin_together() {
         let cfg = lighting_with("ambient_brightness = 25\nambient_kelvin = 2200\n");
-        assert_eq!(cfg.ambient_target(), Some((Some(25), Some(2200))));
+        let target = cfg.ambient_target().unwrap();
+        assert_eq!((target.brightness, target.kelvin), (Some(25), Some(2200)));
         cfg.to_curve_config().expect("valid");
     }
 

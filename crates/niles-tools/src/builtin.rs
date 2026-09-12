@@ -1701,13 +1701,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_device_z2m_rgb_only_does_not_publish_empty_payload() {
+    async fn set_device_z2m_sends_a_colour() {
+        // Zigbee colour lights are ordinary; this used to be refused
+        // because nothing could format the command.
         let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "kitchen/ceiling_light", "rgb": [255, 128, 0] });
-        let err = tool.execute(args).await.unwrap_err();
-        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_device"));
-        assert!(mock.topics.lock().await.is_empty());
-        assert!(mock.payloads.lock().await.is_empty());
+        tool.execute(args).await.expect("a colour is settable");
+        let payloads = mock.payloads.lock().await;
+        assert!(
+            payloads[0].contains(r#""color":{"r":255,"g":128,"b":0}"#),
+            "{:?}",
+            payloads[0]
+        );
     }
 
     #[tokio::test]
