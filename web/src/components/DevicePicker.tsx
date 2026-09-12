@@ -12,6 +12,12 @@ export interface DeviceOption {
   room: string;
   /** Which integration it comes from. */
   source: string;
+  /**
+   * Whether another light shares this one's name. Three rooms with a
+   * "Ceiling" in them is the normal case, not an edge one, and a chip
+   * reading just "Ceiling" then names nothing.
+   */
+  needsRoom: boolean;
 }
 
 export interface DevicePickerProps {
@@ -62,7 +68,11 @@ export function DevicePicker({
   const anchor = useRef<HTMLDivElement | null>(null);
 
   const selected = value.map((device) => byId.get(device)!);
-  const labelFor = (device: string) => byId.get(device)?.label ?? device;
+  const labelFor = (device: string) => {
+    const option = byId.get(device);
+    if (!option) return device;
+    return option.needsRoom ? `${option.room} ${option.label}` : option.label;
+  };
 
   return (
     <Combobox.Root
@@ -94,7 +104,10 @@ export function DevicePicker({
             )}
             title={device}
           >
-            {labelFor(device)}
+            {byId.get(device)?.needsRoom && (
+              <span className="text-muted-foreground">{byId.get(device)!.room}</span>
+            )}
+            {byId.get(device)?.label ?? device}
             <Combobox.ChipRemove
               className="hover:bg-muted rounded-sm p-0.5"
               aria-label={`Remove ${labelFor(device)}`}
@@ -162,21 +175,36 @@ export function DevicePicker({
  * light that is currently offline. Shown as-is rather than dropped.
  */
 function unregistered(device: string): DeviceOption {
-  return { value: device, label: device, room: "not registered", source: "" };
+  return {
+    value: device,
+    label: device,
+    room: "not registered",
+    source: "",
+    needsRoom: false,
+  };
 }
 
 /** Turn `GET /devices` into pickable options: lights, nicely named. */
 export function deviceOptions(
   devices: Array<{ id: string; room: string; name: string; source: string; class: string }>,
 ): DeviceOption[] {
-  return devices
+  const lights = devices
     .filter((device) => device.class === "light")
     .map((device) => ({
       value: device.id,
       label: humanize(device.name),
       room: humanize(device.room),
       source: device.source,
-    }))
+    }));
+
+  const shared = new Set(
+    lights
+      .map((light) => light.label)
+      .filter((label, index, all) => all.indexOf(label) !== index),
+  );
+
+  return lights
+    .map((light) => ({ ...light, needsRoom: shared.has(light.label) }))
     .sort((a, b) => a.room.localeCompare(b.room) || a.label.localeCompare(b.label));
 }
 

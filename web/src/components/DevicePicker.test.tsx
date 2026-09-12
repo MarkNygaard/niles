@@ -27,6 +27,21 @@ const REGISTRY = [
 ];
 
 describe("deviceOptions", () => {
+  it("qualifies only the names that collide", () => {
+    // Three rooms with a "Ceiling" in them is the normal case; a chip
+    // reading just "Ceiling" then names nothing. A "Desk lamp" that is
+    // the only one needs no such help.
+    const options = deviceOptions([
+      ...REGISTRY,
+      { id: "z2m:bedroom/ceiling", room: "bedroom", name: "ceiling", source: "z2m", class: "light" },
+      { id: "z2m:kitchen/ceiling", room: "kitchen", name: "ceiling", source: "z2m", class: "light" },
+    ]);
+    const byLabel = (label: string) => options.filter((o) => o.label === label);
+
+    expect(byLabel("Ceiling").every((o) => o.needsRoom)).toBe(true);
+    expect(byLabel("Desk lamp")[0].needsRoom).toBe(false);
+  });
+
   it("offers lights only — a switch can't be an ambient light", () => {
     const options = deviceOptions(REGISTRY);
     expect(options.map((o) => o.value)).toEqual([
@@ -73,6 +88,26 @@ describe("DevicePicker", () => {
     setup(["wled:living_room/tv_light", "z2m:office/desk_lamp"]);
     expect(screen.getByText("Tv light")).toBeInTheDocument();
     expect(screen.getByText("Desk lamp")).toBeInTheDocument();
+  });
+
+  it("names the room on a chip whose light name is shared", () => {
+    const onChange = vi.fn();
+    render(
+      <DevicePicker
+        id="ambient_lights.devices"
+        aria-label="Ambient lights"
+        value={["z2m:bedroom/ceiling"]}
+        options={deviceOptions([
+          ...REGISTRY,
+          { id: "z2m:bedroom/ceiling", room: "bedroom", name: "ceiling", source: "z2m", class: "light" },
+          { id: "z2m:kitchen/ceiling", room: "kitchen", name: "ceiling", source: "z2m", class: "light" },
+        ])}
+        emptyMessage="none"
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getByText("Bedroom")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Bedroom Ceiling" })).toBeInTheDocument();
   });
 
   it("removes one light without touching the others", () => {
