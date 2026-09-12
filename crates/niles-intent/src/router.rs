@@ -185,7 +185,7 @@ fn light_regex() -> &'static Regex {
             r"(?x)
               ^
               (?:
-                turn\s+(?P<state1>on|off)\s+(?:the\s+)?(?P<room1>.+?)\s+lights?
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state1>on|off)\s+(?:the\s+)?(?P<room1>.+?)\s+lights?
               |
                 (?P<room2>.+?)\s+lights?\s+(?P<state2>on|off)
               )
@@ -265,7 +265,7 @@ fn light_set_all_regex() -> &'static Regex {
             r"(?x)
               ^
               (?:
-                turn\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?
               |
                 all\s+(?:the\s+)?lights?\s+(?P<state2>on|off)
               |
@@ -298,7 +298,7 @@ fn light_set_all_in_room_regex() -> &'static Regex {
             r"(?x)
               ^
               (?:
-                turn\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room1>.+?)
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room1>.+?)
               |
                 all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room2>.+?)\s+(?P<state2>on|off)
               )
@@ -460,7 +460,7 @@ fn light_set_implicit_room_regex() -> &'static Regex {
               (?:
                 lights?\s+(?P<state1>on|off)
               |
-                turn\s+(?P<state2>on|off)\s+(?:the\s+)?lights?
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state2>on|off)\s+(?:the\s+)?lights?
               )
               $",
         )
@@ -1213,7 +1213,7 @@ fn device_set_regex() -> &'static Regex {
         Regex::new(
             r"(?x)
               ^
-              turn\s+(?P<state>on|off)\s+(?:the\s+)?(?P<device>.+?)
+              (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state>on|off)\s+(?:the\s+)?(?P<device>.+?)
               (?:\s+in\s+(?:the\s+)?(?P<room>.+))?
               $",
         )
@@ -3415,5 +3415,62 @@ mod datetime_query_tests {
         ] {
             assert_eq!(parse(phrase), None, "{phrase}");
         }
+    }
+}
+
+#[cfg(test)]
+mod mishearing_tests {
+    use super::*;
+
+    fn parse(t: &str) -> Option<Intent> {
+        IntentRouter::new().parse(t)
+    }
+
+    #[test]
+    fn a_misheard_tense_still_reaches_tier_0() {
+        // Whisper renders "turn off" as "turned off" often enough to
+        // matter, and the cost of missing here is not a worse match —
+        // it is the whole request escalating to the LLM, which on a
+        // rate-limited account means no answer at all.
+        assert_eq!(
+            parse("turned off the office light"),
+            Some(Intent::LightSet {
+                room: "office".into(),
+                on: false
+            })
+        );
+        assert_eq!(
+            parse("turns on the kitchen light"),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn switch_is_the_same_request_as_turn() {
+        assert_eq!(
+            parse("switch off the office light"),
+            Some(Intent::LightSet {
+                room: "office".into(),
+                on: false
+            })
+        );
+        assert_eq!(
+            parse("switched on the bedroom lights"),
+            Some(Intent::LightSet {
+                room: "bedroom".into(),
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn the_whole_home_forms_tolerate_it_too() {
+        assert_eq!(
+            parse("turned off all the lights"),
+            Some(Intent::LightSetAll { on: false })
+        );
     }
 }
