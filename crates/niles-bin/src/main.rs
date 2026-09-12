@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
 
 mod conversation;
@@ -1886,8 +1886,11 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
                         // need a bounded worker pool.
                         let client = client.clone();
                         tokio::spawn(async move {
-                            if let Some((peer, text)) = transcribe_session(&client, session).await {
+                            if let Some((peer, text, timing)) =
+                                transcribe_session(&client, session).await
+                            {
                                 println!("[{peer}] \"{text}\"");
+                                timing.log(peer, &text);
                             }
                         });
                     }
@@ -1926,7 +1929,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
 async fn transcribe_session(
     client: &WhisperClient,
     session: niles_wyoming::AudioSession,
-) -> Option<(SocketAddr, String)> {
+) -> Option<(SocketAddr, String, TurnTiming)> {
     let pcm_format = PcmFormat {
         sample_rate_hz: session.format.sample_rate_hz,
         bits_per_sample: session.format.bits_per_sample,
@@ -1944,13 +1947,64 @@ async fn transcribe_session(
         }
     };
 
+    let audio_ms = wav_duration_ms(&session);
+    let started = Instant::now();
     match client.transcribe(wav, "session.wav").await {
-        Ok(t) => Some((session.from, t.text.trim().to_string())),
+        Ok(t) => Some((
+            session.from,
+            t.text.trim().to_string(),
+            TurnTiming {
+                audio_ms,
+                stt_ms: started.elapsed().as_millis(),
+                ..TurnTiming::default()
+            },
+        )),
         Err(e) => {
             tracing::warn!("{}: transcription failed: {e}", session.from);
             None
         }
     }
+}
+
+/// Where a voice turn's time went, in milliseconds.
+///
+/// Every number here is measured rather than assumed. The architecture
+/// quotes a 400-500 ms Tier 0 budget, and until this existed nobody
+/// could say which part of it was real — the satellite's own
+/// end-of-speech hangover does not even appear in that figure.
+#[derive(Debug, Default, Clone, Copy)]
+struct TurnTiming {
+    /// How long the person spoke, for reading the rest against.
+    audio_ms: u128,
+    /// Upload, transcribe, and the round trip to wherever STT lives.
+    stt_ms: u128,
+    /// Matching the transcript and acting on it — MQTT, tools, an LLM
+    /// call if Tier 0 could not answer.
+    dispatch_ms: u128,
+    /// Synthesising the reply and streaming it back to the satellite.
+    speak_ms: u128,
+}
+
+impl TurnTiming {
+    fn log(&self, peer: SocketAddr, text: &str) {
+        tracing::info!(
+            audio_ms = self.audio_ms,
+            stt_ms = self.stt_ms,
+            dispatch_ms = self.dispatch_ms,
+            speak_ms = self.speak_ms,
+            heard_to_spoken_ms = self.stt_ms + self.dispatch_ms + self.speak_ms,
+            "[{peer}] turn timing for {text:?}"
+        );
+    }
+}
+
+/// Milliseconds of audio in a session, from the PCM length and format.
+fn wav_duration_ms(session: &niles_wyoming::AudioSession) -> u128 {
+    let bytes_per_sample = u128::from(session.format.bits_per_sample / 8).max(1);
+    let channels = u128::from(session.format.channels).max(1);
+    let rate = u128::from(session.format.sample_rate_hz).max(1);
+    let frames = session.pcm.len() as u128 / (bytes_per_sample * channels);
+    frames * 1000 / rate
 }
 
 /// Spawn a fire-and-forget task that transcribes `session`, dispatches
@@ -1977,7 +2031,7 @@ fn spawn_dispatch_task(
             let rate = session.format.sample_rate_hz;
             tokio::task::spawn_blocking(move || id.identify(&pcm, rate))
         });
-        if let Some((peer, text)) = transcribe_session(&whisper, session).await {
+        if let Some((peer, text, mut timing)) = transcribe_session(&whisper, session).await {
             let ident = match id_handle {
                 Some(h) => match h.await {
                     Ok(result) => result,
@@ -1999,7 +2053,9 @@ fn spawn_dispatch_task(
                 }
             }
             let speaker = speaker_context_from(attempted, ident);
+            let dispatch_started = Instant::now();
             let say = handle_transcript(&ctx, peer, &text, &speaker).await;
+            timing.dispatch_ms = dispatch_started.elapsed().as_millis();
             let entry = CommandEntry {
                 ts: chrono::Utc::now(),
                 peer,
@@ -2019,6 +2075,7 @@ fn spawn_dispatch_task(
             }
             if let Some(say) = say {
                 println!("[{peer}] say: {say}");
+                let speak_started = Instant::now();
                 if let Err(e) = crate::speak::speak_back(
                     &piper,
                     &sender,
@@ -2031,7 +2088,9 @@ fn spawn_dispatch_task(
                 {
                     tracing::warn!("[{peer}] speak-back failed: {e:#}");
                 }
+                timing.speak_ms = speak_started.elapsed().as_millis();
             }
+            timing.log(peer, &text);
         }
     });
 }
