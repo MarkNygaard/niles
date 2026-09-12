@@ -58,7 +58,7 @@ export function AmbientControls({
         hint="How bright ambient lights sit, as a percentage."
         disabled={disabled}
         summary={brightness === undefined ? "not set" : `${brightness}%`}
-        face={<BrightnessFace value={brightness} />}
+        face={<BrightnessFace />}
       >
         <ValueSlider
           label="Brightness"
@@ -207,22 +207,23 @@ function ValueSlider({
 }
 
 /**
- * A disc that fills from the bottom to the level it holds.
+ * A brightness glyph, not a gauge.
  *
- * Not a pie or a half-moon: those read as "which half", and the thing
- * being shown is "how much". Filling upward is the same gesture as the
- * slider inside.
+ * An earlier version filled to the level, which nobody could read: the
+ * unfilled part is dark on a dark card, so there was no container to
+ * read the level against. The number lives inside, where there is room
+ * for it.
  */
-function BrightnessFace({ value }: { value?: number }) {
-  const level = value ?? 0;
+function BrightnessFace() {
   return (
-    <span
+    <svg
       aria-hidden
-      className="border-border size-6 overflow-hidden rounded-full border"
-      style={{
-        background: `linear-gradient(to top, var(--foreground) ${level}%, var(--muted) ${level}%)`,
-      }}
-    />
+      viewBox="0 0 24 24"
+      className="size-5 fill-current"
+      focusable="false"
+    >
+      <path d="M12,18V6A6,6 0 0,1 18,12A6,6 0 0,1 12,18M20,15.31L23.31,12L20,8.69V4H15.31L12,0.69L8.69,4H4V8.69L0.69,12L4,15.31V20H8.69L12,23.31L15.31,20H20V15.31Z" />
+    </svg>
   );
 }
 
