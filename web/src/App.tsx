@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CurveChart } from "@/components/CurveChart";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
@@ -37,8 +38,18 @@ const CURVE_ROWS: Row[] = [
     description: "Lights come up across this window.",
     joiner: "→",
     settings: [
-      { path: "lighting.morning_start", kind: "text", caption: "starts" },
-      { path: "lighting.morning_end", kind: "text", caption: "ends" },
+      {
+        path: "lighting.morning_start",
+        kind: "text",
+        caption: "starts",
+        width: "w-32",
+      },
+      {
+        path: "lighting.morning_end",
+        kind: "text",
+        caption: "ends",
+        width: "w-32",
+      },
     ],
   },
   {
@@ -46,8 +57,18 @@ const CURVE_ROWS: Row[] = [
     description: "And wind back down across this one.",
     joiner: "→",
     settings: [
-      { path: "lighting.sunset_start", kind: "text", caption: "starts" },
-      { path: "lighting.sunset_end", kind: "text", caption: "ends" },
+      {
+        path: "lighting.sunset_start",
+        kind: "text",
+        caption: "starts",
+        width: "w-32",
+      },
+      {
+        path: "lighting.sunset_end",
+        kind: "text",
+        caption: "ends",
+        width: "w-32",
+      },
     ],
   },
   {
@@ -280,6 +301,7 @@ export function App() {
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-border divide-y">
+              <CurveChart lighting={view.effective.lighting} />
               {CURVE_ROWS.map(row)}
             </CardContent>
           </Card>
