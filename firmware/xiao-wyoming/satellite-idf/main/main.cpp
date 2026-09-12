@@ -151,6 +151,22 @@ static void xmos_write(uint8_t res, uint8_t cmd, const uint8_t* data, uint8_t n)
 // What niles is doing, shown on the whole ring at once.
 enum class Leds { Idle, Listening, Thinking, Speaking };
 
+// LED_COLOR is a uint32, not three bytes — a three-byte write is
+// rejected outright, which is how every state came out the same stock
+// colour. The wire order is not documented; little-endian is the native
+// order on both sides of this bus. If the colours come out mirrored
+// (blue reading as orange), swap to big-endian here and nowhere else.
+static void led_color(uint8_t r, uint8_t g, uint8_t b) {
+  const uint32_t packed = (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+  const uint8_t bytes[4] = {
+      (uint8_t)(packed & 0xFF),
+      (uint8_t)(packed >> 8 & 0xFF),
+      (uint8_t)(packed >> 16 & 0xFF),
+      (uint8_t)(packed >> 24 & 0xFF),
+  };
+  xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_COLOR, bytes, sizeof(bytes));
+}
+
 static void leds_show(Leds state) {
   uint8_t rgb[3];
   uint8_t effect;
@@ -175,7 +191,7 @@ static void leds_show(Leds state) {
   }
   // Colour first: setting the effect last means the ring never shows
   // the new effect in the old colour, however briefly.
-  xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_COLOR, rgb, 3);
+  led_color(rgb[0], rgb[1], rgb[2]);
   xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_EFFECT, &effect, 1);
 }
 
