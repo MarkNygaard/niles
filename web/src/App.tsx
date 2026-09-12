@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CurveChart } from "@/components/CurveChart";
+import { deviceOptions } from "@/components/DevicePicker";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
@@ -120,9 +121,9 @@ const AMBIENT_ROWS: Row[] = [
     settings: [
       {
         path: "ambient_lights.devices",
-        kind: "list",
-        caption: "room/device ids, comma-separated",
-        width: "min-w-64 flex-1",
+        kind: "devices",
+        caption: "pick from the lights Niles knows about",
+        width: "min-w-72 flex-1",
       },
     ],
   },
@@ -155,6 +156,7 @@ export function App() {
 
   const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
   const history = useQuery({ queryKey: ["history"], queryFn: api.history });
+  const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ["config"] });
@@ -218,7 +220,20 @@ export function App() {
   const view = config.data as ConfigView;
   const sectionMeta = new Map(view.sections.map((s) => [s.name, s]));
 
-  function row({ label, description, settings, joiner }: Row) {
+  const lights = deviceOptions(devices.data ?? []);
+  const noLights = devices.isLoading
+    ? "Still asking Niles which lights it has…"
+    : "Niles has no lights registered yet.";
+
+  function row({ label, description, settings: declared, joiner }: Row) {
+    // The pickable lights come from the registry, which the page loads
+    // separately — so they're attached here rather than in the static
+    // row definitions above.
+    const settings = declared.map((setting) =>
+      setting.kind === "devices"
+        ? { ...setting, options: lights, optionsEmpty: noLights }
+        : setting,
+    );
     const id = settings[0].path;
     // A section the config file never mentions has no entry here, so it
     // reads as boot-only. That errs towards telling someone to restart

@@ -25,6 +25,16 @@ export interface ConfigView {
   persistent: boolean;
 }
 
+/** A device as `GET /devices` reports it. */
+export interface Device {
+  /** Fully qualified: `z2m:living_room/lamp`, `wled:living_room/tv`. */
+  id: string;
+  source: string;
+  room: string;
+  name: string;
+  class: string;
+}
+
 export interface Change {
   path: string;
   from: unknown | null;
@@ -93,6 +103,8 @@ export const api = {
     request<Applied>(`/config/${encodeURIComponent(path)}`, {
       method: "DELETE",
     }),
+
+  devices: () => request<Device[]>("/devices"),
 
   history: () => request<Revision[]>("/config/history"),
 

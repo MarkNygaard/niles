@@ -121,30 +121,34 @@ describe("SettingRow", () => {
     expect(saveButton()).toBeDisabled();
   });
 
-  it("edits a list as comma-separated ids, and lets it be emptied", () => {
-    const settings = [
-      { path: "ambient_lights.devices", kind: "list" as const, caption: "ids" },
-    ];
+  it("saves what the device picker changed", () => {
     const { onSave } = setup({
       label: "Ambient lights",
-      settings,
-      values: { "ambient_lights.devices": ["living_room/tv_lightstrip"] },
+      settings: [
+        {
+          path: "ambient_lights.devices",
+          kind: "devices",
+          caption: "pick from the lights Niles knows about",
+          options: [
+            {
+              value: "wled:living_room/tv_light",
+              label: "Tv light",
+              room: "Living room",
+              source: "wled",
+            },
+          ],
+        },
+      ],
+      values: { "ambient_lights.devices": ["wled:living_room/tv_light"] },
     });
-    const field = input("Ambient lights ids");
-    expect(field).toHaveValue("living_room/tv_lightstrip");
-
-    type(field, "living_room/tv_lightstrip, office/lamp");
-    fireEvent.keyDown(field, { key: "Enter" });
-    expect(onSave).toHaveBeenCalledWith([
-      {
-        path: "ambient_lights.devices",
-        value: ["living_room/tv_lightstrip", "office/lamp"],
-      },
-    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Remove Tv light" }));
 
     // No ambient lights at all is a choice, unlike an empty number.
-    type(field, "");
     expect(saveButton()).toBeEnabled();
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith([
+      { path: "ambient_lights.devices", value: [] },
+    ]);
   });
 
   it("resets every overridden value in the row at once", () => {

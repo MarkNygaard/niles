@@ -361,18 +361,15 @@ fn config_validate(args: ConfigValidateArgs) -> anyhow::Result<()> {
 /// section. Devices listed here are excluded from the ambient
 /// lighting curve and the morning routine.
 fn build_ambient_set(cfg: &Config) -> Arc<HashSet<DeviceId>> {
-    let mut set = HashSet::new();
-    for raw in &cfg.ambient_lights.devices {
-        match DeviceId::parse(&format!("z2m:{raw}")) {
-            Ok(id) => {
-                set.insert(id);
-            }
-            Err(e) => {
-                tracing::warn!("ambient_lights device {raw:?} failed to parse: {e}");
-            }
+    // Unreachable in practice: the config is validated before it gets
+    // here, and validation parses these same entries.
+    match cfg.ambient_lights.device_ids() {
+        Ok(ids) => Arc::new(ids.into_iter().collect()),
+        Err(e) => {
+            tracing::warn!("ambient_lights: {e}; no lights will be treated as ambient");
+            Arc::new(HashSet::new())
         }
     }
-    Arc::new(set)
 }
 fn parse_wled_id(name: &str) -> Option<DeviceId> {
     DeviceId::parse(&format!("wled:{name}"))
