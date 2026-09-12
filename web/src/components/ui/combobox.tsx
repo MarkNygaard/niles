@@ -1,5 +1,6 @@
 "use client"
 
+import { useRef } from "react"
 import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox"
 
 import { cn } from "@/lib/utils"
@@ -8,6 +9,16 @@ function Combobox<Value, Multiple extends boolean | undefined = false>(
   props: ComboboxPrimitive.Root.Props<Value, Multiple>
 ) {
   return <ComboboxPrimitive.Root {...props} />
+}
+
+/**
+ * A ref for `ComboboxChips`, to hand to `ComboboxContent`.
+ *
+ * Without it the popup measures the inner input, which is narrower than
+ * the bordered box around it, and the list comes out too small.
+ */
+function useComboboxAnchor() {
+  return useRef<HTMLDivElement | null>(null)
 }
 
 function ComboboxChips({ className, ...props }: ComboboxPrimitive.Chips.Props) {
@@ -62,21 +73,6 @@ function ComboboxInput({ className, ...props }: ComboboxPrimitive.Input.Props) {
   )
 }
 
-function ComboboxTrigger({
-  className,
-  ...props
-}: ComboboxPrimitive.Trigger.Props) {
-  return (
-    <ComboboxPrimitive.Trigger
-      data-slot="combobox-trigger"
-      className={cn(
-        "ml-auto rounded-sm p-1 text-muted-foreground transition-colors hover:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        className
-      )}
-      {...props}
-    />
-  )
-}
 
 /**
  * The popup, portalled and positioned. `anchor` matters: left to itself
@@ -166,5 +162,5 @@ export {
   ComboboxItem,
   ComboboxItemIndicator,
   ComboboxList,
-  ComboboxTrigger,
+  useComboboxAnchor,
 }

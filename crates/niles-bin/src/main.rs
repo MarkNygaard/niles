@@ -4210,6 +4210,7 @@ async fn run_curve_tick(
             match ambient_target {
                 Some(want) => build_ambient_target(
                     &device.state,
+                    device.capabilities,
                     // Unset brightness follows the curve rather than
                     // freezing wherever the light happened to be.
                     Some(want.brightness.unwrap_or(curve_target.0)),

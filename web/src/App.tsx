@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CurveChart } from "@/components/CurveChart";
+import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
@@ -127,47 +128,19 @@ const AMBIENT_ROWS: Row[] = [
       },
     ],
   },
-  {
-    label: "Held at",
-    description: "How bright. Leave unset to not touch them at all.",
-    settings: [
-      {
-        path: "lighting.ambient_brightness",
-        kind: "number",
-        caption: "brightness %",
-        width: "w-28",
-      },
-    ],
-  },
-  {
-    label: "Colour",
-    description:
-      "For RGB lights. Set one and it takes precedence over colour temperature — a light is in one mode or the other, never both.",
-    settings: [
-      {
-        path: "lighting.ambient_color",
-        kind: "color",
-        caption: "",
-        width: "w-auto",
-      },
-    ],
-  },
-  {
-    label: "Colour temperature",
-    description:
-      "For lights with a white channel. 2000–2200 K is candle-to-lamp warm. WLED strips never receive this.",
-    settings: [
-      {
-        path: "lighting.ambient_kelvin",
-        kind: "number",
-        caption: "kelvin",
-        width: "w-28",
-      },
-    ],
-  },
 ];
 
 type Entry = { path: string; value: unknown };
+
+function numberAt(root: unknown, path: string): number | undefined {
+  const value = valueAt(root, path);
+  return typeof value === "number" ? value : undefined;
+}
+
+function stringAt(root: unknown, path: string): string | undefined {
+  const value = valueAt(root, path);
+  return typeof value === "string" ? value : undefined;
+}
 
 export function App() {
   const queryClient = useQueryClient();
@@ -244,6 +217,14 @@ export function App() {
   const noLights = devices.isLoading
     ? "Still asking Niles which lights it has…"
     : "Niles has no lights registered yet.";
+
+  // Only offer a control something can act on: a house of RGB strips
+  // has no use for a colour temperature, and offering one would invite
+  // setting a value that goes nowhere.
+  const chosen = new Set(
+    (valueAt(view.effective, "ambient_lights.devices") as string[] | undefined) ?? [],
+  );
+  const ambient = lights.filter((light) => chosen.has(light.value));
 
   function row({ label, description, settings: declared, joiner }: Row) {
     // The pickable lights come from the registry, which the page loads
@@ -351,6 +332,24 @@ export function App() {
             </CardHeader>
             <CardContent className="divide-border divide-y">
               {AMBIENT_ROWS.map(row)}
+              <div className="grid gap-x-8 gap-y-3 py-4 sm:grid-cols-[minmax(190px,240px)_minmax(0,1fr)]">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium">Held at</span>
+                  <p className="text-muted-foreground text-xs">
+                    What they show instead of the curve. Leave them unset and
+                    ambient lights are not touched at all.
+                  </p>
+                </div>
+                <AmbientControls
+                  supportsRgb={ambient.some((light) => light.supportsRgb)}
+                  supportsColorTemp={ambient.some((light) => light.supportsColorTemp)}
+                  brightness={numberAt(view.effective, "lighting.ambient_brightness")}
+                  color={stringAt(view.effective, "lighting.ambient_color")}
+                  kelvin={numberAt(view.effective, "lighting.ambient_kelvin")}
+                  disabled={save.isPending}
+                  onChange={(path, value) => save.mutate({ row: path, entries: [{ path, value }] })}
+                />
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

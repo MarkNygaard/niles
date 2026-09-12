@@ -46,10 +46,13 @@ pub struct LightingConfig {
     /// [`Self::ambient_color`] for those.
     #[serde(default)]
     pub ambient_kelvin: Option<u16>,
-    /// Colour for ambient lights as `#rrggbb`. Takes precedence over
-    /// [`Self::ambient_kelvin`]: a light is in colour mode or white
-    /// mode, never both, so sending each would leave the winner up to
-    /// the firmware.
+    /// Colour for ambient lights as `#rrggbb`.
+    ///
+    /// Applied to the ambient lights that can take a colour; the ones
+    /// that only have a white channel get [`Self::ambient_kelvin`]
+    /// instead. A single light is never sent both — it is in one mode
+    /// or the other, and sending each would leave the winner up to the
+    /// firmware.
     #[serde(default)]
     pub ambient_color: Option<String>,
     #[serde(default)]
@@ -127,15 +130,12 @@ impl LightingConfig {
     /// `None` for a field means "leave that alone".
     pub fn ambient_target(&self) -> Option<AmbientTarget> {
         let rgb = self.ambient_color.as_deref().and_then(parse_hex_color);
+        // Both are kept: a house can hold RGB strips and white-only
+        // bulbs, and each light takes the one it can use. Choosing
+        // between them here would leave the other kind unlit.
         let target = AmbientTarget {
             brightness: self.ambient_brightness,
-            // An explicit colour is the more specific ask, and a light
-            // cannot be in both modes at once.
-            kelvin: if rgb.is_some() {
-                None
-            } else {
-                self.ambient_kelvin
-            },
+            kelvin: self.ambient_kelvin,
             rgb,
         };
         (target != AmbientTarget::default()).then_some(target)
@@ -305,9 +305,10 @@ kelvin = 2000
     }
 
     #[test]
-    fn a_colour_wins_over_a_colour_temperature() {
-        // A light is in colour mode or white mode, never both. Sending
-        // each would leave the winner up to the firmware.
+    fn a_colour_and_a_colour_temperature_both_survive() {
+        // A house can hold RGB strips and white-only bulbs. Each light
+        // takes the one it can use; choosing here would leave the other
+        // kind unlit.
         let cfg = lighting_with(
             "ambient_kelvin = 2200
 ambient_color = \"#ff8000\"
@@ -315,7 +316,7 @@ ambient_color = \"#ff8000\"
         );
         let target = cfg.ambient_target().unwrap();
         assert_eq!(target.rgb, Some([255, 128, 0]));
-        assert_eq!(target.kelvin, None);
+        assert_eq!(target.kelvin, Some(2200));
     }
 
     #[test]

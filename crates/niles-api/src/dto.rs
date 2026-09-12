@@ -20,6 +20,11 @@ pub struct DeviceDto {
     pub name: String,
     pub class: DeviceClassDto,
     pub state: DeviceStateDto,
+    /// What this device can be told to do, from the source's own
+    /// capability metadata. A client offering a colour control needs to
+    /// know whether anything can act on it.
+    pub supports_rgb: bool,
+    pub supports_color_temp: bool,
 }
 
 impl From<&Device> for DeviceDto {
@@ -31,6 +36,8 @@ impl From<&Device> for DeviceDto {
             name: d.id.name().as_str().to_string(),
             class: (&d.class).into(),
             state: (&d.state).into(),
+            supports_rgb: d.capabilities.rgb,
+            supports_color_temp: d.capabilities.color_temp,
         }
     }
 }

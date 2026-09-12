@@ -138,6 +138,8 @@ describe("SettingRow", () => {
               label: "Tv light",
               room: "Living room",
               source: "wled",
+              supportsRgb: true,
+              supportsColorTemp: false,
             },
           ],
         },

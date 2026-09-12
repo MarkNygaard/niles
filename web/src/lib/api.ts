@@ -33,6 +33,9 @@ export interface Device {
   room: string;
   name: string;
   class: string;
+  /** Whether the device can be told a colour / a colour temperature. */
+  supports_rgb: boolean;
+  supports_color_temp: boolean;
 }
 
 export interface Change {

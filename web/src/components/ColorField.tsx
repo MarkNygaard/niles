@@ -2,9 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-export interface ColorFieldProps {
-  id: string;
-  "aria-label": string;
+export interface ColorWheelProps {
   /** `#rrggbb`, or empty when nothing is set. */
   value: string;
   disabled?: boolean;
@@ -26,13 +24,7 @@ const RADIUS = SIZE / 2;
  * The hex field beside it stays, because a colour you liked is worth
  * being able to write down and type back.
  */
-export function ColorField({
-  id,
-  "aria-label": ariaLabel,
-  value,
-  disabled,
-  onChange,
-}: ColorFieldProps) {
+export function ColorWheel({ value, disabled, onChange }: ColorWheelProps) {
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const [draft, setDraft] = useState(value);
   // What the marker shows while a drag is in progress. Committing on
@@ -94,7 +86,7 @@ export function ColorField({
   }
 
   return (
-    <div className="flex flex-wrap items-start gap-4">
+    <div className="flex flex-col items-start gap-3">
       <div className="relative" style={{ width: SIZE, height: SIZE }}>
         <canvas
           ref={canvas}
@@ -102,7 +94,7 @@ export function ColorField({
           height={SIZE}
           role="slider"
           tabIndex={disabled ? -1 : 0}
-          aria-label={ariaLabel}
+          aria-label="Colour"
           aria-valuetext={shown || "not set"}
           className={cn(
             "rounded-full",
@@ -133,8 +125,9 @@ export function ColorField({
 
       <div className="flex flex-col gap-1">
         <Input
-          id={id}
           value={draft}
+          aria-label="Colour as hex"
+
           placeholder="not set"
           disabled={disabled}
           spellCheck={false}
@@ -206,6 +199,28 @@ export function hsvToRgb(
     Math.round((g + m) * 255),
     Math.round((b + m) * 255),
   ];
+}
+
+/**
+ * Kelvin as a screen colour — Tanner Helland's blackbody
+ * approximation, which is the one everything from photo software to
+ * WLED uses.
+ */
+export function kelvinToCss(kelvin: number): string {
+  const t = Math.min(Math.max(kelvin, 1000), 40000) / 100;
+  const red = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
+  const green =
+    t <= 66
+      ? 99.4708025861 * Math.log(t) - 161.1195681661
+      : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+  const blue =
+    t >= 66
+      ? 255
+      : t <= 19
+        ? 0
+        : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  const channel = (value: number) => Math.round(Math.min(Math.max(value, 0), 255));
+  return `rgb(${channel(red)}, ${channel(green)}, ${channel(blue)})`;
 }
 
 export function rgbToHsv(r: number, g: number, b: number) {
