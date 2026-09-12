@@ -225,6 +225,22 @@ async fn changing_a_boot_section_says_a_restart_is_needed() {
 }
 
 #[tokio::test]
+async fn a_hot_section_the_base_file_omits_still_reports_hot() {
+    // Reporting only the sections the file mentions made an unset hot
+    // section read as needing a restart — which the UI then told the
+    // user, about a change that was already live.
+    let app = app(true);
+    let (_, body) = send(&app, get("/config")).await;
+    let sections = body["sections"].as_array().expect("sections");
+    let ambient = sections
+        .iter()
+        .find(|s| s["name"] == "ambient_lights")
+        .expect("a known section is listed even when the file omits it");
+    assert_eq!(ambient["reload"], "hot");
+    assert_eq!(ambient["overridden"], false);
+}
+
+#[tokio::test]
 async fn an_optional_value_the_base_file_omits_can_still_be_set() {
     // The UI offers every known setting, configured or not. A value that
     // has never been set is the normal case for an optional one — and is
