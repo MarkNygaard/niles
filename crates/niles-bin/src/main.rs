@@ -47,6 +47,8 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 mod conversation;
 mod last_target;
@@ -321,7 +323,21 @@ async fn main() -> anyhow::Result<()> {
                 "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_mqtt=info,niles_scheduler=info,niles_tools=info",
             )
         });
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // The same events go to stdout and to a small in-memory ring the
+    // HTTP API serves. `kubectl logs` is a different tool with
+    // different credentials, and "why did it just do that" is asked far
+    // too often to live behind one.
+    // Process-wide, like the subscriber that fills it — threading it
+    // through every subcommand's signature to reach the one that serves
+    // HTTP would be ceremony for a thing there is exactly one of.
+    let logs = LOG_BUFFER
+        .get_or_init(niles_api::logs::LogBuffer::new)
+        .clone();
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(niles_api::logs::LogLayer::new(logs.clone()))
+        .init();
 
     let cli = Cli::parse();
     match cli.command {
@@ -1551,6 +1567,9 @@ async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// The in-memory log ring, installed at startup and served by `/logs`.
+static LOG_BUFFER: std::sync::OnceLock<niles_api::logs::LogBuffer> = std::sync::OnceLock::new();
 
 const MAX_TOOL_ITERATIONS: usize = 5;
 
@@ -4099,7 +4118,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         z2m_prefix.clone(),
         bus.clone(),
     )
-    .with_config_store(Some(store.clone()));
+    .with_config_store(Some(store.clone()))
+    .with_logs(LOG_BUFFER.get().cloned());
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(api_bind, api_state).await {
             tracing::error!("API server exited: {e}");

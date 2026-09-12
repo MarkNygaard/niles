@@ -15,6 +15,7 @@ pub fn router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/healthz", get(handlers::healthz))
         .route("/devices", get(handlers::list_devices))
+        .route("/logs", get(crate::logs::get_logs))
         .route("/rooms/{room}", get(handlers::devices_in_room))
         .route("/rooms/{room}/{device}", post(handlers::set_device))
         .route("/events/stream", get(crate::events::events_stream))
