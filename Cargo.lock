@@ -1569,6 +1569,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "niles-config",
+ "niles-recognition",
  "sqlx",
  "tokio",
  "toml",
@@ -1689,6 +1690,7 @@ dependencies = [
 name = "niles-recognition"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "fs2",
  "ndarray",
