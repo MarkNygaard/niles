@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { Combobox } from "@base-ui/react/combobox";
 import { Check, ChevronDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -57,6 +57,10 @@ export function DevicePicker({
     return table;
   }, [options, value.join("|")]);
 
+  // The popup anchors to whatever it is told to; left alone it picks
+  // the inner text input, which is narrower than the box you see.
+  const anchor = useRef<HTMLDivElement | null>(null);
+
   const selected = value.map((device) => byId.get(device)!);
   const labelFor = (device: string) => byId.get(device)?.label ?? device;
 
@@ -71,6 +75,7 @@ export function DevicePicker({
       onValueChange={(next) => onChange(next.map((item) => item.value))}
     >
       <Combobox.Chips
+        ref={anchor}
         className={cn(
           "border-input flex min-h-8 w-full flex-wrap items-center gap-1 rounded-lg border px-1.5 py-1 transition-colors",
           "focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-3",
@@ -114,7 +119,12 @@ export function DevicePicker({
       </Combobox.Chips>
 
       <Combobox.Portal>
-        <Combobox.Positioner sideOffset={6} className="z-50">
+        <Combobox.Positioner
+          anchor={anchor}
+          align="start"
+          sideOffset={6}
+          className="z-50"
+        >
           <Combobox.Popup className="bg-popover text-popover-foreground border-border max-h-64 w-(--anchor-width) overflow-y-auto rounded-lg border p-1 shadow-lg">
             <Combobox.Empty className="text-muted-foreground px-2 py-3 text-xs">
               {options.length === 0 ? emptyMessage : "No light matches that."}
