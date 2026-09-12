@@ -70,6 +70,7 @@ impl IntentRouter {
             .or_else(|| match_timer_list(&t))
             .or_else(|| match_timer_remaining(&t))
             .or_else(|| match_stop_cancel(&t))
+            .or_else(|| match_light_set_last(&t))
             .or_else(|| match_datetime_query(&t))
             .or_else(|| match_enroll_speaker(&t))
     }
@@ -117,6 +118,27 @@ pub(crate) fn normalize(s: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// "turn it back on" / "turn them off again" / "switch it on".
+///
+/// Matched after every pattern that names a room, so a sentence that
+/// says what it means is never resolved from memory instead.
+fn light_set_last_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^(?:turn(?:ed|s)?|switch(?:ed|es)?|put)\s+(?:it|them|that|those|these)\s+(?:back\s+)?(on|off)(?:\s+again)?$",
+        )
+        .expect("valid regex")
+    })
+}
+
+fn match_light_set_last(t: &str) -> Option<Intent> {
+    let caps = light_set_last_regex().captures(t)?;
+    Some(Intent::LightSetLast {
+        on: caps.get(1)?.as_str() == "on",
+    })
 }
 
 // ---- Light on/off ----------------------------------------------------------
@@ -3470,6 +3492,57 @@ mod mishearing_tests {
     fn the_whole_home_forms_tolerate_it_too() {
         assert_eq!(
             parse("turned off all the lights"),
+            Some(Intent::LightSetAll { on: false })
+        );
+    }
+}
+
+#[cfg(test)]
+mod follow_up_tests {
+    use super::*;
+
+    fn parse(t: &str) -> Option<Intent> {
+        IntentRouter::new().parse(t)
+    }
+
+    #[test]
+    fn the_natural_follow_up_stays_in_tier_0() {
+        for phrase in [
+            "turn it back on",
+            "turn it on again",
+            "turn it on",
+            "switch it back on",
+            "turn them on",
+            "turn that back on",
+        ] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::LightSetLast { on: true }),
+                "{phrase}"
+            );
+        }
+        for phrase in ["turn it off", "turn it off again", "turn them back off"] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::LightSetLast { on: false }),
+                "{phrase}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sentence_that_names_its_target_is_not_a_follow_up() {
+        // Said plainly, it should be resolved plainly — never from
+        // memory, which could point somewhere else entirely.
+        assert_eq!(
+            parse("turn on the office light"),
+            Some(Intent::LightSet {
+                room: "office".into(),
+                on: true
+            })
+        );
+        assert_eq!(
+            parse("turn off all the lights"),
             Some(Intent::LightSetAll { on: false })
         );
     }

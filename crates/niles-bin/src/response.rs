@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// Convert a canonical room name (`living_room`) to spoken form
 /// (`living room`).
-fn spoken_room(room: &str) -> String {
+pub(crate) fn spoken_room(room: &str) -> String {
     room.replace('_', " ")
 }
 
@@ -363,6 +363,17 @@ pub fn enrollment_no_audio() -> String {
 
 pub fn enrollment_failed() -> String {
     "I couldn't save your voice just now.".to_string()
+}
+
+/// "Office lights back on." — says what it acted on, because "it" was
+/// resolved from memory and the user deserves to hear whether we
+/// resolved it the way they meant.
+pub fn light_set_last(spoken_room: &str, on: bool) -> String {
+    format!(
+        "{} lights {}.",
+        capitalize_first(spoken_room),
+        if on { "back on" } else { "off" }
+    )
 }
 
 // ---- the clock ------------------------------------------------------

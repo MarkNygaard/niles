@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
 
 mod conversation;
+mod last_target;
 mod manifest;
 mod recognition;
 mod response;
@@ -1622,10 +1623,30 @@ async fn run_tool_calling_chat_with_messages(
     max_iterations: usize,
     exclude_tool: Option<&str>,
 ) -> anyhow::Result<(LoopOutcome, Vec<review::ToolTrace>)> {
-    let mut llm_tools = registry.llm_tools();
+    // Only the tools this request could plausibly use. Every schema
+    // goes on the wire on every iteration, and with thirty-odd
+    // registered that is most of the prompt — one measured call was
+    // 3 497 tokens of an 8 000-per-minute budget.
+    //
+    // Taken from the last thing the user said rather than passed in,
+    // so every caller of this loop benefits without changing.
+    let transcript = messages
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            Message::User { content } => Some(content.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut llm_tools = registry.llm_tools_for(transcript);
     if let Some(name) = exclude_tool {
         llm_tools.retain(|t| t.name != name);
     }
+    tracing::debug!(
+        "sending {} of {} tools for {transcript:?}",
+        llm_tools.len(),
+        registry.llm_tools().len()
+    );
     let mut trace: Vec<review::ToolTrace> = Vec::new();
 
     for _ in 0..max_iterations {
@@ -2339,6 +2360,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
+        last_target: Arc::new(last_target::LastTarget::default()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -2445,6 +2467,8 @@ struct DispatchCtx {
     home: Arc<niles_config::HomeConfig>,
     review: niles_config::SkillsReviewConfig,
     conversation: Arc<conversation::ConversationMemory>,
+    /// What "it" refers to, per room. See [`last_target`].
+    last_target: Arc<last_target::LastTarget>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -2772,8 +2796,23 @@ async fn dispatch_transcript(
                 on: Some(on),
                 ..Default::default()
             };
+            ctx.last_target
+                .remember(origin_room, &response::spoken_room(&room), &targets);
             dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_set(&room, on))
+        }
+        Intent::LightSetLast { on } => {
+            let Some((spoken, targets)) = ctx.last_target.resolve(origin_room) else {
+                // Nothing recent to point at. The LLM has the
+                // conversation history and may do better than we can.
+                return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+            };
+            let desired = DeviceState {
+                on: Some(on),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::light_set_last(&spoken, on))
         }
         Intent::DateTimeQuery { date } => Some(response::datetime_now(&ctx.home.timezone, date)),
         Intent::EnrollSpeaker { name } => Some(enroll_by_voice(ctx, peer, &name, voice).await),
@@ -4083,6 +4122,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
+        last_target: Arc::new(last_target::LastTarget::default()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.

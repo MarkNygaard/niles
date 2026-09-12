@@ -18,6 +18,15 @@ pub enum Intent {
         on: bool,
     },
 
+    /// "turn it back on" / "turn them off again" — the thing you just
+    /// changed, whatever it was.
+    ///
+    /// Resolved from what this room last acted on. The most natural
+    /// follow-up there is, and without it every one costs an LLM call.
+    LightSetLast {
+        on: bool,
+    },
+
     /// "what time is it" / "what day is it" / "what's the date".
     ///
     /// Deterministic questions with deterministic answers, asked often.
