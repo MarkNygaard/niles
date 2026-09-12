@@ -8,7 +8,7 @@ Niles is an open-source, AI-first home automation system designed to replace Hom
 
 - Have a relatively focused device ecosystem (mostly Zigbee via Z2M, maybe a few WiFi-native devices)
 - Want sub-second voice interactions ("Alexa-fast" or faster)
-- Prefer code/config over UI-driven setup
+- Prefer code/config over UI-driven setup (see [Runtime configuration](#runtime-configuration) for where that line actually falls)
 - Want a voice assistant with real LLM intelligence as a first-class citizen, not a bolted-on afterthought
 
 Home Assistant is a fantastic project, but it solves a different problem: maximum protocol/vendor coverage for non-technical users. That makes it heavy, UI-driven, and slow to evolve in the directions that matter for an AI-first assistant. Niles is opinionated, code-first, and assumes the user is comfortable with infrastructure.
@@ -183,6 +183,12 @@ These are the current recommendations; the system should be provider-agnostic so
 ## Device naming convention (the no-UI strategy)
 
 To avoid building an admin UI in v1, Niles uses **device names in the underlying source as the single source of truth** for room/device structure. There is no separate Niles-side device database, no admin screens, no manual room assignment.
+
+This still holds with the config UI in place: that edits *values*, not
+topology. Where it names devices — choosing which lights are ambient,
+say — it offers the registry's own list, and what it stores is the id
+the source gave them. Rename a device in Z2M and Niles follows; there
+is nowhere else for the name to disagree.
 
 ### The convention
 
@@ -399,7 +405,12 @@ Six rules, all consistent:
 5. **Any manual adjustment to brightness or color temp → manual mode until next off→on.**
 6. **Manual off during a ramp cancels the routine.** No system override of explicit user intent.
 
-The system has no UI for any of this. Configuration is a single YAML/TOML file (sunrise/sunset times, day patterns, target lights, color temp curve points) plus voice commands for ad-hoc adjustments ("skip tomorrow's wake-up," "set sunset 30 minutes later this week").
+The curve's shape lives in the config file (sunrise/sunset times, day
+patterns, target lights, color temp curve points). Its values can also
+be changed while Niles runs — by voice ("make the evenings warmer"), or
+in the config UI — and take effect on the next tick. See
+[Runtime configuration](#runtime-configuration) for which settings are
+tunable that way and which are not.
 
 ### How the curve is computed
 
@@ -1440,6 +1451,64 @@ A new crate, `niles-automations`:
 ### Permissions interaction
 
 Voice-created automations are admin-only (they affect everyone). Listing and disabling for a single day can be done by anyone. Deletion of a voice-created automation is admin-only. Config-defined automations (in the TOML) are deployed by whoever deployed Niles — out-of-band from runtime permissions.
+
+## Runtime configuration
+
+"Code/config over UI" is a statement about *structure*, not about every
+value. Two kinds of setting live in the config file, and they behave
+differently:
+
+- **Structural config** — the MQTT broker, device topology, listen
+  addresses, credentials, which integrations exist. Deployed from git,
+  read once at startup, never editable at runtime. Getting one wrong is
+  a deploy to fix, which is correct: these describe the house's wiring.
+- **Experiential config** — the lighting curve, ambient behaviour,
+  automation thresholds. Values tuned by feel, repeatedly, against
+  lights you are looking at. Round-tripping those through a git commit
+  and a pod restart is friction with no safety benefit.
+
+The second kind is editable while Niles runs, from three surfaces
+sharing one store: the config UI, the `update_config` voice tool, and
+`PATCH /config`.
+
+### How it works
+
+The ConfigMap is the **base**. A writable **override document** layers
+over it, and the result is validated as a whole before it replaces the
+running snapshot — so a rejected value leaves the previous config in
+force rather than a half-applied one. Overrides are persisted before
+the swap, so a write that reaches memory but not storage cannot
+silently revert on the next restart. A capped revision history makes
+undo possible and shows who changed what, including by voice.
+
+### Hot and boot sections
+
+Each top-level section is classified:
+
+- **Hot** — re-read by the task that owns it, so a change lands on the
+  next tick. `lighting` and `ambient_lights` today.
+- **Boot** — built once at startup and moved into a task that owns it.
+  Everything else.
+
+This is a statement about the *implementation*, not about intent: a
+section is hot only when something actually re-reads it. The
+classification is exposed rather than hidden — the UI marks boot
+sections as needing a restart, and the voice tool **refuses** to edit
+one, because storing a change nobody can act on is worse than declining
+it out loud.
+
+Credential fields (`*_env`) are never editable and never rendered. They
+are env-var *names*; the values live in the secret store and never pass
+through this path.
+
+### Storage
+
+Overrides live in Postgres, beside the rest of Niles's state. A
+node-local volume was the obvious first choice and the wrong one: it
+pins the pod to one node and blocks drains, which on a Talos cluster
+means every upgrade. Niles owns its tables and creates them on first
+use. Where a deployment has no database, changes still apply — they
+just don't outlive the process, and every surface says so.
 
 ## Deployment
 
