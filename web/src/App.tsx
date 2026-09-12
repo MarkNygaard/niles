@@ -16,6 +16,7 @@ import { SettingField } from "@/components/SettingField";
 import type { FieldKind } from "@/components/SettingField";
 import { ApiError, api, patchFor, valueAt } from "@/lib/api";
 import type { Applied, ConfigView, Revision } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { AlertTriangle, Undo2 } from "lucide-react";
 
 interface Field {
@@ -26,68 +27,94 @@ interface Field {
   hint?: string;
 }
 
-/** The curve fields, in the order they occur over a day. */
-const CURVE_FIELDS: Field[] = [
-  {
-    path: "lighting.morning_start",
-    label: "Morning ramp starts",
-    kind: "text",
-    hint: "HH:MM",
-  },
-  { path: "lighting.morning_end", label: "Morning ramp ends", kind: "text", hint: "HH:MM" },
-  {
-    path: "lighting.sunset_start",
-    label: "Sunset ramp starts",
-    kind: "text",
-    hint: "HH:MM",
-  },
-  { path: "lighting.sunset_end", label: "Sunset ramp ends", kind: "text", hint: "HH:MM" },
-  {
-    path: "lighting.night_floor_brightness",
-    label: "Night floor brightness",
-    kind: "number",
-    hint: "0–100%, held overnight",
-  },
-  {
-    path: "lighting.daytime_brightness",
-    label: "Daytime brightness",
-    kind: "number",
-    hint: "0–100%, held between the ramps",
-  },
-  {
-    path: "lighting.curve_pause_start",
-    label: "Curve pause starts",
-    kind: "text",
-    hint: "e.g. fri 12:00 — the curve freezes at this value until the pause ends",
-  },
-  {
-    path: "lighting.curve_pause_end",
-    label: "Curve pause ends",
-    kind: "text",
-    hint: "e.g. sun 12:00",
-  },
+/**
+ * The curve, a row at a time. Each row is one pair — a ramp's start and
+ * end, the two levels it moves between — because that is how someone
+ * thinks about them and how they have to be read to make sense.
+ */
+const CURVE_ROWS: Field[][] = [
+  [
+    {
+      path: "lighting.morning_start",
+      label: "Morning ramp starts",
+      kind: "text",
+      hint: "HH:MM",
+    },
+    {
+      path: "lighting.morning_end",
+      label: "Morning ramp ends",
+      kind: "text",
+      hint: "HH:MM",
+    },
+  ],
+  [
+    {
+      path: "lighting.sunset_start",
+      label: "Sunset ramp starts",
+      kind: "text",
+      hint: "HH:MM",
+    },
+    {
+      path: "lighting.sunset_end",
+      label: "Sunset ramp ends",
+      kind: "text",
+      hint: "HH:MM",
+    },
+  ],
+  [
+    {
+      path: "lighting.night_floor_brightness",
+      label: "Night floor brightness",
+      kind: "number",
+      hint: "0–100%, held overnight",
+    },
+    {
+      path: "lighting.daytime_brightness",
+      label: "Daytime brightness",
+      kind: "number",
+      hint: "0–100%, held between the ramps",
+    },
+  ],
+  [
+    {
+      path: "lighting.curve_pause_start",
+      label: "Curve pause starts",
+      kind: "text",
+      hint: "e.g. fri 12:00 — the curve freezes here until the pause ends",
+    },
+    {
+      path: "lighting.curve_pause_end",
+      label: "Curve pause ends",
+      kind: "text",
+      hint: "e.g. sun 12:00",
+    },
+  ],
 ];
 
 /** Lights that sit out the curve, and what they hold instead. */
-const AMBIENT_FIELDS: Field[] = [
-  {
-    path: "ambient_lights.devices",
-    label: "Ambient lights",
-    kind: "list",
-    hint: "Comma-separated room/device ids, e.g. living_room/tv_lightstrip",
-  },
-  {
-    path: "lighting.ambient_brightness",
-    label: "Brightness",
-    kind: "number",
-    hint: "0–100%. Leave unset and ambient lights are simply left alone",
-  },
-  {
-    path: "lighting.ambient_kelvin",
-    label: "Colour",
-    kind: "number",
-    hint: "Kelvin — 2000–2200 is candle-to-lamp warm",
-  },
+const AMBIENT_ROWS: Field[][] = [
+  [
+    {
+      path: "ambient_lights.devices",
+      label: "Ambient lights",
+      kind: "list",
+      hint: "Comma-separated room/device ids, e.g. living_room/tv_lightstrip",
+    },
+  ],
+  [
+    {
+      path: "lighting.ambient_brightness",
+      label: "Brightness",
+      kind: "number",
+      hint: "0–100%. Leave unset and ambient lights are simply left alone",
+    },
+    {
+      path: "lighting.ambient_kelvin",
+      label: "Colour",
+      kind: "number",
+      hint: "Kelvin — 2000–2200 is candle-to-lamp warm",
+    },
+  ],
 ];
 
 export function App() {
@@ -178,6 +205,20 @@ export function App() {
     );
   }
 
+  function row(fields: Field[]) {
+    return (
+      <div
+        key={fields[0].path}
+        className={cn(
+          "grid gap-x-8 gap-y-4 py-4",
+          fields.length > 1 && "sm:grid-cols-2",
+        )}
+      >
+        {fields.map(field)}
+      </div>
+    );
+  }
+
   return (
     <Shell>
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -234,7 +275,7 @@ export function App() {
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-border divide-y">
-              {CURVE_FIELDS.map(field)}
+              {CURVE_ROWS.map(row)}
             </CardContent>
           </Card>
 
@@ -248,7 +289,7 @@ export function App() {
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-border divide-y">
-              {AMBIENT_FIELDS.map(field)}
+              {AMBIENT_ROWS.map(row)}
             </CardContent>
           </Card>
         </TabsContent>
@@ -350,7 +391,7 @@ function Notice({
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-8">
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-6 py-8">
       {children}
     </main>
   );
