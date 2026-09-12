@@ -365,8 +365,82 @@ pub fn enrollment_failed() -> String {
     "I couldn't save your voice just now.".to_string()
 }
 
+// ---- the clock ------------------------------------------------------
+
+/// "It's 15:20." / "It's Saturday the 12th of September."
+///
+/// Spoken, so the date drops the year: nobody asks what day it is and
+/// wants to be told which year they are in.
+pub fn datetime_now(timezone: &str, date: bool) -> String {
+    let Ok(tz) = timezone.parse::<chrono_tz::Tz>() else {
+        // Tier 0 cannot answer without a clock it trusts, and guessing
+        // the time is worse than admitting it.
+        return "I'm not sure what time it is — my timezone isn't set.".to_string();
+    };
+    let now = chrono::Utc::now().with_timezone(&tz);
+    if date {
+        format!(
+            "It's {}, the {} of {}.",
+            now.format("%A"),
+            ordinal(now.format("%-d").to_string().parse().unwrap_or(1)),
+            now.format("%B"),
+        )
+    } else {
+        format!("It's {}.", now.format("%-H:%M"))
+    }
+}
+
+/// 1 -> "1st", 12 -> "12th", 23 -> "23rd". Said aloud, so it has to be
+/// the spoken form rather than the numeral.
+fn ordinal(day: u32) -> String {
+    let suffix = match (day % 10, day % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{day}{suffix}")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_time_is_spoken_not_printed() {
+        let said = datetime_now("Europe/Copenhagen", false);
+        assert!(said.starts_with("It's "), "{said}");
+        assert!(said.ends_with('.'), "{said}");
+    }
+
+    #[test]
+    fn the_date_leaves_out_the_year() {
+        // Nobody asks what day it is and wants to be told which year
+        // they are in.
+        let said = datetime_now("Europe/Copenhagen", true);
+        assert!(!said.contains("202"), "{said}");
+        assert!(said.contains("the "), "{said}");
+    }
+
+    #[test]
+    fn ordinals_read_the_way_they_are_said() {
+        assert_eq!(ordinal(1), "1st");
+        assert_eq!(ordinal(2), "2nd");
+        assert_eq!(ordinal(3), "3rd");
+        assert_eq!(ordinal(4), "4th");
+        assert_eq!(ordinal(11), "11th");
+        assert_eq!(ordinal(12), "12th");
+        assert_eq!(ordinal(13), "13th");
+        assert_eq!(ordinal(21), "21st");
+        assert_eq!(ordinal(22), "22nd");
+        assert_eq!(ordinal(23), "23rd");
+    }
+
+    #[test]
+    fn a_broken_timezone_admits_it_rather_than_guessing() {
+        let said = datetime_now("Not/AZone", false);
+        assert!(said.contains("not sure"), "{said}");
+    }
+
     use super::*;
     use std::time::Duration;
 

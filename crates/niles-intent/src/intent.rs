@@ -18,6 +18,16 @@ pub enum Intent {
         on: bool,
     },
 
+    /// "what time is it" / "what day is it" / "what's the date".
+    ///
+    /// Deterministic questions with deterministic answers, asked often.
+    /// Tier 1 can answer them now that the prompt carries the clock, but
+    /// it costs a round trip to say something a `strftime` knows.
+    DateTimeQuery {
+        /// True for "what day/date", false for "what time".
+        date: bool,
+    },
+
     /// "I am Mark" / "this is Mark" — teach Niles this voice.
     ///
     /// The utterance that carried the intent is itself the sample, so

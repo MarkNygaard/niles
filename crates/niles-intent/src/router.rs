@@ -70,6 +70,7 @@ impl IntentRouter {
             .or_else(|| match_timer_list(&t))
             .or_else(|| match_timer_remaining(&t))
             .or_else(|| match_stop_cancel(&t))
+            .or_else(|| match_datetime_query(&t))
             .or_else(|| match_enroll_speaker(&t))
     }
 
@@ -119,6 +120,29 @@ pub(crate) fn normalize(s: &str) -> String {
 }
 
 // ---- Light on/off ----------------------------------------------------------
+
+/// "what time is it" / "what day is it today" / "what's the date".
+///
+/// Anchored, because "what day is bin day" is a question for the LLM
+/// and only the bare forms are safe to answer from a clock.
+fn datetime_query_regex() -> &'static OnceLock<Regex> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    &RE
+}
+
+fn match_datetime_query(t: &str) -> Option<Intent> {
+    let re = datetime_query_regex().get_or_init(|| {
+        Regex::new(
+            r"^(?:what(?:'s| is)?)\s+(?:the\s+)?(time|day|date)(?:\s+is\s+it)?(?:\s+(?:is\s+it\s+)?(?:today|now|right now))?$|^what\s+(time|day|date)\s+is\s+it(?:\s+(?:today|now|right now))?$",
+        )
+        .expect("valid regex")
+    });
+    let caps = re.captures(t)?;
+    let what = caps.get(1).or_else(|| caps.get(2))?.as_str();
+    Some(Intent::DateTimeQuery {
+        date: what != "time",
+    })
+}
 
 /// "I am Mark" / "this is Mark" / "my name is Mark".
 ///
@@ -3345,5 +3369,51 @@ mod enroll_speaker_tests {
         // speaker called "going".
         assert_eq!(parse("I am going to bed"), None);
         assert_eq!(parse("this is a test of something"), None);
+    }
+}
+
+#[cfg(test)]
+mod datetime_query_tests {
+    use super::*;
+
+    fn parse(t: &str) -> Option<Intent> {
+        IntentRouter::new().parse(t)
+    }
+
+    #[test]
+    fn the_clock_questions_never_reach_the_llm() {
+        for phrase in ["what time is it", "what's the time", "what is the time"] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::DateTimeQuery { date: false }),
+                "{phrase}"
+            );
+        }
+        for phrase in [
+            "what day is it",
+            "what day is it today",
+            "what's the date",
+            "what is the date today",
+        ] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::DateTimeQuery { date: true }),
+                "{phrase}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_that_only_mentions_a_day_is_left_to_the_llm() {
+        // "what day is bin day" is a question about the house, not the
+        // clock, and answering it from strftime would be nonsense.
+        for phrase in [
+            "what day is bin day",
+            "what time does the shop open",
+            "what day should i put the bins out",
+            "what time is the meeting tomorrow",
+        ] {
+            assert_eq!(parse(phrase), None, "{phrase}");
+        }
     }
 }

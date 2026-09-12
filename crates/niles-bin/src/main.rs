@@ -818,6 +818,27 @@ fn speaker_context_from(attempted: bool, ident: Option<(String, f32)>) -> Speake
 fn supports_speaker_identification(format: niles_wyoming::AudioFormat) -> bool {
     format.sample_rate_hz == 16_000 && format.bits_per_sample == 16 && format.channels == 1
 }
+/// The current local time, for the end of the system prompt.
+///
+/// Empty when the timezone doesn't parse — a wrong time is worse than
+/// no time, because the model would answer confidently with it.
+pub(crate) fn now_context(timezone: &str) -> String {
+    let Ok(tz) = timezone.parse::<chrono_tz::Tz>() else {
+        return String::new();
+    };
+    let now = chrono::Utc::now().with_timezone(&tz);
+    format!(
+        "
+
+# Now
+
+It is {} in {}. Use this rather than asking for          the time; `current_datetime` is only needed for arithmetic across          dates.
+",
+        now.format("%A %-d %B %Y, %H:%M"),
+        tz.name(),
+    )
+}
+
 pub(crate) fn home_context(home: &niles_config::HomeConfig) -> String {
     fn prompt_field(value: &str) -> String {
         value
@@ -981,6 +1002,15 @@ fn assemble_system_prompt_with_optional_capabilities(
     if let Some(section) = speaker_context(speaker) {
         out.push_str(&section);
     }
+
+    // Last, and deliberately so: this is the one part of the prompt that
+    // changes every second. A provider with prefix caching would have
+    // the whole prompt invalidated by it if it sat at the top.
+    //
+    // Without it the model has no idea what day it is, so anything with
+    // an implicit "now" in it — "is it late?", "did I leave that on this
+    // morning?" — costs a tool call and a second round trip to answer.
+    out.push_str(&now_context(&home.timezone));
     out
 }
 
@@ -2745,6 +2775,7 @@ async fn dispatch_transcript(
             dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_set(&room, on))
         }
+        Intent::DateTimeQuery { date } => Some(response::datetime_now(&ctx.home.timezone, date)),
         Intent::EnrollSpeaker { name } => Some(enroll_by_voice(ctx, peer, &name, voice).await),
         Intent::LightSetAll { on } => {
             let targets: Vec<Device> = ctx
@@ -6315,6 +6346,22 @@ mod system_prompt_tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn the_prompt_carries_the_clock() {
+        // Without it the model spends a tool call and a second round
+        // trip on anything with an implicit "now" in it.
+        let section = now_context("Europe/Copenhagen");
+        assert!(section.contains("# Now"), "{section}");
+        assert!(section.contains("Europe/Copenhagen"), "{section}");
+    }
+
+    #[test]
+    fn an_unparseable_timezone_adds_nothing() {
+        // A wrong time is worse than no time: the model would answer
+        // confidently with it.
+        assert!(now_context("Not/AZone").is_empty());
     }
 
     #[test]
