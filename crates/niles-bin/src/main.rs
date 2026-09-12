@@ -25,7 +25,7 @@ use niles_mqtt::{
 };
 use niles_notifications::NotificationCenter;
 use niles_presence::{PresenceAggregator, PresenceSource, TadoConfig, TadoSource};
-use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig, EnrollmentStore};
+use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant, brightness_at,
@@ -343,7 +343,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Chat(args) => chat(args).await,
         Commands::VoiceTap(args) => voice_tap(args).await,
         Commands::VoiceDispatch(args) => voice_dispatch(args).await,
-        Commands::Enroll(args) => enroll(args),
+        Commands::Enroll(args) => enroll(args).await,
         Commands::Lighting(args) => lighting(args).await,
         Commands::GenerateManifest(args) => generate_manifest(args),
     }
@@ -1431,7 +1431,7 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
+async fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
     let cfg = Config::load_from_path(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
     cfg.validate().context("validating config")?;
@@ -1444,13 +1444,6 @@ fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
         .model_path
         .clone()
         .expect("model_path guaranteed by config validation");
-    let enrollment_dir = cfg
-        .recognition
-        .matcher
-        .enrollment_dir
-        .clone()
-        .expect("enrollment_dir guaranteed by config validation");
-
     let mut reader = hound::WavReader::open(&args.audio)
         .with_context(|| format!("opening audio file {}", args.audio.display()))?;
     let spec = reader.spec();
@@ -1476,17 +1469,25 @@ fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
         .extract(&samples, 16000)
         .with_context(|| "extracting speaker embedding")?;
 
-    let store = EnrollmentStore::open(&enrollment_dir)
-        .with_context(|| format!("opening enrollment store at {}", enrollment_dir.display()))?;
+    let store = build_enrollment_backend(&cfg)?.context(
+        "nowhere to keep enrolled voices: configure [database], or          [recognition.matcher] enrollment_dir",
+    )?;
     store
         .enroll(&args.name, &embedding)
+        .await
         .context("enrolling speaker")?;
 
-    let record = store.load(&args.name).context("loading enrolled speaker")?;
+    let record = store
+        .load(&args.name)
+        .await
+        .context("loading enrolled speaker")?;
     println!(
-        "Enrolled speaker '{}' with {} clip(s).",
-        record.display_name, record.clip_count
+        "Enrolled speaker '{}' with {} clip(s) in {}.",
+        record.display_name,
+        record.clip_count,
+        store.describe()
     );
+    println!("Niles picks up a new voice on its next restart.");
     Ok(())
 }
 
@@ -2208,8 +2209,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
-    let identifier =
-        build_speaker_identifier(&cfg.recognition).context("initializing speaker recognition")?;
+    let identifier = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
+        .await
+        .context("initializing speaker recognition")?;
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
@@ -3506,6 +3508,41 @@ fn spawn_override_retry(store: Arc<ConfigStore>) {
 /// Only a *misconfigured* database is fatal — a DSN that will not parse,
 /// or an env var that is not set. One that merely cannot be reached right
 /// now is not: the store reports it and retries in the background.
+/// Where enrolled voices live.
+///
+/// The database when there is one, because a voice print is under a
+/// kilobyte and the alternative is a volume — node-local ones pin the
+/// pod and block drains, network ones make recognition depend on a NAS.
+/// Falls back to a directory, which is what a laptop has.
+fn build_enrollment_backend(
+    cfg: &Config,
+) -> anyhow::Result<Option<Arc<dyn niles_recognition::EnrollmentBackend>>> {
+    if let Some(database) = &cfg.database {
+        let url = database
+            .resolve_url()
+            .context("resolving the database connection string")?;
+        let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "the connection string in {} is not a valid database URL",
+                    database.url_env
+                )
+            })?;
+        let describe = backend.describe_target();
+        return Ok(Some(Arc::new(niles_db::PostgresEnrollments::new(
+            backend.pool(),
+            describe,
+        ))));
+    }
+    match cfg.recognition.matcher.enrollment_dir.as_ref() {
+        Some(dir) => Ok(Some(Arc::new(
+            niles_recognition::EnrollmentStore::open(dir)
+                .with_context(|| format!("opening enrollment store at {}", dir.display()))?,
+        ))),
+        None => Ok(None),
+    }
+}
+
 fn build_override_backend(cfg: &Config) -> anyhow::Result<Box<dyn niles_config::OverrideBackend>> {
     if let Some(database) = &cfg.database {
         let url = database
@@ -3823,8 +3860,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
-    let identifier =
-        build_speaker_identifier(&cfg.recognition).context("initializing speaker recognition")?;
+    let identifier = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
+        .await
+        .context("initializing speaker recognition")?;
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
         .await
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;

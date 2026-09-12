@@ -29,12 +29,11 @@ impl RecognitionConfig {
                 reason: "model_path is required when enabled".into(),
             });
         }
-        if self.enabled && self.matcher.enrollment_dir.is_none() {
-            return Err(Error::InvalidSection {
-                section: "recognition.matcher",
-                reason: "enrollment_dir is required when enabled".into(),
-            });
-        }
+        // No enrollment_dir check: enrolled voices go to the database
+        // when there is one, and a voice print is under a kilobyte —
+        // far too little to justify a volume. The binary reports it if
+        // neither is configured, where it can see both sections.
+
         if let Some(p) = &self.model_path {
             if p.as_os_str().is_empty() {
                 return Err(Error::InvalidSection {
@@ -122,17 +121,16 @@ mod tests {
     }
 
     #[test]
-    fn enabled_with_model_path_but_no_enrollment_dir_err() {
+    fn enabled_without_an_enrollment_dir_is_fine() {
+        // Enrolled voices go to the database when there is one, and
+        // this section cannot see whether there is. The binary decides,
+        // where it can read both.
         let cfg = RecognitionConfig {
             enabled: true,
             model_path: Some(PathBuf::from("/models/ecapa.onnx")),
             ..Default::default()
         };
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(
-            err.contains("enrollment_dir is required when enabled"),
-            "{err}"
-        );
+        cfg.validate().expect("a database may be holding them");
     }
 
     #[test]
