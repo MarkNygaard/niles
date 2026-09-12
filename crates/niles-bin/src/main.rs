@@ -2030,18 +2030,24 @@ fn spawn_dispatch_task(
                 .expect("attempted implies identifier present");
             let pcm = pcm_bytes_to_i16(&session.pcm);
             let rate = session.format.sample_rate_hz;
-            tokio::task::spawn_blocking(move || id.identify(&pcm, rate))
+            // One embedding, two uses: recognising who spoke, and — if
+            // they were introducing themselves — enrolling them.
+            tokio::task::spawn_blocking(move || {
+                let voice = id.embed(&pcm, rate);
+                let identity = voice.as_deref().and_then(|v| id.classify(v));
+                (identity, voice)
+            })
         });
         if let Some((peer, text, mut timing)) = transcribe_session(&whisper, session).await {
-            let ident = match id_handle {
+            let (ident, voice) = match id_handle {
                 Some(h) => match h.await {
                     Ok(result) => result,
                     Err(e) => {
                         tracing::warn!("[{peer}] speaker identification task failed: {e}");
-                        None
+                        (None, None)
                     }
                 },
-                None => None,
+                None => (None, None),
             };
             if attempted {
                 match &ident {
@@ -2055,7 +2061,7 @@ fn spawn_dispatch_task(
             }
             let speaker = speaker_context_from(attempted, ident);
             let dispatch_started = Instant::now();
-            let say = handle_transcript(&ctx, peer, &text, &speaker).await;
+            let say = handle_transcript(&ctx, peer, &text, &speaker, voice.as_deref()).await;
             timing.dispatch_ms = dispatch_started.elapsed().as_millis();
             let entry = CommandEntry {
                 ts: chrono::Utc::now(),
@@ -2469,8 +2475,9 @@ async fn handle_transcript(
     peer: SocketAddr,
     text: &str,
     speaker: &SpeakerContext,
+    voice: Option<&[f32]>,
 ) -> Option<String> {
-    let response = dispatch_transcript(ctx, peer, text, speaker).await;
+    let response = dispatch_transcript(ctx, peer, text, speaker, voice).await;
     if let Some(reply) = &response {
         ctx.conversation
             .record(ctx.satellites.room_for(peer), text, reply);
@@ -2621,11 +2628,50 @@ async fn dispatch_tier1(
         }
     }
 }
+/// Teach Niles a voice from the sentence that introduced it.
+///
+/// Refuses to add clips to a name that is already enrolled to a voice
+/// this one doesn't match: a guest saying "I am Mark" would otherwise
+/// become Mark, and every later sentence of theirs would be attributed
+/// to him. `niles enroll` remains the way round it, which is the right
+/// place for that power — it needs shell access to the cluster.
+async fn enroll_by_voice(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    name: &str,
+    voice: Option<&[f32]>,
+) -> String {
+    let Some(identifier) = ctx.identifier.as_ref() else {
+        return response::enrollment_unavailable();
+    };
+    let Some(voice) = voice else {
+        return response::enrollment_no_audio();
+    };
+    if identifier.is_someone_else(name, voice).await {
+        tracing::warn!("[{peer}] refused to enrol {name}: voice does not match the enrolled one");
+        return response::enrollment_name_taken(name);
+    }
+    match identifier.enroll(name, voice).await {
+        Ok(clips) => {
+            tracing::info!("[{peer}] enrolled {name} ({clips} clip(s))");
+            response::enrolled(name, clips)
+        }
+        Err(e) => {
+            tracing::warn!("[{peer}] enrolling {name} failed: {e:#}");
+            response::enrollment_failed()
+        }
+    }
+}
+
 async fn dispatch_transcript(
     ctx: &DispatchCtx,
     peer: SocketAddr,
     text: &str,
     speaker: &SpeakerContext,
+    // The voice print of this very utterance, so "I am Mark" can enrol
+    // the sentence that said it. `None` when recognition is off or the
+    // audio was unusable.
+    voice: Option<&[f32]>,
 ) -> Option<String> {
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
@@ -2699,6 +2745,7 @@ async fn dispatch_transcript(
             dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_set(&room, on))
         }
+        Intent::EnrollSpeaker { name } => Some(enroll_by_voice(ctx, peer, &name, voice).await),
         Intent::LightSetAll { on } => {
             let targets: Vec<Device> = ctx
                 .registry
@@ -6486,27 +6533,94 @@ mod system_prompt_tests {
 
     struct MockIdentifier {
         result: Option<(String, f32)>,
+        /// Names already taken by a different voice.
+        taken: Vec<String>,
+        enrolled: std::sync::Mutex<Vec<(String, usize)>>,
     }
 
+    impl MockIdentifier {
+        fn with(result: Option<(String, f32)>) -> Self {
+            Self {
+                result,
+                taken: Vec::new(),
+                enrolled: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
     impl SpeakerIdentifier for MockIdentifier {
-        fn identify(&self, _pcm: &[i16], _sample_rate_hz: u32) -> Option<(String, f32)> {
+        fn embed(&self, _pcm: &[i16], _sample_rate_hz: u32) -> Option<Vec<f32>> {
+            Some(vec![0.0; 192])
+        }
+
+        fn classify(&self, _embedding: &[f32]) -> Option<(String, f32)> {
             self.result.clone()
         }
+
+        async fn enroll(&self, name: &str, _embedding: &[f32]) -> anyhow::Result<usize> {
+            let mut enrolled = self.enrolled.lock().unwrap();
+            let clips = enrolled.iter().filter(|(n, _)| n == name).count() + 1;
+            enrolled.push((name.to_string(), clips));
+            Ok(clips)
+        }
+
+        async fn is_someone_else(&self, name: &str, _embedding: &[f32]) -> bool {
+            self.taken.iter().any(|n| n == name)
+        }
+    }
+
+    #[tokio::test]
+    async fn introducing_yourself_enrols_the_sentence_that_said_it() {
+        let mock = Arc::new(MockIdentifier::with(None));
+        let clips = mock.enroll("mark", &[0.0; 192]).await.unwrap();
+        assert_eq!(clips, 1);
+        assert!(
+            crate::response::enrolled("mark", clips).contains("Mark"),
+            "the reply should use the name"
+        );
+    }
+
+    #[tokio::test]
+    async fn saying_it_again_adds_a_clip() {
+        // One sample is a thin voice print. Repeating the phrase is the
+        // fix, so it has to accumulate rather than replace.
+        let mock = MockIdentifier::with(None);
+        assert_eq!(mock.enroll("mark", &[0.0; 192]).await.unwrap(), 1);
+        assert_eq!(mock.enroll("mark", &[0.0; 192]).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_stranger_cannot_take_an_enrolled_name() {
+        // Otherwise a guest saying "I am Mark" becomes Mark, and every
+        // later sentence of theirs is attributed to him.
+        let mock = MockIdentifier {
+            result: None,
+            taken: vec!["mark".into()],
+            enrolled: std::sync::Mutex::new(Vec::new()),
+        };
+        assert!(mock.is_someone_else("mark", &[0.0; 192]).await);
+        assert!(!mock.is_someone_else("guest", &[0.0; 192]).await);
+    }
+
+    #[test]
+    fn the_enrolment_reply_asks_for_more_until_it_has_enough() {
+        assert!(crate::response::enrolled("mark", 1).contains("once or twice more"));
+        assert!(crate::response::enrolled("mark", 2).contains("One more"));
+        assert!(!crate::response::enrolled("mark", 3).contains("more"));
     }
 
     #[test]
     fn speaker_context_from_attempted_match() {
-        let mock = MockIdentifier {
-            result: Some(("Mark".into(), 0.95)),
-        };
-        let ctx = speaker_context_from(true, mock.identify(&[], 16000));
+        let mock = MockIdentifier::with(Some(("Mark".into(), 0.95)));
+        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]));
         assert!(matches!(ctx, SpeakerContext::Identified(ref name) if name == "Mark"),);
     }
 
     #[test]
     fn speaker_context_from_attempted_unknown() {
-        let mock = MockIdentifier { result: None };
-        let ctx = speaker_context_from(true, mock.identify(&[], 16000));
+        let mock = MockIdentifier::with(None);
+        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]));
         assert!(
             matches!(ctx, SpeakerContext::Unknown),
             "expected Unknown, got {ctx:?}"
@@ -6515,10 +6629,8 @@ mod system_prompt_tests {
 
     #[test]
     fn speaker_context_from_not_attempted_disabled() {
-        let mock = MockIdentifier {
-            result: Some(("Mark".into(), 0.95)),
-        };
-        let ctx = speaker_context_from(false, mock.identify(&[], 16000));
+        let mock = MockIdentifier::with(Some(("Mark".into(), 0.95)));
+        let ctx = speaker_context_from(false, mock.classify(&[0.0; 192]));
         assert!(
             matches!(ctx, SpeakerContext::Disabled),
             "expected Disabled when attempted=false, got {ctx:?}"

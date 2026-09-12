@@ -70,6 +70,7 @@ impl IntentRouter {
             .or_else(|| match_timer_list(&t))
             .or_else(|| match_timer_remaining(&t))
             .or_else(|| match_stop_cancel(&t))
+            .or_else(|| match_enroll_speaker(&t))
     }
 
     /// Try the existing Tier-0 patterns first, then fall through to
@@ -118,6 +119,37 @@ pub(crate) fn normalize(s: &str) -> String {
 }
 
 // ---- Light on/off ----------------------------------------------------------
+
+/// "I am Mark" / "this is Mark" / "my name is Mark".
+///
+/// Matched late, after every device pattern, because "this is" opens a
+/// lot of sentences that have nothing to do with who is speaking. The
+/// name is a single word: a household is on first-name terms, and
+/// allowing a phrase would swallow half of whatever was misheard.
+fn enroll_speaker_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^(?:i am|i'm|this is|my name is|it's|its)\s+([a-z][a-z'-]{1,23})$")
+            .expect("valid regex")
+    })
+}
+
+fn match_enroll_speaker(t: &str) -> Option<Intent> {
+    let caps = enroll_speaker_regex().captures(t)?;
+    let name = caps.get(1)?.as_str();
+    // "I'm home", "I'm back" are statements about arriving, not
+    // introductions, and presence already has opinions about them.
+    const NOT_NAMES: &[&str] = &[
+        "home", "back", "here", "sorry", "done", "ready", "awake", "up", "good", "fine", "okay",
+        "ok", "hungry", "tired", "cold", "hot", "late", "leaving", "off", "on", "out",
+    ];
+    if NOT_NAMES.contains(&name) {
+        return None;
+    }
+    Some(Intent::EnrollSpeaker {
+        name: name.to_string(),
+    })
+}
 
 fn light_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -3259,5 +3291,59 @@ mod context_tests {
         let ctx = ctx_with(&idx, None);
         assert_eq!(parse_with("previous song", ctx), None);
         assert_eq!(parse_with("go back", ctx), None);
+    }
+}
+
+#[cfg(test)]
+mod enroll_speaker_tests {
+    use super::*;
+
+    fn parse(t: &str) -> Option<Intent> {
+        IntentRouter::new().parse(t)
+    }
+
+    #[test]
+    fn introductions_are_recognised() {
+        for phrase in ["I am Mark", "I'm Mark", "this is Mark", "my name is Mark"] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::EnrollSpeaker {
+                    name: "mark".into()
+                }),
+                "{phrase}"
+            );
+        }
+    }
+
+    #[test]
+    fn arriving_home_is_not_an_introduction() {
+        // "I'm home" is the single most likely thing to be said to a
+        // house, and enrolling a speaker called Home would be a mess to
+        // undo — it would match everyone thereafter.
+        for phrase in ["I'm home", "I am back", "I'm tired", "I'm cold", "I'm okay"] {
+            assert_eq!(parse(phrase), None, "{phrase}");
+        }
+    }
+
+    #[test]
+    fn a_command_is_never_an_introduction() {
+        assert_ne!(
+            parse("turn on the office light"),
+            Some(Intent::EnrollSpeaker {
+                name: "light".into()
+            })
+        );
+        assert!(matches!(
+            parse("this is the kitchen light on"),
+            None | Some(Intent::LightSet { .. })
+        ));
+    }
+
+    #[test]
+    fn a_sentence_after_the_name_is_not_a_name() {
+        // Anchored at both ends: "I am going to bed" must not enrol a
+        // speaker called "going".
+        assert_eq!(parse("I am going to bed"), None);
+        assert_eq!(parse("this is a test of something"), None);
     }
 }

@@ -325,6 +325,46 @@ pub fn fallback() -> String {
     "I'm not sure how to help with that.".into()
 }
 
+// ---- speaker enrollment ----------------------------------------------
+
+/// Said after learning a voice. The clip count is the point: one
+/// sample is a thin voice print, and the fix is to say it again — so
+/// the reply asks for that rather than leaving recognition quietly
+/// unreliable.
+pub fn enrolled(name: &str, clips: usize) -> String {
+    let name = capitalize_first(name);
+    match clips {
+        0 | 1 => {
+            format!("Nice to meet you, {name}. Say it once or twice more and I'll know you better.")
+        }
+        2 => format!("Got it, {name}. One more would help."),
+        _ => format!("I'll know you now, {name}."),
+    }
+}
+
+/// Someone else is already enrolled under this name and this voice
+/// isn't theirs.
+pub fn enrollment_name_taken(name: &str) -> String {
+    format!(
+        "I already know a {}, and you don't sound like them.",
+        capitalize_first(name)
+    )
+}
+
+pub fn enrollment_unavailable() -> String {
+    "I'm not set up to recognise voices yet.".to_string()
+}
+
+/// Recognition is on but this utterance produced no usable voice print
+/// — usually too short, which "I am Mark" can be.
+pub fn enrollment_no_audio() -> String {
+    "I didn't get a clear enough sample. Try saying it again, a little slower.".to_string()
+}
+
+pub fn enrollment_failed() -> String {
+    "I couldn't save your voice just now.".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
