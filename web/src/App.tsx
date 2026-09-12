@@ -336,8 +336,8 @@ export function App() {
                 <div className="flex flex-col gap-1">
                   <span className="text-sm font-medium">Held at</span>
                   <p className="text-muted-foreground text-xs">
-                    What they show instead of the curve. Leave all three unset
-                    and ambient lights are not touched at all.
+                    What they show instead of the curve. Leave them unset and
+                    ambient lights are not touched at all.
                   </p>
                 </div>
                 <AmbientControls
