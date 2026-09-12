@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import {
-  ColorField,
+  ColorWheel,
   hsvToRgb,
   parseHex,
   rgbToHsv,
@@ -40,17 +40,10 @@ describe("colour conversion", () => {
   });
 });
 
-describe("ColorField", () => {
+describe("ColorWheel", () => {
   function setup(value: string) {
     const onChange = vi.fn();
-    render(
-      <ColorField
-        id="lighting.ambient_color"
-        aria-label="Colour"
-        value={value}
-        onChange={onChange}
-      />,
-    );
+    render(<ColorWheel value={value} onChange={onChange} />);
     return { onChange };
   }
 

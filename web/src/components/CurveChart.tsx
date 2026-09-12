@@ -12,6 +12,8 @@
  * chart that drew an approximation would be worse than no chart.
  */
 
+import { kelvinToCss } from "@/components/ColorField";
+
 interface Anchor {
   minute: number;
   kelvin: number;
@@ -93,7 +95,7 @@ export function CurveChart({ lighting }: { lighting: unknown }) {
               <stop
                 key={anchor.minute}
                 offset={anchor.minute / 1440}
-                stopColor={kelvinToColor(anchor.kelvin)}
+                stopColor={kelvinToCss(anchor.kelvin)}
               />
             ))}
           </linearGradient>
@@ -164,7 +166,7 @@ export function CurveChart({ lighting }: { lighting: unknown }) {
           cx={x(marked)}
           cy={y(markedBrightness)}
           r={9}
-          fill={kelvinToColor(markedKelvin)}
+          fill={kelvinToCss(markedKelvin)}
           stroke="var(--card)"
           strokeWidth={3}
         />
@@ -338,27 +340,4 @@ function instantOf(value: unknown): Instant | null {
     name.toLowerCase().startsWith(day.toLowerCase().slice(0, 3)),
   );
   return index === -1 ? null : { day: index, minute };
-}
-
-/**
- * Kelvin as a screen colour — Tanner Helland's blackbody approximation,
- * which is the one everything from photo software to WLED uses.
- */
-function kelvinToColor(kelvin: number): string {
-  const t = Math.min(Math.max(kelvin, 1000), 40000) / 100;
-  const red =
-    t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
-  const green =
-    t <= 66
-      ? 99.4708025861 * Math.log(t) - 161.1195681661
-      : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
-  const blue =
-    t >= 66
-      ? 255
-      : t <= 19
-        ? 0
-        : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
-  const channel = (value: number) =>
-    Math.round(Math.min(Math.max(value, 0), 255));
-  return `rgb(${channel(red)}, ${channel(green)}, ${channel(blue)})`;
 }

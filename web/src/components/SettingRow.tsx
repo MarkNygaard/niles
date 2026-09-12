@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RotateCcw } from "lucide-react";
-import { ColorField } from "@/components/ColorField";
 import { DevicePicker } from "@/components/DevicePicker";
 import type { DeviceOption } from "@/components/DevicePicker";
 import { cn } from "@/lib/utils";
@@ -14,7 +13,7 @@ import { cn } from "@/lib/utils";
  * value. A setting that isn't configured yet has no value to sniff, and
  * those are exactly the ones someone opens this page to set.
  */
-export type FieldKind = "number" | "text" | "devices" | "color";
+export type FieldKind = "number" | "text" | "devices";
 
 export interface Setting {
   /** Dotted path, e.g. `lighting.morning_start`. */
@@ -97,7 +96,7 @@ export function SettingRow({
   // Picking a light from a list is already a deliberate act, so that
   // row writes on the spot and has no Save button at all. Typing into a
   // box isn't: half a time is a value, and it must not reach the lights.
-  const instant = settings.every((s) => s.kind === "devices" || s.kind === "color");
+  const instant = settings.every((s) => s.kind === "devices");
   const changed = settings.filter((s) => drafts[s.path] !== server[s.path]);
   const blocked = changed.some((s) => !usable(drafts[s.path], s.kind));
   const unset = settings.filter((s) => values[s.path] === undefined);
@@ -121,7 +120,7 @@ export function SettingRow({
           )}
           {unset.length === settings.length &&
             overridden.length === 0 &&
-            !settings.some((s) => s.kind === "devices" || s.kind === "color") && (
+            !settings.some((s) => s.kind === "devices") && (
               <Badge variant="outline" title="Nothing is configured here">
                 not set
               </Badge>
@@ -147,18 +146,7 @@ export function SettingRow({
               </span>
             )}
             <div className={cn("flex flex-col gap-1", setting.width ?? "w-28")}>
-              {setting.kind === "color" ? (
-                <ColorField
-                  id={setting.path}
-                  aria-label={`${label} ${setting.caption}`}
-                  value={drafts[setting.path] ?? ""}
-                  disabled={saving}
-                  onChange={(next) => {
-                    setDrafts({ ...drafts, [setting.path]: next });
-                    onSave([{ path: setting.path, value: next }]);
-                  }}
-                />
-              ) : setting.kind === "devices" ? (
+              {setting.kind === "devices" ? (
                 <DevicePicker
                   id={setting.path}
                   aria-label={`${label} ${setting.caption}`}
@@ -278,7 +266,7 @@ function parse(draft: string, kind: FieldKind): unknown {
  * body rather than about the setting.
  */
 function usable(draft: string, kind: FieldKind): boolean {
-  if (kind === "devices" || kind === "color") return true;
+  if (kind === "devices") return true;
   if (draft.trim() === "") return false;
   return kind !== "number" || !Number.isNaN(Number(draft));
 }
