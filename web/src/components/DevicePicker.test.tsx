@@ -64,6 +64,10 @@ function setup(value: string[]) {
   return { onChange };
 }
 
+// Opening the popup can't be driven here: Base UI's positioning never
+// settles under jsdom, and the test hangs rather than failing. Picking
+// from the list is verified by hand instead — which is how the bug
+// below got in, so it is worth saying out loud.
 describe("DevicePicker", () => {
   it("shows each picked light as its own chip", () => {
     setup(["wled:living_room/tv_light", "z2m:office/desk_lamp"]);

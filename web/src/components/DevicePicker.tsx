@@ -133,7 +133,10 @@ export function DevicePicker({
               {(option: DeviceOption) => (
                 <Combobox.Item
                   key={option.value}
-                  value={option.value}
+                  // The whole option, not its id: the root's value type
+                  // is the option, and a bare string silently never
+                  // matches one.
+                  value={option}
                   className="data-highlighted:bg-muted flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm"
                 >
                   <Combobox.ItemIndicator className="text-muted-foreground">
