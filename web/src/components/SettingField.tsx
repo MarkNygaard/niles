@@ -78,7 +78,7 @@ export function SettingField({
   }
 
   return (
-    <div className="flex flex-col gap-1.5 py-3">
+    <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <Label htmlFor={path} className="text-sm font-medium">
           {label}
@@ -122,12 +122,11 @@ export function SettingField({
             dirty && !unusable && "border-primary",
           )}
         />
-        <Button size="sm" onClick={save} disabled={!dirty || unusable || saving}>
+        <Button onClick={save} disabled={!dirty || unusable || saving}>
           Save
         </Button>
         {overridden && (
           <Button
-            size="sm"
             variant="ghost"
             onClick={onReset}
             disabled={saving}
@@ -138,14 +137,20 @@ export function SettingField({
         )}
       </div>
 
-      {/* The server's rejection names the field and the reason; showing
-          our own message instead would lose that. */}
-      {error ? (
-        <p className="text-destructive text-xs">{error}</p>
-      ) : hint ? (
-        <p className="text-muted-foreground text-xs">{hint}</p>
-      ) : null}
-      <p className="text-muted-foreground/70 font-mono text-[11px]">{path}</p>
+      {/* The hint and the path share a line: the path matters (it is what
+          the API and voice use) but it is reference, not instruction. */}
+      <div className="flex items-baseline justify-between gap-3">
+        {/* The server's rejection names the field and the reason; showing
+            our own message instead would lose that. */}
+        {error ? (
+          <p className="text-destructive text-xs">{error}</p>
+        ) : (
+          <p className="text-muted-foreground text-xs">{hint}</p>
+        )}
+        <p className="text-muted-foreground/60 shrink-0 font-mono text-[11px]">
+          {path}
+        </p>
+      </div>
     </div>
   );
 }
