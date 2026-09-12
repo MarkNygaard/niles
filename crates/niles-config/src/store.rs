@@ -64,6 +64,11 @@ pub struct ConfigStore {
     /// Current state. Guarded together so a reader can never see
     /// overrides that disagree with the snapshot they produced.
     inner: RwLock<Inner>,
+    /// Bumped after every change that lands, so a task driving real
+    /// hardware can act on a new value instead of waiting out its own
+    /// polling interval. A watch, not a `Notify`: a change that arrives
+    /// between two waits must still be seen.
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 struct Inner {
@@ -120,6 +125,7 @@ impl ConfigStore {
                     current,
                     revisions: state.revisions,
                 }),
+                changed: tokio::sync::watch::channel(0).0,
             },
             outcome,
         ))
@@ -152,6 +158,7 @@ impl ConfigStore {
                 current: Arc::new(config),
                 revisions: Vec::new(),
             }),
+            changed: tokio::sync::watch::channel(0).0,
         })
     }
 
@@ -214,6 +221,17 @@ impl ConfigStore {
     /// show up without anyone maintaining a list.
     pub fn effective_table(&self) -> toml::Table {
         layer_table(&self.base, &self.read().overrides)
+    }
+
+    /// Wakes on every change that lands, so a task driving real
+    /// hardware can apply a new value at once rather than waiting out
+    /// its own polling interval.
+    ///
+    /// The value is the revision that caused it, which matters only for
+    /// logging — a receiver should read [`Self::current`] rather than
+    /// trust it.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 
     /// Whether writes outlive the process.
@@ -377,6 +395,9 @@ impl ConfigStore {
         guard.overrides = next;
         guard.current = Arc::new(config);
         guard.revisions = revisions;
+        drop(guard);
+        // After the swap, so a woken reader sees the new config.
+        self.changed.send_replace(id);
         Ok(Applied {
             revision: id,
             sections: sections_of(&changes),
@@ -1072,6 +1093,57 @@ daytime_brightness = 70",
             store.undo().await.unwrap().is_none(),
             "nothing left to undo"
         );
+    }
+
+    #[tokio::test]
+    async fn a_change_wakes_a_subscriber() {
+        // Without this a tuning change sits until the curve loop's next
+        // tick — up to a minute of watching a light not do what you
+        // just told it.
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        let mut changes = store.subscribe();
+        assert!(
+            !changes.has_changed().unwrap(),
+            "quiet until something happens"
+        );
+
+        store
+            .apply(
+                &toml::from_str(
+                    "[lighting]
+daytime_brightness = 85",
+                )
+                .unwrap(),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+
+        assert!(changes.has_changed().unwrap());
+        changes.changed().await.unwrap();
+        assert_eq!(
+            store.current().lighting.daytime_brightness,
+            85,
+            "and the new config is in force by the time it wakes"
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_a_value_to_what_it_already_is_wakes_nobody() {
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        let changes = store.subscribe();
+        store
+            .apply(
+                &toml::from_str(
+                    "[lighting]
+daytime_brightness = 100",
+                )
+                .unwrap(),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+        assert!(!changes.has_changed().unwrap());
     }
 
     #[tokio::test]

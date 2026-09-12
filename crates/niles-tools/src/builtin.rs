@@ -1708,10 +1708,10 @@ mod tests {
         let args = json!({ "device_id": "kitchen/ceiling_light", "rgb": [255, 128, 0] });
         tool.execute(args).await.expect("a colour is settable");
         let payloads = mock.payloads.lock().await;
+        let sent = String::from_utf8(payloads[0].clone()).unwrap();
         assert!(
-            payloads[0].contains(r#""color":{"r":255,"g":128,"b":0}"#),
-            "{:?}",
-            payloads[0]
+            sent.contains(r#""color":{"r":255,"g":128,"b":0}"#),
+            "{sent}"
         );
     }
 

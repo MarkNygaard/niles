@@ -3911,6 +3911,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
+    let mut config_changes = store.subscribe();
     let mut last_published: HashMap<DeviceId, DeviceState> = HashMap::new();
     let mut ticker = tokio::time::interval(Duration::from_secs(args.tick_seconds.max(1)));
 
@@ -3937,6 +3938,26 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
                     index.retain(|_, addr| *addr != peer);
                 }
+            }
+            Ok(()) = config_changes.changed() => {
+                // A tuning change should land on the lights now, not up
+                // to a tick later. What was published before was for the
+                // old target, so none of it is a reason to stay quiet.
+                last_published.clear();
+                lighting.refresh(&store);
+                run_curve_tick(
+                    &registry,
+                    &publisher,
+                    &router,
+                    &lighting.curve,
+                    lighting.snapshot.lighting.ambient_target(),
+                    lighting.ambient(),
+                    tz,
+                    args.dry_run,
+                    &mut last_published,
+                    &tracker,
+                    &claim_tracker,
+                ).await;
             }
             Some(id) = curve_nudge_rx.recv() => {
                 // A light just came on. Drop its last-published entry so the

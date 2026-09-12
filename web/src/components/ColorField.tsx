@@ -35,6 +35,10 @@ export function ColorField({
 }: ColorFieldProps) {
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const [draft, setDraft] = useState(value);
+  // What the marker shows while a drag is in progress. Committing on
+  // every pointer move would be one config write, one revision and one
+  // database round-trip per pixel dragged.
+  const [dragging, setDragging] = useState<string | null>(null);
 
   useEffect(() => setDraft(value), [value]);
 
@@ -65,11 +69,13 @@ export function ColorField({
     context.putImageData(image, 0, 0);
   }, []);
 
-  const rgb = parseHex(value);
+  const shown = dragging ?? value;
+  const rgb = parseHex(shown);
   const marker = rgb ? positionOf(rgb) : null;
 
-  function pick(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (disabled) return;
+  /** The colour under the pointer, without committing it. */
+  function colorAt(event: React.PointerEvent<HTMLCanvasElement>): string | null {
+    if (disabled) return null;
     const box = event.currentTarget.getBoundingClientRect();
     const dx = ((event.clientX - box.left) / box.width) * SIZE - RADIUS;
     const dy = ((event.clientY - box.top) / box.height) * SIZE - RADIUS;
@@ -78,7 +84,13 @@ export function ColorField({
     // Dragging past the rim keeps the hue at full saturation rather
     // than stopping dead, which is how these are expected to behave.
     const [r, g, b] = hsvToRgb(hue, Math.min(distance / RADIUS, 1), 1);
-    onChange(toHex([r, g, b]));
+    return toHex([r, g, b]);
+  }
+
+  function commit(event: React.PointerEvent<HTMLCanvasElement>) {
+    const next = colorAt(event) ?? dragging;
+    setDragging(null);
+    if (next && next !== value) onChange(next);
   }
 
   return (
@@ -91,18 +103,20 @@ export function ColorField({
           role="slider"
           tabIndex={disabled ? -1 : 0}
           aria-label={ariaLabel}
-          aria-valuetext={value || "not set"}
+          aria-valuetext={shown || "not set"}
           className={cn(
             "rounded-full",
             disabled ? "cursor-not-allowed opacity-50" : "cursor-crosshair",
           )}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
-            pick(e);
+            setDragging(colorAt(e));
           }}
           onPointerMove={(e) => {
-            if (e.buttons === 1) pick(e);
+            if (e.buttons === 1) setDragging(colorAt(e));
           }}
+          onPointerUp={commit}
+          onPointerCancel={() => setDragging(null)}
         />
         {marker && (
           <span
@@ -111,7 +125,7 @@ export function ColorField({
             style={{
               left: marker.x,
               top: marker.y,
-              background: value,
+              background: shown,
             }}
           />
         )}
