@@ -70,6 +70,8 @@ impl IntentRouter {
             .or_else(|| match_timer_list(&t))
             .or_else(|| match_timer_remaining(&t))
             .or_else(|| match_stop_cancel(&t))
+            .or_else(|| match_light_set_last(&t))
+            .or_else(|| match_datetime_query(&t))
             .or_else(|| match_enroll_speaker(&t))
     }
 
@@ -118,7 +120,51 @@ pub(crate) fn normalize(s: &str) -> String {
         .join(" ")
 }
 
+/// "turn it back on" / "turn them off again" / "switch it on".
+///
+/// Matched after every pattern that names a room, so a sentence that
+/// says what it means is never resolved from memory instead.
+fn light_set_last_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^(?:turn(?:ed|s)?|switch(?:ed|es)?|put)\s+(?:it|them|that|those|these)\s+(?:back\s+)?(on|off)(?:\s+again)?$",
+        )
+        .expect("valid regex")
+    })
+}
+
+fn match_light_set_last(t: &str) -> Option<Intent> {
+    let caps = light_set_last_regex().captures(t)?;
+    Some(Intent::LightSetLast {
+        on: caps.get(1)?.as_str() == "on",
+    })
+}
+
 // ---- Light on/off ----------------------------------------------------------
+
+/// "what time is it" / "what day is it today" / "what's the date".
+///
+/// Anchored, because "what day is bin day" is a question for the LLM
+/// and only the bare forms are safe to answer from a clock.
+fn datetime_query_regex() -> &'static OnceLock<Regex> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    &RE
+}
+
+fn match_datetime_query(t: &str) -> Option<Intent> {
+    let re = datetime_query_regex().get_or_init(|| {
+        Regex::new(
+            r"^(?:what(?:'s| is)?)\s+(?:the\s+)?(time|day|date)(?:\s+is\s+it)?(?:\s+(?:is\s+it\s+)?(?:today|now|right now))?$|^what\s+(time|day|date)\s+is\s+it(?:\s+(?:today|now|right now))?$",
+        )
+        .expect("valid regex")
+    });
+    let caps = re.captures(t)?;
+    let what = caps.get(1).or_else(|| caps.get(2))?.as_str();
+    Some(Intent::DateTimeQuery {
+        date: what != "time",
+    })
+}
 
 /// "I am Mark" / "this is Mark" / "my name is Mark".
 ///
@@ -161,7 +207,7 @@ fn light_regex() -> &'static Regex {
             r"(?x)
               ^
               (?:
-                turn\s+(?P<state1>on|off)\s+(?:the\s+)?(?P<room1>.+?)\s+lights?
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state1>on|off)\s+(?:the\s+)?(?P<room1>.+?)\s+lights?
               |
                 (?P<room2>.+?)\s+lights?\s+(?P<state2>on|off)
               )
@@ -241,7 +287,7 @@ fn light_set_all_regex() -> &'static Regex {
             r"(?x)
               ^
               (?:
-                turn\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?
               |
                 all\s+(?:the\s+)?lights?\s+(?P<state2>on|off)
               |
@@ -274,7 +320,7 @@ fn light_set_all_in_room_regex() -> &'static Regex {
             r"(?x)
               ^
               (?:
-                turn\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room1>.+?)
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state1>on|off)\s+all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room1>.+?)
               |
                 all\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room2>.+?)\s+(?P<state2>on|off)
               )
@@ -436,7 +482,7 @@ fn light_set_implicit_room_regex() -> &'static Regex {
               (?:
                 lights?\s+(?P<state1>on|off)
               |
-                turn\s+(?P<state2>on|off)\s+(?:the\s+)?lights?
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state2>on|off)\s+(?:the\s+)?lights?
               )
               $",
         )
@@ -1189,7 +1235,7 @@ fn device_set_regex() -> &'static Regex {
         Regex::new(
             r"(?x)
               ^
-              turn\s+(?P<state>on|off)\s+(?:the\s+)?(?P<device>.+?)
+              (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state>on|off)\s+(?:the\s+)?(?P<device>.+?)
               (?:\s+in\s+(?:the\s+)?(?P<room>.+))?
               $",
         )
@@ -3345,5 +3391,159 @@ mod enroll_speaker_tests {
         // speaker called "going".
         assert_eq!(parse("I am going to bed"), None);
         assert_eq!(parse("this is a test of something"), None);
+    }
+}
+
+#[cfg(test)]
+mod datetime_query_tests {
+    use super::*;
+
+    fn parse(t: &str) -> Option<Intent> {
+        IntentRouter::new().parse(t)
+    }
+
+    #[test]
+    fn the_clock_questions_never_reach_the_llm() {
+        for phrase in ["what time is it", "what's the time", "what is the time"] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::DateTimeQuery { date: false }),
+                "{phrase}"
+            );
+        }
+        for phrase in [
+            "what day is it",
+            "what day is it today",
+            "what's the date",
+            "what is the date today",
+        ] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::DateTimeQuery { date: true }),
+                "{phrase}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_that_only_mentions_a_day_is_left_to_the_llm() {
+        // "what day is bin day" is a question about the house, not the
+        // clock, and answering it from strftime would be nonsense.
+        for phrase in [
+            "what day is bin day",
+            "what time does the shop open",
+            "what day should i put the bins out",
+            "what time is the meeting tomorrow",
+        ] {
+            assert_eq!(parse(phrase), None, "{phrase}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod mishearing_tests {
+    use super::*;
+
+    fn parse(t: &str) -> Option<Intent> {
+        IntentRouter::new().parse(t)
+    }
+
+    #[test]
+    fn a_misheard_tense_still_reaches_tier_0() {
+        // Whisper renders "turn off" as "turned off" often enough to
+        // matter, and the cost of missing here is not a worse match —
+        // it is the whole request escalating to the LLM, which on a
+        // rate-limited account means no answer at all.
+        assert_eq!(
+            parse("turned off the office light"),
+            Some(Intent::LightSet {
+                room: "office".into(),
+                on: false
+            })
+        );
+        assert_eq!(
+            parse("turns on the kitchen light"),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn switch_is_the_same_request_as_turn() {
+        assert_eq!(
+            parse("switch off the office light"),
+            Some(Intent::LightSet {
+                room: "office".into(),
+                on: false
+            })
+        );
+        assert_eq!(
+            parse("switched on the bedroom lights"),
+            Some(Intent::LightSet {
+                room: "bedroom".into(),
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn the_whole_home_forms_tolerate_it_too() {
+        assert_eq!(
+            parse("turned off all the lights"),
+            Some(Intent::LightSetAll { on: false })
+        );
+    }
+}
+
+#[cfg(test)]
+mod follow_up_tests {
+    use super::*;
+
+    fn parse(t: &str) -> Option<Intent> {
+        IntentRouter::new().parse(t)
+    }
+
+    #[test]
+    fn the_natural_follow_up_stays_in_tier_0() {
+        for phrase in [
+            "turn it back on",
+            "turn it on again",
+            "turn it on",
+            "switch it back on",
+            "turn them on",
+            "turn that back on",
+        ] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::LightSetLast { on: true }),
+                "{phrase}"
+            );
+        }
+        for phrase in ["turn it off", "turn it off again", "turn them back off"] {
+            assert_eq!(
+                parse(phrase),
+                Some(Intent::LightSetLast { on: false }),
+                "{phrase}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sentence_that_names_its_target_is_not_a_follow_up() {
+        // Said plainly, it should be resolved plainly — never from
+        // memory, which could point somewhere else entirely.
+        assert_eq!(
+            parse("turn on the office light"),
+            Some(Intent::LightSet {
+                room: "office".into(),
+                on: true
+            })
+        );
+        assert_eq!(
+            parse("turn off all the lights"),
+            Some(Intent::LightSetAll { on: false })
+        );
     }
 }

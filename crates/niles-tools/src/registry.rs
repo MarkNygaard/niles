@@ -34,6 +34,32 @@ impl ToolRegistry {
         out
     }
 
+    /// The tools worth sending for `transcript`.
+    ///
+    /// Every schema here goes on the wire on every call, so a registry
+    /// this size is most of the prompt. Sending only what the request
+    /// could plausibly use is the difference between two questions a
+    /// minute and rather more — see [`crate::relevance`], which also
+    /// explains why an unclassifiable request still gets everything.
+    pub fn llm_tools_for(&self, transcript: &str) -> Vec<niles_llm::Tool> {
+        let Some(wanted) = crate::relevance::relevant_tool_names(transcript) else {
+            return self.llm_tools();
+        };
+        let mut out: Vec<niles_llm::Tool> = self
+            .tools
+            .values()
+            .map(|t| t.descriptor().to_llm_tool())
+            // A tool nobody classified is a tool that still has to
+            // work, so an unknown name keeps its place.
+            .filter(|t| {
+                wanted.binary_search(&t.name.as_str()).is_ok()
+                    || !crate::relevance::is_grouped(&t.name)
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
     /// Dispatch a `ToolCall`. Returns the JSON value the tool produced;
     /// the caller wraps it in `Message::Tool { tool_call_id, content }`.
     pub async fn execute(&self, call: &niles_llm::ToolCall) -> Result<serde_json::Value> {
@@ -127,5 +153,70 @@ mod tests {
 
         let names: Vec<String> = reg.llm_tools().into_iter().map(|t| t.name).collect();
         assert_eq!(names, vec!["a", "m", "z"]);
+    }
+}
+
+#[cfg(test)]
+mod gating_tests {
+    use super::*;
+    use crate::tool::{Tool, ToolDescriptor};
+
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for Named {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: self.0.into(),
+                description: "x".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn execute(&self, _args: serde_json::Value) -> crate::Result<serde_json::Value> {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
+    fn registry() -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        for name in [
+            "set_device",
+            "get_weather",
+            "list_timers",
+            "some_new_tool_nobody_classified",
+        ] {
+            reg.register(Box::new(Named(name)));
+        }
+        reg
+    }
+
+    #[test]
+    fn an_unrelated_tool_stays_off_the_wire() {
+        let names: Vec<String> = registry()
+            .llm_tools_for("what's the weather like")
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"get_weather".to_string()));
+        assert!(!names.contains(&"list_timers".to_string()));
+    }
+
+    #[test]
+    fn a_tool_nobody_classified_is_always_sent() {
+        // Forgetting to group a new tool must cost a saving, never a
+        // capability — otherwise it fails silently, as "the model just
+        // said it couldn't".
+        let names: Vec<String> = registry()
+            .llm_tools_for("what's the weather like")
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"some_new_tool_nobody_classified".to_string()));
+    }
+
+    #[test]
+    fn an_unclassifiable_request_still_gets_everything() {
+        let all = registry().llm_tools().len();
+        assert_eq!(registry().llm_tools_for("do the thing").len(), all);
     }
 }

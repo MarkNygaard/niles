@@ -15,6 +15,7 @@ pub mod linear;
 pub mod list_recent_notifications;
 pub mod presence;
 pub mod registry;
+pub mod relevance;
 pub mod skill;
 pub mod tool;
 pub mod weather;

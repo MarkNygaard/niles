@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
 
 mod conversation;
+mod last_target;
 mod manifest;
 mod recognition;
 mod response;
@@ -818,6 +819,27 @@ fn speaker_context_from(attempted: bool, ident: Option<(String, f32)>) -> Speake
 fn supports_speaker_identification(format: niles_wyoming::AudioFormat) -> bool {
     format.sample_rate_hz == 16_000 && format.bits_per_sample == 16 && format.channels == 1
 }
+/// The current local time, for the end of the system prompt.
+///
+/// Empty when the timezone doesn't parse — a wrong time is worse than
+/// no time, because the model would answer confidently with it.
+pub(crate) fn now_context(timezone: &str) -> String {
+    let Ok(tz) = timezone.parse::<chrono_tz::Tz>() else {
+        return String::new();
+    };
+    let now = chrono::Utc::now().with_timezone(&tz);
+    format!(
+        "
+
+# Now
+
+It is {} in {}. Use this rather than asking for          the time; `current_datetime` is only needed for arithmetic across          dates.
+",
+        now.format("%A %-d %B %Y, %H:%M"),
+        tz.name(),
+    )
+}
+
 pub(crate) fn home_context(home: &niles_config::HomeConfig) -> String {
     fn prompt_field(value: &str) -> String {
         value
@@ -981,6 +1003,15 @@ fn assemble_system_prompt_with_optional_capabilities(
     if let Some(section) = speaker_context(speaker) {
         out.push_str(&section);
     }
+
+    // Last, and deliberately so: this is the one part of the prompt that
+    // changes every second. A provider with prefix caching would have
+    // the whole prompt invalidated by it if it sat at the top.
+    //
+    // Without it the model has no idea what day it is, so anything with
+    // an implicit "now" in it — "is it late?", "did I leave that on this
+    // morning?" — costs a tool call and a second round trip to answer.
+    out.push_str(&now_context(&home.timezone));
     out
 }
 
@@ -1592,10 +1623,30 @@ async fn run_tool_calling_chat_with_messages(
     max_iterations: usize,
     exclude_tool: Option<&str>,
 ) -> anyhow::Result<(LoopOutcome, Vec<review::ToolTrace>)> {
-    let mut llm_tools = registry.llm_tools();
+    // Only the tools this request could plausibly use. Every schema
+    // goes on the wire on every iteration, and with thirty-odd
+    // registered that is most of the prompt — one measured call was
+    // 3 497 tokens of an 8 000-per-minute budget.
+    //
+    // Taken from the last thing the user said rather than passed in,
+    // so every caller of this loop benefits without changing.
+    let transcript = messages
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            Message::User { content } => Some(content.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut llm_tools = registry.llm_tools_for(transcript);
     if let Some(name) = exclude_tool {
         llm_tools.retain(|t| t.name != name);
     }
+    tracing::debug!(
+        "sending {} of {} tools for {transcript:?}",
+        llm_tools.len(),
+        registry.llm_tools().len()
+    );
     let mut trace: Vec<review::ToolTrace> = Vec::new();
 
     for _ in 0..max_iterations {
@@ -2309,6 +2360,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
+        last_target: Arc::new(last_target::LastTarget::default()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -2415,6 +2467,8 @@ struct DispatchCtx {
     home: Arc<niles_config::HomeConfig>,
     review: niles_config::SkillsReviewConfig,
     conversation: Arc<conversation::ConversationMemory>,
+    /// What "it" refers to, per room. See [`last_target`].
+    last_target: Arc<last_target::LastTarget>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -2742,9 +2796,25 @@ async fn dispatch_transcript(
                 on: Some(on),
                 ..Default::default()
             };
+            ctx.last_target
+                .remember(origin_room, &response::spoken_room(&room), &targets);
             dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_set(&room, on))
         }
+        Intent::LightSetLast { on } => {
+            let Some((spoken, targets)) = ctx.last_target.resolve(origin_room) else {
+                // Nothing recent to point at. The LLM has the
+                // conversation history and may do better than we can.
+                return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+            };
+            let desired = DeviceState {
+                on: Some(on),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::light_set_last(&spoken, on))
+        }
+        Intent::DateTimeQuery { date } => Some(response::datetime_now(&ctx.home.timezone, date)),
         Intent::EnrollSpeaker { name } => Some(enroll_by_voice(ctx, peer, &name, voice).await),
         Intent::LightSetAll { on } => {
             let targets: Vec<Device> = ctx
@@ -4052,6 +4122,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         home: Arc::new(cfg.home.clone()),
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
+        last_target: Arc::new(last_target::LastTarget::default()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -6315,6 +6386,22 @@ mod system_prompt_tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn the_prompt_carries_the_clock() {
+        // Without it the model spends a tool call and a second round
+        // trip on anything with an implicit "now" in it.
+        let section = now_context("Europe/Copenhagen");
+        assert!(section.contains("# Now"), "{section}");
+        assert!(section.contains("Europe/Copenhagen"), "{section}");
+    }
+
+    #[test]
+    fn an_unparseable_timezone_adds_nothing() {
+        // A wrong time is worse than no time: the model would answer
+        // confidently with it.
+        assert!(now_context("Not/AZone").is_empty());
     }
 
     #[test]
