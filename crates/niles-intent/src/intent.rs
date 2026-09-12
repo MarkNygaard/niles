@@ -18,6 +18,15 @@ pub enum Intent {
         on: bool,
     },
 
+    /// "I am Mark" / "this is Mark" — teach Niles this voice.
+    ///
+    /// The utterance that carried the intent is itself the sample, so
+    /// enrolling costs nothing extra: an embedding is already extracted
+    /// from every turn in order to recognise it.
+    EnrollSpeaker {
+        name: String,
+    },
+
     /// "turn off all the lights" / "everything off" — whole-home set.
     /// No room means dispatch fans out to every device satisfying
     /// `Device::is_light()`.

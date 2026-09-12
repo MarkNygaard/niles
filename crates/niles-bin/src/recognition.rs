@@ -12,11 +12,27 @@ use tokio::sync::mpsc::UnboundedSender;
 /// Per-utterance speaker identification. The dispatch path depends on
 /// this trait so it can be unit-tested with a mock — the real impl
 /// requires the ONNX model on disk.
+#[async_trait::async_trait]
 pub(crate) trait SpeakerIdentifier: Send + Sync {
-    /// `Some((display_name, confidence))` on a confident match (and
-    /// records last-seen as a side effect); `None` when unknown, the
-    /// audio is unusable, or recognition is unavailable.
-    fn identify(&self, pcm: &[i16], sample_rate_hz: u32) -> Option<(String, f32)>;
+    /// The voice print of this utterance. Separate from [`Self::classify`]
+    /// because the same print is used twice: to recognise who spoke, and
+    /// — when they said "I am Mark" — to enrol them.
+    fn embed(&self, pcm: &[i16], sample_rate_hz: u32) -> Option<Vec<f32>>;
+
+    /// `Some((display_name, confidence))` on a confident match, and
+    /// records last-seen as a side effect. `None` when unknown.
+    fn classify(&self, embedding: &[f32]) -> Option<(String, f32)>;
+
+    /// Teach this voice as `name`, returning how many clips it now has.
+    ///
+    /// Takes effect immediately — the next sentence is matched against
+    /// it — because "I am Mark" followed by not being recognised would
+    /// read as the feature simply not working.
+    async fn enroll(&self, name: &str, embedding: &[f32]) -> anyhow::Result<usize>;
+
+    /// Whether `name` is already enrolled and this voice is not it.
+    /// Adding clips to someone else's identity is how you become them.
+    async fn is_someone_else(&self, name: &str, embedding: &[f32]) -> bool;
 }
 
 /// Map a matcher outcome into an identity, reporting the sighting.
@@ -56,20 +72,74 @@ pub(crate) fn pcm_bytes_to_i16(bytes: &[u8]) -> Vec<i16> {
 
 pub(crate) struct EcapaIdentifier {
     embedder: EcapaTdnnEmbedder,
-    matcher: Matcher,
+    /// Behind a lock because enrolling by voice replaces it while the
+    /// process runs. Read on every turn, written once in a blue moon.
+    matcher: std::sync::RwLock<Matcher>,
+    backend: Arc<dyn EnrollmentBackend>,
+    threshold: f32,
+    strategy: niles_recognition::MatchStrategy,
     heard: UnboundedSender<String>,
 }
 
+impl EcapaIdentifier {
+    fn read_matcher(&self) -> std::sync::RwLockReadGuard<'_, Matcher> {
+        self.matcher
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[async_trait::async_trait]
 impl SpeakerIdentifier for EcapaIdentifier {
-    fn identify(&self, pcm: &[i16], sample_rate_hz: u32) -> Option<(String, f32)> {
-        let embedding = match self.embedder.extract(pcm, sample_rate_hz) {
-            Ok(e) => e,
+    fn embed(&self, pcm: &[i16], sample_rate_hz: u32) -> Option<Vec<f32>> {
+        match self.embedder.extract(pcm, sample_rate_hz) {
+            Ok(e) => Some(e),
             Err(e) => {
                 tracing::debug!("speaker embedding skipped: {e}");
-                return None;
+                None
             }
+        }
+    }
+
+    fn classify(&self, embedding: &[f32]) -> Option<(String, f32)> {
+        outcome_to_identity(self.read_matcher().classify(embedding), &self.heard)
+    }
+
+    async fn enroll(&self, name: &str, embedding: &[f32]) -> anyhow::Result<usize> {
+        self.backend
+            .enroll(name, embedding)
+            .await
+            .with_context(|| format!("enrolling {name}"))?;
+        let speakers = self
+            .backend
+            .load_all()
+            .await
+            .context("reloading enrolled speakers")?;
+        let clips = speakers
+            .iter()
+            .find(|s| s.speaker == name)
+            .map_or(0, |s| s.clip_count);
+        let next = Matcher::new(speakers, self.threshold, self.strategy);
+        *self
+            .matcher
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+        Ok(clips)
+    }
+
+    async fn is_someone_else(&self, name: &str, embedding: &[f32]) -> bool {
+        let enrolled = match self.backend.load(name).await {
+            Ok(record) => record,
+            // Nobody by that name yet, so nobody to impersonate.
+            Err(_) => return false,
         };
-        outcome_to_identity(self.matcher.classify(&embedding), &self.heard)
+        if enrolled.embeddings.is_empty() {
+            return false;
+        }
+        !matches!(
+            self.read_matcher().classify(embedding),
+            MatchOutcome::Match { ref speaker, .. } if speaker == &enrolled.speaker
+        )
     }
 }
 
@@ -118,10 +188,13 @@ pub(crate) async fn build_speaker_identifier(
     })
     .context("loading ECAPA-TDNN embedder")?;
 
-    let heard = spawn_last_seen_writer(backend);
+    let heard = spawn_last_seen_writer(backend.clone());
     Ok(Some(Arc::new(EcapaIdentifier {
         embedder,
-        matcher,
+        matcher: std::sync::RwLock::new(matcher),
+        backend,
+        threshold: cfg.matcher.threshold,
+        strategy: cfg.matcher.strategy,
         heard,
     })))
 }
