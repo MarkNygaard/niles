@@ -1,7 +1,10 @@
 //! Ambient lights opt-out configuration section.
 
 use crate::error::{Error, Result};
+use niles_core::DeviceId;
 use serde::Deserialize;
+use std::collections::HashSet;
+use std::sync::OnceLock;
 
 /// `[ambient_lights]` section of the config file.
 ///
@@ -14,6 +17,11 @@ use serde::Deserialize;
 pub struct AmbientLightsConfig {
     #[serde(default)]
     pub devices: Vec<String>,
+    /// [`Self::ids`] memoized, so the consumers that ask every tick
+    /// don't re-parse. Tied to this snapshot: a config change produces
+    /// a new `Config`, and with it a fresh, empty cell.
+    #[serde(skip)]
+    parsed: OnceLock<HashSet<DeviceId>>,
 }
 
 impl AmbientLightsConfig {
@@ -24,6 +32,25 @@ impl AmbientLightsConfig {
     /// ambient at all.
     pub fn device_ids(&self) -> Result<Vec<niles_core::DeviceId>> {
         self.devices.iter().map(|raw| parse_device(raw)).collect()
+    }
+
+    /// The configured devices as a set, parsed once per config snapshot.
+    ///
+    /// Whoever needs to know whether a light is ambient asks the config
+    /// that is in force *now*. Caching the answer on the device instead
+    /// is what made this restart-only — and let a WLED light be listed
+    /// here and never treated as one.
+    ///
+    /// Entries that don't parse are dropped: `validate` runs before any
+    /// snapshot is published, so this can only be reached with entries
+    /// that already parsed.
+    pub fn ids(&self) -> &HashSet<DeviceId> {
+        self.parsed.get_or_init(|| {
+            self.devices
+                .iter()
+                .filter_map(|raw| parse_device(raw).ok())
+                .collect()
+        })
     }
 
     pub fn validate(&self) -> Result<()> {

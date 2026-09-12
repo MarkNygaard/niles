@@ -357,20 +357,6 @@ fn config_validate(args: ConfigValidateArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a `HashSet<DeviceId>` from the `[ambient_lights]` config
-/// section. Devices listed here are excluded from the ambient
-/// lighting curve and the morning routine.
-fn build_ambient_set(cfg: &Config) -> Arc<HashSet<DeviceId>> {
-    // Unreachable in practice: the config is validated before it gets
-    // here, and validation parses these same entries.
-    match cfg.ambient_lights.device_ids() {
-        Ok(ids) => Arc::new(ids.into_iter().collect()),
-        Err(e) => {
-            tracing::warn!("ambient_lights: {e}; no lights will be treated as ambient");
-            Arc::new(HashSet::new())
-        }
-    }
-}
 fn parse_wled_id(name: &str) -> Option<DeviceId> {
     DeviceId::parse(&format!("wled:{name}"))
         .map_err(|e| tracing::warn!("wled device {name:?} failed to parse: {e}"))
@@ -394,7 +380,6 @@ async fn spawn_wled_source(
     cfg: &Config,
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
-    ambient_set: Arc<HashSet<DeviceId>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if cfg.wled.devices.is_empty() {
         return None;
@@ -416,7 +401,7 @@ async fn spawn_wled_source(
         .iter()
         .filter_map(|dev| parse_wled_id(&dev.name).map(|id| (id, dev.topic.clone())))
         .collect();
-    let source = WledSource::new(client, registry, bus, devices, ambient_set);
+    let source = WledSource::new(client, registry, bus, devices);
     tracing::info!("WLED source running: {} device(s)", cfg.wled.devices.len());
     Some(tokio::spawn(async move {
         if let Err(e) = source.run().await {
@@ -497,14 +482,7 @@ async fn discover(args: DiscoverArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let mut bus_rx = bus.subscribe();
 
-    let ambient_set = build_ambient_set(&cfg);
-    let source = Z2mSource::new(
-        client,
-        registry.clone(),
-        bus.clone(),
-        &cfg.mqtt.z2m_prefix,
-        ambient_set,
-    );
+    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
 
     eprintln!(
         "Subscribed to {prefix}/bridge/devices and {prefix}/+/+. Press Ctrl-C to exit.\n",
@@ -599,14 +577,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
 
     let publisher = client.publisher();
-    let ambient_set = build_ambient_set(&cfg);
-    let source = Z2mSource::new(
-        client,
-        registry.clone(),
-        bus.clone(),
-        &cfg.mqtt.z2m_prefix,
-        ambient_set,
-    );
+    let source = Z2mSource::new(client, registry.clone(), bus.clone(), &cfg.mqtt.z2m_prefix);
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
@@ -1750,20 +1721,18 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let router = build_command_router(&cfg);
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
-    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
-        ambient_set.clone(),
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
         }
     });
-    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone(), ambient_set).await;
+    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone()).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let capability_loader = build_capability_loader(&cfg.capabilities);
@@ -2090,20 +2059,18 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let mut bus_rx = bus.subscribe();
     let device_index = Arc::new(RwLock::new(build_initial_device_index(&registry)));
-    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
-        ambient_set.clone(),
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
         }
     });
-    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone(), ambient_set).await;
+    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone()).await;
 
     // In-memory timer store, shared by the driver task (below) and
     // the dispatch context. The driver's behavior is documented on
@@ -2757,7 +2724,7 @@ async fn dispatch_transcript(
         }
         Intent::LightKelvinStep { room, delta_kelvin } => {
             let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
-                d.is_curve_driven() && d.supports_color_temperature()
+                d.is_light() && d.supports_color_temperature()
             }) {
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
@@ -2785,7 +2752,7 @@ async fn dispatch_transcript(
         }
         Intent::LightKelvinSet { room, kelvin } => {
             let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
-                d.is_curve_driven() && d.supports_color_temperature()
+                d.is_light() && d.supports_color_temperature()
             }) {
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
@@ -3392,6 +3359,13 @@ struct Lighting {
 }
 
 impl Lighting {
+    /// Which lights sit out the curve, as the current config has it.
+    fn ambient(&self) -> &HashSet<DeviceId> {
+        self.snapshot.ambient_lights.ids()
+    }
+}
+
+impl Lighting {
     fn derive(cfg: &Arc<Config>) -> anyhow::Result<Self> {
         Ok(Self {
             snapshot: Arc::clone(cfg),
@@ -3602,20 +3576,18 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_dry_run = args.dry_run;
     let observer_state_writer = state_writer.clone();
     let mut bus_rx = bus.subscribe();
-    let ambient_set = build_ambient_set(&cfg);
     let source = Z2mSource::new(
         mqtt_client,
         registry.clone(),
         bus.clone(),
         cfg.mqtt.z2m_prefix.as_str(),
-        ambient_set.clone(),
     );
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
         }
     });
-    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone(), ambient_set).await;
+    let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone()).await;
 
     // EventBus observer — feeds tracker.observe() for off→on
     // auto-clear, and tracker.forget() so removed devices don't
@@ -3982,6 +3954,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     &router,
                     &lighting.curve,
                     lighting.snapshot.lighting.ambient_target(),
+                    lighting.ambient(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4009,6 +3982,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         args.dry_run,
                         &tracker,
                         &claim_tracker,
+                        lighting.ambient(),
                     ).await;
                 }
                 run_curve_tick(
@@ -4017,6 +3991,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     &router,
                     &lighting.curve,
                     lighting.snapshot.lighting.ambient_target(),
+                    lighting.ambient(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4069,14 +4044,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
     // from the first retained state onwards.
     let bus = EventBus::default();
     let mut bus_rx = bus.subscribe();
-    let ambient_set = build_ambient_set(&cfg);
-    let source = Z2mSource::new(
-        mqtt_client,
-        registry.clone(),
-        bus,
-        z2m_prefix.as_str(),
-        ambient_set,
-    );
+    let source = Z2mSource::new(mqtt_client, registry.clone(), bus, z2m_prefix.as_str());
     let source_handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("Z2mSource exited: {e}");
@@ -4120,6 +4088,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     &CommandRouter::z2m_only(&z2m_prefix),
                     &curve,
                     cfg.lighting.ambient_target(),
+                    cfg.ambient_lights.ids(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4141,6 +4110,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     &CommandRouter::z2m_only(&z2m_prefix),
                     &curve,
                     cfg.lighting.ambient_target(),
+                    cfg.ambient_lights.ids(),
                     tz,
                     args.dry_run,
                     &mut last_published,
@@ -4172,6 +4142,7 @@ async fn run_curve_tick(
     router: &CommandRouter,
     curve: &niles_scheduler::CurveConfig,
     ambient_target: Option<(Option<u8>, Option<u16>)>,
+    ambient: &HashSet<DeviceId>,
     tz: chrono_tz::Tz,
     dry_run: bool,
     last_published: &mut HashMap<DeviceId, (u8, u16)>,
@@ -4206,7 +4177,7 @@ async fn run_curve_tick(
         // Ambient lights sit out the curve and are held at a fixed warm,
         // dim setting instead. With no ambient target configured they are
         // left alone entirely, which is how they behaved before.
-        let target = if device.is_curve_driven() {
+        let target = if device.is_curve_driven(ambient) {
             Some(curve_target)
         } else if device.is_light() {
             ambient_target.map(|(brightness, kelvin)| {
@@ -4293,6 +4264,7 @@ async fn run_morning_routine_tick(
     dry_run: bool,
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
+    ambient: &HashSet<DeviceId>,
 ) {
     let Some((minute_of_day, now)) = current_minute_of_day(tz) else {
         return;
@@ -4312,7 +4284,7 @@ async fn run_morning_routine_tick(
             .into_iter()
             // Non-ambient lights (ramped) + on/off outlets/plugs (switched
             // on at the end-minute, since they can't ramp).
-            .filter(|d| d.is_switchable() && !d.is_ambient)
+            .filter(|d| d.is_switchable() && !ambient.contains(&d.id))
             .map(|d| d.id)
             .collect()
     } else {
@@ -4368,7 +4340,7 @@ async fn run_morning_routine_tick(
                     tracing::info!("[routine {minute_of_day}] released {id}");
                     continue;
                 };
-                if device.is_curve_driven() && device.state.brightness != Some(100) {
+                if device.is_curve_driven(ambient) && device.state.brightness != Some(100) {
                     let target = DeviceState {
                         brightness: Some(100),
                         ..Default::default()
@@ -4406,7 +4378,7 @@ async fn run_morning_routine_tick(
             let Some(device) = registry.get(id) else {
                 continue;
             };
-            if !device.is_curve_driven() {
+            if !device.is_curve_driven(ambient) {
                 continue;
             }
             if device.state.on == Some(true) {
@@ -4463,7 +4435,7 @@ async fn run_morning_routine_tick(
         let Some(device) = registry.get(id) else {
             continue;
         };
-        if !device.is_curve_driven() {
+        if !device.is_curve_driven(ambient) {
             continue;
         }
         let should_publish = match device.state.brightness {

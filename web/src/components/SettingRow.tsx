@@ -93,6 +93,10 @@ export function SettingRow({
     setDrafts(server);
   }, [signature]);
 
+  // Picking a light from a list is already a deliberate act, so that
+  // row writes on the spot and has no Save button at all. Typing into a
+  // box isn't: half a time is a value, and it must not reach the lights.
+  const instant = settings.every((s) => s.kind === "devices");
   const changed = settings.filter((s) => drafts[s.path] !== server[s.path]);
   const blocked = changed.some((s) => !usable(drafts[s.path], s.kind));
   const unset = settings.filter((s) => values[s.path] === undefined);
@@ -114,11 +118,13 @@ export function SettingRow({
               overridden
             </Badge>
           )}
-          {unset.length === settings.length && overridden.length === 0 && (
-            <Badge variant="outline" title="Nothing is configured here">
-              not set
-            </Badge>
-          )}
+          {unset.length === settings.length &&
+            overridden.length === 0 &&
+            !settings.some((s) => s.kind === "devices") && (
+              <Badge variant="outline" title="Nothing is configured here">
+                not set
+              </Badge>
+            )}
           {!hot && (
             <Badge
               variant="outline"
@@ -148,9 +154,10 @@ export function SettingRow({
                   options={setting.options ?? []}
                   disabled={saving}
                   emptyMessage={setting.optionsEmpty ?? "No lights to pick from."}
-                  onChange={(next) =>
-                    setDrafts({ ...drafts, [setting.path]: next.join(", ") })
-                  }
+                  onChange={(next) => {
+                    setDrafts({ ...drafts, [setting.path]: next.join(", ") });
+                    onSave([{ path: setting.path, value: next }]);
+                  }}
                 />
               ) : (
               <Input
@@ -187,13 +194,15 @@ export function SettingRow({
         <div className="ml-auto flex items-center gap-1">
           {/* Kept in the layout when there is nothing to save, so a row
               doesn't jump sideways the moment you type in it. */}
-          <Button
-            onClick={save}
-            disabled={changed.length === 0 || blocked || saving}
-            className={cn(changed.length === 0 && "invisible")}
-          >
-            Save
-          </Button>
+          {!instant && (
+            <Button
+              onClick={save}
+              disabled={changed.length === 0 || blocked || saving}
+              className={cn(changed.length === 0 && "invisible")}
+            >
+              Save
+            </Button>
+          )}
           {overridden.length > 0 && (
             <Button
               size="icon"

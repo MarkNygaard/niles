@@ -27,7 +27,6 @@ pub struct Z2mSource {
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
     prefix: String,
-    ambient_lights: Arc<HashSet<DeviceId>>,
 }
 
 impl Z2mSource {
@@ -39,14 +38,12 @@ impl Z2mSource {
         registry: Arc<DeviceRegistry>,
         bus: EventBus,
         prefix: impl Into<String>,
-        ambient_lights: Arc<HashSet<DeviceId>>,
     ) -> Self {
         Self {
             client,
             registry,
             bus,
             prefix: prefix.into(),
-            ambient_lights,
         }
     }
 
@@ -63,13 +60,7 @@ impl Z2mSource {
         self.client.subscribe(&action_pattern).await?;
 
         while let Some(msg) = self.client.next_message().await {
-            dispatch(
-                &msg,
-                &self.prefix,
-                &self.registry,
-                &self.bus,
-                &self.ambient_lights,
-            );
+            dispatch(&msg, &self.prefix, &self.registry, &self.bus);
         }
         Ok(())
     }
@@ -78,13 +69,7 @@ impl Z2mSource {
 /// Route an incoming message to the right handler. Extracted as a
 /// free function so tests can exercise routing without constructing a
 /// real `MqttClient`.
-pub(crate) fn dispatch(
-    msg: &Message,
-    prefix: &str,
-    registry: &DeviceRegistry,
-    bus: &EventBus,
-    ambient_lights: &HashSet<DeviceId>,
-) {
+pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, bus: &EventBus) {
     let Some(rest) = msg.topic.strip_prefix(prefix) else {
         return;
     };
@@ -93,7 +78,7 @@ pub(crate) fn dispatch(
     };
 
     if rest == "bridge/devices" {
-        handle_device_list(&msg.payload, registry, bus, ambient_lights);
+        handle_device_list(&msg.payload, registry, bus);
     } else if let Some((room, device)) = rest.strip_suffix("/action").and_then(split_room_device) {
         // 3-segment `<room>/<device>/action` from a button device.
         // A 2-segment `<room>/action` (state for a flat-named device
@@ -140,12 +125,7 @@ fn split_room_device(s: &str) -> Option<(&str, &str)> {
 /// Parse a `bridge/devices` payload and reconcile the registry: add
 /// new devices, update friendly_name renames (handled implicitly by
 /// the registry keying), remove devices no longer in the list.
-pub(crate) fn handle_device_list(
-    payload: &[u8],
-    registry: &DeviceRegistry,
-    bus: &EventBus,
-    ambient_lights: &HashSet<DeviceId>,
-) {
+pub(crate) fn handle_device_list(payload: &[u8], registry: &DeviceRegistry, bus: &EventBus) {
     let devices = match parse_device_list(payload) {
         Ok(d) => d,
         Err(e) => {
@@ -161,9 +141,8 @@ pub(crate) fn handle_device_list(
             continue;
         }
         match z2m.to_device() {
-            Ok(mut device) => {
+            Ok(device) => {
                 let id = device.id.clone();
-                device.is_ambient = ambient_lights.contains(&id);
                 new_ids.insert(id);
                 let existed = registry.get(&device.id).is_some();
                 registry.upsert(device.clone());
@@ -298,11 +277,6 @@ mod tests {
         (registry, bus, rx)
     }
 
-    /// Empty ambient set for tests that don't care about ambient lights.
-    fn no_ambient() -> HashSet<DeviceId> {
-        HashSet::new()
-    }
-
     fn drain(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> Vec<Event> {
         let mut out = Vec::new();
         while let Ok(ev) = rx.try_recv() {
@@ -321,7 +295,7 @@ mod tests {
             {"ieee_address":"0x2","friendly_name":"office/desk_lamp","type":"EndDevice"},
             {"ieee_address":"0x3","friendly_name":"Coordinator","type":"Coordinator"}
         ]"#;
-        handle_device_list(payload, &registry, &bus, &no_ambient());
+        handle_device_list(payload, &registry, &bus);
 
         let devices = registry.list_all();
         assert_eq!(devices.len(), 2, "coordinator must not be in registry");
@@ -341,13 +315,13 @@ mod tests {
             {"ieee_address":"0x1","friendly_name":"kitchen/ceiling_light","type":"Router"},
             {"ieee_address":"0x2","friendly_name":"office/desk_lamp","type":"EndDevice"}
         ]"#;
-        handle_device_list(first, &registry, &bus, &no_ambient());
+        handle_device_list(first, &registry, &bus);
         drain(&mut rx); // discard initial add events
 
         let second = br#"[
             {"ieee_address":"0x1","friendly_name":"kitchen/ceiling_light","type":"Router"}
         ]"#;
-        handle_device_list(second, &registry, &bus, &no_ambient());
+        handle_device_list(second, &registry, &bus);
 
         assert_eq!(registry.list_all().len(), 1, "office device should be gone");
         let events = drain(&mut rx);
@@ -365,9 +339,9 @@ mod tests {
         let payload = br#"[
             {"ieee_address":"0x1","friendly_name":"kitchen/ceiling_light","type":"Router"}
         ]"#;
-        handle_device_list(payload, &registry, &bus, &no_ambient());
+        handle_device_list(payload, &registry, &bus);
         drain(&mut rx); // first add
-        handle_device_list(payload, &registry, &bus, &no_ambient());
+        handle_device_list(payload, &registry, &bus);
         let events = drain(&mut rx);
         assert!(
             !events
@@ -383,47 +357,15 @@ mod tests {
         let payload = br#"[
             {"ieee_address":"0x1","friendly_name":"Bad Name With Spaces","type":"Router"}
         ]"#;
-        handle_device_list(payload, &registry, &bus, &no_ambient());
+        handle_device_list(payload, &registry, &bus);
         assert!(registry.is_empty());
     }
 
     #[test]
     fn malformed_device_list_payload_is_logged_not_panicked() {
         let (registry, bus, _rx) = fixtures();
-        handle_device_list(b"not json", &registry, &bus, &no_ambient());
+        handle_device_list(b"not json", &registry, &bus);
         assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn handle_device_list_marks_ambient_when_in_set() {
-        let (registry, bus, _rx) = fixtures();
-        let id = DeviceId::parse("z2m:living_room/tv_lightstrip").unwrap();
-        let ambient_set: HashSet<DeviceId> = [id.clone()].into_iter().collect();
-        let payload = br#"[
-            {"ieee_address":"0x1","friendly_name":"living_room/tv_lightstrip","type":"Router"}
-        ]"#;
-        handle_device_list(payload, &registry, &bus, &ambient_set);
-        let dev = registry.get(&id).unwrap();
-        assert!(
-            dev.is_ambient,
-            "device in ambient set should be marked ambient"
-        );
-    }
-
-    #[test]
-    fn handle_device_list_leaves_non_ambient_clear() {
-        let (registry, bus, _rx) = fixtures();
-        let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
-        let ambient_set = HashSet::new();
-        let payload = br#"[
-            {"ieee_address":"0x1","friendly_name":"kitchen/ceiling_light","type":"Router"}
-        ]"#;
-        handle_device_list(payload, &registry, &bus, &ambient_set);
-        let dev = registry.get(&id).unwrap();
-        assert!(
-            !dev.is_ambient,
-            "device not in ambient set should not be marked ambient"
-        );
     }
 
     // ---- handle_device_state -------------------------------------
@@ -434,7 +376,7 @@ mod tests {
         let device_list = br#"[
             {"ieee_address":"0x1","friendly_name":"kitchen/ceiling_light","type":"Router"}
         ]"#;
-        handle_device_list(device_list, &registry, &bus, &no_ambient());
+        handle_device_list(device_list, &registry, &bus);
         drain(&mut rx);
 
         let state_payload = br#"{"state":"ON","brightness":254,"color_temp":250}"#;
@@ -459,7 +401,7 @@ mod tests {
         let device_list = br#"[
             {"ieee_address":"0x1","friendly_name":"kitchen/ceiling_light","type":"Router"}
         ]"#;
-        handle_device_list(device_list, &registry, &bus, &no_ambient());
+        handle_device_list(device_list, &registry, &bus);
         drain(&mut rx);
 
         // Full state arrives first.
@@ -521,7 +463,7 @@ mod tests {
             ]"#
             .to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert_eq!(registry.list_all().len(), 1);
     }
 
@@ -532,7 +474,7 @@ mod tests {
             topic: "zigbee2mqtt/office/desk_lamp".into(),
             payload: br#"{"state":"ON"}"#.to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         // No registry entry yet (no bridge/devices first), but the
         // call should not panic and the bus event should have fired.
         let id = DeviceId::parse("z2m:office/desk_lamp").unwrap();
@@ -553,7 +495,7 @@ mod tests {
                 topic,
                 payload: br#"{"state":"online"}"#.to_vec(),
             };
-            dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+            dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         }
         // No events emitted, no registry mutation:
         assert!(registry.is_empty());
@@ -567,7 +509,7 @@ mod tests {
             topic: "homeassistant/light/foo".into(),
             payload: b"{}".to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(registry.is_empty());
     }
 
@@ -578,7 +520,7 @@ mod tests {
             topic: "zigbee2mqtt/bridge/logging".into(),
             payload: br#"{"level":"info"}"#.to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(registry.is_empty());
     }
 
@@ -653,7 +595,7 @@ mod tests {
             topic: "zigbee2mqtt/office/switch/action".into(),
             payload: b"on_press".to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], Event::DeviceAction { .. }));
@@ -667,7 +609,7 @@ mod tests {
             topic: "zigbee2mqtt/office/switch/extra/action".into(),
             payload: b"on_press".to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(drain(&mut rx).is_empty());
     }
 
@@ -681,14 +623,14 @@ mod tests {
         let device_list = br#"[
             {"ieee_address":"0x1","friendly_name":"office/action","type":"EndDevice"}
         ]"#;
-        handle_device_list(device_list, &registry, &bus, &no_ambient());
+        handle_device_list(device_list, &registry, &bus);
         drain(&mut rx);
 
         let msg = Message {
             topic: "zigbee2mqtt/office/action".into(),
             payload: br#"{"state":"ON"}"#.to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
 
         let id = DeviceId::parse("z2m:office/action").unwrap();
         assert_eq!(registry.get(&id).unwrap().state.on, Some(true));
@@ -707,7 +649,7 @@ mod tests {
             topic: "zigbee2mqtt/bridge/devices/action".into(),
             payload: b"on_press".to_vec(),
         };
-        dispatch(&msg, "zigbee2mqtt", &registry, &bus, &no_ambient());
+        dispatch(&msg, "zigbee2mqtt", &registry, &bus);
         assert!(drain(&mut rx).is_empty());
     }
 
@@ -741,7 +683,7 @@ mod tests {
         let device_list = br#"[
             {"ieee_address":"0x1","friendly_name":"office/sensor","type":"EndDevice"}
         ]"#;
-        handle_device_list(device_list, &registry, &bus, &no_ambient());
+        handle_device_list(device_list, &registry, &bus);
         drain(&mut rx);
 
         handle_device_state("office", "sensor", br#"{"battery":42}"#, &registry, &bus);

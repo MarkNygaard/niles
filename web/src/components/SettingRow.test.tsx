@@ -121,7 +121,10 @@ describe("SettingRow", () => {
     expect(saveButton()).toBeDisabled();
   });
 
-  it("saves what the device picker changed", () => {
+  it("writes as soon as a light is removed, with no Save to press", () => {
+    // Picking a light is already a deliberate act; a Save button after
+    // it is ceremony. Typing into a box is not, which is why only this
+    // kind of row saves on the spot.
     const { onSave } = setup({
       label: "Ambient lights",
       settings: [
@@ -141,16 +144,30 @@ describe("SettingRow", () => {
       ],
       values: { "ambient_lights.devices": ["wled:living_room/tv_light"] },
     });
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+
     fireEvent.click(
       screen.getByRole("button", { name: "Remove Living room Tv light" }),
     );
-
-    // No ambient lights at all is a choice, unlike an empty number.
-    expect(saveButton()).toBeEnabled();
-    fireEvent.click(saveButton());
     expect(onSave).toHaveBeenCalledWith([
       { path: "ambient_lights.devices", value: [] },
     ]);
+  });
+
+  it("does not badge an empty picker as unset — the empty box says so", () => {
+    setup({
+      label: "Ambient lights",
+      settings: [
+        {
+          path: "ambient_lights.devices",
+          kind: "devices",
+          caption: "pick from the lights Niles knows about",
+          options: [],
+        },
+      ],
+      values: { "ambient_lights.devices": undefined },
+    });
+    expect(screen.queryByText("not set")).toBeNull();
   });
 
   it("resets every overridden value in the row at once", () => {
