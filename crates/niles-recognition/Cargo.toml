@@ -9,6 +9,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 ndarray.workspace = true
 ort.workspace = true
 realfft.workspace = true

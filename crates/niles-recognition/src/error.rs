@@ -61,6 +61,9 @@ pub enum Error {
 
     #[error("speaker `{speaker}` not found")]
     NotFound { speaker: String },
+
+    #[error("enrollment storage failed: {0}")]
+    Storage(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

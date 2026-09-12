@@ -87,3 +87,82 @@ async fn an_empty_document_round_trips_as_empty() {
     assert!(loaded.overrides.is_empty());
     assert!(loaded.revisions.is_empty());
 }
+
+// ---- enrolled voices -------------------------------------------------
+
+fn enrollments() -> Option<niles_db::PostgresEnrollments> {
+    let backend = backend()?;
+    Some(niles_db::PostgresEnrollments::new(
+        backend.pool(),
+        "the test database".into(),
+    ))
+}
+
+/// A normalized embedding pointing along one axis, so two different
+/// `axis` values are orthogonal and cannot be mistaken for each other.
+fn embedding(axis: usize) -> Vec<f32> {
+    let mut e = vec![0.0_f32; 192];
+    e[axis] = 1.0;
+    e
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn an_enrolled_voice_round_trips() {
+    use niles_recognition::EnrollmentBackend;
+    let Some(store) = enrollments() else { return };
+    let _ = store.delete("test_speaker").await;
+
+    store
+        .enroll("test_speaker", &embedding(0))
+        .await
+        .expect("enroll");
+    let record = store.load("test_speaker").await.expect("load");
+    assert_eq!(record.display_name, "Test_speaker");
+    assert_eq!(record.clip_count, 1);
+    assert_eq!(record.embeddings[0].embedding.len(), 192);
+    assert!(record.last_seen_at.is_none());
+
+    store.delete("test_speaker").await.expect("delete");
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_second_clip_is_added_rather_than_replacing_the_first() {
+    use niles_recognition::EnrollmentBackend;
+    let Some(store) = enrollments() else { return };
+    let _ = store.delete("test_speaker").await;
+
+    store.enroll("test_speaker", &embedding(0)).await.unwrap();
+    store.enroll("test_speaker", &embedding(1)).await.unwrap();
+
+    let record = store.load("test_speaker").await.unwrap();
+    assert_eq!(record.clip_count, 2, "enrolling again adds a clip");
+
+    store.delete("test_speaker").await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn being_heard_is_recorded() {
+    use niles_recognition::EnrollmentBackend;
+    let Some(store) = enrollments() else { return };
+    let _ = store.delete("test_speaker").await;
+
+    store.enroll("test_speaker", &embedding(0)).await.unwrap();
+    store.bump_last_seen("test_speaker").await.unwrap();
+
+    let record = store.load("test_speaker").await.unwrap();
+    assert!(record.last_seen_at.is_some());
+
+    store.delete("test_speaker").await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_voice_nobody_enrolled_is_not_found() {
+    use niles_recognition::EnrollmentBackend;
+    let Some(store) = enrollments() else { return };
+    let err = store.load("nobody_here").await.unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+}

@@ -27,6 +27,9 @@
 //! replacement, so a retry after a connection dies mid-write cannot apply
 //! anything twice.
 
+mod enrollments;
+pub use enrollments::PostgresEnrollments;
+
 use async_trait::async_trait;
 use niles_config::{OverrideBackend, Revision, StoredState};
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -97,6 +100,12 @@ impl PostgresBackend {
     /// Where this backend points, with credentials stripped — safe to log.
     pub fn describe_target(&self) -> String {
         self.describe.clone()
+    }
+
+    /// The connection pool, so anything else that needs this database
+    /// shares one rather than opening its own.
+    pub fn pool(&self) -> sqlx::postgres::PgPool {
+        self.pool.clone()
     }
 
     async fn ensure_schema(&self) -> Result<(), String> {

@@ -25,7 +25,7 @@ use niles_mqtt::{
 };
 use niles_notifications::NotificationCenter;
 use niles_presence::{PresenceAggregator, PresenceSource, TadoConfig, TadoSource};
-use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig, EnrollmentStore};
+use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant, brightness_at,
@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
 
 mod conversation;
@@ -343,7 +343,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Chat(args) => chat(args).await,
         Commands::VoiceTap(args) => voice_tap(args).await,
         Commands::VoiceDispatch(args) => voice_dispatch(args).await,
-        Commands::Enroll(args) => enroll(args),
+        Commands::Enroll(args) => enroll(args).await,
         Commands::Lighting(args) => lighting(args).await,
         Commands::GenerateManifest(args) => generate_manifest(args),
     }
@@ -1431,7 +1431,7 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
+async fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
     let cfg = Config::load_from_path(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
     cfg.validate().context("validating config")?;
@@ -1444,13 +1444,6 @@ fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
         .model_path
         .clone()
         .expect("model_path guaranteed by config validation");
-    let enrollment_dir = cfg
-        .recognition
-        .matcher
-        .enrollment_dir
-        .clone()
-        .expect("enrollment_dir guaranteed by config validation");
-
     let mut reader = hound::WavReader::open(&args.audio)
         .with_context(|| format!("opening audio file {}", args.audio.display()))?;
     let spec = reader.spec();
@@ -1476,17 +1469,25 @@ fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
         .extract(&samples, 16000)
         .with_context(|| "extracting speaker embedding")?;
 
-    let store = EnrollmentStore::open(&enrollment_dir)
-        .with_context(|| format!("opening enrollment store at {}", enrollment_dir.display()))?;
+    let store = build_enrollment_backend(&cfg)?.context(
+        "nowhere to keep enrolled voices: configure [database], or          [recognition.matcher] enrollment_dir",
+    )?;
     store
         .enroll(&args.name, &embedding)
+        .await
         .context("enrolling speaker")?;
 
-    let record = store.load(&args.name).context("loading enrolled speaker")?;
+    let record = store
+        .load(&args.name)
+        .await
+        .context("loading enrolled speaker")?;
     println!(
-        "Enrolled speaker '{}' with {} clip(s).",
-        record.display_name, record.clip_count
+        "Enrolled speaker '{}' with {} clip(s) in {}.",
+        record.display_name,
+        record.clip_count,
+        store.describe()
     );
+    println!("Niles picks up a new voice on its next restart.");
     Ok(())
 }
 
@@ -1886,8 +1887,11 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
                         // need a bounded worker pool.
                         let client = client.clone();
                         tokio::spawn(async move {
-                            if let Some((peer, text)) = transcribe_session(&client, session).await {
+                            if let Some((peer, text, timing)) =
+                                transcribe_session(&client, session).await
+                            {
                                 println!("[{peer}] \"{text}\"");
+                                timing.log(peer, &text);
                             }
                         });
                     }
@@ -1926,7 +1930,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
 async fn transcribe_session(
     client: &WhisperClient,
     session: niles_wyoming::AudioSession,
-) -> Option<(SocketAddr, String)> {
+) -> Option<(SocketAddr, String, TurnTiming)> {
     let pcm_format = PcmFormat {
         sample_rate_hz: session.format.sample_rate_hz,
         bits_per_sample: session.format.bits_per_sample,
@@ -1944,13 +1948,64 @@ async fn transcribe_session(
         }
     };
 
+    let audio_ms = wav_duration_ms(&session);
+    let started = Instant::now();
     match client.transcribe(wav, "session.wav").await {
-        Ok(t) => Some((session.from, t.text.trim().to_string())),
+        Ok(t) => Some((
+            session.from,
+            t.text.trim().to_string(),
+            TurnTiming {
+                audio_ms,
+                stt_ms: started.elapsed().as_millis(),
+                ..TurnTiming::default()
+            },
+        )),
         Err(e) => {
             tracing::warn!("{}: transcription failed: {e}", session.from);
             None
         }
     }
+}
+
+/// Where a voice turn's time went, in milliseconds.
+///
+/// Every number here is measured rather than assumed. The architecture
+/// quotes a 400-500 ms Tier 0 budget, and until this existed nobody
+/// could say which part of it was real — the satellite's own
+/// end-of-speech hangover does not even appear in that figure.
+#[derive(Debug, Default, Clone, Copy)]
+struct TurnTiming {
+    /// How long the person spoke, for reading the rest against.
+    audio_ms: u128,
+    /// Upload, transcribe, and the round trip to wherever STT lives.
+    stt_ms: u128,
+    /// Matching the transcript and acting on it — MQTT, tools, an LLM
+    /// call if Tier 0 could not answer.
+    dispatch_ms: u128,
+    /// Synthesising the reply and streaming it back to the satellite.
+    speak_ms: u128,
+}
+
+impl TurnTiming {
+    fn log(&self, peer: SocketAddr, text: &str) {
+        tracing::info!(
+            audio_ms = self.audio_ms,
+            stt_ms = self.stt_ms,
+            dispatch_ms = self.dispatch_ms,
+            speak_ms = self.speak_ms,
+            heard_to_spoken_ms = self.stt_ms + self.dispatch_ms + self.speak_ms,
+            "[{peer}] turn timing for {text:?}"
+        );
+    }
+}
+
+/// Milliseconds of audio in a session, from the PCM length and format.
+fn wav_duration_ms(session: &niles_wyoming::AudioSession) -> u128 {
+    let bytes_per_sample = u128::from(session.format.bits_per_sample / 8).max(1);
+    let channels = u128::from(session.format.channels).max(1);
+    let rate = u128::from(session.format.sample_rate_hz).max(1);
+    let frames = session.pcm.len() as u128 / (bytes_per_sample * channels);
+    frames * 1000 / rate
 }
 
 /// Spawn a fire-and-forget task that transcribes `session`, dispatches
@@ -1977,7 +2032,7 @@ fn spawn_dispatch_task(
             let rate = session.format.sample_rate_hz;
             tokio::task::spawn_blocking(move || id.identify(&pcm, rate))
         });
-        if let Some((peer, text)) = transcribe_session(&whisper, session).await {
+        if let Some((peer, text, mut timing)) = transcribe_session(&whisper, session).await {
             let ident = match id_handle {
                 Some(h) => match h.await {
                     Ok(result) => result,
@@ -1999,7 +2054,9 @@ fn spawn_dispatch_task(
                 }
             }
             let speaker = speaker_context_from(attempted, ident);
+            let dispatch_started = Instant::now();
             let say = handle_transcript(&ctx, peer, &text, &speaker).await;
+            timing.dispatch_ms = dispatch_started.elapsed().as_millis();
             let entry = CommandEntry {
                 ts: chrono::Utc::now(),
                 peer,
@@ -2019,6 +2076,7 @@ fn spawn_dispatch_task(
             }
             if let Some(say) = say {
                 println!("[{peer}] say: {say}");
+                let speak_started = Instant::now();
                 if let Err(e) = crate::speak::speak_back(
                     &piper,
                     &sender,
@@ -2031,7 +2089,9 @@ fn spawn_dispatch_task(
                 {
                     tracing::warn!("[{peer}] speak-back failed: {e:#}");
                 }
+                timing.speak_ms = speak_started.elapsed().as_millis();
             }
+            timing.log(peer, &text);
         }
     });
 }
@@ -2149,8 +2209,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
-    let identifier =
-        build_speaker_identifier(&cfg.recognition).context("initializing speaker recognition")?;
+    let identifier = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
+        .await
+        .context("initializing speaker recognition")?;
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
@@ -3447,6 +3508,41 @@ fn spawn_override_retry(store: Arc<ConfigStore>) {
 /// Only a *misconfigured* database is fatal — a DSN that will not parse,
 /// or an env var that is not set. One that merely cannot be reached right
 /// now is not: the store reports it and retries in the background.
+/// Where enrolled voices live.
+///
+/// The database when there is one, because a voice print is under a
+/// kilobyte and the alternative is a volume — node-local ones pin the
+/// pod and block drains, network ones make recognition depend on a NAS.
+/// Falls back to a directory, which is what a laptop has.
+fn build_enrollment_backend(
+    cfg: &Config,
+) -> anyhow::Result<Option<Arc<dyn niles_recognition::EnrollmentBackend>>> {
+    if let Some(database) = &cfg.database {
+        let url = database
+            .resolve_url()
+            .context("resolving the database connection string")?;
+        let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "the connection string in {} is not a valid database URL",
+                    database.url_env
+                )
+            })?;
+        let describe = backend.describe_target();
+        return Ok(Some(Arc::new(niles_db::PostgresEnrollments::new(
+            backend.pool(),
+            describe,
+        ))));
+    }
+    match cfg.recognition.matcher.enrollment_dir.as_ref() {
+        Some(dir) => Ok(Some(Arc::new(
+            niles_recognition::EnrollmentStore::open(dir)
+                .with_context(|| format!("opening enrollment store at {}", dir.display()))?,
+        ))),
+        None => Ok(None),
+    }
+}
+
 fn build_override_backend(cfg: &Config) -> anyhow::Result<Box<dyn niles_config::OverrideBackend>> {
     if let Some(database) = &cfg.database {
         let url = database
@@ -3764,8 +3860,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
-    let identifier =
-        build_speaker_identifier(&cfg.recognition).context("initializing speaker recognition")?;
+    let identifier = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
+        .await
+        .context("initializing speaker recognition")?;
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
         .await
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;

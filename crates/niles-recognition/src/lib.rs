@@ -4,6 +4,7 @@
 //! cosine similarity helper); v2 adds enrollment persistence and
 //! speaker matching.
 
+pub mod backend;
 pub mod embedder;
 pub mod enrollment;
 pub mod error;
@@ -11,8 +12,11 @@ pub mod matcher;
 pub mod preprocess;
 pub mod similarity;
 
+pub use backend::EnrollmentBackend;
 pub use embedder::{EcapaTdnnEmbedder, EmbedderConfig};
-pub use enrollment::{EnrolledSpeaker, EnrollmentEntry, EnrollmentStore};
+pub use enrollment::{
+    EnrolledSpeaker, EnrollmentEntry, EnrollmentStore, default_display_name, validate_speaker_slug,
+};
 pub use error::{Error, Result};
 pub use matcher::{MatchOutcome, MatchStrategy, Matcher};
 pub use similarity::{cosine_similarity, l2_normalize};

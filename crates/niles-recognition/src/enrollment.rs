@@ -191,7 +191,9 @@ impl EnrollmentStore {
 // Helpers
 // ------------------------------------------------------------------
 
-fn validate_speaker_slug(name: &str) -> Result<()> {
+/// Public so a second backend applies the same rules rather than its
+/// own approximation of them.
+pub fn validate_speaker_slug(name: &str) -> Result<()> {
     if name == "." || name == ".." {
         return Err(Error::InvalidName {
             name: name.to_string(),
@@ -229,7 +231,8 @@ fn validate_speaker_slug(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn default_display_name(slug: &str) -> String {
+/// Public for the same reason as [`validate_speaker_slug`].
+pub fn default_display_name(slug: &str) -> String {
     let mut chars = slug.chars();
     match chars.next() {
         Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
@@ -295,6 +298,37 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+#[async_trait::async_trait]
+impl crate::EnrollmentBackend for EnrollmentStore {
+    async fn load_all(&self) -> Result<Vec<EnrolledSpeaker>> {
+        EnrollmentStore::load_all(self)
+    }
+
+    async fn enroll(&self, speaker: &str, embedding: &[f32]) -> Result<()> {
+        EnrollmentStore::enroll(self, speaker, embedding)
+    }
+
+    async fn load(&self, speaker: &str) -> Result<EnrolledSpeaker> {
+        EnrollmentStore::load(self, speaker)
+    }
+
+    async fn list(&self) -> Result<Vec<String>> {
+        EnrollmentStore::list(self)
+    }
+
+    async fn delete(&self, speaker: &str) -> Result<()> {
+        EnrollmentStore::delete(self, speaker)
+    }
+
+    async fn bump_last_seen(&self, speaker: &str) -> Result<()> {
+        EnrollmentStore::bump_last_seen(self, speaker)
+    }
+
+    fn describe(&self) -> String {
+        format!("the directory {}", self._root.display())
+    }
 }
 
 #[cfg(test)]
