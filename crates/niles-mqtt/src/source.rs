@@ -59,26 +59,52 @@ impl Z2mSource {
         let action_pattern = format!("{}/+/+/action", self.prefix);
         self.client.subscribe(&action_pattern).await?;
 
+        let publisher = self.client.publisher();
         while let Some(msg) = self.client.next_message().await {
-            dispatch(&msg, &self.prefix, &self.registry, &self.bus);
+            for id in dispatch(&msg, &self.prefix, &self.registry, &self.bus) {
+                request_state(&publisher, &self.prefix, &id).await;
+            }
         }
         Ok(())
+    }
+}
+
+/// Ask Z2M what a device is currently doing.
+///
+/// Z2M only publishes state when something changes, so a Niles that has
+/// just started knows nothing about a light until someone physically
+/// turns it off and on — and until then the curve skips it, because it
+/// never drives a light it can't confirm is on. Reading `state` makes
+/// Z2M publish that device's full cached state, which is everything we
+/// need.
+///
+/// A failure here is not worth interrupting the message loop for: the
+/// next state message fixes it, which is exactly where we were before.
+async fn request_state(publisher: &crate::client::MqttPublisher, prefix: &str, id: &DeviceId) {
+    let topic = format!("{prefix}/{}/{}/get", id.room().as_str(), id.name().as_str());
+    if let Err(e) = publisher.publish(&topic, br#"{"state":""}"#.to_vec()).await {
+        debug!("could not ask {id} for its state: {e}");
     }
 }
 
 /// Route an incoming message to the right handler. Extracted as a
 /// free function so tests can exercise routing without constructing a
 /// real `MqttClient`.
-pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, bus: &EventBus) {
+pub(crate) fn dispatch(
+    msg: &Message,
+    prefix: &str,
+    registry: &DeviceRegistry,
+    bus: &EventBus,
+) -> Vec<DeviceId> {
     let Some(rest) = msg.topic.strip_prefix(prefix) else {
-        return;
+        return Vec::new();
     };
     let Some(rest) = rest.strip_prefix('/') else {
-        return;
+        return Vec::new();
     };
 
     if rest == "bridge/devices" {
-        handle_device_list(&msg.payload, registry, bus);
+        return handle_device_list(&msg.payload, registry, bus);
     } else if let Some((room, device)) = rest.strip_suffix("/action").and_then(split_room_device) {
         // 3-segment `<room>/<device>/action` from a button device.
         // A 2-segment `<room>/action` (state for a flat-named device
@@ -86,13 +112,13 @@ pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, b
         // through to the state branch below — silently dropping it
         // would have been a regression.
         if room == "bridge" {
-            return;
+            return Vec::new();
         }
         handle_device_action(room, device, &msg.payload, bus);
     } else if let Some((room, device)) = split_room_device(rest) {
         // Skip Z2M's internal `bridge/*` topics other than `bridge/devices`.
         if room == "bridge" {
-            return;
+            return Vec::new();
         }
         // Skip Z2M's per-device subtopics. For `room/device` friendly_names
         // these are 3 levels deep and wouldn't match our `+/+` subscription;
@@ -105,10 +131,11 @@ pub(crate) fn dispatch(msg: &Message, prefix: &str, registry: &DeviceRegistry, b
         //   <name>/set            — write commands (often echoed back)
         //   <name>/get            — request-state messages
         if matches!(device, "availability" | "set" | "get") {
-            return;
+            return Vec::new();
         }
         handle_device_state(room, device, &msg.payload, registry, bus);
     }
+    Vec::new()
 }
 
 /// Split `"<room>/<device>"`. Returns `None` if there's no slash or
@@ -125,30 +152,52 @@ fn split_room_device(s: &str) -> Option<(&str, &str)> {
 /// Parse a `bridge/devices` payload and reconcile the registry: add
 /// new devices, update friendly_name renames (handled implicitly by
 /// the registry keying), remove devices no longer in the list.
-pub(crate) fn handle_device_list(payload: &[u8], registry: &DeviceRegistry, bus: &EventBus) {
+/// Returns the devices whose state nobody has told us yet, so the
+/// caller can ask Z2M for it.
+pub(crate) fn handle_device_list(
+    payload: &[u8],
+    registry: &DeviceRegistry,
+    bus: &EventBus,
+) -> Vec<DeviceId> {
     let devices = match parse_device_list(payload) {
         Ok(d) => d,
         Err(e) => {
             warn!("failed to parse bridge/devices payload: {e}");
-            return;
+            return Vec::new();
         }
     };
 
     // Build the new set of IDs we want present.
     let mut new_ids: HashSet<DeviceId> = HashSet::new();
+    let mut ask_state: Vec<DeviceId> = Vec::new();
     for z2m in &devices {
         if !z2m.is_user_device() {
             continue;
         }
         match z2m.to_device() {
-            Ok(device) => {
-                let id = device.id.clone();
-                new_ids.insert(id);
-                let existed = registry.get(&device.id).is_some();
+            Ok(mut device) => {
+                new_ids.insert(device.id.clone());
+                // `to_device` carries no state — it describes what the
+                // device *is*, not what it is doing. Z2M republishes
+                // this list on every reconnect and every pairing
+                // change, so overwriting the entry wholesale forgot
+                // what every light was doing, and the curve then
+                // skipped them all until each was physically toggled.
+                let existing = registry.get(&device.id);
+                if let Some(known) = &existing {
+                    device.state = known.state.clone();
+                }
                 registry.upsert(device.clone());
-                if !existed {
+                if existing.is_none() {
                     debug!("discovered {}", device.id);
-                    bus.publish(Event::DeviceAdded { device });
+                    bus.publish(Event::DeviceAdded {
+                        device: device.clone(),
+                    });
+                }
+                // Nothing has told us what this one is doing yet. Ask,
+                // rather than wait for someone to walk over and flip it.
+                if device.state.on.is_none() && device.is_switchable() {
+                    ask_state.push(device.id);
                 }
             }
             Err(e) => {
@@ -174,6 +223,8 @@ pub(crate) fn handle_device_list(payload: &[u8], registry: &DeviceRegistry, bus:
         debug!("removed {}", id);
         bus.publish(Event::DeviceRemoved { id });
     }
+
+    ask_state
 }
 
 /// Maximum action-payload size we'll accept. Z2M action strings are
@@ -366,6 +417,84 @@ mod tests {
         let (registry, bus, _rx) = fixtures();
         handle_device_list(b"not json", &registry, &bus);
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn a_device_list_refresh_keeps_what_we_know_about_a_light() {
+        // Z2M republishes bridge/devices on every reconnect and every
+        // pairing change. Overwriting the entry wholesale forgot what
+        // each light was doing, and the curve then skipped all of them
+        // until someone physically toggled each one.
+        let (registry, bus, _rx) = fixtures();
+        let id = DeviceId::parse("z2m:office/lightstrip").unwrap();
+        let payload = br#"[
+            {"ieee_address":"0x1","friendly_name":"office/lightstrip","type":"Router",
+             "definition":{"exposes":[{"type":"light"}]}}
+        ]"#;
+        handle_device_list(payload, &registry, &bus);
+
+        handle_device_state(
+            "office",
+            "lightstrip",
+            br#"{"state":"ON","brightness":200,"color_temp":370}"#,
+            &registry,
+            &bus,
+        );
+        assert_eq!(registry.get(&id).unwrap().state.on, Some(true));
+
+        handle_device_list(payload, &registry, &bus);
+        let after = registry.get(&id).unwrap();
+        assert_eq!(after.state.on, Some(true), "state survives the refresh");
+        assert!(after.state.brightness.is_some());
+        assert!(after.state.color_temp_kelvin.is_some());
+    }
+
+    #[test]
+    fn a_light_we_know_nothing_about_is_asked() {
+        let (registry, bus, _rx) = fixtures();
+        let payload = br#"[
+            {"ieee_address":"0x1","friendly_name":"office/lightstrip","type":"Router",
+             "definition":{"exposes":[{"type":"light"}]}}
+        ]"#;
+        let ask = handle_device_list(payload, &registry, &bus);
+        assert_eq!(
+            ask,
+            vec![DeviceId::parse("z2m:office/lightstrip").unwrap()],
+            "nothing has said whether this light is on, so ask"
+        );
+    }
+
+    #[test]
+    fn a_light_we_already_know_about_is_not_asked_again() {
+        let (registry, bus, _rx) = fixtures();
+        let payload = br#"[
+            {"ieee_address":"0x1","friendly_name":"office/lightstrip","type":"Router",
+             "definition":{"exposes":[{"type":"light"}]}}
+        ]"#;
+        handle_device_list(payload, &registry, &bus);
+        handle_device_state(
+            "office",
+            "lightstrip",
+            br#"{"state":"ON"}"#,
+            &registry,
+            &bus,
+        );
+
+        assert!(
+            handle_device_list(payload, &registry, &bus).is_empty(),
+            "we already know; asking again is pointless traffic"
+        );
+    }
+
+    #[test]
+    fn a_sensor_is_never_asked() {
+        // Reading from a battery device wakes it for nothing.
+        let (registry, bus, _rx) = fixtures();
+        let payload = br#"[
+            {"ieee_address":"0x1","friendly_name":"hallway/motion","type":"EndDevice",
+             "definition":{"exposes":[{"type":"binary","property":"occupancy"}]}}
+        ]"#;
+        assert!(handle_device_list(payload, &registry, &bus).is_empty());
     }
 
     // ---- handle_device_state -------------------------------------
