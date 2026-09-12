@@ -144,7 +144,7 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --radius: 0.2rem;
+  --radius: 0.4rem;
   /* One step below the canvas: the sidebar is chrome, and it should sit behind
      the page rather than beside it. */
   --sidebar: oklch(0.965 0.002 288);
