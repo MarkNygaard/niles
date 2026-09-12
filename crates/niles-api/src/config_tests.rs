@@ -225,6 +225,43 @@ async fn changing_a_boot_section_says_a_restart_is_needed() {
 }
 
 #[tokio::test]
+async fn an_optional_value_the_base_file_omits_can_still_be_set() {
+    // The UI offers every known setting, configured or not. A value that
+    // has never been set is the normal case for an optional one — and is
+    // exactly the case that used to have no way in.
+    let app = app(true);
+    let (status, body) = send(&app, patch(json!({"lighting": {"ambient_brightness": 25}}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["changes"][0]["from"], Value::Null, "nothing was there");
+    assert_eq!(body["changes"][0]["to"], 25);
+
+    let (_, after) = send(&app, get("/config")).await;
+    assert_eq!(after["effective"]["lighting"]["ambient_brightness"], 25);
+}
+
+#[tokio::test]
+async fn a_section_the_base_file_omits_can_still_be_set() {
+    let app = app(true);
+    let (status, body) = send(
+        &app,
+        patch(json!({"ambient_lights": {"devices": ["living_room/tv_lightstrip"]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["needs_restart"],
+        json!(["ambient_lights"]),
+        "which lights are ambient is read once, at startup"
+    );
+
+    let (_, after) = send(&app, get("/config")).await;
+    assert_eq!(
+        after["effective"]["ambient_lights"]["devices"],
+        json!(["living_room/tv_lightstrip"])
+    );
+}
+
+#[tokio::test]
 async fn delete_returns_a_value_to_the_base() {
     let app = app(true);
     send(&app, patch(json!({"lighting": {"daytime_brightness": 85}}))).await;
