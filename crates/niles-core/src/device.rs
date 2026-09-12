@@ -5,6 +5,7 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashSet;
 use std::fmt;
 
 /// A normalized room name like `kitchen` or `living_room`.
@@ -197,18 +198,12 @@ pub struct Device {
     pub id: DeviceId,
     pub state: DeviceState,
     pub class: DeviceClass,
-    pub is_ambient: bool,
 }
 
 impl Device {
-    /// Construct a new device with `is_ambient` defaulted to `false`.
+    /// Construct a new device.
     pub fn new(id: DeviceId, state: DeviceState, class: DeviceClass) -> Self {
-        Self {
-            id,
-            state,
-            class,
-            is_ambient: false,
-        }
+        Self { id, state, class }
     }
 
     /// True if this device is classified as a light.
@@ -224,11 +219,16 @@ impl Device {
         matches!(self.class, DeviceClass::Light | DeviceClass::Outlet)
     }
 
-    /// True if this device should be driven by the ambient lighting
-    /// curve and the morning routine. Ambient lights (accent /
-    /// decorative lights the user controls manually) are excluded.
-    pub fn is_curve_driven(&self) -> bool {
-        self.is_light() && !self.is_ambient
+    /// True if this device should be driven by the daily curve and the
+    /// morning routine. Ambient lights — accent and decorative ones the
+    /// user wants held steady — are excluded.
+    ///
+    /// The set is passed in rather than cached on the device, because it
+    /// is config and config changes while Niles runs. Holding it here
+    /// once meant a light could only become ambient by restarting, and
+    /// meant two sources could disagree about what the set contained.
+    pub fn is_curve_driven(&self, ambient: &HashSet<DeviceId>) -> bool {
+        self.is_light() && !ambient.contains(&self.id)
     }
 
     /// True if this device reports a color temperature.
@@ -337,17 +337,10 @@ mod tests {
     }
 
     #[test]
-    fn device_new_defaults_to_non_ambient() {
-        let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
-        let device = Device::new(id, DeviceState::default(), DeviceClass::Light);
-        assert!(!device.is_ambient);
-    }
-
-    #[test]
     fn is_curve_driven_for_normal_light() {
         let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
         let device = Device::new(id, DeviceState::default(), DeviceClass::Light);
-        assert!(device.is_curve_driven());
+        assert!(device.is_curve_driven(&HashSet::new()));
     }
 
     #[test]
@@ -359,7 +352,7 @@ mod tests {
             !outlet.is_light(),
             "but it isn't a light (no brightness/curve)"
         );
-        assert!(!outlet.is_curve_driven());
+        assert!(!outlet.is_curve_driven(&HashSet::new()));
 
         let light = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
         assert!(light.is_switchable());
@@ -376,31 +369,30 @@ mod tests {
 
     #[test]
     fn is_curve_driven_excludes_ambient_and_non_lights() {
-        let id = DeviceId::parse("z2m:living_room/tv_lightstrip").unwrap();
+        let light = Device::new(
+            DeviceId::parse("wled:living_room/tv_light").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        );
+        let ambient: HashSet<DeviceId> = [light.id.clone()].into_iter().collect();
 
-        // Light + ambient → false
-        let mut ambient_light = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
-        ambient_light.is_ambient = true;
-        assert!(!ambient_light.is_curve_driven());
+        assert!(light.is_curve_driven(&HashSet::new()));
+        assert!(!light.is_curve_driven(&ambient));
 
-        // Non-light classes → false regardless of is_ambient
+        // Non-light classes are never curve-driven, listed or not.
         for class in [
-            DeviceClass::Outlet,
-            DeviceClass::Sensor,
             DeviceClass::Switch,
-            DeviceClass::Unknown,
+            DeviceClass::Sensor,
+            DeviceClass::Outlet,
         ] {
-            let mut d = Device::new(id.clone(), DeviceState::default(), class);
-            d.is_ambient = false;
-            assert!(
-                !d.is_curve_driven(),
-                "{class:?} with is_ambient=false should not be curve_driven"
+            let d = Device::new(
+                DeviceId::parse("z2m:living_room/thing").unwrap(),
+                DeviceState::default(),
+                class,
             );
-            d.is_ambient = true;
-            assert!(
-                !d.is_curve_driven(),
-                "{class:?} with is_ambient=true should not be curve_driven"
-            );
+            assert!(!d.is_curve_driven(&HashSet::new()), "{class:?}");
+            let listed: HashSet<DeviceId> = [d.id.clone()].into_iter().collect();
+            assert!(!d.is_curve_driven(&listed), "{class:?}");
         }
     }
 

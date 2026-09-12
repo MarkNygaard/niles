@@ -12,120 +12,151 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { SettingField } from "@/components/SettingField";
-import type { FieldKind } from "@/components/SettingField";
-import { ApiError, api, patchFor, valueAt } from "@/lib/api";
+import { CurveChart } from "@/components/CurveChart";
+import { deviceOptions } from "@/components/DevicePicker";
+import { SettingRow } from "@/components/SettingRow";
+import type { Setting } from "@/components/SettingRow";
+import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
 import type { Applied, ConfigView, Revision } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { AlertTriangle, Undo2 } from "lucide-react";
 
-interface Field {
-  /** Dotted path into the config, e.g. `lighting.morning_start`. */
-  path: string;
+interface Row {
   label: string;
-  kind: FieldKind;
-  hint?: string;
+  description: string;
+  settings: Setting[];
+  joiner?: string;
 }
 
 /**
- * The curve, a row at a time. Each row is one pair — a ramp's start and
- * end, the two levels it moves between — because that is how someone
- * thinks about them and how they have to be read to make sense.
+ * The curve, one row per thing it does over a day.
+ *
+ * A row holds a pair where the pair is one idea: a ramp is a span, and
+ * its start says nothing without its end.
  */
-const CURVE_ROWS: Field[][] = [
-  [
-    {
-      path: "lighting.morning_start",
-      label: "Morning ramp starts",
-      kind: "text",
-      hint: "HH:MM",
-    },
-    {
-      path: "lighting.morning_end",
-      label: "Morning ramp ends",
-      kind: "text",
-      hint: "HH:MM",
-    },
-  ],
-  [
-    {
-      path: "lighting.sunset_start",
-      label: "Sunset ramp starts",
-      kind: "text",
-      hint: "HH:MM",
-    },
-    {
-      path: "lighting.sunset_end",
-      label: "Sunset ramp ends",
-      kind: "text",
-      hint: "HH:MM",
-    },
-  ],
-  [
-    {
-      path: "lighting.night_floor_brightness",
-      label: "Night floor brightness",
-      kind: "number",
-      hint: "0–100%, held overnight",
-    },
-    {
-      path: "lighting.daytime_brightness",
-      label: "Daytime brightness",
-      kind: "number",
-      hint: "0–100%, held between the ramps",
-    },
-  ],
-  [
-    {
-      path: "lighting.curve_pause_start",
-      label: "Curve pause starts",
-      kind: "text",
-      hint: "e.g. fri 12:00 — the curve freezes here until the pause ends",
-    },
-    {
-      path: "lighting.curve_pause_end",
-      label: "Curve pause ends",
-      kind: "text",
-      hint: "e.g. sun 12:00",
-    },
-  ],
+const CURVE_ROWS: Row[] = [
+  {
+    label: "Morning ramp",
+    description: "Lights come up across this window.",
+    joiner: "→",
+    settings: [
+      {
+        path: "lighting.morning_start",
+        kind: "text",
+        caption: "starts",
+        width: "w-32",
+      },
+      {
+        path: "lighting.morning_end",
+        kind: "text",
+        caption: "ends",
+        width: "w-32",
+      },
+    ],
+  },
+  {
+    label: "Sunset ramp",
+    description: "And wind back down across this one.",
+    joiner: "→",
+    settings: [
+      {
+        path: "lighting.sunset_start",
+        kind: "text",
+        caption: "starts",
+        width: "w-32",
+      },
+      {
+        path: "lighting.sunset_end",
+        kind: "text",
+        caption: "ends",
+        width: "w-32",
+      },
+    ],
+  },
+  {
+    label: "Brightness",
+    description: "Held flat at these levels outside the two ramps.",
+    settings: [
+      {
+        path: "lighting.night_floor_brightness",
+        kind: "number",
+        caption: "night %",
+        width: "w-24",
+      },
+      {
+        path: "lighting.daytime_brightness",
+        kind: "number",
+        caption: "day %",
+        width: "w-24",
+      },
+    ],
+  },
+  {
+    label: "Curve pause",
+    description:
+      "The curve freezes where it stood when the pause began, so a weekend keeps Friday's light.",
+    joiner: "→",
+    settings: [
+      {
+        path: "lighting.curve_pause_start",
+        kind: "text",
+        caption: "from",
+        width: "w-32",
+      },
+      {
+        path: "lighting.curve_pause_end",
+        kind: "text",
+        caption: "until",
+        width: "w-32",
+      },
+    ],
+  },
 ];
 
 /** Lights that sit out the curve, and what they hold instead. */
-const AMBIENT_ROWS: Field[][] = [
-  [
-    {
-      path: "ambient_lights.devices",
-      label: "Ambient lights",
-      kind: "list",
-      hint: "Comma-separated room/device ids, e.g. living_room/tv_lightstrip",
-    },
-  ],
-  [
-    {
-      path: "lighting.ambient_brightness",
-      label: "Brightness",
-      kind: "number",
-      hint: "0–100%. Leave unset and ambient lights are simply left alone",
-    },
-    {
-      path: "lighting.ambient_kelvin",
-      label: "Colour",
-      kind: "number",
-      hint: "Kelvin — 2000–2200 is candle-to-lamp warm",
-    },
-  ],
+const AMBIENT_ROWS: Row[] = [
+  {
+    label: "Ambient lights",
+    description:
+      "Voice, scenes and the switch still control these normally — only the curve leaves them alone.",
+    settings: [
+      {
+        path: "ambient_lights.devices",
+        kind: "devices",
+        caption: "pick from the lights Niles knows about",
+        width: "min-w-72 flex-1",
+      },
+    ],
+  },
+  {
+    label: "Held at",
+    description: "What they show instead. Leave unset to not touch them at all.",
+    settings: [
+      {
+        path: "lighting.ambient_brightness",
+        kind: "number",
+        caption: "brightness %",
+        width: "w-28",
+      },
+      {
+        path: "lighting.ambient_kelvin",
+        kind: "number",
+        caption: "colour K",
+        width: "w-28",
+      },
+    ],
+  },
 ];
+
+type Entry = { path: string; value: unknown };
 
 export function App() {
   const queryClient = useQueryClient();
   const [lastApplied, setLastApplied] = useState<Applied | null>(null);
-  const [fieldError, setFieldError] = useState<{ path: string; message: string } | null>(
-    null,
-  );
+  const [rowError, setRowError] = useState<{ row: string; message: string } | null>(null);
 
   const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
   const history = useQuery({ queryKey: ["history"], queryFn: api.history });
+  const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ["config"] });
@@ -133,25 +164,32 @@ export function App() {
   }
 
   const save = useMutation({
-    mutationFn: ({ path, value }: { path: string; value: unknown }) =>
-      api.patchConfig(patchFor(path, value)),
-    onMutate: ({ path }) => setFieldError((e) => (e?.path === path ? null : e)),
+    mutationFn: ({ entries }: { row: string; entries: Entry[] }) =>
+      api.patchConfig(patchForAll(entries)),
+    onMutate: ({ row }) => setRowError((e) => (e?.row === row ? null : e)),
     onSuccess: (applied) => {
       setLastApplied(applied);
-      setFieldError(null);
+      setRowError(null);
       refresh();
     },
-    onError: (error, { path }) =>
-      setFieldError({
-        path,
+    onError: (error, { row }) =>
+      setRowError({
+        row,
         message: error instanceof ApiError ? error.message : String(error),
       }),
   });
 
   const reset = useMutation({
-    mutationFn: (path: string) => api.resetPath(path),
+    // A row can hold two overridden values. Dropped in order, so the
+    // history reads the way it happened.
+    mutationFn: async ({ paths }: { row: string; paths: string[] }) => {
+      let last: Applied | null = null;
+      for (const path of paths) last = await api.resetPath(path);
+      return last!;
+    },
     onSuccess: (applied) => {
       setLastApplied(applied);
+      setRowError(null);
       refresh();
     },
   });
@@ -182,40 +220,44 @@ export function App() {
   const view = config.data as ConfigView;
   const sectionMeta = new Map(view.sections.map((s) => [s.name, s]));
 
-  function field({ path, label, kind, hint }: Field) {
+  const lights = deviceOptions(devices.data ?? []);
+  const noLights = devices.isLoading
+    ? "Still asking Niles which lights it has…"
+    : "Niles has no lights registered yet.";
+
+  function row({ label, description, settings: declared, joiner }: Row) {
+    // The pickable lights come from the registry, which the page loads
+    // separately — so they're attached here rather than in the static
+    // row definitions above.
+    const settings = declared.map((setting) =>
+      setting.kind === "devices"
+        ? { ...setting, options: lights, optionsEmpty: noLights }
+        : setting,
+    );
+    const id = settings[0].path;
     // A section the config file never mentions has no entry here, so it
     // reads as boot-only. That errs towards telling someone to restart
     // when they needn't have, which beats the reverse.
-    const section = sectionMeta.get(path.split(".")[0]);
+    const sections = settings.map((s) => sectionMeta.get(s.path.split(".")[0]));
     return (
-      <SettingField
-        key={path}
-        path={path}
+      <SettingRow
+        key={id}
         label={label}
-        kind={kind}
-        hint={hint}
-        value={valueAt(view.effective, path)}
-        hot={section?.reload === "hot"}
-        overridden={valueAt(view.overrides, path) !== undefined}
-        saving={save.isPending || reset.isPending}
-        error={fieldError?.path === path ? fieldError.message : undefined}
-        onSave={(next) => save.mutate({ path, value: next })}
-        onReset={() => reset.mutate(path)}
-      />
-    );
-  }
-
-  function row(fields: Field[]) {
-    return (
-      <div
-        key={fields[0].path}
-        className={cn(
-          "grid gap-x-8 gap-y-4 py-4",
-          fields.length > 1 && "sm:grid-cols-2",
+        description={description}
+        settings={settings}
+        joiner={joiner}
+        values={Object.fromEntries(
+          settings.map((s) => [s.path, valueAt(view.effective, s.path)]),
         )}
-      >
-        {fields.map(field)}
-      </div>
+        overridden={settings
+          .map((s) => s.path)
+          .filter((path) => valueAt(view.overrides, path) !== undefined)}
+        hot={sections.every((section) => section?.reload === "hot")}
+        saving={save.isPending || reset.isPending}
+        error={rowError?.row === id ? rowError.message : undefined}
+        onSave={(entries) => save.mutate({ row: id, entries })}
+        onReset={(paths) => reset.mutate({ row: id, paths })}
+      />
     );
   }
 
@@ -230,7 +272,6 @@ export function App() {
         </div>
         <Button
           variant="outline"
-          size="sm"
           onClick={() => undo.mutate()}
           disabled={undo.isPending || (history.data?.length ?? 0) === 0}
         >
@@ -275,6 +316,7 @@ export function App() {
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-border divide-y">
+              <CurveChart lighting={view.effective.lighting} />
               {CURVE_ROWS.map(row)}
             </CardContent>
           </Card>
@@ -284,8 +326,7 @@ export function App() {
               <CardTitle>Ambient lights</CardTitle>
               <CardDescription>
                 Lights that sit out the curve and the morning routine, holding
-                one dim, warm setting instead. Voice, scenes and the switch
-                still control them normally.
+                one dim, warm setting instead.
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-border divide-y">
@@ -391,7 +432,7 @@ function Notice({
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-6 py-8">
+    <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-6 py-8">
       {children}
     </main>
   );

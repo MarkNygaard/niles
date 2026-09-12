@@ -9,7 +9,7 @@ use crate::Result;
 use crate::client::{Message, MqttClient};
 use crate::wled::{parse_c, parse_g, parse_status};
 use niles_core::{Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, EventBus};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -19,7 +19,6 @@ pub struct WledSource {
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
     devices: Vec<(DeviceId, String)>, // (id, base_topic)
-    ambient_lights: Arc<HashSet<DeviceId>>,
 }
 
 impl WledSource {
@@ -28,14 +27,12 @@ impl WledSource {
         registry: Arc<DeviceRegistry>,
         bus: EventBus,
         devices: Vec<(DeviceId, String)>,
-        ambient_lights: Arc<HashSet<DeviceId>>,
     ) -> Self {
         Self {
             client,
             registry,
             bus,
             devices,
-            ambient_lights,
         }
     }
 
@@ -45,8 +42,7 @@ impl WledSource {
         // Upsert all configured devices first so state messages never race.
         let mut topic_index = HashMap::new();
         for (id, topic) in &self.devices {
-            let mut device = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
-            device.is_ambient = self.ambient_lights.contains(id);
+            let device = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
             self.registry.upsert(device.clone());
             self.bus.publish(niles_core::Event::DeviceAdded { device });
 

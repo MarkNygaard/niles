@@ -25,6 +25,16 @@ export interface ConfigView {
   persistent: boolean;
 }
 
+/** A device as `GET /devices` reports it. */
+export interface Device {
+  /** Fully qualified: `z2m:living_room/lamp`, `wled:living_room/tv`. */
+  id: string;
+  source: string;
+  room: string;
+  name: string;
+  class: string;
+}
+
 export interface Change {
   path: string;
   from: unknown | null;
@@ -94,6 +104,8 @@ export const api = {
       method: "DELETE",
     }),
 
+  devices: () => request<Device[]>("/devices"),
+
   history: () => request<Revision[]>("/config/history"),
 
   undo: () => request<Applied>("/config/undo", { method: "POST" }),
@@ -109,6 +121,40 @@ export function patchFor(path: string, value: unknown): Record<string, unknown> 
     node = { [segment]: node };
   }
   return node;
+}
+
+/**
+ * One patch document covering several dotted paths.
+ *
+ * A row saves everything it changed in one request, so a ramp whose
+ * start and end both moved is one write, one revision, and one undo
+ * rather than two of each.
+ */
+export function patchForAll(
+  entries: Array<{ path: string; value: unknown }>,
+): Record<string, unknown> {
+  return entries.reduce<Record<string, unknown>>(
+    (patch, entry) => mergeInto(patch, patchFor(entry.path, entry.value)),
+    {},
+  );
+}
+
+function mergeInto(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  for (const [key, value] of Object.entries(source)) {
+    const existing = target[key];
+    target[key] =
+      isTable(value) && isTable(existing)
+        ? mergeInto({ ...existing }, value)
+        : value;
+  }
+  return target;
+}
+
+function isTable(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Read a dotted path out of a nested object. */

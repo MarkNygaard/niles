@@ -250,8 +250,8 @@ async fn a_section_the_base_file_omits_can_still_be_set() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["needs_restart"],
-        json!(["ambient_lights"]),
-        "which lights are ambient is read once, at startup"
+        json!([]),
+        "which lights are ambient is read afresh on every curve tick"
     );
 
     let (_, after) = send(&app, get("/config")).await;

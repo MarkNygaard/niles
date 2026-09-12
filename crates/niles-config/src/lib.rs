@@ -168,7 +168,10 @@ pub enum Reload {
 /// case we must not claim is live.
 pub fn section_reload(section: &str) -> Reload {
     match section {
-        "lighting" => Reload::Hot,
+        // Both are read afresh on every curve tick: the curve from the
+        // snapshot, and which lights sit it out from
+        // `AmbientLightsConfig::ids`.
+        "lighting" | "ambient_lights" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
