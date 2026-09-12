@@ -140,21 +140,43 @@ fn has_set_device_field(state: &DeviceState) -> bool {
         || state.rgb.is_some()
 }
 
+/// A device as the model sees it.
+///
+/// Fields nobody has reported are left out rather than sent as null.
+/// `list_all_devices` returns one of these per device and the result
+/// goes back into the next request verbatim — with two dozen devices
+/// mostly reporting nothing, the nulls were the larger half of a 2 KB
+/// payload, and that payload is what pushed a turn over the token
+/// limit.
 fn device_summary(device: &niles_core::Device) -> Value {
-    json!({
-        "id": format!("{}/{}", device.id.room(), device.id.name()),
-        "on": device.state.on,
-        "brightness": device.state.brightness,
-        "color_temp_kelvin": device.state.color_temp_kelvin,
-        "rgb": device.state.rgb,
-    })
+    let mut v = serde_json::Map::new();
+    v.insert(
+        "id".into(),
+        json!(format!("{}/{}", device.id.room(), device.id.name())),
+    );
+    insert_if_some(&mut v, "on", device.state.on);
+    insert_if_some(&mut v, "brightness", device.state.brightness);
+    insert_if_some(&mut v, "color_temp_kelvin", device.state.color_temp_kelvin);
+    insert_if_some(&mut v, "rgb", device.state.rgb);
+    Value::Object(v)
+}
+
+fn insert_if_some<T: serde::Serialize>(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<T>,
+) {
+    if let Some(value) = value {
+        map.insert(key.into(), json!(value));
+    }
 }
 
 fn device_full(device: &niles_core::Device) -> Value {
     let mut v = device_summary(device);
-    v["temperature_celsius"] = json!(device.state.temperature_celsius);
-    v["humidity_percent"] = json!(device.state.humidity_percent);
-    v["battery_percent"] = json!(device.state.battery_percent);
+    let map = v.as_object_mut().expect("device_summary returns an object");
+    insert_if_some(map, "temperature_celsius", device.state.temperature_celsius);
+    insert_if_some(map, "humidity_percent", device.state.humidity_percent);
+    insert_if_some(map, "battery_percent", device.state.battery_percent);
     v
 }
 
@@ -1326,7 +1348,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_device_state_returns_full_shape() {
+    async fn get_device_state_returns_what_is_known() {
         let reg = fixture_registry();
         let tool = GetDeviceState::new(reg);
         let args = json!({ "device_id": "kitchen/ceiling_light" });
@@ -1335,7 +1357,25 @@ mod tests {
         assert_eq!(result["on"], true);
         assert_eq!(result["brightness"], 80);
         assert_eq!(result["color_temp_kelvin"], 3000);
-        assert!(result.get("temperature_celsius").is_some());
+        // A light has no thermometer, and saying so as `null` on every
+        // device is most of what made these payloads large.
+        assert!(
+            result.get("temperature_celsius").is_none(),
+            "unreported fields are left out, not sent as null"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_that_has_reported_nothing_is_just_its_name() {
+        // Two dozen of these went into every request that listed
+        // devices, and the nulls were the larger half of it.
+        let device = niles_core::Device::new(
+            niles_core::DeviceId::parse("z2m:office/go").unwrap(),
+            niles_core::DeviceState::default(),
+            niles_core::DeviceClass::Light,
+        );
+        let summary = device_summary(&device);
+        assert_eq!(summary, json!({ "id": "office/go" }));
     }
 
     #[tokio::test]

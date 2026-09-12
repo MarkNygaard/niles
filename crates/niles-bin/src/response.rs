@@ -376,6 +376,16 @@ pub fn light_set_last(spoken_room: &str, on: bool) -> String {
     )
 }
 
+/// Said when what was heard was too thin to act on.
+///
+/// Deliberately an invitation rather than an apology: nine times in
+/// ten nobody was talking to Niles at all, and a room that says "sorry,
+/// I didn't understand" to the television is worse than one that says
+/// nothing much.
+pub fn didnt_catch_that() -> String {
+    "Sorry?".to_string()
+}
+
 // ---- the clock ------------------------------------------------------
 
 /// "It's 15:20." / "It's Saturday the 12th of September."
