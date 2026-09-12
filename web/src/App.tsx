@@ -13,42 +13,81 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SettingField } from "@/components/SettingField";
+import type { FieldKind } from "@/components/SettingField";
 import { ApiError, api, patchFor, valueAt } from "@/lib/api";
 import type { Applied, ConfigView, Revision } from "@/lib/api";
 import { AlertTriangle, Undo2 } from "lucide-react";
 
-/** The lighting fields, in the order they occur over a day. */
-const LIGHTING_FIELDS: Array<{ key: string; label: string; hint?: string }> = [
-  { key: "morning_start", label: "Morning ramp starts", hint: "HH:MM" },
-  { key: "morning_end", label: "Morning ramp ends", hint: "HH:MM" },
-  { key: "sunset_start", label: "Sunset ramp starts", hint: "HH:MM" },
-  { key: "sunset_end", label: "Sunset ramp ends", hint: "HH:MM" },
+interface Field {
+  /** Dotted path into the config, e.g. `lighting.morning_start`. */
+  path: string;
+  label: string;
+  kind: FieldKind;
+  hint?: string;
+}
+
+/** The curve fields, in the order they occur over a day. */
+const CURVE_FIELDS: Field[] = [
   {
-    key: "night_floor_brightness",
+    path: "lighting.morning_start",
+    label: "Morning ramp starts",
+    kind: "text",
+    hint: "HH:MM",
+  },
+  { path: "lighting.morning_end", label: "Morning ramp ends", kind: "text", hint: "HH:MM" },
+  {
+    path: "lighting.sunset_start",
+    label: "Sunset ramp starts",
+    kind: "text",
+    hint: "HH:MM",
+  },
+  { path: "lighting.sunset_end", label: "Sunset ramp ends", kind: "text", hint: "HH:MM" },
+  {
+    path: "lighting.night_floor_brightness",
     label: "Night floor brightness",
+    kind: "number",
     hint: "0–100%, held overnight",
   },
   {
-    key: "daytime_brightness",
+    path: "lighting.daytime_brightness",
     label: "Daytime brightness",
+    kind: "number",
     hint: "0–100%, held between the ramps",
   },
   {
-    key: "ambient_brightness",
-    label: "Ambient light brightness",
-    hint: "0–100%. Ambient lights sit out the curve and hold this instead",
-  },
-  {
-    key: "ambient_kelvin",
-    label: "Ambient light colour",
-    hint: "Kelvin — 2000–2200 is candle-to-lamp warm",
-  },
-  {
-    key: "curve_pause_start",
+    path: "lighting.curve_pause_start",
     label: "Curve pause starts",
+    kind: "text",
     hint: "e.g. fri 12:00 — the curve freezes at this value until the pause ends",
   },
-  { key: "curve_pause_end", label: "Curve pause ends", hint: "e.g. sun 12:00" },
+  {
+    path: "lighting.curve_pause_end",
+    label: "Curve pause ends",
+    kind: "text",
+    hint: "e.g. sun 12:00",
+  },
+];
+
+/** Lights that sit out the curve, and what they hold instead. */
+const AMBIENT_FIELDS: Field[] = [
+  {
+    path: "ambient_lights.devices",
+    label: "Ambient lights",
+    kind: "list",
+    hint: "Comma-separated room/device ids, e.g. living_room/tv_lightstrip",
+  },
+  {
+    path: "lighting.ambient_brightness",
+    label: "Brightness",
+    kind: "number",
+    hint: "0–100%. Leave unset and ambient lights are simply left alone",
+  },
+  {
+    path: "lighting.ambient_kelvin",
+    label: "Colour",
+    kind: "number",
+    hint: "Kelvin — 2000–2200 is candle-to-lamp warm",
+  },
 ];
 
 export function App() {
@@ -116,6 +155,29 @@ export function App() {
   const view = config.data as ConfigView;
   const sectionMeta = new Map(view.sections.map((s) => [s.name, s]));
 
+  function field({ path, label, kind, hint }: Field) {
+    // A section the config file never mentions has no entry here, so it
+    // reads as boot-only. That errs towards telling someone to restart
+    // when they needn't have, which beats the reverse.
+    const section = sectionMeta.get(path.split(".")[0]);
+    return (
+      <SettingField
+        key={path}
+        path={path}
+        label={label}
+        kind={kind}
+        hint={hint}
+        value={valueAt(view.effective, path)}
+        hot={section?.reload === "hot"}
+        overridden={valueAt(view.overrides, path) !== undefined}
+        saving={save.isPending || reset.isPending}
+        error={fieldError?.path === path ? fieldError.message : undefined}
+        onSave={(next) => save.mutate({ path, value: next })}
+        onReset={() => reset.mutate(path)}
+      />
+    );
+  }
+
   return (
     <Shell>
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -162,7 +224,7 @@ export function App() {
           <TabsTrigger value="history">History</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="lighting">
+        <TabsContent value="lighting" className="flex flex-col gap-4">
           <Card>
             <CardHeader>
               <CardTitle>Daily curve</CardTitle>
@@ -172,28 +234,21 @@ export function App() {
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-border divide-y">
-              {LIGHTING_FIELDS.map(({ key, label, hint }) => {
-                const path = `lighting.${key}`;
-                const value = valueAt(view.effective, path);
-                // Optional settings that aren't configured have nothing
-                // to show and no sensible empty state; hide them.
-                if (value === undefined) return null;
-                return (
-                  <SettingField
-                    key={path}
-                    path={path}
-                    label={label}
-                    hint={hint}
-                    value={value}
-                    hot={sectionMeta.get("lighting")?.reload === "hot"}
-                    overridden={valueAt(view.overrides, path) !== undefined}
-                    saving={save.isPending || reset.isPending}
-                    error={fieldError?.path === path ? fieldError.message : undefined}
-                    onSave={(next) => save.mutate({ path, value: next })}
-                    onReset={() => reset.mutate(path)}
-                  />
-                );
-              })}
+              {CURVE_FIELDS.map(field)}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Ambient lights</CardTitle>
+              <CardDescription>
+                Lights that sit out the curve and the morning routine, holding
+                one dim, warm setting instead. Voice, scenes and the switch
+                still control them normally.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="divide-border divide-y">
+              {AMBIENT_FIELDS.map(field)}
             </CardContent>
           </Card>
         </TabsContent>

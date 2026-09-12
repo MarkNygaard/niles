@@ -6,11 +6,19 @@ import { Label } from "@/components/ui/label";
 import { RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+/**
+ * What a field holds, declared per field rather than sniffed from the
+ * current value. A setting that isn't configured yet has no value to
+ * sniff, and those are exactly the ones a user comes here to set.
+ */
+export type FieldKind = "number" | "text" | "list";
+
 export interface SettingFieldProps {
   /** Dotted path, e.g. `lighting.daytime_brightness`. */
   path: string;
   label: string;
-  /** What Niles is running right now. */
+  kind: FieldKind;
+  /** What Niles is running right now; `undefined` when unset. */
   value: unknown;
   /** True when this value has been changed away from the config file. */
   overridden: boolean;
@@ -35,6 +43,7 @@ export interface SettingFieldProps {
 export function SettingField({
   path,
   label,
+  kind,
   value,
   overridden,
   hot,
@@ -44,7 +53,7 @@ export function SettingField({
   onSave,
   onReset,
 }: SettingFieldProps) {
-  const serverValue = value === null || value === undefined ? "" : String(value);
+  const serverValue = format(value, kind);
   const [draft, setDraft] = useState(serverValue);
 
   // Adopt the server's value whenever it changes underneath us — which
@@ -55,11 +64,17 @@ export function SettingField({
   }, [serverValue]);
 
   const dirty = draft !== serverValue;
-  const numeric = typeof value === "number";
+  // An empty list means "no lights", which is a value worth saving. An
+  // empty number or time is not a value at all — `Number("")` is 0, and
+  // silently writing 0 is worse than refusing. A number that isn't one
+  // would reach the server as JSON `null` and come back as a parse error
+  // about the request body rather than about the field.
+  const blank = draft.trim() === "" && kind !== "list";
+  const unusable = blank || (kind === "number" && Number.isNaN(Number(draft)));
 
   function save() {
-    if (!dirty) return;
-    onSave(numeric ? Number(draft) : draft);
+    if (!dirty || unusable) return;
+    onSave(parse(draft, kind));
   }
 
   return (
@@ -71,6 +86,11 @@ export function SettingField({
         {overridden && (
           <Badge variant="secondary" title="Changed away from the config file">
             overridden
+          </Badge>
+        )}
+        {value === undefined && !overridden && (
+          <Badge variant="outline" title="Nothing is configured for this setting">
+            not set
           </Badge>
         )}
         {!hot && (
@@ -87,7 +107,8 @@ export function SettingField({
         <Input
           id={path}
           value={draft}
-          inputMode={numeric ? "numeric" : "text"}
+          inputMode={kind === "number" ? "numeric" : "text"}
+          placeholder={value === undefined ? "not set" : undefined}
           disabled={saving}
           aria-invalid={error ? true : undefined}
           onChange={(e) => setDraft(e.target.value)}
@@ -95,9 +116,13 @@ export function SettingField({
             if (e.key === "Enter") save();
             if (e.key === "Escape") setDraft(serverValue);
           }}
-          className={cn("max-w-40 font-mono", dirty && "border-primary")}
+          className={cn(
+            "font-mono",
+            kind === "list" ? "max-w-full" : "max-w-40",
+            dirty && !unusable && "border-primary",
+          )}
         />
-        <Button size="sm" onClick={save} disabled={!dirty || saving}>
+        <Button size="sm" onClick={save} disabled={!dirty || unusable || saving}>
           Save
         </Button>
         {overridden && (
@@ -123,4 +148,26 @@ export function SettingField({
       <p className="text-muted-foreground/70 font-mono text-[11px]">{path}</p>
     </div>
   );
+}
+
+/** The value as the user should see and edit it. */
+function format(value: unknown, kind: FieldKind): string {
+  if (value === null || value === undefined) return "";
+  if (kind === "list") return Array.isArray(value) ? value.join(", ") : String(value);
+  return String(value);
+}
+
+/** The typed value to send back, from what the user typed. */
+function parse(draft: string, kind: FieldKind): unknown {
+  switch (kind) {
+    case "number":
+      return Number(draft);
+    case "list":
+      return draft
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    default:
+      return draft;
+  }
 }
