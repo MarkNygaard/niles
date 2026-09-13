@@ -65,11 +65,23 @@ export function App() {
             <ChevronLeft className="size-5" />
           </button>
         )}
-        {/* Large and plain, the way a phone app titles a screen: it says
-            where you are rather than offering somewhere to go. */}
-        <h1 className="font-heading flex-1 truncate text-2xl font-semibold tracking-tight">
-          {settings ? "Settings" : "Niles"}
-        </h1>
+        {/* Large and plain, the way a phone app titles a screen: it
+            says where you are rather than offering somewhere to go.
+
+            The name is the exception, and is set as the wordmark — the
+            same face, weight and tracking as the sign-in screen, at the
+            size a header bar can carry. "Settings" is a screen title,
+            not the name, so it stays in the heading face: a serif there
+            would be the brand claiming to be a destination. */}
+        {settings ? (
+          <h1 className="font-heading flex-1 truncate text-2xl font-semibold tracking-tight">
+            Settings
+          </h1>
+        ) : (
+          <h1 className="font-wordmark flex-1 truncate text-2xl font-medium tracking-wide">
+            Niles
+          </h1>
+        )}
         <AccountMenu
           email={auth.data?.signed_in_as ?? undefined}
           avatarUrl={auth.data?.avatar_url ?? undefined}
