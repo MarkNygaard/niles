@@ -79,10 +79,21 @@ export function ColorWheel({ value, disabled, onChange }: ColorWheelProps) {
     return toHex([r, g, b]);
   }
 
-  function commit(event: React.PointerEvent<HTMLCanvasElement>) {
-    const next = colorAt(event) ?? dragging;
+  /**
+   * End the gesture and send what it chose.
+   *
+   * Called from three handlers, because a press can end in three ways
+   * and only one of them is a tidy `pointerup`. `dragging` doubles as
+   * the guard: the first of them to arrive clears it, so the ones that
+   * follow — `lostpointercapture` always follows a release — find
+   * nothing left to do. Without an event, or without usable
+   * coordinates, the colour picked when the press landed still stands.
+   */
+  function commit(event?: React.PointerEvent<HTMLCanvasElement>) {
+    if (dragging === null) return;
+    const next = (event && colorAt(event)) ?? dragging;
     setDragging(null);
-    if (next && next !== value) onChange(next);
+    if (next !== value) onChange(next);
   }
 
   return (
@@ -97,7 +108,12 @@ export function ColorWheel({ value, disabled, onChange }: ColorWheelProps) {
           aria-label="Colour"
           aria-valuetext={shown || "not set"}
           className={cn(
-            "rounded-full",
+            // `touch-none` is load-bearing, not styling: without it the
+            // browser may claim the gesture as a scroll of the panel
+            // this sits in, and a claimed gesture never delivers the
+            // `pointerup` the colour is committed on. A tap would move
+            // the marker and set nothing.
+            "touch-none rounded-full",
             disabled ? "cursor-not-allowed opacity-50" : "cursor-crosshair",
           )}
           onPointerDown={(e) => {
@@ -108,7 +124,11 @@ export function ColorWheel({ value, disabled, onChange }: ColorWheelProps) {
             if (e.buttons === 1) setDragging(colorAt(e));
           }}
           onPointerUp={commit}
-          onPointerCancel={() => setDragging(null)}
+          // Losing the pointer is not the same as not meaning it: the
+          // colour under the finger was chosen, so keep it rather than
+          // silently dropping the press.
+          onPointerCancel={() => commit()}
+          onLostPointerCapture={() => commit()}
         />
         {marker && (
           <span
