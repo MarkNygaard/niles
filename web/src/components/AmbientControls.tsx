@@ -6,14 +6,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Slider,
-  SliderControl,
-  SliderIndicator,
-  SliderThumb,
-  SliderTrack,
-  SliderValue,
-} from "@/components/ui/slider";
+import { Slider } from "@/components/ui/slider";
 import { ColorWheel } from "@/components/ColorField";
 import {
   BrightnessGlyph,
@@ -182,30 +175,30 @@ function ValueSlider({
   useEffect(() => setDraft(value ?? fallback), [value, fallback]);
 
   return (
-    <Slider
-      value={draft}
-      min={min}
-      max={max}
-      step={step}
-      onValueChange={(next) => setDraft(next)}
-      onValueCommitted={(next) => onCommit(next)}
-    >
+    <div>
       <div className="mb-1 flex items-baseline justify-between">
-        <SliderValue className="text-muted-foreground">
-          {() => `${draft}${unit}`}
-        </SliderValue>
+        <span className="text-muted-foreground text-sm font-mono tabular-nums">
+          {`${draft}${unit}`}
+        </span>
         {value === undefined && (
           <span className="text-muted-foreground/70 text-[11px]">not set</span>
         )}
       </div>
-      <SliderControl>
-        <SliderTrack>
-          <SliderIndicator />
-          {/* Base UI puts the range input inside the thumb, so the
-              label belongs here rather than on the root. */}
-          <SliderThumb aria-label={label} />
-        </SliderTrack>
-      </SliderControl>
-    </Slider>
+      <Slider
+        value={draft}
+        min={min}
+        max={max}
+        step={step}
+        thumbLabel={label}
+        thumbValueText={`${draft}${unit}`}
+        onValueChange={(next, details) => {
+          setDraft(next);
+          // A tap on the track never reaches `onValueCommitted` on a
+          // touch screen — same Base UI quirk as the light rows.
+          if (details.reason === "track-press") onCommit(next);
+        }}
+        onValueCommitted={(next) => onCommit(next)}
+      />
+    </div>
   );
 }

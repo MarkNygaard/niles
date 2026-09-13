@@ -5,13 +5,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Slider,
-  SliderControl,
-  SliderIndicator,
-  SliderThumb,
-  SliderTrack,
-} from "@/components/ui/slider";
+import { Slider } from "@/components/ui/slider";
 import { ColorWheel, parseHex, toHex } from "@/components/ColorField";
 import {
   ColorSwatch,
@@ -152,11 +146,15 @@ function Control({
 }
 
 /**
- * A slider that sends when you let go.
+ * A slider that sends when you let go — and at once when you tap.
  *
  * Every position under the thumb is a real MQTT message to a real
  * light. Committing continuously would flood the broker with values
  * nobody meant to set, and the light would visibly chase the thumb.
+ *
+ * A tap on the track is a different gesture: it is already complete
+ * when it lands, so it is sent there and then. That is also the only
+ * way it gets sent at all on a touch screen — see `trackPress` below.
  */
 function CommitSlider({
   label,
@@ -197,26 +195,31 @@ function CommitSlider({
       max={max}
       step={step}
       disabled={disabled}
-      onValueChange={(next) => {
-        setDragging(true);
+      thumbLabel={label}
+      thumbValueText={format ? format(draft) : `${draft}%`}
+      trackClassName={trackClassName}
+      indicatorClassName={indicatorClassName}
+      onValueChange={(next, details) => {
         setDraft(next);
+        // On a touch screen a tap never reaches `onValueCommitted`:
+        // Base UI handles `pointerdown` and `touchstart` separately and
+        // both call `startPressing`, so the second one clears the
+        // pending value and then declines to set it again because the
+        // controlled value already equals it. Nothing is left to commit
+        // on release. A drag survives because the next move applies a
+        // different value. Committing the press here is both the
+        // workaround and the better gesture.
+        if (details.reason === "track-press") {
+          setDragging(false);
+          onCommit(next);
+          return;
+        }
+        setDragging(true);
       }}
       onValueCommitted={(next) => {
         setDragging(false);
         onCommit(next);
       }}
-    >
-      <SliderControl>
-        <SliderTrack className={trackClassName}>
-          <SliderIndicator className={indicatorClassName} />
-          {/* Base UI puts the range input inside the thumb, so the
-              label belongs here rather than on the root. */}
-          <SliderThumb
-            aria-label={label}
-            aria-valuetext={format ? format(draft) : `${draft}%`}
-          />
-        </SliderTrack>
-      </SliderControl>
-    </Slider>
+    />
   );
 }
