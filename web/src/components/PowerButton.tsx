@@ -36,15 +36,17 @@ export function PowerButton({
       aria-label={`${label} — ${unknown ? "state unknown" : on ? "on" : "off"}`}
       onClick={() => onToggle(!on)}
       className={cn(
-        "flex shrink-0 items-center justify-center rounded-full border transition-colors",
+        "flex shrink-0 items-center justify-center rounded-full transition-colors",
         "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
         "disabled:cursor-not-allowed disabled:opacity-50",
         size === "lg" ? "size-12 [&_svg]:size-5" : "size-10 [&_svg]:size-4",
         on
-          ? "border-transparent bg-amber-200 text-amber-950 hover:bg-amber-100"
+          ? "bg-amber-200 text-amber-950 hover:bg-amber-100"
           : unknown
-            ? "border-dashed border-border text-muted-foreground hover:bg-muted"
-            : "border-border text-muted-foreground hover:bg-muted hover:text-foreground",
+            // Still drawn differently: a light nobody has heard from is
+            // not the same claim as one reporting off.
+            ? "border border-dashed border-border text-muted-foreground hover:bg-muted"
+            : "bg-muted text-muted-foreground hover:text-foreground",
         className,
       )}
     >
