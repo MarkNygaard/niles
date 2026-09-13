@@ -17,6 +17,11 @@ export default defineConfig({
       "/devices": "http://localhost:8080",
       "/healthz": "http://localhost:8080",
       "/rooms": "http://localhost:8080",
+      // Leave `changeOrigin` alone. The event stream refuses a
+      // handshake whose Origin is not its own Host, and the default
+      // (false) forwards this server's Host — so the two agree.
+      // Turning it on rewrites Host to :8080 while Origin stays :5174,
+      // and the socket starts 403ing with nothing obvious to blame.
       "/events": { target: "ws://localhost:8080", ws: true },
     },
   },
