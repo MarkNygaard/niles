@@ -236,3 +236,87 @@ async fn the_config_routes_are_behind_the_gate_too() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_pages_own_assets_are_served_to_somebody_not_signed_in_yet() {
+    // The shell is useless without its script, and a browser asks for
+    // that with `Accept: */*` — so gating on "does it want HTML" alone
+    // serves the page and then refuses the JavaScript that would have
+    // drawn the sign-in screen on it.
+    let app = app_allowing(ONE_PERSON, None);
+    let (status, _) = send(&app, get("/manifest.webmanifest")).await;
+    assert_eq!(status, StatusCode::OK, "the app must be able to boot");
+}
+
+#[tokio::test]
+async fn a_ui_asset_is_public_but_an_api_route_of_the_same_shape_is_not() {
+    // The rule is "is this a file the bundle ships", not "does the path
+    // look static" — so a route added later is still behind the gate.
+    let app = app_allowing(ONE_PERSON, None);
+    assert_eq!(send(&app, get("/icon-192.png")).await.0, StatusCode::OK);
+    assert_eq!(
+        send(&app, get("/assets/there-is-no-such-file.js")).await.0,
+        StatusCode::UNAUTHORIZED,
+        "a path that merely looks like an asset is not one"
+    );
+}
+
+#[tokio::test]
+async fn every_route_this_api_serves_is_either_named_public_or_refused() {
+    // The check somebody should be able to read before exposing this to
+    // the internet: the list of what answers without a session, in one
+    // place, with everything else proven closed.
+    let app = app_allowing(ONE_PERSON, None);
+
+    // Public, each for a stated reason.
+    for (path, why) in [
+        ("/healthz", "a liveness probe cannot hold a session"),
+        (
+            "/auth/status",
+            "asking whether to sign in cannot require it",
+        ),
+    ] {
+        assert_eq!(
+            send(&app, get(path)).await.0,
+            StatusCode::OK,
+            "{path}: {why}"
+        );
+    }
+
+    // Everything that carries or changes state.
+    for path in [
+        "/devices",
+        "/rooms/kitchen",
+        "/config",
+        "/config/history",
+        "/logs",
+        "/events/stream",
+    ] {
+        assert_eq!(
+            send(&app, get(path)).await.0,
+            StatusCode::UNAUTHORIZED,
+            "{path} answered without a session"
+        );
+    }
+
+    // And the writes, which is where it would actually hurt.
+    for (method, path) in [
+        ("POST", "/rooms/kitchen"),
+        ("POST", "/rooms/kitchen/ceiling"),
+        ("POST", "/config/undo"),
+        ("PATCH", "/config"),
+        ("DELETE", "/config/lighting.daytime_brightness"),
+    ] {
+        let request = Request::builder()
+            .uri(path)
+            .method(method)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            send(&app, request).await.0,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path} was accepted without a session"
+        );
+    }
+}

@@ -48,6 +48,25 @@ fn is_exempt(path: &str) -> bool {
     )
 }
 
+/// Whether this is a file out of the embedded UI bundle.
+///
+/// The shell and its assets are not the API — there is no data in
+/// them — and the page cannot draw a sign-in screen without its own
+/// JavaScript, which a browser requests with `Accept: */*`. So letting
+/// navigations through is not enough on its own: it serves the page and
+/// then refuses the script that would have drawn something on it.
+#[cfg(feature = "ui")]
+fn is_ui_asset(path: &str) -> bool {
+    crate::web::contains(path)
+}
+
+/// Without the `ui` feature there is no bundle, and so nothing extra is
+/// public.
+#[cfg(not(feature = "ui"))]
+fn is_ui_asset(_path: &str) -> bool {
+    false
+}
+
 /// Whether this request is for a page rather than an API call.
 ///
 /// A person whose session has expired should get the sign-in page, not
@@ -72,7 +91,8 @@ pub async fn require_sign_in(
         return next.run(request).await;
     };
     let config = store.current();
-    if !config.auth.is_enabled() || is_exempt(request.uri().path()) {
+    let path = request.uri().path();
+    if !config.auth.is_enabled() || is_exempt(path) || is_ui_asset(path) {
         return next.run(request).await;
     }
 
