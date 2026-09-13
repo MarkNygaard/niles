@@ -32,6 +32,17 @@ export interface ConfigView {
  * the same as off or zero — a lamp that has never been heard from has
  * `on: null`, and the UI shows that as unknown rather than off.
  */
+export interface SetupGap {
+  path: string;
+  severity: "blocking" | "degraded";
+  consequence: string;
+}
+
+export interface SetupReport {
+  set_up: boolean;
+  gaps: SetupGap[];
+}
+
 export interface Secret {
   key: string;
   label: string;
@@ -164,6 +175,7 @@ export const api = {
   getConfig: () => request<ConfigView>("/config"),
 
   /** Merge a partial config document, e.g. `{lighting: {daytime_brightness: 85}}`. */
+  setup: () => request<SetupReport>("/setup"),
   secrets: () => request<SecretsReport>("/secrets"),
   setSecret: (key: string, value: string) =>
     request<void>(`/secrets/${encodeURIComponent(key)}`, {
