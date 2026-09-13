@@ -205,3 +205,49 @@ async fn two_connections_receive_same_event() {
     assert_eq!(json1["type"], "device_removed");
     assert_eq!(json1["id"], "z2m:office/desk_lamp");
 }
+
+#[tokio::test]
+async fn a_cross_origin_handshake_is_refused() {
+    // A WebSocket is not subject to the same-origin policy, and the
+    // browser attaches Niles's cookies to the handshake — so without
+    // this, any page a household member visits could read every light
+    // in the house changing, which is to say when the house is empty.
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let port = spawn_server(EventBus::default()).await;
+    let mut request = format!("ws://127.0.0.1:{port}/events/stream")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", "https://evil.example".parse().unwrap());
+
+    let error = tokio_tungstenite::connect_async(request)
+        .await
+        .expect_err("a page on another site must not get a socket");
+    let message = error.to_string();
+    assert!(
+        message.contains("403") || message.to_lowercase().contains("forbidden"),
+        "expected a 403, got: {message}"
+    );
+}
+
+#[tokio::test]
+async fn the_pages_own_origin_is_accepted() {
+    // The other half of the rule: the page Niles served must still
+    // connect, and it reaches us with Origin and Host agreeing.
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let port = spawn_server(EventBus::default()).await;
+    let mut request = format!("ws://127.0.0.1:{port}/events/stream")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "origin",
+        format!("http://127.0.0.1:{port}").parse().unwrap(),
+    );
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let json: serde_json::Value = serde_json::from_str(&recv_text(&mut ws).await).unwrap();
+    assert_eq!(json["type"], "ping");
+}

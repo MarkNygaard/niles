@@ -1709,13 +1709,15 @@ person. Cookie for people, token for scripts.
 Signing in makes this possible. It does not make it safe on its own,
 and two of the following are true whether or not anything is exposed.
 
-- **The WebSocket needs an explicit `Origin` check.** WebSockets are
-  not subject to the same-origin policy, and the browser attaches
-  cookies to the handshake — so once a session exists, any page a
-  household member visits could open `/events/stream` and read the
-  live device stream, which is to say when the house is empty.
-  `SameSite` helps in current browsers; an `Origin` check is the
-  portable answer and does not depend on the browser being current.
+- **The WebSocket checks `Origin`.** WebSockets are not subject to the
+  same-origin policy, and the browser attaches cookies to the
+  handshake — so once a session exists, any page a household member
+  visits could otherwise open `/events/stream` and read the live device
+  stream, which is to say when the house is empty. `SameSite` helps in
+  current browsers; an `Origin` check is the portable answer and does
+  not depend on the browser being current. A handshake with no `Origin`
+  is allowed: browsers always send one, so its absence means a caller
+  with no cookie to borrow.
 - **Every state change stays a `POST`, `PATCH` or `DELETE`.** That is
   what makes `SameSite=Lax` sufficient against cross-site requests, and
   it is a property to preserve rather than a defence to add. A

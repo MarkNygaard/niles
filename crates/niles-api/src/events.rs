@@ -4,7 +4,8 @@ use crate::dto::{DeviceClassDto, DeviceStateDto};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use niles_core::{Event, EventBus};
 use serde::Serialize;
 use std::time::Duration;
@@ -75,8 +76,67 @@ impl WireEvent {
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
 /// - Slow-consumer detection: if the cumulative number of dropped events
 ///   reaches 256, the connection is closed with `{"type":"close"}`
-pub async fn events_stream(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+///
+/// Refuses a handshake whose `Origin` is not this server — see
+/// [`same_origin`].
+pub async fn events_stream(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Response {
+    if !same_origin(&headers) {
+        debug!("refused a cross-origin websocket handshake");
+        return (
+            StatusCode::FORBIDDEN,
+            "this websocket is for pages served by Niles",
+        )
+            .into_response();
+    }
     ws.on_upgrade(|socket| handle_socket(socket, state.event_bus))
+}
+
+/// Whether this handshake came from a page Niles itself served.
+///
+/// **Why a WebSocket needs this and a `fetch` does not.** The same-origin
+/// policy does not apply to WebSockets: any page on the internet may
+/// open one to any host, and the browser attaches the target's cookies
+/// to the handshake. So the moment Niles has a session cookie, a page
+/// someone in the house happens to visit could open this stream and
+/// read every light in the house changing — which is to say, read when
+/// the house is empty. There is no CORS preflight to stop it, and no
+/// response header that would help; the check has to be here.
+///
+/// Compared against `Host` rather than a configured list, because the
+/// page is served by this same binary: whatever name reached us is the
+/// name the page was loaded from. That also means it keeps working
+/// behind an ingress, and through Vite's dev proxy, without either
+/// having to be named in config.
+///
+/// **A request with no `Origin` at all is allowed.** Browsers always
+/// send one on a WebSocket handshake, so its absence means the caller
+/// is not a browser — a terminal, a script, a test — and the attack
+/// this defends against needs a browser holding somebody's cookie. A
+/// non-browser caller has nothing to borrow.
+fn same_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = header_str(headers, header::ORIGIN) else {
+        return true;
+    };
+    // `Origin: null` — a sandboxed frame or a `file://` page — has no
+    // authority to compare and is exactly what an attacker's frame
+    // presents.
+    let Some(origin) = origin.split_once("://").map(|(_scheme, rest)| rest) else {
+        return false;
+    };
+    match header_str(headers, header::HOST) {
+        Some(host) => !origin.is_empty() && origin.eq_ignore_ascii_case(host),
+        // Somebody sent an Origin but no Host. Nothing to compare it
+        // against, so there is nothing to be satisfied by.
+        None => false,
+    }
+}
+
+fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
 }
 
 async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
@@ -146,6 +206,92 @@ async fn send_json(socket: &mut WebSocket, event: &WireEvent) -> Result<(), ()> 
 
 #[cfg(test)]
 mod tests {
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn a_page_niles_served_is_allowed() {
+        assert!(same_origin(&headers(&[
+            ("origin", "https://niles.example"),
+            ("host", "niles.example"),
+        ])));
+    }
+
+    #[test]
+    fn the_scheme_is_not_compared() {
+        // TLS is terminated at the ingress, so the page is https while
+        // the hop that reaches us is http. Comparing schemes would
+        // refuse every real deployment.
+        assert!(same_origin(&headers(&[
+            ("origin", "https://niles.example"),
+            ("host", "niles.example"),
+        ])));
+    }
+
+    #[test]
+    fn the_port_is_part_of_the_origin() {
+        assert!(same_origin(&headers(&[
+            ("origin", "http://localhost:5174"),
+            ("host", "localhost:5174"),
+        ])));
+        assert!(!same_origin(&headers(&[
+            ("origin", "http://localhost:5174"),
+            ("host", "localhost:8080"),
+        ])));
+    }
+
+    #[test]
+    fn somebody_elses_page_is_refused() {
+        // The whole point: a page on another site, opened by someone in
+        // the house, carrying their cookie.
+        assert!(!same_origin(&headers(&[
+            ("origin", "https://evil.example"),
+            ("host", "niles.example"),
+        ])));
+    }
+
+    #[test]
+    fn a_sandboxed_frame_is_refused() {
+        // `Origin: null` is what a sandboxed iframe presents, and it has
+        // no authority to compare.
+        assert!(!same_origin(&headers(&[
+            ("origin", "null"),
+            ("host", "niles.example"),
+        ])));
+    }
+
+    #[test]
+    fn a_caller_that_is_not_a_browser_is_allowed() {
+        // curl, websocat, this crate's own tests. A browser always sends
+        // Origin on a handshake, and the attack needs a browser.
+        assert!(same_origin(&headers(&[("host", "niles.example")])));
+    }
+
+    #[test]
+    fn an_origin_with_nothing_to_check_it_against_is_refused() {
+        assert!(!same_origin(&headers(&[(
+            "origin",
+            "https://niles.example"
+        )])));
+    }
+
+    #[test]
+    fn the_host_comparison_ignores_case() {
+        assert!(same_origin(&headers(&[
+            ("origin", "https://Niles.Example"),
+            ("host", "niles.example"),
+        ])));
+    }
+
     use super::*;
     use niles_core::{Device, DeviceClass, DeviceId, DeviceState};
 
