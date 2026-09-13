@@ -135,8 +135,12 @@ pub async fn require_sign_in(
 /// everything else in `/config`.
 pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(config) = state.config.as_ref().map(|store| store.current()) else {
-        return axum::Json(serde_json::json!({ "enabled": false, "signed_in_as": null }))
-            .into_response();
+        return axum::Json(serde_json::json!({
+            "enabled": false,
+            "configured": false,
+            "signed_in_as": null,
+        }))
+        .into_response();
     };
     let enabled = config.auth.is_enabled();
     let who = enabled
@@ -146,6 +150,12 @@ pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Respon
 
     axum::Json(serde_json::json!({
         "enabled": enabled,
+        // Whether the secrets can be read, which is *not* the same
+        // question. A deployment whose secrets never arrived reports
+        // `enabled: false` — and so does a correct one still waiting
+        // for its first person. Only one of them is open to anybody,
+        // and this is how to tell.
+        "configured": config.auth.is_configured(),
         "signed_in_as": who,
     }))
     .into_response()

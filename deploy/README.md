@@ -29,6 +29,18 @@ kubectl create secret generic niles-secrets \
 
 # Signing in (optional — Niles runs happily without it).
 #
+# NOTE if this cluster mounts the whole Secret with `envFrom: secretRef`
+# rather than naming each key: hyphenated keys are not valid environment
+# variable identifiers, so Kubernetes silently drops them — you get an
+# InvalidVariableNames event and nothing else. Name the keys after the
+# variables instead (NILES_GITHUB_CLIENT_ID, and so on).
+#
+# That failure looks like success: with no secrets and an empty
+# allowlist, /auth/status reports {"enabled":false} — which is also what
+# a correct install waiting for its first person reports. Check
+# "configured": true in the same response, and the startup log, which
+# says so loudly.
+#
 # github-client-id / github-client-secret come from a GitHub OAuth app
 # whose callback URL is https://<your niles host>/auth/github/callback
 #
