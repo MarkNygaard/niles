@@ -38,6 +38,10 @@ pub struct AppState {
     /// The operator's token, for callers that are not browsers. Not
     /// subject to the allowlist, because it is not a person.
     pub api_token: Option<Arc<String>>,
+    /// Where credentials typed into the app are kept. Absent when
+    /// there is no database or no encryption key, in which case
+    /// secrets come from the environment and cannot be changed here.
+    pub secrets: Option<Arc<niles_db::PostgresSecrets>>,
     /// The tado connection, when presence names it. Present so the app
     /// can get it authorised: the device flow needs a person with a
     /// browser, which a service does not have.
@@ -69,7 +73,14 @@ impl AppState {
             api_token: None,
             manual_mode: None,
             tado: None,
+            secrets: None,
         }
+    }
+
+    /// The encrypted secret store, so Settings can fill it in.
+    pub fn with_secrets(mut self, secrets: Option<Arc<niles_db::PostgresSecrets>>) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// The tado source, so Settings can walk somebody through

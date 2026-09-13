@@ -3774,6 +3774,35 @@ fn spawn_override_retry(store: Arc<ConfigStore>) {
 /// to avoid. No database means no tado presence, and the caller says so
 /// rather than starting something that will ask for a browser on every
 /// restart.
+/// The encrypted secret store, when there is a database and a key.
+///
+/// Absent is normal and not an error: it means secrets come from
+/// environment variables, which is what every install did before this
+/// existed. What is *not* normal is a key that cannot be used, so that
+/// is reported rather than quietly falling back — a Niles that ignores
+/// a key somebody set would leave them wondering why Settings will not
+/// save anything.
+fn build_secret_store(cfg: &Config) -> Option<Arc<niles_db::PostgresSecrets>> {
+    let database = cfg.database.as_ref()?;
+    let key = std::env::var(&database.secret_key_env).ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    let describe = backend.describe_target();
+    match niles_db::PostgresSecrets::new(backend.pool(), describe, &key) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::error!(
+                "[secrets] {} is set but unusable, so secrets typed into the app                  cannot be read: {e}",
+                database.secret_key_env
+            );
+            None
+        }
+    }
+}
+
 fn build_tado_tokens(cfg: &Config) -> anyhow::Result<Option<Arc<dyn niles_presence::TokenStore>>> {
     let Some(database) = &cfg.database else {
         return Ok(None);
@@ -3880,6 +3909,26 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
 
     let cfg = store.current();
+
+    // Before the broker, because the broker password may be one of
+    // these. Everything that reads a credential goes through
+    // `require_secret`, and until this runs that only sees the
+    // environment.
+    let secret_store = build_secret_store(&cfg);
+    if let Some(secrets) = &secret_store {
+        match secrets.load_all().await {
+            Ok(values) => {
+                let n = values.len();
+                niles_config::secrets::load(values);
+                tracing::info!("[secrets] {n} loaded from the database");
+            }
+            // Not fatal: an install whose credentials are all env vars
+            // does not need these, and refusing to start would make a
+            // database blip take the house down with it.
+            Err(e) => tracing::error!("[secrets] could not be read: {e}"),
+        }
+    }
+
     let mqtt_client = connect_with_config(&cfg).await?;
     let publisher = mqtt_client.publisher();
     let router = build_command_router(&cfg);
@@ -4232,6 +4281,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_logs(LOG_BUFFER.get().cloned())
     .with_manual_mode(Some(tracker.clone()))
     .with_tado(presence.as_ref().and_then(|p| p.tado.clone()))
+    .with_secrets(secret_store.clone())
     .with_api_token(cfg.auth.resolve_api_token());
 
     // A deployment that mounts its secrets under names the platform

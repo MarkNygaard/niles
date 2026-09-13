@@ -3,7 +3,7 @@
 use crate::handlers;
 use crate::state::AppState;
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -24,6 +24,11 @@ pub fn router(state: AppState) -> Router {
         .route("/rooms/{room}/{device}", post(handlers::set_device))
         .route("/events/stream", get(crate::events::events_stream))
         .route("/setup", get(crate::presence::setup_report))
+        .route("/secrets", get(crate::secrets::list_secrets))
+        .route(
+            "/secrets/{key}",
+            put(crate::secrets::set_secret).delete(crate::secrets::clear_secret),
+        )
         .route("/presence/tado", get(crate::presence::tado_status))
         .route(
             "/presence/tado/connect",
@@ -1271,5 +1276,80 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn secrets_are_listed_even_with_nowhere_to_save_them() {
+        // A laptop with no database still has to be able to draw the
+        // page, and to say which credentials are coming from the
+        // environment.
+        let app = app_with(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(MockPublisher::default()),
+        );
+        let (status, body) = get_json(app, "/secrets").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["writable"], false);
+        assert!(
+            body["secrets"].as_array().unwrap().len() >= 8,
+            "the list is what Niles reads, not what happens to be stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secret_cannot_be_read_back() {
+        // There is no route for it, on purpose: a route that returns a
+        // secret is a route that can be made to return it to somebody
+        // else. The path exists for PUT and DELETE, so a GET is refused
+        // by method rather than by path — which is the more useful of
+        // the two answers.
+        let app = app_with(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(MockPublisher::default()),
+        );
+        let (status, _) = get_json(app, "/secrets/mqtt.password").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn saving_without_a_store_says_why_rather_than_500ing() {
+        let app = app_with(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(MockPublisher::default()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/secrets/mqtt.password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"hunter2"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn a_key_niles_does_not_read_is_refused() {
+        // Otherwise a typo fills the table with secrets nothing will
+        // ever look for, and the page quietly lies about being set up.
+        let app = app_with(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(MockPublisher::default()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/secrets/mqtt.passwrod")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"hunter2"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

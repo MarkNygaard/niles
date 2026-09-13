@@ -27,6 +27,7 @@ pub mod handlers;
 pub mod logs;
 pub mod presence;
 pub mod publish;
+pub mod secrets;
 pub mod server;
 pub mod state;
 #[cfg(feature = "ui")]

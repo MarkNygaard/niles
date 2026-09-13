@@ -17,6 +17,7 @@ import { CurveChart } from "@/components/CurveChart";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
+import { SecretsCard } from "@/components/SecretsCard";
 import { TadoCard } from "@/components/TadoCard";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
@@ -160,6 +161,7 @@ export function ConfigPanel() {
   const history = useQuery({ queryKey: ["history"], queryFn: api.history });
   const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
+  const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ["config"] });
@@ -423,6 +425,12 @@ export function ConfigPanel() {
         </TabsContent>
 
         <TabsContent value="services" className="flex flex-col gap-4">
+          {secrets.data && (
+            <SecretsCard
+              report={secrets.data}
+              onChanged={() => secrets.refetch()}
+            />
+          )}
           {tado.data && (
             <TadoCard
               status={tado.data}

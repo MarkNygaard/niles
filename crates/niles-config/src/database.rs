@@ -22,6 +22,21 @@ pub struct DatabaseConfig {
     /// leak into Niles's problem rather than the cluster's.
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+
+    /// Name of the environment variable holding the key that secrets
+    /// typed into the app are sealed with, base64 of 32 bytes.
+    ///
+    /// It cannot live in the database it protects, and it cannot be set
+    /// from the app for the same reason — so with the connection string
+    /// it is the whole of what Niles needs before the app can take over.
+    /// Absent means secrets stay in environment variables, which is
+    /// what every install did before this existed.
+    #[serde(default = "default_secret_key_env")]
+    pub secret_key_env: String,
+}
+
+fn default_secret_key_env() -> String {
+    "NILES_SECRET_KEY".into()
 }
 
 fn default_max_connections() -> u32 {

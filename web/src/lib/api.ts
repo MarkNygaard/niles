@@ -32,6 +32,21 @@ export interface ConfigView {
  * the same as off or zero — a lamp that has never been heard from has
  * `on: null`, and the UI shows that as unknown rather than off.
  */
+export interface Secret {
+  key: string;
+  label: string;
+  /** Set from anywhere — the environment counts. */
+  set: boolean;
+  /** Set in Niles's own store, which is the only kind it can replace. */
+  stored: boolean;
+}
+
+export interface SecretsReport {
+  /** False without a database or an encryption key. */
+  writable: boolean;
+  secrets: Secret[];
+}
+
 export interface TadoPending {
   verification_uri: string;
   user_code: string;
@@ -149,6 +164,14 @@ export const api = {
   getConfig: () => request<ConfigView>("/config"),
 
   /** Merge a partial config document, e.g. `{lighting: {daytime_brightness: 85}}`. */
+  secrets: () => request<SecretsReport>("/secrets"),
+  setSecret: (key: string, value: string) =>
+    request<void>(`/secrets/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    }),
+  clearSecret: (key: string) =>
+    request<void>(`/secrets/${encodeURIComponent(key)}`, { method: "DELETE" }),
   tadoStatus: () => request<TadoStatus>("/presence/tado"),
   tadoConnect: () =>
     request<TadoPending>("/presence/tado/connect", { method: "POST" }),
