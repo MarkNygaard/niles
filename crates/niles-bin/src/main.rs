@@ -1229,10 +1229,6 @@ fn build_weather_client() -> Option<Arc<niles_weather::OpenMeteoClient>> {
 struct PresenceSetup {
     aggregator: Arc<PresenceAggregator>,
     sources: Vec<Arc<dyn PresenceSource>>,
-    /// Kept concretely as well as in `sources`, because authorising is
-    /// tado's own business and not something a presence source in
-    /// general has.
-    tado: Option<Arc<TadoSource>>,
 }
 
 /// Build a `PresenceSetup` from the `[presence]` section.
@@ -1272,9 +1268,18 @@ fn build_tado(
 /// Returns `None` only when there is no source at all. Whether presence
 /// is *on* is read live by the poll loop, so switching it on does not
 /// need a restart.
-fn build_presence(tado: Option<Arc<TadoSource>>) -> Option<PresenceSetup> {
+fn build_presence(
+    cfg: &niles_config::PresenceConfig,
+    tado: Option<Arc<TadoSource>>,
+) -> Option<PresenceSetup> {
     let mut sources: Vec<Arc<dyn PresenceSource>> = Vec::new();
-    if let Some(t) = &tado {
+    // Polled only if the config actually names tado. The *connection*
+    // is built whenever there is a database, so it can be authorised
+    // before the feature is switched on — but being able to connect
+    // something is not the same as having asked for it, and polling a
+    // source nobody configured warns once a tick about a device code
+    // nobody was waiting for.
+    if let (Some(t), true) = (&tado, cfg.tado.is_some()) {
         sources.push(t.clone() as Arc<dyn PresenceSource>);
     }
     if sources.is_empty() {
@@ -1287,7 +1292,6 @@ fn build_presence(tado: Option<Arc<TadoSource>>) -> Option<PresenceSetup> {
     Some(PresenceSetup {
         aggregator,
         sources,
-        tado,
     })
 }
 
@@ -1897,7 +1901,10 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(build_tado(&cfg.presence, build_tado_tokens(&cfg)?));
+    // Kept separately from the poll loop: the connection has to exist
+    // for Settings to authorise it even when nothing polls it yet.
+    let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
+    let presence = build_presence(&cfg.presence, tado.clone());
     let presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
@@ -2317,7 +2324,10 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(build_tado(&cfg.presence, build_tado_tokens(&cfg)?));
+    // Kept separately from the poll loop: the connection has to exist
+    // for Settings to authorise it even when nothing polls it yet.
+    let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
+    let presence = build_presence(&cfg.presence, tado.clone());
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
@@ -4135,13 +4145,16 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(build_tado(&cfg.presence, build_tado_tokens(&cfg)?));
+    // Kept separately from the poll loop: the connection has to exist
+    // for Settings to authorise it even when nothing polls it yet.
+    let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
+    let presence = build_presence(&cfg.presence, tado.clone());
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
             p.sources.clone(),
             cfg.presence.clone(),
-            None,
+            Some(store.clone()),
             bus.clone(),
         )
     });
@@ -4280,7 +4293,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_config_store(Some(store.clone()))
     .with_logs(LOG_BUFFER.get().cloned())
     .with_manual_mode(Some(tracker.clone()))
-    .with_tado(presence.as_ref().and_then(|p| p.tado.clone()))
+    .with_tado(tado.clone())
     .with_secrets(secret_store.clone())
     .with_api_token(cfg.auth.resolve_api_token());
 

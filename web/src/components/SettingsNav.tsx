@@ -1,4 +1,12 @@
-import { ChevronRight, Clock, KeyRound, Lightbulb, Plug, Users } from "lucide-react";
+import {
+  ChevronRight,
+  Clock,
+  FileCode,
+  KeyRound,
+  Lightbulb,
+  Plug,
+  Users,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface Section {
@@ -36,16 +44,27 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
     group: "Connections",
     items: [
       {
-        id: "services",
-        label: "Services",
-        hint: "tado, and the credentials Niles needs",
+        id: "integrations",
+        label: "Integrations",
+        hint: "The services Niles reads from",
         icon: Plug,
       },
       {
-        id: "all",
-        label: "Everything else",
-        hint: "Every section, as Niles has it",
+        id: "credentials",
+        label: "Credentials",
+        hint: "Keys and passwords, kept encrypted",
         icon: KeyRound,
+      },
+    ],
+  },
+  {
+    group: "Advanced",
+    items: [
+      {
+        id: "all",
+        label: "Raw config",
+        hint: "Every section, including ones with no page yet",
+        icon: FileCode,
       },
       {
         id: "history",

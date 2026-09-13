@@ -55,6 +55,69 @@ pub fn is_loaded() -> bool {
     STORED.read().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
+/// Where a credential is actually coming from.
+///
+/// Resolved in the same order [`require_secret`](crate::env) uses, so
+/// what a page reports and what Niles reads cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Source {
+    /// An environment variable the config names. Niles can read it and
+    /// cannot change it.
+    Environment,
+    /// Saved in Niles's own store, which is the only kind it can
+    /// replace or clear.
+    Stored,
+    /// Nowhere. Whatever needs it does not work.
+    Unset,
+}
+
+impl crate::Config {
+    /// The environment variable this purpose is configured to read, if
+    /// the config names one.
+    ///
+    /// The mapping lives here rather than in the API because it is the
+    /// config that decides it — and because a second copy of this list
+    /// is a second thing to forget to update.
+    pub fn secret_env_var(&self, key: &str) -> Option<String> {
+        let named = match key {
+            "mqtt.username" => Some(self.mqtt.username_env.clone()),
+            "mqtt.password" => Some(self.mqtt.password_env.clone()),
+            "stt.api_key" => Some(self.stt.api_key_env.clone()),
+            "llm.api_key" => Some(self.llm.api_key_env.clone()),
+            "integrations.linear.api_key" => self
+                .integrations
+                .linear
+                .as_ref()
+                .map(|l| l.api_key_env.clone()),
+            "auth.session_secret" => self.auth.session_secret_env.clone(),
+            "auth.github_client_secret" => self.auth.github_client_secret_env.clone(),
+            "auth.api_token" => self.auth.api_token_env.clone(),
+            _ => None,
+        }?;
+        (!named.trim().is_empty()).then_some(named)
+    }
+
+    /// Where a credential comes from right now.
+    ///
+    /// Environment first, matching resolution: a variable that is set
+    /// wins, and reporting it as merely "stored" — or worse, as unset —
+    /// would invite somebody to type a value here and silently move
+    /// where the credential lives.
+    pub fn secret_source(&self, key: &str) -> Source {
+        if let Some(var) = self.secret_env_var(key)
+            && std::env::var(&var).is_ok_and(|v| !v.trim().is_empty())
+        {
+            return Source::Environment;
+        }
+        if get(key).is_some() {
+            return Source::Stored;
+        }
+        Source::Unset
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +151,50 @@ mod tests {
         // starts happily and fails at the first call instead.
         load(HashMap::from([("test.only.blank".into(), "   ".into())]));
         assert_eq!(get("test.only.blank"), None);
+    }
+
+    #[test]
+    fn an_environment_variable_is_reported_as_the_source() {
+        // The bug this exists to prevent: the first version only ever
+        // looked in the store, so every credential fed by an env var
+        // read as unset — and the page offered to overwrite working
+        // credentials, which is exactly the guard it was meant to be.
+        unsafe { std::env::set_var("NILES_TEST_SOURCE_KEY", "from-the-env") };
+        let cfg = crate::Config::load_from_str(
+            "[mqtt]
+password_env = \"NILES_TEST_SOURCE_KEY\"
+",
+        )
+        .expect("valid");
+        assert_eq!(cfg.secret_source("mqtt.password"), Source::Environment);
+    }
+
+    #[test]
+    fn a_named_variable_that_is_not_set_is_not_a_source() {
+        let cfg = crate::Config::load_from_str(
+            "[mqtt]
+password_env = \"NILES_TEST_DEFINITELY_UNSET_XYZ\"
+",
+        )
+        .expect("valid");
+        assert_eq!(cfg.secret_source("mqtt.password"), Source::Unset);
+    }
+
+    #[test]
+    fn the_environment_wins_over_the_store() {
+        // Same order the reader uses. Reporting "stored" while the
+        // reader takes the env var would make the page describe a
+        // credential Niles is not using.
+        unsafe { std::env::set_var("NILES_TEST_SOURCE_WINS", "from-the-env") };
+        load(HashMap::from([("stt.api_key".into(), "stored".into())]));
+        let cfg = crate::Config::load_from_str(
+            "[stt]
+api_key_env = \"NILES_TEST_SOURCE_WINS\"
+",
+        )
+        .expect("valid");
+        assert_eq!(cfg.secret_source("stt.api_key"), Source::Environment);
+        load(HashMap::new());
     }
 
     #[test]

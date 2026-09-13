@@ -1291,8 +1291,20 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["writable"], false);
         assert!(
-            body["secrets"].as_array().unwrap().len() >= 8,
+            body["secrets"].as_array().unwrap().len() >= 9,
             "the list is what Niles reads, not what happens to be stored"
+        );
+        assert_eq!(
+            body["secrets"][0]["source"], "unset",
+            "with no config store to ask, nothing can be resolved"
+        );
+        assert!(
+            body["secrets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["key"] == "auth.github_client_id"),
+            "the client id is not secret, but it still has to be settable"
         );
     }
 
