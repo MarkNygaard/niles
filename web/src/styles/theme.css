@@ -114,7 +114,12 @@
   --card-foreground: oklch(0.25 0.006 285);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.25 0.006 285);
-  --primary: oklch(0.25 0.006 285);
+  /* Niles's colour. Violet rather than the warm end, because amber
+     is already spoken for: it is what a *lit room* looks like, and a
+     brand that borrowed it would leave the state with nothing of its
+     own. Violet sits opposite amber, so the two read as contrast
+     rather than a clash. */
+  --primary: oklch(0.58 0.19 296);
   --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.95 0.002 286);
   --secondary-foreground: oklch(0.25 0.006 285);
@@ -138,7 +143,7 @@
      the border is confirming an edge rather than drawing one. */
   --border: oklch(0.93 0.003 286);
   --input: oklch(0.93 0.003 286);
-  --ring: oklch(0.708 0 0);
+  --ring: oklch(0.58 0.14 296);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -203,8 +208,8 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: oklch(0.58 0.19 296);
+  --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -218,7 +223,7 @@
   --status-success: oklch(0.72 0.15 150);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --ring: oklch(0.62 0.14 296);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
