@@ -1,16 +1,21 @@
+import { useState } from "react";
 import { ChevronRight, Droplets, Thermometer, X } from "lucide-react";
 import {
   Dialog,
-  DialogBody,
   DialogClose,
   DialogContent,
   DialogDescription,
-  DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerTitle,
+} from "@/components/ui/drawer";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { roomSummary, roomToggle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
@@ -41,9 +46,70 @@ export function RoomCard({
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
+  const [open, setOpen] = useState(false);
+  // A drag handle is meaningless with a mouse and a centred modal is
+  // wrong in a hand, so this picks the component rather than restyling
+  // one of them. Matches the `sm` breakpoint the card already uses.
+  const phone = useMediaQuery("(max-width: 639px)");
+
+  // DialogHeader and DrawerHeader disagree — one is a row with a
+  // divider, the other a centred column — and the panel is the same
+  // panel either way, so the chrome is written once here and only the
+  // parts that carry the accessible name are swapped.
+  const contents = (
+    <>
+      <div className="border-border flex items-start justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          {phone ? (
+            <>
+              <DrawerTitle className="font-heading text-base leading-snug font-medium">
+                {room.label}
+              </DrawerTitle>
+              <DrawerDescription className="text-muted-foreground text-sm">
+                {roomSummary(room)}
+              </DrawerDescription>
+            </>
+          ) : (
+            <>
+              <DialogTitle>{room.label}</DialogTitle>
+              <DialogDescription>{roomSummary(room)}</DialogDescription>
+            </>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <PowerButton
+            on={lit}
+            label={`All lights in ${room.label}`}
+            disabled={disabled}
+            onToggle={() => onSetRoom(toggle)}
+          />
+          {/* No close button on the drawer: it is dismissed by swiping
+              it away, which is the gesture the handle is advertising. */}
+          {!phone && (
+            <DialogClose
+              aria-label="Close"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 flex size-8 items-center justify-center rounded-lg focus-visible:outline-none"
+            >
+              <X aria-hidden className="size-4" />
+            </DialogClose>
+          )}
+        </div>
+      </div>
+      <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
+        {room.lights.map((light) => (
+          <LightRow
+            key={light.id}
+            light={light}
+            disabled={disabled}
+            onSet={(body) => onSetLight(light, body)}
+          />
+        ))}
+      </div>
+    </>
+  );
 
   return (
-    <Dialog>
+    <>
       {/* No outline, and no tint when the room is lit. The card is
           separated from the page by its own fill, and the only thing
           carrying colour is the switch — which is the only thing on it
@@ -103,49 +169,36 @@ export function RoomCard({
           </span>
         </button>
 
-        <DialogTrigger className="border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 flex items-center justify-between gap-1 border-t px-3 py-2.5 text-left text-xs transition-colors focus-visible:outline-none sm:px-4 sm:gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 flex items-center justify-between gap-1 border-t px-3 py-2.5 text-left text-xs transition-colors focus-visible:outline-none sm:px-4 sm:gap-2">
           <span className="truncate">
             {room.lights.length === 1
               ? "Adjust this light"
               : `Adjust ${room.lights.length} lights`}
           </span>
           <ChevronRight aria-hidden className="size-4 shrink-0" />
-        </DialogTrigger>
+        </button>
       </div>
 
-      <DialogContent>
-        <DialogHeader>
-          <div className="min-w-0">
-            <DialogTitle>{room.label}</DialogTitle>
-            <DialogDescription>{roomSummary(room)}</DialogDescription>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <PowerButton
-              on={lit}
-              label={`All lights in ${room.label}`}
-              disabled={disabled}
-              onToggle={() => onSetRoom(toggle)}
-            />
-            <DialogClose
-              aria-label="Close"
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 flex size-8 items-center justify-center rounded-lg focus-visible:outline-none"
-            >
-              <X aria-hidden className="size-4" />
-            </DialogClose>
-          </div>
-        </DialogHeader>
-        <DialogBody className="divide-border divide-y">
-          {room.lights.map((light) => (
-            <LightRow
-              key={light.id}
-              light={light}
-              disabled={disabled}
-              onSet={(body) => onSetLight(light, body)}
-            />
-          ))}
-        </DialogBody>
-      </DialogContent>
-    </Dialog>
+      {phone ? (
+        <Drawer open={open} onOpenChange={setOpen} showSwipeHandle>
+          {/* Square across the top. It is already flush to the bottom
+              and both sides — the rounded corners are the component's
+              default and belong to a sheet that floats, which this one
+              does not. Overridden here rather than in the component, so
+              `shadcn add drawer` can still update it cleanly. */}
+          <DrawerContent className="data-[swipe-direction=down]:rounded-t-none">
+            {contents}
+          </DrawerContent>
+        </Drawer>
+      ) : (
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent>{contents}</DialogContent>
+        </Dialog>
+      )}
+    </>
   );
 }
 

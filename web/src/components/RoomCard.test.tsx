@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { RoomCard } from "@/components/RoomCard";
 import { roomsOf } from "@/lib/rooms";
@@ -42,6 +42,23 @@ function sensor(name: string, celsius: number, humidity: number): Device {
   );
 }
 
+// The card asks the viewport whether it is in a hand. jsdom always
+// says no (see test-setup), so a test about the phone has to say so.
+function onAPhone() {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn().mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }),
+  );
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 function setup(devices: Device[]) {
   const onSetRoom = vi.fn();
   const onSetLight = vi.fn();
@@ -83,6 +100,26 @@ describe("RoomCard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Adjust 2 lights" }));
     expect(onSetRoom).not.toHaveBeenCalled();
+  });
+
+  it("closes with a button on a desktop", () => {
+    setup([light("ceiling", true), light("counter", true)]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Adjust 2 lights" }));
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+  });
+
+  it("closes by being swiped away on a phone", () => {
+    // The drawer advertises the gesture with a handle, so a close
+    // button beside it would be a second way to do the same thing.
+    onAPhone();
+    setup([light("ceiling", true), light("counter", true)]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Adjust 2 lights" }));
+    expect(
+      screen.getByRole("button", { name: /^All lights in Kitchen/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
   });
 
   it("shows what the room is reporting alongside its lights", () => {
