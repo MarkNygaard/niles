@@ -13,6 +13,7 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from "@/components/ui/drawer";
+import { BulbGlyph } from "@/components/BulbGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
@@ -132,16 +133,17 @@ export function RoomCard({
           )}
         >
           {/* The whole card is the switch, so the icon is a read-out
-              rather than a second target inside the first. */}
-          <span
-            aria-hidden
+              rather than a second target inside the first — which is
+              why it is a bulb and no longer a power symbol on a filled
+              disc. A lit bulb needs no legend; a disc had to carry the
+              colour because a stroked glyph could not hold it, and a
+              grid of filled amber discs reads as a warning panel. */}
+          <BulbGlyph
             className={cn(
-              "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors sm:size-12",
-              lit ? "bg-lit text-lit-foreground" : "bg-muted text-muted-foreground",
+              "size-9 transition-colors sm:size-11",
+              lit ? "text-lit" : "text-unlit",
             )}
-          >
-            <PowerGlyph />
-          </span>
+          />
 
           <span className="w-full min-w-0 flex-1">
             <span className="font-heading block truncate text-sm leading-snug font-medium sm:text-base">
@@ -199,22 +201,5 @@ export function RoomCard({
         </Dialog>
       )}
     </>
-  );
-}
-
-function PowerGlyph() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      className="size-5"
-      focusable="false"
-    >
-      <path d="M12 2v10" />
-      <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
-    </svg>
   );
 }
