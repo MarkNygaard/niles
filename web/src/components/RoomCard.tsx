@@ -71,7 +71,7 @@ export function RoomCard({
             aria-hidden
             className={cn(
               "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors sm:size-12",
-              lit ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+              lit ? "bg-lit text-lit-foreground" : "bg-muted text-muted-foreground",
             )}
           >
             <PowerGlyph />
