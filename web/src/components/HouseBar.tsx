@@ -42,7 +42,7 @@ export function HouseBar({ rooms, disabled, onToggle }: HouseBarProps) {
         aria-hidden
         className={cn(
           "flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
-          lit ? "bg-amber-200 text-amber-950" : "bg-muted text-muted-foreground",
+          lit ? "bg-lit text-lit-foreground" : "bg-muted text-muted-foreground",
         )}
       >
         <svg

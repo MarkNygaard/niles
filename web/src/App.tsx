@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Home, LogOut, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
+import { AccountMenu } from "@/components/AccountMenu";
 import { ConfigPanel } from "@/components/ConfigPanel";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { SignIn } from "@/components/SignIn";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -12,11 +12,11 @@ import { cn } from "@/lib/utils";
 type View = "home" | "settings";
 
 /**
- * Two pages: the house, and how it behaves.
+ * The house, with everything about *you* behind the avatar.
  *
- * The house comes first. Settings are read once a month; lights are
- * pressed every day, and the thing you open this on your phone to do
- * should not be behind a tab.
+ * No tab bar. The house is the page you came for; how it looks and who
+ * you are are not a second destination of equal weight, and a phone app
+ * would not give them half the top bar.
  */
 export function App() {
   const [view, setView] = useState<View>("home");
@@ -47,77 +47,37 @@ export function App() {
     return <SignIn error={refusal ?? undefined} />;
   }
 
+  const settings = view === "settings";
+
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-8">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-heading text-xl font-semibold">Niles</h1>
-        <nav className="bg-muted/60 flex items-center gap-1 rounded-lg p-1">
-          <NavButton
-            current={view}
-            value="home"
-            icon={<Home aria-hidden className="size-4" />}
-            onSelect={setView}
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-4 sm:px-6 sm:py-6">
+      <header className="flex items-center gap-2">
+        {settings && (
+          <button
+            type="button"
+            aria-label="Back to the house"
+            onClick={() => setView("home")}
+            className={cn(
+              "text-muted-foreground hover:text-foreground -ml-2 flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
+              "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+            )}
           >
-            Home
-          </NavButton>
-          <NavButton
-            current={view}
-            value="settings"
-            icon={<SlidersHorizontal aria-hidden className="size-4" />}
-            onSelect={setView}
-          >
-            Settings
-          </NavButton>
-        </nav>
+            <ChevronLeft className="size-5" />
+          </button>
+        )}
+        {/* Large and plain, the way a phone app titles a screen: it says
+            where you are rather than offering somewhere to go. */}
+        <h1 className="font-heading flex-1 truncate text-2xl font-semibold tracking-tight">
+          {settings ? "Settings" : "Niles"}
+        </h1>
+        <AccountMenu
+          email={auth.data?.signed_in_as ?? undefined}
+          avatarUrl={auth.data?.avatar_url ?? undefined}
+          onOpenSettings={() => setView("settings")}
+        />
       </header>
 
-      {auth.data?.signed_in_as && (
-        <div className="text-muted-foreground flex flex-wrap items-center justify-end gap-2 text-xs">
-          <span className="truncate">{auth.data.signed_in_as}</span>
-          <Button
-            render={<a href="/auth/signout" />}
-            variant="ghost"
-            size="xs"
-            aria-label="Sign out"
-          >
-            <LogOut /> Sign out
-          </Button>
-        </div>
-      )}
-
-      {view === "home" ? <RoomDashboard /> : <ConfigPanel />}
+      {settings ? <ConfigPanel /> : <RoomDashboard />}
     </main>
-  );
-}
-
-function NavButton({
-  current,
-  value,
-  icon,
-  children,
-  onSelect,
-}: {
-  current: View;
-  value: View;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-  onSelect: (view: View) => void;
-}) {
-  const active = current === value;
-  return (
-    <button
-      type="button"
-      aria-current={active ? "page" : undefined}
-      onClick={() => onSelect(value)}
-      className={cn(
-        "focus-visible:ring-3 focus-visible:ring-ring/50 flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none",
-        active
-          ? "bg-background text-foreground shadow-sm"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {icon}
-      {children}
-    </button>
   );
 }

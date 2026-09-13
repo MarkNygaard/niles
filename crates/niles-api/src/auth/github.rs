@@ -172,6 +172,9 @@ async fn authenticate(
 
     let token = exchange(&client_id, &client_secret, &code).await?;
     let email = verified_email(&token).await?;
+    // Best effort: the avatar is a nicety, and failing to draw one is
+    // not a reason to refuse somebody who has proved who they are.
+    let github_id = account_id(&token).await;
 
     // The boundary, read from the config in force *now* — which is what
     // makes taking somebody off the list take effect immediately.
@@ -183,7 +186,7 @@ async fn authenticate(
         )
     })?;
 
-    Ok((Session::new(email), pending.next.clone()))
+    Ok((Session::new(email, github_id), pending.next.clone()))
 }
 
 #[derive(Deserialize)]
@@ -259,6 +262,31 @@ fn pick_verified(emails: &[GithubEmail]) -> Option<String> {
         .find(|e| e.primary && e.verified)
         .or_else(|| emails.iter().find(|e| e.verified))
         .map(|e| e.email.trim().to_lowercase())
+}
+
+#[derive(Deserialize)]
+struct GithubUser {
+    id: u64,
+}
+
+/// GitHub's numeric account id.
+///
+/// The one identifier that survives a rename, and what the avatar is
+/// addressed by. Not part of authentication — the verified address is
+/// still the whole of that — so a failure here costs a picture.
+async fn account_id(token: &str) -> Option<u64> {
+    let user: GithubUser = reqwest::Client::new()
+        .get(format!("{API}/user"))
+        .header(header::ACCEPT, "application/vnd.github+json")
+        .header(header::USER_AGENT, USER_AGENT)
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    Some(user.id)
 }
 
 /// `GET /auth/signout`

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover: installed on iOS the page owns the whole
@@ -14,9 +14,34 @@
     <title>Niles</title>
 
     <link rel="manifest" href="/manifest.webmanifest" />
-    <!-- The app is dark-only (see `class="dark"` above), so there is one
-         colour to declare rather than a pair behind media queries. -->
+    <!-- Overwritten before first paint by the script below, and again
+         whenever the preference changes. -->
     <meta name="theme-color" content="#0a0a0a" />
+
+    <!--
+      Runs before the stylesheet paints, because the alternative is a
+      dark-mode phone flashing the light theme for as long as the
+      bundle takes to load. Duplicated from lib/theme.ts on purpose:
+      nothing that ships in the bundle can run this early.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("niles-theme");
+          var dark =
+            stored === "dark" ||
+            ((stored !== "light") &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document
+            .querySelector('meta[name="theme-color"]')
+            .setAttribute("content", dark ? "#0a0a0a" : "#f7f7f8");
+        } catch (e) {
+          /* Private windows throw on localStorage; the media query alone
+             is a fine answer. */
+        }
+      })();
+    </script>
 
     <meta name="mobile-web-app-capable" content="yes" />
     <!-- Light status-bar text, drawn over the page. -->

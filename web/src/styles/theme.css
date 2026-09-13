@@ -30,6 +30,8 @@
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
+  --color-lit: var(--lit);
+  --color-lit-foreground: var(--lit-foreground);
   --color-accent-orange: var(--accent-orange);
   --color-accent-orange-light: var(--accent-orange-light);
   --color-accent-orange-foreground: var(--accent-orange-foreground);
@@ -114,13 +116,19 @@
   --card-foreground: oklch(0.25 0.006 285);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.25 0.006 285);
-  /* Niles's colour. Violet rather than the warm end, because amber
-     is already spoken for: it is what a *lit room* looks like, and a
-     brand that borrowed it would leave the state with nothing of its
-     own. Violet sits opposite amber, so the two read as contrast
-     rather than a clash. */
+  /* Niles's colour: the app speaking. Primary buttons, the selected
+     appearance, every focus ring. Not what a *light* does — that is
+     `--lit`, below, because warm meaning lit is worth more than one
+     accent is. */
   --primary: oklch(0.58 0.19 296);
   --primary-foreground: oklch(0.99 0 0);
+  /* What a lit room looks like. The one place warmth is spent, and the
+     reason it is a token rather than a shade written into three
+     components: it means something, so it is named once. Deep enough to
+     read against both grounds — an earlier pale amber washed out on
+     dark and looked like decoration. */
+  --lit: oklch(0.769 0.165 70.1);
+  --lit-foreground: oklch(0.279 0.074 45.6);
   --secondary: oklch(0.95 0.002 286);
   --secondary-foreground: oklch(0.25 0.006 285);
   --muted: oklch(0.95 0.002 286);
@@ -210,6 +218,13 @@
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.58 0.19 296);
   --primary-foreground: oklch(0.99 0 0);
+  /* What a lit room looks like. The one place warmth is spent, and the
+     reason it is a token rather than a shade written into three
+     components: it means something, so it is named once. Deep enough to
+     read against both grounds — an earlier pale amber washed out on
+     dark and looked like decoration. */
+  --lit: oklch(0.769 0.165 70.1);
+  --lit-foreground: oklch(0.279 0.074 45.6);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
