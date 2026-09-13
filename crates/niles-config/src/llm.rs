@@ -107,7 +107,9 @@ fn validate_llm_fields(
 }
 
 fn resolve_api_key(api_key_env: &str, section: &'static str) -> Result<String> {
-    crate::env::require_env(section, api_key_env)
+    // The section doubles as the purpose: `llm` and the tier-2 section
+    // are separate keys because they can be separate accounts.
+    crate::env::require_secret(section, &format!("{section}.api_key"), api_key_env)
 }
 
 /// Every field has a default, so the section can be left out

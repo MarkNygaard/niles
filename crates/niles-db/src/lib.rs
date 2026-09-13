@@ -28,8 +28,10 @@
 //! anything twice.
 
 mod enrollments;
+mod secrets;
 mod tado_tokens;
 pub use enrollments::PostgresEnrollments;
+pub use secrets::{PostgresSecrets, Sealer};
 pub use tado_tokens::PostgresTadoTokens;
 
 use async_trait::async_trait;
