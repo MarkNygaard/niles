@@ -13,6 +13,7 @@ function state(partial: Partial<DeviceState> = {}): DeviceState {
     temperature_celsius: null,
     humidity_percent: null,
     battery_percent: null,
+    open: null,
     ...partial,
   };
 }
@@ -32,6 +33,10 @@ function device(name: string, klass: string, reported: DeviceState): Device {
 
 function light(name: string, on: boolean | null): Device {
   return device(name, "light", state({ on }));
+}
+
+function contact(name: string, open: boolean): Device {
+  return device(name, "contact", state({ open }));
 }
 
 function sensor(name: string, celsius: number, humidity: number): Device {
@@ -120,6 +125,27 @@ describe("RoomCard", () => {
       screen.getByRole("button", { name: /^All lights in Kitchen/ }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+  });
+
+  it("says when a door is standing open", () => {
+    setup([light("ceiling", true), contact("door", true)]);
+    expect(screen.getByText("Door open")).toBeInTheDocument();
+  });
+
+  it("says nothing at all when everything is shut", () => {
+    // A closed door is the ordinary case. Drawing it would put an icon
+    // on every card in the house that never means anything.
+    setup([light("ceiling", true), contact("door", false)]);
+    expect(screen.queryByText(/open/i)).toBeNull();
+  });
+
+  it("counts windows rather than repeating the icon", () => {
+    setup([
+      light("ceiling", true),
+      contact("bay_window", true),
+      contact("side_window", true),
+    ]);
+    expect(screen.getByText("2 windows open")).toBeInTheDocument();
   });
 
   it("shows what the room is reporting alongside its lights", () => {

@@ -8,6 +8,7 @@ import {
   houseSummary,
   houseToggle,
   roomsOf,
+  openingsOf,
   targets,
 } from "./rooms";
 import type { Device, DeviceState } from "./api";
@@ -21,6 +22,7 @@ function state(partial: Partial<DeviceState> = {}): DeviceState {
     temperature_celsius: null,
     humidity_percent: null,
     battery_percent: null,
+    open: null,
     ...partial,
   };
 }
@@ -314,5 +316,39 @@ describe("mergeReported", () => {
       brightness: null,
     });
     expect(merged.brightness).toBe(70);
+  });
+});
+
+describe("openingsOf", () => {
+  const shut = (id: string) =>
+    device(id, { class: "contact", state: { open: false } });
+  const ajar = (id: string) =>
+    device(id, { class: "contact", state: { open: true } });
+
+  it("reads the door from what it is, not what it is called", () => {
+    // Niles knows it is a contact sensor from Z2M's exposes, so one
+    // nobody named "door" still reports. The name only decides which
+    // of two icons gets drawn.
+    expect(openingsOf([ajar("z2m:office/garden")])).toEqual([
+      { kind: "door", count: 1 },
+    ]);
+  });
+
+  it("calls anything with window in its name a window", () => {
+    expect(openingsOf([ajar("z2m:office/bay_window")])).toEqual([
+      { kind: "window", count: 1 },
+    ]);
+  });
+
+  it("counts rather than repeating a kind", () => {
+    expect(
+      openingsOf([ajar("z2m:office/bay_window"), ajar("z2m:office/side_window")]),
+    ).toEqual([{ kind: "window", count: 2 }]);
+  });
+
+  it("ignores what is shut and what has never said", () => {
+    expect(
+      openingsOf([shut("z2m:office/door"), device("z2m:office/hatch", { class: "contact" })]),
+    ).toEqual([]);
   });
 });

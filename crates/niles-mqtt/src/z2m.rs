@@ -81,6 +81,7 @@ impl Z2mDevice {
 
         let mut has_outlet = false;
         let mut has_action = false;
+        let mut has_contact = false;
 
         for expose in exposes {
             if Self::expose_is_light(expose) {
@@ -92,12 +93,17 @@ impl Z2mDevice {
             if Self::expose_is_action(expose) {
                 has_action = true;
             }
+            if Self::expose_is_contact(expose) {
+                has_contact = true;
+            }
         }
 
         if has_outlet {
             DeviceClass::Outlet
         } else if has_action {
             DeviceClass::Switch
+        } else if has_contact {
+            DeviceClass::Contact
         } else {
             DeviceClass::Sensor
         }
@@ -121,6 +127,17 @@ impl Z2mDevice {
             return true;
         }
         expose.features.iter().any(Self::expose_is_action)
+    }
+
+    /// A door or window sensor's binary. Named `contact` by Z2M for
+    /// every brand that has one, which is what makes this a property
+    /// check rather than a guess at the device's name — a sensor
+    /// called `office/garden` is still a door.
+    fn expose_is_contact(expose: &Z2mExpose) -> bool {
+        if expose.property.as_deref() == Some("contact") {
+            return true;
+        }
+        expose.features.iter().any(Self::expose_is_contact)
     }
 
     /// Convert into a `niles_core::Device` with a default (empty) state
@@ -173,6 +190,8 @@ pub struct Z2mState {
     pub temperature: Option<f32>,
     pub humidity: Option<f32>,
     pub battery: Option<f32>,
+    /// `true` when the magnet is present — which is the door *shut*.
+    pub contact: Option<bool>,
 }
 
 impl Z2mState {
@@ -185,6 +204,7 @@ impl Z2mState {
             temperature_celsius: self.temperature,
             humidity_percent: self.humidity,
             battery_percent: self.battery.map(|b| b.round().clamp(0.0, 100.0) as u8),
+            open: self.contact.map(|shut| !shut),
         }
     }
 
@@ -207,6 +227,7 @@ impl Z2mState {
             || self.temperature.is_some()
             || self.humidity.is_some()
             || self.battery.is_some()
+            || self.contact.is_some()
     }
 }
 
@@ -360,6 +381,60 @@ mod tests {
     }
 
     // ---- classification ------------------------------------------
+
+    #[test]
+    fn contact_true_is_a_shut_door() {
+        // Z2M reports the magnet, not the opening: `contact: true` is
+        // the two halves together, which is closed. Inverting it here
+        // is the whole reason `open` can be read at face value
+        // everywhere else, so it is worth a test of its own.
+        let shut = Z2mState {
+            contact: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(shut.to_device_state().open, Some(false));
+
+        let ajar = Z2mState {
+            contact: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(ajar.to_device_state().open, Some(true));
+    }
+
+    #[test]
+    fn a_contact_payload_is_worth_propagating() {
+        // A door sensor that has not reported battery yet sends only
+        // `contact`. Without this the whole payload looks empty and the
+        // door never moves.
+        let opened = Z2mState {
+            contact: Some(false),
+            ..Default::default()
+        };
+        assert!(opened.has_actionable_state_field());
+    }
+
+    #[test]
+    fn a_contact_expose_makes_it_a_door_whatever_it_is_called() {
+        // Classified from what Z2M says it exposes, not from the name:
+        // this one is called `garden`, and it is still a door.
+        let z2m = Z2mDevice {
+            ieee_address: "0x1".into(),
+            friendly_name: "office/garden".into(),
+            device_type: "EndDevice".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![Z2mExpose {
+                    expose_type: Some("binary".into()),
+                    property: Some("contact".into()),
+                    ..Default::default()
+                }],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Contact);
+        assert!(
+            !z2m.to_device().unwrap().is_switchable(),
+            "a door is not something you can switch"
+        );
+    }
 
     #[test]
     fn classify_light_from_exposes_type() {

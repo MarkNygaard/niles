@@ -57,6 +57,10 @@ impl From<DeviceStateDto> for DeviceState {
             temperature_celsius: d.temperature_celsius,
             humidity_percent: d.humidity_percent,
             battery_percent: d.battery_percent,
+            // A scene restores lights. Whether a door was open when it
+            // was saved is not something a scene can put back, so it is
+            // not carried and not re-applied.
+            open: None,
         }
     }
 }

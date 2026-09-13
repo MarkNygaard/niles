@@ -14,6 +14,7 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { BulbGlyph } from "@/components/BulbGlyph";
+import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
@@ -152,7 +153,9 @@ export function RoomCard({
             <span className="text-muted-foreground block truncate text-xs sm:text-sm">
               {roomSummary(room)}
             </span>
-            {(room.temperature !== undefined || room.humidity !== undefined) && (
+            {(room.temperature !== undefined ||
+              room.humidity !== undefined ||
+              room.openings.length > 0) && (
               <span className="text-muted-foreground/80 mt-1 flex flex-wrap items-center gap-x-3 text-xs">
                 {room.temperature !== undefined && (
                   <span className="flex items-center gap-1">
@@ -166,6 +169,15 @@ export function RoomCard({
                     {Math.round(room.humidity)}%
                   </span>
                 )}
+                {/* Open doors and windows sit with the other things the
+                    room is reporting rather than getting a badge of
+                    their own: this is another reading, not an alarm. */}
+                {room.openings.map((opening) => (
+                  <span key={opening.kind} className="flex items-center gap-1">
+                    <OpeningGlyph kind={opening.kind} />
+                    {openingLabel(opening)}
+                  </span>
+                ))}
               </span>
             )}
           </span>
