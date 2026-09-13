@@ -1955,7 +1955,7 @@ exclude_devices = ["wled:living_room/tv_light"]
         let cfg = Config::load_from_str(valid_toml()).unwrap();
         cfg.validate().unwrap();
         assert!(!cfg.presence.enabled);
-        assert_eq!(cfg.presence.poll_seconds, 60);
+        assert_eq!(cfg.presence.poll_seconds, 300);
         assert_eq!(cfg.presence.away_debounce_minutes, 5);
         assert!(cfg.presence.tado.is_none());
     }
@@ -1963,15 +1963,14 @@ exclude_devices = ["wled:living_room/tv_light"]
     #[test]
     fn presence_with_tado_parses_and_validates() {
         let toml = format!(
-            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"TADO_USER\"\npassword_env = \"TADO_PASS\"\nhome_id = 123\n",
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nhome_id = 123\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
         cfg.validate().unwrap();
         assert!(cfg.presence.enabled);
         let tado = cfg.presence.tado.as_ref().unwrap();
-        assert_eq!(tado.username_env, "TADO_USER");
-        assert_eq!(tado.home_id, 123);
+        assert_eq!(tado.home_id, Some(123));
     }
 
     #[test]
@@ -1994,7 +1993,7 @@ exclude_devices = ["wled:living_room/tv_light"]
     #[test]
     fn rejects_presence_poll_seconds_too_small() {
         let toml = format!(
-            "{}\n[presence]\nenabled = true\npoll_seconds = 5\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\n",
+            "{}\n[presence]\nenabled = true\npoll_seconds = 5\n[presence.tado]\nhome_id = 1\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2011,7 +2010,7 @@ exclude_devices = ["wled:living_room/tv_light"]
     #[test]
     fn rejects_presence_poll_seconds_too_large() {
         let toml = format!(
-            "{}\n[presence]\nenabled = true\npoll_seconds = 4000\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\n",
+            "{}\n[presence]\nenabled = true\npoll_seconds = 4000\n[presence.tado]\nhome_id = 1\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2028,7 +2027,7 @@ exclude_devices = ["wled:living_room/tv_light"]
     #[test]
     fn rejects_presence_away_debounce_too_large() {
         let toml = format!(
-            "{}\n[presence]\nenabled = true\naway_debounce_minutes = 121\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\n",
+            "{}\n[presence]\nenabled = true\naway_debounce_minutes = 121\n[presence.tado]\nhome_id = 1\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2043,26 +2042,40 @@ exclude_devices = ["wled:living_room/tv_light"]
     }
 
     #[test]
-    fn rejects_empty_tado_username_env() {
+    fn tado_needs_no_credentials() {
+        // There is nothing to give it: tado removed the password grant
+        // in March 2025, and a browser approval replaced it. A config
+        // still naming the old env vars is rejected outright rather
+        // than parsed and ignored — a Niles that looks configured and
+        // silently is not is the worse failure.
         let toml = format!(
-            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"\"\npassword_env = \"P\"\nhome_id = 1\n",
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"U\"\n",
             valid_toml().trim_end_matches('\n')
         );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "presence.tado",
-                ..
-            }
-        ));
+        let err = Config::load_from_str(&toml).unwrap_err();
+        assert!(format!("{err}").contains("username_env"), "{err}");
+    }
+
+    #[test]
+    fn tado_home_id_is_optional() {
+        // Discovered from /api/v2/me, so leaving it out is the normal
+        // case rather than an incomplete config.
+        let toml = format!(
+            "{}
+[presence]
+enabled = true
+[presence.tado]
+",
+            valid_toml().trim_end_matches('\n')
+        );
+        let cfg = Config::load_from_str(&toml).expect("valid");
+        assert_eq!(cfg.presence.tado.as_ref().unwrap().home_id, None);
     }
 
     #[test]
     fn rejects_zero_tado_home_id() {
         let toml = format!(
-            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 0\n",
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nhome_id = 0\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -2079,7 +2092,7 @@ exclude_devices = ["wled:living_room/tv_light"]
     #[test]
     fn rejects_tado_base_url_without_http_scheme() {
         let toml = format!(
-            "{}\n[presence]\nenabled = true\n[presence.tado]\nusername_env = \"U\"\npassword_env = \"P\"\nhome_id = 1\nbase_url = \"my.tado.com\"\n",
+            "{}\n[presence]\nenabled = true\n[presence.tado]\nhome_id = 1\nbase_url = \"my.tado.com\"\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();

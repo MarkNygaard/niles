@@ -28,7 +28,9 @@
 //! anything twice.
 
 mod enrollments;
+mod tado_tokens;
 pub use enrollments::PostgresEnrollments;
+pub use tado_tokens::PostgresTadoTokens;
 
 use async_trait::async_trait;
 use niles_config::{OverrideBackend, Revision, StoredState};

@@ -177,3 +177,25 @@ kelvin = 2000
 #
 # [ambient_lights]
 # devices = ["living_room/tv_lightstrip"]
+
+# Who is home, from tado's geofencing.
+#
+# There are no credentials here. tado removed the password grant in
+# March 2025; what replaced it is a one-time approval in a browser, and
+# the refresh token it yields is written to Postgres — so `[database]`
+# has to be configured or this stays off.
+#
+# On first start Niles logs a URL and a code at WARN. Open the URL,
+# approve the code, and that is the last time anyone has to.
+# [presence]
+# enabled = true
+# # Five minutes. tado rate-limits per day and resets around midday
+# # Berlin time; a minute's polling spends the budget before evening.
+# poll_seconds = 300
+# # How long everyone has to be gone before the house counts as away.
+# away_debounce_minutes = 5
+#
+# [presence.tado]
+# # Discovered from /api/v2/me. Only worth setting if the account has
+# # more than one home.
+# # home_id = 123456

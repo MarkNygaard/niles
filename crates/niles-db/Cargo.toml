@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 niles-config.workspace = true
+niles-presence.workspace = true
 niles-recognition.workspace = true
 sqlx.workspace = true
 async-trait.workspace = true
