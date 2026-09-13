@@ -56,6 +56,34 @@ spec:
                   name: niles-secrets
                   key: openai-api-key
                   optional: true
+            # Signing in. All optional: an install with no `[auth]`
+            # section never reads them, and must still start.
+            - name: NILES_GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: github-client-id
+                  optional: true
+            - name: NILES_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: github-client-secret
+                  optional: true
+            # Changing this signs everybody out, which is also the only
+            # way to revoke one device without removing its owner.
+            - name: NILES_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: session-secret
+                  optional: true
+            - name: NILES_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: api-token
+                  optional: true
           livenessProbe:
             httpGet:
               path: /healthz
