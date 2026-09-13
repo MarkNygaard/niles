@@ -8,7 +8,7 @@ Niles is an open-source, AI-first home automation system designed to replace Hom
 
 - Have a relatively focused device ecosystem (mostly Zigbee via Z2M, maybe a few WiFi-native devices)
 - Want sub-second voice interactions ("Alexa-fast" or faster)
-- Prefer code/config over UI-driven setup (see [Runtime configuration](#runtime-configuration) for where that line actually falls)
+- Prefer code/config over UI-driven setup (see [Runtime configuration](#runtime-configuration) for where that line actually falls, and [Signing in](#signing-in) for who is allowed to use either)
 - Want a voice assistant with real LLM intelligence as a first-class citizen, not a bolted-on afterthought
 
 Home Assistant is a fantastic project, but it solves a different problem: maximum protocol/vendor coverage for non-technical users. That makes it heavy, UI-driven, and slow to evolve in the directions that matter for an AI-first assistant. Niles is opinionated, code-first, and assumes the user is comfortable with infrastructure.
@@ -1038,7 +1038,7 @@ Each is a self-contained crate. None require core architectural changes — that
 
 Niles identifies the people in the household by voice. This enables personalization (greeting by name, routing "my X" references to the right person) and access control (rules about who can do what, covered in the next section).
 
-Recognition is opt-in via introduction. There is no enrollment ceremony, no biometric setup wizard. The first time someone is identified, it's either because they introduced themselves or because Niles asked. Over time, their voice profile gets stronger from repeated successful matches.
+Recognition is opt-in via introduction. There is no enrollment ceremony, no biometric setup wizard. The same person signing in to the web surface is the *same person*: an entry in `[auth] allowed` names the speaker it belongs to, so voice and web share one identity and one memory rather than keeping two. See [Signing in](#signing-in). The first time someone is identified, it's either because they introduced themselves or because Niles asked. Over time, their voice profile gets stronger from repeated successful matches.
 
 ### How it works technically
 
@@ -1530,6 +1530,8 @@ rather than an exception to it.
 **Settings** is [Runtime configuration](#runtime-configuration): the
 curve, ambient behaviour, the revision history, and an undo.
 
+Who may open either is [Signing in](#signing-in).
+
 ### Why a control surface at all
 
 Voice is the primary interface and stays that way. But a voice command
@@ -1584,6 +1586,103 @@ cleared" would lose it.
 
 Presses are shown immediately and reconciled when the light reports.
 A command that fails rolls the row back and says why.
+
+## Signing in
+
+### Why there is a sign-in at all
+
+Not because the network is hostile. Niles sits on the house network,
+its satellites stream audio to it unauthenticated over Wyoming, and it
+talks to the broker over MQTT. None of that changes, and none of it
+gains a login.
+
+The reason is that **a house has more than one person in it**. A timer
+set on one phone should ring on that phone. What Niles remembers about
+one person should not be read back to another. Voice already knows who
+is speaking — [speaker recognition](#user-recognition) has known since
+it shipped — and the web surface did not, which meant the two halves of
+the same system disagreed about whether people exist.
+
+Exposing Niles beyond the house is a **separate decision** that this
+makes possible rather than requires. Worth knowing before taking it:
+web push does not need Niles to be reachable from outside. A push
+subscription lives on Apple's or Google's service and Niles only ever
+posts to it outbound, so notifications arrive on a phone anywhere
+without a single inbound port.
+
+### Who gets in
+
+Sign-in is GitHub's OAuth app flow. GitHub is the **front door, not the
+boundary** — accounts there are free, so "has a GitHub account" tests
+nothing.
+
+The boundary is a list in config:
+
+```toml
+[auth]
+github_client_id_env = "NILES_GITHUB_CLIENT_ID"
+github_client_secret_env = "NILES_GITHUB_CLIENT_SECRET"
+allowed = [
+  { email = "you@example.com",     speaker = "mark" },
+  { email = "someone@example.com", speaker = "majse" },
+]
+```
+
+Four things follow from the list being config rather than a table:
+
+- **Adding a person is an edit, not a message.** No invitation is sent,
+  no token is minted, no expiry is tracked, and no mail server has to
+  be configured for a household of two. Removing a person is deleting a
+  line, and it holds from the next request.
+- **Niles never creates an account.** There is nothing to create. A
+  verified address that is not in the list is refused, and the refusal
+  names the address GitHub vouched for — which is the whole of the fix,
+  because the usual cause is a list entry pointing at a different one.
+- **The address is the one GitHub verified**, read from `/user/emails`.
+  The `email` field on a GitHub profile is whatever the account holder
+  typed, and anybody can type yours.
+- **`speaker` ties the two identities together**, so the person who
+  says "I am Mark" and the person holding the phone are one person and
+  share one memory. It is optional; without it the account is
+  web-only.
+
+The client secret follows the same `*_env` convention as every other
+credential, so it is a variable *name* in config and its value never
+passes through the config UI.
+
+### What a session is
+
+A cookie, `HttpOnly; SameSite=Lax; Secure`, and nothing else kept on
+the device.
+
+GitHub's OAuth app flow has no discovery document and no ID token, so
+there is no signature on the way back to check. What stands in for one
+is a pair: a **single-use, expiring `state`**, and a **cookie binding
+the attempt to the browser that began it**. Both must match, or the
+callback is refused. The destination afterwards is a same-origin path
+or nothing — an absolute URL there would turn the sign-in page into a
+phishing hop that authenticates against the real Niles and lands
+somewhere else.
+
+### What stays outside it
+
+- `/healthz`, because a liveness probe cannot hold a session.
+- The sign-in routes themselves, which exist to get a request *past*
+  this.
+- `/webhooks/linear`, which authenticates itself with an HMAC over the
+  body. A cookie would mean nothing to Linear.
+- Wyoming and MQTT, which are not HTTP. **Only the HTTP API gains a
+  login**, and if Niles is ever exposed, only that port goes out.
+
+### What this deliberately is not
+
+- **No roles and no admin screens.** Two people in a house are both
+  trusted with the house. A permission model would be machinery
+  guarding a distinction nobody in the household is making.
+- **No passwords**, so no reset flow, no lockout policy, and no second
+  factor to build. The account Niles trusts is the GitHub account, and
+  keeping that safe is GitHub's job.
+- **No sign-up.** Ever. The list is the only way in.
 
 ## Deployment
 
