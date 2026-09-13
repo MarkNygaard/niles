@@ -3,8 +3,14 @@
 use crate::error::{Error, Result};
 use serde::Deserialize;
 
+/// Five minutes, which is what Home Assistant's tado integration
+/// settles on and roughly what tado's quota tolerates: it rate-limits
+/// per day, resetting around midday Berlin time, and a minute's polling
+/// spends the budget long before the day is out. Presence changes when
+/// somebody walks out of a geofence, so minutes is the right grain
+/// anyway.
 fn default_poll_seconds() -> u64 {
-    60
+    300
 }
 
 fn default_away_debounce_minutes() -> u64 {
@@ -16,12 +22,18 @@ fn default_tado_base_url() -> String {
 }
 
 /// `[presence.tado]` subsection.
+///
+/// No credentials here on purpose. tado removed the password grant in
+/// March 2025, and what replaced it is a browser approval that yields a
+/// refresh token — which is state, not configuration, and lives in
+/// Postgres beside the config overrides.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TadoConfigDto {
-    pub username_env: String,
-    pub password_env: String,
-    pub home_id: u64,
+    /// Usually left out: discovered from `/api/v2/me` on first use.
+    /// Worth setting only for an account with more than one home.
+    #[serde(default)]
+    pub home_id: Option<u64>,
     #[serde(default = "default_tado_base_url")]
     pub base_url: String,
 }
@@ -29,19 +41,9 @@ pub struct TadoConfigDto {
 impl Default for TadoConfigDto {
     fn default() -> Self {
         Self {
-            username_env: String::new(),
-            password_env: String::new(),
-            home_id: 0,
+            home_id: None,
             base_url: default_tado_base_url(),
         }
-    }
-}
-
-impl TadoConfigDto {
-    pub fn resolve_env(&self) -> Result<(String, String)> {
-        let username = crate::env::require_env("presence.tado", &self.username_env)?;
-        let password = crate::env::require_env("presence.tado", &self.password_env)?;
-        Ok((username, password))
     }
 }
 
@@ -96,22 +98,13 @@ impl PresenceConfig {
             });
         }
         if let Some(tado) = &self.tado {
-            if tado.username_env.is_empty() {
+            // No credential checks: there are no credentials. An
+            // explicit home_id of 0 is still a mistake, but leaving it
+            // out is the normal case now that it is discovered.
+            if tado.home_id == Some(0) {
                 return Err(Error::InvalidSection {
                     section: "presence.tado",
-                    reason: "username_env must not be empty".into(),
-                });
-            }
-            if tado.password_env.is_empty() {
-                return Err(Error::InvalidSection {
-                    section: "presence.tado",
-                    reason: "password_env must not be empty".into(),
-                });
-            }
-            if tado.home_id == 0 {
-                return Err(Error::InvalidSection {
-                    section: "presence.tado",
-                    reason: "home_id must be > 0".into(),
+                    reason: "home_id must be > 0, or left out to be discovered".into(),
                 });
             }
             if !tado.base_url.starts_with("http://") && !tado.base_url.starts_with("https://") {
@@ -133,7 +126,7 @@ mod tests {
     fn defaults_when_disabled() {
         let cfg = PresenceConfig::default();
         assert!(!cfg.enabled);
-        assert_eq!(cfg.poll_seconds, 60);
+        assert_eq!(cfg.poll_seconds, 300);
         assert_eq!(cfg.away_debounce_minutes, 5);
         assert!(cfg.tado.is_none());
     }
@@ -159,14 +152,12 @@ mod tests {
         let toml = r#"
 enabled = true
 [tado]
-username_env = "TADO_USER"
-password_env = "TADO_PASS"
 home_id = 123
 "#;
         let cfg: PresenceConfig = toml::from_str(toml).unwrap();
         assert!(cfg.enabled);
         let tado = cfg.tado.as_ref().unwrap();
-        assert_eq!(tado.username_env, "TADO_USER");
+        assert_eq!(tado.home_id, Some(123));
         assert_eq!(tado.base_url, "https://my.tado.com");
     }
 
@@ -174,12 +165,10 @@ home_id = 123
     fn validate_accepts_good_config() {
         let cfg = PresenceConfig {
             enabled: true,
-            poll_seconds: 60,
+            poll_seconds: 300,
             away_debounce_minutes: 5,
             tado: Some(TadoConfigDto {
-                username_env: "U".into(),
-                password_env: "P".into(),
-                home_id: 1,
+                home_id: Some(1),
                 base_url: "https://my.tado.com".into(),
             }),
         };
@@ -226,7 +215,7 @@ home_id = 123
     fn validate_rejects_away_debounce_too_large() {
         let cfg = PresenceConfig {
             enabled: true,
-            poll_seconds: 60,
+            poll_seconds: 300,
             away_debounce_minutes: 121,
             tado: Some(TadoConfigDto::default()),
         };
@@ -241,38 +230,13 @@ home_id = 123
     }
 
     #[test]
-    fn validate_rejects_empty_tado_username_env() {
-        let cfg = PresenceConfig {
-            enabled: true,
-            poll_seconds: 60,
-            away_debounce_minutes: 5,
-            tado: Some(TadoConfigDto {
-                username_env: "".into(),
-                password_env: "P".into(),
-                home_id: 1,
-                base_url: "https://my.tado.com".into(),
-            }),
-        };
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "presence.tado",
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn validate_rejects_zero_tado_home_id() {
         let cfg = PresenceConfig {
             enabled: true,
-            poll_seconds: 60,
+            poll_seconds: 300,
             away_debounce_minutes: 5,
             tado: Some(TadoConfigDto {
-                username_env: "U".into(),
-                password_env: "P".into(),
-                home_id: 0,
+                home_id: Some(0),
                 base_url: "https://my.tado.com".into(),
             }),
         };
@@ -290,51 +254,14 @@ home_id = 123
     fn validate_rejects_tado_base_url_without_http_scheme() {
         let cfg = PresenceConfig {
             enabled: true,
-            poll_seconds: 60,
+            poll_seconds: 300,
             away_debounce_minutes: 5,
             tado: Some(TadoConfigDto {
-                username_env: "U".into(),
-                password_env: "P".into(),
-                home_id: 1,
+                home_id: Some(1),
                 base_url: "my.tado.com".into(),
             }),
         };
         let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "presence.tado",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn resolve_env_reads_vars() {
-        unsafe {
-            std::env::set_var("NILES_TEST_TADO_USER", "u");
-            std::env::set_var("NILES_TEST_TADO_PASS", "p");
-        }
-        let dto = TadoConfigDto {
-            username_env: "NILES_TEST_TADO_USER".into(),
-            password_env: "NILES_TEST_TADO_PASS".into(),
-            home_id: 1,
-            base_url: "https://my.tado.com".into(),
-        };
-        let (u, p) = dto.resolve_env().unwrap();
-        assert_eq!(u, "u");
-        assert_eq!(p, "p");
-    }
-
-    #[test]
-    fn resolve_env_errors_when_missing() {
-        let dto = TadoConfigDto {
-            username_env: "NILES_TEST_DEFINITELY_NOT_SET_TADO_XYZ".into(),
-            password_env: "NILES_TEST_DEFINITELY_NOT_SET_TADO_XYZ".into(),
-            home_id: 1,
-            base_url: "https://my.tado.com".into(),
-        };
-        let err = dto.resolve_env().unwrap_err();
         assert!(matches!(
             err,
             Error::InvalidSection {

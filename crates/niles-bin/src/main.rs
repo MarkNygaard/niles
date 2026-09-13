@@ -1229,30 +1229,48 @@ fn build_weather_client() -> Option<Arc<niles_weather::OpenMeteoClient>> {
 struct PresenceSetup {
     aggregator: Arc<PresenceAggregator>,
     sources: Vec<Arc<dyn PresenceSource>>,
+    /// Kept concretely as well as in `sources`, because authorising is
+    /// tado's own business and not something a presence source in
+    /// general has.
+    tado: Option<Arc<TadoSource>>,
 }
 
 /// Build a `PresenceSetup` from the `[presence]` section.
 /// Returns `None` when presence is disabled or no sources could be constructed.
-fn build_presence(cfg: &niles_config::PresenceConfig) -> Option<PresenceSetup> {
+fn build_presence(
+    cfg: &niles_config::PresenceConfig,
+    tokens: Option<Arc<dyn niles_presence::TokenStore>>,
+) -> Option<PresenceSetup> {
     if !cfg.enabled {
         return None;
     }
     let mut sources: Vec<Arc<dyn PresenceSource>> = Vec::new();
+    let mut tado: Option<Arc<TadoSource>> = None;
     if let Some(tado_cfg) = &cfg.tado {
-        match tado_cfg.resolve_env() {
-            Ok((username, password)) => {
-                match TadoSource::new(TadoConfig {
-                    username,
-                    password,
-                    home_id: tado_cfg.home_id,
-                    base_url: tado_cfg.base_url.clone(),
-                    ..TadoConfig::default()
-                }) {
-                    Ok(s) => sources.push(Arc::new(s)),
-                    Err(e) => tracing::error!("Tado source build failed: {e}"),
-                }
+        // Without somewhere to keep the refresh token there is no point
+        // starting: the device flow needs a person and a browser, and a
+        // token held in memory would ask for both again on the next
+        // restart.
+        let Some(tokens) = tokens.clone() else {
+            tracing::error!(
+                "[presence] tado needs a database to keep its refresh token in —                  configure persistence, or presence stays off"
+            );
+            return None;
+        };
+        match TadoSource::new(
+            TadoConfig {
+                home_id: tado_cfg.home_id,
+                base_url: tado_cfg.base_url.clone(),
+                ..TadoConfig::default()
+            },
+            tokens,
+        ) {
+            Ok(s) => {
+                let s = Arc::new(s);
+                tado = Some(s.clone());
+                sources.push(s);
             }
-            Err(e) => tracing::error!("Tado env-var resolution failed: {e}"),
+            Err(e) => tracing::error!("Tado source build failed: {e}"),
         }
     }
     if sources.is_empty() {
@@ -1264,6 +1282,7 @@ fn build_presence(cfg: &niles_config::PresenceConfig) -> Option<PresenceSetup> {
     Some(PresenceSetup {
         aggregator,
         sources,
+        tado,
     })
 }
 
@@ -1290,6 +1309,69 @@ fn spawn_presence_poll_loop(
                     state: state.into(),
                 });
             }
+        }
+    })
+}
+
+/// Get tado authorised, and say so where somebody will see it.
+///
+/// The device flow needs a person and a browser, which a service does
+/// not have. What it does have is a log somebody reads — `/logs` in the
+/// UI — so the URL and the code go there, loudly, and Niles waits.
+///
+/// Runs only while unauthorised, and stops for good once a token is
+/// stored: the refresh from then on is unattended.
+fn spawn_tado_activation(source: Arc<TadoSource>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match source.is_authorised().await {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!("[tado] cannot read the stored token: {e}");
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    continue;
+                }
+            }
+
+            let pending = match source.begin_activation().await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("[tado] could not start authorisation: {e}");
+                    tokio::time::sleep(Duration::from_secs(600)).await;
+                    continue;
+                }
+            };
+
+            tracing::warn!(
+                "[tado] NOT AUTHORISED YET. Open {} and approve the code {} —                  this is asked once; after that Niles refreshes on its own",
+                pending.verification_uri,
+                pending.user_code
+            );
+
+            loop {
+                tokio::time::sleep(pending.interval).await;
+                match source.finish_activation(&pending).await {
+                    Ok(true) => {
+                        tracing::info!("[tado] authorised — presence is live");
+                        return;
+                    }
+                    // Still waiting for somebody to get to their phone.
+                    Ok(false) if chrono::Utc::now() < pending.expires_at => continue,
+                    Ok(false) => {
+                        tracing::warn!("[tado] the code expired unapproved; asking for a new one");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!("[tado] authorisation failed: {e}");
+                        break;
+                    }
+                }
+            }
+            // A fresh code, but not immediately: tado rate-limits by
+            // the day, and a household that is not ready to approve
+            // must not spend the budget waiting for them.
+            tokio::time::sleep(Duration::from_secs(600)).await;
         }
     })
 }
@@ -1855,7 +1937,10 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(&cfg.presence);
+    let presence = build_presence(&cfg.presence, build_tado_tokens(&cfg)?);
+    if let Some(tado) = presence.as_ref().and_then(|p| p.tado.clone()) {
+        spawn_tado_activation(tado);
+    }
     let presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
@@ -2274,7 +2359,10 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(&cfg.presence);
+    let presence = build_presence(&cfg.presence, build_tado_tokens(&cfg)?);
+    if let Some(tado) = presence.as_ref().and_then(|p| p.tado.clone()) {
+        spawn_tado_activation(tado);
+    }
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
@@ -3722,6 +3810,35 @@ fn spawn_override_retry(store: Arc<ConfigStore>) {
 /// kilobyte and the alternative is a volume — node-local ones pin the
 /// pod and block drains, network ones make recognition depend on a NAS.
 /// Falls back to a directory, which is what a laptop has.
+/// Where the tado refresh token lives.
+///
+/// Only the database will do. tado rotates the token on every use, so
+/// this is written several times an hour — a Secret cannot hold it, and
+/// a file would need a volume, which is the thing `[database]` exists
+/// to avoid. No database means no tado presence, and the caller says so
+/// rather than starting something that will ask for a browser on every
+/// restart.
+fn build_tado_tokens(cfg: &Config) -> anyhow::Result<Option<Arc<dyn niles_presence::TokenStore>>> {
+    let Some(database) = &cfg.database else {
+        return Ok(None);
+    };
+    let url = database
+        .resolve_url()
+        .context("resolving the database connection string")?;
+    let backend =
+        niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).map_err(|_| {
+            anyhow::anyhow!(
+                "the connection string in {} is not a valid database URL",
+                database.url_env
+            )
+        })?;
+    let describe = backend.describe_target();
+    Ok(Some(Arc::new(niles_db::PostgresTadoTokens::new(
+        backend.pool(),
+        describe,
+    ))))
+}
+
 fn build_enrollment_backend(
     cfg: &Config,
 ) -> anyhow::Result<Option<Arc<dyn niles_recognition::EnrollmentBackend>>> {
@@ -4013,7 +4130,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(&cfg.presence);
+    let presence = build_presence(&cfg.presence, build_tado_tokens(&cfg)?);
+    if let Some(tado) = presence.as_ref().and_then(|p| p.tado.clone()) {
+        spawn_tado_activation(tado);
+    }
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
