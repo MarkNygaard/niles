@@ -4,4 +4,8 @@ This project adopts the [Contributor Covenant, version 2.1](https://www.contribu
 
 ## Reporting
 
-Please report concerns to **mnl@dilling.com**. Reports will be reviewed promptly and confidentially.
+Please report concerns privately to the maintainer through GitHub — open a
+[private security advisory](https://github.com/MarkNygaard/niles/security/advisories/new),
+which is visible only to the maintainer, or contact
+[@MarkNygaard](https://github.com/MarkNygaard) directly. Reports will be
+reviewed promptly and confidentially.

@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-authors = ["Mark Nygaard Leth <mnl@dilling.com>"]
+authors = ["Mark Nygaard Leth <47065655+MarkNygaard@users.noreply.github.com>"]
 
 [workspace.lints.rust]
 unused_must_use = "deny"
