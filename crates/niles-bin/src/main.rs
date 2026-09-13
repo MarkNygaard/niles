@@ -4156,6 +4156,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     )
     .with_config_store(Some(store.clone()))
     .with_logs(LOG_BUFFER.get().cloned())
+    .with_manual_mode(Some(tracker.clone()))
     .with_api_token(cfg.auth.resolve_api_token());
 
     // A deployment that mounts its secrets under names the platform

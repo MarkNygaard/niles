@@ -1124,4 +1124,106 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
+
+    fn app_with_curve(
+        registry: Arc<DeviceRegistry>,
+        tracker: Arc<niles_scheduler::ManualModeTracker>,
+    ) -> Router {
+        router(
+            AppState::new(
+                registry,
+                Arc::new(MockPublisher::default()),
+                Arc::new(CommandRouter::z2m_only("zigbee2mqtt")),
+                EventBus::default(),
+            )
+            .with_manual_mode(Some(tracker)),
+        )
+    }
+
+    fn id_of(room: &str, name: &str) -> DeviceId {
+        DeviceId::new(
+            "z2m",
+            RoomName::parse(room).unwrap(),
+            DeviceName::parse(name).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn dimming_from_the_ui_holds_against_the_curve() {
+        // The reported bug: a brightness set from the dashboard was
+        // back on the curve within the minute, because the curve only
+        // ever heard about voice, the dimmer and scenes.
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_dimmable("office", "desk_lamp"));
+        let tracker = Arc::new(niles_scheduler::ManualModeTracker::new());
+        let app = app_with_curve(registry, tracker.clone());
+
+        let (status, _) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"brightness": 30}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(tracker.is_flagged(&id_of("office", "desk_lamp")));
+    }
+
+    #[tokio::test]
+    async fn turning_a_light_on_leaves_it_to_the_curve() {
+        // Asking for a light is not asking to own it. It is also how
+        // you hand one back, so flagging here would make the curve
+        // unreachable from the dashboard.
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_dimmable("office", "desk_lamp"));
+        let tracker = Arc::new(niles_scheduler::ManualModeTracker::new());
+        let app = app_with_curve(registry, tracker.clone());
+
+        post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert!(!tracker.is_flagged(&id_of("office", "desk_lamp")));
+    }
+
+    #[tokio::test]
+    async fn a_room_command_holds_only_what_it_actually_set() {
+        // A room narrows per device, so a colour meant for the strip
+        // reaches the plain bulb as nothing at all. Flagging that bulb
+        // would exempt it from the curve over a command it never got.
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "strip"));
+        registry.upsert(make_dimmable("office", "ceiling"));
+        let tracker = Arc::new(niles_scheduler::ManualModeTracker::new());
+        let app = app_with_curve(registry, tracker.clone());
+
+        let (status, _) = post(
+            app,
+            "/rooms/office",
+            serde_json::json!({"rgb": [255, 0, 0]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(tracker.is_flagged(&id_of("office", "strip")));
+        assert!(!tracker.is_flagged(&id_of("office", "ceiling")));
+    }
+
+    #[tokio::test]
+    async fn without_a_curve_there_is_nothing_to_hold_against() {
+        // `niles api` serves these routes with no scheduler behind
+        // them. Commands still go out; there is just nothing to flag.
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_dimmable("office", "desk_lamp"));
+        let app = app_with(registry, Arc::new(MockPublisher::default()));
+
+        let (status, _) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"brightness": 30}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+    }
 }

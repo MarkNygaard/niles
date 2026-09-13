@@ -4,6 +4,7 @@ use crate::publish::DevicePublisher;
 use niles_core::{DeviceRegistry, EventBus};
 use niles_mqtt::CommandRouter;
 use niles_notifications::NotificationCenter;
+use niles_scheduler::ManualModeTracker;
 use std::sync::Arc;
 
 /// State required to verify and route Linear webhooks.
@@ -37,6 +38,12 @@ pub struct AppState {
     /// The operator's token, for callers that are not browsers. Not
     /// subject to the allowlist, because it is not a person.
     pub api_token: Option<Arc<String>>,
+    /// Which lights the lighting curve must leave alone.
+    ///
+    /// Absent when nothing is driving a curve — `niles api` serves the
+    /// device routes with no scheduler behind them, and there is then
+    /// nothing to be exempt from.
+    pub manual_mode: Option<Arc<ManualModeTracker>>,
 }
 
 impl AppState {
@@ -56,7 +63,19 @@ impl AppState {
             logs: None,
             attempts: Arc::new(crate::auth::flow::Attempts::new()),
             api_token: None,
+            manual_mode: None,
         }
+    }
+
+    /// The manual-mode flags the lighting curve consults before it
+    /// touches a light.
+    ///
+    /// Optional because the API also runs from `niles api`, which has
+    /// no curve driving anything — there is nothing there to be exempt
+    /// from. When it is absent, commands simply are not flagged.
+    pub fn with_manual_mode(mut self, tracker: Option<Arc<ManualModeTracker>>) -> Self {
+        self.manual_mode = tracker;
+        self
     }
 
     /// The bearer token that stands in for a session, when one is
