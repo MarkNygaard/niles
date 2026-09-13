@@ -105,24 +105,64 @@ pub async fn set_room(
         return Err((StatusCode::NOT_FOUND, format!("no lights in room {room}")));
     }
 
+    fan_out(&state, &lights, &desired, &room.to_string()).await
+}
+
+/// Send `desired` to each light, narrowed to what that light can act on.
+///
+/// `where_` names the scope for the error, which is the only thing the
+/// room and the house do differently.
+async fn fan_out(
+    state: &AppState,
+    lights: &[Device],
+    desired: &DeviceState,
+    where_: &str,
+) -> Result<(StatusCode, Json<RoomApplied>), Failure> {
     let mut sent = 0;
-    for light in &lights {
-        let narrowed = narrow_to(light, &desired);
+    for light in lights {
+        let narrowed = narrow_to(light, desired);
         let Some((topic, payload)) = state.router.format(&light.id, &narrowed) else {
             tracing::debug!("{} can't act on this, skipping", light.id);
             continue;
         };
-        publish(&state, topic, payload).await?;
+        publish(state, topic, payload).await?;
         sent += 1;
     }
 
     if sent == 0 {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("nothing in {room} can act on that"),
+            format!("nothing in {where_} can act on that"),
         ));
     }
     Ok((StatusCode::ACCEPTED, Json(RoomApplied { lights: sent })))
+}
+
+/// `POST /lights` — set everything switchable in the house at once.
+///
+/// The bar above the rooms is one press meaning "the whole house", and
+/// a press that fans out to a request per room arrives as the house
+/// going dark room by room over a mobile connection. Same narrowing as
+/// a room: the caller named the house, not a device, so each light
+/// gets the part of the command it can act on.
+pub async fn set_all_lights(
+    State(state): State<AppState>,
+    Json(body): Json<SetDeviceBody>,
+) -> Result<(StatusCode, Json<RoomApplied>), Failure> {
+    let desired = desired_state(&body)?;
+    let lights: Vec<Device> = state
+        .registry
+        .list_all()
+        .into_iter()
+        .filter(Device::is_switchable)
+        .collect();
+    if lights.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "Niles has no lights to switch".into(),
+        ));
+    }
+    fan_out(&state, &lights, &desired, "the house").await
 }
 
 fn parse_room(raw: &str) -> Result<RoomName, Failure> {

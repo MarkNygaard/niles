@@ -114,14 +114,47 @@ export function brightnessOf(light: Device): number {
 }
 
 /**
- * Whether a command aimed at `target` should move this device.
+ * What a command is aimed at.
  *
- * A room is named by its string; anything else is one device by id.
+ * Spelled out rather than overloading a string, because there are now
+ * three scopes and "is it a string" would have to mean two of them.
  */
-export function targets(device: Device, target: Device | string): boolean {
-  return typeof target === "string"
-    ? device.room === target && isControllable(device)
-    : device.id === target.id;
+export type Target =
+  | { scope: "house" }
+  | { scope: "room"; room: string }
+  | { scope: "light"; light: Device };
+
+/** Whether a command aimed at `target` should move this device. */
+export function targets(device: Device, target: Target): boolean {
+  switch (target.scope) {
+    case "house":
+      return isControllable(device);
+    case "room":
+      return device.room === target.room && isControllable(device);
+    case "light":
+      return device.id === target.light.id;
+  }
+}
+
+/**
+ * What pressing the whole house should do.
+ *
+ * The same rule as a room, for the same reason: somebody pressing this
+ * with one lamp still burning is clearing the house, not topping it up.
+ * And it stays a toggle rather than an off-only button, so a press is
+ * always undoable by pressing again.
+ */
+export function houseToggle(rooms: Room[]): SetLight {
+  return { on: !rooms.some((room) => room.on > 0) };
+}
+
+/** How the bar above the rooms reads. */
+export function houseSummary(rooms: Room[]): string {
+  const on = rooms.reduce((total, room) => total + room.on, 0);
+  const total = rooms.reduce((count, room) => count + room.lights.length, 0);
+  if (on === 0) return `Nothing on, ${total} lights`;
+  if (on === total) return `All ${total} on`;
+  return `${on} of ${total} on`;
 }
 
 /**

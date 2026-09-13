@@ -22,6 +22,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
+| `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 
 ## llm

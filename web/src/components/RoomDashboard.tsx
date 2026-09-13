@@ -6,7 +6,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
-import { optimistic, roomsOf, targets } from "@/lib/rooms";
+import { HouseBar } from "@/components/HouseBar";
+import { houseToggle, optimistic, roomsOf, targets } from "@/lib/rooms";
+import type { Target } from "@/lib/rooms";
 
 /**
  * Every room in the house, and its lights.
@@ -30,10 +32,16 @@ export function RoomDashboard() {
   });
 
   const command = useMutation({
-    mutationFn: ({ target, body }: { target: Device | string; body: SetLight }) =>
-      typeof target === "string"
-        ? api.setRoom(target, body).then(() => undefined)
-        : api.setLight(target, body).then(() => undefined),
+    mutationFn: ({ target, body }: { target: Target; body: SetLight }) => {
+      switch (target.scope) {
+        case "house":
+          return api.setAllLights(body).then(() => undefined);
+        case "room":
+          return api.setRoom(target.room, body).then(() => undefined);
+        case "light":
+          return api.setLight(target.light, body).then(() => undefined);
+      }
+    },
     // Show the press landing. The light's own report arrives over the
     // stream a moment later and replaces this with the truth; if the
     // command failed, the rollback puts it back.
@@ -76,16 +84,24 @@ export function RoomDashboard() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       {error && <Notice>{error}</Notice>}
+      <HouseBar
+        rooms={rooms}
+        onToggle={() =>
+          command.mutate({ target: { scope: "house" }, body: houseToggle(rooms) })
+        }
+      />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {rooms.map((room) => (
           <RoomCard
             key={room.name}
             room={room}
-            onSetRoom={(body) => command.mutate({ target: room.name, body })}
+            onSetRoom={(body) =>
+              command.mutate({ target: { scope: "room", room: room.name }, body })
+            }
             onSetLight={(light, body) =>
-              command.mutate({ target: light, body })
+              command.mutate({ target: { scope: "light", light }, body })
             }
           />
         ))}
