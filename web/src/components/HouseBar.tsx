@@ -1,5 +1,6 @@
 import { houseSummary } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
+import { BulbGlyph } from "@/components/BulbGlyph";
 import { cn } from "@/lib/utils";
 
 export interface HouseBarProps {
@@ -38,26 +39,15 @@ export function HouseBar({ rooms, disabled, onToggle }: HouseBarProps) {
         "disabled:cursor-not-allowed disabled:opacity-60",
       )}
     >
-      <span
-        aria-hidden
+      {/* The same read-out as a room card's, at the same weight: the
+          house is a row of rooms, and it should not speak louder than
+          one of them just because it sits above them. */}
+      <BulbGlyph
         className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
-          lit ? "bg-lit text-lit-foreground" : "bg-muted text-muted-foreground",
+          "size-8 transition-colors",
+          lit ? "text-lit" : "text-unlit",
         )}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          className="size-4"
-          focusable="false"
-        >
-          <path d="M12 2v10" />
-          <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
-        </svg>
-      </span>
+      />
 
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">

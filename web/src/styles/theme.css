@@ -32,6 +32,7 @@
   --color-accent: var(--accent);
   --color-mark: var(--mark);
   --color-lit: var(--lit);
+  --color-unlit: var(--unlit);
   --color-lit-foreground: var(--lit-foreground);
   --color-accent-orange: var(--accent-orange);
   --color-accent-orange-light: var(--accent-orange-light);
@@ -136,11 +137,24 @@
   --mark: oklch(0.42 0.085 158);
   /* What a lit room looks like. The one place warmth is spent, and the
      reason it is a token rather than a shade written into three
-     components: it means something, so it is named once. Deep enough to
-     read against both grounds — an earlier pale amber washed out on
-     dark and looked like decoration. */
-  --lit: oklch(0.769 0.165 70.1);
-  --lit-foreground: oklch(0.279 0.074 45.6);
+     components: it means something, so it is named once.
+
+     Darker here than on dark, which looks backwards until you measure
+     it: the dark theme's amber against a white card is 2.14:1, so a lit
+     room read as a pale wash rather than as a state. Presence on white
+     only comes from going down. 3.75:1 here, against 8.35:1 for the
+     dark theme's — the same job, done to the ground it lands on, the
+     way `--mark` already is. */
+  --lit: oklch(0.62 0.17 70.1);
+  /* White, because the deeper amber can no longer carry dark ink. */
+  --lit-foreground: oklch(0.99 0 0);
+  /* A bulb that is off. Named rather than dimmed with an opacity,
+     because one opacity cannot serve both grounds: at the value that
+     reads correctly on near-black, an unlit bulb on white came out at
+     2.97:1 against the lit one's 3.75 — near enough to it that off was
+     as loud as on, which is the whole bug being fixed here. Off has to
+     be visibly a state and audibly quieter. 1.87:1 against 3.75. */
+  --unlit: oklch(0.80 0.004 285);
   --secondary: oklch(0.95 0.002 286);
   --secondary-foreground: oklch(0.25 0.006 285);
   --muted: oklch(0.95 0.002 286);
@@ -233,13 +247,14 @@
   /* See the light palette: the same green, lifted so it reads on
      near-black rather than sinking into it. */
   --mark: oklch(0.62 0.1 158);
-  /* What a lit room looks like. The one place warmth is spent, and the
-     reason it is a token rather than a shade written into three
-     components: it means something, so it is named once. Deep enough to
-     read against both grounds — an earlier pale amber washed out on
-     dark and looked like decoration. */
+  /* See the light palette. Bright here: this amber has near-black under
+     it, where it reads as a lamp rather than as a warning. */
   --lit: oklch(0.769 0.165 70.1);
   --lit-foreground: oklch(0.279 0.074 45.6);
+  /* Lighter than the light theme's, for the same reason the amber is:
+     it has to climb off a dark ground rather than sink into a white
+     one. 3.54:1 against the lit bulb's 8.35. */
+  --unlit: oklch(0.54 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
