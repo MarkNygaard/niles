@@ -44,10 +44,10 @@ export function RoomCard({
 
   return (
     <Dialog>
-      {/* No outline, and no tint when the room is lit. Seven ringed
-          cards read as seven warnings; the card is separated from the
-          page by its own fill, and the one amber thing on it is the
-          switch, which is the only thing reporting a state. */}
+      {/* No outline, and no tint when the room is lit. The card is
+          separated from the page by its own fill, and the only thing
+          carrying colour is the switch — which is the only thing on it
+          reporting a state. */}
       <div className="flex flex-col overflow-hidden rounded-xl bg-card text-card-foreground">
         <button
           type="button"
@@ -71,7 +71,7 @@ export function RoomCard({
             aria-hidden
             className={cn(
               "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors sm:size-12",
-              lit ? "bg-amber-200 text-amber-950" : "bg-muted text-muted-foreground",
+              lit ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
             )}
           >
             <PowerGlyph />

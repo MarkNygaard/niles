@@ -114,11 +114,13 @@
   --card-foreground: oklch(0.25 0.006 285);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.25 0.006 285);
-  /* Niles's colour. Violet rather than the warm end, because amber
-     is already spoken for: it is what a *lit room* looks like, and a
-     brand that borrowed it would leave the state with nothing of its
-     own. Violet sits opposite amber, so the two read as contrast
-     rather than a clash. */
+  /* Niles's colour, and the one accent there is. It marks anything
+     active: a lit room, the selected appearance, a primary button,
+     every focus ring — the iOS convention, where the tint colour *is*
+     the state colour. An earlier version used amber for lit rooms on
+     the grounds that warm means light; it did not read, because in a
+     house where almost everything is on there is nothing for it to
+     contrast against. */
   --primary: oklch(0.58 0.19 296);
   --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.95 0.002 286);

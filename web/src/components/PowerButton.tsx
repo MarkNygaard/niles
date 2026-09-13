@@ -41,7 +41,7 @@ export function PowerButton({
         "disabled:cursor-not-allowed disabled:opacity-50",
         size === "lg" ? "size-12 [&_svg]:size-5" : "size-10 [&_svg]:size-4",
         on
-          ? "bg-amber-200 text-amber-950 hover:bg-amber-100"
+          ? "bg-primary text-primary-foreground hover:opacity-90"
           : unknown
             // Still drawn differently: a light nobody has heard from is
             // not the same claim as one reporting off.
