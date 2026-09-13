@@ -19,11 +19,15 @@ type Failure = (StatusCode, String);
 
 #[derive(serde::Serialize)]
 pub struct TadoStatus {
-    /// Whether `[presence]` names tado at all. False means there is
-    /// nothing to connect to yet.
-    pub configured: bool,
+    /// Whether there is anywhere to keep a token — which is to say,
+    /// whether connecting is possible at all. False means no database.
+    pub connectable: bool,
     /// Whether somebody has already approved a code.
     pub authorised: bool,
+    /// Whether the feature is switched on. Separate from being
+    /// connected, and second: authorising something nothing uses is
+    /// harmless, turning it on before anything is connected is not.
+    pub presence_enabled: bool,
     /// The code currently waiting to be approved, if any.
     pub pending: Option<PendingDto>,
 }
@@ -50,16 +54,23 @@ impl From<niles_presence::DeviceActivation> for PendingDto {
 /// Deliberately does not start an authorisation: opening a page must
 /// not spend tado's daily quota.
 pub async fn tado_status(State(state): State<AppState>) -> Json<TadoStatus> {
+    let enabled = state
+        .config
+        .as_ref()
+        .map(|c| c.current().presence.enabled)
+        .unwrap_or(false);
     let Some(tado) = state.tado.as_ref() else {
         return Json(TadoStatus {
-            configured: false,
+            connectable: false,
             authorised: false,
+            presence_enabled: enabled,
             pending: None,
         });
     };
     Json(TadoStatus {
-        configured: true,
+        connectable: true,
         authorised: tado.is_authorised().await.unwrap_or(false),
+        presence_enabled: enabled,
         pending: tado.pending_activation().await.map(PendingDto::from),
     })
 }
@@ -70,15 +81,57 @@ pub async fn tado_connect(State(state): State<AppState>) -> Result<Json<PendingD
     let Some(tado) = state.tado.as_ref() else {
         return Err((
             StatusCode::NOT_IMPLEMENTED,
-            "tado is not configured — turn presence on first".into(),
+            "no database, so there is nowhere to keep tado's token".into(),
         ));
     };
     if tado.is_authorised().await.unwrap_or(false) {
         return Err((StatusCode::CONFLICT, "already connected to tado".into()));
     }
-    let pending = tado
+    let (pending, is_new) = tado
         .ensure_activation()
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("tado refused: {e}")))?;
+
+    // Whoever started it waits on it. Nothing else polls tado in the
+    // background any more: an authorisation is something a person asks
+    // for, and a service quietly asking for codes nobody approves
+    // spends a daily quota on nothing.
+    if is_new {
+        wait_for_approval(tado.clone(), pending.clone());
+    }
     Ok(Json(PendingDto::from(pending)))
+}
+
+/// Poll tado until the code is approved, gives up, or runs out.
+///
+/// The page watches our own status rather than tado's, so this is the
+/// only thing that touches tado while a code is outstanding — at the
+/// interval tado asked for, and not faster.
+fn wait_for_approval(
+    tado: std::sync::Arc<niles_presence::TadoSource>,
+    pending: niles_presence::DeviceActivation,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(pending.interval).await;
+            match tado.finish_activation(&pending).await {
+                Ok(true) => {
+                    tado.clear_activation().await;
+                    tracing::info!("[tado] authorised — presence can be switched on");
+                    return;
+                }
+                Ok(false) if chrono::Utc::now() < pending.expires_at => continue,
+                Ok(false) => {
+                    tado.clear_activation().await;
+                    tracing::warn!("[tado] the code expired unapproved");
+                    return;
+                }
+                Err(e) => {
+                    tado.clear_activation().await;
+                    tracing::warn!("[tado] authorisation failed: {e}");
+                    return;
+                }
+            }
+        }
+    });
 }

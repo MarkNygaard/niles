@@ -39,9 +39,11 @@ export interface TadoPending {
 }
 
 export interface TadoStatus {
-  /** Whether `[presence]` names tado at all. */
-  configured: boolean;
+  /** Whether connecting is possible at all — i.e. there is a database. */
+  connectable: boolean;
   authorised: boolean;
+  /** Whether presence polling is switched on. Separate from connected. */
+  presence_enabled: boolean;
   pending?: TadoPending;
 }
 

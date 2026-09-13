@@ -1237,48 +1237,53 @@ struct PresenceSetup {
 
 /// Build a `PresenceSetup` from the `[presence]` section.
 /// Returns `None` when presence is disabled or no sources could be constructed.
-fn build_presence(
+/// The tado connection, built whenever there is somewhere to keep its
+/// token — **not** gated on `[presence] enabled`.
+///
+/// Connecting and switching the feature on are separate things, and in
+/// that order: authorising something nothing is using is harmless,
+/// while turning presence on before anything is connected is a feature
+/// that cannot work yet. So the connection is always available to be
+/// made, and `enabled` only decides whether anybody polls it.
+fn build_tado(
     cfg: &niles_config::PresenceConfig,
     tokens: Option<Arc<dyn niles_presence::TokenStore>>,
-) -> Option<PresenceSetup> {
-    if !cfg.enabled {
-        return None;
-    }
-    let mut sources: Vec<Arc<dyn PresenceSource>> = Vec::new();
-    let mut tado: Option<Arc<TadoSource>> = None;
-    if let Some(tado_cfg) = &cfg.tado {
-        // Without somewhere to keep the refresh token there is no point
-        // starting: the device flow needs a person and a browser, and a
-        // token held in memory would ask for both again on the next
-        // restart.
-        let Some(tokens) = tokens.clone() else {
-            tracing::error!(
-                "[presence] tado needs a database to keep its refresh token in —                  configure persistence, or presence stays off"
-            );
-            return None;
-        };
-        match TadoSource::new(
-            TadoConfig {
-                home_id: tado_cfg.home_id,
-                base_url: tado_cfg.base_url.clone(),
-                ..TadoConfig::default()
-            },
-            tokens,
-        ) {
-            Ok(s) => {
-                let s = Arc::new(s);
-                tado = Some(s.clone());
-                sources.push(s);
-            }
-            Err(e) => tracing::error!("Tado source build failed: {e}"),
+) -> Option<Arc<TadoSource>> {
+    let tokens = tokens?;
+    let tado_cfg = cfg.tado.clone().unwrap_or_default();
+    match TadoSource::new(
+        TadoConfig {
+            home_id: tado_cfg.home_id,
+            base_url: tado_cfg.base_url,
+            ..TadoConfig::default()
+        },
+        tokens,
+    ) {
+        Ok(s) => Some(Arc::new(s)),
+        Err(e) => {
+            tracing::error!("Tado source build failed: {e}");
+            None
         }
+    }
+}
+
+/// Build a `PresenceSetup` from the `[presence]` section.
+///
+/// Returns `None` only when there is no source at all. Whether presence
+/// is *on* is read live by the poll loop, so switching it on does not
+/// need a restart.
+fn build_presence(tado: Option<Arc<TadoSource>>) -> Option<PresenceSetup> {
+    let mut sources: Vec<Arc<dyn PresenceSource>> = Vec::new();
+    if let Some(t) = &tado {
+        sources.push(t.clone() as Arc<dyn PresenceSource>);
     }
     if sources.is_empty() {
         return None;
     }
-    let aggregator = Arc::new(PresenceAggregator::new(chrono::Duration::minutes(
-        cfg.away_debounce_minutes as i64,
-    )));
+    // The debounce is read once. It is a property of the aggregator
+    // rather than of a tick, and re-reading it would mean rebuilding
+    // the aggregator and losing what it has seen.
+    let aggregator = Arc::new(PresenceAggregator::new(chrono::Duration::minutes(5)));
     Some(PresenceSetup {
         aggregator,
         sources,
@@ -1289,14 +1294,30 @@ fn build_presence(
 fn spawn_presence_poll_loop(
     aggregator: Arc<PresenceAggregator>,
     sources: Vec<Arc<dyn PresenceSource>>,
-    poll_seconds: u64,
+    startup: niles_config::PresenceConfig,
+    store: Option<Arc<niles_config::ConfigStore>>,
     bus: EventBus,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(poll_seconds.max(10)));
         let mut last_published: Option<niles_presence::HomeState> = None;
         loop {
-            ticker.tick().await;
+            // Read live rather than captured, so turning presence on in
+            // Settings takes hold on the next tick instead of at the
+            // next restart. `[presence]` is `Reload::Hot` for this
+            // reason, and this loop is the thing that makes it true.
+            let cfg = store
+                .as_ref()
+                .map(|s| s.current().presence.clone())
+                .unwrap_or_else(|| startup.clone());
+
+            if !cfg.enabled {
+                // Idle, but not asleep: checking every half minute is
+                // what makes switching it on feel immediate without
+                // spending anything upstream while it is off.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+
             for src in &sources {
                 match src.poll().await {
                     Ok(signal) => aggregator.ingest(signal),
@@ -1309,72 +1330,8 @@ fn spawn_presence_poll_loop(
                     state: state.into(),
                 });
             }
-        }
-    })
-}
 
-/// Get tado authorised, and say so where somebody will see it.
-///
-/// The device flow needs a person and a browser, which a service does
-/// not have. What it does have is a log somebody reads — `/logs` in the
-/// UI — so the URL and the code go there, loudly, and Niles waits.
-///
-/// Runs only while unauthorised, and stops for good once a token is
-/// stored: the refresh from then on is unattended.
-fn spawn_tado_activation(source: Arc<TadoSource>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match source.is_authorised().await {
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!("[tado] cannot read the stored token: {e}");
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                    continue;
-                }
-            }
-
-            let pending = match source.ensure_activation().await {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("[tado] could not start authorisation: {e}");
-                    tokio::time::sleep(Duration::from_secs(600)).await;
-                    continue;
-                }
-            };
-
-            tracing::warn!(
-                "[tado] NOT AUTHORISED YET. Settings in the app will walk you                  through it, or open {} and approve the code {} — asked once;                  after that Niles refreshes on its own",
-                pending.verification_uri,
-                pending.user_code
-            );
-
-            loop {
-                tokio::time::sleep(pending.interval).await;
-                match source.finish_activation(&pending).await {
-                    Ok(true) => {
-                        source.clear_activation().await;
-                        tracing::info!("[tado] authorised — presence is live");
-                        return;
-                    }
-                    // Still waiting for somebody to get to their phone.
-                    Ok(false) if chrono::Utc::now() < pending.expires_at => continue,
-                    Ok(false) => {
-                        source.clear_activation().await;
-                        tracing::warn!("[tado] the code expired unapproved; asking for a new one");
-                        break;
-                    }
-                    Err(e) => {
-                        source.clear_activation().await;
-                        tracing::warn!("[tado] authorisation failed: {e}");
-                        break;
-                    }
-                }
-            }
-            // A fresh code, but not immediately: tado rate-limits by
-            // the day, and a household that is not ready to approve
-            // must not spend the budget waiting for them.
-            tokio::time::sleep(Duration::from_secs(600)).await;
+            tokio::time::sleep(Duration::from_secs(cfg.poll_seconds.max(10))).await;
         }
     })
 }
@@ -1940,15 +1897,13 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(&cfg.presence, build_tado_tokens(&cfg)?);
-    if let Some(tado) = presence.as_ref().and_then(|p| p.tado.clone()) {
-        spawn_tado_activation(tado);
-    }
+    let presence = build_presence(build_tado(&cfg.presence, build_tado_tokens(&cfg)?));
     let presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
             p.sources.clone(),
-            cfg.presence.poll_seconds,
+            cfg.presence.clone(),
+            None,
             bus.clone(),
         )
     });
@@ -2362,15 +2317,13 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(&cfg.presence, build_tado_tokens(&cfg)?);
-    if let Some(tado) = presence.as_ref().and_then(|p| p.tado.clone()) {
-        spawn_tado_activation(tado);
-    }
+    let presence = build_presence(build_tado(&cfg.presence, build_tado_tokens(&cfg)?));
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
             p.sources.clone(),
-            cfg.presence.poll_seconds,
+            cfg.presence.clone(),
+            None,
             bus.clone(),
         )
     });
@@ -4133,15 +4086,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
-    let presence = build_presence(&cfg.presence, build_tado_tokens(&cfg)?);
-    if let Some(tado) = presence.as_ref().and_then(|p| p.tado.clone()) {
-        spawn_tado_activation(tado);
-    }
+    let presence = build_presence(build_tado(&cfg.presence, build_tado_tokens(&cfg)?));
     let _presence_handle = presence.as_ref().map(|p| {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
             p.sources.clone(),
-            cfg.presence.poll_seconds,
+            cfg.presence.clone(),
+            None,
             bus.clone(),
         )
     });

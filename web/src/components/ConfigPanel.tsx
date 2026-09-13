@@ -389,17 +389,17 @@ export function ConfigPanel() {
           {tado.data && (
             <TadoCard
               status={tado.data}
-              enabling={save.isPending}
-              onEnable={() =>
+              saving={save.isPending}
+              onToggle={(on) =>
                 save.mutate({
                   row: "presence",
                   entries: [
-                    { path: "presence.enabled", value: true },
+                    { path: "presence.enabled", value: on },
                     { path: "presence.tado", value: {} },
                   ],
                 })
               }
-              onConnected={() => tado.refetch()}
+              onChanged={() => tado.refetch()}
             />
           )}
         </TabsContent>
