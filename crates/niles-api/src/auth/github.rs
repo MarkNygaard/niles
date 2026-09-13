@@ -59,12 +59,17 @@ pub async fn start(
 
     let (token, binding) = state.attempts.begin(safe_next(query.next.as_deref()));
     let secure = is_secure(&headers);
+    // No `redirect_uri`. GitHub then uses the callback URL registered
+    // on the app itself, which is the one thing here that cannot be
+    // wrong — whereas a URL built from `Host` and `X-Forwarded-Proto`
+    // is only right if the ingress sets both, and gets refused with
+    // `redirect_uri_mismatch` when it does not. One registered URL, one
+    // source of truth, and one less thing that has to agree.
     let url = format!(
-        "{AUTHORIZE}?client_id={}&scope={}&state={}&redirect_uri={}",
+        "{AUTHORIZE}?client_id={}&scope={}&state={}",
         urlencode(&client_id),
         urlencode(SCOPES),
         urlencode(&token),
-        urlencode(&callback_url(&headers)),
     );
 
     (
@@ -159,7 +164,7 @@ async fn authenticate(
         .resolve_client_secret()
         .map_err(|e| e.to_string())?;
 
-    let token = exchange(&client_id, &client_secret, &code, &callback_url(headers)).await?;
+    let token = exchange(&client_id, &client_secret, &code).await?;
     let email = verified_email(&token).await?;
 
     // The boundary, read from the config in force *now* — which is what
@@ -182,12 +187,7 @@ struct TokenResponse {
     error: Option<String>,
 }
 
-async fn exchange(
-    client_id: &str,
-    client_secret: &str,
-    code: &str,
-    redirect_uri: &str,
-) -> Result<String, String> {
+async fn exchange(client_id: &str, client_secret: &str, code: &str) -> Result<String, String> {
     let response: TokenResponse = reqwest::Client::new()
         .post(TOKEN)
         .header(header::ACCEPT, "application/json")
@@ -196,7 +196,6 @@ async fn exchange(
             ("client_id", client_id),
             ("client_secret", client_secret),
             ("code", code),
-            ("redirect_uri", redirect_uri),
         ])
         .send()
         .await
@@ -271,24 +270,13 @@ pub async fn sign_out(headers: HeaderMap) -> Response {
         .into_response()
 }
 
-/// Where GitHub should send the browser back to.
-///
-/// Derived from the request rather than configured, for the same reason
-/// the WebSocket compares `Origin` against `Host`: the page is served by
-/// this binary, so whatever name reached us is the name it was loaded
-/// from. One less setting to keep in step with the ingress.
-fn callback_url(headers: &HeaderMap) -> String {
-    let host = header_str(headers, header::HOST).unwrap_or("localhost");
-    let scheme = if is_secure(headers) { "https" } else { "http" };
-    format!("{scheme}://{host}/auth/github/callback")
-}
-
 /// Whether the browser reached us over HTTPS.
 ///
 /// TLS terminates at the ingress, so the connection here is plain and
-/// only `X-Forwarded-Proto` knows. Getting this wrong sets a `Secure`
-/// cookie the browser then refuses to store, which presents as signing
-/// in silently doing nothing.
+/// only `X-Forwarded-Proto` knows. This decides one thing: whether the
+/// session cookie is marked `Secure`. An ingress that does not set the
+/// header costs that flag — the cookie still works — rather than
+/// breaking sign-in, which is why the redirect URL is not built from it.
 fn is_secure(headers: &HeaderMap) -> bool {
     header_str(headers, "x-forwarded-proto")
         .map(|proto| proto.split(',').next().unwrap_or("").trim() == "https")
@@ -381,21 +369,6 @@ mod tests {
         assert_eq!(
             pick_verified(&[email("  Mark@Example.COM ", true, true)]).as_deref(),
             Some("mark@example.com")
-        );
-    }
-
-    #[test]
-    fn the_callback_url_follows_the_name_the_browser_used() {
-        let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, "niles.example".parse().unwrap());
-        assert_eq!(
-            callback_url(&headers),
-            "http://niles.example/auth/github/callback"
-        );
-        headers.insert("x-forwarded-proto", "https".parse().unwrap());
-        assert_eq!(
-            callback_url(&headers),
-            "https://niles.example/auth/github/callback"
         );
     }
 
