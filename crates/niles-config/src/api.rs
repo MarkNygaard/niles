@@ -10,7 +10,20 @@ use std::str::FromStr;
 #[serde(deny_unknown_fields)]
 pub struct ApiConfig {
     /// Address to bind the HTTP server to (e.g. `"0.0.0.0:8080"`).
+    #[serde(default = "default_bind_address")]
     pub bind_address: String,
+}
+
+fn default_bind_address() -> String {
+    "0.0.0.0:8080".into()
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: default_bind_address(),
+        }
+    }
 }
 
 impl ApiConfig {

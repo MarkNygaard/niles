@@ -13,12 +13,16 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct MqttConfig {
     /// Broker host (IP or DNS name).
+    #[serde(default)]
     pub host: String,
     /// Broker TCP port (typically 1883 unplain, 8883 TLS).
+    #[serde(default = "default_port")]
     pub port: u16,
     /// Name of the env var holding the broker username.
+    #[serde(default)]
     pub username_env: String,
     /// Name of the env var holding the broker password.
+    #[serde(default)]
     pub password_env: String,
     /// MQTT client identifier. Defaults to `"niles"`.
     #[serde(default = "default_client_id")]
@@ -36,30 +40,32 @@ fn default_z2m_prefix() -> String {
     "zigbee2mqtt".into()
 }
 
+fn default_port() -> u16 {
+    1883
+}
+
+impl Default for MqttConfig {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            port: default_port(),
+            username_env: String::new(),
+            password_env: String::new(),
+            client_id: default_client_id(),
+            z2m_prefix: default_z2m_prefix(),
+        }
+    }
+}
+
 impl MqttConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.host.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "mqtt",
-                reason: "host must not be empty".into(),
-            });
-        }
+        // An empty host is *unset*, not wrong, and is reported by
+        // `Config::setup_gaps` instead. Failing here would mean a fresh
+        // Niles could not start far enough to be told the answer.
         if self.port == 0 {
             return Err(Error::InvalidSection {
                 section: "mqtt",
                 reason: "port must not be 0".into(),
-            });
-        }
-        if self.username_env.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "mqtt",
-                reason: "username_env must not be empty".into(),
-            });
-        }
-        if self.password_env.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "mqtt",
-                reason: "password_env must not be empty".into(),
             });
         }
         if self.z2m_prefix.contains('/')

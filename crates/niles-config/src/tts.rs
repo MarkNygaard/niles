@@ -33,6 +33,14 @@ fn default_timeout_seconds() -> u64 {
     30
 }
 
+/// Every field has a default, so the section can be left out
+/// entirely and filled in later from the app.
+impl Default for TtsConfig {
+    fn default() -> Self {
+        toml::from_str("").expect("every field has a default")
+    }
+}
+
 impl TtsConfig {
     pub fn validate(&self) -> Result<()> {
         if self.base_url.trim().is_empty() {

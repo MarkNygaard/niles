@@ -13,6 +13,7 @@ use serde::Deserialize;
 pub struct SttConfig {
     /// Name of the env var holding the provider API key
     /// (e.g. `"GROQ_API_KEY"`).
+    #[serde(default)]
     pub api_key_env: String,
     /// Provider base URL. Defaults to Groq's hosted endpoint.
     #[serde(default = "default_base_url")]
@@ -41,14 +42,16 @@ fn default_timeout_secs() -> u64 {
     30
 }
 
+/// Every field has a default, so the section can be left out
+/// entirely and filled in later from the app.
+impl Default for SttConfig {
+    fn default() -> Self {
+        toml::from_str("").expect("every field has a default")
+    }
+}
+
 impl SttConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.api_key_env.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "stt",
-                reason: "api_key_env must not be empty".into(),
-            });
-        }
         if self.base_url.trim().is_empty() {
             return Err(Error::InvalidSection {
                 section: "stt",

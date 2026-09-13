@@ -1399,9 +1399,14 @@ daytime_brightness = {value}"
     async fn an_invalid_base_is_fatal() {
         // The override document is tuning; the base is the contract. A
         // broken base has no safe fallback to degrade to.
+        //
+        // Broken means *wrong*, not merely incomplete: every section has
+        // a default now, so a base saying only the home's name is a
+        // perfectly good base. This one names an address nothing can
+        // bind to.
         let tmp = tempfile::TempDir::new().unwrap();
         let base_path = tmp.path().join("niles.toml");
-        std::fs::write(&base_path, "[home]\nname = \"only this\"\n").unwrap();
+        std::fs::write(&base_path, "[api]\nbind_address = \"not-an-address\"\n").unwrap();
         assert!(ConfigStore::open_in_memory(&base_path).await.is_err());
     }
 

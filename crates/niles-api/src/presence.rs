@@ -135,3 +135,28 @@ fn wait_for_approval(
         }
     });
 }
+
+#[derive(serde::Serialize)]
+pub struct SetupReport {
+    pub set_up: bool,
+    pub gaps: Vec<niles_config::Gap>,
+}
+
+/// `GET /setup` — what is still unset.
+///
+/// Niles starts with no config at all now, so starting no longer proves
+/// it is configured. This is what carries the difference, and it is why
+/// the defaults are allowed to be as permissive as they are.
+pub async fn setup_report(State(state): State<AppState>) -> Json<SetupReport> {
+    let Some(store) = state.config.as_ref() else {
+        return Json(SetupReport {
+            set_up: true,
+            gaps: Vec::new(),
+        });
+    };
+    let cfg = store.current();
+    Json(SetupReport {
+        set_up: cfg.is_set_up(),
+        gaps: cfg.setup_gaps(),
+    })
+}

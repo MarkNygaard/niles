@@ -4238,6 +4238,20 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // silently drops leaves `[auth]` naming variables that do not
     // resolve. Sign-in then reads as "off, waiting for its first
     // person" — which is what a correct install looks like too, except
+    // Starting no longer proves Niles is configured — every section has
+    // a default, which is what lets the app be the way in. So say what
+    // is still unanswered, once, where somebody will see it.
+    for gap in cfg.setup_gaps() {
+        // A severity added later is louder than it needs to be rather
+        // than silently dropped: a new kind of gap nobody is told about
+        // is the failure this whole report exists to prevent.
+        if matches!(gap.severity, niles_config::Severity::Degraded) {
+            tracing::info!("[setup] {} is not set. {}", gap.path, gap.consequence);
+        } else {
+            tracing::warn!("[setup] {} is not set. {}", gap.path, gap.consequence);
+        }
+    }
+
     // that one is open to anybody who can reach it. Worth one loud line
     // rather than a discovery.
     if cfg.auth.github_client_id_env.is_some() && !cfg.auth.is_configured() {
