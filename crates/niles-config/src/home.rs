@@ -19,12 +19,16 @@ pub enum Units {
 #[serde(deny_unknown_fields)]
 pub struct HomeConfig {
     /// Display name of the home (e.g. `"Mark's apartment"`).
+    #[serde(default = "default_name")]
     pub name: String,
     /// Latitude in decimal degrees, `-90..=90`.
+    #[serde(default)]
     pub latitude: f64,
     /// Longitude in decimal degrees, `-180..=180`.
+    #[serde(default)]
     pub longitude: f64,
     /// IANA timezone identifier (e.g. `"Europe/Copenhagen"`).
+    #[serde(default = "default_timezone")]
     pub timezone: String,
     /// Locale tag — POSIX (`en_US`) or IETF BCP-47 (`en-US`).
     #[serde(default = "default_locale")]
@@ -42,6 +46,34 @@ pub struct HomeConfig {
 
 fn default_locale() -> String {
     "en_US".into()
+}
+
+fn default_name() -> String {
+    "Home".into()
+}
+
+/// UTC, which is wrong everywhere and misleading nowhere — a guessed
+/// local zone would put the curve an hour out and look deliberate.
+fn default_timezone() -> String {
+    "UTC".into()
+}
+
+impl Default for HomeConfig {
+    fn default() -> Self {
+        Self {
+            name: default_name(),
+            // Null Island. Only the weather tool reads these, so an
+            // unset location costs a wrong forecast rather than a
+            // broken house — and `setup_gaps` says so.
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: default_timezone(),
+            locale: default_locale(),
+            units: None,
+            country: None,
+            default_language: None,
+        }
+    }
 }
 
 impl HomeConfig {

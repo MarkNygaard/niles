@@ -13,6 +13,7 @@ use serde::Deserialize;
 pub struct LlmConfig {
     /// Name of the env var holding the provider API key
     /// (e.g. `"GROQ_API_KEY"`).
+    #[serde(default)]
     pub api_key_env: String,
     /// Provider base URL. Defaults to Groq's hosted endpoint.
     #[serde(default = "default_base_url")]
@@ -34,6 +35,7 @@ pub struct LlmConfig {
 pub struct LlmTier2Config {
     /// Name of the env var holding the Tier 2 provider API key
     /// (e.g. `"OPENAI_API_KEY"`).
+    #[serde(default)]
     pub api_key_env: String,
     /// Provider base URL. Defaults to OpenAI's hosted endpoint.
     #[serde(default = "default_tier2_base_url")]
@@ -73,12 +75,10 @@ fn validate_llm_fields(
     model: &str,
     timeout_seconds: u64,
 ) -> Result<()> {
-    if api_key_env.trim().is_empty() {
-        return Err(Error::InvalidSection {
-            section,
-            reason: "api_key_env must not be empty".into(),
-        });
-    }
+    // An unnamed key is *unset*, not wrong, and `Config::setup_gaps`
+    // reports it. Refusing to load here would mean a Niles nobody has
+    // given a key to cannot start far enough to be given one.
+    let _ = api_key_env;
     if base_url.trim().is_empty() {
         return Err(Error::InvalidSection {
             section,
@@ -108,6 +108,14 @@ fn validate_llm_fields(
 
 fn resolve_api_key(api_key_env: &str, section: &'static str) -> Result<String> {
     crate::env::require_env(section, api_key_env)
+}
+
+/// Every field has a default, so the section can be left out
+/// entirely and filled in later from the app.
+impl Default for LlmConfig {
+    fn default() -> Self {
+        toml::from_str("").expect("every field has a default")
+    }
 }
 
 impl LlmConfig {

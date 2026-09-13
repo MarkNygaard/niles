@@ -26,6 +26,7 @@ pub mod persistence;
 pub mod presence;
 pub mod recognition;
 pub mod satellites;
+pub mod setup;
 pub mod skills;
 pub mod speakers;
 pub mod store;
@@ -56,6 +57,7 @@ pub use presence::{PresenceConfig, TadoConfigDto};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use satellites::{SatelliteConfig, SatellitesConfig};
 use serde::Deserialize;
+pub use setup::{Gap, Severity};
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 use std::path::Path;
@@ -225,8 +227,11 @@ pub const SECTIONS: &[&str] = &[
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
     pub home: HomeConfig,
+    #[serde(default)]
     pub mqtt: MqttConfig,
+    #[serde(default)]
     pub api: ApiConfig,
     #[serde(default)]
     pub auth: AuthConfig,
@@ -261,10 +266,15 @@ pub struct Config {
     pub wled: WledConfig,
     #[serde(default)]
     pub integrations: IntegrationsConfig,
+    #[serde(default)]
     pub wyoming: WyomingConfig,
+    #[serde(default)]
     pub stt: SttConfig,
+    #[serde(default)]
     pub tts: TtsConfig,
+    #[serde(default)]
     pub llm: LlmConfig,
+    #[serde(default)]
     pub lighting: LightingConfig,
     #[serde(default, rename = "automation")]
     pub automations: AutomationsConfig,
@@ -485,10 +495,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mqtt_empty_host() {
-        let bad = valid_toml().replace("host = \"192.168.42.16\"", "host = \"\"");
-        let cfg = Config::load_from_str(&bad).unwrap();
-        assert!(cfg.validate().is_err());
+    fn an_unset_mqtt_host_is_a_gap_not_an_error() {
+        // It used to refuse to load. That made the app unusable as the
+        // way in: a Niles that will not start cannot be told the
+        // answer. Unset is now reported, not fatal.
+        let cfg = Config::load_from_str("").expect("an empty config loads");
+        cfg.validate().expect("and validates");
+        assert!(
+            cfg.setup_gaps().iter().any(|g| g.path == "mqtt.host"),
+            "it still has to be reported: {:?}",
+            cfg.setup_gaps()
+        );
     }
 
     #[test]
@@ -577,13 +594,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_stt_api_key_env() {
-        let bad = valid_toml().replace(
-            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
-            "[stt]\napi_key_env = \"\"",
+    fn an_unset_llm_api_key_env_is_a_gap_not_an_error() {
+        // Same reasoning as the broker: without a key the LLM tier is
+        // off, which is a degraded house rather than a broken one, and
+        // is worth reporting rather than refusing to start over.
+        let cfg = Config::load_from_str("").expect("an empty config loads");
+        cfg.validate().expect("and validates");
+        assert!(
+            cfg.setup_gaps().iter().any(|g| g.path == "llm.api_key_env"),
+            "{:?}",
+            cfg.setup_gaps()
         );
-        let cfg = Config::load_from_str(&bad).unwrap();
-        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn an_unset_stt_api_key_env_is_a_gap_not_an_error() {
+        // It used to refuse to load. That made the app unusable as the
+        // way in: a Niles that will not start cannot be told the
+        // answer. Unset is now reported, not fatal.
+        let cfg = Config::load_from_str("").expect("an empty config loads");
+        cfg.validate().expect("and validates");
+        assert!(
+            cfg.setup_gaps().iter().any(|g| g.path == "stt.api_key_env"),
+            "it still has to be reported: {:?}",
+            cfg.setup_gaps()
+        );
     }
 
     #[test]
@@ -663,16 +698,6 @@ mod tests {
         assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
         assert_eq!(cfg.llm.model, "openai/gpt-oss-20b");
         assert_eq!(cfg.llm.timeout_seconds, 30);
-    }
-
-    #[test]
-    fn rejects_empty_llm_api_key_env() {
-        let bad = valid_toml().replace(
-            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
-            "[llm]\napi_key_env = \"\"",
-        );
-        let cfg = Config::load_from_str(&bad).unwrap();
-        assert!(cfg.validate().is_err());
     }
 
     #[test]
@@ -777,16 +802,6 @@ timeout_seconds = 60
         assert_eq!(tier2.base_url, "https://custom.openai.com/v1");
         assert_eq!(tier2.model, "gpt-5.5-pro");
         assert_eq!(tier2.timeout_seconds, 60);
-    }
-
-    #[test]
-    fn rejects_empty_llm_tier2_api_key_env() {
-        let toml = format!(
-            "{}\n[llm.tier2]\napi_key_env = \"\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        assert!(cfg.validate().is_err());
     }
 
     #[test]

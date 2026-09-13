@@ -12,7 +12,20 @@ pub struct WyomingConfig {
     /// Address the Wyoming server binds to (e.g. `"0.0.0.0:10300"`).
     /// 10300 is the conventional Wyoming port used by Home Assistant
     /// satellites and ESPHome's voice_assistant component.
+    #[serde(default = "default_bind_address")]
     pub bind_address: String,
+}
+
+fn default_bind_address() -> String {
+    "0.0.0.0:10300".into()
+}
+
+impl Default for WyomingConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: default_bind_address(),
+        }
+    }
 }
 
 impl WyomingConfig {

@@ -29,12 +29,19 @@ pub struct LightingConfig {
     /// deletion.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_morning_start")]
     pub morning_start: String,
+    #[serde(default = "default_morning_end")]
     pub morning_end: String,
+    #[serde(default = "default_sunset_start")]
     pub sunset_start: String,
+    #[serde(default = "default_sunset_end")]
     pub sunset_end: String,
+    #[serde(default = "default_night_floor")]
     pub night_floor_brightness: u8,
+    #[serde(default = "default_daytime")]
     pub daytime_brightness: u8,
+    #[serde(default = "default_anchors")]
     pub color_temp_anchors: Vec<ColorTempAnchor>,
     pub morning_routine: Option<MorningRoutineConfigDto>,
     /// Optional recurring weekly window during which the curve freezes
@@ -136,6 +143,69 @@ pub struct ColorTempAnchor {
     pub time: String,
     /// Color temperature in Kelvin.
     pub kelvin: u16,
+}
+
+fn default_morning_start() -> String {
+    "05:45".into()
+}
+fn default_morning_end() -> String {
+    "06:30".into()
+}
+fn default_sunset_start() -> String {
+    "21:30".into()
+}
+fn default_sunset_end() -> String {
+    "23:00".into()
+}
+fn default_night_floor() -> u8 {
+    15
+}
+fn default_daytime() -> u8 {
+    100
+}
+
+/// The curve Niles ships with: 2000K through the night, warming to
+/// 2700K by the end of the morning ramp, 4500K at midday, and back down
+/// the same way. The bookends at 00:00 and 23:59 pin the flat night
+/// sections so a lookup outside the ramps returns night rather than the
+/// nearest transition.
+fn default_anchors() -> Vec<ColorTempAnchor> {
+    [
+        ("00:00", 2000),
+        ("05:45", 2000),
+        ("06:30", 2700),
+        ("12:00", 4500),
+        ("21:30", 2700),
+        ("23:00", 2000),
+        ("23:59", 2000),
+    ]
+    .into_iter()
+    .map(|(time, kelvin)| ColorTempAnchor {
+        time: time.into(),
+        kelvin,
+    })
+    .collect()
+}
+
+impl Default for LightingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            morning_start: default_morning_start(),
+            morning_end: default_morning_end(),
+            sunset_start: default_sunset_start(),
+            sunset_end: default_sunset_end(),
+            night_floor_brightness: default_night_floor(),
+            daytime_brightness: default_daytime(),
+            color_temp_anchors: default_anchors(),
+            morning_routine: None,
+            ambient_brightness: None,
+            ambient_kelvin: None,
+            ambient_color: None,
+            curve_pause_start: None,
+            curve_pause_end: None,
+        }
+    }
 }
 
 impl LightingConfig {
