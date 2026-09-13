@@ -97,7 +97,7 @@ mod tests {
         router(AppState::new(
             Arc::new(DeviceRegistry::new()),
             Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
-            Arc::new("zigbee2mqtt".into()),
+            Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
             EventBus::default(),
         ))
     }

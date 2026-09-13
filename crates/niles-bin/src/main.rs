@@ -604,7 +604,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     let state = AppState::new(
         registry.clone(),
         Arc::new(publisher) as Arc<dyn DevicePublisher>,
-        Arc::new(cfg.mqtt.z2m_prefix.clone()),
+        build_command_router(&cfg),
         bus.clone(),
     );
     let api_handle = tokio::spawn(async move {
@@ -614,7 +614,7 @@ async fn api(args: ApiArgs) -> anyhow::Result<()> {
     });
 
     eprintln!(
-        "Z2M source running on {prefix}/+/+; API listening on http://{bind}\n  GET  /devices   /rooms/<room>   /healthz\n  WS   /events/stream\n  POST /rooms/<room>/<device>\nPress Ctrl-C to exit.",
+        "Z2M source running on {prefix}/+/+; API listening on http://{bind}\n  GET  /devices   /rooms/<room>   /healthz\n  WS   /events/stream\n  POST /rooms/<room>   /rooms/<room>/<device>\nPress Ctrl-C to exit.",
         prefix = cfg.mqtt.z2m_prefix
     );
 
@@ -3773,7 +3773,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let mqtt_client = connect_with_config(&cfg).await?;
     let publisher = mqtt_client.publisher();
     let router = build_command_router(&cfg);
-    let z2m_prefix = Arc::new(cfg.mqtt.z2m_prefix.clone());
     let api_bind = cfg
         .api
         .socket_addr()
@@ -4115,7 +4114,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let api_state = AppState::new(
         registry.clone(),
         Arc::new(publisher.clone()) as Arc<dyn DevicePublisher>,
-        z2m_prefix.clone(),
+        router.clone(),
         bus.clone(),
     )
     .with_config_store(Some(store.clone()))

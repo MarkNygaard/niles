@@ -90,7 +90,7 @@ mod tests {
         AppState::new(
             Arc::new(niles_core::DeviceRegistry::default()),
             Arc::new(NoopPublisher),
-            Arc::new("zigbee2mqtt".into()),
+            Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
             niles_core::EventBus::new(16),
         )
         .with_linear_webhook(Some(Arc::new(LinearWebhookState {
@@ -340,7 +340,7 @@ mod tests {
         let state = AppState::new(
             Arc::new(niles_core::DeviceRegistry::default()),
             Arc::new(NoopPublisher),
-            Arc::new("zigbee2mqtt".into()),
+            Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
             niles_core::EventBus::new(16),
         );
 

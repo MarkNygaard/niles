@@ -14,7 +14,14 @@ import {
   SliderTrack,
   SliderValue,
 } from "@/components/ui/slider";
-import { ColorWheel, parseHex } from "@/components/ColorField";
+import { ColorWheel } from "@/components/ColorField";
+import {
+  BrightnessGlyph,
+  ColorSwatch,
+  KELVIN_MAX,
+  KELVIN_MIN,
+  KelvinSwatch,
+} from "@/components/LightSwatches";
 import { cn } from "@/lib/utils";
 
 export interface AmbientControlsProps {
@@ -28,10 +35,6 @@ export interface AmbientControlsProps {
   disabled?: boolean;
   onChange: (path: string, value: unknown) => void;
 }
-
-/** Sane ends for a lamp, not the 1000–10000 the config will accept. */
-const KELVIN_MIN = 1800;
-const KELVIN_MAX = 6500;
 
 /**
  * The three things an ambient light is held at, each behind its own
@@ -58,7 +61,7 @@ export function AmbientControls({
         hint="How bright ambient lights sit, as a percentage."
         disabled={disabled}
         summary={brightness === undefined ? "not set" : `${brightness}%`}
-        face={<BrightnessFace />}
+        face={<BrightnessGlyph />}
       >
         <ValueSlider
           label="Brightness"
@@ -77,7 +80,7 @@ export function AmbientControls({
         hint="Applied to the ambient lights that can take a colour."
         disabled={disabled}
         summary={color ?? "not set"}
-        face={<ColorFace value={color} />}
+        face={<ColorSwatch value={color} />}
       >
         <ColorWheel
           value={color ?? ""}
@@ -93,7 +96,7 @@ export function AmbientControls({
         hint="Applied to the ambient lights that have a white channel. Low is warm."
         disabled={disabled}
         summary={kelvin === undefined ? "not set" : `${kelvin}K`}
-        face={<KelvinFace value={kelvin} />}
+        face={<KelvinSwatch value={kelvin} />}
       >
         <ValueSlider
           label="Colour temperature"
@@ -184,7 +187,6 @@ function ValueSlider({
       min={min}
       max={max}
       step={step}
-      aria-label={label}
       onValueChange={(next) => setDraft(next)}
       onValueCommitted={(next) => onCommit(next)}
     >
@@ -199,93 +201,11 @@ function ValueSlider({
       <SliderControl>
         <SliderTrack>
           <SliderIndicator />
-          <SliderThumb />
+          {/* Base UI puts the range input inside the thumb, so the
+              label belongs here rather than on the root. */}
+          <SliderThumb aria-label={label} />
         </SliderTrack>
       </SliderControl>
     </Slider>
   );
-}
-
-/**
- * A brightness glyph, not a gauge.
- *
- * An earlier version filled to the level, which nobody could read: the
- * unfilled part is dark on a dark card, so there was no container to
- * read the level against. The number lives inside, where there is room
- * for it.
- */
-function BrightnessFace() {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 24 24"
-      className="size-5 fill-current"
-      focusable="false"
-    >
-      <path d="M12,18V6A6,6 0 0,1 18,12A6,6 0 0,1 12,18M20,15.31L23.31,12L20,8.69V4H15.31L12,0.69L8.69,4H4V8.69L0.69,12L4,15.31V20H8.69L12,23.31L15.31,20H20V15.31Z" />
-    </svg>
-  );
-}
-
-/**
- * The chosen colour, or the wheel itself when there isn't one.
- *
- * The unset face is the same wheel the popover opens: hue around the
- * rim, white in the middle, so the button looks like the thing it
- * leads to.
- */
-function ColorFace({ value }: { value?: string }) {
-  const rgb = value ? parseHex(value) : null;
-  return (
-    <span
-      aria-hidden
-      className="border-border size-6 rounded-full border"
-      style={
-        rgb
-          ? { background: value }
-          : {
-              backgroundImage: [
-                "radial-gradient(circle closest-side, #ffffff, rgba(255,255,255,0) 78%)",
-                "conic-gradient(from 90deg, #ff0000, #ff00ff, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)",
-              ].join(", "),
-            }
-      }
-    />
-  );
-}
-
-/** Cool at one end, warm at the other, white through the middle. */
-const KELVIN_COOL = [166, 209, 255] as const;
-const KELVIN_WARM = [255, 160, 0] as const;
-
-/**
- * The white it holds, over the warm-to-cool range it can hold.
- *
- * The swatch is taken from the same ramp the unset face shows, rather
- * than from the blackbody curve the chart uses. A physically accurate
- * 2200 K is a muddy brown at thumbnail size; this reads as a warm lamp,
- * which is what the setting means.
- */
-function KelvinFace({ value }: { value?: number }) {
-  return (
-    <span
-      aria-hidden
-      className="border-border size-6 rounded-full border"
-      style={{
-        background: value
-          ? kelvinSwatch(value)
-          : `linear-gradient(90deg, rgb(${KELVIN_WARM.join(", ")}) 0%, rgb(255, 255, 255) 50%, rgb(${KELVIN_COOL.join(", ")}) 100%)`,
-      }}
-    />
-  );
-}
-
-function kelvinSwatch(kelvin: number): string {
-  const span = KELVIN_MAX - KELVIN_MIN;
-  const t = Math.min(Math.max((kelvin - KELVIN_MIN) / span, 0), 1);
-  const white = [255, 255, 255] as const;
-  const [from, to, mix] =
-    t < 0.5 ? [KELVIN_WARM, white, t * 2] : [white, KELVIN_COOL, (t - 0.5) * 2];
-  const channel = (i: number) => Math.round(from[i] + (to[i] - from[i]) * mix);
-  return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
 }

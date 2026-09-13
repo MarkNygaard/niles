@@ -2,6 +2,7 @@
 
 use crate::publish::DevicePublisher;
 use niles_core::{DeviceRegistry, EventBus};
+use niles_mqtt::CommandRouter;
 use niles_notifications::NotificationCenter;
 use std::sync::Arc;
 
@@ -19,7 +20,9 @@ pub struct LinearWebhookState {
 pub struct AppState {
     pub registry: Arc<DeviceRegistry>,
     pub publisher: Arc<dyn DevicePublisher>,
-    pub z2m_prefix: Arc<String>,
+    /// Turns a desired state into the topic and payload that device's
+    /// source understands — Z2M and WLED speak different MQTT.
+    pub router: Arc<CommandRouter>,
     pub event_bus: EventBus,
     pub linear_webhook: Option<Arc<LinearWebhookState>>,
     /// Absent for subcommands that serve the device API without a config
@@ -34,13 +37,13 @@ impl AppState {
     pub fn new(
         registry: Arc<DeviceRegistry>,
         publisher: Arc<dyn DevicePublisher>,
-        z2m_prefix: Arc<String>,
+        router: Arc<CommandRouter>,
         event_bus: EventBus,
     ) -> Self {
         Self {
             registry,
             publisher,
-            z2m_prefix,
+            router,
             event_bus,
             linear_webhook: None,
             config: None,
