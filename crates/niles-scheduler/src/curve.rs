@@ -66,6 +66,13 @@ impl CurvePause {
 /// it is the resolved values for the current day.
 #[derive(Debug, Clone)]
 pub struct CurveConfig {
+    /// Whether the curve drives anything at all.
+    ///
+    /// Lives here rather than being checked by each driver, so a new
+    /// caller cannot forget to ask. Off is a real answer — somebody who
+    /// wants their lights left alone should not have to find a curve
+    /// that flattens them.
+    pub enabled: bool,
     pub morning_start: MinuteOfDay,
     pub morning_end: MinuteOfDay,
     pub sunset_start: MinuteOfDay,
@@ -96,6 +103,7 @@ impl CurveConfig {
     /// return the night-floor color rather than the first/last transition.
     pub fn default_weekday() -> Self {
         Self {
+            enabled: true,
             morning_start: MinuteOfDay::new(5, 45).expect("05:45 is valid"),
             morning_end: MinuteOfDay::new(6, 30).expect("06:30 is valid"),
             sunset_start: MinuteOfDay::new(21, 30).expect("21:30 is valid"),
@@ -532,6 +540,7 @@ mod tests {
     #[test]
     fn validate_rejects_morning_after_sunset_start() {
         let c = CurveConfig {
+            enabled: true,
             morning_start: t(20, 0),
             morning_end: t(22, 0),
             sunset_start: t(21, 0),
@@ -550,6 +559,7 @@ mod tests {
         // morning ramp hands directly to the sunset ramp with no Day
         // plateau in between. Useful for short winter days.
         let c = CurveConfig {
+            enabled: true,
             morning_start: t(5, 45),
             morning_end: t(12, 0),
             sunset_start: t(12, 0),

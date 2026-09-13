@@ -12,10 +12,23 @@ use niles_scheduler::{CurveConfig, CurvePause, MinuteOfDay, MorningRoutineConfig
 use serde::Deserialize;
 use std::str::FromStr;
 
+fn default_enabled() -> bool {
+    true
+}
+
 /// `[lighting]` section of the config file.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LightingConfig {
+    /// Whether the daily curve runs.
+    ///
+    /// Defaults to on, because a config that bothered to set anchors
+    /// meant them. Off stops the curve touching lights; it does not
+    /// stop anything else — voice, the dashboard and the dimmer all
+    /// still work, which is the point of a switch rather than a
+    /// deletion.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     pub morning_start: String,
     pub morning_end: String,
     pub sunset_start: String,
@@ -166,6 +179,7 @@ impl LightingConfig {
         };
 
         let curve = CurveConfig {
+            enabled: self.enabled,
             morning_start: parse_time(&self.morning_start)?,
             morning_end: parse_time(&self.morning_end)?,
             sunset_start: parse_time(&self.sunset_start)?,

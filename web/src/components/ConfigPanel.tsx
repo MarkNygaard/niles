@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { CurveChart } from "@/components/CurveChart";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
@@ -219,6 +220,11 @@ export function ConfigPanel() {
 
   const view = config.data as ConfigView;
   const sectionMeta = new Map(view.sections.map((s) => [s.name, s]));
+  // Absent means on: every config written before the switch existed
+  // has a curve that runs, and the server defaults the same way.
+  const curveOn =
+    (view.effective.lighting as { enabled?: boolean } | undefined)?.enabled !==
+    false;
 
   const lights = deviceOptions(devices.data ?? []);
   const noLights = devices.isLoading
@@ -322,9 +328,40 @@ export function ConfigPanel() {
                 Lights already on pick changes up on the next tick.
               </CardDescription>
             </CardHeader>
-            <CardContent className="divide-border divide-y">
-              <CurveChart lighting={view.effective.lighting} />
-              {CURVE_ROWS.map(row)}
+            <CardContent className="flex flex-col gap-4">
+              <label className="flex items-center justify-between gap-4">
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">
+                    Follow the curve
+                  </span>
+                  <span className="text-muted-foreground block text-xs">
+                    Off leaves lights exactly where you put them. Voice, the
+                    dashboard and the wall dimmer all still work, and the
+                    morning routine is separate.
+                  </span>
+                </span>
+                <Switch
+                  checked={curveOn}
+                  disabled={save.isPending}
+                  onCheckedChange={(on) =>
+                    save.mutate({
+                      row: "lighting.enabled",
+                      entries: [{ path: "lighting.enabled", value: on }],
+                    })
+                  }
+                />
+              </label>
+
+              {/* Hidden rather than disabled: a wall of greyed-out
+                  settings is a page asking to be read and then ignored.
+                  Nothing is lost by hiding them — the values stay, and
+                  come back untouched when the curve does. */}
+              {curveOn && (
+                <div className="divide-border divide-y">
+                  <CurveChart lighting={view.effective.lighting} />
+                  {CURVE_ROWS.map(row)}
+                </div>
+              )}
             </CardContent>
           </Card>
 
