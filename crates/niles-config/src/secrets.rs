@@ -135,7 +135,28 @@ impl crate::Config {
         if get(key).is_some() {
             return Source::Stored;
         }
+        // A role pointing at a provider is served by that provider's
+        // key. Without this the page reports speech-to-text as having
+        // no key while it is happily using Groq's — the same mistake as
+        // reading the `*_env` name instead of the value, one level
+        // further along.
+        if let Some(provider) = self.provider_for(key)
+            && get(&provider).is_some()
+        {
+            return Source::Stored;
+        }
         Source::Unset
+    }
+
+    /// The provider key a role's credential falls through to, if the
+    /// role names one.
+    fn provider_for(&self, key: &str) -> Option<String> {
+        let named = match key {
+            "stt.api_key" => self.stt.provider.as_deref(),
+            "llm.api_key" => self.llm.provider.as_deref(),
+            _ => None,
+        }?;
+        crate::providers::find(&self.providers, named).map(|p| p.secret_key())
     }
 }
 
@@ -146,6 +167,15 @@ fn host_of(base_url: &str) -> Option<String> {
     let host = rest.split(['/', '?']).next()?;
     (!host.is_empty()).then(|| host.to_string())
 }
+
+/// Serialises tests that write the process-wide store.
+///
+/// The store is global by design — `require_env` is called from sync
+/// config code — which makes it shared between tests in a crate. Two
+/// of them loading different maps at once is how a test about speech
+/// ended up asserting on a broker password.
+#[cfg(test)]
+pub(crate) static TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {

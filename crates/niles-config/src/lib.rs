@@ -612,7 +612,7 @@ mod tests {
         let cfg = Config::load_from_str("").expect("an empty config loads");
         cfg.validate().expect("and validates");
         assert!(
-            cfg.setup_gaps().iter().any(|g| g.path == "llm.api_key_env"),
+            cfg.setup_gaps().iter().any(|g| g.path == "llm.api_key"),
             "{:?}",
             cfg.setup_gaps()
         );
@@ -626,7 +626,7 @@ mod tests {
         let cfg = Config::load_from_str("").expect("an empty config loads");
         cfg.validate().expect("and validates");
         assert!(
-            cfg.setup_gaps().iter().any(|g| g.path == "stt.api_key_env"),
+            cfg.setup_gaps().iter().any(|g| g.path == "stt.api_key"),
             "it still has to be reported: {:?}",
             cfg.setup_gaps()
         );

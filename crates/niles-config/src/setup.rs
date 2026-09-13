@@ -49,35 +49,43 @@ impl Config {
                 consequence: "Niles cannot reach any lights: it has no broker to talk to.",
             });
         }
-        if self.mqtt.username_env.trim().is_empty() {
-            gaps.push(Gap {
-                path: "mqtt.username_env",
-                severity: Severity::Blocking,
-                consequence: "The broker will refuse the connection without a username.",
-            });
-        }
 
-        if self.mqtt.password_env.trim().is_empty() {
-            gaps.push(Gap {
-                path: "mqtt.password_env",
-                severity: Severity::Blocking,
-                consequence: "The broker will refuse the connection without a password.",
-            });
-        }
-
-        if self.llm.api_key_env.trim().is_empty() {
-            gaps.push(Gap {
-                path: "llm.api_key_env",
-                severity: Severity::Degraded,
-                consequence: "Anything a regex cannot answer goes unanswered.",
-            });
-        }
-        if self.stt.api_key_env.trim().is_empty() {
-            gaps.push(Gap {
-                path: "stt.api_key_env",
-                severity: Severity::Degraded,
-                consequence: "Speech cannot be transcribed, so voice does nothing.",
-            });
+        // Asked of the resolver, not of the config's `*_env` names.
+        // Checking whether a variable is *named* answers the wrong
+        // question once a credential can also be stored: a broker
+        // password typed into Settings works, and reported a missing
+        // one — which is the same mistake `/secrets` made, in a second
+        // place, and looks worse here because it is the first thing on
+        // the page.
+        for (key, severity, consequence) in [
+            (
+                "mqtt.username",
+                Severity::Blocking,
+                "The broker will refuse the connection without a username.",
+            ),
+            (
+                "mqtt.password",
+                Severity::Blocking,
+                "The broker will refuse the connection without a password.",
+            ),
+            (
+                "llm.api_key",
+                Severity::Degraded,
+                "Anything a regex cannot answer goes unanswered.",
+            ),
+            (
+                "stt.api_key",
+                Severity::Degraded,
+                "Speech cannot be transcribed, so voice does nothing.",
+            ),
+        ] {
+            if self.secret_source(key) == crate::Source::Unset {
+                gaps.push(Gap {
+                    path: key,
+                    severity,
+                    consequence,
+                });
+            }
         }
 
         // UTC is the default because guessing a zone would put the
@@ -149,8 +157,70 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_credential_is_not_a_missing_one() {
+        let _guard = crate::secrets::TEST_GUARD.lock();
+        // The bug this replaced: gaps were decided by whether the
+        // config *named* an environment variable, so a broker password
+        // typed into Settings worked while the page led with "Niles is
+        // missing 2 things it needs".
+        crate::secrets::load(std::collections::HashMap::from([
+            ("mqtt.username".to_string(), "u".to_string()),
+            ("mqtt.password".to_string(), "p".to_string()),
+        ]));
+        let cfg = Config::load_from_str(
+            "[mqtt]
+host = \"broker\"
+",
+        )
+        .unwrap();
+        let paths: Vec<_> = cfg.setup_gaps().iter().map(|g| g.path).collect();
+        assert!(!paths.contains(&"mqtt.username"), "{paths:?}");
+        assert!(!paths.contains(&"mqtt.password"), "{paths:?}");
+        crate::secrets::load(std::collections::HashMap::new());
+    }
+
+    #[test]
+    fn a_role_served_by_a_provider_is_not_a_gap_either() {
+        let _guard = crate::secrets::TEST_GUARD.lock();
+        // One level further along: the key belongs to the provider, and
+        // the role has none of its own.
+        crate::secrets::load(std::collections::HashMap::from([(
+            "provider.groq.api_key".to_string(),
+            "key".to_string(),
+        )]));
+        let cfg = Config::load_from_str(concat!(
+            "[[providers]]
+name = \"groq\"
+",
+            "base_url = \"https://api.groq.com/openai/v1\"
+",
+            "[stt]
+provider = \"groq\"
+[llm]
+provider = \"groq\"
+",
+        ))
+        .unwrap();
+        let paths: Vec<_> = cfg.setup_gaps().iter().map(|g| g.path).collect();
+        assert!(!paths.contains(&"stt.api_key"), "{paths:?}");
+        assert!(!paths.contains(&"llm.api_key"), "{paths:?}");
+        crate::secrets::load(std::collections::HashMap::new());
+    }
+
+    #[test]
     fn a_broker_that_is_set_is_not_a_gap() {
-        let toml = "[mqtt]\nhost = \"192.168.42.16\"\nusername_env = \"U\"\npassword_env = \"P\"\n";
+        // The variables have to hold something. Naming one that was
+        // never set is precisely the half-configured state this
+        // reports, so the old version of this test — which named `U`
+        // and `P` and set neither — proved nothing.
+        unsafe {
+            std::env::set_var("NILES_TEST_GAP_U", "u");
+            std::env::set_var("NILES_TEST_GAP_P", "p");
+        }
+        let toml = concat!(
+            "[mqtt]\nhost = \"192.168.42.16\"\n",
+            "username_env = \"NILES_TEST_GAP_U\"\npassword_env = \"NILES_TEST_GAP_P\"\n",
+        );
         let gaps = Config::load_from_str(toml).unwrap().setup_gaps();
         assert!(
             !gaps.iter().any(|g| g.path.starts_with("mqtt.")),
@@ -160,11 +230,18 @@ mod tests {
 
     #[test]
     fn nothing_left_to_answer_reads_as_set_up() {
+        unsafe {
+            std::env::set_var("NILES_TEST_DONE_U", "u");
+            std::env::set_var("NILES_TEST_DONE_P", "p");
+            std::env::set_var("NILES_TEST_DONE_K", "k");
+        }
         let toml = concat!(
             "[home]\nname = \"Home\"\nlatitude = 56.1572\nlongitude = 10.2107\n",
             "timezone = \"Europe/Copenhagen\"\n",
-            "[mqtt]\nhost = \"broker\"\nusername_env = \"U\"\npassword_env = \"P\"\n",
-            "[stt]\napi_key_env = \"K\"\n[llm]\napi_key_env = \"K\"\n",
+            "[mqtt]\nhost = \"broker\"\n",
+            "username_env = \"NILES_TEST_DONE_U\"\npassword_env = \"NILES_TEST_DONE_P\"\n",
+            "[stt]\napi_key_env = \"NILES_TEST_DONE_K\"\n",
+            "[llm]\napi_key_env = \"NILES_TEST_DONE_K\"\n",
         );
         let cfg = Config::load_from_str(toml).unwrap();
         assert!(cfg.is_set_up(), "{:?}", cfg.setup_gaps());
