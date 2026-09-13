@@ -83,16 +83,34 @@ pub fn parse_status(payload: &[u8]) -> Option<bool> {
 /// ignored — RGB strips have no natural color-temperature mapping.
 ///
 /// Returns `None` if none of the mapped fields is set (no-op guard).
+/// Kelvin as WLED understands it.
+///
+/// `cct` means two things by magnitude: 0–255 is a relative position
+/// between the warm and cold channels, and 1900–10091 is read as
+/// Kelvin. Sent as Kelvin so the payload says what it means on the
+/// wire, and clamped into that window because a value just below it
+/// would cross back into being read as a relative one — 1800K would
+/// arrive as very nearly the coldest white the strip can make, which
+/// is the opposite of what was asked.
+pub fn kelvin_to_wled_cct(kelvin: u16) -> u16 {
+    kelvin.clamp(1900, 10091)
+}
+
 pub fn format_wled_command(base_topic: &str, target: &DeviceState) -> Option<(String, String)> {
-    if target.on.is_none() && target.brightness.is_none() && target.rgb.is_none() {
+    if target.on.is_none()
+        && target.brightness.is_none()
+        && target.rgb.is_none()
+        && target.color_temp_kelvin.is_none()
+    {
         return None;
     }
     let json = serde_json::to_string(&WledApiPayload {
         on: target.on,
         bri: target.brightness.map(percent_to_wled_brightness),
-        seg: target.rgb.map(|rgb| {
+        seg: (target.rgb.is_some() || target.color_temp_kelvin.is_some()).then(|| {
             vec![WledSegment {
-                col: Some(vec![rgb]),
+                col: target.rgb.map(|rgb| vec![rgb]),
+                cct: target.color_temp_kelvin.map(kelvin_to_wled_cct),
                 fx: None,
             }]
         }),
@@ -127,6 +145,7 @@ pub fn format_wled_effect(base_topic: &str, fx: u8) -> (String, String) {
         bri: None,
         seg: Some(vec![WledSegment {
             col: None,
+            cct: None,
             fx: Some(fx),
         }]),
     })
@@ -148,6 +167,9 @@ struct WledApiPayload {
 struct WledSegment {
     #[serde(skip_serializing_if = "Option::is_none")]
     col: Option<Vec<[u8; 3]>>,
+    /// White balance, for strips with warm and cold channels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cct: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fx: Option<u8>,
 }
@@ -252,12 +274,34 @@ mod tests {
     }
 
     #[test]
-    fn format_wled_color_temp_only_returns_none() {
+    fn a_colour_temperature_reaches_a_wled_strip() {
+        // This test used to assert the opposite, because the formatter
+        // had no path for it: an analog strip with warm and cold white
+        // channels sat at whatever it was last set to while the curve
+        // warmed every other light in the house.
         let target = DeviceState {
             color_temp_kelvin: Some(3000),
             ..Default::default()
         };
-        assert!(format_wled_command("wled/office", &target).is_none());
+        let (topic, payload) = format_wled_command("wled/office", &target).expect("sent");
+        assert_eq!(topic, "wled/office/api");
+        assert!(payload.contains("\"cct\":3000"), "{payload}");
+    }
+
+    #[test]
+    fn kelvin_below_the_window_is_clamped_rather_than_misread() {
+        // WLED reads `cct` by magnitude: 0-255 is a relative position
+        // and 1900-10091 is Kelvin. 1800K would land in neither, and a
+        // strip told "1800" could read it as very nearly the coldest
+        // white it can make — the opposite of what the curve asked for.
+        assert_eq!(kelvin_to_wled_cct(1800), 1900);
+        assert_eq!(kelvin_to_wled_cct(2700), 2700);
+        assert_eq!(kelvin_to_wled_cct(20000), 10091);
+    }
+
+    #[test]
+    fn a_strip_told_nothing_is_still_not_messaged() {
+        assert!(format_wled_command("wled/office", &DeviceState::default()).is_none());
     }
 
     #[test]

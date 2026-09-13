@@ -15,12 +15,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+/// A WLED instance, as the config declares it.
+///
+/// A named struct rather than a tuple: it grew a third field, and
+/// `(id, topic, bool)` at a call site says nothing about which bool.
+#[derive(Debug, Clone)]
+pub struct WledDevice {
+    pub id: DeviceId,
+    pub topic: String,
+    /// Has warm and cold white channels — WLED's "white balance".
+    pub white_balance: bool,
+}
+
 /// Consumes WLED MQTT messages and keeps a shared `DeviceRegistry` in sync.
 pub struct WledSource {
     client: MqttClient,
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
-    devices: Vec<(DeviceId, String)>, // (id, base_topic)
+    devices: Vec<WledDevice>,
 }
 
 impl WledSource {
@@ -28,7 +40,7 @@ impl WledSource {
         client: MqttClient,
         registry: Arc<DeviceRegistry>,
         bus: EventBus,
-        devices: Vec<(DeviceId, String)>,
+        devices: Vec<WledDevice>,
     ) -> Self {
         Self {
             client,
@@ -43,12 +55,20 @@ impl WledSource {
     pub async fn run(mut self) -> Result<()> {
         // Upsert all configured devices first so state messages never race.
         let mut topic_index = HashMap::new();
-        for (id, topic) in &self.devices {
-            // A WLED strip is RGB by construction, and our command
-            // formatter has no colour-temperature path for one.
+        for WledDevice {
+            id,
+            topic,
+            white_balance,
+        } in &self.devices
+        {
+            // Every WLED strip is RGB; only some have warm and cold
+            // white channels as well, and only those can be warmed by
+            // the curve. Taken from the config because WLED has no
+            // `bridge/devices` to ask, and inferring it from reported
+            // state is the trap #167 closed for Zigbee.
             let device = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light)
                 .with_capabilities(LightCapabilities {
-                    color_temp: false,
+                    color_temp: *white_balance,
                     rgb: true,
                 });
             self.registry.upsert(device.clone());

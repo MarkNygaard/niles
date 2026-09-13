@@ -417,7 +417,13 @@ async fn spawn_wled_source(
         .wled
         .devices
         .iter()
-        .filter_map(|dev| parse_wled_id(&dev.name).map(|id| (id, dev.topic.clone())))
+        .filter_map(|dev| {
+            parse_wled_id(&dev.name).map(|id| niles_mqtt::WledDevice {
+                id,
+                topic: dev.topic.clone(),
+                white_balance: dev.white_balance,
+            })
+        })
         .collect();
     let source = WledSource::new(client, registry, bus, devices);
     tracing::info!("WLED source running: {} device(s)", cfg.wled.devices.len());
