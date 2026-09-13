@@ -62,7 +62,7 @@ function HouseMark() {
       strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="size-14 text-amber-200"
+      className="size-14 text-foreground"
       aria-hidden
     >
       <path d="M10 12V8.964" />

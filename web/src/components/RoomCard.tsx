@@ -44,12 +44,11 @@ export function RoomCard({
 
   return (
     <Dialog>
-      <div
-        className={cn(
-          "flex flex-col overflow-hidden rounded-xl bg-card text-card-foreground ring-1 transition-colors",
-          lit ? "ring-amber-300/40" : "ring-foreground/10",
-        )}
-      >
+      {/* No outline, and no tint when the room is lit. Seven ringed
+          cards read as seven warnings; the card is separated from the
+          page by its own fill, and the one amber thing on it is the
+          switch, which is the only thing reporting a state. */}
+      <div className="flex flex-col overflow-hidden rounded-xl bg-card text-card-foreground">
         <button
           type="button"
           disabled={disabled}
@@ -64,7 +63,6 @@ export function RoomCard({
             "sm:flex-row sm:items-center sm:gap-3 sm:p-4",
             "hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",
-            lit && "bg-amber-200/[0.07]",
           )}
         >
           {/* The whole card is the switch, so the icon is a read-out
@@ -72,10 +70,8 @@ export function RoomCard({
           <span
             aria-hidden
             className={cn(
-              "flex size-10 shrink-0 items-center justify-center rounded-full border transition-colors sm:size-12",
-              lit
-                ? "border-transparent bg-amber-200 text-amber-950"
-                : "border-border text-muted-foreground",
+              "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors sm:size-12",
+              lit ? "bg-amber-200 text-amber-950" : "bg-muted text-muted-foreground",
             )}
           >
             <PowerGlyph />
@@ -107,7 +103,7 @@ export function RoomCard({
           </span>
         </button>
 
-        <DialogTrigger className="border-border text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 flex items-center justify-between gap-1 border-t px-3 py-2.5 text-left text-xs transition-colors focus-visible:outline-none sm:px-4 sm:gap-2">
+        <DialogTrigger className="border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 flex items-center justify-between gap-1 border-t px-3 py-2.5 text-left text-xs transition-colors focus-visible:outline-none sm:px-4 sm:gap-2">
           <span className="truncate">
             {room.lights.length === 1
               ? "Adjust this light"

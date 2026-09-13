@@ -33,19 +33,16 @@ export function HouseBar({ rooms, disabled, onToggle }: HouseBarProps) {
       aria-label={`The whole house, ${summary}. Turn everything ${lit ? "off" : "on"}.`}
       onClick={onToggle}
       className={cn(
-        "flex w-full items-center gap-3 rounded-xl bg-card px-3 py-2.5 text-left ring-1 transition-colors sm:px-4",
+        "flex w-full items-center gap-3 rounded-xl bg-card px-3 py-2.5 text-left transition-colors sm:px-4",
         "hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
         "disabled:cursor-not-allowed disabled:opacity-60",
-        lit ? "bg-amber-200/[0.07] ring-amber-300/40" : "ring-foreground/10",
       )}
     >
       <span
         aria-hidden
         className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-full border transition-colors",
-          lit
-            ? "border-transparent bg-amber-200 text-amber-950"
-            : "border-border text-muted-foreground",
+          "flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
+          lit ? "bg-amber-200 text-amber-950" : "bg-muted text-muted-foreground",
         )}
       >
         <svg
