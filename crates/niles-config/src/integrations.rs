@@ -82,6 +82,10 @@ impl LinearConfigDto {
     }
 
     pub fn resolve_api_key(&self) -> Result<String> {
-        crate::env::require_env("integrations.linear", &self.api_key_env)
+        crate::env::require_secret(
+            "integrations.linear",
+            "integrations.linear.api_key",
+            &self.api_key_env,
+        )
     }
 }

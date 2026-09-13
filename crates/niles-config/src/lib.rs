@@ -26,6 +26,7 @@ pub mod persistence;
 pub mod presence;
 pub mod recognition;
 pub mod satellites;
+pub mod secrets;
 pub mod setup;
 pub mod skills;
 pub mod speakers;

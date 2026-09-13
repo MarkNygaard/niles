@@ -96,6 +96,6 @@ impl SttConfig {
     /// Read the API key from the env var named by `api_key_env`.
     /// Returns an `InvalidSection` error if it's unset.
     pub fn resolve_api_key(&self) -> Result<String> {
-        crate::env::require_env("stt", &self.api_key_env)
+        crate::env::require_secret("stt", "stt.api_key", &self.api_key_env)
     }
 }

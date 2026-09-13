@@ -15,6 +15,36 @@ use crate::error::{Error, Result};
 ///
 /// `section` names the config section for the error message, so the
 /// failure says which setting to go and look at.
+/// A secret, from wherever it actually lives.
+///
+/// Two places, in this order: the environment variable the config
+/// names, then whatever was saved under `key`. Environment first so an
+/// existing install is unaffected by any of this — a variable that is
+/// set still wins, and nothing has to be migrated.
+///
+/// `key` says what the secret is *for* (`mqtt.password`), not where it
+/// was kept, so it survives somebody renaming the variable.
+pub(crate) fn require_secret(section: &'static str, key: &str, var: &str) -> Result<String> {
+    if !var.trim().is_empty()
+        && let Ok(value) = std::env::var(var)
+        && !value.trim().is_empty()
+    {
+        return Ok(value);
+    }
+    if let Some(value) = crate::secrets::get(key) {
+        return Ok(value);
+    }
+    // Named a variable that is not set: that is the more specific
+    // complaint, and the more likely mistake.
+    if !var.trim().is_empty() {
+        return require_env(section, var);
+    }
+    Err(Error::InvalidSection {
+        section,
+        reason: format!("no {key} has been set — add one in Settings"),
+    })
+}
+
 pub(crate) fn require_env(section: &'static str, var: &str) -> Result<String> {
     let value = std::env::var(var).map_err(|_| Error::InvalidSection {
         section,

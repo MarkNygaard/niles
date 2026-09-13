@@ -119,16 +119,16 @@ impl AuthConfig {
     /// that never reads `/logs` from a terminal needs no token, and
     /// demanding one would be a setting for its own sake.
     pub fn resolve_api_token(&self) -> Option<String> {
-        let var = self.api_token_env.as_deref()?;
-        crate::env::require_env("auth", var).ok()
+        let var = self.api_token_env.as_deref().unwrap_or("");
+        crate::env::require_secret("auth", "auth.api_token", var).ok()
     }
 
+    /// `session_secret_env` names where the secret *was* kept; the
+    /// purpose is `auth.session_secret`, which is what it is saved
+    /// under when somebody sets it in the app instead.
     fn resolve(&self, field: &'static str, var: Option<&str>) -> Result<String> {
-        let var = var.ok_or(Error::InvalidSection {
-            section: "auth",
-            reason: format!("{field} is not set"),
-        })?;
-        crate::env::require_env("auth", var)
+        let key = format!("auth.{}", field.trim_end_matches("_env"));
+        crate::env::require_secret("auth", &key, var.unwrap_or(""))
     }
 
     pub fn validate(&self) -> Result<()> {

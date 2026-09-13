@@ -88,8 +88,8 @@ impl MqttConfig {
     /// named by `username_env` / `password_env`. Returns an
     /// `InvalidSection` error if either is unset.
     pub fn resolve_credentials(&self) -> Result<(String, String)> {
-        let username = crate::env::require_env("mqtt", &self.username_env)?;
-        let password = crate::env::require_env("mqtt", &self.password_env)?;
+        let username = crate::env::require_secret("mqtt", "mqtt.username", &self.username_env)?;
+        let password = crate::env::require_secret("mqtt", "mqtt.password", &self.password_env)?;
         Ok((username, password))
     }
 }
