@@ -89,7 +89,7 @@ allowed = []
 }
 
 fn signed_in_as(email: &str) -> String {
-    let token = session::sign(SECRET, &Session::new(email));
+    let token = session::sign(SECRET, &Session::new(email, None));
     format!("{}={token}", session::COOKIE)
 }
 
@@ -165,7 +165,7 @@ async fn taking_somebody_off_the_list_revokes_the_cookie_they_already_hold() {
 #[tokio::test]
 async fn a_cookie_signed_with_another_key_is_refused() {
     let app = app_allowing(ONE_PERSON, None);
-    let forged = session::sign("not-our-key", &Session::new("mark@example.com"));
+    let forged = session::sign("not-our-key", &Session::new("mark@example.com", None));
     let request = get_with(
         "/devices",
         header::COOKIE,

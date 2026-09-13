@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Check, LogOut, Monitor, Moon, SlidersHorizontal, Sun } from "lucide-react";
 import {
   Popover,
@@ -11,6 +12,8 @@ import { cn } from "@/lib/utils";
 export interface AccountMenuProps {
   /** The signed-in address, or undefined when sign-in is off. */
   email?: string;
+  /** Their GitHub avatar, when there is one. */
+  avatarUrl?: string;
   onOpenSettings: () => void;
 }
 
@@ -21,20 +24,40 @@ export interface AccountMenuProps {
  * thing you came to use — the house is the page, and how it looks and
  * who you are are both one press away rather than half the top bar.
  */
-export function AccountMenu({ email, onOpenSettings }: AccountMenuProps) {
+export function AccountMenu({ email, avatarUrl, onOpenSettings }: AccountMenuProps) {
   const [theme, setTheme] = useTheme();
+  // The picture comes from GitHub, so it can be slow, blocked by a
+  // content blocker, or simply gone. Any of those falls back to the
+  // letters rather than leaving a hole where the button was.
+  const [broken, setBroken] = useState(false);
+  const picture = avatarUrl && !broken;
 
   return (
     <Popover>
       <PopoverTrigger
         aria-label={email ? `Account — ${email}` : "Account and appearance"}
         className={cn(
-          "bg-primary text-primary-foreground flex size-9 items-center justify-center rounded-full",
+          "flex size-9 items-center justify-center overflow-hidden rounded-full",
           "text-sm font-medium transition-opacity hover:opacity-90",
           "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+          !picture && "bg-primary text-primary-foreground",
         )}
       >
-        {initials(email)}
+        {picture ? (
+          <img
+            src={avatarUrl}
+            alt=""
+            width={36}
+            height={36}
+            // Nothing about this house travels to GitHub with the
+            // request for a picture.
+            referrerPolicy="no-referrer"
+            className="size-full object-cover"
+            onError={() => setBroken(true)}
+          />
+        ) : (
+          initials(email)
+        )}
       </PopoverTrigger>
 
       <PopoverContent align="end" className="w-64 p-0">
@@ -147,12 +170,12 @@ function MenuItem({
 }
 
 /**
- * Initials, not a photo.
+ * What to draw when there is no picture.
  *
- * GitHub has an avatar, but fetching it would mean either storing a URL
- * in the session or asking Gravatar — which is handing somebody the
- * hash of a household member's address to look up. Two letters cost
- * nothing and leave the building empty-handed.
+ * The avatar comes from GitHub, addressed by the numeric account id the
+ * session carries — not from Gravatar, which would mean handing a third
+ * party the hash of a household member's address. When it is missing,
+ * slow or blocked, two letters are better than a hole.
  */
 export function initials(email?: string): string {
   if (!email) return "·";

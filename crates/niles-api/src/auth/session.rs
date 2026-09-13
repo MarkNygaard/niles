@@ -30,24 +30,37 @@ pub const COOKIE: &str = "niles_session";
 pub struct Session {
     pub email: String,
     pub issued_at: u64,
+    /// GitHub's numeric account id, which is what the avatar is
+    /// addressed by. Optional because a cookie signed before this
+    /// existed is still perfectly good — it just draws initials.
+    pub github_id: Option<u64>,
 }
 
 impl Session {
-    pub fn new(email: impl Into<String>) -> Self {
+    pub fn new(email: impl Into<String>, github_id: Option<u64>) -> Self {
         Self {
             email: email.into(),
             issued_at: now(),
+            github_id,
         }
     }
 }
 
-/// `<base64url(email|issued_at)>.<base64url(hmac)>`
+/// `<base64url(email)>|<issued_at>|<github id>.<base64url(hmac)>`
 ///
 /// Hand-rolled rather than a JWT: there is one issuer, one audience and
 /// one algorithm, so a format that can negotiate those is a larger
 /// surface than the problem. Notably there is no `alg` field to confuse.
 pub fn sign(secret: &str, session: &Session) -> String {
-    let payload = format!("{}|{}", encode(session.email.as_bytes()), session.issued_at);
+    let payload = format!(
+        "{}|{}|{}",
+        encode(session.email.as_bytes()),
+        session.issued_at,
+        session
+            .github_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+    );
     let signature = mac(secret, payload.as_bytes());
     format!("{payload}.{}", encode(&signature))
 }
@@ -67,13 +80,20 @@ pub fn verify(secret: &str, token: &str) -> Option<Session> {
         return None;
     }
 
-    let (email, issued_at) = payload.rsplit_once('|')?;
-    let email = String::from_utf8(decode(email)?).ok()?;
-    let issued_at: u64 = issued_at.parse().ok()?;
+    // Two fields or three: a cookie signed before the id was carried
+    // still verifies, and simply has no avatar to draw.
+    let mut parts = payload.split('|');
+    let email = String::from_utf8(decode(parts.next()?)?).ok()?;
+    let issued_at: u64 = parts.next()?.parse().ok()?;
+    let github_id = parts.next().and_then(|id| id.parse().ok());
     if now().saturating_sub(issued_at) > MAX_AGE_SECS {
         return None;
     }
-    Some(Session { email, issued_at })
+    Some(Session {
+        email,
+        issued_at,
+        github_id,
+    })
 }
 
 /// `Set-Cookie` for a fresh session.
@@ -178,20 +198,22 @@ mod tests {
 
     #[test]
     fn a_cookie_we_signed_names_the_person() {
-        let token = sign(SECRET, &Session::new("mark@example.com"));
-        assert_eq!(verify(SECRET, &token).unwrap().email, "mark@example.com");
+        let token = sign(SECRET, &Session::new("mark@example.com", Some(47065655)));
+        let session = verify(SECRET, &token).unwrap();
+        assert_eq!(session.email, "mark@example.com");
+        assert_eq!(session.github_id, Some(47065655));
     }
 
     #[test]
     fn a_cookie_signed_with_another_key_is_nobody() {
-        let token = sign(SECRET, &Session::new("mark@example.com"));
+        let token = sign(SECRET, &Session::new("mark@example.com", None));
         assert!(verify("a-different-key", &token).is_none());
     }
 
     #[test]
     fn changing_the_address_invalidates_it() {
         // The whole point of signing it: the address is the claim.
-        let token = sign(SECRET, &Session::new("mark@example.com"));
+        let token = sign(SECRET, &Session::new("mark@example.com", None));
         let forged = token.replace(&encode(b"mark@example.com"), &encode(b"evil@example.com"));
         assert_ne!(forged, token, "the test must actually change it");
         assert!(verify(SECRET, &forged).is_none());
@@ -202,6 +224,7 @@ mod tests {
         let old = Session {
             email: "mark@example.com".into(),
             issued_at: now() - MAX_AGE_SECS - 1,
+            github_id: None,
         };
         assert!(verify(SECRET, &sign(SECRET, &old)).is_none());
     }
@@ -253,5 +276,15 @@ mod tests {
         assert_eq!(from_header(&header, COOKIE).as_deref(), Some("abc123"));
         assert_eq!(from_header("nothing=here", COOKIE), None);
         assert_eq!(from_header(&format!("{COOKIE}="), COOKIE), None);
+    }
+
+    #[test]
+    fn a_cookie_signed_before_the_id_existed_still_works() {
+        // Adding a field must not sign the household out.
+        let payload = format!("{}|{}", encode(b"mark@example.com"), now());
+        let token = format!("{payload}.{}", encode(&mac(SECRET, payload.as_bytes())));
+        let session = verify(SECRET, &token).expect("two fields is still a session");
+        assert_eq!(session.email, "mark@example.com");
+        assert_eq!(session.github_id, None, "no avatar, and that is fine");
     }
 }

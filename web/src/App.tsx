@@ -72,6 +72,7 @@ export function App() {
         </h1>
         <AccountMenu
           email={auth.data?.signed_in_as ?? undefined}
+          avatarUrl={auth.data?.avatar_url ?? undefined}
           onOpenSettings={() => setView("settings")}
         />
       </header>

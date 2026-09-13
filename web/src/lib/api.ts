@@ -71,6 +71,8 @@ export interface AuthStatus {
   enabled: boolean;
   /** The address of whoever is holding this browser, or null. */
   signed_in_as: string | null;
+  /** Their GitHub avatar, when the session knows which account it is. */
+  avatar_url: string | null;
 }
 
 export interface Change {

@@ -139,16 +139,25 @@ pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Respon
             "enabled": false,
             "configured": false,
             "signed_in_as": null,
+            "avatar_url": null,
         }))
         .into_response();
     };
     let enabled = config.auth.is_enabled();
-    let who = enabled
-        .then(|| signed_in_as(&headers, &config))
+    let session = enabled
+        .then(|| session_from(&headers, &config))
         .flatten()
-        .filter(|email| config.auth.person_for(email).is_some());
+        .filter(|s| config.auth.person_for(&s.email).is_some());
+    let who = session.as_ref().map(|s| s.email.clone());
+    // Built here rather than in the browser so the shape of GitHub's
+    // avatar URL lives in one place. `s` is the pixel size: 96 CSS
+    // pixels at 3x, which is the worst case a phone asks for.
+    let avatar = session
+        .and_then(|s| s.github_id)
+        .map(|id| format!("https://avatars.githubusercontent.com/u/{id}?v=4&s=96"));
 
     axum::Json(serde_json::json!({
+        "avatar_url": avatar,
         "enabled": enabled,
         // Whether the secrets can be read, which is *not* the same
         // question. A deployment whose secrets never arrived reports
@@ -161,11 +170,15 @@ pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Respon
     .into_response()
 }
 
-fn signed_in_as(headers: &HeaderMap, config: &niles_config::Config) -> Option<String> {
+fn session_from(headers: &HeaderMap, config: &niles_config::Config) -> Option<session::Session> {
     let secret = config.auth.resolve_session_secret().ok()?;
     let header = headers.get(header::COOKIE)?.to_str().ok()?;
     let token = session::from_header(header, session::COOKIE)?;
-    session::verify(&secret, &token).map(|s| s.email)
+    session::verify(&secret, &token)
+}
+
+fn signed_in_as(headers: &HeaderMap, config: &niles_config::Config) -> Option<String> {
+    session_from(headers, config).map(|s| s.email)
 }
 
 fn presented_token(request: &Request) -> Option<&str> {
