@@ -4157,6 +4157,18 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_config_store(Some(store.clone()))
     .with_logs(LOG_BUFFER.get().cloned())
     .with_api_token(cfg.auth.resolve_api_token());
+
+    // A deployment that mounts its secrets under names the platform
+    // silently drops leaves `[auth]` naming variables that do not
+    // resolve. Sign-in then reads as "off, waiting for its first
+    // person" — which is what a correct install looks like too, except
+    // that one is open to anybody who can reach it. Worth one loud line
+    // rather than a discovery.
+    if cfg.auth.github_client_id_env.is_some() && !cfg.auth.is_configured() {
+        tracing::warn!(
+            "[auth] names secrets that cannot be read, so signing in is OFF and this              Niles is open to anyone who can reach it — check the env vars actually              reach the process"
+        );
+    }
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(api_bind, api_state).await {
             tracing::error!("API server exited: {e}");

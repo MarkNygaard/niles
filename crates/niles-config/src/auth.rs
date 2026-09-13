@@ -64,6 +64,23 @@ impl AuthConfig {
             && self.github_client_secret_env.is_some()
     }
 
+    /// Whether the secrets `[auth]` names can actually be read.
+    ///
+    /// Separate from [`Self::is_enabled`] on purpose, and the
+    /// difference is the point. A deployment whose secrets never
+    /// reached the process looks *exactly* like one that is correctly
+    /// set up and waiting for its first person: both have an empty
+    /// allowlist and both report sign-in as off. One of them is open to
+    /// anybody who can reach it.
+    ///
+    /// Reported by `/auth/status` so the two can be told apart from
+    /// outside, which is the only place anybody is going to look.
+    pub fn is_configured(&self) -> bool {
+        self.resolve_client_id().is_ok()
+            && self.resolve_client_secret().is_ok()
+            && self.resolve_session_secret().is_ok()
+    }
+
     /// The person this verified address belongs to, if any.
     ///
     /// Case-insensitive: addresses are not, and GitHub returns them as
@@ -218,6 +235,50 @@ mod tests {
             api_token_env: None,
             allowed: people,
         }
+    }
+
+    #[test]
+    fn naming_a_secret_is_not_the_same_as_being_able_to_read_it() {
+        // The failure this exists for: a deployment that mounts its
+        // secrets under names Kubernetes silently drops. Sign-in then
+        // reads as "off, waiting for its first person" — which is also
+        // what a correct install looks like at that moment, except
+        // that one is open to anybody.
+        let cfg = AuthConfig {
+            github_client_id_env: Some("NILES_TEST_AUTH_ABSENT_ID".into()),
+            github_client_secret_env: Some("NILES_TEST_AUTH_ABSENT_SECRET".into()),
+            session_secret_env: Some("NILES_TEST_AUTH_ABSENT_SESSION".into()),
+            api_token_env: None,
+            allowed: vec![],
+        };
+        assert!(!cfg.is_configured(), "nothing is set, so nothing resolves");
+    }
+
+    #[test]
+    fn configured_means_every_secret_resolves() {
+        // SAFETY: test-only variable names nothing else reads.
+        unsafe {
+            std::env::set_var("NILES_TEST_AUTH_PRESENT_ID", "id");
+            std::env::set_var("NILES_TEST_AUTH_PRESENT_SECRET", "secret");
+            std::env::set_var("NILES_TEST_AUTH_PRESENT_SESSION", "session");
+        }
+        let mut cfg = AuthConfig {
+            github_client_id_env: Some("NILES_TEST_AUTH_PRESENT_ID".into()),
+            github_client_secret_env: Some("NILES_TEST_AUTH_PRESENT_SECRET".into()),
+            session_secret_env: Some("NILES_TEST_AUTH_PRESENT_SESSION".into()),
+            api_token_env: None,
+            allowed: vec![],
+        };
+        assert!(cfg.is_configured());
+
+        // One missing is enough to be misconfigured.
+        cfg.session_secret_env = Some("NILES_TEST_AUTH_ABSENT_SESSION".into());
+        assert!(!cfg.is_configured());
+    }
+
+    #[test]
+    fn a_section_that_names_nothing_is_not_configured() {
+        assert!(!AuthConfig::default().is_configured());
     }
 
     #[test]

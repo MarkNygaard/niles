@@ -64,6 +64,30 @@ fn app_allowing(allowed: &str, api_token: Option<&str>) -> axum::Router {
     router(state)
 }
 
+/// `[auth]` naming variables that are not set — a platform that dropped
+/// the keys on the way in.
+fn app_with_unreadable_secrets() -> axum::Router {
+    let toml = format!(
+        "{}
+[auth]
+github_client_id_env = \"NILES_TEST_AUTH_NEVER_SET_ID\"
+         github_client_secret_env = \"NILES_TEST_AUTH_NEVER_SET_SECRET\"
+         session_secret_env = \"NILES_TEST_AUTH_NEVER_SET_SESSION\"
+allowed = []
+",
+        crate::config_tests::base_toml()
+    );
+    let store = Arc::new(ConfigStore::from_str_in_memory(&toml).expect("fixture is valid"));
+    let state = AppState::new(
+        Arc::new(DeviceRegistry::new()),
+        Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
+        Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
+        EventBus::default(),
+    )
+    .with_config_store(Some(store));
+    router(state)
+}
+
 fn signed_in_as(email: &str) -> String {
     let token = session::sign(SECRET, &Session::new(email));
     format!("{}={token}", session::COOKIE)
@@ -325,4 +349,25 @@ async fn every_route_this_api_serves_is_either_named_public_or_refused() {
             "{method} {path} was accepted without a session"
         );
     }
+}
+
+#[tokio::test]
+async fn status_tells_a_missing_secret_apart_from_an_empty_list() {
+    // Both report sign-in as off. Only one of them is open to anybody,
+    // and from outside this is the only way to see which.
+    let waiting = app_allowing("allowed = []", None);
+    let (_, body) = send(&waiting, get("/auth/status")).await;
+    assert_eq!(body["enabled"], false);
+    assert_eq!(
+        body["configured"], true,
+        "secrets are readable; this install is merely waiting for its first person"
+    );
+
+    let broken = app_with_unreadable_secrets();
+    let (_, body) = send(&broken, get("/auth/status")).await;
+    assert_eq!(body["enabled"], false);
+    assert_eq!(
+        body["configured"], false,
+        "the secrets never arrived, and saying so is the whole point"
+    );
 }
