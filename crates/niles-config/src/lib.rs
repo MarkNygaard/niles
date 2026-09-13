@@ -7,6 +7,7 @@
 
 pub mod ambient_lights;
 pub mod api;
+pub mod auth;
 pub mod automations;
 pub mod backend;
 pub mod capabilities;
@@ -36,6 +37,7 @@ pub mod wyoming;
 
 pub use ambient_lights::AmbientLightsConfig;
 pub use api::ApiConfig;
+pub use auth::{AllowedPerson, AuthConfig};
 pub use automations::{ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, TriggerDto};
 pub use backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
 pub use capabilities::CapabilitiesConfig;
@@ -172,6 +174,11 @@ pub fn section_reload(section: &str) -> Reload {
         // snapshot, and which lights sit it out from
         // `AmbientLightsConfig::ids`.
         "lighting" | "ambient_lights" => Reload::Hot,
+        // Nothing caches the allowlist: it is read from the live
+        // snapshot as each request is authorised. So adding somebody
+        // takes effect on their next request, and so does removing
+        // them — one property serving both.
+        "auth" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
@@ -187,6 +194,7 @@ pub const SECTIONS: &[&str] = &[
     "home",
     "mqtt",
     "api",
+    "auth",
     "capabilities",
     "persistence",
     "database",
@@ -217,6 +225,8 @@ pub struct Config {
     pub home: HomeConfig,
     pub mqtt: MqttConfig,
     pub api: ApiConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
     #[serde(default)]
     pub capabilities: CapabilitiesConfig,
     #[serde(default)]
@@ -295,6 +305,7 @@ impl Config {
         self.home.validate()?;
         self.mqtt.validate()?;
         self.api.validate()?;
+        self.auth.validate()?;
         self.capabilities.validate()?;
         self.persistence.validate()?;
         if let Some(database) = &self.database {
