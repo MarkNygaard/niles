@@ -63,6 +63,7 @@ pub async fn set_device(
     let desired = desired_state(&body)?;
     within_reach(&device, &body)?;
     let (topic, payload) = command_for(&state, &device.id, &desired)?;
+    hold_against_the_curve(&state, &device.id, &desired);
     publish(&state, topic, payload).await?;
     Ok(StatusCode::ACCEPTED)
 }
@@ -108,6 +109,32 @@ pub async fn set_room(
     fan_out(&state, &lights, &desired, &room.to_string()).await
 }
 
+/// Take a light out of the curve's hands, if this command is the kind
+/// the curve would undo.
+///
+/// Before the publish, not after: the curve ticks once a minute and
+/// would otherwise be free to overwrite in between — the same ordering
+/// the voice path documents.
+///
+/// Only for commands that set a *level*. `on` alone is deliberately not
+/// manual: turning a light on is how you ask for the curve back, and
+/// the off→on transition clears the flag anyway. Sending brightness to
+/// a light that is off is a level, so it counts — it just also happens
+/// to turn it on, and the transition then clears what was set here,
+/// which is correct. Asking for a dark room to come up at 20% is asking
+/// for it once, not forever.
+fn hold_against_the_curve(state: &AppState, id: &DeviceId, desired: &DeviceState) {
+    let Some(manual) = state.manual_mode.as_ref() else {
+        return;
+    };
+    let sets_a_level = desired.brightness.is_some()
+        || desired.color_temp_kelvin.is_some()
+        || desired.rgb.is_some();
+    if sets_a_level {
+        manual.flag(id);
+    }
+}
+
 /// Send `desired` to each light, narrowed to what that light can act on.
 ///
 /// `where_` names the scope for the error, which is the only thing the
@@ -125,6 +152,7 @@ async fn fan_out(
             tracing::debug!("{} can't act on this, skipping", light.id);
             continue;
         };
+        hold_against_the_curve(state, &light.id, &narrowed);
         publish(state, topic, payload).await?;
         sent += 1;
     }
