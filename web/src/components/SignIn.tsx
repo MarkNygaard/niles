@@ -26,8 +26,19 @@ export function SignIn({ error }: SignInProps) {
     <main className="flex min-h-dvh flex-col items-center justify-center gap-6 px-6 py-12">
       <div className="flex flex-col items-center gap-3 text-center">
         <ButlerMark />
-        <h1 className="font-heading text-2xl font-semibold">Niles</h1>
-        <p className="text-muted-foreground max-w-sm text-sm">
+        {/* Set in a serif because Niles is a butler, and in real type
+            because this page has a font to do it with — the launch
+            image does not, which is why the name is not on that. */}
+        <h1
+          className="text-3xl font-medium tracking-wide"
+          style={{ fontFamily: "ui-serif, Georgia, 'Times New Roman', serif" }}
+        >
+          Niles
+        </h1>
+        <p className="text-muted-foreground/90 max-w-xs text-[11px] tracking-[0.14em] uppercase">
+          Neural Intelligence, Lightweight Edge System
+        </p>
+        <p className="text-muted-foreground mt-2 max-w-sm text-sm">
           The lights in the house, and how they behave. Sign in to reach them.
         </p>
       </div>
@@ -52,22 +63,26 @@ export function SignIn({ error }: SignInProps) {
   );
 }
 
-/** The same mark as the Home Screen icon, so the page is recognisably it. */
+/**
+ * The same mark as the Home Screen icon, so the page is recognisably it.
+ *
+ * The shirt is the drawn shape and the jacket is whatever is behind it;
+ * the tie and the buttons are cut back out, which is what puts the tie
+ * inside the collar rather than floating above it. `fill-rule` does the
+ * cutting, so it is one path rather than a shape and three patches.
+ */
 function ButlerMark() {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="size-14 text-foreground"
-      aria-hidden
-    >
-      <path d="M2 7 L2 17 L10.3 12 Z" />
-      <path d="M22 7 L22 17 L13.7 12 Z" />
-      <circle cx="12" cy="12" r="1.7" />
+    <svg viewBox="0 0 24 24" className="size-16 fill-current" aria-hidden>
+      <path
+        fillRule="evenodd"
+        d="M5.8 3 H18.2 L12 20.5 Z
+           M7.8 4.2 V7.6 L12 5.9 Z
+           M16.2 4.2 V7.6 L12 5.9 Z
+           M12.85 10.6 a0.85 0.85 0 1 1 -1.7 0 a0.85 0.85 0 1 1 1.7 0 Z
+           M12.85 13.6 a0.85 0.85 0 1 1 -1.7 0 a0.85 0.85 0 1 1 1.7 0 Z
+           M12.85 16.6 a0.85 0.85 0 1 1 -1.7 0 a0.85 0.85 0 1 1 1.7 0 Z"
+      />
     </svg>
   );
 }
