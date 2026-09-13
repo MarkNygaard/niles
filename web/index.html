@@ -2,8 +2,30 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: installed on iOS the page owns the whole
+         screen, including behind the status bar and home indicator, and
+         globals.css keeps clear of both with safe-area insets.
+         interactive-widget=resizes-content: the on-screen keyboard
+         shrinks the page rather than scrolling it out from under itself. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>Niles</title>
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- The app is dark-only (see `class="dark"` above), so there is one
+         colour to declare rather than a pair behind media queries. -->
+    <meta name="theme-color" content="#0a0a0a" />
+
+    <meta name="mobile-web-app-capable" content="yes" />
+    <!-- Light status-bar text, drawn over the page. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Niles" />
+
+    <!-- iOS reads only this one, and ignores the manifest's icons. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
   </head>
   <body>
     <div id="root"></div>

@@ -14,3 +14,16 @@
   background: var(--border);
   border-radius: 3px;
 }
+
+/* Installed on a phone the page runs under the status bar and the home
+   indicator, because the viewport is declared `viewport-fit=cover`.
+   Both insets are zero in an ordinary browser tab, so this costs
+   nothing there.
+
+   Applied here rather than through a custom property: Lightning CSS
+   silently drops `env()` inside a custom-property declaration, so the
+   value has to appear at the point it is used. */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}

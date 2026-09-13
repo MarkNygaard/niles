@@ -347,6 +347,12 @@ summary = "Web dashboard of every room, switching a whole room or one light"
 since_pr = 178
 
 [[feature]]
+id = "ui-installable"
+category = "ui.lighting"
+summary = "Install the dashboard to a phone's Home Screen as an app"
+since_pr = 179
+
+[[feature]]
 id = "api-events-stream"
 category = "api.events"
 summary = "WebSocket /events/stream pushes real-time device and system events"

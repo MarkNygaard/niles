@@ -1539,6 +1539,30 @@ lights are still on?" is one glance and several sentences), and
 percentage). Neither is a setting, so neither belongs in the config
 surfaces; both are what a phone in a hallway is for.
 
+### Installing it
+
+The page is a progressive web app, so it can live on a Home Screen and
+open without browser furniture — which is what makes "press the hallway
+off on your way past" a thing anyone actually does.
+
+The service worker behind that **caches nothing, deliberately**. This
+page exists to say which lights are on, and a cached copy is a page
+confidently describing a room the reader can see is wrong. Nor is there
+anything worth having offline: every control needs Niles at the other
+end. So the usual trade of "stale but present" buys nothing here and
+costs correctness.
+
+It still has to exist, for two reasons. Chrome declines to offer
+installation to a page whose worker has no `fetch` handler — so there
+is one, and it is empty, which leaves every request to the network
+exactly as if it were absent. And a push notification can only be
+received by a service worker, which is where a fired timer will reach a
+phone.
+
+There is no install button in the page. Every browser already has one,
+Safari's cannot be triggered from script, and a button that guesses at
+Chrome's can only reproduce it badly.
+
 ### What it talks to
 
 The registry it draws comes from `GET /devices`, which reports each
