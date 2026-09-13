@@ -237,6 +237,9 @@ async fn the_config_routes_are_behind_the_gate_too() {
     }
 }
 
+// Only meaningful with the bundle embedded: without the `ui`
+// feature there are no assets, and nothing extra is public.
+#[cfg(feature = "ui")]
 #[tokio::test]
 async fn the_pages_own_assets_are_served_to_somebody_not_signed_in_yet() {
     // The shell is useless without its script, and a browser asks for
@@ -248,6 +251,9 @@ async fn the_pages_own_assets_are_served_to_somebody_not_signed_in_yet() {
     assert_eq!(status, StatusCode::OK, "the app must be able to boot");
 }
 
+// Only meaningful with the bundle embedded: without the `ui`
+// feature there are no assets, and nothing extra is public.
+#[cfg(feature = "ui")]
 #[tokio::test]
 async fn a_ui_asset_is_public_but_an_api_route_of_the_same_shape_is_not() {
     // The rule is "is this a file the bundle ships", not "does the path
