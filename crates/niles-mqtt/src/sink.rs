@@ -185,6 +185,7 @@ mod tests {
                 temperature_celsius: Some(21.5),
                 humidity_percent: Some(50.0),
                 battery_percent: Some(99),
+                open: None,
             },
         );
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();

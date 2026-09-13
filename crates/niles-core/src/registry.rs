@@ -59,6 +59,7 @@ impl DeviceRegistry {
         s.temperature_celsius = partial.temperature_celsius.or(s.temperature_celsius);
         s.humidity_percent = partial.humidity_percent.or(s.humidity_percent);
         s.battery_percent = partial.battery_percent.or(s.battery_percent);
+        s.open = partial.open.or(s.open);
         true
     }
 

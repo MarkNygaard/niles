@@ -40,6 +40,8 @@ export interface DeviceState {
   temperature_celsius: number | null;
   humidity_percent: number | null;
   battery_percent: number | null;
+  /** A door or window: `true` is open. `null` on everything else. */
+  open: boolean | null;
 }
 
 /** A device as `GET /devices` reports it. */

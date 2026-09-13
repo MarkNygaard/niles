@@ -174,6 +174,14 @@ pub struct DeviceState {
     pub temperature_celsius: Option<f32>,
     pub humidity_percent: Option<f32>,
     pub battery_percent: Option<u8>,
+    /// A door or window: `true` is open.
+    ///
+    /// Z2M reports the opposite — `contact: true` means the magnet is
+    /// present, so the door is shut — and the inversion happens in the
+    /// source crate, where every other upstream translation lives. A
+    /// field named `open` that means closed would be read wrong once
+    /// and then be wrong for good.
+    pub open: Option<bool>,
 }
 
 /// What a light can actually be told to do.
@@ -204,6 +212,11 @@ pub enum DeviceClass {
     /// brightness or color (so the curve / morning routine skip it).
     Outlet,
     Switch,
+    /// A door or window sensor: open or closed, and nothing to press.
+    /// Its own class rather than a `Sensor` that happens to report
+    /// `open`, so the distinction survives a device that has not said
+    /// anything yet.
+    Contact,
     Sensor,
     Unknown,
 }

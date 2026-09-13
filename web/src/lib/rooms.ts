@@ -36,6 +36,21 @@ export interface Room {
    */
   temperature?: number;
   humidity?: number;
+  /** What is standing open in it. Empty when everything is shut. */
+  openings: Opening[];
+}
+
+/**
+ * Something in a room that is open right now.
+ *
+ * Deduplicated by kind rather than listed per device: three open
+ * windows is still "the windows are open", and three identical icons
+ * on a card the size of a thumbnail is noise, not information. The
+ * count rides along for the label, which is where it belongs.
+ */
+export interface Opening {
+  kind: "door" | "window";
+  count: number;
 }
 
 /**
@@ -64,10 +79,31 @@ export function roomsOf(devices: Device[]): Room[] {
         on: lights.filter((light) => light.state.on === true).length,
         temperature: firstReported(all, "temperature_celsius"),
         humidity: firstReported(all, "humidity_percent"),
+        openings: openingsOf(all),
       };
     })
     .filter((room) => room.lights.length > 0)
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * The open doors and windows in a set of devices.
+ *
+ * Which of the two it is comes from the *name*, and only because being
+ * wrong about it costs an icon rather than a behaviour — Niles already
+ * knows it is a contact sensor from what Z2M says it exposes, so a
+ * sensor called `garden` still reports, it just draws a door.
+ */
+export function openingsOf(devices: Device[]): Opening[] {
+  const counts = new Map<Opening["kind"], number>();
+  for (const device of devices) {
+    if (device.state.open !== true) continue;
+    const kind: Opening["kind"] = /window/i.test(device.name) ? "window" : "door";
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([kind, count]) => ({ kind, count }))
+    .sort((a, b) => a.kind.localeCompare(b.kind));
 }
 
 function firstReported(

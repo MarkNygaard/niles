@@ -85,6 +85,8 @@ pub struct DeviceStateDto {
     pub temperature_celsius: Option<f32>,
     pub humidity_percent: Option<f32>,
     pub battery_percent: Option<u8>,
+    /// A door or window: `true` is open. Absent on everything else.
+    pub open: Option<bool>,
 }
 
 impl From<&DeviceState> for DeviceStateDto {
@@ -97,6 +99,7 @@ impl From<&DeviceState> for DeviceStateDto {
             temperature_celsius: s.temperature_celsius,
             humidity_percent: s.humidity_percent,
             battery_percent: s.battery_percent,
+            open: s.open,
         }
     }
 }
