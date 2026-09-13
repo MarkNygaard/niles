@@ -15,6 +15,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { CurveChart } from "@/components/CurveChart";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
+import { PeopleCard } from "@/components/PeopleCard";
+import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
@@ -140,6 +142,11 @@ function numberAt(root: unknown, path: string): number | undefined {
 function stringAt(root: unknown, path: string): string | undefined {
   const value = valueAt(root, path);
   return typeof value === "string" ? value : undefined;
+}
+
+function peopleAt(root: unknown): Person[] {
+  const value = valueAt(root, "auth.allowed");
+  return Array.isArray(value) ? (value as Person[]) : [];
 }
 
 export function ConfigPanel() {
@@ -298,6 +305,7 @@ export function ConfigPanel() {
       <Tabs defaultValue="lighting">
         <TabsList>
           <TabsTrigger value="lighting">Lighting</TabsTrigger>
+          <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="all">Everything else</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
         </TabsList>
@@ -345,6 +353,31 @@ export function ConfigPanel() {
                   onChange={(path, value) => save.mutate({ row: path, entries: [{ path, value }] })}
                 />
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="people">
+          <Card>
+            <CardHeader>
+              <CardTitle>People</CardTitle>
+              <CardDescription>
+                Who can sign in. Signing in uses GitHub, but a GitHub account
+                is free — so this list, not GitHub, decides who gets in.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <PeopleCard
+                people={peopleAt(view.effective)}
+                saving={save.isPending}
+                error={rowError?.row === "auth.allowed" ? rowError.message : undefined}
+                onChange={(people) =>
+                  save.mutate({
+                    row: "auth.allowed",
+                    entries: [{ path: "auth.allowed", value: people }],
+                  })
+                }
+              />
             </CardContent>
           </Card>
         </TabsContent>

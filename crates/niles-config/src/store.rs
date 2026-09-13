@@ -356,6 +356,20 @@ impl ConfigStore {
         // boot would produce.
         let config = layer(&self.base, &next)?;
 
+        // The one write that cannot be undone from the page that made
+        // it: with nobody on the allowlist, nobody can sign in to put
+        // somebody back. Refused here rather than in `validate`,
+        // because an empty list is a perfectly valid *state* — it is
+        // how a fresh install starts — and only the transition out of
+        // a non-empty one is the mistake.
+        if self.current().auth.would_lock_out(&config.auth) {
+            return Err(Error::InvalidSection {
+                section: "auth",
+                reason: "removing the last person would leave nobody able to sign in;                          add somebody else first"
+                    .into(),
+            });
+        }
+
         let before = layer_table(&self.base, &overrides);
         let after = layer_table(&self.base, &next);
         let changes: Vec<Change> = paths
@@ -706,11 +720,87 @@ mod tests {
         toml::from_str(s).expect("test patch parses")
     }
 
+    /// The minimal base plus an `[auth]` section with a GitHub app
+    /// named, so `is_enabled` turns purely on who is listed.
+    fn with_auth(allowed: &str) -> ConfigStore {
+        let toml = format!(
+            "{}
+[auth]
+github_client_id_env = \"NILES_GITHUB_CLIENT_ID\"
+             github_client_secret_env = \"NILES_GITHUB_CLIENT_SECRET\"
+{allowed}
+",
+            base_toml()
+        );
+        ConfigStore::from_str_in_memory(&toml).expect("fixture config is valid")
+    }
+
     #[tokio::test]
     async fn without_overrides_the_base_is_the_effective_config() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 100);
         assert!(store.overrides().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_last_person_cannot_be_removed() {
+        // Nobody left on the allowlist means nobody can sign in to put
+        // somebody back — and the page offering that button is the page
+        // you would have to be signed in to reach.
+        let store = with_auth(r#"allowed = [{ email = "a@example.com" }]"#);
+
+        let error = store
+            .apply(
+                &patch(
+                    "[auth]
+allowed = []
+",
+                ),
+                ChangeSource::Api,
+            )
+            .await
+            .expect_err("should refuse");
+        assert!(
+            error.to_string().contains("nobody able to sign in"),
+            "the refusal should say why: {error}"
+        );
+        assert_eq!(store.current().auth.allowed.len(), 1, "unchanged");
+    }
+
+    #[tokio::test]
+    async fn removing_yourself_is_allowed_while_somebody_remains() {
+        let store =
+            with_auth(r#"allowed = [{ email = "a@example.com" }, { email = "b@example.com" }]"#);
+
+        store
+            .apply(
+                &patch(
+                    "[auth]
+allowed = [{ email = \"b@example.com\" }]
+",
+                ),
+                ChangeSource::Api,
+            )
+            .await
+            .expect("one person left is fine");
+        assert_eq!(store.current().auth.allowed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_first_person_can_always_be_added() {
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        store
+            .apply(
+                &patch(
+                    "[auth]
+allowed = [{ email = \"a@example.com\" }]
+",
+                ),
+                ChangeSource::Api,
+            )
+            .await
+            .expect("adding the first person is how sign-in gets switched on");
+        assert_eq!(store.current().auth.allowed.len(), 1);
     }
 
     #[tokio::test]
