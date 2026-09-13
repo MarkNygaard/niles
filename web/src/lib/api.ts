@@ -46,10 +46,12 @@ export interface SetupReport {
 export interface Secret {
   key: string;
   label: string;
-  /** Set from anywhere — the environment counts. */
-  set: boolean;
-  /** Set in Niles's own store, which is the only kind it can replace. */
-  stored: boolean;
+  /**
+   * Where Niles reads it from. One field rather than two booleans the
+   * page has to combine correctly — which is how the first version got
+   * it wrong and showed working credentials as unset.
+   */
+  source: "environment" | "stored" | "unset";
 }
 
 export interface SecretsReport {

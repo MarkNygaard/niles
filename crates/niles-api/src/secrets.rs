@@ -23,6 +23,11 @@ const KNOWN: &[(&str, &str)] = &[
     ("mqtt.password", "Zigbee2MQTT broker password"),
     ("stt.api_key", "Speech-to-text API key"),
     ("llm.api_key", "LLM API key"),
+    // Not a secret — it travels in the redirect URL the browser
+    // follows — but it is a value Niles has to be given, and it comes
+    // through the same resolution. Leaving it out meant sign-in could
+    // not be finished from the app at all.
+    ("auth.github_client_id", "GitHub OAuth client ID"),
     ("auth.github_client_secret", "GitHub OAuth client secret"),
     ("auth.session_secret", "Session signing secret"),
     (
@@ -36,11 +41,16 @@ const KNOWN: &[(&str, &str)] = &[
 pub struct SecretDto {
     pub key: &'static str,
     pub label: &'static str,
-    /// Whether Niles can get this secret at all, from anywhere.
-    pub set: bool,
-    /// True when it is set *here* rather than in the environment. The
-    /// app can only replace the ones it owns.
-    pub stored: bool,
+    /// Where it comes from: `environment`, `stored`, or `unset`.
+    ///
+    /// One field rather than two booleans the caller has to combine.
+    /// The first version reported `set` and `stored` separately and got
+    /// `set` wrong — it only ever looked in the store, so every
+    /// credential fed by an environment variable read as unset, and the
+    /// page offered to overwrite working credentials. A single source,
+    /// resolved by the same code that reads the secret, cannot drift
+    /// like that.
+    pub source: niles_config::Source,
 }
 
 #[derive(serde::Serialize)]
@@ -58,25 +68,25 @@ pub struct SetSecret {
 
 /// `GET /secrets` — what is set, and what is missing.
 pub async fn list_secrets(State(state): State<AppState>) -> Json<SecretsReport> {
-    let stored = match state.secrets.as_ref() {
-        Some(store) => store.keys().await.unwrap_or_default(),
-        None => Vec::new(),
-    };
+    let cfg = state.config.as_ref().map(|c| c.current());
     Json(SecretsReport {
         writable: state.secrets.is_some(),
         secrets: KNOWN
             .iter()
-            .map(|(key, label)| {
-                let stored = stored.iter().any(|k| k == key);
-                SecretDto {
-                    key,
-                    label,
-                    // Either source counts as set: an install whose
-                    // credentials are all environment variables is a
-                    // finished install, not an unfinished one.
-                    set: stored || niles_config::secrets::get(key).is_some(),
-                    stored,
-                }
+            .map(|(key, label)| SecretDto {
+                key,
+                label,
+                // Asked of the config, which is the thing that knows
+                // which environment variable each purpose reads. Without
+                // a config store there is nothing to ask, and a
+                // credential can only have come from the store.
+                source: match cfg.as_ref() {
+                    Some(cfg) => cfg.secret_source(key),
+                    None if niles_config::secrets::get(key).is_some() => {
+                        niles_config::Source::Stored
+                    }
+                    None => niles_config::Source::Unset,
+                },
             })
             .collect(),
     })

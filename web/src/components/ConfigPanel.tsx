@@ -449,13 +449,16 @@ export function ConfigPanel() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="services" className="flex flex-col gap-4">
+        <TabsContent value="credentials" className="flex flex-col gap-4">
           {secrets.data && (
             <SecretsCard
               report={secrets.data}
               onChanged={() => secrets.refetch()}
             />
           )}
+        </TabsContent>
+
+        <TabsContent value="integrations" className="flex flex-col gap-4">
           {tado.data && (
             <TadoCard
               status={tado.data}
@@ -477,11 +480,13 @@ export function ConfigPanel() {
         <TabsContent value="all">
           <Card>
             <CardHeader>
-              <CardTitle>All sections</CardTitle>
+              <CardTitle>Raw config</CardTitle>
               <CardDescription>
-                Read-only. Sections marked “restart required” are only read
-                when Niles starts, so editing them here would look like it
-                worked without doing anything.
+                Every section as Niles has it, read-only — including the ones
+                with no page of their own yet, which is why this exists.
+                Sections marked “restart required” are only read at startup,
+                so editing them here would look like it worked without doing
+                anything.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">

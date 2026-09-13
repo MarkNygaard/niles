@@ -59,9 +59,24 @@ impl AuthConfig {
     /// allowed would refuse everyone; listing people with no GitHub app
     /// would give them nothing to sign in with.
     pub fn is_enabled(&self) -> bool {
-        !self.allowed.is_empty()
-            && self.github_client_id_env.is_some()
-            && self.github_client_secret_env.is_some()
+        !self.allowed.is_empty() && self.names_a_github_app()
+    }
+
+    /// Whether a GitHub app has been *pointed at*, by either route.
+    ///
+    /// Naming `*_env` variables is one way to say so; storing the
+    /// values from Settings is the other, and an install with no config
+    /// file has only the second. Deliberately asks whether an app was
+    /// nominated rather than whether its values read back — that
+    /// distinction is what lets a deployment whose secrets never
+    /// arrived be told apart from one correctly waiting for its first
+    /// person, and collapsing it would hide exactly the failure
+    /// `is_configured` exists to catch.
+    fn names_a_github_app(&self) -> bool {
+        let named = self.github_client_id_env.is_some() && self.github_client_secret_env.is_some();
+        let stored = crate::secrets::get("auth.github_client_id").is_some()
+            && crate::secrets::get("auth.github_client_secret").is_some();
+        named || stored
     }
 
     /// Whether the secrets `[auth]` names can actually be read.

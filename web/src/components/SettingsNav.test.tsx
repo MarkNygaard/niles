@@ -8,8 +8,18 @@ describe("SettingsNav", () => {
     // a word, and "Services" on its own says nothing.
     render(<SettingsNav current={null} onPick={vi.fn()} />);
     expect(
-      screen.getByRole("button", { name: /Services/ }),
-    ).toHaveTextContent("tado, and the credentials Niles needs");
+      screen.getByRole("button", { name: /Integrations/ }),
+    ).toHaveTextContent("The services Niles reads from");
+  });
+
+  it("keeps credentials apart from the things that use them", () => {
+    // They answer different questions — "what is Niles connected to"
+    // and "what keys does it hold" — and one page called Services made
+    // somebody scroll past a broker password to reach tado.
+    render(<SettingsNav current={null} onPick={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /Credentials/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Integrations/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Services/ })).toBeNull();
   });
 
   it("opens the section that was pressed", () => {

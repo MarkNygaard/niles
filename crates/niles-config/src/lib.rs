@@ -57,6 +57,7 @@ pub use persistence::PersistenceConfig;
 pub use presence::{PresenceConfig, TadoConfigDto};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use satellites::{SatelliteConfig, SatellitesConfig};
+pub use secrets::Source;
 use serde::Deserialize;
 pub use setup::{Gap, Severity};
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};

@@ -23,6 +23,18 @@ pub struct WledDeviceConfig {
     pub name: String,
     /// Base MQTT topic for this WLED instance, e.g. `"wled/office"`.
     pub topic: String,
+
+    /// True for a strip with warm and cold white channels — the
+    /// "white balance" slider in WLED's own interface, `cct` in its
+    /// API.
+    ///
+    /// Declared rather than detected: WLED has no `bridge/devices` to
+    /// ask, and guessing from what a strip has happened to report is
+    /// the mistake #167 fixed for Zigbee. Off by default, because a
+    /// plain RGB strip told to warm up does nothing and looks broken
+    /// rather than unsupported.
+    #[serde(default)]
+    pub white_balance: bool,
 }
 
 impl WledConfig {

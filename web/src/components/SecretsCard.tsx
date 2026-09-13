@@ -86,21 +86,25 @@ export function SecretsCard({ report, onChanged }: SecretsCardProps) {
           <div key={secret.key} className="flex flex-col gap-1.5">
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-sm font-medium">{secret.label}</span>
-              {secret.set && (
+              {secret.source !== "unset" && (
                 <span className="text-muted-foreground flex items-center gap-1 text-xs">
                   <Check aria-hidden className="text-lit size-3" />
-                  {secret.stored ? "saved here" : "from the environment"}
+                  {secret.source === "stored"
+                    ? "saved here"
+                    : "from the environment"}
                 </span>
               )}
             </div>
 
-            {secret.stored || !secret.set ? (
+            {secret.source !== "environment" ? (
               <div className="flex items-center gap-2">
                 <Input
                   type="password"
                   autoComplete="off"
                   aria-label={secret.label}
-                  placeholder={secret.set ? "Replace it…" : "Not set"}
+                  placeholder={
+                    secret.source === "stored" ? "Replace it…" : "Not set"
+                  }
                   value={drafts[secret.key] ?? ""}
                   disabled={!report.writable || busy === secret.key}
                   onChange={(e) =>
@@ -121,7 +125,7 @@ export function SecretsCard({ report, onChanged }: SecretsCardProps) {
                 >
                   Save
                 </Button>
-                {secret.stored && (
+                {secret.source === "stored" && (
                   <Button
                     variant="ghost"
                     aria-label={`Clear ${secret.label}`}
