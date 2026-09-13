@@ -51,10 +51,45 @@ impl SatelliteRegistry {
     pub fn room_for(&self, peer: SocketAddr) -> Option<&RoomName> {
         self.by_ip.get(&peer.ip())
     }
+
+    /// Where to reach the satellite in `room`.
+    ///
+    /// The reverse of [`Self::room_for`], for the case where niles
+    /// wants to speak and the satellite is not currently connected —
+    /// the only address we have for it is the one in its config entry.
+    pub fn ip_for(&self, room: &RoomName) -> Option<IpAddr> {
+        self.by_ip
+            .iter()
+            .find(|(_, r)| *r == room)
+            .map(|(ip, _)| *ip)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_room_can_be_dialled_as_well_as_recognised() {
+        // Anything unprompted — a timer, a notification — finds no live
+        // connection, because the satellite hangs up after every turn.
+        // The config entry is the only address there is.
+        let mut cfg = SatellitesConfig::default();
+        cfg.satellites.insert(
+            "office".into(),
+            niles_config::SatelliteConfig {
+                ip: "192.168.69.188".into(),
+                room: "office".into(),
+            },
+        );
+        let reg = SatelliteRegistry::from_config(&cfg);
+        let office = RoomName::parse("office").unwrap();
+
+        assert_eq!(
+            reg.ip_for(&office),
+            Some("192.168.69.188".parse::<IpAddr>().unwrap())
+        );
+        assert_eq!(reg.ip_for(&RoomName::parse("kitchen").unwrap()), None);
+    }
+
     use super::*;
     use niles_config::SatellitesConfig;
     use std::collections::HashMap;

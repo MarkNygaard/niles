@@ -44,6 +44,7 @@
 #include "nvs_flash.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
+#include <fcntl.h>
 
 #include "secrets.h"
 
@@ -68,6 +69,11 @@ static constexpr int STRIDE_SAMPLES = 10 * SAMPLE_RATE / 1000;            // 160
 
 // XVF3800 I2S pins (match the proven VAD wiring): BCLK 8, WS 7, DIN 43,
 // DOUT 44 (playback — the XVF3800 plays I2S-TX audio on its speaker).
+// Where niles reaches us to say something unprompted. Fixed rather
+// than configured: it is the satellite's own listening port, and niles
+// learns it from its `[satellites]` entry.
+static constexpr int NILES_PUSH_PORT = 10301;
+
 static constexpr gpio_num_t PIN_BCLK = GPIO_NUM_8;
 static constexpr gpio_num_t PIN_WS = GPIO_NUM_7;
 static constexpr gpio_num_t PIN_DIN = GPIO_NUM_43;
@@ -479,6 +485,76 @@ static void play_reply(int sock) {
 // After wake detection, open a Wyoming TCP connection to niles and stream the
 // spoken command as mono 16 kHz 16-bit PCM (raw downmix, no MIC_GAIN — cleaner
 // for STT), ending on silence (energy VAD) or a hard cap. No playback yet.
+// ---- Niles calling us ----
+//
+// The satellite has only ever spoken first: connect, stream, hear the
+// reply, hang up. So niles could never start a conversation — a timer
+// could fire and there was nowhere to say so, because an idle
+// satellite holds no connection and the peer index correctly reports
+// that it has none.
+//
+// A listening socket is the smaller half of fixing that. The wake loop
+// already runs every 10 ms, so a non-blocking accept costs a branch;
+// the alternative — holding an outbound connection open — needs
+// keepalives, reconnection, and stale-socket handling for the same
+// result.
+//
+// Deliberately playback only. It does NOT capture afterwards: a
+// microphone that opens because *niles* decided to talk is a
+// microphone that opens without anyone saying the wake word, and an
+// earlier capture of an unrelated television is exactly what that
+// looks like when it goes wrong. To answer a ringing timer, say the
+// wake word like anything else.
+static int push_listener = -1;
+
+static void push_listener_init() {
+  push_listener = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+  if (push_listener < 0) {
+    ESP_LOGE(TAG, "push listener socket() failed");
+    return;
+  }
+  int yes = 1;
+  setsockopt(push_listener, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+  struct sockaddr_in addr = {};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(NILES_PUSH_PORT);
+  if (bind(push_listener, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ESP_LOGE(TAG, "push listener bind failed (errno %d)", errno);
+    close(push_listener);
+    push_listener = -1;
+    return;
+  }
+  if (listen(push_listener, 1) != 0) {
+    ESP_LOGE(TAG, "push listener listen failed (errno %d)", errno);
+    close(push_listener);
+    push_listener = -1;
+    return;
+  }
+  // Non-blocking: the wake loop polls it and must never stall there,
+  // or the satellite stops hearing its own name.
+  fcntl(push_listener, F_SETFL, O_NONBLOCK);
+  ESP_LOGI(TAG, "listening for niles pushes on :%d", NILES_PUSH_PORT);
+}
+
+// Play anything niles has to say. Returns true if something arrived.
+static bool push_poll() {
+  if (push_listener < 0) return false;
+  int client = accept(push_listener, nullptr, nullptr);
+  if (client < 0) return false;  // EWOULDBLOCK — the normal case
+
+  ESP_LOGI(TAG, ">>> niles is calling <<<");
+  // The accepted socket inherits O_NONBLOCK on some stacks, and
+  // play_reply expects to block on reads.
+  fcntl(client, F_SETFL, 0);
+  leds_show(Leds::Speaking);
+  play_reply(client);
+  close(client);
+  leds_show(Leds::Idle);
+  return true;
+}
+
 static void stream_utterance() {
   struct sockaddr_in dest = {};
   dest.sin_family = AF_INET;
@@ -505,10 +581,26 @@ static void stream_utterance() {
     return;
   }
 
-  // mean |sample| (raw, ungained) below this = silence. Ambient measures
-  // ~15-24, real speech reaches thousands, so 60 separates them cleanly.
-  // Lower it if quiet commands get cut off; raise if it never ends.
-  static const int STOP_RMS = 60;
+  // End-of-speech is measured RELATIVE to how loud this sentence is,
+  // not against a fixed level.
+  //
+  // A constant cannot work in a room that is sometimes quiet and
+  // sometimes has a television in it. At STOP_RMS = 60 with ambient
+  // ~15-24 it was fine in a quiet room and impossible with the TV on:
+  // the floor never fell below 60, the capture ran to MAX_FRAMES every
+  // time, and Whisper was handed the sentence plus two and a half
+  // seconds of room. That is what turned "what's the weather like" into
+  // "what's the word I like".
+  //
+  // Speech runs into the thousands and background sits in the tens, so
+  // the *ratio* is stable even though neither level is. Stop when the
+  // level falls to a fraction of the loudest speech so far in this
+  // utterance, clamped at both ends: a floor so a whispered sentence
+  // doesn't set the bar at nothing, and a ceiling so a shouted one
+  // doesn't set it so high that the trailing words are cut off.
+  static const int STOP_DIVISOR = 16;
+  static const int STOP_RMS_MIN = 60;  // the old fixed value, now the floor
+  static const int STOP_RMS_MAX = 400;
   static const int HANGOVER_FRAMES = 35; // ~350 ms of trailing silence ends it
   static const int MAX_FRAMES = 400;     // ~4 s hard cap (was 6 s — too slow)
 
@@ -534,6 +626,10 @@ static void stream_utterance() {
   int silent = 0, total = 0, lead = 0;
   bool started = false;
   long emin = 1 << 30, emax = 0;
+  // The loudest speech seen since onset, which sets the bar for what
+  // counts as silence afterwards.
+  long speech_peak = 0;
+  int stop_rms = STOP_RMS_MIN;
   while (total < MAX_FRAMES) {
     size_t got = 0;
     i2s_channel_read(rx_chan, i2s_buf, sizeof(i2s_buf), &got, portMAX_DELAY);
@@ -567,10 +663,22 @@ static void stream_utterance() {
         ESP_LOGW(TAG, "no speech after wake — aborting capture");
         break;
       }
-    } else if (energy < STOP_RMS) {
-      if (++silent >= HANGOVER_FRAMES) break;
     } else {
-      silent = 0;
+      // Recompute the bar from the loudest speech so far: how loud this
+      // person is right now is the only thing that says what silence
+      // sounds like afterwards.
+      if (energy > speech_peak) {
+        speech_peak = energy;
+        long scaled = speech_peak / STOP_DIVISOR;
+        if (scaled < STOP_RMS_MIN) scaled = STOP_RMS_MIN;
+        if (scaled > STOP_RMS_MAX) scaled = STOP_RMS_MAX;
+        stop_rms = (int)scaled;
+      }
+      if (energy < stop_rms) {
+        if (++silent >= HANGOVER_FRAMES) break;
+      } else {
+        silent = 0;
+      }
     }
   }
 
@@ -579,8 +687,10 @@ static void stream_utterance() {
   // Nothing more to say; from here the wait is niles's.
   leds_show(Leds::Thinking);
   ESP_LOGI(TAG,
-           "utterance streamed (%d frames, ~%d ms, %s) energy[min=%ld max=%ld] (STOP_RMS=%d)",
-           total, total * 10, started ? "spoke" : "no-speech", emin, emax, STOP_RMS);
+           "utterance streamed (%d frames, ~%d ms, %s%s) energy[min=%ld max=%ld] "
+           "speech_peak=%ld stop_rms=%d",
+           total, total * 10, started ? "spoke" : "no-speech",
+           total >= MAX_FRAMES ? ", HIT CAP" : "", emin, emax, speech_peak, stop_rms);
 
   // Read + play niles' spoken reply on the same socket (Stage 3), then close.
   play_reply(sock);
@@ -643,6 +753,7 @@ extern "C" void app_main(void) {
   model_init();
   i2s_init();
   leds_init();
+  push_listener_init();
   memset(window, 0, sizeof(window));
   ESP_LOGI(TAG, "listening — say 'nyles'");
 
@@ -663,6 +774,15 @@ extern "C" void app_main(void) {
   static int8_t feat3[3 * kFeatureSize];
   int slot = 0;
   while (true) {
+    // Before listening for our own name, see whether niles is trying to
+    // say something. Cheap: one non-blocking accept per 10 ms frame.
+    if (push_poll()) {
+      // Playback reconfigured I2S and swallowed real time; drop the
+      // stale window rather than run the detector over a gap.
+      slot = 0;
+      warmup = WINDOW_SAMPLES / STRIDE_SAMPLES;
+      last_fire_ms = esp_log_timestamp();
+    }
     push_slice();
     if (warmup > 0) { warmup--; continue; }
 

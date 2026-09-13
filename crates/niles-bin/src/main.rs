@@ -53,6 +53,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 mod conversation;
 mod last_target;
 mod manifest;
+mod push;
 mod recognition;
 mod response;
 mod review;
@@ -1121,19 +1122,55 @@ impl niles_notifications::NotificationDelivery for WyomingDelivery {
             let index = self.peer_index.lock().unwrap_or_else(|e| e.into_inner());
             index.get(&room_name).copied()
         };
-        let Some(peer) = peer else {
+        // No live connection is the *normal* case for anything
+        // unprompted: the satellite hangs up after each turn, so a
+        // timer firing thirty seconds later finds nothing here. Dial it
+        // instead.
+        let push_to = peer
+            .is_none()
+            .then(|| self.satellites.ip_for(&room_name))
+            .flatten();
+        if peer.is_none() && push_to.is_none() {
+            tracing::warn!(
+                "nothing to say {text:?} to: no satellite is connected from {room_name}                  and none is configured there"
+            );
             return false;
-        };
+        }
+
         let piper = self.piper.clone();
         let sender = self.sender.clone();
         let speakers = self.speakers.clone();
         let satellites = self.satellites.clone();
         let text = text.to_string();
         tokio::spawn(async move {
-            if let Err(e) =
-                crate::speak::speak_back(&piper, &sender, peer, &text, &speakers, &satellites).await
-            {
-                tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
+            if let Some(peer) = peer {
+                if let Err(e) =
+                    crate::speak::speak_back(&piper, &sender, peer, &text, &speakers, &satellites)
+                        .await
+                {
+                    tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
+                }
+                return;
+            }
+            let ip = push_to.expect("checked above");
+            match piper.synthesize(&text, None).await {
+                Ok(synthesis) => {
+                    let (pcm, format) = match crate::speak::wav_to_pcm(&synthesis.audio_wav) {
+                        Ok(parts) => parts,
+                        Err(e) => {
+                            tracing::warn!("could not decode synthesized notification: {e:#}");
+                            return;
+                        }
+                    };
+                    if let Err(e) = crate::push::speak_to(ip, &pcm, format).await {
+                        tracing::warn!(
+                            "could not reach the satellite at {ip} to say {text:?}: {e:#}"
+                        );
+                    } else {
+                        tracing::info!("pushed {text:?} to the satellite at {ip}");
+                    }
+                }
+                Err(e) => tracing::warn!("synthesizing a notification failed: {e:#}"),
             }
         });
         true
