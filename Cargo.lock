@@ -1454,6 +1454,7 @@ dependencies = [
  "niles-integration-linear",
  "niles-mqtt",
  "niles-notifications",
+ "niles-presence",
  "niles-scheduler",
  "rand 0.10.2",
  "reqwest",

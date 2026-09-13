@@ -16,6 +16,7 @@ import { CurveChart } from "@/components/CurveChart";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
+import { TadoCard } from "@/components/TadoCard";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
@@ -157,6 +158,7 @@ export function ConfigPanel() {
   const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
   const history = useQuery({ queryKey: ["history"], queryFn: api.history });
   const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
+  const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ["config"] });
@@ -306,6 +308,7 @@ export function ConfigPanel() {
         <TabsList>
           <TabsTrigger value="lighting">Lighting</TabsTrigger>
           <TabsTrigger value="people">People</TabsTrigger>
+          <TabsTrigger value="services">Services</TabsTrigger>
           <TabsTrigger value="all">Everything else</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
         </TabsList>
@@ -380,6 +383,25 @@ export function ConfigPanel() {
               />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="services" className="flex flex-col gap-4">
+          {tado.data && (
+            <TadoCard
+              status={tado.data}
+              enabling={save.isPending}
+              onEnable={() =>
+                save.mutate({
+                  row: "presence",
+                  entries: [
+                    { path: "presence.enabled", value: true },
+                    { path: "presence.tado", value: {} },
+                  ],
+                })
+              }
+              onConnected={() => tado.refetch()}
+            />
+          )}
         </TabsContent>
 
         <TabsContent value="all">

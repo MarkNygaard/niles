@@ -25,6 +25,7 @@ pub mod dto;
 pub mod events;
 pub mod handlers;
 pub mod logs;
+pub mod presence;
 pub mod publish;
 pub mod server;
 pub mod state;

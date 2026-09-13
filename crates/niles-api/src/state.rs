@@ -38,6 +38,10 @@ pub struct AppState {
     /// The operator's token, for callers that are not browsers. Not
     /// subject to the allowlist, because it is not a person.
     pub api_token: Option<Arc<String>>,
+    /// The tado connection, when presence names it. Present so the app
+    /// can get it authorised: the device flow needs a person with a
+    /// browser, which a service does not have.
+    pub tado: Option<Arc<niles_presence::TadoSource>>,
     /// Which lights the lighting curve must leave alone.
     ///
     /// Absent when nothing is driving a curve — `niles api` serves the
@@ -64,7 +68,15 @@ impl AppState {
             attempts: Arc::new(crate::auth::flow::Attempts::new()),
             api_token: None,
             manual_mode: None,
+            tado: None,
         }
+    }
+
+    /// The tado source, so Settings can walk somebody through
+    /// authorising it.
+    pub fn with_tado(mut self, tado: Option<Arc<niles_presence::TadoSource>>) -> Self {
+        self.tado = tado;
+        self
     }
 
     /// The manual-mode flags the lighting curve consults before it
