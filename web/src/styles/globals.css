@@ -27,3 +27,31 @@ body {
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
 }
+
+/* Installed on a phone, the things that give a web page away.
+
+   `user-scalable=no` is the usual advice here and is deliberately not
+   used: Safari has ignored it in the browser since iOS 10 because it
+   takes zoom away from people who need it, and where it does still
+   apply it takes it away from them too. `touch-action: manipulation`
+   gets the part actually worth having — no 300ms wait on a tap while
+   the browser decides whether a second one is coming — without that. */
+body {
+  -webkit-tap-highlight-color: transparent;
+  /* No rubber-band at the top of the list, and no pull-to-refresh
+     reloading an app that updates itself over a websocket. */
+  overscroll-behavior-y: none;
+}
+
+/* Controls, not text. A long press on a button should do nothing, the
+   way it does in an app — but a log line, a device id or a config value
+   is there to be copied, so selection stays where it is useful. */
+button,
+[role="button"],
+label,
+[data-slot="slider-control"] {
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
