@@ -1664,6 +1664,36 @@ or nothing — an absolute URL there would turn the sign-in page into a
 phishing hop that authenticates against the real Niles and lands
 somewhere else.
 
+**The cookie carries the signed address, and the allowlist is read
+again on every request.** This is what makes removing a line from
+config actually remove somebody: a session signed months ago has no
+idea the list changed, so a cookie that carried a bare session id would
+outlive the decision to revoke it. Re-reading costs a lookup in a
+config snapshot already held in memory, and it means there is no
+session table to build, expire, or forget to clear.
+
+Two consequences worth stating rather than discovering:
+
+- The **signing key has to outlive a restart**, or every deploy signs
+  everybody out. It is a secret like any other, referenced by env-var
+  name.
+- `Secure` means **sign-in only works over HTTPS**. A browser will not
+  store the cookie over plain HTTP, so reaching Niles at
+  `http://<address>:8080` cannot sign in even on the house network.
+  Either everything goes through the HTTPS name or that path stays
+  anonymous, and choosing is better than finding out.
+
+### Callers that are not browsers
+
+A cookie is for a person with a browser. Niles is also read from a
+terminal — `/logs` and `/devices` are the fastest way to answer "why
+did it do that", and that is the reason the endpoint exists at all.
+
+So there is also a **bearer token**, one value, referenced by env-var
+name, compared in constant time. It is not a lesser session: it is the
+operator, and it is not subject to the allowlist because it is not a
+person. Cookie for people, token for scripts.
+
 ### What stays outside it
 
 - `/healthz`, because a liveness probe cannot hold a session.
@@ -1673,6 +1703,38 @@ somewhere else.
   body. A cookie would mean nothing to Linear.
 - Wyoming and MQTT, which are not HTTP. **Only the HTTP API gains a
   login**, and if Niles is ever exposed, only that port goes out.
+
+### If Niles is ever exposed
+
+Signing in makes this possible. It does not make it safe on its own,
+and two of the following are true whether or not anything is exposed.
+
+- **The WebSocket needs an explicit `Origin` check.** WebSockets are
+  not subject to the same-origin policy, and the browser attaches
+  cookies to the handshake — so once a session exists, any page a
+  household member visits could open `/events/stream` and read the
+  live device stream, which is to say when the house is empty.
+  `SameSite` helps in current browsers; an `Origin` check is the
+  portable answer and does not depend on the browser being current.
+- **Every state change stays a `POST`, `PATCH` or `DELETE`.** That is
+  what makes `SameSite=Lax` sufficient against cross-site requests, and
+  it is a property to preserve rather than a defence to add. A
+  state-changing `GET` would quietly undo it.
+- **`/logs` changes character.** On the house network it serves voice
+  transcripts to people already in the house. On the internet it serves
+  them to whoever holds a session, which is an argument for keeping the
+  allowlist short rather than for hiding the route.
+- **Only 8080 leaves.** Wyoming and MQTT stay where they are; the
+  satellite streams audio unauthenticated and that is not changing.
+- **The OAuth client secret becomes house access**, so it lives in the
+  secret store like every other credential and never in the ConfigMap.
+
+None of this is required to get a notification to a phone that is out
+of the house. A push subscription lives on Apple's or Google's service
+and Niles only posts to it outbound, so a timer reaches a phone
+anywhere without a single inbound port. Exposure buys opening the app
+from the bus, and should be weighed as that rather than as a
+prerequisite.
 
 ### What this deliberately is not
 
