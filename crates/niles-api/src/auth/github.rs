@@ -11,7 +11,7 @@
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{AppendHeaders, IntoResponse, Response};
 use serde::Deserialize;
 
 use super::flow::{self, safe_next};
@@ -114,13 +114,19 @@ pub async fn callback(
             };
             let token = session::sign(&secret, &session);
             tracing::info!("{} signed in", session.email);
+            // `AppendHeaders`, not an array: axum's `IntoResponseParts`
+            // for an array *inserts*, so a second `Set-Cookie`
+            // replaces the first. Written as an array, this sent only
+            // the binding-clear cookie and dropped the session — the
+            // sign-in succeeded, the browser came back with nothing,
+            // and the sign-in page reappeared for ever.
             (
                 StatusCode::SEE_OTHER,
-                [
+                AppendHeaders([
                     (header::LOCATION, next),
                     (header::SET_COOKIE, session::set_cookie(&token, secure)),
                     (header::SET_COOKIE, clear),
-                ],
+                ]),
             )
                 .into_response()
         }
@@ -300,13 +306,13 @@ fn refuse(status: StatusCode, reason: &str) -> Response {
 fn signed_out(clear: &str, reason: &str) -> Response {
     (
         StatusCode::SEE_OTHER,
-        [
+        AppendHeaders([
             (
                 header::LOCATION,
                 format!("/?sign_in_error={}", urlencode(reason)),
             ),
             (header::SET_COOKIE, clear.to_string()),
-        ],
+        ]),
     )
         .into_response()
 }
@@ -334,6 +340,64 @@ mod tests {
             primary,
             verified,
         }
+    }
+
+    #[test]
+    fn a_response_setting_two_cookies_sends_both() {
+        // axum's `IntoResponseParts` for an array *inserts*, so a second
+        // `Set-Cookie` silently replaces the first. Written that way,
+        // the callback sent only the binding-clear cookie and dropped
+        // the session — sign-in succeeded and the browser came back
+        // with nothing, over and over.
+        let response = (
+            StatusCode::SEE_OTHER,
+            AppendHeaders([
+                (header::LOCATION, "/".to_string()),
+                (header::SET_COOKIE, session::set_cookie("token", true)),
+                (header::SET_COOKIE, flow::clear_binding_cookie(true)),
+            ]),
+        )
+            .into_response();
+
+        let cookies: Vec<&str> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(cookies.len(), 2, "both cookies must survive: {cookies:?}");
+        assert!(
+            cookies.iter().any(|c| c.starts_with(session::COOKIE)),
+            "the session cookie is the one that matters: {cookies:?}"
+        );
+        assert!(
+            cookies.iter().any(|c| c.starts_with(flow::BINDING_COOKIE)),
+            "and the spent binding cookie is still cleared: {cookies:?}"
+        );
+    }
+
+    #[test]
+    fn an_array_would_have_dropped_one_which_is_why_it_is_not_used() {
+        // Pinning the upstream behaviour this works around, so that a
+        // future tidy-up back to an array fails here rather than in a
+        // browser.
+        let response = (
+            StatusCode::SEE_OTHER,
+            [
+                (header::SET_COOKIE, "first=1".to_string()),
+                (header::SET_COOKIE, "second=2".to_string()),
+            ],
+        )
+            .into_response();
+        assert_eq!(
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .count(),
+            1,
+            "if axum ever appends instead, this guard can go"
+        );
     }
 
     #[test]
