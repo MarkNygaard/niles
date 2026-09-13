@@ -23,22 +23,28 @@ export function SignIn({ error }: SignInProps) {
   );
 
   return (
-    <main className="flex min-h-dvh flex-col items-center justify-center gap-6 px-6 py-12">
-      <div className="flex flex-col items-center gap-3 text-center">
+    <main className="flex min-h-dvh flex-col items-center justify-center gap-6 px-5 py-12">
+      {/* Wide enough for the tagline to be one line, which is the width
+          the whole page is then set to. */}
+      <div className="flex w-full max-w-lg flex-col items-center gap-4 text-center">
         <ButlerMark />
         {/* Set in a serif because Niles is a butler, and in real type
             because this page has a font to do it with — the launch
             image does not, which is why the name is not on that. */}
         <h1
-          className="text-3xl font-medium tracking-wide"
+          className="text-5xl font-medium tracking-wide"
           style={{ fontFamily: "ui-serif, Georgia, 'Times New Roman', serif" }}
         >
           Niles
         </h1>
-        <p className="text-muted-foreground/90 max-w-xs text-[11px] tracking-[0.14em] uppercase">
+        {/* One line at every width, which is the whole point of an
+            acronym: broken across two it stops being one. The size is
+            what gives, not the line — it tracks the viewport down to a
+            phone and stops growing once there is room to spare. */}
+        <p className="text-muted-foreground/90 text-[clamp(0.5rem,2.35vw,0.8125rem)] tracking-[0.12em] whitespace-nowrap uppercase">
           Neural Intelligence, Lightweight Edge System
         </p>
-        <p className="text-muted-foreground mt-2 max-w-sm text-sm">
+        <p className="text-muted-foreground mt-2 max-w-sm text-balance text-sm">
           The lights in the house, and how they behave. Sign in to reach them.
         </p>
       </div>
@@ -66,6 +72,10 @@ export function SignIn({ error }: SignInProps) {
 /**
  * The same mark as the Home Screen icon, so the page is recognisably it.
  *
+ * Green here, where white is the rule everywhere else: the accent is
+ * only ever wrong when it competes with amber for meaning, and this is
+ * the one screen with no light on it to report.
+ *
  * The shirt is the drawn shape and the jacket is whatever is behind it;
  * the tie and the buttons are cut back out, which is what puts the tie
  * inside the collar rather than floating above it. `fill-rule` does the
@@ -73,7 +83,7 @@ export function SignIn({ error }: SignInProps) {
  */
 function ButlerMark() {
   return (
-    <svg viewBox="0 0 24 24" className="size-16 fill-current" aria-hidden>
+    <svg viewBox="0 0 24 24" className="text-mark size-28 fill-current" aria-hidden>
       <path
         fillRule="evenodd"
         d="M5.8 3 H18.2 L12 20.5 Z

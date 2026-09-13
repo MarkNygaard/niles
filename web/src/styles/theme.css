@@ -30,6 +30,7 @@
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
+  --color-mark: var(--mark);
   --color-lit: var(--lit);
   --color-lit-foreground: var(--lit-foreground);
   --color-accent-orange: var(--accent-orange);
@@ -128,6 +129,11 @@
      other candidate and at 52° it would have. */
   --primary: oklch(0.42 0.085 158);
   --primary-foreground: oklch(0.99 0 0);
+  /* The brand green at the weight the butler mark needs. On paper-white
+     that is `--primary` itself; on near-black the same green goes muddy,
+     which is why the dark ring is lightened too. A mark is read, not
+     pressed, so it gets its own name rather than borrowing the ring's. */
+  --mark: oklch(0.42 0.085 158);
   /* What a lit room looks like. The one place warmth is spent, and the
      reason it is a token rather than a shade written into three
      components: it means something, so it is named once. Deep enough to
@@ -224,6 +230,9 @@
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.42 0.085 158);
   --primary-foreground: oklch(0.99 0 0);
+  /* See the light palette: the same green, lifted so it reads on
+     near-black rather than sinking into it. */
+  --mark: oklch(0.62 0.1 158);
   /* What a lit room looks like. The one place warmth is spent, and the
      reason it is a token rather than a shade written into three
      components: it means something, so it is named once. Deep enough to
