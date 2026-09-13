@@ -188,4 +188,60 @@ mod tests {
             "no-cache"
         );
     }
+
+    #[tokio::test]
+    async fn the_manifest_is_served_as_a_manifest() {
+        // A browser will not offer to install a page whose manifest it
+        // cannot read, and it says nothing when it declines — so the
+        // failure would be a missing menu item and no other symptom.
+        let (status, content_type, body) = get("/manifest.webmanifest").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, "application/manifest+json", "{content_type}");
+
+        let manifest: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(manifest["start_url"], "/");
+        assert_eq!(manifest["display"], "standalone");
+    }
+
+    #[tokio::test]
+    async fn the_service_worker_is_served_and_never_cached() {
+        // A cached service worker is the classic trap: the browser keeps
+        // running the old one and an update never lands, however many
+        // times the page is reloaded.
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/sw.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            content_type.contains("javascript"),
+            "a worker served as anything else is refused: {content_type}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_icons_the_manifest_names_are_actually_there() {
+        // Nothing reports a manifest icon that 404s; the install offer
+        // simply doesn't appear.
+        for icon in ["/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"] {
+            let (status, content_type, _) = get(icon).await;
+            assert_eq!(status, StatusCode::OK, "{icon} is missing");
+            assert_eq!(content_type, "image/png", "{icon}: {content_type}");
+        }
+    }
 }

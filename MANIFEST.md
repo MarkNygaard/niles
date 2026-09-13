@@ -52,6 +52,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 
 ## voice
