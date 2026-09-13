@@ -20,6 +20,20 @@ data:
     [api]
     bind_address = "0.0.0.0:8080"
 
+    # Signing in. Off until `allowed` names somebody, which is also how
+    # the first person gets in: open Settings on the house network, add
+    # yourself under People, and it switches on from that moment.
+    #
+    # Needs a GitHub OAuth app whose callback URL is
+    # <your niles url>/auth/github/callback.
+    #
+    # [auth]
+    # github_client_id_env = "NILES_GITHUB_CLIENT_ID"
+    # github_client_secret_env = "NILES_GITHUB_CLIENT_SECRET"
+    # session_secret_env = "NILES_SESSION_SECRET"
+    # api_token_env = "NILES_API_TOKEN"
+    # allowed = [{ email = "you@example.com", speaker = "you" }]
+
     [wyoming]
     bind_address = "0.0.0.0:10300"
 

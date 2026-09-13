@@ -17,6 +17,7 @@
 //! POST /webhooks/linear         -> 200 OK (Linear webhook)
 //! ```
 
+pub mod auth;
 pub mod config;
 #[cfg(test)]
 mod config_tests;

@@ -353,6 +353,18 @@ summary = "Install the dashboard to a phone's Home Screen as an app"
 since_pr = 179
 
 [[feature]]
+id = "auth-github-sign-in"
+category = "ui.access"
+summary = "Sign in with GitHub, against an allowlist of verified email addresses"
+since_pr = 186
+
+[[feature]]
+id = "auth-api-token"
+category = "ui.access"
+summary = "A bearer token for reading the API from a terminal"
+since_pr = 186
+
+[[feature]]
 id = "api-events-stream"
 category = "api.events"
 summary = "WebSocket /events/stream pushes real-time device and system events"

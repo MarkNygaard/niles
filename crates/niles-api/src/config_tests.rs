@@ -26,7 +26,7 @@ impl DevicePublisher for NoopPublisher {
     }
 }
 
-fn base_toml() -> String {
+pub(crate) fn base_toml() -> String {
     // A minimal config `validate()` accepts. Kept local rather than
     // reaching into niles-config's test fixtures, which are crate-private.
     r#"

@@ -30,6 +30,10 @@ pub struct AuthConfig {
     /// Signs the session cookie. Must outlive a restart, or every
     /// deploy signs everybody out.
     pub session_secret_env: Option<String>,
+    /// The operator's bearer token, for callers that are not browsers.
+    /// Not subject to the allowlist, because it is not a person — and
+    /// the way back in if the list is ever emptied.
+    pub api_token_env: Option<String>,
     #[serde(default)]
     pub allowed: Vec<AllowedPerson>,
 }
@@ -69,6 +73,45 @@ impl AuthConfig {
         self.allowed
             .iter()
             .find(|person| person.email.eq_ignore_ascii_case(email))
+    }
+
+    /// The GitHub OAuth app's client id, from the environment.
+    pub fn resolve_client_id(&self) -> Result<String> {
+        self.resolve("github_client_id_env", self.github_client_id_env.as_deref())
+    }
+
+    pub fn resolve_client_secret(&self) -> Result<String> {
+        self.resolve(
+            "github_client_secret_env",
+            self.github_client_secret_env.as_deref(),
+        )
+    }
+
+    /// The key the session cookie is signed with.
+    ///
+    /// Required rather than generated: a key minted at startup would be
+    /// different after every restart, and everybody would be signed out
+    /// by each deploy with nothing to explain why.
+    pub fn resolve_session_secret(&self) -> Result<String> {
+        self.resolve("session_secret_env", self.session_secret_env.as_deref())
+    }
+
+    /// The operator's token, or `None` when none is configured.
+    ///
+    /// Unlike the others this is not an error when absent: a household
+    /// that never reads `/logs` from a terminal needs no token, and
+    /// demanding one would be a setting for its own sake.
+    pub fn resolve_api_token(&self) -> Option<String> {
+        let var = self.api_token_env.as_deref()?;
+        crate::env::require_env("auth", var).ok()
+    }
+
+    fn resolve(&self, field: &'static str, var: Option<&str>) -> Result<String> {
+        let var = var.ok_or(Error::InvalidSection {
+            section: "auth",
+            reason: format!("{field} is not set"),
+        })?;
+        crate::env::require_env("auth", var)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -172,6 +215,7 @@ mod tests {
             github_client_id_env: Some("NILES_GITHUB_CLIENT_ID".into()),
             github_client_secret_env: Some("NILES_GITHUB_CLIENT_SECRET".into()),
             session_secret_env: Some("NILES_SESSION_SECRET".into()),
+            api_token_env: None,
             allowed: people,
         }
     }

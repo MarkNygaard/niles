@@ -4155,7 +4155,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         bus.clone(),
     )
     .with_config_store(Some(store.clone()))
-    .with_logs(LOG_BUFFER.get().cloned());
+    .with_logs(LOG_BUFFER.get().cloned())
+    .with_api_token(cfg.auth.resolve_api_token());
     let api_handle = tokio::spawn(async move {
         if let Err(e) = niles_api::serve(api_bind, api_state).await {
             tracing::error!("API server exited: {e}");
