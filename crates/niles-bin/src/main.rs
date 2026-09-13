@@ -4565,6 +4565,12 @@ async fn run_curve_tick(
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
 ) {
+    // Checked here rather than at each call site, because there are
+    // five of them and a sixth would forget. Off means the curve
+    // publishes nothing — not that it publishes something neutral.
+    if !curve.enabled {
+        return;
+    }
     let Some((minute_of_day, now)) = current_minute_of_day(tz) else {
         return;
     };
@@ -4683,6 +4689,11 @@ async fn run_morning_routine_tick(
     claim_tracker: &MorningClaimTracker,
     ambient: &HashSet<DeviceId>,
 ) {
+    // Deliberately not gated on `lighting.enabled`: that switch governs
+    // the curve, and the routine is opted into separately by having a
+    // `[lighting.morning_routine]` at all. Turning the curve off and
+    // silently losing a wake-up ramp would be a poor trade for whoever
+    // relies on it to get up.
     let Some((minute_of_day, now)) = current_minute_of_day(tz) else {
         return;
     };

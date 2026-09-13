@@ -1954,6 +1954,52 @@ exclude_devices = ["wled:living_room/tv_light"]
     // ------------------------------------------------------------------
 
     #[test]
+    fn the_curve_runs_unless_it_is_turned_off() {
+        // Defaults to on, because a config that bothered to set anchors
+        // meant them — and every config written before the switch
+        // existed has to keep working.
+        let cfg = Config::load_from_str(valid_toml()).unwrap();
+        assert!(cfg.lighting.enabled);
+        assert!(cfg.lighting.to_curve_config().expect("valid curve").enabled);
+    }
+
+    #[test]
+    fn turning_the_curve_off_carries_into_the_curve() {
+        // The flag rides on CurveConfig rather than being checked by
+        // each driver, so a new caller inherits it instead of having to
+        // remember to ask.
+        let toml = valid_toml().replace(
+            "[lighting]",
+            "[lighting]
+enabled = false",
+        );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        assert!(!cfg.lighting.enabled);
+        assert!(!cfg.lighting.to_curve_config().expect("valid curve").enabled);
+    }
+
+    #[test]
+    fn an_off_curve_is_still_validated() {
+        // Off must not also mean "stop checking", or the settings
+        // somebody switches back on could have rotted while it was off.
+        let toml = valid_toml()
+            .replace(
+                "[lighting]",
+                "[lighting]
+enabled = false",
+            )
+            .replace(
+                "night_floor_brightness = 15",
+                "night_floor_brightness = 150",
+            );
+        let cfg = Config::load_from_str(&toml).unwrap();
+        assert!(
+            cfg.validate().is_err(),
+            "an impossible curve is still wrong"
+        );
+    }
+
+    #[test]
     fn presence_section_absent_defaults_to_disabled() {
         let cfg = Config::load_from_str(valid_toml()).unwrap();
         cfg.validate().unwrap();
