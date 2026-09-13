@@ -27,6 +27,26 @@ kubectl create secret generic niles-secrets \
   --from-literal=groq-api-key='your-groq-key' \
   --from-literal=openai-api-key='your-openai-key'
 
+# Signing in (optional — Niles runs happily without it).
+#
+# github-client-id / github-client-secret come from a GitHub OAuth app
+# whose callback URL is https://<your niles host>/auth/github/callback
+#
+# session-secret is the one nobody can look up: invent it, and keep it.
+# It signs the session cookie, so changing it signs everybody out —
+# which is also the only way to revoke a single lost phone without
+# removing its owner from the allowlist.
+#
+# api-token is for reading the API from a terminal. It is not subject to
+# the allowlist, so it is also the way back in if the list is emptied.
+kubectl create secret generic niles-secrets \
+  --namespace niles --dry-run=client -o yaml \
+  --from-literal=github-client-id='Ov23li...' \
+  --from-literal=github-client-secret='...' \
+  --from-literal=session-secret="$(openssl rand -base64 48)" \
+  --from-literal=api-token="$(openssl rand -base64 32)" \
+  | kubectl apply -f -
+
 # Production data PVC (adjust storageClassName and size to your cluster)
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
