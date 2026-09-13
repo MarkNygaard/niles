@@ -28,13 +28,12 @@ export function SignIn({ error }: SignInProps) {
           the whole page is then set to. */}
       <div className="flex w-full max-w-lg flex-col items-center gap-4 text-center">
         <ButlerMark />
-        {/* Set in a serif because Niles is a butler, and in real type
-            because this page has a font to do it with — the launch
-            image does not, which is why the name is not on that. */}
-        <h1
-          className="text-5xl font-medium tracking-wide"
-          style={{ fontFamily: "ui-serif, Georgia, 'Times New Roman', serif" }}
-        >
+        {/* Set in real type because this page has a font to do it
+            with — the launch image does not, which is why the name is
+            not on that. `font-wordmark` is the same face the header
+            inside the app uses, so signing in does not hand you a
+            different Niles. */}
+        <h1 className="font-wordmark text-5xl font-medium tracking-wide">
           Niles
         </h1>
         {/* One line at every width, which is the whole point of an
