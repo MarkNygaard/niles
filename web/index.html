@@ -44,6 +44,18 @@
     </script>
 
     <meta name="mobile-web-app-capable" content="yes" />
+    <!--
+      Both, and not one or the other. `mobile-web-app-capable` is the
+      standards-track name and is what Chrome reads; Safari reads only
+      the `apple-` one, and without it iOS ignores every
+      `apple-touch-startup-image` below — the app opens with a white
+      flash and no splash at all. Proven by comparison: the one PWA of
+      Mark's that shows its splash is the one carrying this line.
+
+      iOS reads these when the app is added to the Home Screen and not
+      again, so changing them means removing the app and re-adding it.
+    -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <!-- Light status-bar text, drawn over the page. -->
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Niles" />
