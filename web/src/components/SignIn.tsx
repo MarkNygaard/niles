@@ -25,7 +25,7 @@ export function SignIn({ error }: SignInProps) {
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center gap-6 px-6 py-12">
       <div className="flex flex-col items-center gap-3 text-center">
-        <HouseMark />
+        <ButlerMark />
         <h1 className="font-heading text-2xl font-semibold">Niles</h1>
         <p className="text-muted-foreground max-w-sm text-sm">
           The lights in the house, and how they behave. Sign in to reach them.
@@ -53,7 +53,7 @@ export function SignIn({ error }: SignInProps) {
 }
 
 /** The same mark as the Home Screen icon, so the page is recognisably it. */
-function HouseMark() {
+function ButlerMark() {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -65,10 +65,9 @@ function HouseMark() {
       className="size-14 text-foreground"
       aria-hidden
     >
-      <path d="M10 12V8.964" />
-      <path d="M14 12V8.964" />
-      <path d="M15 12a1 1 0 0 1 1 1v2a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2a1 1 0 0 1 1-1z" />
-      <path d="M8.5 21H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2h-5a2 2 0 0 1-2-2v-2" />
+      <path d="M2 7 L2 17 L10.3 12 Z" />
+      <path d="M22 7 L22 17 L13.7 12 Z" />
+      <circle cx="12" cy="12" r="1.7" />
     </svg>
   );
 }

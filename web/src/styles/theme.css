@@ -119,8 +119,14 @@
   /* Niles's colour: the app speaking. Primary buttons, the selected
      appearance, every focus ring. Not what a *light* does — that is
      `--lit`, below, because warm meaning lit is worth more than one
-     accent is. */
-  --primary: oklch(0.58 0.19 296);
+     accent is.
+
+     Deep green because Niles is a butler, not a chatbot: the club, the
+     library, baize and leather. An earlier violet read as "AI
+     assistant", which is the wrong idea about what this is. 88° from
+     the amber of a lit room, so the two never argue — claret was the
+     other candidate and at 52° it would have. */
+  --primary: oklch(0.42 0.085 158);
   --primary-foreground: oklch(0.99 0 0);
   /* What a lit room looks like. The one place warmth is spent, and the
      reason it is a token rather than a shade written into three
@@ -151,7 +157,7 @@
      the border is confirming an edge rather than drawing one. */
   --border: oklch(0.93 0.003 286);
   --input: oklch(0.93 0.003 286);
-  --ring: oklch(0.58 0.14 296);
+  --ring: oklch(0.52 0.09 158);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -216,7 +222,7 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.58 0.19 296);
+  --primary: oklch(0.42 0.085 158);
   --primary-foreground: oklch(0.99 0 0);
   /* What a lit room looks like. The one place warmth is spent, and the
      reason it is a token rather than a shade written into three
@@ -238,7 +244,7 @@
   --status-success: oklch(0.72 0.15 150);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.62 0.14 296);
+  --ring: oklch(0.62 0.1 158);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
