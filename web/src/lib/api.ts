@@ -32,6 +32,19 @@ export interface ConfigView {
  * the same as off or zero — a lamp that has never been heard from has
  * `on: null`, and the UI shows that as unknown rather than off.
  */
+export interface TadoPending {
+  verification_uri: string;
+  user_code: string;
+  expires_at: string;
+}
+
+export interface TadoStatus {
+  /** Whether `[presence]` names tado at all. */
+  configured: boolean;
+  authorised: boolean;
+  pending?: TadoPending;
+}
+
 export interface DeviceState {
   on: boolean | null;
   brightness: number | null;
@@ -134,6 +147,9 @@ export const api = {
   getConfig: () => request<ConfigView>("/config"),
 
   /** Merge a partial config document, e.g. `{lighting: {daytime_brightness: 85}}`. */
+  tadoStatus: () => request<TadoStatus>("/presence/tado"),
+  tadoConnect: () =>
+    request<TadoPending>("/presence/tado/connect", { method: "POST" }),
   patchConfig: (patch: Record<string, unknown>) =>
     request<Applied>("/config", {
       method: "PATCH",

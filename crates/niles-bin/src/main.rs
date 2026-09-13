@@ -1334,7 +1334,7 @@ fn spawn_tado_activation(source: Arc<TadoSource>) -> tokio::task::JoinHandle<()>
                 }
             }
 
-            let pending = match source.begin_activation().await {
+            let pending = match source.ensure_activation().await {
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!("[tado] could not start authorisation: {e}");
@@ -1344,7 +1344,7 @@ fn spawn_tado_activation(source: Arc<TadoSource>) -> tokio::task::JoinHandle<()>
             };
 
             tracing::warn!(
-                "[tado] NOT AUTHORISED YET. Open {} and approve the code {} —                  this is asked once; after that Niles refreshes on its own",
+                "[tado] NOT AUTHORISED YET. Settings in the app will walk you                  through it, or open {} and approve the code {} — asked once;                  after that Niles refreshes on its own",
                 pending.verification_uri,
                 pending.user_code
             );
@@ -1353,16 +1353,19 @@ fn spawn_tado_activation(source: Arc<TadoSource>) -> tokio::task::JoinHandle<()>
                 tokio::time::sleep(pending.interval).await;
                 match source.finish_activation(&pending).await {
                     Ok(true) => {
+                        source.clear_activation().await;
                         tracing::info!("[tado] authorised — presence is live");
                         return;
                     }
                     // Still waiting for somebody to get to their phone.
                     Ok(false) if chrono::Utc::now() < pending.expires_at => continue,
                     Ok(false) => {
+                        source.clear_activation().await;
                         tracing::warn!("[tado] the code expired unapproved; asking for a new one");
                         break;
                     }
                     Err(e) => {
+                        source.clear_activation().await;
                         tracing::warn!("[tado] authorisation failed: {e}");
                         break;
                     }
@@ -4277,6 +4280,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_config_store(Some(store.clone()))
     .with_logs(LOG_BUFFER.get().cloned())
     .with_manual_mode(Some(tracker.clone()))
+    .with_tado(presence.as_ref().and_then(|p| p.tado.clone()))
     .with_api_token(cfg.auth.resolve_api_token());
 
     // A deployment that mounts its secrets under names the platform

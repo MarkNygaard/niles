@@ -77,6 +77,11 @@ pub struct TadoSource {
     cfg: TadoConfig,
     token: Mutex<Option<CachedToken>>,
     home_id: Mutex<Option<u64>>,
+    /// The activation currently being waited on, shared so the code a
+    /// person is shown is the same one something is polling for. Two
+    /// device codes in flight means approving one and watching the
+    /// other stay pending.
+    pending: Mutex<Option<DeviceActivation>>,
 }
 
 impl TadoSource {
@@ -97,12 +102,39 @@ impl TadoSource {
             cfg,
             token: Mutex::new(None),
             home_id,
+            pending: Mutex::new(None),
         }
     }
 
     /// Whether anybody has authorised this Niles yet.
     pub async fn is_authorised(&self) -> Result<bool> {
         Ok(self.tokens.load().await?.is_some())
+    }
+
+    /// The activation being waited on, if there is one. Does not start
+    /// one — a page being looked at should not spend tado's quota.
+    pub async fn pending_activation(&self) -> Option<DeviceActivation> {
+        let pending = self.pending.lock().await;
+        pending
+            .as_ref()
+            .filter(|p| Utc::now() < p.expires_at)
+            .cloned()
+    }
+
+    /// The activation to show somebody, starting one if the last has
+    /// expired or there has never been one.
+    pub async fn ensure_activation(&self) -> Result<DeviceActivation> {
+        if let Some(live) = self.pending_activation().await {
+            return Ok(live);
+        }
+        let fresh = self.begin_activation().await?;
+        *self.pending.lock().await = Some(fresh.clone());
+        Ok(fresh)
+    }
+
+    /// Forget the pending activation — approved, or past saving.
+    pub async fn clear_activation(&self) {
+        *self.pending.lock().await = None;
     }
 
     /// Ask tado to start a device authorisation.

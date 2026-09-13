@@ -23,6 +23,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/rooms/{room}/{device}", post(handlers::set_device))
         .route("/events/stream", get(crate::events::events_stream))
+        .route("/presence/tado", get(crate::presence::tado_status))
+        .route(
+            "/presence/tado/connect",
+            post(crate::presence::tado_connect),
+        )
         .route("/auth/status", get(crate::auth::status))
         .route("/auth/github/start", get(crate::auth::github::start))
         .route("/auth/github/callback", get(crate::auth::github::callback))
@@ -1225,5 +1230,44 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn tado_status_says_so_when_nothing_is_configured() {
+        // Presence off is the common case, and the card has to be able
+        // to draw that rather than read it as a failure.
+        let app = app_with(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(MockPublisher::default()),
+        );
+        let (status, body) = get_json(app, "/presence/tado").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["configured"], false);
+        assert_eq!(body["authorised"], false);
+    }
+
+    #[tokio::test]
+    async fn connecting_tado_when_it_is_not_configured_is_not_a_500() {
+        let app = app_with(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(MockPublisher::default()),
+        );
+        let (status, _) = post(app, "/presence/tado/connect", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    }
+
+    async fn get_json(app: Router, path: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
     }
 }
