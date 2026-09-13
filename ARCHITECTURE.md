@@ -1489,7 +1489,8 @@ undo possible and shows who changed what, including by voice.
 Each top-level section is classified:
 
 - **Hot** — re-read by the task that owns it, so a change lands on the
-  next tick. `lighting` and `ambient_lights` today.
+  next tick. `lighting` and `ambient_lights` today, and `auth` when it
+  lands, for the reason given under [Managing people](#managing-people).
 - **Boot** — built once at startup and moved into a task that owns it.
   Everything else.
 
@@ -1694,6 +1695,43 @@ name, compared in constant time. It is not a lesser session: it is the
 operator, and it is not subject to the allowlist because it is not a
 person. Cookie for people, token for scripts.
 
+### Managing people
+
+Adding somebody is done in **Settings**, not by editing a file. That is
+the reason the allowlist is config in the first place: config is already
+runtime-editable from the UI, the voice tool and `PATCH /config`, so
+"let Majse in" is a field rather than a deploy.
+
+Three things have to hold for that to be true rather than merely
+plausible.
+
+**`auth` is a hot section.** It has to be, or adding somebody would
+need a restart — which is the friction the whole design exists to
+avoid. It *can* be, for the same reason the allowlist is re-read on
+every request: nothing caches it. The list is read from the live
+snapshot at the moment a request is authorised, so a change lands on
+the next one. This is one mechanism serving two purposes — adding a
+person takes effect immediately, and so does removing one.
+
+**The last person cannot be removed.** An empty list would mean nobody
+can sign in, and the page offering that button is the page you would
+need to be signed in to reach. So a write that would empty the list is
+refused, and says why, rather than being accepted and locking the house
+out of its own settings. Removing *yourself* is allowed when somebody
+else remains — it is a legitimate thing to want, and the person still
+listed can undo it.
+
+**A signed-in person can add anyone.** There are no roles here (see
+below), so the allowlist is self-amending by design: whoever is in the
+house can let another person in. That is the correct shape for two
+adults sharing a home and the wrong shape for anything larger, and it
+is the assumption to revisit first if Niles ever has a user who is not
+a householder.
+
+If it is ever locked out anyway, the bearer token is the way back in —
+it is not subject to the allowlist, so `PATCH /config` from a terminal
+can always restore it.
+
 ### What stays outside it
 
 - `/healthz`, because a liveness probe cannot hold a session.
@@ -1742,7 +1780,9 @@ prerequisite.
 
 - **No roles and no admin screens.** Two people in a house are both
   trusted with the house. A permission model would be machinery
-  guarding a distinction nobody in the household is making.
+  guarding a distinction nobody in the household is making — with the
+  consequence, stated above, that anyone signed in can let anyone else
+  in.
 - **No passwords**, so no reset flow, no lockout policy, and no second
   factor to build. The account Niles trusts is the GitHub account, and
   keeping that safe is GitHub's job.
