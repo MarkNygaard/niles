@@ -1233,21 +1233,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tado_status_says_so_when_nothing_is_configured() {
-        // Presence off is the common case, and the card has to be able
-        // to draw that rather than read it as a failure.
+    async fn tado_status_says_so_when_there_is_nowhere_to_keep_a_token() {
+        // No database is a normal state for a laptop, and the card has
+        // to be able to draw it rather than read it as a failure.
         let app = app_with(
             Arc::new(DeviceRegistry::new()),
             Arc::new(MockPublisher::default()),
         );
         let (status, body) = get_json(app, "/presence/tado").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["configured"], false);
+        assert_eq!(body["connectable"], false);
         assert_eq!(body["authorised"], false);
+        assert_eq!(body["presence_enabled"], false);
     }
 
     #[tokio::test]
-    async fn connecting_tado_when_it_is_not_configured_is_not_a_500() {
+    async fn connecting_tado_without_a_database_is_not_a_500() {
         let app = app_with(
             Arc::new(DeviceRegistry::new()),
             Arc::new(MockPublisher::default()),

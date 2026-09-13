@@ -8,33 +8,36 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import type { TadoStatus } from "@/lib/api";
 
 export interface TadoCardProps {
   status: TadoStatus;
-  /** Turn `[presence]` on. A restart is needed before it takes. */
-  onEnable: () => void;
-  enabling?: boolean;
-  onConnected: () => void;
+  /** Start or stop reading presence. Only offered once connected. */
+  onToggle: (on: boolean) => void;
+  saving?: boolean;
+  onChanged: () => void;
 }
 
 /**
  * Connecting tado, which cannot be done from a config file.
  *
  * tado dropped password logins in March 2025; what replaced it needs a
- * person to approve a code in a browser. So the code comes here, where
- * there is a person and a browser, rather than to a log line somebody
- * would have to go looking for.
+ * person to approve a code in a browser. So the code appears here,
+ * where there is a person and a browser.
  *
- * Asked once. After that Niles refreshes the session on its own, and
- * this card is a green tick.
+ * Connecting comes first and switching on comes second, because that
+ * is the order in which they make sense: authorising something nothing
+ * is using yet is harmless, while turning presence on before anything
+ * is connected is a feature that cannot work. Asked once — after that
+ * Niles keeps the session alive on its own.
  */
 export function TadoCard({
   status,
-  onEnable,
-  enabling,
-  onConnected,
+  onToggle,
+  saving,
+  onChanged,
 }: TadoCardProps) {
   const [pending, setPending] = useState(status.pending);
   const [busy, setBusy] = useState(false);
@@ -42,8 +45,8 @@ export function TadoCard({
 
   useEffect(() => setPending(status.pending), [status.pending]);
 
-  // While a code is out, ask whether it has been approved. The server
-  // is polling tado anyway; this is only watching for the answer.
+  // While a code is out, watch for it being approved. The server is
+  // polling tado; this only watches for the answer.
   useEffect(() => {
     if (!pending || status.authorised) return;
     const timer = setInterval(async () => {
@@ -51,15 +54,15 @@ export function TadoCard({
         const next = await api.tadoStatus();
         if (next.authorised) {
           setPending(undefined);
-          onConnected();
+          onChanged();
         }
       } catch {
-        // A missed poll is not worth saying anything about; the next
-        // one is three seconds away.
+        // A missed poll is not worth reporting; the next is three
+        // seconds away.
       }
     }, 3000);
     return () => clearInterval(timer);
-  }, [pending, status.authorised, onConnected]);
+  }, [pending, status.authorised, onChanged]);
 
   async function connect() {
     setError(null);
@@ -81,32 +84,20 @@ export function TadoCard({
           Who is home, from tado's geofencing. Niles only reads it.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {!status.configured && (
-          <>
-            <p className="text-muted-foreground text-sm">
-              Presence is off. Turning it on stores the setting now, but Niles
-              only reads this section at startup — so it takes effect on the
-              next restart.
-            </p>
-            <Button onClick={onEnable} disabled={enabling} className="self-start">
-              {enabling ? "Turning on…" : "Turn presence on"}
-            </Button>
-          </>
-        )}
-
-        {status.configured && status.authorised && (
-          <p className="text-muted-foreground flex items-center gap-2 text-sm">
-            <Check aria-hidden className="text-lit size-4" />
-            Connected. Niles keeps the session alive on its own.
+      <CardContent className="flex flex-col gap-4">
+        {!status.connectable && (
+          <p className="text-muted-foreground text-sm">
+            Niles has no database configured, and tado's session has to be kept
+            somewhere it survives a restart. Set <code>[database]</code> and
+            this becomes available.
           </p>
         )}
 
-        {status.configured && !status.authorised && !pending && (
+        {status.connectable && !status.authorised && !pending && (
           <>
             <p className="text-muted-foreground text-sm">
-              tado needs approving once, in a browser. Niles never sees your
-              tado password — there is no longer one to give it.
+              Approve Niles once, in a browser. There is no tado password to
+              give it — there is no longer one to give.
             </p>
             <Button onClick={connect} disabled={busy} className="self-start">
               {busy ? "Asking tado…" : "Connect tado"}
@@ -114,7 +105,7 @@ export function TadoCard({
           </>
         )}
 
-        {status.configured && !status.authorised && pending && (
+        {status.connectable && !status.authorised && pending && (
           <>
             <p className="text-muted-foreground text-sm">
               Open the link and check the code matches. This page notices when
@@ -138,6 +129,29 @@ export function TadoCard({
             >
               <ExternalLink aria-hidden /> Approve at tado
             </Button>
+          </>
+        )}
+
+        {status.authorised && (
+          <>
+            <p className="text-muted-foreground flex items-center gap-2 text-sm">
+              <Check aria-hidden className="text-lit size-4" />
+              Connected. Niles keeps the session alive on its own.
+            </p>
+            <label className="flex items-center justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">Read presence</span>
+                <span className="text-muted-foreground block text-xs">
+                  Polls tado every few minutes for who is home. Takes effect
+                  straight away.
+                </span>
+              </span>
+              <Switch
+                checked={status.presence_enabled}
+                disabled={saving}
+                onCheckedChange={onToggle}
+              />
+            </label>
           </>
         )}
 

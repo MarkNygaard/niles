@@ -174,6 +174,9 @@ pub fn section_reload(section: &str) -> Reload {
         // snapshot, and which lights sit it out from
         // `AmbientLightsConfig::ids`.
         "lighting" | "ambient_lights" => Reload::Hot,
+        // The poll loop reads this every tick rather than at startup,
+        // so switching presence on takes hold within half a minute.
+        "presence" => Reload::Hot,
         // Nothing caches the allowlist: it is read from the live
         // snapshot as each request is authorised. So adding somebody
         // takes effect on their next request, and so does removing

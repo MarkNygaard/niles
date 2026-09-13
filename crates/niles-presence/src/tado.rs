@@ -123,13 +123,17 @@ impl TadoSource {
 
     /// The activation to show somebody, starting one if the last has
     /// expired or there has never been one.
-    pub async fn ensure_activation(&self) -> Result<DeviceActivation> {
+    ///
+    /// The flag says whether this call started it. Only the caller that
+    /// did should begin waiting on it — two waiters would poll tado
+    /// twice as fast as it asked to be polled.
+    pub async fn ensure_activation(&self) -> Result<(DeviceActivation, bool)> {
         if let Some(live) = self.pending_activation().await {
-            return Ok(live);
+            return Ok((live, false));
         }
         let fresh = self.begin_activation().await?;
         *self.pending.lock().await = Some(fresh.clone());
-        Ok(fresh)
+        Ok((fresh, true))
     }
 
     /// Forget the pending activation — approved, or past saving.
