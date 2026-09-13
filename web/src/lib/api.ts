@@ -168,6 +168,19 @@ export const api = {
     ),
 
   /**
+   * Set every light in the house at once.
+   *
+   * One request for the same reason the room fan-out is one: over a
+   * mobile connection, a request per room arrives as the house going
+   * dark room by room.
+   */
+  setAllLights: (body: SetLight) =>
+    request<{ lights: number }>("/lights", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
    * Set every light in a room at once.
    *
    * One request rather than one per light: over a phone's connection

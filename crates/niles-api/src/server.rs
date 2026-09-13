@@ -15,6 +15,7 @@ pub fn router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/healthz", get(handlers::healthz))
         .route("/devices", get(handlers::list_devices))
+        .route("/lights", post(handlers::set_all_lights))
         .route("/logs", get(crate::logs::get_logs))
         .route(
             "/rooms/{room}",
@@ -938,6 +939,95 @@ mod tests {
 
         let (status, _body) = post(app, "/rooms/all", serde_json::json!({"on": true})).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // ---- POST /lights ----
+
+    #[tokio::test]
+    async fn posting_to_lights_reaches_the_whole_house() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("kitchen", "ceiling"));
+        registry.upsert(make_light("office", "go"));
+        registry.upsert(make_outlet("living_room", "corner_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, body) = post(app, "/lights", serde_json::json!({"on": false})).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["lights"], 3, "every room, not just one");
+        assert_eq!(mock.calls().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_house_leaves_sensors_and_wall_switches_alone() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("kitchen", "ceiling"));
+        registry.upsert(make_switch("all", "bedroom_switch"));
+        registry.upsert(make_sensor("hallway", "thermometer"));
+        let app = app_with(registry, mock.clone());
+
+        let (_, body) = post(app, "/lights", serde_json::json!({"on": false})).await;
+        assert_eq!(body["lights"], 1);
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_house_narrows_per_device_like_a_room_does() {
+        // Same rule: the caller named the house, not a device, so a
+        // colour goes only where it can be shown.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("living_room", "strip"));
+        registry.upsert(make_outlet("living_room", "corner_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _) = post(
+            app,
+            "/lights",
+            serde_json::json!({"on": true, "rgb": [255, 0, 0]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        let sent: Vec<String> = mock
+            .calls()
+            .into_iter()
+            .map(|(t, p)| format!("{t} {}", String::from_utf8(p).unwrap()))
+            .collect();
+        let lamp = sent
+            .iter()
+            .find(|line| line.contains("corner_lamp"))
+            .expect("the plug still hears the switch");
+        assert!(lamp.contains("\"state\":\"ON\""));
+        assert!(
+            !lamp.contains("color"),
+            "and nothing it cannot act on: {lamp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_house_with_no_lights_says_so() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_sensor("hallway", "thermometer"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _) = post(app, "/lights", serde_json::json!({"on": true})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_empty_body_is_refused_for_the_house_too() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("kitchen", "ceiling"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _) = post(app, "/lights", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
     }
 
     // ---- POST /rooms/{room} ----

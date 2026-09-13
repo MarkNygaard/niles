@@ -5,6 +5,8 @@ import {
   optimistic,
   roomSummary,
   roomToggle,
+  houseSummary,
+  houseToggle,
   roomsOf,
   targets,
 } from "./rooms";
@@ -167,28 +169,84 @@ describe("brightnessOf", () => {
 
 describe("targets", () => {
   const lamp = device("z2m:office/desk_lamp");
+  const room = (name: string) => ({ scope: "room", room: name }) as const;
+  const house = { scope: "house" } as const;
 
   it("matches one light by its id", () => {
-    expect(targets(lamp, lamp)).toBe(true);
-    expect(targets(device("z2m:office/other"), lamp)).toBe(false);
+    expect(targets(lamp, { scope: "light", light: lamp })).toBe(true);
+    expect(
+      targets(device("z2m:office/other"), { scope: "light", light: lamp }),
+    ).toBe(false);
   });
 
   it("matches every light in a named room", () => {
-    expect(targets(lamp, "office")).toBe(true);
-    expect(targets(lamp, "kitchen")).toBe(false);
+    expect(targets(lamp, room("office"))).toBe(true);
+    expect(targets(lamp, room("kitchen"))).toBe(false);
+  });
+
+  it("matches every light anywhere when the house is the target", () => {
+    expect(targets(lamp, house)).toBe(true);
+    expect(targets(device("z2m:kitchen/ceiling"), house)).toBe(true);
   });
 
   it("leaves a room's sensors and wall switches alone", () => {
-    expect(targets(device("z2m:office/thermometer", { class: "sensor" }), "office")).toBe(
+    expect(
+      targets(device("z2m:office/thermometer", { class: "sensor" }), room("office")),
+    ).toBe(false);
+    expect(
+      targets(device("z2m:office/switch", { class: "switch" }), room("office")),
+    ).toBe(false);
+  });
+
+  it("leaves sensors and wall switches alone for the house too", () => {
+    // The scope is wider; the rule about what a light is, is not.
+    expect(targets(device("z2m:all/bedroom_switch", { class: "switch" }), house)).toBe(
       false,
     );
-    expect(targets(device("z2m:office/switch", { class: "switch" }), "office")).toBe(false);
+    expect(targets(device("z2m:hallway/thermometer", { class: "sensor" }), house)).toBe(
+      false,
+    );
   });
 
   it("reaches a room's outlets", () => {
-    expect(targets(device("z2m:office/corner_lamp", { class: "outlet" }), "office")).toBe(
-      true,
+    expect(
+      targets(device("z2m:office/corner_lamp", { class: "outlet" }), room("office")),
+    ).toBe(true);
+  });
+});
+
+describe("the whole house", () => {
+  const house = (...on: boolean[]) =>
+    roomsOf(
+      on.map((state, i) =>
+        device(`z2m:room${i}/light`, { state: { on: state } }),
+      ),
     );
+
+  it("goes off when anything at all is on", () => {
+    // Somebody pressing this with one lamp still burning is clearing
+    // the house, not topping it up.
+    expect(houseToggle(house(true, false, false))).toEqual({ on: false });
+  });
+
+  it("goes on when the house is dark", () => {
+    expect(houseToggle(house(false, false))).toEqual({ on: true });
+  });
+
+  it("stays a toggle so a press can be undone", () => {
+    // An off-only button would be a dead end on the second press.
+    expect(houseToggle(house(true))).toEqual({ on: false });
+    expect(houseToggle(house(false))).toEqual({ on: true });
+  });
+
+  it("counts across rooms rather than counting rooms", () => {
+    expect(houseSummary(house(true, false, false))).toBe("1 of 3 on");
+    expect(houseSummary(house(true, true))).toBe("All 2 on");
+    expect(houseSummary(house(false, false))).toBe("Nothing on, 2 lights");
+  });
+
+  it("says nothing is on for a house with no rooms yet", () => {
+    expect(houseToggle([])).toEqual({ on: true });
   });
 });
 

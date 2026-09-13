@@ -341,6 +341,12 @@ summary = "POST /rooms/{room} sets every light in a room in one request"
 since_pr = 178
 
 [[feature]]
+id = "api-post-lights"
+category = "api.write"
+summary = "POST /lights sets every light in the house in one request"
+since_pr = 189
+
+[[feature]]
 id = "ui-room-dashboard"
 category = "ui.lighting"
 summary = "Web dashboard of every room, switching a whole room or one light"
