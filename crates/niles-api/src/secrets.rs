@@ -21,12 +21,11 @@ type Failure = (StatusCode, String);
 const KNOWN: &[(&str, &str)] = &[
     ("mqtt.username", "Zigbee2MQTT broker username"),
     ("mqtt.password", "Zigbee2MQTT broker password"),
-    ("stt.api_key", "Speech-to-text API key"),
-    ("llm.api_key", "LLM API key"),
     // Not a secret — it travels in the redirect URL the browser
     // follows — but it is a value Niles has to be given, and it comes
     // through the same resolution. Leaving it out meant sign-in could
     // not be finished from the app at all.
+    //
     ("auth.github_client_id", "GitHub OAuth client ID"),
     ("auth.github_client_secret", "GitHub OAuth client secret"),
     ("auth.session_secret", "Session signing secret"),
@@ -39,8 +38,10 @@ const KNOWN: &[(&str, &str)] = &[
 
 #[derive(serde::Serialize)]
 pub struct SecretDto {
-    pub key: &'static str,
-    pub label: &'static str,
+    /// Owned rather than borrowed now that a provider's key is built
+    /// from its name.
+    pub key: String,
+    pub label: String,
     /// What it is used against — `api.groq.com`, the broker's
     /// host:port. Absent for Niles's own secrets, which are used
     /// against nothing.
@@ -73,28 +74,52 @@ pub struct SetSecret {
 /// `GET /secrets` — what is set, and what is missing.
 pub async fn list_secrets(State(state): State<AppState>) -> Json<SecretsReport> {
     let cfg = state.config.as_ref().map(|c| c.current());
+
+    // A row per configured provider, alongside the fixed ones. The
+    // list has to include what is *not* set yet, which rules out
+    // reading it from the store — but which providers exist is a
+    // config question, and the answer changes when somebody adds one.
+    let mut secrets: Vec<SecretDto> = cfg
+        .as_ref()
+        .map(|cfg| {
+            cfg.providers
+                .iter()
+                .map(|p| SecretDto {
+                    key: p.secret_key(),
+                    label: format!("{} API key", p.name),
+                    hint: Some(host_of(&p.base_url).unwrap_or_else(|| p.base_url.clone())),
+                    source: cfg.secret_source(&p.secret_key()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    secrets.extend(KNOWN.iter().map(|(key, label)| SecretDto {
+        key: (*key).to_string(),
+        label: (*label).to_string(),
+        hint: cfg.as_ref().and_then(|cfg| cfg.secret_hint(key)),
+        // Asked of the config, which is the thing that knows
+        // which environment variable each purpose reads. Without
+        // a config store there is nothing to ask, and a
+        // credential can only have come from the store.
+        source: match cfg.as_ref() {
+            Some(cfg) => cfg.secret_source(key),
+            None if niles_config::secrets::get(key).is_some() => niles_config::Source::Stored,
+            None => niles_config::Source::Unset,
+        },
+    }));
+
     Json(SecretsReport {
         writable: state.secrets.is_some(),
-        secrets: KNOWN
-            .iter()
-            .map(|(key, label)| SecretDto {
-                key,
-                label,
-                hint: cfg.as_ref().and_then(|cfg| cfg.secret_hint(key)),
-                // Asked of the config, which is the thing that knows
-                // which environment variable each purpose reads. Without
-                // a config store there is nothing to ask, and a
-                // credential can only have come from the store.
-                source: match cfg.as_ref() {
-                    Some(cfg) => cfg.secret_source(key),
-                    None if niles_config::secrets::get(key).is_some() => {
-                        niles_config::Source::Stored
-                    }
-                    None => niles_config::Source::Unset,
-                },
-            })
-            .collect(),
+        secrets,
     })
+}
+
+/// The host out of a base URL, for the label beside a provider's key.
+fn host_of(base_url: &str) -> Option<String> {
+    let rest = base_url.split_once("://")?.1;
+    let host = rest.split(['/', '?']).next()?;
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// `PUT /secrets/{key}` — save one.
@@ -103,7 +128,7 @@ pub async fn set_secret(
     Path(key): Path<String>,
     Json(body): Json<SetSecret>,
 ) -> Result<StatusCode, Failure> {
-    let key = known(&key)?;
+    let key = known(&state, &key)?;
     let store = writable(&state)?;
     if body.value.trim().is_empty() {
         return Err((
@@ -112,7 +137,7 @@ pub async fn set_secret(
         ));
     }
     store
-        .set(key, &body.value)
+        .set(&key, &body.value)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not save it: {e}")))?;
     reload(&state).await;
@@ -124,10 +149,10 @@ pub async fn clear_secret(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<StatusCode, Failure> {
-    let key = known(&key)?;
+    let key = known(&state, &key)?;
     let store = writable(&state)?;
     store
-        .clear(key)
+        .clear(&key)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not clear it: {e}")))?;
     reload(&state).await;
@@ -136,17 +161,26 @@ pub async fn clear_secret(
 
 /// Only keys Niles actually reads, so a typo cannot fill the table with
 /// secrets nothing will ever look for.
-fn known(key: &str) -> Result<&'static str, Failure> {
-    KNOWN
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(k, _)| *k)
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                format!("{key} is not a secret Niles reads"),
-            )
-        })
+/// Only keys Niles actually reads: the fixed ones, plus a key for each
+/// provider the config declares. A typo must not fill the table with
+/// secrets nothing will look for — including `provider.typo.api_key`,
+/// which would look plausible and never be read.
+fn known(state: &AppState, key: &str) -> Result<String, Failure> {
+    if KNOWN.iter().any(|(k, _)| *k == key) {
+        return Ok(key.to_string());
+    }
+    let declared = state
+        .config
+        .as_ref()
+        .map(|c| c.current())
+        .is_some_and(|cfg| cfg.providers.iter().any(|p| p.secret_key() == key));
+    if declared {
+        return Ok(key.to_string());
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        format!("{key} is not a secret Niles reads"),
+    ))
 }
 
 fn writable(state: &AppState) -> Result<&niles_db::PostgresSecrets, Failure> {

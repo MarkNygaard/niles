@@ -1290,20 +1290,26 @@ mod tests {
         let (status, body) = get_json(app, "/secrets").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["writable"], false);
+        // Asserted by identity rather than by count: the list changes
+        // as providers are added, and a number would break on every
+        // such change while saying nothing about what is wrong.
+        let keys: Vec<&str> = body["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["key"].as_str().unwrap())
+            .collect();
+        assert!(keys.contains(&"mqtt.password"), "{keys:?}");
         assert!(
-            body["secrets"].as_array().unwrap().len() >= 9,
-            "the list is what Niles reads, not what happens to be stored"
+            !keys.iter().any(|k| k.starts_with("provider.")),
+            "no config store means no providers to list: {keys:?}"
         );
         assert_eq!(
             body["secrets"][0]["source"], "unset",
             "with no config store to ask, nothing can be resolved"
         );
         assert!(
-            body["secrets"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|s| s["key"] == "auth.github_client_id"),
+            keys.contains(&"auth.github_client_id"),
             "the client id is not secret, but it still has to be settable"
         );
     }

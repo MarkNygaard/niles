@@ -17,6 +17,8 @@ import { CurveChart } from "@/components/CurveChart";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
+import { ProvidersCard } from "@/components/ProvidersCard";
+import { RoleCard } from "@/components/RoleCard";
 import { SecretsCard } from "@/components/SecretsCard";
 import { SettingsNav } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
@@ -237,6 +239,13 @@ export function ConfigPanel() {
   const sectionMeta = new Map(view.sections.map((s) => [s.name, s]));
   // Absent means on: every config written before the switch existed
   // has a curve that runs, and the server defaults the same way.
+  const providers =
+    (view.effective.providers as import("@/lib/api").Provider[] | undefined) ?? [];
+  /** A field of a role section, as the live config has it. */
+  const roleValue = (section: "stt" | "llm", field: string) =>
+    (view.effective[section] as Record<string, unknown> | undefined)?.[field] as
+      | string
+      | undefined;
   const curveOn =
     (view.effective.lighting as { enabled?: boolean } | undefined)?.enabled !==
     false;
@@ -458,7 +467,70 @@ export function ConfigPanel() {
           )}
         </TabsContent>
 
+        <TabsContent value="language" className="flex flex-col gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Speech &amp; language</CardTitle>
+              <CardDescription>
+                Which provider does each job, and with which model. The two go
+                together: a model name is not portable between providers.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="divide-border flex flex-col gap-5 divide-y">
+              <RoleCard
+                role="stt"
+                title="Speech-to-text"
+                description="Turns what a satellite heard into words."
+                providers={providers}
+                current={roleValue("stt", "provider")}
+                model={roleValue("stt", "model") ?? ""}
+                saving={save.isPending}
+                onSave={(change) =>
+                  save.mutate({
+                    row: "stt",
+                    entries: [
+                      { path: "stt.provider", value: change.provider ?? null },
+                      { path: "stt.model", value: change.model },
+                    ],
+                  })
+                }
+              />
+              <div className="pt-5">
+                <RoleCard
+                  role="llm"
+                  title="Language model"
+                  description="Answers anything a pattern cannot."
+                  providers={providers}
+                  current={roleValue("llm", "provider")}
+                  model={roleValue("llm", "model") ?? ""}
+                  saving={save.isPending}
+                  onSave={(change) =>
+                    save.mutate({
+                      row: "llm",
+                      entries: [
+                        { path: "llm.provider", value: change.provider ?? null },
+                        { path: "llm.model", value: change.model },
+                      ],
+                    })
+                  }
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="integrations" className="flex flex-col gap-4">
+          <ProvidersCard
+            providers={providers}
+            saving={save.isPending}
+            error={rowError?.row === "providers" ? rowError.message : undefined}
+            onChange={(next) =>
+              save.mutate({
+                row: "providers",
+                entries: [{ path: "providers", value: next }],
+              })
+            }
+          />
           {tado.data && (
             <TadoCard
               status={tado.data}

@@ -24,6 +24,7 @@ pub mod mqtt;
 pub mod notifications;
 pub mod persistence;
 pub mod presence;
+pub mod providers;
 pub mod recognition;
 pub mod satellites;
 pub mod secrets;
@@ -55,6 +56,7 @@ pub use mqtt::MqttConfig;
 pub use notifications::NotificationsConfig;
 pub use persistence::PersistenceConfig;
 pub use presence::{PresenceConfig, TadoConfigDto};
+pub use providers::{ProviderConfig, Role};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use satellites::{SatelliteConfig, SatellitesConfig};
 pub use secrets::Source;
@@ -213,6 +215,7 @@ pub const SECTIONS: &[&str] = &[
     "memory",
     "notifications",
     "presence",
+    "providers",
     "skills",
     "web_search",
     "wled",
@@ -229,6 +232,11 @@ pub const SECTIONS: &[&str] = &[
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Accounts with outside inference providers. Roles point at these
+    /// by name rather than each carrying its own copy of a URL and a
+    /// key.
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub home: HomeConfig,
     #[serde(default)]
@@ -317,6 +325,7 @@ impl Config {
     /// while there's only one typed section. Once more sections exist,
     /// a future `into_validated()` will return them bundled.
     pub fn validate(&self) -> Result<()> {
+        providers::validate_all(&self.providers)?;
         self.home.validate()?;
         self.mqtt.validate()?;
         self.api.validate()?;
@@ -660,6 +669,7 @@ mod tests {
             std::env::set_var("NILES_TEST_GROQ_API_KEY", "gsk_test");
         }
         let cfg = SttConfig {
+            provider: None,
             api_key_env: "NILES_TEST_GROQ_API_KEY".into(),
             base_url: "https://example".into(),
             model: "m".into(),
@@ -679,6 +689,7 @@ mod tests {
             std::env::remove_var("NILES_TEST_DEFINITELY_NOT_SET_STT_KEY_XYZ");
         }
         let cfg = SttConfig {
+            provider: None,
             api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_STT_KEY_XYZ".into(),
             base_url: "https://example".into(),
             model: "m".into(),
@@ -739,6 +750,7 @@ mod tests {
             std::env::set_var("NILES_TEST_LLM_GROQ_API_KEY", "gsk_test_llm");
         }
         let cfg = LlmConfig {
+            provider: None,
             api_key_env: "NILES_TEST_LLM_GROQ_API_KEY".into(),
             base_url: "https://example".into(),
             model: "m".into(),
@@ -755,6 +767,7 @@ mod tests {
             std::env::remove_var("NILES_TEST_DEFINITELY_NOT_SET_LLM_KEY_XYZ");
         }
         let cfg = LlmConfig {
+            provider: None,
             api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_LLM_KEY_XYZ".into(),
             base_url: "https://example".into(),
             model: "m".into(),
@@ -843,6 +856,7 @@ timeout_seconds = 60
             std::env::set_var("NILES_TEST_TIER2_KEY", "sk_test_tier2");
         }
         let cfg = LlmTier2Config {
+            provider: None,
             api_key_env: "NILES_TEST_TIER2_KEY".into(),
             base_url: "https://example".into(),
             model: "m".into(),
@@ -858,6 +872,7 @@ timeout_seconds = 60
             std::env::remove_var("NILES_TEST_DEFINITELY_NOT_SET_TIER2_KEY_XYZ");
         }
         let cfg = LlmTier2Config {
+            provider: None,
             api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_TIER2_KEY_XYZ".into(),
             base_url: "https://example".into(),
             model: "m".into(),

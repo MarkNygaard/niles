@@ -13,6 +13,13 @@ use serde::Deserialize;
 pub struct LlmConfig {
     /// Name of the env var holding the provider API key
     /// (e.g. `"GROQ_API_KEY"`).
+    /// Which `[[providers]]` entry serves this role.
+    ///
+    /// When set, its endpoint and key are used and the two fields
+    /// below are ignored. When absent, they are read as before — which
+    /// is what every config written before providers existed does.
+    #[serde(default)]
+    pub provider: Option<String>,
     #[serde(default)]
     pub api_key_env: String,
     /// Provider base URL. Defaults to Groq's hosted endpoint.
@@ -35,6 +42,13 @@ pub struct LlmConfig {
 pub struct LlmTier2Config {
     /// Name of the env var holding the Tier 2 provider API key
     /// (e.g. `"OPENAI_API_KEY"`).
+    /// Which `[[providers]]` entry serves this role.
+    ///
+    /// When set, its endpoint and key are used and the two fields
+    /// below are ignored. When absent, they are read as before — which
+    /// is what every config written before providers existed does.
+    #[serde(default)]
+    pub provider: Option<String>,
     #[serde(default)]
     pub api_key_env: String,
     /// Provider base URL. Defaults to OpenAI's hosted endpoint.
