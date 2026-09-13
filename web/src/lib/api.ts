@@ -25,6 +25,23 @@ export interface ConfigView {
   persistent: boolean;
 }
 
+/**
+ * What a device is reporting.
+ *
+ * Every field is nullable and null means "not reported", which is not
+ * the same as off or zero — a lamp that has never been heard from has
+ * `on: null`, and the UI shows that as unknown rather than off.
+ */
+export interface DeviceState {
+  on: boolean | null;
+  brightness: number | null;
+  color_temp_kelvin: number | null;
+  rgb: [number, number, number] | null;
+  temperature_celsius: number | null;
+  humidity_percent: number | null;
+  battery_percent: number | null;
+}
+
 /** A device as `GET /devices` reports it. */
 export interface Device {
   /** Fully qualified: `z2m:living_room/lamp`, `wled:living_room/tv`. */
@@ -33,9 +50,19 @@ export interface Device {
   room: string;
   name: string;
   class: string;
+  state: DeviceState;
   /** Whether the device can be told a colour / a colour temperature. */
   supports_rgb: boolean;
   supports_color_temp: boolean;
+}
+
+/** What a light can be told. Every field is optional; at least one is required. */
+export interface SetLight {
+  on?: boolean;
+  /** Percent, `0..=100`. */
+  brightness?: number;
+  color_temp_kelvin?: number;
+  rgb?: [number, number, number];
 }
 
 export interface Change {
@@ -108,6 +135,34 @@ export const api = {
     }),
 
   devices: () => request<Device[]>("/devices"),
+
+  /**
+   * Set one light.
+   *
+   * Addressed as `source:name` rather than the bare name: the same name
+   * can exist in Z2M and WLED both, and the UI always knows which one
+   * it is looking at, so there is nothing for the server to resolve.
+   */
+  setLight: (device: Device, body: SetLight) =>
+    request<null>(
+      `/rooms/${encodeURIComponent(device.room)}/${encodeURIComponent(
+        `${device.source}:${device.name}`,
+      )}`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
+   * Set every light in a room at once.
+   *
+   * One request rather than one per light: over a phone's connection
+   * the fan-out is the difference between a room changing and a room
+   * changing light by light.
+   */
+  setRoom: (room: string, body: SetLight) =>
+    request<{ lights: number }>(`/rooms/${encodeURIComponent(room)}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   history: () => request<Revision[]>("/config/history"),
 

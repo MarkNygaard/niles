@@ -13,6 +13,7 @@ import {
   useComboboxAnchor,
 } from "@/components/ui/combobox";
 import { Check, X } from "lucide-react";
+import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
 
 export interface DeviceOption {
@@ -191,10 +192,4 @@ export function deviceOptions(
     .sort(
       (a, b) => a.room.localeCompare(b.room) || a.label.localeCompare(b.label),
     );
-}
-
-/** `tv_lightstrip` → `Tv lightstrip`. Ids are snake_case by rule. */
-function humanize(raw: string): string {
-  const spaced = raw.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }

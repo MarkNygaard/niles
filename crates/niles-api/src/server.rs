@@ -16,7 +16,10 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(handlers::healthz))
         .route("/devices", get(handlers::list_devices))
         .route("/logs", get(crate::logs::get_logs))
-        .route("/rooms/{room}", get(handlers::devices_in_room))
+        .route(
+            "/rooms/{room}",
+            get(handlers::devices_in_room).post(handlers::set_room),
+        )
         .route("/rooms/{room}/{device}", post(handlers::set_device))
         .route("/events/stream", get(crate::events::events_stream))
         .route(
@@ -58,8 +61,10 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use niles_core::{
-        Device, DeviceClass, DeviceId, DeviceName, DeviceRegistry, DeviceState, EventBus, RoomName,
+        Device, DeviceClass, DeviceId, DeviceName, DeviceRegistry, DeviceState, EventBus,
+        LightCapabilities, RoomName,
     };
+    use niles_mqtt::CommandRouter;
     use serde_json::Value;
     use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
@@ -98,19 +103,26 @@ mod tests {
         AppState::new(
             Arc::new(DeviceRegistry::new()),
             Arc::new(MockPublisher::default()),
-            Arc::new("zigbee2mqtt".into()),
+            Arc::new(CommandRouter::z2m_only("zigbee2mqtt")),
             EventBus::default(),
         )
     }
 
     fn app_with(registry: Arc<DeviceRegistry>, publisher: Arc<dyn DevicePublisher>) -> Router {
-        let state = AppState::new(
+        app_routing(registry, publisher, CommandRouter::z2m_only("zigbee2mqtt"))
+    }
+
+    fn app_routing(
+        registry: Arc<DeviceRegistry>,
+        publisher: Arc<dyn DevicePublisher>,
+        command_router: CommandRouter,
+    ) -> Router {
+        router(AppState::new(
             registry,
             publisher,
-            Arc::new("zigbee2mqtt".into()),
+            Arc::new(command_router),
             EventBus::default(),
-        );
-        router(state)
+        ))
     }
 
     fn make_device(room: &str, name: &str) -> Device {
@@ -126,11 +138,32 @@ mod tests {
         )
     }
 
+    /// A bulb that can do everything — colour and a white channel — so
+    /// tests exercising one of those aren't also asserting a capability.
     fn make_light(room: &str, name: &str) -> Device {
         let mut d = make_device(room, name);
         d.class = DeviceClass::Light;
         d.state.on = Some(true);
         d.state.brightness = Some(100);
+        d.capabilities = LightCapabilities {
+            rgb: true,
+            color_temp: true,
+        };
+        d
+    }
+
+    /// A plain bulb: on, off, and a level. No colour of any kind.
+    fn make_dimmable(room: &str, name: &str) -> Device {
+        let mut d = make_device(room, name);
+        d.class = DeviceClass::Light;
+        d.state.on = Some(true);
+        d
+    }
+
+    fn make_outlet(room: &str, name: &str) -> Device {
+        let mut d = make_device(room, name);
+        d.class = DeviceClass::Outlet;
+        d.state.on = Some(true);
         d
     }
 
@@ -582,21 +615,381 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_invalid_device_name_returns_bad_request() {
+    async fn post_to_a_name_the_room_does_not_have_returns_not_found() {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("office", "desk_lamp"));
         let app = app_with(registry, mock.clone());
 
-        // Hyphen is rejected by DeviceName validation.
         let (status, _body) = post(
             app,
             "/rooms/office/desk-lamp",
             serde_json::json!({"on": true}),
         )
         .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(mock.calls().is_empty());
+    }
+
+    // ---- addressing a light across sources ----
+
+    fn make_wled_light(room: &str, name: &str) -> Device {
+        let mut d = Device::new(
+            DeviceId::new(
+                "wled",
+                RoomName::parse(room).unwrap(),
+                DeviceName::parse(name).unwrap(),
+            )
+            .unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        )
+        .with_capabilities(LightCapabilities {
+            rgb: true,
+            color_temp: false,
+        });
+        d.state.on = Some(true);
+        d
+    }
+
+    fn router_with_wled(room: &str, name: &str, topic: &str) -> CommandRouter {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            DeviceId::new(
+                "wled",
+                RoomName::parse(room).unwrap(),
+                DeviceName::parse(name).unwrap(),
+            )
+            .unwrap(),
+            topic.to_string(),
+        );
+        CommandRouter::new("zigbee2mqtt", map)
+    }
+
+    #[tokio::test]
+    async fn a_wled_light_is_reachable_from_the_api() {
+        // Before this the write route formatted every command as Z2M,
+        // so a strip could be listed but never switched.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_wled_light("office", "desk_strip"));
+        let app = app_routing(
+            registry,
+            mock.clone(),
+            router_with_wled("office", "desk_strip", "wled/office"),
+        );
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_strip",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(mock.calls().len(), 1);
+        assert!(
+            mock.calls()[0].0.starts_with("wled/office"),
+            "should speak WLED, got {}",
+            mock.calls()[0].0
+        );
+    }
+
+    #[tokio::test]
+    async fn one_name_in_two_sources_asks_which_rather_than_guessing() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "ceiling"));
+        registry.upsert(make_wled_light("office", "ceiling"));
+        let app = app_routing(
+            registry,
+            mock.clone(),
+            router_with_wled("office", "ceiling", "wled/office"),
+        );
+
+        let (status, body) = post(
+            app,
+            "/rooms/office/ceiling",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            body.as_str().unwrap_or_default().contains("wled"),
+            "the error should name the sources: {body}"
+        );
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_source_qualified_name_picks_that_source() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "ceiling"));
+        registry.upsert(make_wled_light("office", "ceiling"));
+        let app = app_routing(
+            registry,
+            mock.clone(),
+            router_with_wled("office", "ceiling", "wled/office"),
+        );
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/wled:ceiling",
+            serde_json::json!({"on": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(mock.calls()[0].0.starts_with("wled/office"));
+    }
+
+    #[tokio::test]
+    async fn post_rgb_to_a_light_returns_accepted() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"rgb": [255, 0, 0]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let calls = mock.calls();
+        let payload = std::str::from_utf8(&calls[0].1).unwrap();
+        assert!(payload.contains("\"r\":255"), "payload: {payload}");
+    }
+
+    #[tokio::test]
+    async fn a_colour_and_a_white_together_are_refused() {
+        // The light can be in one mode or the other; sending both
+        // leaves which one wins to the firmware.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "desk_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _body) = post(
+            app,
+            "/rooms/office/desk_lamp",
+            serde_json::json!({"rgb": [255, 0, 0], "color_temp_kelvin": 4000}),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(mock.calls().is_empty());
+    }
+
+    // ---- what a given device can be told ----
+
+    #[tokio::test]
+    async fn a_lamp_on_a_smart_plug_can_still_be_switched() {
+        // It is a light to whoever owns it, and the dashboard lists it
+        // as one; refusing "off" because Z2M calls it an outlet would
+        // leave it the one lamp in the house the UI can't reach.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_outlet("living_room", "corner_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _body) = post(
+            app,
+            "/rooms/living_room/corner_lamp",
+            serde_json::json!({"on": false}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_outlet_refuses_a_brightness_rather_than_dropping_it() {
+        // Accepting it and sending half the command would report
+        // success for something that never happened.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_outlet("living_room", "corner_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, body) = post(
+            app,
+            "/rooms/living_room/corner_lamp",
+            serde_json::json!({"brightness": 40}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.as_str().unwrap_or_default().contains("on or off"),
+            "the error should say what it can do: {body}"
+        );
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bulb_with_no_colour_refuses_one() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_dimmable("office", "go"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, body) = post(
+            app,
+            "/rooms/office/go",
+            serde_json::json!({"rgb": [255, 0, 0]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.as_str().unwrap_or_default().contains("colour channel"));
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_room_command_narrows_to_what_each_device_can_act_on() {
+        // The caller named the room, not the devices, so a colour meant
+        // for the strip is simply not sent to the plug or the plain
+        // bulb — and they still hear the part they can act on.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("living_room", "strip"));
+        registry.upsert(make_dimmable("living_room", "bulb"));
+        registry.upsert(make_outlet("living_room", "corner_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, body) = post(
+            app,
+            "/rooms/living_room",
+            serde_json::json!({"on": true, "brightness": 60, "rgb": [255, 0, 0]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["lights"], 3);
+
+        let sent: Vec<(String, String)> = mock
+            .calls()
+            .into_iter()
+            .map(|(t, p)| (t, String::from_utf8(p).unwrap()))
+            .collect();
+        let payload = |name: &str| {
+            sent.iter()
+                .find(|(t, _)| t.contains(name))
+                .map(|(_, p)| p.clone())
+                .unwrap_or_else(|| panic!("nothing sent to {name}: {sent:?}"))
+        };
+
+        assert!(
+            payload("strip").contains("\"r\":255"),
+            "the strip gets the colour"
+        );
+        assert!(
+            !payload("bulb").contains("color"),
+            "the plain bulb does not"
+        );
+        assert!(
+            payload("bulb").contains("brightness"),
+            "but it does get the level"
+        );
+
+        let lamp = payload("corner_lamp");
+        assert!(
+            lamp.contains("\"state\":\"ON\""),
+            "the plug hears the switch"
+        );
+        assert!(
+            !lamp.contains("brightness"),
+            "and nothing it can't act on: {lamp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_room_where_nothing_can_act_on_it_says_so() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_outlet("living_room", "corner_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _body) = post(
+            app,
+            "/rooms/living_room",
+            serde_json::json!({"brightness": 60}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_room_of_switches_and_sensors_is_not_a_room_of_lights() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_switch("all", "bedroom_switch"));
+        registry.upsert(make_sensor("all", "thermometer"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _body) = post(app, "/rooms/all", serde_json::json!({"on": true})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // ---- POST /rooms/{room} ----
+
+    #[tokio::test]
+    async fn posting_to_a_room_reaches_every_light_in_it() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("kitchen", "ceiling"));
+        registry.upsert(make_light("kitchen", "counter"));
+        registry.upsert(make_light("office", "desk_lamp"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, body) = post(app, "/rooms/kitchen", serde_json::json!({"on": false})).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["lights"], 2);
+
+        let topics: Vec<String> = mock.calls().into_iter().map(|(t, _)| t).collect();
+        assert_eq!(topics.len(), 2);
+        assert!(topics.iter().all(|t| t.contains("/kitchen/")));
+    }
+
+    #[tokio::test]
+    async fn posting_to_a_room_leaves_sensors_and_wall_switches_alone() {
+        // A room's thermometer has no business receiving "off".
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("kitchen", "ceiling"));
+        registry.upsert(make_sensor("kitchen", "thermometer"));
+        registry.upsert(make_switch("kitchen", "dimmer"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, body) = post(app, "/rooms/kitchen", serde_json::json!({"on": true})).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["lights"], 1);
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn posting_to_a_room_with_no_lights_returns_not_found() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_sensor("hallway", "thermometer"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, _body) = post(app, "/rooms/hallway", serde_json::json!({"on": true})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(mock.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_light_with_no_route_does_not_stop_the_rest_of_the_room() {
+        // A WLED strip with no `[wled]` entry can't be commanded. That
+        // is a config gap, not a reason to leave the ceiling light on.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "ceiling"));
+        registry.upsert(make_wled_light("office", "unconfigured_strip"));
+        let app = app_with(registry, mock.clone());
+
+        let (status, body) = post(app, "/rooms/office", serde_json::json!({"on": false})).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["lights"], 1);
     }
 
     #[tokio::test]

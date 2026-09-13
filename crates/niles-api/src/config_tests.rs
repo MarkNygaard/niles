@@ -86,7 +86,7 @@ fn app(with_store: bool) -> axum::Router {
     let state = AppState::new(
         Arc::new(DeviceRegistry::new()),
         Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
-        Arc::new("zigbee2mqtt".into()),
+        Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
         EventBus::default(),
     )
     .with_config_store(store);
@@ -373,7 +373,7 @@ async fn an_unknown_level_is_the_callers_mistake() {
     let state = AppState::new(
         Arc::new(DeviceRegistry::new()),
         Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
-        Arc::new("zigbee2mqtt".into()),
+        Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
         EventBus::default(),
     )
     .with_logs(Some(crate::logs::LogBuffer::new()));

@@ -24,7 +24,7 @@ fn make_state(bus: EventBus) -> AppState {
     AppState::new(
         Arc::new(DeviceRegistry::new()),
         Arc::new(MockPublisher),
-        Arc::new("zigbee2mqtt".into()),
+        Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
         bus,
     )
 }

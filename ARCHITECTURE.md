@@ -184,11 +184,14 @@ These are the current recommendations; the system should be provider-agnostic so
 
 To avoid building an admin UI in v1, Niles uses **device names in the underlying source as the single source of truth** for room/device structure. There is no separate Niles-side device database, no admin screens, no manual room assignment.
 
-This still holds with the config UI in place: that edits *values*, not
-topology. Where it names devices — choosing which lights are ambient,
-say — it offers the registry's own list, and what it stores is the id
-the source gave them. Rename a device in Z2M and Niles follows; there
-is nowhere else for the name to disagree.
+This still holds with the web UI in place. What that UI does is edit
+*values* and *press switches*; what it cannot do is describe the house.
+Where it names devices — choosing which lights are ambient, listing the
+rooms on the dashboard — it reads the registry rather than a list
+anyone maintains, and what it stores is the id the source gave them.
+Rename a device in Z2M and Niles follows; add one and it appears.
+There is nowhere else for the name to disagree, and no screen where a
+room is created.
 
 ### The convention
 
@@ -1509,6 +1512,54 @@ pins the pod to one node and blocks drains, which on a Talos cluster
 means every upgrade. Niles owns its tables and creates them on first
 use. Where a deployment has no database, changes still apply — they
 just don't outlive the process, and every surface says so.
+
+## The web UI
+
+One page, served by the same binary behind the `ui` cargo feature, with
+two halves that answer to different rules.
+
+**Home** is the house: every room Niles knows of, and the lights in it.
+Pressing a room switches all of its lights; opening one gives each
+light its own power, brightness, and — where the light has them —
+colour and colour temperature. Nothing here is configured. The rooms
+exist because devices are in them, so a light discovered in Z2M turns
+up on the dashboard with nobody naming it twice, which is the same
+no-UI rule stated under [device naming](#device-naming-convention-the-no-ui-strategy)
+rather than an exception to it.
+
+**Settings** is [Runtime configuration](#runtime-configuration): the
+curve, ambient behaviour, the revision history, and an undo.
+
+### Why a control surface at all
+
+Voice is the primary interface and stays that way. But a voice command
+is a poor fit for two things a hand is better at: *surveying* ("which
+lights are still on?" is one glance and several sentences), and
+*adjusting by eye* (a brightness you find by dragging, not by naming a
+percentage). Neither is a setting, so neither belongs in the config
+surfaces; both are what a phone in a hallway is for.
+
+### What it talks to
+
+The registry it draws comes from `GET /devices`, which reports each
+device's capabilities, so the UI can offer a colour wheel only to
+lights that have one. Commands go to `POST /rooms/{room}/{device}` for
+one light and `POST /rooms/{room}` for all of them — the room fan-out
+happens server-side, next to the broker, rather than as one request per
+light from a phone.
+
+State is **pushed, not polled**. The page holds the WebSocket at
+`GET /events/stream` open and folds each `device_state_changed` frame
+into what it already knows. This matters because the UI is not the only
+thing moving these lights: the curve does at sunset, voice does, a wall
+switch does. A polled page would spend a few seconds describing a room
+the person holding it can see is wrong. Frames carry only what changed,
+so they merge rather than replace — a frame saying `{on: false}`
+carries nothing about brightness, and treating that as "brightness
+cleared" would lose it.
+
+Presses are shown immediately and reconciled when the light reports.
+A command that fails rolls the row back and says why.
 
 ## Deployment
 

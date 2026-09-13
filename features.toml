@@ -331,8 +331,20 @@ since_pr = 13
 [[feature]]
 id = "api-post-device"
 category = "api.write"
-summary = "POST /rooms/{room}/{device} sends a state update to a device"
+summary = "POST /rooms/{room}/{device} sets one light, in whichever source it comes from"
 since_pr = 59
+
+[[feature]]
+id = "api-post-room"
+category = "api.write"
+summary = "POST /rooms/{room} sets every light in a room in one request"
+since_pr = 178
+
+[[feature]]
+id = "ui-room-dashboard"
+category = "ui.lighting"
+summary = "Web dashboard of every room, switching a whole room or one light"
+since_pr = 178
 
 [[feature]]
 id = "api-events-stream"

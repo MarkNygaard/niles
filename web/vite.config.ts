@@ -16,6 +16,8 @@ export default defineConfig({
       "/config": "http://localhost:8080",
       "/devices": "http://localhost:8080",
       "/healthz": "http://localhost:8080",
+      "/rooms": "http://localhost:8080",
+      "/events": { target: "ws://localhost:8080", ws: true },
     },
   },
   build: {
