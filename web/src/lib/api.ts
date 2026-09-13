@@ -46,6 +46,8 @@ export interface SetupReport {
 export interface Secret {
   key: string;
   label: string;
+  /** What it is used against, when Niles knows. */
+  hint?: string;
   /**
    * Where Niles reads it from. One field rather than two booleans the
    * page has to combine correctly — which is how the first version got

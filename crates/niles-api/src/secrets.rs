@@ -41,6 +41,10 @@ const KNOWN: &[(&str, &str)] = &[
 pub struct SecretDto {
     pub key: &'static str,
     pub label: &'static str,
+    /// What it is used against — `api.groq.com`, the broker's
+    /// host:port. Absent for Niles's own secrets, which are used
+    /// against nothing.
+    pub hint: Option<String>,
     /// Where it comes from: `environment`, `stored`, or `unset`.
     ///
     /// One field rather than two booleans the caller has to combine.
@@ -76,6 +80,7 @@ pub async fn list_secrets(State(state): State<AppState>) -> Json<SecretsReport> 
             .map(|(key, label)| SecretDto {
                 key,
                 label,
+                hint: cfg.as_ref().and_then(|cfg| cfg.secret_hint(key)),
                 // Asked of the config, which is the thing that knows
                 // which environment variable each purpose reads. Without
                 // a config store there is nothing to ask, and a
