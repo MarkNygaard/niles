@@ -7,7 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -18,13 +18,17 @@ import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
 import { SecretsCard } from "@/components/SecretsCard";
+import { SettingsNav } from "@/components/SettingsNav";
+import { cn } from "@/lib/utils";
+import { SetupBanner } from "@/components/SetupBanner";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { TadoCard } from "@/components/TadoCard";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
 import type { Applied, ConfigView, Revision } from "@/lib/api";
-import { AlertTriangle, Undo2 } from "lucide-react";
+import { AlertTriangle, ChevronLeft, Undo2 } from "lucide-react";
 
 interface Row {
   label: string;
@@ -162,6 +166,15 @@ export function ConfigPanel() {
   const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
+  const setup = useQuery({ queryKey: ["setup"], queryFn: api.setup });
+
+  // On a phone the list *is* the screen and tapping pushes into a
+  // section; from `sm` both sit side by side and something has to be
+  // open, so nothing lands on an empty pane.
+  const phone = useMediaQuery("(max-width: 639px)");
+  const [section, setSection] = useState<string | null>(null);
+  const showNav = !phone || section === null;
+  const showSection = !phone || section !== null;
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ["config"] });
@@ -312,14 +325,26 @@ export function ConfigPanel() {
         </Notice>
       )}
 
-      <Tabs defaultValue="lighting">
-        <TabsList>
-          <TabsTrigger value="lighting">Lighting</TabsTrigger>
-          <TabsTrigger value="people">People</TabsTrigger>
-          <TabsTrigger value="services">Services</TabsTrigger>
-          <TabsTrigger value="all">Everything else</TabsTrigger>
-          <TabsTrigger value="history">History</TabsTrigger>
-        </TabsList>
+      {setup.data && <SetupBanner report={setup.data} />}
+
+      {/* Driven by value alone: the nav beside it is the trigger, and a
+          tab bar as well would be two controls for one thing. */}
+      <Tabs value={section ?? "lighting"} onValueChange={(v) => setSection(String(v))}>
+        <div className="flex flex-col gap-5 sm:flex-row sm:gap-6">
+          {showNav && (
+            <SettingsNav current={phone ? null : section} onPick={setSection} />
+          )}
+          <div className={cn("min-w-0 flex-1", !showSection && "hidden")}>
+            {phone && (
+              <button
+                type="button"
+                onClick={() => setSection(null)}
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 -ml-1 mb-3 flex items-center gap-1 rounded-lg py-1 pr-2 text-sm focus-visible:outline-none"
+              >
+                <ChevronLeft aria-hidden className="size-4" />
+                Settings
+              </button>
+            )}
 
         <TabsContent value="lighting" className="flex flex-col gap-4">
           <Card>
@@ -499,6 +524,8 @@ export function ConfigPanel() {
             </CardContent>
           </Card>
         </TabsContent>
+          </div>
+        </div>
       </Tabs>
     </div>
   );
