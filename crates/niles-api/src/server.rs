@@ -22,6 +22,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/rooms/{room}/{device}", post(handlers::set_device))
         .route("/events/stream", get(crate::events::events_stream))
+        .route("/auth/status", get(crate::auth::status))
+        .route("/auth/github/start", get(crate::auth::github::start))
+        .route("/auth/github/callback", get(crate::auth::github::callback))
+        .route("/auth/signout", get(crate::auth::github::sign_out))
         .route(
             "/config",
             get(crate::config::get_config).patch(crate::config::patch_config),
@@ -41,7 +45,14 @@ pub fn router(state: AppState) -> Router {
     {
         r = r.fallback(crate::web::serve_asset);
     }
-    r.with_state(state)
+    // Wrapped around everything, including the fallback: a route added
+    // later is behind the gate by default, and has to be named in
+    // `auth::is_exempt` to get out from behind it.
+    r.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::auth::require_sign_in,
+    ))
+    .with_state(state)
 }
 
 /// Bind to `addr` and run the API server until the process exits

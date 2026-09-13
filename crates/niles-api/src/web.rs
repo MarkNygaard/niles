@@ -42,6 +42,18 @@ pub async fn serve_asset(uri: Uri, headers: HeaderMap) -> Response {
     }
 }
 
+/// Whether the bundle actually ships this path.
+///
+/// Used by the sign-in gate to tell the app's own files from the API.
+/// Asking the bundle beats matching a prefix: a path is public only if
+/// it is literally a file we built, so a route added later is still
+/// behind the gate.
+pub(crate) fn contains(path: &str) -> bool {
+    let path = path.trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    Assets::get(path).is_some()
+}
+
 fn wants_html(headers: &HeaderMap) -> bool {
     headers
         .get(header::ACCEPT)

@@ -52,6 +52,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 

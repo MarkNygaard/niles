@@ -1742,6 +1742,12 @@ can always restore it.
 - Wyoming and MQTT, which are not HTTP. **Only the HTTP API gains a
   login**, and if Niles is ever exposed, only that port goes out.
 
+The *page* is also served to everyone, and shows a sign-in screen when
+nobody is signed in. Redirecting a navigation instead would mean the UI
+never gets to ask who it is talking to — and every request it would
+make behind that screen is refused anyway. An API call without a
+session gets `401` and a JSON body; a navigation gets the app.
+
 ### If Niles is ever exposed
 
 Signing in makes this possible. It does not make it safe on its own,

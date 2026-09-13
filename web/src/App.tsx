@@ -1,7 +1,12 @@
 import { useState } from "react";
-import { Home, SlidersHorizontal } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Home, LogOut, SlidersHorizontal } from "lucide-react";
 import { ConfigPanel } from "@/components/ConfigPanel";
 import { RoomDashboard } from "@/components/RoomDashboard";
+import { SignIn } from "@/components/SignIn";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type View = "home" | "settings";
@@ -15,6 +20,32 @@ type View = "home" | "settings";
  */
 export function App() {
   const [view, setView] = useState<View>("home");
+  // Not refetched on focus like everything else: signing out in another
+  // tab should not yank this one to a sign-in screen mid-press. The
+  // 401s would say so anyway, and on the next load.
+  const auth = useQuery({
+    queryKey: ["auth"],
+    queryFn: api.authStatus,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+
+  // Nothing is worth drawing before we know whether it will be refused.
+  if (auth.isLoading) {
+    return (
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-6">
+        <Skeleton className="h-8 w-40" />
+        <Skeleton className="h-64 w-full" />
+      </main>
+    );
+  }
+
+  // A refused sign-in comes back on the URL rather than in a body,
+  // because the browser followed a redirect to get here.
+  const refusal = new URLSearchParams(window.location.search).get("sign_in_error");
+  if (auth.data?.enabled && !auth.data.signed_in_as) {
+    return <SignIn error={refusal ?? undefined} />;
+  }
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-8">
@@ -39,6 +70,20 @@ export function App() {
           </NavButton>
         </nav>
       </header>
+
+      {auth.data?.signed_in_as && (
+        <div className="text-muted-foreground flex flex-wrap items-center justify-end gap-2 text-xs">
+          <span className="truncate">{auth.data.signed_in_as}</span>
+          <Button
+            render={<a href="/auth/signout" />}
+            variant="ghost"
+            size="xs"
+            aria-label="Sign out"
+          >
+            <LogOut /> Sign out
+          </Button>
+        </div>
+      )}
 
       {view === "home" ? <RoomDashboard /> : <ConfigPanel />}
     </main>

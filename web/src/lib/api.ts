@@ -65,6 +65,14 @@ export interface SetLight {
   rgb?: [number, number, number];
 }
 
+/** What `GET /auth/status` says before anybody has signed in. */
+export interface AuthStatus {
+  /** False when nobody is on the allowlist: Niles is open. */
+  enabled: boolean;
+  /** The address of whoever is holding this browser, or null. */
+  signed_in_as: string | null;
+}
+
 export interface Change {
   path: string;
   from: unknown | null;
@@ -135,6 +143,14 @@ export const api = {
     }),
 
   devices: () => request<Device[]>("/devices"),
+
+  /**
+   * Whether to offer a sign-in button, and to whom.
+   *
+   * Deliberately outside the gate: asking whether you need to sign in
+   * cannot itself require being signed in.
+   */
+  authStatus: () => request<AuthStatus>("/auth/status"),
 
   /**
    * Set one light.

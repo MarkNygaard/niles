@@ -31,6 +31,12 @@ pub struct AppState {
     /// Recent log lines, when the binary installed a buffer. Absent for
     /// subcommands that don't, and `/logs` says so rather than 500ing.
     pub logs: Option<crate::logs::LogBuffer>,
+    /// Sign-in attempts in flight. In memory on purpose: an attempt is
+    /// worth ten minutes, and a restart mid-sign-in costs one retry.
+    pub attempts: Arc<crate::auth::flow::Attempts>,
+    /// The operator's token, for callers that are not browsers. Not
+    /// subject to the allowlist, because it is not a person.
+    pub api_token: Option<Arc<String>>,
 }
 
 impl AppState {
@@ -48,7 +54,17 @@ impl AppState {
             linear_webhook: None,
             config: None,
             logs: None,
+            attempts: Arc::new(crate::auth::flow::Attempts::new()),
+            api_token: None,
         }
+    }
+
+    /// The bearer token that stands in for a session, when one is
+    /// configured. Empty is treated as absent: a placeholder nobody
+    /// filled in must not become a password of "".
+    pub fn with_api_token(mut self, token: Option<String>) -> Self {
+        self.api_token = token.filter(|t| !t.trim().is_empty()).map(Arc::new);
+        self
     }
 
     pub fn with_logs(mut self, logs: Option<crate::logs::LogBuffer>) -> Self {
