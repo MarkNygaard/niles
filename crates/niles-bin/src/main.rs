@@ -3708,6 +3708,15 @@ fn build_automation_engine(
 struct Lighting {
     snapshot: Arc<Config>,
     curve: niles_scheduler::CurveConfig,
+    /// `None` when there is no `[lighting.morning_routine]`, and when
+    /// there is one that is switched off.
+    ///
+    /// Re-derived with the curve rather than built once at startup:
+    /// `lighting` reports as `Reload::Hot`, and a routine read only at
+    /// boot would have made that a lie — the page would say a change
+    /// had applied while nothing had, which is precisely what `Reload`
+    /// exists to prevent.
+    routine: Option<MorningRoutineConfig>,
 }
 
 impl Lighting {
@@ -3720,6 +3729,11 @@ impl Lighting {
     fn transition(&self) -> Duration {
         self.snapshot.lighting.transition()
     }
+
+    /// The wake-up ramp, if one is configured and switched on.
+    fn routine(&self) -> Option<&MorningRoutineConfig> {
+        self.routine.as_ref()
+    }
 }
 
 impl Lighting {
@@ -3730,6 +3744,8 @@ impl Lighting {
                 .lighting
                 .to_curve_config()
                 .context("converting [lighting] section to a CurveConfig")?,
+            routine: derive_routine(cfg)
+                .context("converting [lighting.morning_routine] to a MorningRoutineConfig")?,
         })
     }
 
@@ -3745,6 +3761,16 @@ impl Lighting {
         }
         match snapshot.lighting.to_curve_config() {
             Ok(curve) => {
+                // A routine that will not convert keeps the previous
+                // one, for the same reason the curve does: the old one
+                // still works, and waking somebody up is not a good
+                // thing to stop doing quietly.
+                match derive_routine(&snapshot) {
+                    Ok(routine) => self.routine = routine,
+                    Err(e) => tracing::error!(
+                        "[lighting.morning_routine] would not convert ({e}); keeping the previous one"
+                    ),
+                }
                 self.snapshot = snapshot;
                 self.curve = curve;
                 tracing::info!("lighting curve reloaded from a config change");
@@ -3759,6 +3785,17 @@ impl Lighting {
             }
         }
     }
+}
+
+/// The wake-up ramp a config describes, or `None` when it has none or
+/// has switched it off.
+fn derive_routine(cfg: &Config) -> anyhow::Result<Option<MorningRoutineConfig>> {
+    cfg.lighting
+        .morning_routine
+        .as_ref()
+        .filter(|dto| dto.enabled)
+        .map(|dto| dto.to_morning_routine_config().map_err(anyhow::Error::from))
+        .transpose()
 }
 
 /// Keep trying to load config overrides after the backend was unreachable
@@ -3992,16 +4029,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
     })?;
     let mut lighting = Lighting::derive(&cfg)?;
-    let morning_routine = cfg
-        .lighting
-        .morning_routine
-        .as_ref()
-        .map(|dto| {
-            dto.to_morning_routine_config()
-                .context("converting [lighting.morning_routine] to MorningRoutineConfig")
-        })
-        .transpose()?;
-    match &morning_routine {
+    match lighting.routine() {
         Some(r) if r.target_devices.is_empty() => tracing::info!(
             "morning routine: ALL non-ambient lights + plugs, fires {:?}",
             r.fire_days
@@ -4011,7 +4039,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             r.target_devices.len(),
             r.fire_days
         ),
-        None => tracing::info!("morning routine: not configured (no wake-up light)"),
+        None => tracing::info!("morning routine: off (no wake-up light)"),
     }
 
     let whisper = Arc::new(build_whisper_client(&cfg)?);
@@ -4499,7 +4527,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     ));
                 }
                 lighting.refresh(&store);
-                if let Some(routine) = &morning_routine {
+                if let Some(routine) = lighting.routine() {
                     run_morning_routine_tick(
                         &registry,
                         &publisher,
