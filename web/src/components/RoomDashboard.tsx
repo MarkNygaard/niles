@@ -67,13 +67,6 @@ export function RoomDashboard() {
     },
   });
 
-  if (devices.isLoading) return <LoadingGrid />;
-  if (devices.error) {
-    return (
-      <Notice>Can't reach Niles: {String(devices.error)}</Notice>
-    );
-  }
-
   const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });
   const applyScene = useMutation({
     mutationFn: (name: string) => api.applyScene(name),
@@ -82,6 +75,17 @@ export function RoomDashboard() {
     // that does not report.
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["devices"] }),
   });
+
+  // Every hook is above the early returns. React counts them per
+  // render, so one sitting below `isLoading` is called on the second
+  // render and not the first — which is not a warning, it is the whole
+  // page unmounting the moment the devices arrive.
+  if (devices.isLoading) return <LoadingGrid />;
+  if (devices.error) {
+    return (
+      <Notice>Can't reach Niles: {String(devices.error)}</Notice>
+    );
+  }
 
   const rooms = roomsOf(devices.data ?? []);
   if (rooms.length === 0) {
