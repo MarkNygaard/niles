@@ -95,7 +95,7 @@ impl Sealer {
         rand::rng().fill_bytes(&mut nonce);
         let ciphertext = self
             .cipher
-            .encrypt(Nonce::from_slice(&nonce), value.as_bytes())
+            .encrypt(&Nonce::from(nonce), value.as_bytes())
             .map_err(|_| bad_key("the value could not be sealed"))?;
         // Nonce first, so a reader knows where the ciphertext starts
         // without storing a length.
@@ -110,9 +110,13 @@ impl Sealer {
             return Err(bad_key("the stored value is too short to be sealed"));
         }
         let (nonce, ciphertext) = sealed.split_at(NONCE_LEN);
+        // `split_at(NONCE_LEN)` gives exactly that many bytes, so this
+        // cannot fail — but it is a `TryFrom`, and the length check
+        // above is what makes it true.
+        let nonce = Nonce::try_from(nonce).map_err(|_| bad_key("its nonce was the wrong size"))?;
         let plain = self
             .cipher
-            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|_| bad_key("it did not decrypt"))?;
         String::from_utf8(plain).map_err(|_| bad_key("it did not decrypt to text"))
     }
@@ -242,6 +246,28 @@ mod tests {
 
     fn sealer() -> Sealer {
         Sealer::new(&Sealer::generate_key()).expect("a generated key is usable")
+    }
+
+    #[test]
+    fn a_secret_sealed_by_an_older_build_still_opens() {
+        // Captured from aes-gcm 0.10.3 before the bump to 0.11. The
+        // format is the algorithm rather than the crate — a 12-byte
+        // nonce, then AES-256-GCM ciphertext with its tag — so a
+        // version bump must not move it. If this ever fails, every
+        // credential anybody has stored has just become unreadable,
+        // and finding that out from a test beats finding it out from a
+        // house that cannot reach its broker.
+        let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let sealed = hex("7bf169bb82ef50753ff75313a0d6877c9976bdfd854d93ef332d3a8f429e77f5ebc7c7");
+        let opened = Sealer::new(&key).unwrap().open(&sealed).unwrap();
+        assert_eq!(opened, "hunter2");
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        s.as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
     }
 
     #[test]
