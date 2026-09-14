@@ -2928,9 +2928,13 @@ async fn dispatch_transcript(
     // per call is free.
     let parsed = {
         let idx = ctx.device_index.read().unwrap_or_else(|e| e.into_inner());
+        // Read per utterance rather than cached: a scene saved a
+        // sentence ago has to be callable by name in the next one.
+        let scene_names = ctx.scenes.names();
         let router_ctx = RouterContext {
             device_index: &idx,
             origin_room,
+            scenes: &scene_names,
         };
         IntentRouter::new().parse_with_context(text, router_ctx)
     };

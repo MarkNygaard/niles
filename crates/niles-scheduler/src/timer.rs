@@ -376,13 +376,7 @@ fn next_vacant_id(inner: &mut TimerStoreInner) -> u64 {
 /// Normalize a raw timer name for use as a HashMap key.
 ///
 /// Rules: trim, lowercase ASCII, collapse runs of ASCII whitespace to `_`.
-pub fn canonicalize_name(raw: &str) -> String {
-    raw.trim()
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("_")
-}
+pub use niles_core::canonicalize_name;
 
 #[cfg(test)]
 mod tests {
