@@ -5,10 +5,11 @@
 //! WLED-formatted `/api` commands while Z2M devices continue to use the
 //! existing `/set` topic.
 
-use crate::sink::{format_set_command, is_actionable};
-use crate::wled::{effect_to_fx, format_wled_command, format_wled_effect};
+use crate::sink::{format_set_command_fading, is_actionable};
+use crate::wled::{effect_to_fx, format_wled_command_fading, format_wled_effect};
 use niles_core::{DeviceId, DeviceState};
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Routes set commands to the correct topic/payload format based on the
 /// device source.
@@ -34,14 +35,28 @@ impl CommandRouter {
     /// Source-aware formatting. Returns `None` for a no-op target or an
     /// unknown/unsupported device.
     pub fn format(&self, id: &DeviceId, target: &DeviceState) -> Option<(String, String)> {
+        self.format_fading(id, target, Duration::ZERO)
+    }
+
+    /// The same, but telling the light to take `fade` getting there.
+    ///
+    /// Only the two ramps ask for one. A voice command, a tap on the
+    /// dashboard and the wall dimmer all go through [`format`](Self::format)
+    /// and stay instant: a control that answers in its own time reads as
+    /// broken, however pretty the fade.
+    pub fn format_fading(
+        &self,
+        id: &DeviceId,
+        target: &DeviceState,
+        fade: Duration,
+    ) -> Option<(String, String)> {
         match id.source() {
             "wled" => self
                 .wled
                 .get(id)
-                .and_then(|base_topic| format_wled_command(base_topic, target)),
-            "z2m" => {
-                is_actionable(target).then(|| format_set_command(&self.z2m_prefix, id, target))
-            }
+                .and_then(|base_topic| format_wled_command_fading(base_topic, target, fade)),
+            "z2m" => is_actionable(target)
+                .then(|| format_set_command_fading(&self.z2m_prefix, id, target, fade)),
             _ => None,
         }
     }

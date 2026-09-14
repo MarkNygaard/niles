@@ -24,6 +24,8 @@ pub fn router(state: AppState) -> Router {
         .route("/rooms/{room}/{device}", post(handlers::set_device))
         .route("/events/stream", get(crate::events::events_stream))
         .route("/setup", get(crate::presence::setup_report))
+        .route("/places", get(crate::places::search))
+        .route("/timezones", get(crate::places::timezones))
         .route("/secrets", get(crate::secrets::list_secrets))
         .route(
             "/secrets/{key}",

@@ -39,6 +39,29 @@ export interface Provider {
   serves?: ("stt" | "llm")[];
 }
 
+/**
+ * One WLED strip, as `[[wled.devices]]` has it.
+ *
+ * `rgb` and `white_balance` are optional here because the config file
+ * may simply not mention them: unwritten means the defaults, which are
+ * colour and no white balance.
+ */
+export interface WledStrip {
+  name: string;
+  topic: string;
+  rgb?: boolean;
+  white_balance?: boolean;
+}
+
+/** A place the house might be, as `/places` returns it. */
+export interface Place {
+  label: string;
+  latitude: number;
+  longitude: number;
+  timezone: string;
+  country_code: string | null;
+}
+
 export interface SetupGap {
   path: string;
   severity: "blocking" | "degraded";
@@ -195,6 +218,9 @@ export const api = {
     }),
   clearSecret: (key: string) =>
     request<void>(`/secrets/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  places: (q: string) =>
+    request<Place[]>(`/places?q=${encodeURIComponent(q)}`),
+  timezones: () => request<string[]>("/timezones"),
   tadoStatus: () => request<TadoStatus>("/presence/tado"),
   tadoConnect: () =>
     request<TadoPending>("/presence/tado/connect", { method: "POST" }),

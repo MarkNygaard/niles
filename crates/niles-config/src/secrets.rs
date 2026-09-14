@@ -174,6 +174,11 @@ fn host_of(base_url: &str) -> Option<String> {
 /// config code — which makes it shared between tests in a crate. Two
 /// of them loading different maps at once is how a test about speech
 /// ended up asserting on a broker password.
+///
+/// Every test that calls [`load`] has to take it, in this module and
+/// in every other: holding it in only some of them serialises those
+/// against each other and against nothing else, which is how a setup
+/// test went on failing after the guard was added.
 #[cfg(test)]
 pub(crate) static TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -195,21 +200,25 @@ mod tests {
 
     #[test]
     fn a_stored_secret_is_found_by_purpose() {
+        let _guard = TEST_GUARD.lock();
         load(HashMap::from([(
             "test.only.password".into(),
             "hunter2".into(),
         )]));
         assert!(is_loaded());
         assert_eq!(get("test.only.password").as_deref(), Some("hunter2"));
+        load(HashMap::new());
     }
 
     #[test]
     fn an_empty_value_is_not_a_secret() {
+        let _guard = TEST_GUARD.lock();
         // A placeholder nobody filled in must not read as configured,
         // for the same reason an empty env var does not: the process
         // starts happily and fails at the first call instead.
         load(HashMap::from([("test.only.blank".into(), "   ".into())]));
         assert_eq!(get("test.only.blank"), None);
+        load(HashMap::new());
     }
 
     #[test]
@@ -241,6 +250,7 @@ password_env = \"NILES_TEST_DEFINITELY_UNSET_XYZ\"
 
     #[test]
     fn the_environment_wins_over_the_store() {
+        let _guard = TEST_GUARD.lock();
         // Same order the reader uses. Reporting "stored" while the
         // reader takes the env var would make the page describe a
         // credential Niles is not using.
@@ -296,6 +306,7 @@ base_url = \"https://api.openai.com/v1\"
 
     #[test]
     fn loading_replaces_rather_than_merges() {
+        let _guard = TEST_GUARD.lock();
         // A secret somebody deleted has to disappear. Merging would
         // leave it working until the next restart, which is the worst
         // possible time to find out.
@@ -303,5 +314,6 @@ base_url = \"https://api.openai.com/v1\"
         load(HashMap::from([("test.only.kept".into(), "new".into())]));
         assert_eq!(get("test.only.gone"), None);
         assert_eq!(get("test.only.kept").as_deref(), Some("new"));
+        load(HashMap::new());
     }
 }

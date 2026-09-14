@@ -13,6 +13,7 @@
 
 use niles_core::DeviceState;
 use serde::Serialize;
+use std::time::Duration;
 
 /// WLED brightness `0..=255` → percent `0..=100`, rounded to nearest.
 pub fn wled_brightness_to_percent(v: u8) -> u8 {
@@ -97,6 +98,19 @@ pub fn kelvin_to_wled_cct(kelvin: u16) -> u16 {
 }
 
 pub fn format_wled_command(base_topic: &str, target: &DeviceState) -> Option<(String, String)> {
+    format_wled_command_fading(base_topic, target, Duration::ZERO)
+}
+
+/// The same command, told to take `fade` getting there.
+///
+/// WLED counts its crossfade in hundredths of a second and calls the
+/// one-shot form `tt` — `transition` would stick to every later call
+/// too, including the instant ones.
+pub fn format_wled_command_fading(
+    base_topic: &str,
+    target: &DeviceState,
+    fade: Duration,
+) -> Option<(String, String)> {
     if target.on.is_none()
         && target.brightness.is_none()
         && target.rgb.is_none()
@@ -107,6 +121,7 @@ pub fn format_wled_command(base_topic: &str, target: &DeviceState) -> Option<(St
     let json = serde_json::to_string(&WledApiPayload {
         on: target.on,
         bri: target.brightness.map(percent_to_wled_brightness),
+        tt: fade_to_wled_tt(fade),
         seg: (target.rgb.is_some() || target.color_temp_kelvin.is_some()).then(|| {
             vec![WledSegment {
                 col: target.rgb.map(|rgb| vec![rgb]),
@@ -117,6 +132,13 @@ pub fn format_wled_command(base_topic: &str, target: &DeviceState) -> Option<(St
     })
     .ok()?;
     Some((format!("{base_topic}/api"), json))
+}
+
+/// A fade in WLED's units: tenths of a second, capped at the u16 its
+/// API accepts. Zero sends nothing, leaving the strip its own default.
+fn fade_to_wled_tt(fade: Duration) -> Option<u16> {
+    let tenths = fade.as_millis() / 100;
+    (tenths > 0).then(|| u16::try_from(tenths).unwrap_or(u16::MAX))
 }
 
 /// Map a curated effect name to its WLED FX index. Case-insensitive.
@@ -143,6 +165,7 @@ pub fn format_wled_effect(base_topic: &str, fx: u8) -> (String, String) {
     let json = serde_json::to_string(&WledApiPayload {
         on: None,
         bri: None,
+        tt: None,
         seg: Some(vec![WledSegment {
             col: None,
             cct: None,
@@ -159,6 +182,9 @@ struct WledApiPayload {
     on: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bri: Option<u8>,
+    /// Crossfade for this call only, in hundredths of a second.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tt: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     seg: Option<Vec<WledSegment>>,
 }
@@ -329,6 +355,43 @@ mod tests {
     fn effect_to_fx_unknown_returns_none() {
         assert_eq!(effect_to_fx("strobe"), None);
         assert_eq!(effect_to_fx(""), None);
+    }
+
+    #[test]
+    fn a_fade_travels_as_tt_in_tenths_of_a_second() {
+        let (_, payload) = format_wled_command_fading(
+            "wled/living_room",
+            &DeviceState {
+                brightness: Some(40),
+                ..Default::default()
+            },
+            Duration::from_secs(45),
+        )
+        .expect("actionable");
+        assert!(payload.contains("\"tt\":450"), "{payload}");
+    }
+
+    #[test]
+    fn an_instant_command_carries_no_tt() {
+        let (_, payload) = format_wled_command(
+            "wled/living_room",
+            &DeviceState {
+                brightness: Some(40),
+                ..Default::default()
+            },
+        )
+        .expect("actionable");
+        assert!(!payload.contains("tt"), "{payload}");
+    }
+
+    #[test]
+    fn a_fade_longer_than_wled_can_count_is_capped_not_wrapped() {
+        // The field is a u16 of tenths, so 1:49:13 is the ceiling.
+        // Wrapping would turn a very long fade into a very short one.
+        assert_eq!(
+            fade_to_wled_tt(Duration::from_secs(60 * 60 * 5)),
+            Some(u16::MAX)
+        );
     }
 
     #[test]

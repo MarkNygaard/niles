@@ -25,6 +25,7 @@ pub mod dto;
 pub mod events;
 pub mod handlers;
 pub mod logs;
+pub mod places;
 pub mod presence;
 pub mod publish;
 pub mod secrets;
