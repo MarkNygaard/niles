@@ -3,6 +3,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -175,24 +176,24 @@ export function IntegrationsPage({
         }
         return (
           <Card key={integration.id}>
-            <CardHeader className="flex-row items-start justify-between gap-3">
-              <div className="min-w-0">
-                <CardTitle>{integration.label}</CardTitle>
-                <CardDescription>
-                  {integration.blurb}
-                  <span className="mt-1 block font-mono text-xs">
-                    {integration.base_url}
-                  </span>
-                </CardDescription>
-              </div>
-              <Button
-                variant="ghost"
-                aria-label={`Remove ${integration.label}`}
-                disabled={saving}
-                onClick={() => remove(integration)}
-              >
-                <Trash2 aria-hidden />
-              </Button>
+            <CardHeader>
+              <CardTitle>{integration.label}</CardTitle>
+              <CardDescription>
+                {integration.blurb}
+                <span className="mt-1 block font-mono text-xs">
+                  {integration.base_url}
+                </span>
+              </CardDescription>
+              <CardAction>
+                <Button
+                  variant="ghost"
+                  aria-label={`Remove ${integration.label}`}
+                  disabled={saving}
+                  onClick={() => remove(integration)}
+                >
+                  <Trash2 aria-hidden />
+                </Button>
+              </CardAction>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
               {secretFor(integration.secret_key) ? (

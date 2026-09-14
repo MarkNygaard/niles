@@ -3,6 +3,7 @@ import { Check, ExternalLink, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -81,22 +82,25 @@ export function TadoCard({
 
   return (
     <Card>
-      <CardHeader className="flex-row items-start justify-between gap-3">
-        <div className="min-w-0">
-          <CardTitle>tado</CardTitle>
-          <CardDescription>
-            Who is home, from tado's geofencing. Niles only reads it.
-          </CardDescription>
-        </div>
+      <CardHeader>
+        <CardTitle>tado</CardTitle>
+        <CardDescription>
+          Who is home, from tado's geofencing. Niles only reads it.
+        </CardDescription>
+        {/* The header's own slot rather than a flex row of my own:
+            CardHeader is a grid, and adding `flex` to it left the
+            button stranded in the middle of the card. */}
         {onRemove && (
-          <Button
-            variant="ghost"
-            aria-label="Remove tado"
-            disabled={saving}
-            onClick={onRemove}
-          >
-            <Trash2 aria-hidden />
-          </Button>
+          <CardAction>
+            <Button
+              variant="ghost"
+              aria-label="Remove tado"
+              disabled={saving}
+              onClick={onRemove}
+            >
+              <Trash2 aria-hidden />
+            </Button>
+          </CardAction>
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">

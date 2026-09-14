@@ -220,9 +220,30 @@ export function ConfigPanel() {
   const showNav = !phone || section === null;
   const showSection = !phone || section !== null;
 
+  /**
+   * Everything the server works out from the config, re-asked.
+   *
+   * Not just `config`: several routes answer questions *about* it, and
+   * each one goes stale the moment a value changes. Invalidating only
+   * the two obvious ones is how the tado switch came to sit still while
+   * presence turned on and off behind it — the card reads
+   * `/presence/tado`, which nothing was re-asking.
+   *
+   * `devices` is deliberately absent. It comes from the registry rather
+   * than the config, and the one config change that moves it —
+   * a WLED strip's channels — needs a restart anyway.
+   */
   function refresh() {
-    queryClient.invalidateQueries({ queryKey: ["config"] });
-    queryClient.invalidateQueries({ queryKey: ["history"] });
+    for (const key of [
+      "config",
+      "history",
+      "setup",
+      "secrets",
+      "integrations",
+      "tado",
+    ]) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
   }
 
   const save = useMutation({
@@ -639,12 +660,7 @@ export function ConfigPanel() {
             }
             saving={save.isPending}
             error={rowError ? rowError.message : undefined}
-            onChange={(row, entries) => {
-              save.mutate({ row, entries });
-              // The catalogue reports what is set up, so it moves when
-              // the config does.
-              integrations.refetch();
-            }}
+            onChange={(row, entries) => save.mutate({ row, entries })}
             onSecretsChanged={() => secrets.refetch()}
             onTadoChanged={() => tado.refetch()}
           />
