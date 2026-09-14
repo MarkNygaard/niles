@@ -106,6 +106,16 @@ export function RoomCard({
             onSet={(body) => onSetLight(light, body)}
           />
         ))}
+        {/* Named rather than simply gone. A control that publishes to
+            something not listening looks broken, but a light that
+            vanishes when its battery dies is one nobody notices has
+            died. */}
+        {room.unreachable.length > 0 && (
+          <p className="text-muted-foreground py-3 text-xs">
+            {room.unreachable.join(", ")}{" "}
+            {room.unreachable.length === 1 ? "is" : "are"} not answering.
+          </p>
+        )}
       </div>
     </>
   );

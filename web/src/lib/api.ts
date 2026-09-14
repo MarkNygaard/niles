@@ -162,6 +162,11 @@ export interface Device {
   /** Whether the device can be told a colour / a colour temperature. */
   supports_rgb: boolean;
   supports_color_temp: boolean;
+  /**
+   * Whether the source can currently reach it. Absent on an older
+   * server, which reads the same as reachable.
+   */
+  available?: boolean;
 }
 
 /** What a light can be told. Every field is optional; at least one is required. */
