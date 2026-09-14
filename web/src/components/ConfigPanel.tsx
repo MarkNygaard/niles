@@ -26,12 +26,14 @@ import { SetupBanner } from "@/components/SetupBanner";
 import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
+import { SatellitesCard } from "@/components/SatellitesCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
 import type { Applied, ConfigView, Revision, WledStrip } from "@/lib/api";
+import type { Satellite } from "@/components/SatellitesCard";
 import { AlertTriangle, ChevronLeft, Undo2 } from "lucide-react";
 
 interface Row {
@@ -183,6 +185,19 @@ function routineAt(root: unknown): { enabled?: boolean; fire_days?: string[] } {
 function hostOf(baseUrl?: string): string | undefined {
   const rest = baseUrl?.split("://")[1];
   return rest ? rest.split(/[/?]/)[0] || undefined : undefined;
+}
+
+/** The satellites as `[satellites.<name>]` has them, sorted by name. */
+function satellitesAt(root: unknown): Satellite[] {
+  const value = valueAt(root, "satellites");
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value as Record<string, { ip?: string; room?: string }>)
+    .map(([name, entry]) => ({
+      name,
+      ip: entry?.ip ?? "",
+      room: entry?.room ?? "",
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function stripsAt(root: unknown): WledStrip[] {
@@ -564,6 +579,19 @@ export function ConfigPanel() {
             error={rowError?.row === "home" ? rowError.message : undefined}
             onChange={(entries) => save.mutate({ row: "home", entries })}
             onClear={(path) => reset.mutate({ row: "home", paths: [path] })}
+          />
+        </TabsContent>
+
+        <TabsContent value="satellites">
+          <SatellitesCard
+            satellites={satellitesAt(view.effective)}
+            rooms={[...new Set((devices.data ?? []).map((d) => d.room))].sort()}
+            saving={save.isPending || reset.isPending}
+            error={rowError?.row === "satellites" ? rowError.message : undefined}
+            onChange={(entries) => save.mutate({ row: "satellites", entries })}
+            onRemove={(name) =>
+              reset.mutate({ row: "satellites", paths: [`satellites.${name}`] })
+            }
           />
         </TabsContent>
 
