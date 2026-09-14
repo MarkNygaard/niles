@@ -24,6 +24,15 @@ pub struct WledDeviceConfig {
     /// Base MQTT topic for this WLED instance, e.g. `"wled/office"`.
     pub topic: String,
 
+    /// True for a strip with colour LEDs.
+    ///
+    /// Nearly all of them have, which is why it defaults to true — but
+    /// not the analog ones, and offering a colour wheel for a strip
+    /// that only does warm-to-cold white is how a control ends up
+    /// doing nothing.
+    #[serde(default = "default_rgb")]
+    pub rgb: bool,
+
     /// True for a strip with warm and cold white channels — the
     /// "white balance" slider in WLED's own interface, `cct` in its
     /// API.
@@ -35,6 +44,12 @@ pub struct WledDeviceConfig {
     /// rather than unsupported.
     #[serde(default)]
     pub white_balance: bool,
+}
+
+/// Nearly every WLED strip has colour LEDs; the analog ones are the
+/// exception.
+fn default_rgb() -> bool {
+    true
 }
 
 impl WledConfig {
@@ -78,6 +93,17 @@ impl WledConfig {
             if !seen_topics.insert(dev.topic.clone()) {
                 return Err(Self::invalid(format!("duplicate topic {:?}", dev.topic)));
             }
+            // A strip with neither is a light Niles can switch on and
+            // dim and nothing else. That is a real thing to own, but it
+            // is almost always a mistake in the entry, and saying so
+            // costs less than an evening wondering why a slider does
+            // nothing.
+            if !dev.rgb && !dev.white_balance {
+                return Err(Self::invalid(format!(
+                    "{:?} has neither colour nor white balance, so nothing about                      its light can be set",
+                    dev.name
+                )));
+            }
         }
         Ok(())
     }
@@ -86,6 +112,53 @@ impl WledConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_strip_is_a_colour_strip_unless_told_otherwise() {
+        let cfg: WledConfig = toml::from_str(
+            "[[devices]]
+name = \"office/desk\"
+topic = \"wled/office\"
+",
+        )
+        .expect("parses");
+        assert!(cfg.devices[0].rgb);
+        assert!(!cfg.devices[0].white_balance);
+        cfg.validate().expect("valid");
+    }
+
+    #[test]
+    fn an_analog_strip_can_say_it_has_no_colour() {
+        let cfg: WledConfig = toml::from_str(
+            "[[devices]]
+name = \"living_room/ceiling\"
+topic = \"wled/living_room\"
+             rgb = false
+white_balance = true
+",
+        )
+        .expect("parses");
+        assert!(!cfg.devices[0].rgb);
+        assert!(cfg.devices[0].white_balance);
+        cfg.validate().expect("valid");
+    }
+
+    #[test]
+    fn a_strip_with_no_channel_at_all_is_refused() {
+        let cfg: WledConfig = toml::from_str(
+            "[[devices]]
+name = \"office/desk\"
+topic = \"wled/office\"
+rgb = false
+",
+        )
+        .expect("it parses");
+        let err = cfg.validate().expect_err("but does not validate");
+        assert!(
+            err.to_string().contains("neither colour nor white"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn default_empty_parses() {

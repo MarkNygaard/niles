@@ -39,6 +39,20 @@ export interface Provider {
   serves?: ("stt" | "llm")[];
 }
 
+/**
+ * One WLED strip, as `[[wled.devices]]` has it.
+ *
+ * `rgb` and `white_balance` are optional here because the config file
+ * may simply not mention them: unwritten means the defaults, which are
+ * colour and no white balance.
+ */
+export interface WledStrip {
+  name: string;
+  topic: string;
+  rgb?: boolean;
+  white_balance?: boolean;
+}
+
 export interface SetupGap {
   path: string;
   severity: "blocking" | "degraded";

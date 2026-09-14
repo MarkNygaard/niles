@@ -23,6 +23,8 @@ use tracing::{debug, warn};
 pub struct WledDevice {
     pub id: DeviceId,
     pub topic: String,
+    /// Has colour LEDs. False for an analog white-only strip.
+    pub rgb: bool,
     /// Has warm and cold white channels — WLED's "white balance".
     pub white_balance: bool,
 }
@@ -58,18 +60,20 @@ impl WledSource {
         for WledDevice {
             id,
             topic,
+            rgb,
             white_balance,
         } in &self.devices
         {
-            // Every WLED strip is RGB; only some have warm and cold
-            // white channels as well, and only those can be warmed by
-            // the curve. Taken from the config because WLED has no
-            // `bridge/devices` to ask, and inferring it from reported
-            // state is the trap #167 closed for Zigbee.
+            // Taken from the config because WLED has no
+            // `bridge/devices` to ask — and its MQTT feed says nothing
+            // about what a strip is, only what it is currently doing.
+            // Inferring it from that is the trap #167 closed for
+            // Zigbee: a white-only strip publishes a colour anyway, and
+            // a colour strip in white mode publishes none.
             let device = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light)
                 .with_capabilities(LightCapabilities {
                     color_temp: *white_balance,
-                    rgb: true,
+                    rgb: *rgb,
                 });
             self.registry.upsert(device.clone());
             self.bus.publish(niles_core::Event::DeviceAdded { device });
