@@ -71,6 +71,7 @@ describe("ConfigPanel", () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: /Integrations/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Configure/ }));
     const before = vi.mocked(api.tadoStatus).mock.calls.length;
 
     fireEvent.click(await screen.findByRole("switch"));
@@ -88,6 +89,7 @@ describe("ConfigPanel", () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: /Integrations/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Configure/ }));
     const before = vi.mocked(api.secrets).mock.calls.length;
 
     fireEvent.click(await screen.findByRole("switch"));

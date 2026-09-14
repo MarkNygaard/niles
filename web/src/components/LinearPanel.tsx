@@ -1,16 +1,9 @@
 import { useState } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { SecretField } from "@/components/SecretField";
 import type { Secret } from "@/lib/api";
 
-export interface LinearCardProps {
+export interface LinearPanelProps {
   team: string;
   triggerLabel: string;
   secret?: Secret;
@@ -27,7 +20,7 @@ export interface LinearCardProps {
  * connects nothing here: Niles has to know which team's issues are
  * meant for it, and which label says an issue is.
  */
-export function LinearCard({
+export function LinearPanel({
   team,
   triggerLabel,
   secret,
@@ -35,53 +28,49 @@ export function LinearCard({
   saving,
   onChange,
   onSecretsChanged,
-}: LinearCardProps) {
+}: LinearPanelProps) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Linear</CardTitle>
-        <CardDescription>
-          An issue in this team, carrying the label below, becomes work Niles
-          picks up.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Field
-            label="Team"
-            value={team}
-            placeholder="niles"
-            disabled={saving}
-            onCommit={(value) =>
-              onChange([{ path: "integrations.linear.team", value }])
-            }
-          />
-          <Field
-            label="Trigger label"
-            value={triggerLabel}
-            placeholder="AI Eligible"
-            disabled={saving}
-            onCommit={(value) =>
-              onChange([{ path: "integrations.linear.trigger_label", value }])
-            }
-          />
-        </div>
+    <div className="flex flex-col gap-4">
+      <p className="text-muted-foreground text-sm">
+        An issue in this team, carrying the label below, becomes work Niles
+        picks up.
+      </p>
 
-        {secret && (
-          <SecretField
-            secret={secret}
-            writable={writable}
-            onChanged={onSecretsChanged}
-          />
-        )}
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Field
+          label="Team"
+          value={team}
+          placeholder="niles"
+          disabled={saving}
+          onCommit={(value) =>
+            onChange([{ path: "integrations.linear.team", value }])
+          }
+        />
+        <Field
+          label="Trigger label"
+          value={triggerLabel}
+          placeholder="AI Eligible"
+          disabled={saving}
+          onCommit={(value) =>
+            onChange([{ path: "integrations.linear.trigger_label", value }])
+          }
+        />
+      </div>
 
-        {!team.trim() && (
-          <p className="text-muted-foreground text-xs">
-            Niles will not read anything until a team is named.
-          </p>
-        )}
-      </CardContent>
-    </Card>
+      {secret && (
+        <SecretField
+          secret={secret}
+          writable={writable}
+          onChanged={onSecretsChanged}
+        />
+      )}
+
+      {!team.trim() && (
+        <p className="text-muted-foreground text-xs">
+          Niles will not read anything until a team is named.
+        </p>
+      )}
+    </div>
   );
 }
 

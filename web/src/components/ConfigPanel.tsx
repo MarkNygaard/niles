@@ -612,6 +612,7 @@ export function ConfigPanel() {
                 current={roleValue("stt", "provider")}
                 model={roleValue("stt", "model") ?? ""}
                 fallbackHost={hostOf(roleValue("stt", "base_url"))}
+                defaultModel={stringAt(view.defaults, "stt.model")}
                 saving={save.isPending}
                 onSave={(change) =>
                   save.mutate({
@@ -632,6 +633,7 @@ export function ConfigPanel() {
                   current={roleValue("llm", "provider")}
                   model={roleValue("llm", "model") ?? ""}
                   fallbackHost={hostOf(roleValue("llm", "base_url"))}
+                  defaultModel={stringAt(view.defaults, "llm.model")}
                   saving={save.isPending}
                   onSave={(change) =>
                     save.mutate({

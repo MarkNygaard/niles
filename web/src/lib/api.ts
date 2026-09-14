@@ -23,6 +23,13 @@ export interface ConfigView {
   sections: SectionView[];
   /** False when there is no writable volume: changes are lost on restart. */
   persistent: boolean;
+  /**
+   * What Niles runs where the config says nothing.
+   *
+   * `effective` is the merged *file*, so a value nobody wrote is absent
+   * from it — which made a working setting look like an empty box.
+   */
+  defaults?: Record<string, unknown>;
 }
 
 /**

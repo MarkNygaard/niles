@@ -37,7 +37,7 @@ const SECRETS: SecretsReport = {
   ],
 };
 
-function setup(integrations: Integration[], secrets = SECRETS) {
+function setup(integrations: Integration[], secrets: SecretsReport = SECRETS) {
   const onChange = vi.fn();
   render(
     <IntegrationsPage
@@ -58,10 +58,25 @@ function openAddList() {
 describe("IntegrationsPage", () => {
   it("shows only what is set up", () => {
     // The point of the catalogue: a hundred entries later this is still
-    // one card per thing you actually use.
+    // one row per thing you actually use.
     setup([{ ...GROQ, added: true }, TADO]);
     expect(screen.getByText("Groq")).toBeInTheDocument();
     expect(screen.queryByText("tado°")).toBeNull();
+  });
+
+  it("marks an integration added without a key as unfinished", () => {
+    // A row that looks done and answers nothing is worse than one that
+    // says what is left to do.
+    setup([{ ...GROQ, added: true }]);
+    expect(screen.getByText(/not finished/)).toBeInTheDocument();
+  });
+
+  it("says nothing is left to do once the key is there", () => {
+    setup([{ ...GROQ, added: true }], {
+      writable: true,
+      secrets: [{ ...SECRETS.secrets[0], source: "stored" }],
+    });
+    expect(screen.queryByText(/not finished/)).toBeNull();
   });
 
   it("offers the rest behind the add button", () => {
@@ -109,14 +124,19 @@ describe("IntegrationsPage", () => {
     expect(value.map((p) => p.name)).toEqual(["groq", "cerebras"]);
   });
 
-  it("asks for the key on the integration's own card", () => {
+  it("keeps the key out of the list and behind Configure", () => {
+    // The list answers "what is connected". A key is setup detail, and
+    // true at a glance is not the same as useful at a glance.
     setup([{ ...GROQ, added: true }]);
+    expect(screen.queryByLabelText("groq API key")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
     expect(screen.getByLabelText("groq API key")).toBeInTheDocument();
   });
 
   it("removes a provider by leaving it out of the list", () => {
     const { onChange } = setup([{ ...GROQ, added: true }]);
-    fireEvent.click(screen.getByRole("button", { name: "Remove Groq" }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove Groq/ }));
     expect(onChange).toHaveBeenCalledWith("providers", [
       { path: "providers", value: [] },
     ]);
@@ -124,7 +144,7 @@ describe("IntegrationsPage", () => {
 
   it("says what connecting is for when nothing is", () => {
     setup([GROQ, TADO]);
-    expect(screen.getByText(/Nothing connected yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing yet/)).toBeInTheDocument();
   });
 
   it("says so when everything is already set up", () => {

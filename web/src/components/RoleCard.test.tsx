@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { RoleCard } from "@/components/RoleCard";
+import { RoleCard, usableFor } from "@/components/RoleCard";
 import type { Provider } from "@/lib/api";
 
 const GROQ: Provider = {
@@ -15,54 +15,60 @@ const CEREBRAS: Provider = {
   serves: ["llm"],
 };
 
-function setup(role: "stt" | "llm", providers: Provider[] = [GROQ, CEREBRAS]) {
+function setup(
+  role: "stt" | "llm",
+  props: Partial<React.ComponentProps<typeof RoleCard>> = {},
+) {
   const onSave = vi.fn();
   render(
     <RoleCard
       role={role}
       title={role === "stt" ? "Speech-to-text" : "Language model"}
       description="…"
-      providers={providers}
+      providers={[GROQ, CEREBRAS]}
       current="groq"
       model="openai/gpt-oss-20b"
       onSave={onSave}
+      {...props}
     />,
   );
   return { onSave };
 }
 
-describe("RoleCard", () => {
+// The rule lives in a function rather than being read off the rendered
+// options, because Base UI's Select popup hangs jsdom outright and
+// cannot be opened at all. Testing the rule beats testing nothing.
+describe("usableFor", () => {
   it("offers only providers that can do the job", () => {
     // A language-only provider has no speech endpoint. Offering it
     // would turn a 404 from somebody else's server into the way you
     // find that out.
-    setup("stt");
-    const select = screen.getByRole("combobox", { name: /provider/i });
-    expect(select).toHaveTextContent("groq");
-    expect(select).not.toHaveTextContent("cerebras");
+    expect(usableFor([GROQ, CEREBRAS], "stt").map((p) => p.name)).toEqual([
+      "groq",
+    ]);
   });
 
   it("offers both where both apply", () => {
-    setup("llm");
-    const select = screen.getByRole("combobox", { name: /provider/i });
-    expect(select).toHaveTextContent("groq");
-    expect(select).toHaveTextContent("cerebras");
+    expect(usableFor([GROQ, CEREBRAS], "llm").map((p) => p.name)).toEqual([
+      "groq",
+      "cerebras",
+    ]);
   });
 
   it("treats a provider that says nothing as able to do anything", () => {
-    setup("stt", [{ name: "somewhere", base_url: "https://example.test/v1" }]);
-    expect(
-      screen.getByRole("combobox", { name: /provider/i }),
-    ).toHaveTextContent("somewhere");
+    const bare: Provider = {
+      name: "somewhere",
+      base_url: "https://example.test/v1",
+    };
+    expect(usableFor([bare], "stt")).toEqual([bare]);
   });
+});
 
+describe("RoleCard", () => {
   it("saves the provider and the model as one change", () => {
     // They cannot move separately: a model name is not portable, so
     // half a change is a request that fails at the next transcription.
-    const { onSave } = setup("llm");
-    fireEvent.change(screen.getByRole("combobox", { name: /provider/i }), {
-      target: { value: "cerebras" },
-    });
+    const { onSave } = setup("llm", { current: "cerebras" });
     fireEvent.change(screen.getByRole("textbox", { name: /model/i }), {
       target: { value: "llama3.1-8b" },
     });
@@ -78,44 +84,20 @@ describe("RoleCard", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
-  it("does not offer un-picking once something is picked", () => {
-    // The blank used to be an option called "From the config", which
-    // read as a choice. It is not one — it means the endpoint written
-    // into this role's own section, which is a leftover rather than
-    // something to select.
-    setup("llm");
-    const select = screen.getByRole("combobox", { name: /provider/i });
-    expect(select).not.toHaveTextContent("Pick one");
-    expect(select).not.toHaveTextContent("From the config");
-  });
-
-  it("asks you to pick when nothing is picked yet", () => {
-    render(
-      <RoleCard
-        role="llm"
-        title="Language model"
-        description="…"
-        providers={[GROQ]}
-        model=""
-        onSave={vi.fn()}
-      />,
+  it("says which model is running when none is written down", () => {
+    // The box was blank while Niles was happily using its default,
+    // which made the page look like it was asking for something it
+    // already had.
+    setup("stt", { model: "", defaultModel: "whisper-large-v3-turbo" });
+    expect(screen.getByText(/what Niles ships with/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /model/i })).toHaveAttribute(
+      "placeholder",
+      "whisper-large-v3-turbo",
     );
-    expect(
-      screen.getByRole("combobox", { name: /provider/i }),
-    ).toHaveTextContent("Pick one");
   });
 
   it("says where to go when nothing can do the job", () => {
-    render(
-      <RoleCard
-        role="stt"
-        title="Speech-to-text"
-        description="…"
-        providers={[CEREBRAS]}
-        model=""
-        onSave={vi.fn()}
-      />,
-    );
+    setup("stt", { providers: [CEREBRAS], current: undefined, model: "" });
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.getByText(/Add one under Integrations/)).toBeInTheDocument();
   });
@@ -124,17 +106,7 @@ describe("RoleCard", () => {
     // Somebody whose config still carries its own endpoint is not
     // misconfigured. Telling them nothing is set up while speech works
     // would be worse than saying nothing.
-    render(
-      <RoleCard
-        role="stt"
-        title="Speech-to-text"
-        description="…"
-        providers={[GROQ]}
-        model="whisper-large-v3-turbo"
-        fallbackHost="api.groq.com"
-        onSave={vi.fn()}
-      />,
-    );
+    setup("stt", { current: undefined, fallbackHost: "api.groq.com" });
     expect(screen.getByText(/api\.groq\.com/)).toBeInTheDocument();
   });
 });

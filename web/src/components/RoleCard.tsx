@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { Provider } from "@/lib/api";
 
 export interface RoleCardProps {
@@ -13,6 +19,10 @@ export interface RoleCardProps {
   /** Which provider this role names, if any. */
   current?: string;
   model: string;
+  /** What Niles runs when nothing is written down. Shown in the box as
+      a placeholder, because that is what an unset field actually
+      means here — not "empty", which is what it used to look like. */
+  defaultModel?: string;
   /** The host of the role's own `base_url`, when it has one and names
       no provider — so the page can say what is answering today. */
   fallbackHost?: string;
@@ -40,6 +50,24 @@ export interface RoleCardProps {
  * integrations existed works — but it is not something to *choose*, so
  * it is reported as the current state rather than offered as an option.
  */
+/**
+ * The providers that can do this job.
+ *
+ * A function rather than a line inside the component because it is the
+ * one rule here worth testing and the popup it feeds cannot be opened
+ * in jsdom — Base UI's Select hangs it. Testing the rule directly beats
+ * testing nothing.
+ *
+ * A provider that says nothing about what it serves is assumed able:
+ * refusing to use something because nobody wrote down what it does is
+ * worse than letting it fail with the provider's own error.
+ */
+export function usableFor(providers: Provider[], role: "stt" | "llm") {
+  return providers.filter(
+    (p) => !p.serves || p.serves.length === 0 || p.serves.includes(role),
+  );
+}
+
 export function RoleCard({
   role,
   title,
@@ -47,6 +75,7 @@ export function RoleCard({
   providers,
   current,
   model,
+  defaultModel,
   fallbackHost,
   saving,
   onSave,
@@ -57,9 +86,7 @@ export function RoleCard({
   useEffect(() => setProvider(current ?? ""), [current]);
   useEffect(() => setDraft(model), [model]);
 
-  const usable = providers.filter(
-    (p) => !p.serves || p.serves.length === 0 || p.serves.includes(role),
-  );
+  const usable = usableFor(providers, role);
   const dirty = (current ?? "") !== provider || model !== draft;
 
   return (
@@ -74,37 +101,45 @@ export function RoleCard({
           Nothing set up can do this yet. Add one under Integrations.
         </p>
       ) : (
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <select
-          aria-label={`${title} provider`}
-          value={provider}
-          disabled={saving}
-          onChange={(e) => setProvider(e.target.value)}
-          className={cn(
-            "border-input bg-background h-9 rounded-lg border px-2 text-sm sm:w-44",
-            "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-          )}
-        >
-          {/* An empty choice only while nothing is picked, so the box
-              cannot claim a provider that was never chosen. Once one is,
-              it stops being offered: unpicking would silently fall back
-              to the config file. */}
-          {!current && <option value="">Pick one</option>}
-          {usable.map((p) => (
-            <option key={p.name} value={p.name}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <label className="flex flex-col gap-1 sm:w-44">
+          <span className="text-muted-foreground text-xs">Provider</span>
+          <Select
+            value={provider || null}
+            disabled={saving}
+            onValueChange={(next: string | null) => setProvider(next ?? "")}
+          >
+            <SelectTrigger
+              aria-label={`${title} provider`}
+              className="h-9 w-full"
+            >
+              <SelectValue placeholder="Pick one" />
+            </SelectTrigger>
+            <SelectContent>
+              {usable.map((p) => (
+                <SelectItem key={p.name} value={p.name}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
 
-        <Input
-          value={draft}
-          aria-label={`${title} model`}
-          spellCheck={false}
-          disabled={saving}
-          onChange={(e) => setDraft(e.target.value)}
-          className="font-mono sm:flex-1"
-        />
+        <label className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="text-muted-foreground text-xs">Model</span>
+          <Input
+            value={draft}
+            aria-label={`${title} model`}
+            spellCheck={false}
+            disabled={saving}
+            // An unset model is not an empty one — Niles ships a
+            // working default, and a blank box made the page look
+            // like it was asking for something it already had.
+            placeholder={defaultModel}
+            onChange={(e) => setDraft(e.target.value)}
+            className="font-mono"
+          />
+        </label>
 
         <Button
           variant="outline"
@@ -119,7 +154,15 @@ export function RoleCard({
           Save
         </Button>
       </div>
+      )}
 
+      {/* An unset model is not an empty one. Saying which one is
+          running beats a blank box that looks like it wants something. */}
+      {!model && defaultModel && (
+        <p className="text-muted-foreground text-xs">
+          Using <span className="font-mono">{defaultModel}</span>, which is
+          what Niles ships with. Type a name here to pin a different one.
+        </p>
       )}
 
       {/* Said rather than offered. Somebody whose config still carries
