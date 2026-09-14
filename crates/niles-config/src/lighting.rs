@@ -100,6 +100,24 @@ pub struct LightingConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MorningRoutineConfigDto {
+    /// Whether the wake-up ramp runs.
+    ///
+    /// A switch rather than deleting the section, so turning it off for
+    /// a fortnight's holiday does not lose which lights were in it and
+    /// which days it fired on.
+    ///
+    /// Defaults to on: a config that bothered to write this section
+    /// meant it.
+    #[serde(default = "default_routine_enabled")]
+    pub enabled: bool,
+
+    /// Weekdays it fires on — `"mon"`, `"monday"`, either.
+    ///
+    /// Defaults to the working week, which is what a wake-up light is
+    /// usually for, and what makes an empty section still do something.
+    /// Defaulting to no days would be a routine that is switched on,
+    /// looks configured, and never fires.
+    #[serde(default = "default_fire_days")]
     pub fire_days: Vec<String>,
     /// Devices to wake up. **Omit (or leave empty) to target every
     /// curve-managed light** (all non-ambient lights, honoring
@@ -158,6 +176,17 @@ pub struct ColorTempAnchor {
     pub time: String,
     /// Color temperature in Kelvin.
     pub kelvin: u16,
+}
+
+fn default_routine_enabled() -> bool {
+    true
+}
+
+fn default_fire_days() -> Vec<String> {
+    ["mon", "tue", "wed", "thu", "fri"]
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 fn default_morning_start() -> String {
@@ -498,6 +527,50 @@ ambient_color = \"#ff8000\"
 #[cfg(test)]
 mod tests {
     use crate::Config;
+
+    #[test]
+    fn a_routine_that_says_only_that_it_exists_still_fires() {
+        // What the switch in the app writes when it is first turned on:
+        // nothing but `enabled`. Defaulting the days to none would be a
+        // routine that is on, looks configured, and never fires.
+        let cfg = Config::load_from_str(
+            "[lighting.morning_routine]
+enabled = true
+",
+        )
+        .expect("valid");
+        let routine = cfg.lighting.morning_routine.as_ref().expect("present");
+        assert!(routine.enabled);
+        assert_eq!(routine.fire_days, ["mon", "tue", "wed", "thu", "fri"]);
+        routine.to_morning_routine_config().expect("converts");
+    }
+
+    #[test]
+    fn a_routine_written_before_the_switch_existed_is_on() {
+        let cfg = Config::load_from_str(
+            "[lighting.morning_routine]
+fire_days = [\"sat\", \"sun\"]
+",
+        )
+        .expect("valid");
+        assert!(cfg.lighting.morning_routine.expect("present").enabled);
+    }
+
+    #[test]
+    fn switching_it_off_keeps_what_it_was_set_to() {
+        // The reason it is a flag and not a deletion: a fortnight's
+        // holiday should not lose which lights were in it.
+        let cfg = Config::load_from_str(
+            "[lighting.morning_routine]
+enabled = false
+fire_days = [\"sat\"]
+",
+        )
+        .expect("valid");
+        let routine = cfg.lighting.morning_routine.expect("still there");
+        assert!(!routine.enabled);
+        assert_eq!(routine.fire_days, ["sat"]);
+    }
 
     #[test]
     fn the_ramps_fade_by_default() {

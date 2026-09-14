@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { SetupBanner } from "@/components/SetupBanner";
 import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
+import { MorningCard } from "@/components/MorningCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { TadoCard } from "@/components/TadoCard";
 import type { Person } from "@/components/PeopleCard";
@@ -171,6 +172,12 @@ function stringAt(root: unknown, path: string): string | undefined {
 function peopleAt(root: unknown): Person[] {
   const value = valueAt(root, "auth.allowed");
   return Array.isArray(value) ? (value as Person[]) : [];
+}
+
+/** The routine as the config has it, which may be nothing at all. */
+function routineAt(root: unknown): { enabled?: boolean; fire_days?: string[] } {
+  const value = valueAt(root, "lighting.morning_routine");
+  return value && typeof value === "object" ? (value as Record<string, never>) : {};
 }
 
 function stripsAt(root: unknown): WledStrip[] {
@@ -457,6 +464,41 @@ export function ConfigPanel() {
               </div>
             </CardContent>
           </Card>
+
+          <MorningCard
+            // Present and not switched off. A section written before the
+            // switch existed has no `enabled`, and meant yes.
+            enabled={
+              routineAt(view.effective).enabled ??
+              valueAt(view.effective, "lighting.morning_routine") !== undefined
+            }
+            fireDays={routineAt(view.effective).fire_days ?? []}
+            start={stringAt(view.effective, "lighting.morning_start")}
+            end={stringAt(view.effective, "lighting.morning_end")}
+            saving={save.isPending}
+            error={
+              rowError?.row === "lighting.morning_routine"
+                ? rowError.message
+                : undefined
+            }
+            onToggle={(on) =>
+              save.mutate({
+                row: "lighting.morning_routine",
+                entries: [
+                  { path: "lighting.morning_routine.enabled", value: on },
+                ],
+              })
+            }
+            onDays={(days) =>
+              save.mutate({
+                row: "lighting.morning_routine",
+                entries: [
+                  { path: "lighting.morning_routine.fire_days", value: days },
+                ],
+              })
+            }
+            row={row}
+          />
 
           <WledCard
             strips={stripsAt(view.effective)}

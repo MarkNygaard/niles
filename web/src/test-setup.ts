@@ -17,3 +17,16 @@ if (typeof window !== "undefined" && !window.matchMedia) {
       dispatchEvent: () => false,
     }) as MediaQueryList;
 }
+
+// jsdom implements pointer events as plain MouseEvents and never
+// defines the constructor, so Base UI's Switch — which synthesises a
+// click on the hidden input — throws "PointerEvent is not a
+// constructor" the moment a test toggles one. MouseEvent carries every
+// field the components read; what is missing is only the name.
+if (typeof window !== "undefined" && !window.PointerEvent) {
+  window.PointerEvent = class PointerEvent extends MouseEvent {
+    constructor(type: string, params: PointerEventInit = {}) {
+      super(type, params);
+    }
+  } as unknown as typeof window.PointerEvent;
+}
