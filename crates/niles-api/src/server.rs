@@ -24,6 +24,11 @@ pub fn router(state: AppState) -> Router {
         .route("/rooms/{room}/{device}", post(handlers::set_device))
         .route("/events/stream", get(crate::events::events_stream))
         .route("/setup", get(crate::presence::setup_report))
+        .route("/scenes", get(crate::scenes::list_scenes))
+        .route(
+            "/scenes/{name}",
+            post(crate::scenes::apply_scene).delete(crate::scenes::delete_scene),
+        )
         .route("/integrations", get(crate::integrations::list))
         .route("/places", get(crate::places::search))
         .route("/timezones", get(crate::places::timezones))

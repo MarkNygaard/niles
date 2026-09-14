@@ -3884,6 +3884,78 @@ fn build_secret_store(cfg: &Config) -> Option<Arc<niles_db::PostgresSecrets>> {
     }
 }
 
+/// Writes scenes to Postgres on a task of its own.
+///
+/// [`SceneStore`] is sync — it is read on paths that cannot await — so
+/// it cannot do a database round trip itself. It hands the document to
+/// this instead, and a task drains the queue. The last document wins,
+/// which is what "the whole set, replaced" already means.
+///
+/// The window where a scene is saved and the process dies before the
+/// write lands is real and small. A save that blocked a voice reply on
+/// a database is worse.
+struct QueuedScenes {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl niles_scheduler::ScenePersistence for QueuedScenes {
+    fn store(&self, document: &str) {
+        // A closed channel means the writer task is gone, which is
+        // worth one line rather than one per save.
+        if self.tx.send(document.to_string()).is_err() {
+            tracing::warn!(
+                "[scenes] nothing is writing scenes any more; this one is in memory only"
+            );
+        }
+    }
+}
+
+/// The scene store, kept wherever this install can keep it.
+///
+/// Postgres first: it needs nothing in the config file beyond the line
+/// that names the database, which is the point. A directory is still
+/// honoured for installs that have one, and with neither, scenes live
+/// until the process does — and say so, because losing them silently
+/// is how this was found.
+async fn build_scene_store(cfg: &Config) -> Arc<SceneStore> {
+    let Some(database) = &cfg.database else {
+        return Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
+    };
+    let Ok(url) = database.resolve_url() else {
+        return Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
+    };
+    let describe = backend.describe_target();
+    let scenes = Arc::new(niles_db::PostgresScenes::new(backend.pool(), describe));
+
+    let store = match scenes.load().await {
+        Ok(Some(document)) => SceneStore::from_json(&document).unwrap_or_else(|e| {
+            tracing::error!("[scenes] the stored document would not parse ({e}); starting empty");
+            SceneStore::new()
+        }),
+        Ok(None) => SceneStore::new(),
+        Err(e) => {
+            // Starting empty here would look like the scenes were
+            // deleted, and the next save would make that true.
+            tracing::error!("[scenes] could not be read ({e}); they are unavailable this run");
+            return Arc::new(SceneStore::new());
+        }
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(document) = rx.recv().await {
+            if let Err(e) = scenes.store(&document).await {
+                tracing::error!("[scenes] save failed: {e}");
+            }
+        }
+    });
+    Arc::new(store.with_sink(Arc::new(QueuedScenes { tx })))
+}
+
 fn build_tado_tokens(cfg: &Config) -> anyhow::Result<Option<Arc<dyn niles_presence::TokenStore>>> {
     let Some(database) = &cfg.database else {
         return Ok(None);
@@ -4192,7 +4264,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // populate. See voice_dispatch for the same reasoning.
     let llm = Arc::new(build_groq_client(&cfg)?);
     let timers = Arc::new(load_timer_store(cfg.persistence.directory.as_deref()));
-    let scenes = Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
+    let scenes = build_scene_store(&cfg).await;
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader
         .as_deref()
@@ -4355,6 +4427,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_config_store(Some(store.clone()))
     .with_logs(LOG_BUFFER.get().cloned())
     .with_manual_mode(Some(tracker.clone()))
+    .with_scenes(Some(scenes.clone()))
     .with_tado(tado.clone())
     .with_secrets(secret_store.clone())
     .with_api_token(cfg.auth.resolve_api_token());

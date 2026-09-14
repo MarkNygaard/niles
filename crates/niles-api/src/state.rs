@@ -52,6 +52,8 @@ pub struct AppState {
     /// device routes with no scheduler behind them, and there is then
     /// nothing to be exempt from.
     pub manual_mode: Option<Arc<ManualModeTracker>>,
+    /// The saved scenes, when this instance has a store for them.
+    pub scenes: Option<Arc<niles_scheduler::SceneStore>>,
 }
 
 impl AppState {
@@ -72,6 +74,7 @@ impl AppState {
             attempts: Arc::new(crate::auth::flow::Attempts::new()),
             api_token: None,
             manual_mode: None,
+            scenes: None,
             tado: None,
             secrets: None,
         }
@@ -96,6 +99,12 @@ impl AppState {
     /// Optional because the API also runs from `niles api`, which has
     /// no curve driving anything — there is nothing there to be exempt
     /// from. When it is absent, commands simply are not flagged.
+    /// The saved scenes, so the dashboard can list and apply them.
+    pub fn with_scenes(mut self, scenes: Option<Arc<niles_scheduler::SceneStore>>) -> Self {
+        self.scenes = scenes;
+        self
+    }
+
     pub fn with_manual_mode(mut self, tracker: Option<Arc<ManualModeTracker>>) -> Self {
         self.manual_mode = tracker;
         self

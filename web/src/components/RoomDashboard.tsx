@@ -7,6 +7,7 @@ import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
 import { HouseBar } from "@/components/HouseBar";
+import { SceneBar } from "@/components/SceneBar";
 import { houseToggle, optimistic, roomsOf, targets } from "@/lib/rooms";
 import type { Target } from "@/lib/rooms";
 
@@ -73,6 +74,15 @@ export function RoomDashboard() {
     );
   }
 
+  const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });
+  const applyScene = useMutation({
+    mutationFn: (name: string) => api.applyScene(name),
+    // A scene moves several lights at once, and the reports arrive
+    // over the event stream; asking again closes the gap for anything
+    // that does not report.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["devices"] }),
+  });
+
   const rooms = roomsOf(devices.data ?? []);
   if (rooms.length === 0) {
     return (
@@ -86,6 +96,10 @@ export function RoomDashboard() {
   return (
     <div className="flex flex-col gap-3">
       {error && <Notice>{error}</Notice>}
+      <SceneBar
+        scenes={scenes.data ?? []}
+        onApply={(name) => applyScene.mutate(name)}
+      />
       <HouseBar
         rooms={rooms}
         onToggle={() =>

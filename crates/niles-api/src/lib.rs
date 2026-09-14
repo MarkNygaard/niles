@@ -29,6 +29,7 @@ pub mod logs;
 pub mod places;
 pub mod presence;
 pub mod publish;
+pub mod scenes;
 pub mod secrets;
 pub mod server;
 pub mod state;

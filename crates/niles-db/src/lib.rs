@@ -28,9 +28,11 @@
 //! anything twice.
 
 mod enrollments;
+mod scenes;
 mod secrets;
 mod tado_tokens;
 pub use enrollments::PostgresEnrollments;
+pub use scenes::PostgresScenes;
 pub use secrets::{PostgresSecrets, Sealer};
 pub use tado_tokens::PostgresTadoTokens;
 
