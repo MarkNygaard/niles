@@ -6,6 +6,7 @@ import {
   KeyRound,
   Lightbulb,
   MessagesSquare,
+  Mic,
   Plug,
   Users,
 } from "lucide-react";
@@ -45,6 +46,12 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
         label: "Home",
         hint: "Where the house is, and what clock it keeps",
         icon: House,
+      },
+      {
+        id: "satellites",
+        label: "Satellites",
+        hint: "The microphones, and which room each is in",
+        icon: Mic,
       },
     ],
   },
