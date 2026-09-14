@@ -7,67 +7,15 @@
 //! and it also asked for a base URL that Niles already knows, since
 //! there is only one address Groq's API lives at.
 //!
-//! So the list is here instead. Adding one is picking from it, and what
-//! the page shows afterwards is only what is set up. A hundred entries
-//! later that is still one card per thing you actually use.
-//!
-//! Adding a new OpenAI-compatible provider is one entry in [`KNOWN`].
-//! Anything that needs more than a base URL and a key — tado's device
-//! flow, Linear's webhook — is a `Service` and brings its own card.
+//! The list itself lives in `niles-config`, beside the defaults that
+//! read from it. This is the route that serves it, plus the one thing
+//! the list cannot know on its own: which entries are set up.
 
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
+use niles_config::catalogue::{self, Known};
 use niles_config::{Config, Role};
-
-/// How a thing is set up, which decides what its card looks like.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    /// An inference account: one endpoint, one key, and the roles it
-    /// can serve. Adding it appends to `[[providers]]`.
-    Provider,
-    /// Anything with its own wiring — an OAuth flow, a webhook.
-    Service,
-}
-
-struct Known {
-    id: &'static str,
-    label: &'static str,
-    blurb: &'static str,
-    kind: Kind,
-    /// Providers only. The one address its API lives at, so nobody has
-    /// to look it up or mistype it.
-    base_url: Option<&'static str>,
-    serves: &'static [Role],
-}
-
-const KNOWN: &[Known] = &[
-    Known {
-        id: "groq",
-        label: "Groq",
-        blurb: "Speech-to-text and language models, fast enough for a house.",
-        kind: Kind::Provider,
-        base_url: Some("https://api.groq.com/openai/v1"),
-        serves: &[Role::Stt, Role::Llm],
-    },
-    Known {
-        id: "tado",
-        label: "tado°",
-        blurb: "Who is home, from the thermostats that already know.",
-        kind: Kind::Service,
-        base_url: None,
-        serves: &[],
-    },
-    Known {
-        id: "linear",
-        label: "Linear",
-        blurb: "Turns an issue into work Niles picks up.",
-        kind: Kind::Service,
-        base_url: None,
-        serves: &[],
-    },
-];
 
 /// One entry as the page sees it.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -75,9 +23,15 @@ pub struct IntegrationDto {
     pub id: String,
     pub label: String,
     pub blurb: String,
-    pub kind: Kind,
+    pub kind: catalogue::Kind,
     pub base_url: Option<String>,
     pub serves: Vec<Role>,
+    /// What it can be asked for, per role — `{"stt": [...], "llm": [...]}`.
+    ///
+    /// Grouped rather than a flat list so the page can fill one
+    /// dropdown without filtering, and absent for a role it does not
+    /// serve rather than empty.
+    pub models: std::collections::BTreeMap<String, Vec<String>>,
     /// Whether it is set up. The page shows the ones that are and
     /// offers the rest behind the add button.
     pub added: bool,
@@ -91,7 +45,7 @@ pub struct IntegrationDto {
 pub async fn list(State(state): State<AppState>) -> Json<Vec<IntegrationDto>> {
     let cfg = state.config.as_ref().map(|c| c.current());
     Json(
-        KNOWN
+        catalogue::KNOWN
             .iter()
             .map(|known| IntegrationDto {
                 id: known.id.to_string(),
@@ -100,21 +54,31 @@ pub async fn list(State(state): State<AppState>) -> Json<Vec<IntegrationDto>> {
                 kind: known.kind,
                 base_url: known.base_url.map(Into::into),
                 serves: known.serves.to_vec(),
+                models: models_of(known),
                 added: cfg.as_ref().is_some_and(|cfg| is_added(cfg, known.id)),
-                secret_key: secret_key(known),
+                secret_key: known.secret_key(),
             })
             .collect(),
     )
 }
 
-/// Where a given integration keeps its key.
-fn secret_key(known: &Known) -> Option<String> {
-    match known.kind {
-        Kind::Provider => Some(format!("provider.{}.api_key", known.id)),
-        // tado has tokens rather than a key, and gets them itself.
-        Kind::Service if known.id == "linear" => Some("integrations.linear.api_key".into()),
-        Kind::Service => None,
-    }
+/// The models it offers, keyed by the role they are for.
+fn models_of(known: &Known) -> std::collections::BTreeMap<String, Vec<String>> {
+    known
+        .serves
+        .iter()
+        .map(|role| {
+            let name = match role {
+                Role::Stt => "stt",
+                Role::Llm => "llm",
+                _ => "other",
+            };
+            (
+                name.to_string(),
+                known.models_for(*role).map(Into::into).collect(),
+            )
+        })
+        .collect()
 }
 
 /// Whether this config has the integration set up.
@@ -138,35 +102,37 @@ mod tests {
         Config::load_from_str(toml).expect("valid")
     }
 
+    fn groq() -> &'static Known {
+        catalogue::find("groq").expect("in the catalogue")
+    }
+
     #[test]
-    fn every_entry_says_where_its_key_goes_or_that_it_has_none() {
-        for known in KNOWN {
-            match known.kind {
-                Kind::Provider => {
-                    assert!(known.base_url.is_some(), "{} has no endpoint", known.id);
-                    assert!(
-                        !known.serves.is_empty(),
-                        "{} serves nothing, so no role could use it",
-                        known.id
-                    );
-                    assert_eq!(
-                        secret_key(known).as_deref(),
-                        Some(format!("provider.{}.api_key", known.id).as_str())
-                    );
-                }
-                // A service brings its own wiring, and tado's is tokens
-                // it fetches rather than a key anybody types.
-                Kind::Service => assert!(known.base_url.is_none(), "{}", known.id),
-            }
-        }
+    fn a_provider_offers_its_models_grouped_by_role() {
+        // One dropdown, filled without filtering — and absent for a
+        // role it does not serve rather than empty, so the page can
+        // tell "nothing for this" from "nothing yet".
+        let models = models_of(groq());
+        assert!(models["stt"].contains(&"whisper-large-v3-turbo".to_string()));
+        assert!(models["llm"].contains(&"openai/gpt-oss-20b".to_string()));
+        assert!(!models["stt"].contains(&"openai/gpt-oss-20b".to_string()));
+    }
+
+    #[test]
+    fn a_service_offers_none() {
+        let tado = catalogue::find("tado").expect("in the catalogue");
+        assert!(models_of(tado).is_empty());
+        assert!(tado.secret_key().is_none());
     }
 
     #[test]
     fn a_provider_counts_as_added_once_the_config_names_it() {
         let toml = concat!(
-            "[[providers]]\n",
-            "name = \"groq\"\n",
-            "base_url = \"https://api.groq.com/openai/v1\"\n",
+            "[[providers]]
+",
+            "name = \"groq\"
+",
+            "base_url = \"https://api.groq.com/openai/v1\"
+",
         );
         assert!(is_added(&cfg(toml), "groq"));
         assert!(!is_added(&cfg(""), "groq"));
@@ -175,11 +141,14 @@ mod tests {
     #[test]
     fn a_provider_with_no_key_yet_is_still_added() {
         // Otherwise adding one and being asked for its key would make
-        // the card vanish the moment you looked away from it.
+        // the row vanish the moment you looked away from it.
         let toml = concat!(
-            "[[providers]]\n",
-            "name = \"groq\"\n",
-            "base_url = \"https://api.groq.com/openai/v1\"\n",
+            "[[providers]]
+",
+            "name = \"groq\"
+",
+            "base_url = \"https://api.groq.com/openai/v1\"
+",
         );
         assert!(is_added(&cfg(toml), "groq"));
     }
@@ -187,12 +156,17 @@ mod tests {
     #[test]
     fn tado_and_linear_are_read_from_their_own_sections() {
         assert!(is_added(
-            &cfg("[presence]\nenabled = true\n[presence.tado]\n"),
+            &cfg("[presence]
+enabled = true
+[presence.tado]
+"),
             "tado"
         ));
         assert!(!is_added(&cfg(""), "tado"));
         assert!(is_added(
-            &cfg("[integrations.linear]\nteam = \"niles\"\n"),
+            &cfg("[integrations.linear]
+team = \"niles\"
+"),
             "linear"
         ));
         assert!(!is_added(&cfg(""), "linear"));

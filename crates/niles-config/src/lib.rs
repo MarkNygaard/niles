@@ -11,6 +11,7 @@ pub mod auth;
 pub mod automations;
 pub mod backend;
 pub mod capabilities;
+pub mod catalogue;
 pub mod database;
 mod env;
 pub mod error;

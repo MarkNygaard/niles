@@ -75,6 +75,11 @@ export interface Integration {
   kind: "provider" | "service";
   base_url: string | null;
   serves: ("stt" | "llm")[];
+  /**
+   * What it can be asked for, per role. The first for a role is what
+   * Niles uses when nothing is written down.
+   */
+  models?: Partial<Record<"stt" | "llm", string[]>>;
   added: boolean;
   secret_key: string | null;
 }

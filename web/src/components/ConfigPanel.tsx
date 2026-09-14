@@ -304,6 +304,13 @@ export function ConfigPanel() {
   // has a curve that runs, and the server defaults the same way.
   const providers =
     (view.effective.providers as import("@/lib/api").Provider[] | undefined) ?? [];
+  /** What each provider offers for a role, from the catalogue. */
+  const modelsFor = (role: "stt" | "llm") =>
+    Object.fromEntries(
+      (integrations.data ?? [])
+        .map((i) => [i.id, i.models?.[role] ?? []] as const)
+        .filter(([, list]) => list.length > 0),
+    );
   /** A field of a role section, as the live config has it. */
   const roleValue = (section: "stt" | "llm", field: string) =>
     (view.effective[section] as Record<string, unknown> | undefined)?.[field] as
@@ -613,6 +620,7 @@ export function ConfigPanel() {
                 model={roleValue("stt", "model") ?? ""}
                 fallbackHost={hostOf(roleValue("stt", "base_url"))}
                 defaultModel={stringAt(view.defaults, "stt.model")}
+                models={modelsFor("stt")}
                 saving={save.isPending}
                 onSave={(change) =>
                   save.mutate({
@@ -634,6 +642,7 @@ export function ConfigPanel() {
                   model={roleValue("llm", "model") ?? ""}
                   fallbackHost={hostOf(roleValue("llm", "base_url"))}
                   defaultModel={stringAt(view.defaults, "llm.model")}
+                  models={modelsFor("llm")}
                   saving={save.isPending}
                   onSave={(change) =>
                     save.mutate({

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { RoleCard, usableFor } from "@/components/RoleCard";
+import { RoleCard, choices, usableFor } from "@/components/RoleCard";
 import type { Provider } from "@/lib/api";
 
 const GROQ: Provider = {
@@ -64,6 +64,34 @@ describe("usableFor", () => {
   });
 });
 
+describe("choices", () => {
+  it("offers what the provider is known to serve", () => {
+    expect(choices(["whisper-large-v3-turbo", "whisper-large-v3"])).toEqual([
+      "whisper-large-v3-turbo",
+      "whisper-large-v3",
+    ]);
+  });
+
+  it("keeps a configured model the list has never heard of", () => {
+    // The shipped list goes stale the week a provider adds something,
+    // and a dropdown that cannot express the value already in the
+    // config would silently offer to change it.
+    expect(choices(["whisper-large-v3-turbo"], "whisper-next")).toEqual([
+      "whisper-large-v3-turbo",
+      "whisper-next",
+    ]);
+  });
+
+  it("does not list a configured model twice", () => {
+    expect(choices(["a", "b"], "b")).toEqual(["a", "b"]);
+  });
+
+  it("is empty for a provider nothing is known about", () => {
+    // Which is what makes the box fall back to being typed in.
+    expect(choices(undefined, undefined)).toEqual([]);
+  });
+});
+
 describe("RoleCard", () => {
   it("saves the provider and the model as one change", () => {
     // They cannot move separately: a model name is not portable, so
@@ -100,6 +128,19 @@ describe("RoleCard", () => {
     setup("stt", { providers: [CEREBRAS], current: undefined, model: "" });
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.getByText(/Add one under Integrations/)).toBeInTheDocument();
+  });
+
+  it("offers a list rather than a box when the models are known", () => {
+    // The whole point of putting them in the catalogue: nobody
+    // remembers `distil-whisper-large-v3-en`, and a box you have to
+    // guess at is a box that gets a wrong answer typed into it.
+    setup("stt", { models: { groq: ["whisper-large-v3-turbo"] } });
+    expect(screen.queryByRole("textbox", { name: /model/i })).toBeNull();
+  });
+
+  it("falls back to a box for a provider nothing is known about", () => {
+    setup("stt", { models: {} });
+    expect(screen.getByRole("textbox", { name: /model/i })).toBeInTheDocument();
   });
 
   it("says what is answering today rather than claiming nothing is", () => {

@@ -38,11 +38,14 @@ pub struct SttConfig {
 }
 
 fn default_base_url() -> String {
-    "https://api.groq.com/openai/v1".into()
+    crate::catalogue::default_base_url().into()
 }
 
+// From the catalogue, so the shipped default and the model offered
+// in the dropdown are the same string by construction rather than
+// because somebody remembered to change both.
 fn default_model() -> String {
-    "whisper-large-v3-turbo".into()
+    crate::catalogue::default_model(crate::providers::Role::Stt).into()
 }
 
 fn default_timeout_secs() -> u64 {
