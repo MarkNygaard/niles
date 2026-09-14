@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use ort::ep::ExecutionProvider;
 use ort::session::Session;
 use ort::value::{Tensor, TensorElementType, ValueType};
 
@@ -42,14 +41,26 @@ impl EcapaTdnnEmbedder {
         let mut builder = Session::builder().map_err(load_err)?;
 
         if cfg.use_gpu {
-            let cuda = ort::ep::CUDA::default();
-            if cuda.is_available().unwrap_or(false) {
-                builder = builder
-                    .with_execution_providers([cuda.build()])
-                    .map_err(|source| load_err(source.into()))?;
-            } else {
-                tracing::info!(target: "niles_recognition", "GPU execution provider unavailable, falling back to CPU");
+            #[cfg(feature = "cuda")]
+            {
+                use ort::ep::ExecutionProvider;
+                let cuda = ort::ep::CUDA::default();
+                if cuda.is_available().unwrap_or(false) {
+                    builder = builder
+                        .with_execution_providers([cuda.build()])
+                        .map_err(|source| load_err(source.into()))?;
+                } else {
+                    tracing::info!(target: "niles_recognition", "GPU execution provider unavailable, falling back to CPU");
+                }
             }
+            // Said out loud rather than ignored: somebody who turned
+            // `use_gpu` on and got CPU speed deserves to know it was
+            // the build and not the hardware.
+            #[cfg(not(feature = "cuda"))]
+            tracing::warn!(
+                target: "niles_recognition",
+                "use_gpu is on, but this build has no CUDA support; using the CPU.                  Rebuild with --features cuda to change that."
+            );
         }
 
         let session = builder
