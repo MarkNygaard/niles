@@ -11,6 +11,11 @@
 # Claude Code per-user state
 .claude/settings.local.json
 
+# Project MCP servers. Per-machine, and it names hosts that are nobody
+# else's business on a public repo. The skills under .claude/skills are
+# checked in; this is not.
+.mcp.json
+
 # Local-only Claude Code working notes (prior-art pointers, personal
 # scratchpads, anything we don't want on the public repo). Auto-loaded
 # alongside CLAUDE.md when present.

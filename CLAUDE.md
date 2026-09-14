@@ -84,6 +84,36 @@ crates/<name>/
 - Brightness is `u8` in `0..=100` (percent). Upstream-source translation (Z2M's `0..=254`) happens in the source-specific crate, not in core types.
 - Color temperature is `u16` Kelvin. Mireds → Kelvin conversion happens in the source-specific crate.
 
+## The web UI
+
+`web/` is a Vite + React app, served by `niles-api` behind the `ui`
+feature. Bun for dependencies (`bun.lock` is the lockfile), and:
+
+```powershell
+cd web
+npm run build      # tsc --noEmit + vite build
+npm test           # vitest
+```
+
+Components come from **shadcn/ui** on Base UI (`components.json`,
+`style: "base-nova"`). The skill is vendored at
+`.claude/skills/shadcn/`, pinned by `skills-lock.json`.
+
+Two things that cost an hour each if you do not know them:
+
+- **`npx shadcn@latest add <x>` rewrites the import and installs a
+  package for it.** The generated file says `import { cn } from "cn"`
+  and a `cn` dependency appears in `package.json`. Both are wrong here:
+  change the import to `@/lib/utils` and `npm uninstall cn`. Check
+  `bun.lock` afterwards — npm will not update it, so run `bun install`
+  to put the lockfile back in step with `package.json`.
+- **Base UI's `Select` popup hangs jsdom.** Not a slow retry — the run
+  never finishes. Anything worth asserting about what a `Select` offers
+  belongs in a function the test can call directly; see `usableFor` in
+  `RoleCard.tsx` and `roomChoices` in `SatellitesCard.tsx`. `Dialog`,
+  `Popover` and `Switch` are all fine, though `Switch` needs the
+  `PointerEvent` shim in `src/test-setup.ts`.
+
 ## PR workflow
 
 1. Branch off `main` with a meaningful prefix: `feat/`, `fix/`, `docs/`, `chore/`.
