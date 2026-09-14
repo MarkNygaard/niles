@@ -27,6 +27,13 @@ pub struct IntegrationsConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinearConfigDto {
+    /// The variable holding the key, when it comes from one.
+    ///
+    /// Optional now that a credential can be stored instead: naming no
+    /// variable means Niles looks in its own store, and says so clearly
+    /// if it is not there either. Requiring a name here made the
+    /// Settings page unable to set up Linear at all.
+    #[serde(default)]
     pub api_key_env: String,
     pub team: String,
     #[serde(default = "default_trigger_label")]
@@ -48,12 +55,6 @@ impl IntegrationsConfig {
 
 impl LinearConfigDto {
     pub fn validate(&self) -> Result<()> {
-        if self.api_key_env.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "integrations.linear",
-                reason: "api_key_env must not be empty".into(),
-            });
-        }
         if self.team.trim().is_empty() {
             return Err(Error::InvalidSection {
                 section: "integrations.linear",

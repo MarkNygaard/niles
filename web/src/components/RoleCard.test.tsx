@@ -78,17 +78,63 @@ describe("RoleCard", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
-  it("keeps naming no provider as a real answer", () => {
-    // It means "use the section's own endpoint", which is what every
-    // config written before providers existed does.
-    const { onSave } = setup("llm");
-    fireEvent.change(screen.getByRole("combobox", { name: /provider/i }), {
-      target: { value: "" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(onSave).toHaveBeenCalledWith({
-      provider: undefined,
-      model: "openai/gpt-oss-20b",
-    });
+  it("does not offer un-picking once something is picked", () => {
+    // The blank used to be an option called "From the config", which
+    // read as a choice. It is not one — it means the endpoint written
+    // into this role's own section, which is a leftover rather than
+    // something to select.
+    setup("llm");
+    const select = screen.getByRole("combobox", { name: /provider/i });
+    expect(select).not.toHaveTextContent("Pick one");
+    expect(select).not.toHaveTextContent("From the config");
+  });
+
+  it("asks you to pick when nothing is picked yet", () => {
+    render(
+      <RoleCard
+        role="llm"
+        title="Language model"
+        description="…"
+        providers={[GROQ]}
+        model=""
+        onSave={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("combobox", { name: /provider/i }),
+    ).toHaveTextContent("Pick one");
+  });
+
+  it("says where to go when nothing can do the job", () => {
+    render(
+      <RoleCard
+        role="stt"
+        title="Speech-to-text"
+        description="…"
+        providers={[CEREBRAS]}
+        model=""
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.getByText(/Add one under Integrations/)).toBeInTheDocument();
+  });
+
+  it("says what is answering today rather than claiming nothing is", () => {
+    // Somebody whose config still carries its own endpoint is not
+    // misconfigured. Telling them nothing is set up while speech works
+    // would be worse than saying nothing.
+    render(
+      <RoleCard
+        role="stt"
+        title="Speech-to-text"
+        description="…"
+        providers={[GROQ]}
+        model="whisper-large-v3-turbo"
+        fallbackHost="api.groq.com"
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/api\.groq\.com/)).toBeInTheDocument();
   });
 });

@@ -2313,20 +2313,18 @@ actions = [{{ do = "notify", body = "hi" }}]
         assert_eq!(linear.timeout_seconds, 15);
     }
     #[test]
-    fn integrations_linear_empty_api_key_env_rejected() {
+    fn integrations_linear_needs_no_api_key_env() {
+        // It used to be required, which left the Settings page unable to
+        // set Linear up at all: a key typed into the app has no variable
+        // name, and naming one that does not exist to get past the check
+        // would put a lie in the config file.
         let toml = format!(
-            "{}\n[integrations.linear]\napi_key_env = \"\"\nteam = \"NILES\"\n",
+            "{}\n[integrations.linear]\nteam = \"NILES\"\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "integrations.linear",
-                ..
-            }
-        ));
+        cfg.validate().expect("valid without one");
+        assert_eq!(cfg.integrations.linear.expect("present").api_key_env, "");
     }
     #[test]
     fn integrations_linear_empty_team_rejected() {

@@ -13,6 +13,9 @@ export interface RoleCardProps {
   /** Which provider this role names, if any. */
   current?: string;
   model: string;
+  /** The host of the role's own `base_url`, when it has one and names
+      no provider — so the page can say what is answering today. */
+  fallbackHost?: string;
   saving?: boolean;
   onSave: (change: { provider?: string; model: string }) => void;
 }
@@ -29,6 +32,13 @@ export interface RoleCardProps {
  * Only providers that say they serve this role are offered — a
  * language-only provider has no speech endpoint, and offering it would
  * turn a 404 into the way you find that out.
+ *
+ * With none added there is no dropdown at all, only what to do about
+ * it. The list used to carry an option called "From the config",
+ * meaning the endpoint and key written into this role's own section.
+ * That is still honoured, and is still how a config written before
+ * integrations existed works — but it is not something to *choose*, so
+ * it is reported as the current state rather than offered as an option.
  */
 export function RoleCard({
   role,
@@ -37,6 +47,7 @@ export function RoleCard({
   providers,
   current,
   model,
+  fallbackHost,
   saving,
   onSave,
 }: RoleCardProps) {
@@ -58,6 +69,11 @@ export function RoleCard({
         <p className="text-muted-foreground text-xs">{description}</p>
       </div>
 
+      {usable.length === 0 ? (
+        <p className="text-muted-foreground text-sm">
+          Nothing set up can do this yet. Add one under Integrations.
+        </p>
+      ) : (
       <div className="flex flex-col gap-2 sm:flex-row">
         <select
           aria-label={`${title} provider`}
@@ -69,10 +85,11 @@ export function RoleCard({
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
           )}
         >
-          {/* Naming nothing is a real answer, not a blank: it means the
-              section's own endpoint, which is what every config written
-              before providers existed uses. */}
-          <option value="">From the config</option>
+          {/* An empty choice only while nothing is picked, so the box
+              cannot claim a provider that was never chosen. Once one is,
+              it stops being offered: unpicking would silently fall back
+              to the config file. */}
+          {!current && <option value="">Pick one</option>}
           {usable.map((p) => (
             <option key={p.name} value={p.name}>
               {p.name}
@@ -103,9 +120,16 @@ export function RoleCard({
         </Button>
       </div>
 
-      {providers.length > 0 && usable.length === 0 && (
+      )}
+
+      {/* Said rather than offered. Somebody whose config still carries
+          its own endpoint is not misconfigured, and telling them
+          nothing is available while speech works would be worse than
+          saying nothing at all. */}
+      {!current && fallbackHost && (
         <p className="text-muted-foreground text-xs">
-          None of the providers you have added say they can do this.
+          Using <span className="font-mono">{fallbackHost}</span> from the
+          config file. Picking something here replaces it.
         </p>
       )}
     </div>

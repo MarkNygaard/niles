@@ -17,7 +17,7 @@ import { CurveChart } from "@/components/CurveChart";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
-import { ProvidersCard } from "@/components/ProvidersCard";
+import { IntegrationsPage } from "@/components/IntegrationsPage";
 import { RoleCard } from "@/components/RoleCard";
 import { SecretsCard } from "@/components/SecretsCard";
 import { SettingsNav } from "@/components/SettingsNav";
@@ -27,7 +27,6 @@ import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { TadoCard } from "@/components/TadoCard";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
@@ -180,6 +179,12 @@ function routineAt(root: unknown): { enabled?: boolean; fire_days?: string[] } {
   return value && typeof value === "object" ? (value as Record<string, never>) : {};
 }
 
+/** The host out of a base URL, for the line saying what answers today. */
+function hostOf(baseUrl?: string): string | undefined {
+  const rest = baseUrl?.split("://")[1];
+  return rest ? rest.split(/[/?]/)[0] || undefined : undefined;
+}
+
 function stripsAt(root: unknown): WledStrip[] {
   const value = valueAt(root, "wled.devices");
   return Array.isArray(value) ? (value as WledStrip[]) : [];
@@ -196,6 +201,10 @@ export function ConfigPanel() {
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
   const setup = useQuery({ queryKey: ["setup"], queryFn: api.setup });
+  const integrations = useQuery({
+    queryKey: ["integrations"],
+    queryFn: api.integrations,
+  });
   // Six hundred-odd strings that never change while the process runs.
   const timezones = useQuery({
     queryKey: ["timezones"],
@@ -581,6 +590,7 @@ export function ConfigPanel() {
                 providers={providers}
                 current={roleValue("stt", "provider")}
                 model={roleValue("stt", "model") ?? ""}
+                fallbackHost={hostOf(roleValue("stt", "base_url"))}
                 saving={save.isPending}
                 onSave={(change) =>
                   save.mutate({
@@ -600,6 +610,7 @@ export function ConfigPanel() {
                   providers={providers}
                   current={roleValue("llm", "provider")}
                   model={roleValue("llm", "model") ?? ""}
+                  fallbackHost={hostOf(roleValue("llm", "base_url"))}
                   saving={save.isPending}
                   onSave={(change) =>
                     save.mutate({
@@ -616,34 +627,27 @@ export function ConfigPanel() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="integrations" className="flex flex-col gap-4">
-          <ProvidersCard
-            providers={providers}
-            saving={save.isPending}
-            error={rowError?.row === "providers" ? rowError.message : undefined}
-            onChange={(next) =>
-              save.mutate({
-                row: "providers",
-                entries: [{ path: "providers", value: next }],
-              })
+        <TabsContent value="integrations">
+          <IntegrationsPage
+            integrations={integrations.data ?? []}
+            secrets={secrets.data}
+            tado={tado.data}
+            linear={
+              (view.effective.integrations as
+                | { linear?: { team?: string; trigger_label?: string } }
+                | undefined)?.linear
             }
+            saving={save.isPending}
+            error={rowError ? rowError.message : undefined}
+            onChange={(row, entries) => {
+              save.mutate({ row, entries });
+              // The catalogue reports what is set up, so it moves when
+              // the config does.
+              integrations.refetch();
+            }}
+            onSecretsChanged={() => secrets.refetch()}
+            onTadoChanged={() => tado.refetch()}
           />
-          {tado.data && (
-            <TadoCard
-              status={tado.data}
-              saving={save.isPending}
-              onToggle={(on) =>
-                save.mutate({
-                  row: "presence",
-                  entries: [
-                    { path: "presence.enabled", value: on },
-                    { path: "presence.tado", value: {} },
-                  ],
-                })
-              }
-              onChanged={() => tado.refetch()}
-            />
-          )}
         </TabsContent>
 
         <TabsContent value="all">

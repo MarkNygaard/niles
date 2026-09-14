@@ -53,6 +53,25 @@ export interface WledStrip {
   white_balance?: boolean;
 }
 
+/**
+ * Something Niles knows how to connect to.
+ *
+ * The list is fixed and comes from the server, because whether Niles
+ * can talk to a service is a question about the code rather than about
+ * the config — and because the endpoint of a known provider is
+ * something Niles already knows and nobody should have to type.
+ */
+export interface Integration {
+  id: string;
+  label: string;
+  blurb: string;
+  kind: "provider" | "service";
+  base_url: string | null;
+  serves: ("stt" | "llm")[];
+  added: boolean;
+  secret_key: string | null;
+}
+
 /** A place the house might be, as `/places` returns it. */
 export interface Place {
   label: string;
@@ -218,6 +237,7 @@ export const api = {
     }),
   clearSecret: (key: string) =>
     request<void>(`/secrets/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  integrations: () => request<Integration[]>("/integrations"),
   places: (q: string) =>
     request<Place[]>(`/places?q=${encodeURIComponent(q)}`),
   timezones: () => request<string[]>("/timezones"),

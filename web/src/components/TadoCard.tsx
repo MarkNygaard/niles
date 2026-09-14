@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, ExternalLink } from "lucide-react";
+import { Check, ExternalLink, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,6 +18,8 @@ export interface TadoCardProps {
   onToggle: (on: boolean) => void;
   saving?: boolean;
   onChanged: () => void;
+  /** Disconnect it entirely, from the integrations page. */
+  onRemove?: () => void;
 }
 
 /**
@@ -38,6 +40,7 @@ export function TadoCard({
   onToggle,
   saving,
   onChanged,
+  onRemove,
 }: TadoCardProps) {
   const [pending, setPending] = useState(status.pending);
   const [busy, setBusy] = useState(false);
@@ -78,11 +81,23 @@ export function TadoCard({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>tado</CardTitle>
-        <CardDescription>
-          Who is home, from tado's geofencing. Niles only reads it.
-        </CardDescription>
+      <CardHeader className="flex-row items-start justify-between gap-3">
+        <div className="min-w-0">
+          <CardTitle>tado</CardTitle>
+          <CardDescription>
+            Who is home, from tado's geofencing. Niles only reads it.
+          </CardDescription>
+        </div>
+        {onRemove && (
+          <Button
+            variant="ghost"
+            aria-label="Remove tado"
+            disabled={saving}
+            onClick={onRemove}
+          >
+            <Trash2 aria-hidden />
+          </Button>
+        )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {!status.connectable && (
