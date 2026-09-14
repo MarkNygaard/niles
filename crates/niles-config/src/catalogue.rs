@@ -1,0 +1,186 @@
+//! What Niles has been taught to talk to.
+//!
+//! Not a config section — a list of facts about the outside world that
+//! belong to the code rather than to anybody's file. Whether Niles can
+//! use Groq is decided by the client it ships with; where Groq's API
+//! lives has exactly one answer; and which models it serves is
+//! something a person should pick from rather than be asked to
+//! remember.
+//!
+//! Keeping the list here rather than in the API crate means the shipped
+//! defaults can read from it. `[stt]` with nothing in it has to name a
+//! model, and that model and the one offered in the dropdown must be
+//! the same string — which they now are by construction rather than by
+//! somebody noticing.
+
+use crate::providers::Role;
+
+/// How a thing is set up, which decides what its card looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// An inference account: one endpoint, one key, and the roles it
+    /// can serve. Adding it appends to `[[providers]]`.
+    Provider,
+    /// Anything with its own wiring — an OAuth flow, a webhook.
+    Service,
+}
+
+pub struct Known {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub blurb: &'static str,
+    pub kind: Kind,
+    /// Providers only. The one address its API lives at, so nobody has
+    /// to look it up or mistype it.
+    pub base_url: Option<&'static str>,
+    pub serves: &'static [Role],
+    /// What it can be asked for, per role. **The first entry for a role
+    /// is what Niles uses when nothing is written down.**
+    ///
+    /// A list rather than a free-text box because nobody remembers
+    /// `distil-whisper-large-v3-en`, and a box you have to guess at is
+    /// a box that gets a wrong answer typed into it. It will go stale —
+    /// providers add models — so the page keeps whatever is already
+    /// configured even when it is not on this list, and offers a way to
+    /// type one that is not.
+    pub models: &'static [(Role, &'static str)],
+}
+
+/// The provider the shipped defaults point at.
+///
+/// `[stt]` and `[llm]` have to default to *something*, and this is what
+/// they have always defaulted to.
+pub const DEFAULT_PROVIDER: &str = "groq";
+
+pub const KNOWN: &[Known] = &[
+    Known {
+        id: "groq",
+        label: "Groq",
+        blurb: "Speech-to-text and language models, fast enough for a house.",
+        kind: Kind::Provider,
+        base_url: Some("https://api.groq.com/openai/v1"),
+        serves: &[Role::Stt, Role::Llm],
+        models: &[
+            (Role::Stt, "whisper-large-v3-turbo"),
+            (Role::Stt, "whisper-large-v3"),
+            (Role::Stt, "distil-whisper-large-v3-en"),
+            (Role::Llm, "openai/gpt-oss-20b"),
+            (Role::Llm, "openai/gpt-oss-120b"),
+            (Role::Llm, "llama-3.3-70b-versatile"),
+            (Role::Llm, "llama-3.1-8b-instant"),
+        ],
+    },
+    Known {
+        id: "tado",
+        label: "tado°",
+        blurb: "Who is home, from the thermostats that already know.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        models: &[],
+    },
+    Known {
+        id: "linear",
+        label: "Linear",
+        blurb: "Turns an issue into work Niles picks up.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        models: &[],
+    },
+];
+
+pub fn find(id: &str) -> Option<&'static Known> {
+    KNOWN.iter().find(|known| known.id == id)
+}
+
+impl Known {
+    /// Everything it offers for a role, in the order it is offered.
+    pub fn models_for(&self, role: Role) -> impl Iterator<Item = &'static str> {
+        self.models
+            .iter()
+            .filter(move |(r, _)| *r == role)
+            .map(|(_, model)| *model)
+    }
+
+    /// Where its key is kept.
+    pub fn secret_key(&self) -> Option<String> {
+        match self.kind {
+            Kind::Provider => Some(format!("provider.{}.api_key", self.id)),
+            // tado has tokens rather than a key, and fetches them itself.
+            Kind::Service if self.id == "linear" => Some("integrations.linear.api_key".into()),
+            Kind::Service => None,
+        }
+    }
+}
+
+/// The model the shipped config uses for a role.
+///
+/// Panics only if the catalogue is inconsistent with itself — the
+/// default provider missing, or serving a role it lists no model for —
+/// which the tests below rule out at build time rather than leaving to
+/// a first start.
+pub fn default_model(role: Role) -> &'static str {
+    find(DEFAULT_PROVIDER)
+        .and_then(|known| known.models_for(role).next())
+        .expect("the default provider serves every role the shipped config has")
+}
+
+/// The endpoint the shipped config points a role at.
+pub fn default_base_url() -> &'static str {
+    find(DEFAULT_PROVIDER)
+        .and_then(|known| known.base_url)
+        .expect("the default provider is a provider, so it has an endpoint")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_provider_exists_and_is_one() {
+        let known = find(DEFAULT_PROVIDER).expect("in the catalogue");
+        assert_eq!(known.kind, Kind::Provider);
+        assert!(known.base_url.is_some());
+    }
+
+    #[test]
+    fn everything_a_provider_serves_it_offers_a_model_for() {
+        // A provider that serves a role with no model would leave the
+        // dropdown empty and the shipped default unresolvable.
+        for known in KNOWN {
+            for role in known.serves {
+                assert!(
+                    known.models_for(*role).next().is_some(),
+                    "{} serves {role:?} and offers no model for it",
+                    known.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_service_offers_no_models_and_no_endpoint() {
+        for known in KNOWN.iter().filter(|k| k.kind == Kind::Service) {
+            assert!(known.base_url.is_none(), "{}", known.id);
+            assert!(known.models.is_empty(), "{}", known.id);
+            assert!(known.serves.is_empty(), "{}", known.id);
+        }
+    }
+
+    #[test]
+    fn the_first_model_for_a_role_is_the_default() {
+        assert_eq!(default_model(Role::Stt), "whisper-large-v3-turbo");
+        assert_eq!(default_model(Role::Llm), "openai/gpt-oss-20b");
+    }
+
+    #[test]
+    fn no_two_entries_share_an_id() {
+        let mut seen: Vec<&str> = Vec::new();
+        for known in KNOWN {
+            assert!(!seen.contains(&known.id), "two entries called {}", known.id);
+            seen.push(known.id);
+        }
+    }
+}

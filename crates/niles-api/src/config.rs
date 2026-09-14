@@ -39,6 +39,20 @@ pub struct ConfigView {
     /// False when there is no writable directory: changes apply but are
     /// lost on restart. Worth showing rather than discovering.
     persistent: bool,
+    /// What Niles runs where the config says nothing.
+    ///
+    /// `effective` is base-plus-overrides — the *file*, merged — so a
+    /// value nobody wrote is simply absent from it, and the page showed
+    /// an empty box for a setting that was working. It cannot show the
+    /// real one without being told, because the defaults live in the
+    /// typed config and the typed config has no `Serialize`.
+    ///
+    /// Only the two roles for now, which is where the empty box was
+    /// actually misleading somebody. The general answer is to make the
+    /// whole `Config` serialisable and layer it under the base; that is
+    /// a bigger change than this, and every settings field wants it
+    /// once the config file is empty.
+    defaults: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -115,6 +129,7 @@ pub async fn get_config(State(state): State<AppState>) -> Response {
             overrides,
             sections,
             persistent: store.is_persistent(),
+            defaults: shipped_defaults(),
         })
         .into_response(),
         _ => problem(
@@ -188,6 +203,20 @@ pub async fn undo_config(State(state): State<AppState>) -> Response {
         Ok(None) => problem(StatusCode::NOT_FOUND, "no config changes to undo"),
         Err(e) => problem(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
     }
+}
+
+/// Read off a default `Config` rather than written out again here, so
+/// the page cannot show a different value from the one Niles runs.
+fn shipped_defaults() -> serde_json::Value {
+    // An empty config *is* the defaults — every field has one, which is
+    // what lets Niles start with no file at all.
+    let Ok(cfg) = niles_config::Config::load_from_str("") else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "stt": { "model": cfg.stt.model },
+        "llm": { "model": cfg.llm.model },
+    })
 }
 
 fn store(state: &AppState) -> Option<&Arc<ConfigStore>> {

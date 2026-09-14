@@ -220,9 +220,30 @@ export function ConfigPanel() {
   const showNav = !phone || section === null;
   const showSection = !phone || section !== null;
 
+  /**
+   * Everything the server works out from the config, re-asked.
+   *
+   * Not just `config`: several routes answer questions *about* it, and
+   * each one goes stale the moment a value changes. Invalidating only
+   * the two obvious ones is how the tado switch came to sit still while
+   * presence turned on and off behind it — the card reads
+   * `/presence/tado`, which nothing was re-asking.
+   *
+   * `devices` is deliberately absent. It comes from the registry rather
+   * than the config, and the one config change that moves it —
+   * a WLED strip's channels — needs a restart anyway.
+   */
   function refresh() {
-    queryClient.invalidateQueries({ queryKey: ["config"] });
-    queryClient.invalidateQueries({ queryKey: ["history"] });
+    for (const key of [
+      "config",
+      "history",
+      "setup",
+      "secrets",
+      "integrations",
+      "tado",
+    ]) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
   }
 
   const save = useMutation({
@@ -283,6 +304,13 @@ export function ConfigPanel() {
   // has a curve that runs, and the server defaults the same way.
   const providers =
     (view.effective.providers as import("@/lib/api").Provider[] | undefined) ?? [];
+  /** What each provider offers for a role, from the catalogue. */
+  const modelsFor = (role: "stt" | "llm") =>
+    Object.fromEntries(
+      (integrations.data ?? [])
+        .map((i) => [i.id, i.models?.[role] ?? []] as const)
+        .filter(([, list]) => list.length > 0),
+    );
   /** A field of a role section, as the live config has it. */
   const roleValue = (section: "stt" | "llm", field: string) =>
     (view.effective[section] as Record<string, unknown> | undefined)?.[field] as
@@ -591,6 +619,8 @@ export function ConfigPanel() {
                 current={roleValue("stt", "provider")}
                 model={roleValue("stt", "model") ?? ""}
                 fallbackHost={hostOf(roleValue("stt", "base_url"))}
+                defaultModel={stringAt(view.defaults, "stt.model")}
+                models={modelsFor("stt")}
                 saving={save.isPending}
                 onSave={(change) =>
                   save.mutate({
@@ -611,6 +641,8 @@ export function ConfigPanel() {
                   current={roleValue("llm", "provider")}
                   model={roleValue("llm", "model") ?? ""}
                   fallbackHost={hostOf(roleValue("llm", "base_url"))}
+                  defaultModel={stringAt(view.defaults, "llm.model")}
+                  models={modelsFor("llm")}
                   saving={save.isPending}
                   onSave={(change) =>
                     save.mutate({
@@ -639,12 +671,7 @@ export function ConfigPanel() {
             }
             saving={save.isPending}
             error={rowError ? rowError.message : undefined}
-            onChange={(row, entries) => {
-              save.mutate({ row, entries });
-              // The catalogue reports what is set up, so it moves when
-              // the config does.
-              integrations.refetch();
-            }}
+            onChange={(row, entries) => save.mutate({ row, entries })}
             onSecretsChanged={() => secrets.refetch()}
             onTadoChanged={() => tado.refetch()}
           />
