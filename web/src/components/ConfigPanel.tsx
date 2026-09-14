@@ -24,6 +24,7 @@ import { SettingsNav } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
 import { SetupBanner } from "@/components/SetupBanner";
 import { WledCard } from "@/components/WledCard";
+import { HomeCard } from "@/components/HomeCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { TadoCard } from "@/components/TadoCard";
 import type { Person } from "@/components/PeopleCard";
@@ -188,6 +189,12 @@ export function ConfigPanel() {
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
   const setup = useQuery({ queryKey: ["setup"], queryFn: api.setup });
+  // Six hundred-odd strings that never change while the process runs.
+  const timezones = useQuery({
+    queryKey: ["timezones"],
+    queryFn: api.timezones,
+    staleTime: Infinity,
+  });
 
   // On a phone the list *is* the screen and tapping pushes into a
   // section; from `sm` both sit side by side and something has to be
@@ -461,6 +468,23 @@ export function ConfigPanel() {
                 entries: [{ path: "wled.devices", value: next }],
               })
             }
+          />
+        </TabsContent>
+
+        <TabsContent value="home">
+          <HomeCard
+            values={{
+              name: stringAt(view.effective, "home.name"),
+              latitude: numberAt(view.effective, "home.latitude"),
+              longitude: numberAt(view.effective, "home.longitude"),
+              timezone: stringAt(view.effective, "home.timezone"),
+              units: stringAt(view.effective, "home.units"),
+            }}
+            timezones={timezones.data ?? []}
+            saving={save.isPending || reset.isPending}
+            error={rowError?.row === "home" ? rowError.message : undefined}
+            onChange={(entries) => save.mutate({ row: "home", entries })}
+            onClear={(path) => reset.mutate({ row: "home", paths: [path] })}
           />
         </TabsContent>
 

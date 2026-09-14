@@ -53,6 +53,15 @@ export interface WledStrip {
   white_balance?: boolean;
 }
 
+/** A place the house might be, as `/places` returns it. */
+export interface Place {
+  label: string;
+  latitude: number;
+  longitude: number;
+  timezone: string;
+  country_code: string | null;
+}
+
 export interface SetupGap {
   path: string;
   severity: "blocking" | "degraded";
@@ -209,6 +218,9 @@ export const api = {
     }),
   clearSecret: (key: string) =>
     request<void>(`/secrets/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  places: (q: string) =>
+    request<Place[]>(`/places?q=${encodeURIComponent(q)}`),
+  timezones: () => request<string[]>("/timezones"),
   tadoStatus: () => request<TadoStatus>("/presence/tado"),
   tadoConnect: () =>
     request<TadoPending>("/presence/tado/connect", { method: "POST" }),
