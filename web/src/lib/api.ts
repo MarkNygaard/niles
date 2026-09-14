@@ -32,6 +32,13 @@ export interface ConfigView {
  * the same as off or zero — a lamp that has never been heard from has
  * `on: null`, and the UI shows that as unknown rather than off.
  */
+export interface Provider {
+  name: string;
+  base_url: string;
+  /** Which roles it can serve. Empty means anything. */
+  serves?: ("stt" | "llm")[];
+}
+
 export interface SetupGap {
   path: string;
   severity: "blocking" | "degraded";
@@ -46,6 +53,8 @@ export interface SetupReport {
 export interface Secret {
   key: string;
   label: string;
+  /** What it is used against, when Niles knows. */
+  hint?: string;
   /**
    * Where Niles reads it from. One field rather than two booleans the
    * page has to combine correctly — which is how the first version got

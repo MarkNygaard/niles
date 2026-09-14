@@ -4,6 +4,7 @@ import {
   FileCode,
   KeyRound,
   Lightbulb,
+  MessagesSquare,
   Plug,
   Users,
 } from "lucide-react";
@@ -48,6 +49,12 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
         label: "Integrations",
         hint: "The services Niles reads from",
         icon: Plug,
+      },
+      {
+        id: "language",
+        label: "Speech & language",
+        hint: "Who transcribes, who answers, and with what model",
+        icon: MessagesSquare,
       },
       {
         id: "credentials",

@@ -689,13 +689,21 @@ async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
 /// Build a `WhisperClient` from the `[stt]` section of an already-
 /// validated config, resolving the API key from the environment.
 fn build_whisper_client(cfg: &Config) -> anyhow::Result<WhisperClient> {
-    let api_key = cfg
-        .stt
-        .resolve_api_key()
-        .context("resolving STT API key from environment")?;
+    // Through the provider when the role names one, and the section's
+    // own fields when it does not — so a config written before
+    // `[[providers]]` existed behaves exactly as it did.
+    let endpoint = cfg
+        .endpoint_for(
+            niles_config::Role::Stt,
+            cfg.stt.provider.as_deref(),
+            &cfg.stt.base_url,
+            &cfg.stt.api_key_env,
+            "stt",
+        )
+        .context("resolving where speech-to-text should go")?;
     let whisper_cfg = WhisperConfig {
-        api_key,
-        base_url: cfg.stt.base_url.clone(),
+        api_key: endpoint.api_key,
+        base_url: endpoint.base_url,
         model: cfg.stt.model.clone(),
         language: cfg.stt.language.clone(),
         request_timeout: Duration::from_secs(cfg.stt.timeout_seconds),
@@ -706,13 +714,18 @@ fn build_whisper_client(cfg: &Config) -> anyhow::Result<WhisperClient> {
 /// Build a `GroqClient` from the `[llm]` section of an already-
 /// validated config, resolving the API key from the environment.
 fn build_groq_client(cfg: &Config) -> anyhow::Result<GroqClient> {
-    let api_key = cfg
-        .llm
-        .resolve_api_key()
-        .context("resolving LLM API key from environment")?;
+    let endpoint = cfg
+        .endpoint_for(
+            niles_config::Role::Llm,
+            cfg.llm.provider.as_deref(),
+            &cfg.llm.base_url,
+            &cfg.llm.api_key_env,
+            "llm",
+        )
+        .context("resolving where the language model should go")?;
     let groq_cfg = GroqConfig {
-        api_key,
-        base_url: cfg.llm.base_url.clone(),
+        api_key: endpoint.api_key,
+        base_url: endpoint.base_url,
         model: cfg.llm.model.clone(),
         request_timeout: Duration::from_secs(cfg.llm.timeout_seconds),
     };
@@ -724,12 +737,21 @@ fn build_tier2_client(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ChatProvide
     let Some(tier2_cfg) = &cfg.llm.tier2 else {
         return Ok(None);
     };
-    let api_key = tier2_cfg
-        .resolve_api_key()
-        .context("resolving Tier 2 API key from environment")?;
+    // The role that most wants a provider: escalation is by definition
+    // somewhere other than the tier below it, and used to say so by
+    // repeating a whole endpoint inline.
+    let endpoint = cfg
+        .endpoint_for(
+            niles_config::Role::Llm,
+            tier2_cfg.provider.as_deref(),
+            &tier2_cfg.base_url,
+            &tier2_cfg.api_key_env,
+            "llm.tier2",
+        )
+        .context("resolving where the escalation tier should go")?;
     let openai_cfg = OpenAiConfig {
-        api_key,
-        base_url: tier2_cfg.base_url.clone(),
+        api_key: endpoint.api_key,
+        base_url: endpoint.base_url,
         model: tier2_cfg.model.clone(),
         request_timeout: Duration::from_secs(tier2_cfg.timeout_seconds),
     };

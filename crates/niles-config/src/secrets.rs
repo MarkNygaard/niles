@@ -99,6 +99,27 @@ impl crate::Config {
         (!named.trim().is_empty()).then_some(named)
     }
 
+    /// What a credential is used against, when that is knowable.
+    ///
+    /// "Speech-to-text API key" says what it is for and not who has to
+    /// have issued it — and the answer is decided by `base_url`, which
+    /// is configurable. Naming the provider in the label would be a
+    /// second copy of that setting, wrong the moment somebody points it
+    /// somewhere else. The host is read from the same config the
+    /// request goes to, so it cannot disagree.
+    pub fn secret_hint(&self, key: &str) -> Option<String> {
+        match key {
+            "mqtt.username" | "mqtt.password" => (!self.mqtt.host.trim().is_empty())
+                .then(|| format!("{}:{}", self.mqtt.host, self.mqtt.port)),
+            "stt.api_key" => host_of(&self.stt.base_url),
+            "llm.api_key" => host_of(&self.llm.base_url),
+            "integrations.linear.api_key" => Some("api.linear.app".into()),
+            "auth.github_client_id" | "auth.github_client_secret" => Some("github.com".into()),
+            // Niles's own, used against nothing.
+            _ => None,
+        }
+    }
+
     /// Where a credential comes from right now.
     ///
     /// Environment first, matching resolution: a variable that is set
@@ -114,9 +135,47 @@ impl crate::Config {
         if get(key).is_some() {
             return Source::Stored;
         }
+        // A role pointing at a provider is served by that provider's
+        // key. Without this the page reports speech-to-text as having
+        // no key while it is happily using Groq's — the same mistake as
+        // reading the `*_env` name instead of the value, one level
+        // further along.
+        if let Some(provider) = self.provider_for(key)
+            && get(&provider).is_some()
+        {
+            return Source::Stored;
+        }
         Source::Unset
     }
+
+    /// The provider key a role's credential falls through to, if the
+    /// role names one.
+    fn provider_for(&self, key: &str) -> Option<String> {
+        let named = match key {
+            "stt.api_key" => self.stt.provider.as_deref(),
+            "llm.api_key" => self.llm.provider.as_deref(),
+            _ => None,
+        }?;
+        crate::providers::find(&self.providers, named).map(|p| p.secret_key())
+    }
 }
+
+/// The host out of a base URL, without pulling in a URL parser for one
+/// label. Anything unparseable is simply not shown.
+fn host_of(base_url: &str) -> Option<String> {
+    let rest = base_url.split_once("://")?.1;
+    let host = rest.split(['/', '?']).next()?;
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// Serialises tests that write the process-wide store.
+///
+/// The store is global by design — `require_env` is called from sync
+/// config code — which makes it shared between tests in a crate. Two
+/// of them loading different maps at once is how a test about speech
+/// ended up asserting on a broker password.
+#[cfg(test)]
+pub(crate) static TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -195,6 +254,44 @@ api_key_env = \"NILES_TEST_SOURCE_WINS\"
         .expect("valid");
         assert_eq!(cfg.secret_source("stt.api_key"), Source::Environment);
         load(HashMap::new());
+    }
+
+    #[test]
+    fn a_key_says_where_it_is_used() {
+        // The label cannot: "LLM API key" is true of every provider,
+        // and which one it must come from is decided by `base_url`.
+        let cfg = crate::Config::load_from_str("").expect("valid");
+        assert_eq!(
+            cfg.secret_hint("llm.api_key").as_deref(),
+            Some("api.groq.com")
+        );
+        assert_eq!(
+            cfg.secret_hint("stt.api_key").as_deref(),
+            Some("api.groq.com")
+        );
+    }
+
+    #[test]
+    fn pointing_somewhere_else_changes_what_it_says() {
+        // Which is the whole reason it is read rather than written down
+        // a second time.
+        let cfg = crate::Config::load_from_str(
+            "[llm]
+base_url = \"https://api.openai.com/v1\"
+",
+        )
+        .expect("valid");
+        assert_eq!(
+            cfg.secret_hint("llm.api_key").as_deref(),
+            Some("api.openai.com")
+        );
+    }
+
+    #[test]
+    fn niles_own_secrets_are_used_against_nothing() {
+        let cfg = crate::Config::load_from_str("").expect("valid");
+        assert_eq!(cfg.secret_hint("auth.session_secret"), None);
+        assert_eq!(cfg.secret_hint("auth.api_token"), None);
     }
 
     #[test]

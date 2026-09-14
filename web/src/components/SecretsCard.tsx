@@ -85,7 +85,17 @@ export function SecretsCard({ report, onChanged }: SecretsCardProps) {
         {report.secrets.map((secret) => (
           <div key={secret.key} className="flex flex-col gap-1.5">
             <div className="flex items-baseline justify-between gap-3">
-              <span className="text-sm font-medium">{secret.label}</span>
+              <span className="min-w-0 text-sm font-medium">
+                {secret.label}
+                {secret.hint && (
+                  /* Which provider the key has to come from is decided
+                     by the endpoint, not by the label — so the label
+                     shows the endpoint rather than guessing a name. */
+                  <span className="text-muted-foreground ml-1.5 font-mono text-xs font-normal">
+                    {secret.hint}
+                  </span>
+                )}
+              </span>
               {secret.source !== "unset" && (
                 <span className="text-muted-foreground flex items-center gap-1 text-xs">
                   <Check aria-hidden className="text-lit size-3" />
