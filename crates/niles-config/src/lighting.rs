@@ -75,6 +75,21 @@ pub struct LightingConfig {
     /// firmware.
     #[serde(default)]
     pub ambient_color: Option<String>,
+    /// How long a light takes to reach the level the ramps just gave
+    /// it, in seconds.
+    ///
+    /// The curve moves a light once a minute, and a minute's worth of
+    /// change delivered at once is a step you can see rather than a
+    /// sunset you cannot. Handing the bulb the same change with a fade
+    /// makes it spend the minute getting there.
+    ///
+    /// Only the two ramps use it — the curve and the morning routine.
+    /// A tap on a dimmer, a voice command and the dashboard stay
+    /// instant, because a control that answers in its own time reads
+    /// as broken. Zero turns fading off everywhere.
+    #[serde(default = "default_transition_seconds")]
+    pub transition_seconds: u16,
+
     #[serde(default)]
     pub curve_pause_start: Option<String>,
     #[serde(default)]
@@ -157,6 +172,12 @@ fn default_sunset_start() -> String {
 fn default_sunset_end() -> String {
     "23:00".into()
 }
+/// Just short of the 60-second tick, so a light lands and settles
+/// before the next instruction rather than never arriving at all.
+fn default_transition_seconds() -> u16 {
+    45
+}
+
 fn default_night_floor() -> u8 {
     15
 }
@@ -202,6 +223,7 @@ impl Default for LightingConfig {
             ambient_brightness: None,
             ambient_kelvin: None,
             ambient_color: None,
+            transition_seconds: default_transition_seconds(),
             curve_pause_start: None,
             curve_pause_end: None,
         }
@@ -209,6 +231,11 @@ impl Default for LightingConfig {
 }
 
 impl LightingConfig {
+    /// The fade the two ramps hand to a light.
+    pub fn transition(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.transition_seconds))
+    }
+
     /// What ambient lights are held at, if anything is configured.
     /// `None` for a field means "leave that alone".
     pub fn ambient_target(&self) -> Option<AmbientTarget> {
@@ -265,6 +292,18 @@ impl LightingConfig {
             reason: e.to_string(),
         })?;
 
+        // An hour is far past anything a ramp needs, and a fade longer
+        // than the gap between ticks never finishes before the next one
+        // restarts it — a light that creeps and never arrives.
+        if self.transition_seconds > 3600 {
+            return Err(Error::InvalidSection {
+                section: "lighting",
+                reason: format!(
+                    "transition_seconds {} is longer than an hour",
+                    self.transition_seconds
+                ),
+            });
+        }
         if let Some(brightness) = self.ambient_brightness
             && brightness > 100
         {
@@ -453,5 +492,48 @@ ambient_color = \"#ff8000\"
             .to_curve_config()
             .expect_err("out of range");
         assert!(err.to_string().contains("ambient_kelvin"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Config;
+
+    #[test]
+    fn the_ramps_fade_by_default() {
+        // A config that says nothing still gets a fade: the complaint
+        // this answers was about the shipped behaviour, not about a
+        // setting somebody had failed to find.
+        let cfg = Config::load_from_str("").expect("valid");
+        assert_eq!(cfg.lighting.transition_seconds, 45);
+    }
+
+    #[test]
+    fn zero_is_a_real_answer() {
+        let cfg = Config::load_from_str(
+            "[lighting]
+transition_seconds = 0
+",
+        )
+        .expect("valid");
+        assert!(cfg.lighting.transition().is_zero());
+        cfg.lighting.to_curve_config().expect("still a valid curve");
+    }
+
+    #[test]
+    fn a_fade_longer_than_an_hour_is_refused() {
+        // Anything past the gap between ticks never finishes before the
+        // next one restarts it, so the light creeps and never arrives.
+        let cfg = Config::load_from_str(
+            "[lighting]
+transition_seconds = 7200
+",
+        )
+        .expect("it parses");
+        let err = cfg
+            .lighting
+            .to_curve_config()
+            .expect_err("but does not convert");
+        assert!(err.to_string().contains("longer than an hour"), "{err}");
     }
 }

@@ -23,13 +23,14 @@ import { SecretsCard } from "@/components/SecretsCard";
 import { SettingsNav } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
 import { SetupBanner } from "@/components/SetupBanner";
+import { WledCard } from "@/components/WledCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { TadoCard } from "@/components/TadoCard";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
-import type { Applied, ConfigView, Revision } from "@/lib/api";
+import type { Applied, ConfigView, Revision, WledStrip } from "@/lib/api";
 import { AlertTriangle, ChevronLeft, Undo2 } from "lucide-react";
 
 interface Row {
@@ -103,6 +104,19 @@ const CURVE_ROWS: Row[] = [
     ],
   },
   {
+    label: "Fade",
+    description:
+      "How long a light takes to reach each new level. The curve only speaks once a minute, so this is what fills the gap between one instruction and the next. Nothing you do by hand waits for it.",
+    settings: [
+      {
+        path: "lighting.transition_seconds",
+        kind: "number",
+        caption: "seconds",
+        width: "w-24",
+      },
+    ],
+  },
+  {
     label: "Curve pause",
     description:
       "The curve freezes where it stood when the pause began, so a weekend keeps Friday's light.",
@@ -156,6 +170,11 @@ function stringAt(root: unknown, path: string): string | undefined {
 function peopleAt(root: unknown): Person[] {
   const value = valueAt(root, "auth.allowed");
   return Array.isArray(value) ? (value as Person[]) : [];
+}
+
+function stripsAt(root: unknown): WledStrip[] {
+  const value = valueAt(root, "wled.devices");
+  return Array.isArray(value) ? (value as WledStrip[]) : [];
 }
 
 export function ConfigPanel() {
@@ -431,6 +450,18 @@ export function ConfigPanel() {
               </div>
             </CardContent>
           </Card>
+
+          <WledCard
+            strips={stripsAt(view.effective)}
+            saving={save.isPending}
+            error={rowError?.row === "wled.devices" ? rowError.message : undefined}
+            onChange={(next) =>
+              save.mutate({
+                row: "wled.devices",
+                entries: [{ path: "wled.devices", value: next }],
+              })
+            }
+          />
         </TabsContent>
 
         <TabsContent value="people">

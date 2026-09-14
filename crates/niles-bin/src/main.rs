@@ -421,6 +421,7 @@ async fn spawn_wled_source(
             parse_wled_id(&dev.name).map(|id| niles_mqtt::WledDevice {
                 id,
                 topic: dev.topic.clone(),
+                rgb: dev.rgb,
                 white_balance: dev.white_balance,
             })
         })
@@ -3714,6 +3715,11 @@ impl Lighting {
     fn ambient(&self) -> &HashSet<DeviceId> {
         self.snapshot.ambient_lights.ids()
     }
+
+    /// How long the ramps give a light to arrive.
+    fn transition(&self) -> Duration {
+        self.snapshot.lighting.transition()
+    }
 }
 
 impl Lighting {
@@ -4454,6 +4460,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     lighting.ambient(),
                     tz,
                     args.dry_run,
+                    Duration::ZERO,
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
@@ -4478,6 +4485,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     lighting.ambient(),
                     tz,
                     args.dry_run,
+                    Duration::ZERO,
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
@@ -4501,6 +4509,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         lighting.curve.morning_end,
                         tz,
                         args.dry_run,
+                        lighting.transition(),
                         &tracker,
                         &claim_tracker,
                         lighting.ambient(),
@@ -4515,6 +4524,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     lighting.ambient(),
                     tz,
                     args.dry_run,
+                    lighting.transition(),
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
@@ -4612,6 +4622,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     cfg.ambient_lights.ids(),
                     tz,
                     args.dry_run,
+                    Duration::ZERO,
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
@@ -4634,6 +4645,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     cfg.ambient_lights.ids(),
                     tz,
                     args.dry_run,
+                    cfg.lighting.transition(),
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
@@ -4666,6 +4678,11 @@ async fn run_curve_tick(
     ambient: &HashSet<DeviceId>,
     tz: chrono_tz::Tz,
     dry_run: bool,
+    // Zero on the paths that run because something just happened — a
+    // light coming on, or somebody moving a slider in Settings — where
+    // a slow creep towards the right level reads as a fault rather
+    // than as a sunset.
+    fade: Duration,
     last_published: &mut HashMap<DeviceId, DeviceState>,
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
@@ -4711,7 +4728,12 @@ async fn run_curve_tick(
         // setting instead. With nothing configured they are left alone
         // entirely, which is how they behaved before.
         let target_state = if device.is_curve_driven(ambient) {
-            build_curve_target(&device.state, curve_target.0, curve_target.1)
+            build_curve_target(
+                &device.state,
+                device.capabilities,
+                curve_target.0,
+                curve_target.1,
+            )
         } else if device.is_light() {
             match ambient_target {
                 Some(want) => build_ambient_target(
@@ -4737,7 +4759,7 @@ async fn run_curve_tick(
         if last_published.get(&device.id) == Some(&target_state) {
             continue;
         }
-        let Some((topic, payload)) = router.format(&device.id, &target_state) else {
+        let Some((topic, payload)) = router.format_fading(&device.id, &target_state, fade) else {
             continue;
         };
         debug_assert!(
@@ -4790,6 +4812,10 @@ async fn run_morning_routine_tick(
     morning_end: MinuteOfDay,
     tz: chrono_tz::Tz,
     dry_run: bool,
+    // Used by the ramp and by nothing else here: switching a light on
+    // at zero, and the shove to full at the end, are both meant to
+    // happen the moment they happen.
+    fade: Duration,
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
     ambient: &HashSet<DeviceId>,
@@ -4982,7 +5008,7 @@ async fn run_morning_routine_tick(
             brightness: Some(target_brightness),
             ..Default::default()
         };
-        let Some((topic, payload)) = router.format(id, &target) else {
+        let Some((topic, payload)) = router.format_fading(id, &target, fade) else {
             continue;
         };
         if dry_run {

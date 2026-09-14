@@ -36,8 +36,14 @@ pub(crate) const KELVIN_DEBOUNCE_K: u16 = 50;
 /// Important behaviors:
 ///
 /// - Devices not declaring `brightness` (e.g. a smart plug) get
-///   no brightness command, even if the curve says otherwise. The
-///   same applies to color temperature.
+///   no brightness command, even if the curve says otherwise.
+/// - Colour temperature is decided by what the device *declares*,
+///   not by what it has reported. WLED publishes brightness and
+///   colour and nothing else, so a strip with warm and cold white
+///   channels never reports a colour temperature at all — and read
+///   as "has no such channel", it went the whole day at whatever
+///   white it was left on while every Zigbee bulb in the house
+///   warmed up around it.
 /// - `on` is never set: the curve never turns lights on or off
 ///   (that's the morning routine + manual control's job).
 /// - When the current value matches the curve value within the
@@ -46,6 +52,7 @@ pub(crate) const KELVIN_DEBOUNCE_K: u16 = 50;
 ///   `None`, signaling "skip publish entirely."
 pub fn build_curve_target(
     current: &DeviceState,
+    capabilities: LightCapabilities,
     curve_brightness: u8,
     curve_kelvin: u16,
 ) -> Option<DeviceState> {
@@ -54,8 +61,12 @@ pub fn build_curve_target(
         _ => None,
     };
     let kelvin = match current.color_temp_kelvin {
+        _ if !capabilities.color_temp => None,
+        // Never reported one. Either the light has not said yet, or it
+        // is a strip that never will; both want telling.
+        None => Some(curve_kelvin),
         Some(cur) if cur.abs_diff(curve_kelvin) > KELVIN_DEBOUNCE_K => Some(curve_kelvin),
-        _ => None,
+        Some(_) => None,
     };
     if brightness.is_none() && kelvin.is_none() {
         return None;
@@ -123,6 +134,16 @@ mod tests {
     };
     const WHITE_ONLY: LightCapabilities = LightCapabilities {
         color_temp: true,
+        rgb: false,
+    };
+    /// A plain colour strip: no white channel to warm.
+    const RGB_ONLY: LightCapabilities = LightCapabilities {
+        color_temp: false,
+        rgb: true,
+    };
+    /// Smart-plug shaped — neither channel.
+    const NEITHER: LightCapabilities = LightCapabilities {
+        color_temp: false,
         rgb: false,
     };
 
@@ -208,8 +229,8 @@ mod tests {
     #[test]
     fn publishes_when_brightness_far_from_curve() {
         // Current 30, curve wants 80 — well past the 2-pt debounce.
-        let target =
-            build_curve_target(&state(Some(30), Some(2700)), 80, 2700).expect("should publish");
+        let target = build_curve_target(&state(Some(30), Some(2700)), RGB, 80, 2700)
+            .expect("should publish");
         assert_eq!(target.brightness, Some(80));
         // Kelvin already matches → omitted.
         assert_eq!(target.color_temp_kelvin, None);
@@ -217,16 +238,16 @@ mod tests {
 
     #[test]
     fn publishes_when_kelvin_far_from_curve() {
-        let target =
-            build_curve_target(&state(Some(80), Some(2000)), 80, 4500).expect("should publish");
+        let target = build_curve_target(&state(Some(80), Some(2000)), RGB, 80, 4500)
+            .expect("should publish");
         assert_eq!(target.brightness, None);
         assert_eq!(target.color_temp_kelvin, Some(4500));
     }
 
     #[test]
     fn publishes_both_when_both_drift() {
-        let target =
-            build_curve_target(&state(Some(30), Some(2000)), 80, 4500).expect("should publish");
+        let target = build_curve_target(&state(Some(30), Some(2000)), RGB, 80, 4500)
+            .expect("should publish");
         assert_eq!(target.brightness, Some(80));
         assert_eq!(target.color_temp_kelvin, Some(4500));
     }
@@ -234,26 +255,26 @@ mod tests {
     #[test]
     fn skip_when_both_already_on_curve() {
         // Identical values → nothing to do.
-        assert!(build_curve_target(&state(Some(80), Some(2700)), 80, 2700).is_none());
+        assert!(build_curve_target(&state(Some(80), Some(2700)), RGB, 80, 2700).is_none());
     }
 
     #[test]
     fn skip_when_within_debounce_window() {
         // 79 vs 80 brightness, 2680 vs 2700 K — both within debounce.
-        assert!(build_curve_target(&state(Some(79), Some(2680)), 80, 2700).is_none());
+        assert!(build_curve_target(&state(Some(79), Some(2680)), RGB, 80, 2700).is_none());
         // Boundary cases: equal-to-debounce is *not* "more than", so still skip.
-        assert!(build_curve_target(&state(Some(78), Some(2650)), 80, 2700).is_none());
+        assert!(build_curve_target(&state(Some(78), Some(2650)), RGB, 80, 2700).is_none());
     }
 
     #[test]
     fn publishes_just_past_debounce_window() {
         // 3-pt brightness diff > 2-pt debounce.
-        let t = build_curve_target(&state(Some(77), Some(2700)), 80, 2700).expect("publish");
+        let t = build_curve_target(&state(Some(77), Some(2700)), RGB, 80, 2700).expect("publish");
         assert_eq!(t.brightness, Some(80));
         assert_eq!(t.color_temp_kelvin, None);
 
         // 51-K kelvin diff > 50-K debounce.
-        let t = build_curve_target(&state(Some(80), Some(2649)), 80, 2700).expect("publish");
+        let t = build_curve_target(&state(Some(80), Some(2649)), RGB, 80, 2700).expect("publish");
         assert_eq!(t.brightness, None);
         assert_eq!(t.color_temp_kelvin, Some(2700));
     }
@@ -261,17 +282,45 @@ mod tests {
     #[test]
     fn skip_for_device_without_brightness_or_kelvin() {
         // Smart-plug-shaped state: power only, no light fields.
-        assert!(build_curve_target(&state(None, None), 80, 2700).is_none());
+        assert!(build_curve_target(&state(None, None), NEITHER, 80, 2700).is_none());
     }
 
     #[test]
     fn skip_brightness_for_brightness_unaware_device() {
         // Brightness field missing → never publish brightness, even if
         // the curve says we should. Kelvin still applies if exposed.
-        let target =
-            build_curve_target(&state(None, Some(2000)), 80, 4500).expect("kelvin should publish");
+        let target = build_curve_target(&state(None, Some(2000)), RGB, 80, 4500)
+            .expect("kelvin should publish");
         assert_eq!(target.brightness, None);
         assert_eq!(target.color_temp_kelvin, Some(4500));
+    }
+
+    #[test]
+    fn a_strip_that_never_reports_its_white_still_gets_warmed() {
+        // The bug this closes: WLED publishes brightness and colour and
+        // nothing else, so a strip with warm and cold white channels
+        // never reports a colour temperature. Read as "has no such
+        // channel", the ceiling sat at one white all day while every
+        // Zigbee bulb around it warmed up.
+        let target = build_curve_target(&state(Some(80), None), WHITE_ONLY, 80, 2200)
+            .expect("the channel is declared, so it gets told");
+        assert_eq!(target.color_temp_kelvin, Some(2200));
+    }
+
+    #[test]
+    fn a_strip_with_no_white_channel_is_never_sent_one() {
+        // Same silence from the strip, opposite answer, and this is why
+        // the reported state could not decide it: a plain colour strip
+        // told to be 2200 K does nothing, and looks broken rather than
+        // unsupported.
+        assert!(build_curve_target(&state(Some(80), None), RGB_ONLY, 80, 2200).is_none());
+    }
+
+    #[test]
+    fn a_declared_channel_beats_a_reported_one() {
+        // A bulb can report a colour temperature it is not currently
+        // showing — it was in colour mode. What it *is* decides.
+        assert!(build_curve_target(&state(Some(80), Some(2000)), RGB_ONLY, 80, 4500).is_none());
     }
 
     #[test]
@@ -280,7 +329,7 @@ mod tests {
         // filtered to currently-on devices. Make sure we don't
         // accidentally publish an `on` field that would re-trigger
         // an off→on transition (which clears manual mode, per spec).
-        let target = build_curve_target(&state(Some(30), Some(2000)), 80, 4500).unwrap();
+        let target = build_curve_target(&state(Some(30), Some(2000)), RGB, 80, 4500).unwrap();
         assert_eq!(target.on, None);
     }
 }

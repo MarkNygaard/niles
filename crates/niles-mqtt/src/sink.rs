@@ -15,6 +15,7 @@
 
 use niles_core::{DeviceId, DeviceState};
 use serde::Serialize;
+use std::time::Duration;
 
 /// Build the topic + JSON payload for a Z2M `set` command.
 ///
@@ -27,8 +28,27 @@ use serde::Serialize;
 /// the caller should generally check for that and not publish a
 /// no-op message.
 pub fn format_set_command(prefix: &str, id: &DeviceId, target: &DeviceState) -> (String, String) {
+    format_set_command_fading(prefix, id, target, Duration::ZERO)
+}
+
+/// The same command, but told to take `fade` getting there.
+///
+/// Z2M calls it `transition` and counts in seconds. A bulb given one
+/// ramps to the new value itself, which is the only way a change can be
+/// smooth: Niles speaks once a minute, and everything between belongs
+/// to the bulb.
+///
+/// A zero fade sends no `transition` at all rather than `0`, so a light
+/// keeps whatever it does by default — which for Hue is already a short
+/// fade, and is why a tap has never felt abrupt.
+pub fn format_set_command_fading(
+    prefix: &str,
+    id: &DeviceId,
+    target: &DeviceState,
+    fade: Duration,
+) -> (String, String) {
     let topic = format!("{}/{}/{}/set", prefix, id.room(), id.name());
-    let payload = Z2mSetPayload::from(target);
+    let payload = Z2mSetPayload::new(target, fade);
     let json = serde_json::to_string(&payload).expect("Z2mSetPayload always serializes");
     (topic, json)
 }
@@ -52,6 +72,10 @@ struct Z2mSetPayload {
     color_temp: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<Z2mColor>,
+    /// Seconds, and fractional ones are allowed — which is why this is
+    /// a float and not the `u16` the config keeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transition: Option<f32>,
 }
 
 /// Z2M takes a colour as `{"color": {"r": .., "g": .., "b": ..}}`.
@@ -64,8 +88,8 @@ struct Z2mColor {
     b: u8,
 }
 
-impl From<&DeviceState> for Z2mSetPayload {
-    fn from(s: &DeviceState) -> Self {
+impl Z2mSetPayload {
+    fn new(s: &DeviceState, fade: Duration) -> Self {
         Self {
             state: s.on.map(|on| if on { "ON" } else { "OFF" }),
             brightness: s.brightness.map(percent_to_z2m_brightness),
@@ -78,6 +102,7 @@ impl From<&DeviceState> for Z2mSetPayload {
                 s.color_temp_kelvin.and_then(kelvin_to_mireds)
             },
             color: s.rgb.map(|[r, g, b]| Z2mColor { r, g, b }),
+            transition: (!fade.is_zero()).then_some(fade.as_secs_f32()),
         }
     }
 }
@@ -110,6 +135,36 @@ mod tests {
     }
 
     // ---- conversions ---------------------------------------------
+
+    #[test]
+    fn a_fade_travels_as_transition_in_seconds() {
+        let (_, payload) = format_set_command_fading(
+            "zigbee2mqtt",
+            &id("living_room", "lamp"),
+            &DeviceState {
+                brightness: Some(40),
+                ..Default::default()
+            },
+            Duration::from_secs(45),
+        );
+        assert!(payload.contains("\"transition\":45.0"), "{payload}");
+    }
+
+    #[test]
+    fn an_instant_command_says_nothing_about_transition() {
+        // Not `transition: 0`: a bulb left to itself already fades a
+        // little, and that is why a tap has never felt abrupt. Sending
+        // zero would take that away.
+        let (_, payload) = format_set_command(
+            "zigbee2mqtt",
+            &id("living_room", "lamp"),
+            &DeviceState {
+                brightness: Some(40),
+                ..Default::default()
+            },
+        );
+        assert!(!payload.contains("transition"), "{payload}");
+    }
 
     #[test]
     fn percent_to_brightness_extremes() {
