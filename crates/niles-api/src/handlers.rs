@@ -65,7 +65,18 @@ pub async fn set_device(
     let (topic, payload) = command_for(&state, &device.id, &desired)?;
     hold_against_the_curve(&state, &device.id, &desired);
     publish(&state, topic, payload).await?;
+    record_unechoed(&state, &device.id, &desired);
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Remember what a device has no way of telling us it did.
+///
+/// After the publish, not before: what did not go out should not be
+/// claimed. See [`niles_mqtt::unechoed`] for which fields and why.
+fn record_unechoed(state: &AppState, id: &DeviceId, sent: &DeviceState) {
+    if let Some(echo) = niles_mqtt::unechoed(id, sent) {
+        state.registry.merge_state(id, echo);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -154,6 +165,7 @@ async fn fan_out(
         };
         hold_against_the_curve(state, &light.id, &narrowed);
         publish(state, topic, payload).await?;
+        record_unechoed(state, &light.id, &narrowed);
         sent += 1;
     }
 
