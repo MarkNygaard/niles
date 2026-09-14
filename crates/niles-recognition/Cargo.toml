@@ -24,3 +24,9 @@ fs2.workspace = true
 tempfile.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
+
+[features]
+# ort gates its CUDA execution provider behind this, and the cluster
+# has no GPU — so it is off by default and the code that names CUDA is
+# compiled out with it.
+cuda = ["ort/cuda"]
