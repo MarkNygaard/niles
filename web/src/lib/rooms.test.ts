@@ -46,6 +46,56 @@ function device(
   };
 }
 
+describe("roomsOf and reachability", () => {
+  it("keeps a light out of the controls when the source cannot reach it", () => {
+    // Z2M draws it with a red border; Niles was showing it as on at
+    // 100% with a working slider, because the last state it published
+    // is the last state anybody ever hears.
+    const [room] = roomsOf([
+      device("z2m:living_room/bulb_1", { state: { on: true } }),
+      device("z2m:living_room/lightstip", {
+        available: false,
+        state: { on: true },
+      }),
+    ]);
+    expect(room.lights.map((l) => l.name)).toEqual(["bulb_1"]);
+    expect(room.unreachable).toEqual(["Lightstip"]);
+  });
+
+  it("does not count an unreachable light as on", () => {
+    const [room] = roomsOf([
+      device("z2m:living_room/bulb_1", { state: { on: true } }),
+      device("z2m:living_room/lightstip", {
+        available: false,
+        state: { on: true },
+      }),
+    ]);
+    expect(room.on).toBe(1);
+    expect(roomSummary(room)).toBe("On");
+  });
+
+  it("keeps a room whose every light is unreachable", () => {
+    // Dropping it would be the silent disappearance the flag exists to
+    // avoid, one level up.
+    const rooms = roomsOf([
+      device("z2m:shed/lamp", { available: false, state: { on: false } }),
+    ]);
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].lights).toHaveLength(0);
+    expect(rooms[0].unreachable).toEqual(["Lamp"]);
+  });
+
+  it("treats a device that has said nothing about it as reachable", () => {
+    // Availability is optional in Z2M. A house that never switched it
+    // on must not lose its dashboard.
+    const [room] = roomsOf([
+      device("z2m:living_room/bulb_1", { state: { on: true } }),
+    ]);
+    expect(room.lights).toHaveLength(1);
+    expect(room.unreachable).toEqual([]);
+  });
+});
+
 describe("roomsOf", () => {
   it("groups lights under the room they are in", () => {
     const rooms = roomsOf([

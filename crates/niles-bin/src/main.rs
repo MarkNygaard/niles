@@ -4810,6 +4810,13 @@ async fn run_curve_tick(
             }
         };
         if ok {
+            // A WLED strip never reports its white balance, so nothing
+            // would ever update the registry and the curve would find
+            // it off-curve again next tick — every minute, for ever,
+            // and over the top of anyone who set it by hand.
+            if let Some(echo) = niles_mqtt::unechoed(&device.id, &target_state) {
+                registry.merge_state(&device.id, echo);
+            }
             last_published.insert(device.id.clone(), target_state);
         }
         publish_count += 1;

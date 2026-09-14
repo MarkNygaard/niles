@@ -79,6 +79,30 @@ impl CommandRouter {
     }
 }
 
+/// What a device will never tell us it did.
+///
+/// WLED publishes a brightness and a colour and nothing else, so a
+/// colour temperature sent to one has no echo. Nothing ever updates the
+/// registry, which has two consequences and both of them look like
+/// breakage: the slider in the app snaps back to its default the moment
+/// you let go, and the curve finds the strip off its colour temperature
+/// on every single tick — for ever, once a minute, taking it back from
+/// anyone who set it by hand.
+///
+/// So the caller records what it sent, for the fields that have no way
+/// of coming back. Only those: a Zigbee bulb reports its own state, and
+/// claiming a value there would be inventing one where a real answer is
+/// already on its way.
+pub fn unechoed(id: &DeviceId, sent: &DeviceState) -> Option<DeviceState> {
+    if id.source() != "wled" {
+        return None;
+    }
+    sent.color_temp_kelvin.map(|kelvin| DeviceState {
+        color_temp_kelvin: Some(kelvin),
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +124,43 @@ mod tests {
             DeviceName::parse(name).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_wled_colour_temperature_has_to_be_remembered() {
+        // WLED publishes a brightness and a colour and nothing else, so
+        // this one never comes back. Without recording it the slider
+        // snaps back the moment you let go, and the curve finds the
+        // strip off-curve every tick for ever.
+        let sent = DeviceState {
+            brightness: Some(80),
+            color_temp_kelvin: Some(2700),
+            ..Default::default()
+        };
+        let echo = unechoed(&wled_id("living_room", "ceiling"), &sent).expect("worth recording");
+        assert_eq!(echo.color_temp_kelvin, Some(2700));
+        assert_eq!(
+            echo.brightness, None,
+            "WLED reports this one itself; claiming it would invent a              value where a real answer is already on its way"
+        );
+    }
+
+    #[test]
+    fn a_zigbee_light_is_left_to_report_its_own_state() {
+        let sent = DeviceState {
+            color_temp_kelvin: Some(2700),
+            ..Default::default()
+        };
+        assert!(unechoed(&z2m_id("living_room", "bulb_1"), &sent).is_none());
+    }
+
+    #[test]
+    fn nothing_to_remember_when_none_was_sent() {
+        let sent = DeviceState {
+            brightness: Some(80),
+            ..Default::default()
+        };
+        assert!(unechoed(&wled_id("living_room", "ceiling"), &sent).is_none());
     }
 
     #[test]

@@ -124,11 +124,25 @@ pub(crate) fn dispatch_wled(
             state: registry.get(id).map(|d| d.state).unwrap_or_default(),
         });
     } else if msg.topic.ends_with("/status") {
-        match parse_status(&msg.payload) {
-            Some(true) => debug!("wled: {id} online"),
-            Some(false) => warn!("wled: {id} offline"),
-            None => debug!("wled: unparseable status for {id}"),
+        // WLED's last will, so `offline` arrives when the strip drops
+        // off the broker rather than when it says goodbye. It used to
+        // be logged and thrown away, which left a strip that had been
+        // unplugged for a week still reading as on at whatever
+        // brightness it last published.
+        let Some(available) = parse_status(&msg.payload) else {
+            debug!("wled: unparseable status for {id}");
+            return;
+        };
+        if !available {
+            warn!("wled: {id} is not answering");
         }
+        if !registry.set_available(id, available) {
+            return;
+        }
+        bus.publish(niles_core::Event::DeviceStateChanged {
+            id: id.clone(),
+            state: registry.get(id).map(|d| d.state).unwrap_or_default(),
+        });
     }
 }
 

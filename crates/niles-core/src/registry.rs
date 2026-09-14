@@ -46,6 +46,23 @@ impl DeviceRegistry {
     /// upstream reports only what changed, so a `None` means "not
     /// reported", never "cleared". Returns `true` if the device
     /// existed and was updated.
+    /// Record whether the source can reach a device.
+    ///
+    /// Returns true when this changed something, so a caller can skip
+    /// publishing an event nobody needs — availability messages are
+    /// retained and arrive again on every reconnect.
+    pub fn set_available(&self, id: &DeviceId, available: bool) -> bool {
+        let mut guard = self.devices.write().unwrap();
+        let Some(device) = guard.get_mut(id) else {
+            return false;
+        };
+        if device.available == available {
+            return false;
+        }
+        device.available = available;
+        true
+    }
+
     pub fn merge_state(&self, id: &DeviceId, partial: DeviceState) -> bool {
         let mut guard = self.devices.write().unwrap();
         let Some(device) = guard.get_mut(id) else {

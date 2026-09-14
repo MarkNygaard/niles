@@ -744,3 +744,53 @@ mod tests {
         assert!(state.has_actionable_state_field());
     }
 }
+
+/// Parse a Z2M `<device>/availability` payload.
+///
+/// Z2M has said this two ways: bare `online` / `offline`, and — since
+/// it grew a JSON availability payload — `{"state":"online"}`. Both are
+/// still in the wild depending on the `legacy_availability_payload`
+/// setting, so both are read rather than making somebody find out which
+/// one their broker is sending.
+pub fn parse_availability(payload: &[u8]) -> Option<bool> {
+    match payload.trim_ascii() {
+        b"online" => return Some(true),
+        b"offline" => return Some(false),
+        _ => {}
+    }
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    match value.get("state")?.as_str()? {
+        "online" => Some(true),
+        "offline" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::parse_availability;
+
+    #[test]
+    fn the_bare_form_is_read() {
+        assert_eq!(parse_availability(b"online"), Some(true));
+        assert_eq!(parse_availability(b"offline"), Some(false));
+    }
+
+    #[test]
+    fn the_json_form_is_read_too() {
+        // Which one arrives depends on a Z2M setting, and nobody should
+        // have to find out which theirs is sending.
+        assert_eq!(parse_availability(br#"{"state":"online"}"#), Some(true));
+        assert_eq!(parse_availability(br#"{"state":"offline"}"#), Some(false));
+    }
+
+    #[test]
+    fn anything_else_says_nothing() {
+        // Rather than guessing. A device wrongly marked unreachable
+        // disappears from the dashboard, which is worse than one that
+        // is shown while it is not answering.
+        assert_eq!(parse_availability(b""), None);
+        assert_eq!(parse_availability(b"maybe"), None);
+        assert_eq!(parse_availability(br#"{"state":"flaky"}"#), None);
+    }
+}

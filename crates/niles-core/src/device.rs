@@ -229,6 +229,15 @@ pub struct Device {
     /// What the source says this device can be told to do. Defaults to
     /// nothing; a source that knows fills it in.
     pub capabilities: LightCapabilities,
+    /// Whether the source can currently reach it.
+    ///
+    /// True until told otherwise, on purpose. Z2M only publishes
+    /// availability when the feature is switched on, and WLED only
+    /// while its broker connection is alive — so "nothing has said"
+    /// has to mean present. Defaulting to absent would empty the
+    /// dashboard of every working light in a house that never enabled
+    /// the feature.
+    pub available: bool,
 }
 
 impl Device {
@@ -239,6 +248,7 @@ impl Device {
             state,
             class,
             capabilities: LightCapabilities::default(),
+            available: true,
         }
     }
 

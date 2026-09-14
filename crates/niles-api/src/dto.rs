@@ -25,6 +25,10 @@ pub struct DeviceDto {
     /// know whether anything can act on it.
     pub supports_rgb: bool,
     pub supports_color_temp: bool,
+    /// Whether the source can currently reach it. True until something
+    /// says otherwise — availability is optional in Z2M, and a house
+    /// that never switched it on must not lose its dashboard.
+    pub available: bool,
 }
 
 impl From<&Device> for DeviceDto {
@@ -38,6 +42,7 @@ impl From<&Device> for DeviceDto {
             state: (&d.state).into(),
             supports_rgb: d.capabilities.rgb,
             supports_color_temp: d.capabilities.color_temp,
+            available: d.available,
         }
     }
 }

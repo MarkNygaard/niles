@@ -58,6 +58,12 @@ impl Z2mSource {
         self.client.subscribe(&state_pattern).await?;
         let action_pattern = format!("{}/+/+/action", self.prefix);
         self.client.subscribe(&action_pattern).await?;
+        // Z2M publishes this per device when availability tracking is
+        // on. Without it a light that has been unplugged for a week
+        // still reads as on at 100%, because the last state it ever
+        // published is the last state anybody ever hears.
+        let availability_pattern = format!("{}/+/+/availability", self.prefix);
+        self.client.subscribe(&availability_pattern).await?;
 
         let publisher = self.client.publisher();
         while let Some(msg) = self.client.next_message().await {
@@ -105,6 +111,13 @@ pub(crate) fn dispatch(
 
     if rest == "bridge/devices" {
         return handle_device_list(&msg.payload, registry, bus);
+    } else if let Some((room, device)) = rest
+        .strip_suffix("/availability")
+        .and_then(split_room_device)
+    {
+        if room != "bridge" {
+            handle_availability(room, device, &msg.payload, registry, bus);
+        }
     } else if let Some((room, device)) = rest.strip_suffix("/action").and_then(split_room_device) {
         // 3-segment `<room>/<device>/action` from a button device.
         // A 2-segment `<room>/action` (state for a flat-named device
@@ -235,6 +248,44 @@ const MAX_ACTION_PAYLOAD: usize = 256;
 
 /// Parse a per-device action payload (plain UTF-8 string) and emit a
 /// `DeviceAction` event. Drops non-UTF-8 / oversize payloads with a warn.
+/// Record whether Z2M can reach a device.
+///
+/// Published retained, so it arrives again on every reconnect — hence
+/// the event only when something actually changed.
+pub(crate) fn handle_availability(
+    room: &str,
+    device: &str,
+    payload: &[u8],
+    registry: &DeviceRegistry,
+    bus: &EventBus,
+) {
+    let Some(available) = crate::z2m::parse_availability(payload) else {
+        debug!("unreadable availability for {room}/{device}; leaving it as it was");
+        return;
+    };
+    let Ok(id) = DeviceId::parse(&format!("z2m:{room}/{device}")) else {
+        return;
+    };
+    if !registry.set_available(&id, available) {
+        return;
+    }
+    debug!(
+        "{id} is {}",
+        if available {
+            "reachable"
+        } else {
+            "not answering"
+        }
+    );
+    // The same event a state change publishes: what changed about the
+    // device is that you can no longer do anything to it, which the
+    // dashboard has to hear about the same way.
+    bus.publish(niles_core::Event::DeviceStateChanged {
+        id: id.clone(),
+        state: registry.get(&id).map(|d| d.state).unwrap_or_default(),
+    });
+}
+
 pub(crate) fn handle_device_action(room: &str, device: &str, payload: &[u8], bus: &EventBus) {
     if payload.len() >= MAX_ACTION_PAYLOAD {
         let len = payload.len();

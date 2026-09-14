@@ -26,9 +26,19 @@ export interface Room {
   /** The id Niles uses, and what the API is addressed by. */
   name: string;
   label: string;
+  /** The ones the source can currently reach. */
   lights: Device[];
   /** How many of them are reporting on. */
   on: number;
+  /**
+   * The names of the ones it cannot.
+   *
+   * Left out of `lights` — a control that publishes to something not
+   * listening looks broken rather than offline — but named here rather
+   * than vanishing, because a light that disappears when its battery
+   * dies is a light nobody notices has died.
+   */
+  unreachable: string[];
   /**
    * What the room is reporting, from whichever device in it reports
    * such a thing. Shown on the card because a room's temperature is
@@ -69,20 +79,24 @@ export function roomsOf(devices: Device[]): Room[] {
 
   return [...byRoom.entries()]
     .map(([name, all]) => {
-      const lights = all
+      const controllable = all
         .filter(isControllable)
         .sort((a, b) => a.name.localeCompare(b.name));
+      const lights = controllable.filter((d) => d.available !== false);
       return {
         name,
         label: humanize(name),
         lights,
+        unreachable: controllable
+          .filter((d) => d.available === false)
+          .map((d) => humanize(d.name)),
         on: lights.filter((light) => light.state.on === true).length,
         temperature: firstReported(all, "temperature_celsius"),
         humidity: firstReported(all, "humidity_percent"),
         openings: openingsOf(all),
       };
     })
-    .filter((room) => room.lights.length > 0)
+    .filter((room) => room.lights.length + room.unreachable.length > 0)
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 

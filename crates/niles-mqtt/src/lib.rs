@@ -26,7 +26,7 @@ pub mod wled_source;
 pub mod z2m;
 
 pub use client::{DisconnectReason, Message, MqttClient, MqttOptions, MqttPublisher};
-pub use command::CommandRouter;
+pub use command::{CommandRouter, unechoed};
 pub use error::{Error, Result};
 pub use sink::{format_set_command, is_actionable};
 pub use source::Z2mSource;
