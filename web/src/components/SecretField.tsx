@@ -1,0 +1,125 @@
+import { useState } from "react";
+import { Check, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { api } from "@/lib/api";
+import type { Secret } from "@/lib/api";
+
+export interface SecretFieldProps {
+  secret: Secret;
+  /** False when there is no database or no encryption key. */
+  writable: boolean;
+  onChanged: () => void;
+}
+
+/**
+ * One credential, typed in rather than mounted.
+ *
+ * Write-only by design: there is no route that hands one back, so this
+ * can say whether something is set and never what it is. A field that
+ * could show you a broker password is a field that could show it to
+ * whoever is standing behind you.
+ *
+ * A secret already coming from an environment variable is left alone —
+ * it is set, it works, and offering to replace it from here would
+ * quietly move where it lives.
+ *
+ * Its own component because the same field belongs in two places: the
+ * Credentials page, which lists every key Niles holds, and an
+ * integration's own card, where the key is part of setting that one
+ * thing up.
+ */
+export function SecretField({ secret, writable, onChanged }: SecretFieldProps) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(work: () => Promise<void>) {
+    setError(null);
+    setBusy(true);
+    try {
+      await work();
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const save = () => {
+    const value = draft.trim();
+    if (!value) return;
+    run(async () => {
+      await api.setSecret(secret.key, value);
+      setDraft("");
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="min-w-0 text-sm font-medium">
+          {secret.label}
+          {secret.hint && (
+            /* Which provider the key has to come from is decided by the
+               endpoint, not by the label — so the label shows the
+               endpoint rather than guessing a name. */
+            <span className="text-muted-foreground ml-1.5 font-mono text-xs font-normal">
+              {secret.hint}
+            </span>
+          )}
+        </span>
+        {secret.source !== "unset" && (
+          <span className="text-muted-foreground flex items-center gap-1 text-xs">
+            <Check aria-hidden className="text-lit size-3" />
+            {secret.source === "stored" ? "saved here" : "from the environment"}
+          </span>
+        )}
+      </div>
+
+      {secret.source !== "environment" ? (
+        <div className="flex items-center gap-2">
+          <Input
+            type="password"
+            autoComplete="off"
+            aria-label={secret.label}
+            placeholder={secret.source === "stored" ? "Replace it…" : "Not set"}
+            value={draft}
+            disabled={!writable || busy}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") save();
+            }}
+          />
+          <Button
+            variant="outline"
+            disabled={!writable || busy || !draft.trim()}
+            onClick={save}
+          >
+            Save
+          </Button>
+          {secret.source === "stored" && (
+            <Button
+              variant="ghost"
+              aria-label={`Clear ${secret.label}`}
+              disabled={busy}
+              onClick={() => run(() => api.clearSecret(secret.key))}
+            >
+              <Trash2 aria-hidden />
+            </Button>
+          )}
+        </div>
+      ) : (
+        /* Set in the environment: it works, and offering to replace it
+           here would quietly move where it lives. */
+        <p className="text-muted-foreground text-xs">
+          Coming from an environment variable. Remove it there to manage it
+          here instead.
+        </p>
+      )}
+
+      {error && <p className="text-destructive text-sm">{error}</p>}
+    </div>
+  );
+}

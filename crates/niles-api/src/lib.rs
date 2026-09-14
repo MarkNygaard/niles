@@ -24,6 +24,7 @@ mod config_tests;
 pub mod dto;
 pub mod events;
 pub mod handlers;
+pub mod integrations;
 pub mod logs;
 pub mod places;
 pub mod presence;
