@@ -94,6 +94,10 @@ impl IntentRouter {
             .or_else(|| match_device_set(&t, &ctx))
             .or_else(|| match_media_next_implicit_room(&t, &ctx))
             .or_else(|| match_media_previous_implicit_room(&t, &ctx))
+            // Last, so a real device or room always wins the sentence.
+            // A scene sharing a name with a room is the owner's
+            // business, and they meant the room.
+            .or_else(|| match_scene_by_name(&t, &ctx))
     }
 }
 
@@ -102,6 +106,13 @@ impl IntentRouter {
 pub struct RouterContext<'a> {
     pub device_index: &'a DeviceIndex,
     pub origin_room: Option<&'a RoomName>,
+    /// The scenes that exist, canonically named.
+    ///
+    /// Needed because "turn on cosy" and "turn on kitchen" are the same
+    /// sentence. Only knowing that a scene called cosy exists tells the
+    /// two apart, and guessing would turn a device command nobody could
+    /// route into a scene lookup that fails differently.
+    pub scenes: &'a [String],
 }
 
 /// Lowercase, trim, collapse internal whitespace, strip trailing
@@ -724,6 +735,58 @@ fn match_scene_apply(t: &str) -> Option<Intent> {
     // "delete"/"remove"; explicit "apply <name>" and "scene <name>" should
     // still allow scene names like "delete party".
     if from_suffix_form && (name.starts_with("delete ") || name.starts_with("remove ")) {
+        return None;
+    }
+    Some(Intent::SceneApply {
+        name: name.to_string(),
+    })
+}
+
+// ---- Scene by name --------------------------------------------------------
+
+fn scene_by_name_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // The ways people actually ask for one, none of which mention
+        // the word "scene":
+        //   "turn on cosy"
+        //   "set the lights to cosy"
+        //   "activate cosy"
+        //   "put on cosy"
+        Regex::new(
+            r"(?x)
+              ^
+              (?:
+                (?:turn|switch)\s+on\s+(?P<name1>.+)
+              |
+                set\s+(?:the\s+)?lights?\s+to\s+(?P<name2>.+)
+              |
+                (?:activate|put\s+on)\s+(?P<name3>.+)
+              )
+              $",
+        )
+        .expect("scene_by_name regex compiles")
+    })
+}
+
+/// "Turn on cosy", but only when cosy is a scene.
+///
+/// Runs after every device and room matcher, so it can only ever claim
+/// a sentence nothing else wanted — and then only if the name is one
+/// that has actually been saved. Without that check this would swallow
+/// "turn on kitchen", which routes nowhere today but should escalate to
+/// the model rather than be answered with "there is no scene called
+/// kitchen".
+fn match_scene_by_name(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    let caps = scene_by_name_regex().captures(t)?;
+    let name = caps
+        .name("name1")
+        .or_else(|| caps.name("name2"))
+        .or_else(|| caps.name("name3"))?
+        .as_str()
+        .trim();
+    let canonical = niles_core::canonicalize_name(name);
+    if !ctx.scenes.contains(&canonical) {
         return None;
     }
     Some(Intent::SceneApply {
@@ -2858,7 +2921,73 @@ mod context_tests {
         RouterContext {
             device_index: idx,
             origin_room: origin,
+            scenes: &[],
         }
+    }
+
+    fn ctx_with_scenes<'a>(idx: &'a DeviceIndex, scenes: &'a [String]) -> RouterContext<'a> {
+        RouterContext {
+            device_index: idx,
+            origin_room: None,
+            scenes,
+        }
+    }
+
+    // ---- Scene by name ----
+
+    #[test]
+    fn turn_on_a_scene_by_its_name() {
+        // The two phrasings people actually use, neither of which says
+        // the word "scene".
+        let idx = fixture_multi();
+        let scenes = vec!["cosy".to_string()];
+        for said in ["turn on cosy", "set the lights to cosy", "activate cosy"] {
+            assert_eq!(
+                parse_with(said, ctx_with_scenes(&idx, &scenes)),
+                Some(Intent::SceneApply {
+                    name: "cosy".into()
+                }),
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_nobody_saved_is_not_a_scene() {
+        // "turn on kitchen" routes nowhere today, and should escalate
+        // to the model rather than be answered with "there is no scene
+        // called kitchen".
+        let idx = fixture_multi();
+        assert_eq!(parse_with("turn on kitchen", ctx_with(&idx, None)), None);
+        assert_eq!(parse_with("turn on floor lamp", ctx_with(&idx, None)), None);
+    }
+
+    #[test]
+    fn a_room_wins_a_name_it_shares_with_a_scene() {
+        // Somebody who called a scene "kitchen lights" still means the
+        // kitchen lights. The scene matcher runs last for this reason.
+        let idx = fixture_multi();
+        let scenes = vec!["kitchen_lights".to_string()];
+        assert_eq!(
+            parse_with("turn on the kitchen lights", ctx_with_scenes(&idx, &scenes)),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn a_scene_is_found_however_it_is_said() {
+        // Stored canonically, spoken however it comes out.
+        let idx = fixture_multi();
+        let scenes = vec!["movie_night".to_string()];
+        assert_eq!(
+            parse_with("turn on Movie  Night", ctx_with_scenes(&idx, &scenes)),
+            Some(Intent::SceneApply {
+                name: "movie night".into()
+            })
+        );
     }
 
     fn parse_with(transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {

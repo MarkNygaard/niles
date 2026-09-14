@@ -254,6 +254,9 @@ export const api = {
     }),
   clearSecret: (key: string) =>
     request<void>(`/secrets/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  scenes: () => request<string[]>("/scenes"),
+  applyScene: (name: string) =>
+    request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   places: (q: string) =>
     request<Place[]>(`/places?q=${encodeURIComponent(q)}`),

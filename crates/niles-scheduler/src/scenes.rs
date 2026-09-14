@@ -76,12 +76,72 @@ struct PersistedScenes {
     scenes: BTreeMap<String, Vec<PersistedSceneEntry>>,
 }
 
+/// The document form of what the store holds.
+fn persistable(inner: &HashMap<String, Vec<SceneEntry>>) -> PersistedScenes {
+    let scenes = inner
+        .iter()
+        .map(|(name, entries)| {
+            let entries = entries
+                .iter()
+                .map(|e| PersistedSceneEntry {
+                    device_id: e.device_id.to_string(),
+                    state: (&e.state).into(),
+                })
+                .collect();
+            (name.clone(), entries)
+        })
+        .collect();
+    PersistedScenes { scenes }
+}
+
+/// The reverse, dropping entries whose device id will not parse: one
+/// bad row must not cost somebody every scene they have.
+fn rehydrate(persisted: PersistedScenes) -> HashMap<String, Vec<SceneEntry>> {
+    let mut scenes = HashMap::new();
+    for (name, entries) in persisted.scenes {
+        let valid = entries
+            .into_iter()
+            .filter_map(|e| match DeviceId::parse(&e.device_id) {
+                Ok(id) => Some(SceneEntry {
+                    device_id: id,
+                    state: e.state.into(),
+                }),
+                Err(_) => {
+                    tracing::warn!(
+                        "persistence: dropping scene entry with malformed device_id '{}'",
+                        e.device_id
+                    );
+                    None
+                }
+            })
+            .collect();
+        scenes.insert(canonicalize_name(&name), valid);
+    }
+    scenes
+}
+
+/// Somewhere a scene outlives the process.
+///
+/// A trait rather than a path, because the answer is no longer always
+/// a file. A scene kept on a mounted directory needs a config file to
+/// say where that directory is, and the config file is the thing Niles
+/// is trying to stop needing: in a cluster they go to the database
+/// instead, alongside the credentials and the overrides.
+///
+/// Handed the whole document rather than one change. The store is a
+/// handful of scenes, and the alternative is two ways for it to be
+/// wrong.
+pub trait ScenePersistence: Send + Sync {
+    fn store(&self, document: &str);
+}
+
 /// In-memory store for named lighting scenes.
 ///
 /// Mirrors the `RwLock<HashMap>` shape of [`ManualModeTracker`].
 pub struct SceneStore {
     scenes: RwLock<HashMap<String, Vec<SceneEntry>>>,
     persistence_path: Option<PathBuf>,
+    sink: Option<std::sync::Arc<dyn ScenePersistence>>,
 }
 
 impl SceneStore {
@@ -89,6 +149,7 @@ impl SceneStore {
         Self {
             scenes: RwLock::new(HashMap::new()),
             persistence_path: None,
+            sink: None,
         }
     }
 
@@ -97,31 +158,34 @@ impl SceneStore {
         self
     }
 
+    /// Write every change somewhere that is not a file.
+    pub fn with_sink(mut self, sink: std::sync::Arc<dyn ScenePersistence>) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+
+    /// Read a document written by [`Self::to_json`].
+    pub fn from_json(document: &str) -> serde_json::Result<Self> {
+        let persisted: PersistedScenes = serde_json::from_str(document)?;
+        Ok(Self {
+            scenes: RwLock::new(rehydrate(persisted)),
+            persistence_path: None,
+            sink: None,
+        })
+    }
+
+    /// Everything held, as the document a sink is given.
+    pub fn to_json(&self) -> String {
+        let inner = self.scenes_read();
+        serde_json::to_string(&persistable(&inner)).unwrap_or_else(|_| "{}".into())
+    }
+
     pub fn load_from_file(path: &Path) -> std::io::Result<Self> {
         let persisted: PersistedScenes = read_json_or_empty(path, "scenes")?;
-        let mut scenes = HashMap::new();
-        for (name, entries) in persisted.scenes {
-            let valid: Vec<SceneEntry> = entries
-                .into_iter()
-                .filter_map(|e| match DeviceId::parse(&e.device_id) {
-                    Ok(id) => Some(SceneEntry {
-                        device_id: id,
-                        state: e.state.into(),
-                    }),
-                    Err(_) => {
-                        tracing::warn!(
-                            "persistence: dropping scene entry with malformed device_id '{}'",
-                            e.device_id
-                        );
-                        None
-                    }
-                })
-                .collect();
-            scenes.insert(canonicalize_name(&name), valid);
-        }
         Ok(Self {
-            scenes: RwLock::new(scenes),
+            scenes: RwLock::new(rehydrate(persisted)),
             persistence_path: None,
+            sink: None,
         })
     }
 
@@ -135,20 +199,7 @@ impl SceneStore {
         inner: &HashMap<String, Vec<SceneEntry>>,
         path: &Path,
     ) -> std::io::Result<()> {
-        let scenes: BTreeMap<String, Vec<PersistedSceneEntry>> = inner
-            .iter()
-            .map(|(k, v)| {
-                let entries = v
-                    .iter()
-                    .map(|e| PersistedSceneEntry {
-                        device_id: e.device_id.to_string(),
-                        state: (&e.state).into(),
-                    })
-                    .collect();
-                (k.clone(), entries)
-            })
-            .collect();
-        atomic_write_json(path, &PersistedScenes { scenes })
+        atomic_write_json(path, &persistable(inner))
     }
 
     fn maybe_save(&self, inner: &HashMap<String, Vec<SceneEntry>>) {
@@ -156,6 +207,12 @@ impl SceneStore {
             && let Err(e) = self.save_locked(inner, path)
         {
             tracing::warn!("persistence: scenes save failed: {e}");
+        }
+        if let Some(sink) = self.sink.as_ref() {
+            match serde_json::to_string(&persistable(inner)) {
+                Ok(document) => sink.store(&document),
+                Err(e) => tracing::warn!("persistence: scenes would not serialize: {e}"),
+            }
         }
     }
 
@@ -418,6 +475,45 @@ mod tests {
         store.save("evening", &reg, None);
         let entries = store.get("evening").unwrap();
         assert_eq!(entries[0].state.rgb, Some([255, 128, 0]));
+    }
+
+    #[test]
+    fn a_document_survives_a_round_trip_without_a_file() {
+        // The database path: no directory, no config section naming
+        // one, and the scenes still come back.
+        let registry = registry_with(&[("living_room", "bulb_1", state(true, 60, 2700))]);
+        let store = SceneStore::new();
+        store.save("cosy", &registry, None);
+
+        let reloaded = SceneStore::from_json(&store.to_json()).expect("parses");
+        assert_eq!(reloaded.names(), vec!["cosy"]);
+        let entry = &reloaded.get("cosy").expect("there")[0];
+        assert_eq!(entry.state.brightness, Some(60));
+        assert_eq!(entry.state.color_temp_kelvin, Some(2700));
+    }
+
+    #[test]
+    fn a_sink_is_handed_every_change() {
+        // Including a delete: a scene somebody removed has to actually
+        // disappear, and sending only saves would leave it there until
+        // a restart.
+        struct Spy(std::sync::Mutex<Vec<String>>);
+        impl ScenePersistence for Spy {
+            fn store(&self, document: &str) {
+                self.0.lock().unwrap().push(document.to_string());
+            }
+        }
+        let spy = std::sync::Arc::new(Spy(std::sync::Mutex::new(Vec::new())));
+        let registry = registry_with(&[("living_room", "bulb_1", state(true, 60, 2700))]);
+        let store = SceneStore::new().with_sink(spy.clone());
+
+        store.save("cosy", &registry, None);
+        store.delete("cosy");
+
+        let seen = spy.0.lock().unwrap();
+        assert_eq!(seen.len(), 2, "a save and a delete");
+        assert!(seen[0].contains("cosy"));
+        assert!(!seen[1].contains("cosy"), "the delete has to travel too");
     }
 
     #[test]
