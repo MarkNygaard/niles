@@ -40,7 +40,7 @@ chrono-tz = "0.10"
 ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "load-dynamic", "api-24", "tls-rustls"] }
 realfft = "3"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 futures-util = "0.3"
 serde_yaml = "0.9"
 tempfile = "3"
