@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Droplets, Flame, Lightbulb, Power, X } from "lucide-react";
+import { Droplets, Power, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -14,6 +14,8 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from "@/components/ui/drawer";
+import { BulbGlyph } from "@/components/BulbGlyph";
+import { FlameGlyph } from "@/components/FlameGlyph";
 import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
@@ -61,6 +63,22 @@ export interface RoomCardProps {
  * can, and the secondary line is `text-sm` rather than `text-xs`
  * because nothing smaller survives this background.
  */
+/**
+ * The two ways into a room, along the bottom of its card.
+ *
+ * No rules and no fill: the card is one object, and three lines across
+ * it turned a tile into a small table. What is left is a pair of marks
+ * pressed into the colour — half-strength white, which is about where
+ * an icon stops looking applied to the card and starts looking part of
+ * it, while still holding its shape at this size. The hover wash is
+ * what says they can be pressed.
+ */
+const FOOT = [
+  "flex flex-1 items-center justify-center px-3 py-2.5 text-white/50 transition-colors",
+  "hover:bg-black/10 hover:text-white/80",
+  "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
+].join(" ");
+
 const TILE = {
   on: "radial-gradient(circle at top left, #fd9740 0%, #fd8b2d 70.7%)",
   off: "radial-gradient(circle at top left, #adb7c2 0%, #97a2b0 70.7%)",
@@ -332,19 +350,15 @@ export function RoomCard({
             glance, and the card's own colour and reading are what that
             space is for. The name is still there for anything not
             reading the picture. */}
-        <div className="flex border-t border-white/25">
+        <div className="flex">
           <button
             type="button"
             aria-label={`Lights in ${room.label}`}
             title="Lights"
             onClick={() => setOpen("lights")}
-            className={cn(
-              "flex flex-1 items-center justify-center px-3 py-2.5 transition-colors",
-              "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
-              "hover:bg-black/10",
-            )}
+            className={FOOT}
           >
-            <Lightbulb aria-hidden className="size-5" />
+            <BulbGlyph className="size-6" />
           </button>
           {hasZone && (
             <button
@@ -355,13 +369,9 @@ export function RoomCard({
                 setDraft(room.zone?.on ? (room.zone.target ?? null) : null);
                 setOpen("heating");
               }}
-              className={cn(
-                "flex flex-1 items-center justify-center border-l border-white/25 px-3 py-2.5 transition-colors",
-                "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
-                "hover:bg-black/10",
-              )}
+              className={FOOT}
             >
-              <Flame aria-hidden className="size-5" />
+              <FlameGlyph className="size-6" />
             </button>
           )}
         </div>
