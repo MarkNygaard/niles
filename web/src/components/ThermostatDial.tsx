@@ -147,10 +147,11 @@ export function ThermostatDial({
         tabIndex={disabled ? -1 : 0}
         className={cn(
           "relative h-64 w-32 touch-none overflow-hidden rounded-[2rem] select-none",
-          // Translucent rather than a token, because this sits on a
-          // sheet whose colour changes with the value: a fixed grey
-          // would fight every one of them.
-          "bg-white/20",
+          // Both translucent, and darker under lighter: the sheet
+          // behind runs from a dark teal to a light yellow, so the
+          // contrast has to come from the pair rather than from either
+          // one being a fixed colour.
+          "bg-black/10",
           "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
           disabled && "pointer-events-none opacity-50",
         )}
@@ -182,7 +183,7 @@ export function ThermostatDial({
       >
         <div
           aria-hidden
-          className="absolute inset-x-0 bottom-0 bg-white transition-[height] duration-100"
+          className="absolute inset-x-0 bottom-0 bg-white/85 transition-[height] duration-100"
           style={{ height: `${fractionOf(draft) * 100}%` }}
         />
         {/* The grip, where a thumb expects one. Hidden at the very
@@ -190,7 +191,7 @@ export function ThermostatDial({
         {draft !== null && (
           <div
             aria-hidden
-            className="absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-black/15"
+            className="absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-black/20"
             style={{ bottom: `calc(${fractionOf(draft) * 100}% - 0.75rem)` }}
           />
         )}

@@ -12,15 +12,18 @@
  * perceptually even; oklch's are, so every step between two stops looks
  * like the same size step.
  *
- * The hues and the rising chroma are measured from tado's own screens —
- * 185 at 5°, 162 at 12°, 155 at 18.5°, then the turn to yellow and
- * orange. The lightness is not. Theirs climbs to 0.74 by 18.5°, where
- * white text sits at 2.18:1 and is genuinely hard to read; ours stops
- * at 0.66, which holds 3.2–3.8:1 across the whole range.
+ * Every stop is measured out of tado's own screens rather than guessed:
+ * `#329896` at 5°, `#31b27f` at 12°, `#2fb77d` at 18.5°, `#f6c944` at
+ * 19° and `#ec6a2c` at 25°. Two of those were guesses first and both
+ * were wrong — the yellow sits at hue 90 rather than the 120 that
+ * seemed right, and the orange at 43 rather than 60.
  *
- * That is still AA for large text only. It is why the secondary line on
- * a heated panel is sized up rather than left at `text-xs` — anything
- * smaller does not belong on this background.
+ * Note that the lightness is not monotonic: it climbs to 0.853 at the
+ * yellow and falls back to 0.674 for the orange. Yellow is simply a
+ * light colour, and forcing it down the way the rest of the scale
+ * suggests would produce olive rather than yellow.
+ *
+ * What does not come from tado is the foreground — see [`HEAT_INK`].
  */
 
 interface Stop {
@@ -39,15 +42,31 @@ interface Stop {
  * one place on the dial where a small move means something.
  */
 const STOPS: Stop[] = [
-  { at: 5, l: 0.6, c: 0.09, h: 185 },
-  { at: 12, l: 0.618, c: 0.12, h: 162 },
-  { at: 18.5, l: 0.632, c: 0.145, h: 155 },
-  { at: 19, l: 0.645, c: 0.15, h: 120 },
-  { at: 25, l: 0.66, c: 0.15, h: 60 },
+  { at: 5, l: 0.622, c: 0.092, h: 193 },
+  { at: 12, l: 0.682, c: 0.134, h: 162 },
+  { at: 18.5, l: 0.694, c: 0.143, h: 160 },
+  { at: 19, l: 0.853, c: 0.152, h: 90 },
+  { at: 25, l: 0.674, c: 0.176, h: 43 },
 ];
 
+/**
+ * What goes on top of them.
+ *
+ * Dark, where tado uses white. Their colours are right and their
+ * foreground is not: white on the yellow at 19° measures 1.57:1, which
+ * is unreadable, and 2.6:1 on the greens. The same ink reads 4.7:1 at
+ * worst and 10.8:1 at best across the whole scale, which clears AA for
+ * ordinary text rather than only for headings.
+ *
+ * A fixed value rather than a token, because the sheet's colour does
+ * not change with the theme and so its text cannot either — a
+ * light-mode foreground on a dark-mode page would be the same mistake
+ * in reverse.
+ */
+export const HEAT_INK = "#1c1c1e";
+
 /** Off is not on the scale. It is the absence of one. */
-const OFF = "oklch(0.62 0.015 250)";
+const OFF = "oklch(0.66 0.018 250)";
 
 /**
  * The colour for a setting, as a CSS `oklch()`.
@@ -76,7 +95,7 @@ function between(celsius: number): Omit<Stop, "at"> {
     return {
       l: mix(from.l, to.l, t),
       c: mix(from.c, to.c, t),
-      // Hues descend 190 → 55 across the whole scale, so there is no
+      // Hues descend 193 → 43 across the whole scale, so there is no
       // wrap to reason about: straight interpolation is the short way
       // round every time.
       h: mix(from.h, to.h, t),

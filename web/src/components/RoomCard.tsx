@@ -18,7 +18,7 @@ import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { ClimatePanel } from "@/components/ClimatePanel";
-import { heatColor } from "@/lib/heat";
+import { HEAT_INK, heatColor } from "@/lib/heat";
 import { measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
@@ -83,7 +83,7 @@ export function RoomCard({
       <div
         className={cn(
           "flex items-start justify-between gap-3 border-b px-4 py-3",
-          tinted ? "border-white/20" : "border-border",
+          tinted ? "border-black/15" : "border-border",
         )}
       >
         <div className="min-w-0">
@@ -304,9 +304,12 @@ export function RoomCard({
           <DrawerContent
             className={cn(
               "data-[swipe-direction=down]:rounded-t-none transition-colors duration-200",
-              tinted && "text-white",
             )}
-            style={tinted ? { backgroundColor: heatColor(draft) } : undefined}
+            style={
+              tinted
+                ? { backgroundColor: heatColor(draft), color: HEAT_INK }
+                : undefined
+            }
           >
             {contents}
           </DrawerContent>
@@ -319,8 +322,12 @@ export function RoomCard({
           }}
         >
           <DialogContent
-            className={cn("transition-colors duration-200", tinted && "text-white")}
-            style={tinted ? { backgroundColor: heatColor(draft) } : undefined}
+            className="transition-colors duration-200"
+            style={
+              tinted
+                ? { backgroundColor: heatColor(draft), color: HEAT_INK }
+                : undefined
+            }
           >
             {contents}
           </DialogContent>

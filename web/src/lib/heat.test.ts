@@ -24,8 +24,8 @@ describe("heatColor", () => {
     // tado's journey, measured off their own screens: the hue falls the
     // whole way, which is what "cool at the bottom, warm at the top"
     // means in a colour space.
-    expect(parse(heatColor(5)).h).toBeCloseTo(185, 0);
-    expect(parse(heatColor(25)).h).toBeCloseTo(60, 0);
+    expect(parse(heatColor(5)).h).toBeCloseTo(193, 0);
+    expect(parse(heatColor(25)).h).toBeCloseTo(43, 0);
   });
 
   it("never turns back on itself", () => {
@@ -39,8 +39,12 @@ describe("heatColor", () => {
     }
   });
 
-  it("brightens as it warms", () => {
-    expect(parse(heatColor(25)).l).toBeGreaterThan(parse(heatColor(5)).l);
+  it("brightens as it warms, then falls back for the orange", () => {
+    // Not monotonic, and deliberately so: yellow is simply a light
+    // colour, and forcing it down the way the rest of the scale
+    // suggests would produce olive rather than yellow.
+    expect(parse(heatColor(19)).l).toBeGreaterThan(parse(heatColor(5)).l);
+    expect(parse(heatColor(25)).l).toBeLessThan(parse(heatColor(19)).l);
   });
 
   it("turns yellow between 18.5 and 19", () => {
@@ -49,7 +53,7 @@ describe("heatColor", () => {
     const green = parse(heatColor(18.5)).h;
     const yellow = parse(heatColor(19)).h;
     expect(green).toBeGreaterThan(140);
-    expect(yellow).toBeLessThan(130);
+    expect(yellow).toBeLessThan(100);
   });
 
   it("holds at the ends rather than running past them", () => {
@@ -57,11 +61,11 @@ describe("heatColor", () => {
     expect(heatColor(100)).toBe(heatColor(25));
   });
 
-  it("stays dark enough to read white on", () => {
-    // tado's own reaches 0.74 by 18.5°, where white text is 2.18:1 and
-    // genuinely hard to read. Ours stops short of that on purpose.
-    for (let c = 5; c <= 25; c += 0.5) {
-      expect(parse(heatColor(c)).l).toBeLessThanOrEqual(0.66);
-    }
+  it("reaches tado's own colours at the stops", () => {
+    // Measured out of their screenshots rather than guessed — two of
+    // the guesses were wrong by 30 degrees of hue.
+    expect(parse(heatColor(5))).toMatchObject({ l: 0.622, h: 193 });
+    expect(parse(heatColor(19))).toMatchObject({ l: 0.853, h: 90 });
+    expect(parse(heatColor(25))).toMatchObject({ l: 0.674, h: 43 });
   });
 });

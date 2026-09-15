@@ -88,7 +88,7 @@ export function ClimatePanel({
           variant="outline"
           disabled={saving}
           onClick={onResume}
-          className="border-white/30 bg-white/10 text-inherit hover:bg-white/20"
+          className="border-black/20 bg-white/30 text-inherit hover:bg-white/50"
         >
           <CalendarSync aria-hidden /> Resume schedule
         </Button>
