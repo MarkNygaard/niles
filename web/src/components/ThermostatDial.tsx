@@ -165,7 +165,11 @@ export function ThermostatDial({
       <div className="flex min-h-16 flex-col justify-center text-center">
         {draft === null ? (
           <>
-            <div className="font-heading text-3xl leading-none font-medium">
+            {/* Set in caps rather than written in them, the way the
+                readings below the dial are: a screen reader is given
+                "Off" and some of them spell an all-capitals word out a
+                letter at a time. */}
+            <div className="font-heading text-3xl leading-none font-medium tracking-wide uppercase">
               Off
             </div>
             {offLabel && (
