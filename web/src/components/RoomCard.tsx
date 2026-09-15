@@ -18,6 +18,7 @@ import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { ClimatePanel } from "@/components/ClimatePanel";
+import { heatColor } from "@/lib/heat";
 import { measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
@@ -59,6 +60,15 @@ export function RoomCard({
   const toggle = roomToggle(room);
   const heating = room.zone !== undefined && onSetZone !== undefined;
   const [open, setOpen] = useState<"lights" | "heating" | null>(null);
+  /**
+   * What the heating sheet is coloured, following the dial as it moves.
+   *
+   * Held here rather than in the panel because the colour belongs to
+   * the whole sheet, and the panel is only what is inside it. Reset on
+   * open so a sheet never flashes the last room's temperature.
+   */
+  const [draft, setDraft] = useState<number | null>(null);
+  const tinted = open === "heating" && room.zone?.reachable;
   // A drag handle is meaningless with a mouse and a centred modal is
   // wrong in a hand, so this picks the component rather than restyling
   // one of them. Matches the `sm` breakpoint the card already uses.
@@ -70,14 +80,21 @@ export function RoomCard({
   // parts that carry the accessible name are swapped.
   const contents = (
     <>
-      <div className="border-border flex items-start justify-between gap-3 border-b px-4 py-3">
+      <div
+        className={cn(
+          "flex items-start justify-between gap-3 border-b px-4 py-3",
+          tinted ? "border-white/20" : "border-border",
+        )}
+      >
         <div className="min-w-0">
           {phone ? (
             <>
               <DrawerTitle className="font-heading text-base leading-snug font-medium">
                 {room.label}
               </DrawerTitle>
-              <DrawerDescription className="text-muted-foreground text-sm">
+              <DrawerDescription
+                className={cn("text-sm", tinted ? "opacity-80" : "text-muted-foreground")}
+              >
                 {open === "heating" ? "Heating" : roomSummary(room)}
               </DrawerDescription>
             </>
@@ -117,6 +134,7 @@ export function RoomCard({
           <ClimatePanel
             zone={room.zone}
             saving={disabled}
+            onDraft={setDraft}
             onHeat={(celsius) => onSetZone({ action: "heat", celsius })}
             onOff={() => onSetZone({ action: "off" })}
             onResume={() => onSetZone({ action: "resume" })}
@@ -251,7 +269,10 @@ export function RoomCard({
           {heating && (
             <button
               type="button"
-              onClick={() => setOpen("heating")}
+              onClick={() => {
+              setDraft(room.zone?.on ? (room.zone.target ?? null) : null);
+              setOpen("heating");
+            }}
               className={cn(
                 "flex flex-1 items-center justify-between gap-1 border-l px-3 py-2.5 text-left transition-colors sm:px-4",
                 "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
@@ -280,7 +301,13 @@ export function RoomCard({
               default and belong to a sheet that floats, which this one
               does not. Overridden here rather than in the component, so
               `shadcn add drawer` can still update it cleanly. */}
-          <DrawerContent className="data-[swipe-direction=down]:rounded-t-none">
+          <DrawerContent
+            className={cn(
+              "data-[swipe-direction=down]:rounded-t-none transition-colors duration-200",
+              tinted && "text-white",
+            )}
+            style={tinted ? { backgroundColor: heatColor(draft) } : undefined}
+          >
             {contents}
           </DrawerContent>
         </Drawer>
@@ -291,7 +318,12 @@ export function RoomCard({
             if (!next) setOpen(null);
           }}
         >
-          <DialogContent>{contents}</DialogContent>
+          <DialogContent
+            className={cn("transition-colors duration-200", tinted && "text-white")}
+            style={tinted ? { backgroundColor: heatColor(draft) } : undefined}
+          >
+            {contents}
+          </DialogContent>
         </Dialog>
       )}
     </>
