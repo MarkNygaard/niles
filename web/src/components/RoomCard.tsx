@@ -79,9 +79,22 @@ const FOOT = [
   "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
 ].join(" ");
 
+/**
+ * A room, lit and unlit.
+ *
+ * Radial from the top-left corner, which is how tado draws theirs and
+ * what the samples off their app show: equal values at equal distance
+ * from that corner rather than at equal height.
+ *
+ * `--tile-shade` rides on top as a flat layer — nothing in the light
+ * theme, a wash of black in the dark one. A stacked background rather
+ * than an overlay element, so the shade cannot land above anything
+ * drawn on the card.
+ */
+const SHADE = "linear-gradient(var(--tile-shade), var(--tile-shade))";
 const TILE = {
-  on: "radial-gradient(circle at top left, #fd9740 0%, #fd8b2d 70.7%)",
-  off: "radial-gradient(circle at top left, #adb7c2 0%, #97a2b0 70.7%)",
+  on: `${SHADE}, radial-gradient(circle at top left, #fd9740 0%, #fd8b2d 70.7%)`,
+  off: `${SHADE}, radial-gradient(circle at top left, #adb7c2 0%, #97a2b0 70.7%)`,
 };
 
 /** What the drawer can ask of a heating zone. */
@@ -213,13 +226,27 @@ export function RoomCard({
       }}
     >
       <DialogContent
-        className="inset-0 max-h-none rounded-t-none transition-colors duration-200 sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:max-h-[85vh] sm:rounded-xl"
+        className={cn(
+          "inset-0 max-h-none rounded-t-none transition-colors duration-200",
+          // A dialog is positioned against the viewport, not the body,
+          // so the body's own safe-area padding does nothing for it —
+          // and this one covers the screen, which put the room's name
+          // under the clock. The bottom inset it inherits; the top it
+          // has to ask for.
+          "pt-[env(safe-area-inset-top)]",
+          "sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:max-h-[85vh] sm:rounded-xl sm:pt-0",
+        )}
         style={{ backgroundImage: heatSheet(draft), color: HEAT_INK }}
       >
         <div className="flex items-center gap-2 px-3 py-3">
           <DialogClose
             aria-label="Close"
-            className="focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-lg hover:bg-black/10 focus-visible:outline-none"
+            // `outline-none` unconditionally, not just on focus-visible:
+            // the stylesheet colours every outline with the brand green,
+            // so a tap that leaves focus behind drew a green ring around
+            // the X. The keyboard indicator is the ring below, which
+            // only a keyboard brings up.
+            className="focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-lg outline-none hover:bg-black/10"
           >
             <X aria-hidden className="size-5" />
           </DialogClose>
