@@ -20,6 +20,7 @@ function zone(overrides: Partial<Zone> = {}): Zone {
     on: false,
     overridden: true,
     reachable: true,
+    until: null,
     placed_by: "name",
     ...overrides,
   };

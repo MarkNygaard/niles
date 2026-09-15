@@ -12,6 +12,7 @@
 
 use crate::error::{Error, Result};
 use crate::tado::TadoSource;
+use chrono::{DateTime, Utc};
 use niles_core::canonicalize_name;
 use serde::Deserialize;
 
@@ -52,6 +53,13 @@ pub struct Zone {
     pub on: bool,
     /// Whether somebody has overridden the schedule.
     pub overridden: bool,
+    /// When the override ends, when it ends by itself.
+    ///
+    /// `None` covers both "no override" and "until you resume it",
+    /// which the page tells apart by looking at `overridden` — an
+    /// override with no end is the one worth pointing at, because it
+    /// is the one somebody has to remember.
+    pub until: Option<DateTime<Utc>>,
     /// False when tado says the zone is offline — a dead battery, or a
     /// valve out of range.
     pub reachable: bool,
@@ -117,10 +125,57 @@ impl TadoSource {
                     .map(|t| t.celsius),
                 on: state.setting.power == "ON",
                 overridden: state.overlay.is_some(),
+                until: state
+                    .overlay
+                    .and_then(|o| o.termination)
+                    .and_then(|t| t.expiry),
                 reachable,
             });
         }
         Ok(zones)
+    }
+
+    /// Hold a zone at a temperature until somebody says otherwise.
+    ///
+    /// `MANUAL` termination, which is tado's "until you resume
+    /// schedule" — and the only one worth offering without a way to
+    /// pick a duration. A timer that ends at a time nobody chose would
+    /// be a surprise in the other direction.
+    pub async fn set_temperature(&self, zone: u64, celsius: f32) -> Result<()> {
+        let body = serde_json::json!({
+            "setting": {
+                "type": "HEATING",
+                "power": "ON",
+                "temperature": { "celsius": celsius },
+            },
+            "termination": { "type": "MANUAL" },
+        });
+        self.write_home_path(&format!("zones/{zone}/overlay"), Some(body.to_string()))
+            .await
+            .map(|_| ())
+    }
+
+    /// Turn a zone off — which in tado means frost protection, not
+    /// nothing: it still heats below about 5°C so the pipes survive.
+    pub async fn turn_off(&self, zone: u64) -> Result<()> {
+        let body = serde_json::json!({
+            "setting": { "type": "HEATING", "power": "OFF" },
+            "termination": { "type": "MANUAL" },
+        });
+        self.write_home_path(&format!("zones/{zone}/overlay"), Some(body.to_string()))
+            .await
+            .map(|_| ())
+    }
+
+    /// Drop the override and let the schedule have the zone back.
+    ///
+    /// Needs nothing from the schedule itself — removing the overlay is
+    /// the whole operation, and tado falls back to whatever the
+    /// timetable already said.
+    pub async fn resume_schedule(&self, zone: u64) -> Result<()> {
+        self.write_home_path(&format!("zones/{zone}/overlay"), None)
+            .await
+            .map(|_| ())
     }
 
     async fn list_zones(&self) -> Result<Vec<ListedZone>> {
@@ -183,7 +238,7 @@ struct ListedZone {
 struct ZoneState {
     setting: Setting,
     #[serde(default)]
-    overlay: Option<serde_json::Value>,
+    overlay: Option<Overlay>,
     #[serde(default)]
     link: Option<Link>,
     #[serde(rename = "sensorDataPoints", default)]
@@ -197,6 +252,20 @@ struct Setting {
     power: String,
     #[serde(default)]
     temperature: Option<Celsius>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Overlay {
+    #[serde(default)]
+    termination: Option<Termination>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Termination {
+    /// Absent for a MANUAL override, which is what "until you resume
+    /// schedule" is: it has no end until somebody gives it one.
+    #[serde(default)]
+    expiry: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,6 +301,36 @@ mod tests {
 
     fn nothing_paired() -> std::collections::HashMap<String, String> {
         std::collections::HashMap::new()
+    }
+
+    #[test]
+    fn a_manual_override_has_no_end() {
+        // Which is the one worth pointing at: it lasts until somebody
+        // remembers it, and nothing else will end it.
+        let state: ZoneState = serde_json::from_str(
+            r#"{"setting":{"type":"HEATING","power":"OFF"},
+                "overlay":{"type":"MANUAL","termination":{"type":"MANUAL"}}}"#,
+        )
+        .expect("parses");
+        let overlay = state.overlay.expect("there is one");
+        assert!(overlay.termination.expect("has one").expiry.is_none());
+    }
+
+    #[test]
+    fn a_timed_override_says_when_it_ends() {
+        let state: ZoneState = serde_json::from_str(
+            r#"{"setting":{"type":"HEATING","power":"ON"},
+                "overlay":{"termination":{"type":"TIMER",
+                "expiry":"2026-09-15T18:30:00Z"}}}"#,
+        )
+        .expect("parses");
+        assert!(
+            state
+                .overlay
+                .and_then(|o| o.termination)
+                .and_then(|t| t.expiry)
+                .is_some()
+        );
     }
 
     #[test]

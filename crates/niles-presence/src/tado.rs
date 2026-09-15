@@ -376,6 +376,39 @@ impl TadoSource {
         }
         Ok(body)
     }
+
+    /// PUT or DELETE a path under this home.
+    ///
+    /// Same token handling as the read: a 401 drops the cached token so
+    /// the next call fetches a new one, which matters more here — a
+    /// write that silently failed on a stale token would leave a
+    /// radiator where it was and the page saying otherwise.
+    pub(crate) async fn write_home_path(&self, path: &str, body: Option<String>) -> Result<String> {
+        let token = self.ensure_token().await?;
+        let home = self.home_id(&token).await?;
+        let url = format!(
+            "{}/api/v2/homes/{}/{}",
+            self.cfg.base_url.trim_end_matches('/'),
+            home,
+            path
+        );
+
+        let (status, body) = match body {
+            Some(json) => self.transport.put_bearer(&url, &token, json).await?,
+            None => self.transport.delete_bearer(&url, &token).await?,
+        };
+
+        if status == 401 {
+            *self.token.lock().await = None;
+            return Err(Error::Auth {
+                reason: "token expired or invalid".into(),
+            });
+        }
+        if !(200..300).contains(&status) {
+            return Err(Error::BadStatus { status, body });
+        }
+        Ok(body)
+    }
 }
 
 #[async_trait]
