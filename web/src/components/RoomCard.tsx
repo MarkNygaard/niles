@@ -271,12 +271,12 @@ export function RoomCard({
           )}
         >
           <span className="flex w-full items-start justify-between gap-2">
-            {/* A tile rather than a pill, and barely there: white at a
-                tenth is enough to hold the reading together as one
-                thing without competing with the card's own colour,
-                which is the only thing on here carrying a state. */}
+            {/* Barely there: white at a tenth is enough to hold the
+                reading together as one thing without competing with
+                the card's own colour, which is the only thing on here
+                carrying a state. */}
             {room.humidity !== undefined && (
-              <span className="flex items-center gap-1.5 rounded-lg bg-white/10 px-2 py-1 text-base leading-none font-medium">
+              <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-base leading-none font-medium">
                 <Droplets aria-hidden className="size-4" />
                 {Math.round(room.humidity)}%
               </span>
