@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Droplets, X } from "lucide-react";
+import { Droplets, Flame, Lightbulb, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -305,34 +305,41 @@ export function RoomCard({
             many times a day and heating rarely, and a single button
             labelled for lights is one nobody finds the thermostat
             behind. */}
-        <div className="flex border-t border-white/25 text-sm font-medium">
+        {/* Drawn rather than written. Two words and two chevrons took a
+            fifth of the card to say what a bulb and a flame say at a
+            glance, and the card's own colour and reading are what that
+            space is for. The name is still there for anything not
+            reading the picture. */}
+        <div className="flex border-t border-white/25">
           <button
             type="button"
+            aria-label={`Lights in ${room.label}`}
+            title="Lights"
             onClick={() => setOpen("lights")}
             className={cn(
-              "flex flex-1 items-center justify-between gap-1 px-3 py-2.5 text-left transition-colors sm:px-4",
+              "flex flex-1 items-center justify-center px-3 py-2.5 transition-colors",
               "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
               "hover:bg-black/10",
             )}
           >
-            <span className="truncate">Lights</span>
-            <ChevronRight aria-hidden className="size-4 shrink-0" />
+            <Lightbulb aria-hidden className="size-5" />
           </button>
           {hasZone && (
             <button
               type="button"
+              aria-label={`Heating in ${room.label}`}
+              title="Heating"
               onClick={() => {
-              setDraft(room.zone?.on ? (room.zone.target ?? null) : null);
-              setOpen("heating");
-            }}
+                setDraft(room.zone?.on ? (room.zone.target ?? null) : null);
+                setOpen("heating");
+              }}
               className={cn(
-                "flex flex-1 items-center justify-between gap-1 border-l border-white/25 px-3 py-2.5 text-left transition-colors sm:px-4",
+                "flex flex-1 items-center justify-center border-l border-white/25 px-3 py-2.5 transition-colors",
                 "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
                 "hover:bg-black/10",
               )}
             >
-              <span className="truncate">Heating</span>
-              <ChevronRight aria-hidden className="size-4 shrink-0" />
+              <Flame aria-hidden className="size-5" />
             </button>
           )}
         </div>

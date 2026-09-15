@@ -103,14 +103,14 @@ describe("RoomCard", () => {
     // target, not a long-press a mouse can't perform.
     const { onSetRoom } = setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
     expect(onSetRoom).not.toHaveBeenCalled();
   });
 
   it("closes with a button on a desktop", () => {
     setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
   });
 
@@ -120,7 +120,7 @@ describe("RoomCard", () => {
     onAPhone();
     setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
     expect(
       screen.getByRole("button", { name: /^All lights in Kitchen/ }),
     ).toBeInTheDocument();
@@ -174,6 +174,6 @@ describe("RoomCard", () => {
   it("offers heating only where there is a zone", () => {
     // A room with no radiator gets one button, not a dead second one.
     setup([light("ceiling", true)]);
-    expect(screen.queryByRole("button", { name: "Heating" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Heating in / })).toBeNull();
   });
 });
