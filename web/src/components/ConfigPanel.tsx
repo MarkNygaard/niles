@@ -26,12 +26,14 @@ import { SetupBanner } from "@/components/SetupBanner";
 import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
+import { RoomOrderCard } from "@/components/RoomOrderCard";
 import { SatellitesCard } from "@/components/SatellitesCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
-import { ApiError, api, patchForAll, valueAt } from "@/lib/api";
+import { ApiError, api, patchForAll, roomOrder, valueAt } from "@/lib/api";
+import { roomsOf } from "@/lib/rooms";
 import type { Applied, ConfigView, Revision, WledStrip } from "@/lib/api";
 import type { Satellite } from "@/components/SatellitesCard";
 import { AlertTriangle, ChevronLeft, Undo2 } from "lucide-react";
@@ -587,6 +589,25 @@ export function ConfigPanel() {
             error={rowError?.row === "home" ? rowError.message : undefined}
             onChange={(entries) => save.mutate({ row: "home", entries })}
             onClear={(path) => reset.mutate({ row: "home", paths: [path] })}
+          />
+        </TabsContent>
+
+        <TabsContent value="rooms">
+          {/* The same list the dashboard builds, arranged the same way,
+              so what is dragged here is what moves there. */}
+          <RoomOrderCard
+            rooms={roomsOf(
+              devices.data ?? [],
+              climate.data ?? [],
+              roomOrder(view.effective),
+            )}
+            disabled={save.isPending}
+            onChange={(order) =>
+              save.mutate({
+                row: "rooms.order",
+                entries: [{ path: "rooms.order", value: order }],
+              })
+            }
           />
         </TabsContent>
 

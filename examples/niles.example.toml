@@ -102,6 +102,15 @@ api_key_env = "GROQ_API_KEY"
 # url_env = "NILES_DATABASE_URL"
 # max_connections = 5
 
+# The order the rooms sit in on the dashboard's front page, by room name.
+# A house has an order its rooms are thought about in and it is never the
+# alphabet, which is what the page sorts by otherwise. Rooms left out keep
+# the alphabet and follow the ones listed, so a newly paired room appears
+# at the end rather than not at all. Easier set by dragging the list in
+# Settings than typed here.
+# [rooms]
+# order = ["living_room", "kitchen", "office"]
+
 # Lights that should sit out the adaptive curve — a TV backlight, a shelf
 # strip — and hold a fixed warm, dim setting instead. List them here; set
 # how they look with `ambient_brightness` / `ambient_kelvin` under
