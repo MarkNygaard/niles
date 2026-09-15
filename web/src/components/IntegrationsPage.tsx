@@ -26,12 +26,16 @@ import type {
   Secret,
   SecretsReport,
   TadoStatus,
+  Zone,
 } from "@/lib/api";
 
 export interface IntegrationsPageProps {
   integrations: Integration[];
   secrets?: SecretsReport;
   tado?: TadoStatus;
+  /** tado's heating zones, and the rooms they can be paired with. */
+  zones?: Zone[];
+  rooms?: string[];
   /** The Linear section as the config has it, if there is one. */
   linear?: { team?: string; trigger_label?: string };
   saving?: boolean;
@@ -60,6 +64,8 @@ export function IntegrationsPage({
   integrations,
   secrets,
   tado,
+  zones,
+  rooms,
   linear,
   saving,
   error,
@@ -251,6 +257,16 @@ export function IntegrationsPage({
                       ])
                     }
                     onChanged={onTadoChanged}
+                    zones={zones}
+                    rooms={rooms}
+                    onPair={(zoneId, room) =>
+                      onChange("presence", [
+                        {
+                          path: `presence.tado.rooms.${zoneId}`,
+                          value: room,
+                        },
+                      ])
+                    }
                   />
                 )}
 

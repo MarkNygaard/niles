@@ -220,6 +220,13 @@ export function ConfigPanel() {
     queryKey: ["integrations"],
     queryFn: api.integrations,
   });
+  // Every call reaches tado, so this is asked once rather than on a
+  // timer: it is a setup list, not a readout.
+  const climate = useQuery({
+    queryKey: ["climate"],
+    queryFn: api.climate,
+    staleTime: 60_000,
+  });
   // Six hundred-odd strings that never change while the process runs.
   const timezones = useQuery({
     queryKey: ["timezones"],
@@ -256,6 +263,7 @@ export function ConfigPanel() {
       "secrets",
       "integrations",
       "tado",
+      "climate",
     ]) {
       queryClient.invalidateQueries({ queryKey: [key] });
     }
@@ -692,6 +700,8 @@ export function ConfigPanel() {
             integrations={integrations.data ?? []}
             secrets={secrets.data}
             tado={tado.data}
+            zones={climate.data}
+            rooms={[...new Set((devices.data ?? []).map((d) => d.room))].sort()}
             linear={
               (view.effective.integrations as
                 | { linear?: { team?: string; trigger_label?: string } }

@@ -29,6 +29,12 @@ pub struct ZoneDto {
     /// Whether somebody has overridden the schedule.
     pub overridden: bool,
     pub reachable: bool,
+    /// How it came to have that room: `paired`, `name`, or `nowhere`.
+    ///
+    /// The page needs the difference. A room that happens to share a
+    /// name is convenience, not an answer somebody gave — and offering
+    /// to confirm it is very different from offering to change it.
+    pub placed_by: niles_presence::Placed,
 }
 
 /// `GET /climate` — every heating zone tado reports.
@@ -52,8 +58,16 @@ pub async fn list_zones(State(state): State<AppState>) -> Result<Json<Vec<ZoneDt
     rooms.sort();
     rooms.dedup();
 
+    // What somebody has already said about which zone is which room.
+    let paired = state
+        .config
+        .as_ref()
+        .map(|c| c.current())
+        .and_then(|cfg| cfg.presence.tado.as_ref().map(|t| t.rooms.clone()))
+        .unwrap_or_default();
+
     let zones = tado
-        .zones(&rooms)
+        .zones(&rooms, &paired)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("tado would not say: {e}")))?;
 
@@ -70,6 +84,7 @@ pub async fn list_zones(State(state): State<AppState>) -> Result<Json<Vec<ZoneDt
                 on: z.on,
                 overridden: z.overridden,
                 reachable: z.reachable,
+                placed_by: z.placed_by,
             })
             .collect(),
     ))

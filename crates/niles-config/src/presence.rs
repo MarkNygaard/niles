@@ -36,6 +36,20 @@ pub struct TadoConfigDto {
     pub home_id: Option<u64>,
     #[serde(default = "default_tado_base_url")]
     pub base_url: String,
+
+    /// Which Niles room each tado zone is, keyed by zone id.
+    ///
+    /// Set from Settings, and only where it is needed. Zone names are
+    /// whatever somebody typed into the tado app years ago — "Stue",
+    /// "Kids room", "Radiator hall" — and Niles room names are
+    /// canonical. Where the two happen to agree, nothing needs to be
+    /// written here; where they do not, guessing would attach a
+    /// radiator to the wrong room and nothing would ever say so.
+    ///
+    /// Keyed by id rather than name so renaming a zone in the tado app
+    /// does not silently unpair it.
+    #[serde(default)]
+    pub rooms: std::collections::HashMap<String, String>,
 }
 
 impl Default for TadoConfigDto {
@@ -43,6 +57,7 @@ impl Default for TadoConfigDto {
         Self {
             home_id: None,
             base_url: default_tado_base_url(),
+            rooms: std::collections::HashMap::new(),
         }
     }
 }
@@ -170,6 +185,7 @@ home_id = 123
             tado: Some(TadoConfigDto {
                 home_id: Some(1),
                 base_url: "https://my.tado.com".into(),
+                ..Default::default()
             }),
         };
         assert!(cfg.validate().is_ok());
@@ -238,6 +254,7 @@ home_id = 123
             tado: Some(TadoConfigDto {
                 home_id: Some(0),
                 base_url: "https://my.tado.com".into(),
+                ..Default::default()
             }),
         };
         let err = cfg.validate().unwrap_err();
@@ -259,6 +276,7 @@ home_id = 123
             tado: Some(TadoConfigDto {
                 home_id: Some(1),
                 base_url: "my.tado.com".into(),
+                ..Default::default()
             }),
         };
         let err = cfg.validate().unwrap_err();

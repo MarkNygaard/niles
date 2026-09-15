@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { Check, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { ZonePairing, UnplacedNotice } from "@/components/ZonePairing";
 import { api } from "@/lib/api";
-import type { TadoStatus } from "@/lib/api";
+import type { TadoStatus, Zone } from "@/lib/api";
 
 export interface TadoPanelProps {
   status: TadoStatus;
@@ -11,6 +12,11 @@ export interface TadoPanelProps {
   onToggle: (on: boolean) => void;
   saving?: boolean;
   onChanged: () => void;
+  /** The heating zones tado reports, once it is connected. */
+  zones?: Zone[];
+  /** Rooms Niles knows about, to pair them with. */
+  rooms?: string[];
+  onPair?: (zoneId: number, room: string) => void;
 }
 
 /**
@@ -31,6 +37,9 @@ export function TadoPanel({
   onToggle,
   saving,
   onChanged,
+  zones,
+  rooms,
+  onPair,
 }: TadoPanelProps) {
   const [pending, setPending] = useState(status.pending);
   const [busy, setBusy] = useState(false);
@@ -138,6 +147,18 @@ export function TadoPanel({
               onCheckedChange={onToggle}
             />
           </label>
+
+          {zones && zones.length > 0 && onPair && (
+            <div className="flex flex-col gap-3 border-t pt-4">
+              <ZonePairing
+                zones={zones}
+                rooms={rooms ?? []}
+                saving={saving}
+                onPair={onPair}
+              />
+              <UnplacedNotice zones={zones} />
+            </div>
+          )}
         </>
       )}
 
