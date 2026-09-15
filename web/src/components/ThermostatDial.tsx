@@ -159,11 +159,11 @@ export function ThermostatDial({
         tabIndex={disabled ? -1 : 0}
         className={cn(
           "relative h-64 w-32 touch-none overflow-hidden rounded-[2rem] select-none",
-          // Both translucent, and darker under lighter: the sheet
-          // behind runs from a dark teal to a light yellow, so the
-          // contrast has to come from the pair rather than from either
-          // one being a fixed colour.
-          "bg-black/10",
+          // Both translucent, and lighter over lighter: the track
+          // lifts the column off the sheet rather than cutting a hole
+          // in it, and the fill is lighter again — so the pair reads
+          // the same way against the dark teal and the light yellow.
+          "bg-white/10",
           "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
           disabled && "pointer-events-none opacity-50",
         )}
