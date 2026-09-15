@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Droplets, Power, X } from "lucide-react";
+import { ChevronRight, Droplets, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -204,23 +204,10 @@ export function RoomCard({
             Heating for {room.label}
           </DialogDescription>
 
-          {/* Off has a place of its own up here as well as the bottom
-              of the dial. Dragging the whole way down is the gesture;
-              this is the shortcut for when you already know. */}
-          <button
-            type="button"
-            aria-label={`Turn heating off in ${room.label}`}
-            aria-pressed={!room.zone.on}
-            disabled={disabled}
-            onClick={() => onSetZone({ action: "off" })}
-            className={cn(
-              "focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-full focus-visible:outline-none",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-              room.zone.on ? "hover:bg-black/10" : "bg-white/25",
-            )}
-          >
-            <Power aria-hidden className="size-5" />
-          </button>
+          {/* Nothing on the right. Off is the bottom of the dial, and a
+              second way to reach it up here was one control too many on
+              a screen that has exactly one. */}
+          <span aria-hidden className="size-9 shrink-0" />
         </div>
 
         <DialogBody className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto">

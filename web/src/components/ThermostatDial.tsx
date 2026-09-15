@@ -130,7 +130,11 @@ export function ThermostatDial({
 
   return (
     <div className="flex flex-col items-center gap-4">
-      <div className="text-center">
+      {/* Tall enough for the two-line case, so switching between
+          "20.0°" and "Off / Frost protection" does not move the dial
+          under your thumb — which it did, at the exact moment you were
+          dragging towards it. */}
+      <div className="flex min-h-16 flex-col justify-center text-center">
         {draft === null ? (
           <>
             <div className="font-heading text-3xl leading-none font-medium">
