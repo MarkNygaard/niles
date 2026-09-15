@@ -133,7 +133,7 @@ export function ThermostatDial({
       <div className="text-center">
         {draft === null ? (
           <>
-            <div className="font-heading text-4xl leading-none font-medium">
+            <div className="font-heading text-3xl leading-none font-medium">
               Off
             </div>
             {offLabel && (
@@ -141,9 +141,9 @@ export function ThermostatDial({
             )}
           </>
         ) : (
-          <div className="font-heading text-5xl leading-none font-medium tabular-nums">
+          <div className="font-heading text-4xl leading-none font-medium tabular-nums">
             {draft.toFixed(1)}
-            <span className="align-top text-2xl">°</span>
+            <span className="align-top text-xl">°</span>
           </div>
         )}
       </div>
