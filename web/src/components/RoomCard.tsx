@@ -14,7 +14,7 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import { BulbGlyph } from "@/components/BulbGlyph";
+import { BulbOutlineGlyph } from "@/components/BulbGlyph";
 import { FlameGlyph } from "@/components/FlameGlyph";
 import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
@@ -358,7 +358,7 @@ export function RoomCard({
             onClick={() => setOpen("lights")}
             className={FOOT}
           >
-            <BulbGlyph className="size-6" />
+            <BulbOutlineGlyph className="size-6" />
           </button>
           {hasZone && (
             <button
