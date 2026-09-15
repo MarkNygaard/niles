@@ -9,6 +9,8 @@ export interface ClimatePanelProps {
   onHeat: (celsius: number) => void;
   onOff: () => void;
   onResume: () => void;
+  /** What the sheet behind this should be coloured, as it is dragged. */
+  onDraft?: (celsius: number | null) => void;
 }
 
 /**
@@ -23,12 +25,13 @@ export function ClimatePanel({
   onHeat,
   onOff,
   onResume,
+  onDraft,
 }: ClimatePanelProps) {
   if (!zone.reachable) {
     return (
       <div className="flex flex-col gap-2 py-6 text-center">
         <p className="text-sm font-medium">Not answering</p>
-        <p className="text-muted-foreground text-xs">
+        <p className="text-sm opacity-80">
           tado cannot reach this valve, so there is nothing to read and
           nothing to set. Its last reading is not shown, because it is not
           current.
@@ -39,11 +42,11 @@ export function ClimatePanel({
 
   return (
     <div className="flex flex-col items-center gap-5 py-4">
-      <div className="text-muted-foreground flex items-center gap-4 text-xs">
+      <div className="flex items-center gap-4 text-sm opacity-90">
         {zone.temperature !== null && (
           <span>
             Inside now{" "}
-            <span className="text-foreground font-medium tabular-nums">
+            <span className="font-medium tabular-nums">
               {zone.temperature.toFixed(1)}°
             </span>
           </span>
@@ -51,7 +54,7 @@ export function ClimatePanel({
         {zone.humidity !== null && (
           <span>
             Humidity{" "}
-            <span className="text-foreground font-medium tabular-nums">
+            <span className="font-medium tabular-nums">
               {Math.round(zone.humidity)}%
             </span>
           </span>
@@ -68,19 +71,25 @@ export function ClimatePanel({
         // pipes survive.
         offLabel="Frost protection"
         disabled={saving}
+        onDraft={onDraft}
         onCommit={(celsius) =>
           celsius === null ? onOff() : onHeat(celsius)
         }
       />
 
-      <p className="text-muted-foreground text-center text-xs">
-        {summarise(zone)}
-      </p>
+      {/* Sized up rather than left at `text-xs`: white on these
+          colours clears AA for large text and not for small. */}
+      <p className="text-center text-sm opacity-80">{summarise(zone)}</p>
 
       {/* The only button left. On and off are the dial's job now, and
           this is the one thing the dial cannot say: give it back. */}
       {zone.overridden && (
-        <Button variant="outline" disabled={saving} onClick={onResume}>
+        <Button
+          variant="outline"
+          disabled={saving}
+          onClick={onResume}
+          className="border-black/20 bg-white/30 text-inherit hover:bg-white/50"
+        >
           <CalendarSync aria-hidden /> Resume schedule
         </Button>
       )}

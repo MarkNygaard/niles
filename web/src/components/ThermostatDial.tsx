@@ -23,6 +23,14 @@ export interface ThermostatDialProps {
   disabled?: boolean;
   /** Fires when a drag ends, not while it moves. `null` is off. */
   onCommit: (celsius: number | null) => void;
+  /**
+   * Fires on every change, including mid-drag.
+   *
+   * Separate from `onCommit` because they answer different questions:
+   * this is what the screen should look like, that is what the radiator
+   * should do. One is free and the other costs a write.
+   */
+  onDraft?: (celsius: number | null) => void;
 }
 
 /** Where a setting sits in the column, 0 at the bottom. */
@@ -69,16 +77,28 @@ export function ThermostatDial({
   offLabel,
   disabled,
   onCommit,
+  onDraft,
 }: ThermostatDialProps) {
-  const [draft, setDraft] = useState<number | null>(value);
+  const [draft, setDraftState] = useState<number | null>(value);
   const [dragging, setDragging] = useState(false);
   const column = useRef<HTMLDivElement | null>(null);
+
+  const setDraft = (next: number | null) => {
+    setDraftState(next);
+    onDraft?.(next);
+  };
 
   // While a drag is in flight the draft is the truth; afterwards the
   // zone is, so a value that came back different is shown rather than
   // the one that was asked for.
   useEffect(() => {
-    if (!dragging) setDraft(value);
+    if (!dragging) {
+      setDraftState(value);
+      onDraft?.(value);
+    }
+    // `onDraft` is a fresh closure every render; depending on it would
+    // run this on every one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, dragging]);
 
   function settingAtY(clientY: number): number | null {
@@ -104,7 +124,7 @@ export function ThermostatDial({
               Off
             </div>
             {offLabel && (
-              <p className="text-muted-foreground mt-1 text-xs">{offLabel}</p>
+              <p className="mt-1 text-sm opacity-80">{offLabel}</p>
             )}
           </>
         ) : (
@@ -126,7 +146,12 @@ export function ThermostatDial({
         aria-disabled={disabled}
         tabIndex={disabled ? -1 : 0}
         className={cn(
-          "bg-muted relative h-64 w-32 touch-none overflow-hidden rounded-[2rem] select-none",
+          "relative h-64 w-32 touch-none overflow-hidden rounded-[2rem] select-none",
+          // Both translucent, and darker under lighter: the sheet
+          // behind runs from a dark teal to a light yellow, so the
+          // contrast has to come from the pair rather than from either
+          // one being a fixed colour.
+          "bg-black/10",
           "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
           disabled && "pointer-events-none opacity-50",
         )}
@@ -158,7 +183,7 @@ export function ThermostatDial({
       >
         <div
           aria-hidden
-          className="bg-background absolute inset-x-0 bottom-0 transition-[height] duration-100"
+          className="absolute inset-x-0 bottom-0 bg-white/85 transition-[height] duration-100"
           style={{ height: `${fractionOf(draft) * 100}%` }}
         />
         {/* The grip, where a thumb expects one. Hidden at the very
@@ -166,7 +191,7 @@ export function ThermostatDial({
         {draft !== null && (
           <div
             aria-hidden
-            className="bg-muted-foreground/40 absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full"
+            className="absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-black/20"
             style={{ bottom: `calc(${fractionOf(draft) * 100}% - 0.75rem)` }}
           />
         )}
