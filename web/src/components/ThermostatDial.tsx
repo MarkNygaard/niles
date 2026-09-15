@@ -196,7 +196,7 @@ export function ThermostatDial({
       >
         <div
           aria-hidden
-          className="absolute inset-x-0 bottom-0 bg-white/85 transition-[height] duration-100"
+          className="absolute inset-x-0 bottom-0 bg-white/95 transition-[height] duration-100"
           style={{ height: `${fractionOf(draft) * 100}%` }}
         />
         {/* The grip, where a thumb expects one — including when the
