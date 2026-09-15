@@ -21,17 +21,32 @@ pub struct Zone {
     pub id: u64,
     /// As tado has it — "Living Room", free text somebody typed.
     pub name: String,
-    /// The Niles room this looks like, by name alone.
+    /// The Niles room this zone is.
     ///
-    /// `None` when nothing matches, which is a thing to say rather than
-    /// to guess at: a zone Niles cannot place is better shown unplaced
-    /// than quietly attached to the wrong room.
+    /// `None` when nobody has said and the name does not give it away,
+    /// which is a thing to report rather than guess at: a zone Niles
+    /// cannot place is better shown unplaced than quietly attached to
+    /// the wrong room.
     pub room: Option<String>,
-    /// What the thermostat reads.
+    /// How it got that room, so the page can tell a saved answer from
+    /// a lucky one.
+    pub placed_by: Placed,
+    /// What the thermostat reads, or `None` when it is not answering.
+    ///
+    /// tado keeps sending the last value it heard from an offline
+    /// valve, with no hint that it is old. Passing that on would put a
+    /// stale number beside live ones on the same card — the same
+    /// mistake an unreachable Zigbee light made when it went on
+    /// reporting itself as on at 100%.
     pub temperature: Option<f32>,
     pub humidity: Option<f32>,
     /// What it is trying to reach. `None` when the zone is off, which
     /// is different from zero.
+    ///
+    /// Kept even when the valve is unreachable, unlike the readings
+    /// above: a setpoint is a setting tado holds, not something the
+    /// valve reports, so it is still true — it is just not being
+    /// reached.
     pub target: Option<f32>,
     /// Whether it is heating at all.
     pub on: bool,
@@ -40,6 +55,20 @@ pub struct Zone {
     /// False when tado says the zone is offline — a dead battery, or a
     /// valve out of range.
     pub reachable: bool,
+}
+
+/// How a zone came to have a room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Placed {
+    /// Somebody said so, in Settings.
+    Paired,
+    /// The zone name is a room name. Convenient when it happens, and
+    /// worth distinguishing: it changes if either name changes, and
+    /// nobody chose it.
+    Name,
+    /// Neither. The zone is real and Niles does not know where it is.
+    Nowhere,
 }
 
 impl TadoSource {
@@ -52,20 +81,35 @@ impl TadoSource {
     /// bulk `zoneStates`, but the per-zone shape is the documented one
     /// and a house has a handful of zones — a poll every few minutes
     /// costs nothing worth optimising for.
-    pub async fn zones(&self, rooms: &[String]) -> Result<Vec<Zone>> {
+    pub async fn zones(
+        &self,
+        rooms: &[String],
+        paired: &std::collections::HashMap<String, String>,
+    ) -> Result<Vec<Zone>> {
         let listed = self.list_zones().await?;
         let mut zones = Vec::with_capacity(listed.len());
         for zone in listed.into_iter().filter(|z| z.kind == "HEATING") {
             let state = self.zone_state(zone.id).await?;
+            let (room, placed_by) = place(zone.id, &zone.name, rooms, paired);
+            // Absent means tado said nothing about the link, which for a
+            // zone that answered at all is likelier to be a shape we
+            // have not seen than a dead valve.
+            let reachable = state.link.as_ref().is_none_or(|l| l.state == "ONLINE");
             zones.push(Zone {
-                room: match_room(&zone.name, rooms),
+                room,
+                placed_by,
                 id: zone.id,
                 name: zone.name,
                 temperature: state
                     .sensor_data_points
                     .inside_temperature
+                    .filter(|_| reachable)
                     .map(|t| t.celsius),
-                humidity: state.sensor_data_points.humidity.map(|h| h.percentage),
+                humidity: state
+                    .sensor_data_points
+                    .humidity
+                    .filter(|_| reachable)
+                    .map(|h| h.percentage),
                 target: state
                     .setting
                     .temperature
@@ -73,10 +117,7 @@ impl TadoSource {
                     .map(|t| t.celsius),
                 on: state.setting.power == "ON",
                 overridden: state.overlay.is_some(),
-                // Absent means tado said nothing about the link, which
-                // for a zone that answered at all is far likelier to be
-                // a shape we have not seen than a dead valve.
-                reachable: state.link.is_none_or(|l| l.state == "ONLINE"),
+                reachable,
             });
         }
         Ok(zones)
@@ -97,13 +138,34 @@ impl TadoSource {
     }
 }
 
-/// The Niles room a zone name looks like.
+/// Which room a zone is in, and on whose authority.
 ///
-/// By canonical name and nothing else. "Living Room" is `living_room`,
-/// which is what the room is already called — and where it is not, the
-/// answer is nothing rather than a guess. Somebody can say which room
-/// they meant; nobody can undo a radiator quietly attached to the wrong
-/// one.
+/// A saved pairing wins outright, including over a name that happens to
+/// match — somebody went and said so, and a zone renamed in the tado
+/// app must not quietly move rooms underneath them.
+///
+/// Failing that, the name: "Living Room" is `living_room`, which is
+/// what the room is already called. That is convenience rather than
+/// truth, which is why it is reported as its own kind of answer.
+///
+/// Failing both, nothing. Nobody can undo a radiator quietly heating
+/// the wrong room.
+pub fn place(
+    id: u64,
+    zone_name: &str,
+    rooms: &[String],
+    paired: &std::collections::HashMap<String, String>,
+) -> (Option<String>, Placed) {
+    if let Some(room) = paired.get(&id.to_string()) {
+        return (Some(room.clone()), Placed::Paired);
+    }
+    match match_room(zone_name, rooms) {
+        Some(room) => (Some(room), Placed::Name),
+        None => (None, Placed::Nowhere),
+    }
+}
+
+/// The Niles room a zone name looks like, if any.
 pub fn match_room(zone_name: &str, rooms: &[String]) -> Option<String> {
     let canonical = canonicalize_name(zone_name);
     rooms.iter().find(|room| **room == canonical).cloned()
@@ -166,6 +228,75 @@ mod tests {
 
     fn rooms() -> Vec<String> {
         vec!["living_room".into(), "bedroom".into()]
+    }
+
+    fn nothing_paired() -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
+    #[test]
+    fn an_unreachable_valve_reports_no_reading_rather_than_an_old_one() {
+        // tado goes on sending the last temperature it heard, with no
+        // hint that it is hours old. Passing it on would put a stale
+        // number beside live ones on the same card.
+        let state: ZoneState = serde_json::from_str(
+            r#"{
+                "setting": {"type":"HEATING","power":"ON","temperature":{"celsius":23.0}},
+                "link": {"state":"OFFLINE"},
+                "sensorDataPoints": {
+                    "insideTemperature": {"celsius": 19.24},
+                    "humidity": {"percentage": 42.3}
+                }
+            }"#,
+        )
+        .expect("parses");
+        let reachable = state.link.as_ref().is_none_or(|l| l.state == "ONLINE");
+        assert!(!reachable);
+        assert!(
+            state
+                .sensor_data_points
+                .inside_temperature
+                .filter(|_| reachable)
+                .is_none()
+        );
+        assert_eq!(
+            state.setting.temperature.map(|t| t.celsius),
+            Some(23.0),
+            "the setpoint is tado's own and stays true; only the readings go stale"
+        );
+    }
+
+    #[test]
+    fn a_saved_pairing_beats_a_matching_name() {
+        // Somebody went and said so. A zone renamed in the tado app
+        // must not quietly move rooms underneath them.
+        let paired = std::collections::HashMap::from([("1".to_string(), "bedroom".to_string())]);
+        assert_eq!(
+            place(1, "Living Room", &rooms(), &paired),
+            (Some("bedroom".into()), Placed::Paired)
+        );
+    }
+
+    #[test]
+    fn a_name_that_matches_is_reported_as_a_guess() {
+        // Convenient when it happens, and not the same as being told:
+        // it changes if either name changes, and nobody chose it.
+        assert_eq!(
+            place(1, "Living Room", &rooms(), &nothing_paired()),
+            (Some("living_room".into()), Placed::Name)
+        );
+    }
+
+    #[test]
+    fn a_zone_named_in_another_language_waits_to_be_placed() {
+        // The case the pairing exists for. Zone names are whatever
+        // somebody typed into the tado app years ago, and matching
+        // nothing must leave it unplaced rather than attached to the
+        // nearest room.
+        assert_eq!(
+            place(3, "Stue", &rooms(), &nothing_paired()),
+            (None, Placed::Nowhere)
+        );
     }
 
     #[test]

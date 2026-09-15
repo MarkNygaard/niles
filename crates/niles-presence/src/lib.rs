@@ -16,4 +16,4 @@ pub use state::{HomeState, Override, PresenceSignal, PresenceSnapshot, SourceRea
 pub use tado::{DEVICE_CLIENT_ID, DeviceActivation, TadoConfig, TadoSource};
 pub use tokens::{MemoryTokenStore, TokenStore};
 pub use transport::{HttpTadoTransport, TadoTransport};
-pub use zones::Zone;
+pub use zones::{Placed, Zone};

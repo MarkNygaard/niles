@@ -84,6 +84,28 @@ export interface Integration {
   secret_key: string | null;
 }
 
+/**
+ * One tado heating zone, as `/climate` returns it.
+ *
+ * `temperature` and `humidity` are absent when the valve is not
+ * answering: tado goes on sending the last reading it heard, and a
+ * stale number beside live ones is worse than none. `target` survives,
+ * because a setpoint is tado's own rather than the valve's.
+ */
+export interface Zone {
+  id: number;
+  name: string;
+  room: string | null;
+  temperature: number | null;
+  humidity: number | null;
+  target: number | null;
+  on: boolean;
+  overridden: boolean;
+  reachable: boolean;
+  /** Whether the room was chosen, guessed from the name, or neither. */
+  placed_by: "paired" | "name" | "nowhere";
+}
+
 /** A place the house might be, as `/places` returns it. */
 export interface Place {
   label: string;
@@ -254,6 +276,7 @@ export const api = {
     }),
   clearSecret: (key: string) =>
     request<void>(`/secrets/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  climate: () => request<Zone[]>("/climate"),
   scenes: () => request<string[]>("/scenes"),
   applyScene: (name: string) =>
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
