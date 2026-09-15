@@ -286,17 +286,16 @@ export function RoomCard({
 
           <span className="mt-auto w-full min-w-0">
             {measured(room) !== undefined && (
-              <span className="font-heading block text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
-                {measured(room)!.toFixed(1)}
-                <span className="align-top text-lg sm:text-xl">°</span>
-              </span>
+              <Reading celsius={measured(room)!} />
             )}
             <span className="font-heading mt-1 block truncate text-base leading-snug font-semibold sm:text-lg">
               {room.label}
             </span>
             {/* `text-sm`, not `text-xs`: white on these colours is about
-                2.3:1, and nothing smaller than this survives it. */}
-            <span className="block truncate text-sm font-medium opacity-90">
+                2.3:1, and nothing smaller than this survives it. Full
+                white rather than dimmed, since the weight is already
+                doing the work of making it secondary. */}
+            <span className="block truncate text-sm font-thin">
               {subtitle(room)}
             </span>
           </span>
@@ -369,5 +368,28 @@ export function RoomCard({
         </Dialog>
       )}
     </>
+  );
+}
+
+/**
+ * A temperature, set the way a gauge sets one.
+ *
+ * The whole degrees carry it and the tenth is a footnote — small enough
+ * to read as one, with the degree sign stacked above it so the pair
+ * occupies a single column rather than trailing off the end. Which is
+ * also how it stays legible at the size a phone gives two cards to a
+ * row: the number you actually read is as large as the space allows,
+ * and the part you rarely read is not competing with it.
+ */
+function Reading({ celsius }: { celsius: number }) {
+  const [whole, tenth] = celsius.toFixed(1).split(".");
+  return (
+    <span className="font-heading flex items-start text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
+      {whole}
+      <span className="ml-0.5 flex flex-col items-center leading-none">
+        <span className="text-xl sm:text-2xl">°</span>
+        <span className="text-base sm:text-lg">{tenth}</span>
+      </span>
+    </span>
   );
 }

@@ -153,10 +153,22 @@ describe("RoomCard", () => {
 
   it("leads with the temperature, the way a thermostat tile does", () => {
     // The number is the first thing on the card now rather than a
-    // footnote under the light count.
+    // footnote under the light count — and it is set in two sizes, so
+    // the whole degrees and the tenth are separate elements.
     setup([light("ceiling", true), sensor("thermometer", 21.42, 54.3)]);
-    expect(screen.getByText("21.4")).toBeInTheDocument();
+    expect(screen.getByText("21")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByText("54%")).toBeInTheDocument();
+  });
+
+  it("keeps the tenth out of the way of the degrees", () => {
+    // The whole degrees carry the reading; the tenth is a footnote and
+    // is sized as one, with the degree sign stacked over it.
+    setup([light("ceiling", true), sensor("thermometer", 21.42, 54.3)]);
+    const whole = screen.getByText("21");
+    const tenth = screen.getByText("4");
+    expect(whole.className).toMatch(/text-4xl/);
+    expect(tenth.className).toMatch(/text-base/);
   });
 
   it("offers heating only where there is a zone", () => {
