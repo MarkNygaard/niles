@@ -42,7 +42,10 @@ export function ClimatePanel({
 
   return (
     <div className="flex flex-col items-center gap-5 py-4">
-      <div className="flex items-center gap-4 text-sm opacity-90">
+      {/* Upright and spaced, the way a readout is labelled rather than
+          the way a sentence is written: these two are captions on the
+          numbers beside them, not prose about them. */}
+      <div className="flex items-center gap-4 text-sm tracking-wide uppercase opacity-90">
         {zone.temperature !== null && (
           <span>
             Inside now{" "}
