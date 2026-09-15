@@ -334,8 +334,17 @@ export function RoomCard({
                 the card's own colour, which is the only thing on here
                 carrying a state. */}
             {humid(room) !== undefined && (
-              <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-base leading-none font-medium">
-                <Droplets aria-hidden className="size-4" />
+              <span
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm leading-none font-medium",
+                  // Which way the wash goes follows the card: a fifth
+                  // of white lifts the pill off the orange, and the
+                  // same again in black does the job on the grey,
+                  // which white barely marks.
+                  lit ? "bg-white/20" : "bg-black/20",
+                )}
+              >
+                <Droplets aria-hidden className="size-3.5" />
                 {Math.round(humid(room)!)}%
               </span>
             )}
@@ -462,7 +471,7 @@ function Reading({ celsius }: { celsius: number }) {
             glyph is drawn in the top quarter of its own box, so its
             box has to be pushed most of the way back down to bring the
             ring near the digit under it. */}
-        <span className="absolute bottom-full left-1/2 -translate-x-1/2 translate-y-[0.6em] text-xl leading-none sm:text-2xl">
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 translate-y-[0.2em] text-xl leading-none sm:text-2xl">
           °
         </span>
         <span>{tenth}</span>
