@@ -183,6 +183,28 @@ export function wanted(room: Room): string | undefined {
   return zone.target === null ? "on" : `${zone.target.toFixed(1)}°`;
 }
 
+/**
+ * The line under the room's name on its card.
+ *
+ * The heating when there is any, because the colour of the card already
+ * says what the lights are doing and repeating it would spend the one
+ * line on the thing you can already see. `Set to 23.0°` is tado's own
+ * phrasing and the right one: it is not the temperature, it is the
+ * instruction.
+ *
+ * Without a zone it falls back to the lights, which then have the line
+ * to themselves.
+ */
+export function subtitle(room: Room): string {
+  const zone = room.zone;
+  if (!zone) return roomSummary(room);
+  if (!zone.reachable) return "Not answering";
+  // tado's word, and worth borrowing: a zone that is off still heats
+  // below about 5°C, so "off" alone understates it.
+  if (!zone.on) return "Frost protection";
+  return zone.target === null ? "Heating" : `Set to ${zone.target.toFixed(1)}°`;
+}
+
 /** How the card reads under the room's name. */
 export function roomSummary(room: Room): string {
   if (room.lights.length === 1) {
