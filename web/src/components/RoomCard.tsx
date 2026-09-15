@@ -106,7 +106,7 @@ export function RoomCard({
       <div
         className={cn(
           "flex items-start justify-between gap-3 border-b px-4 py-3",
-          tinted ? "border-black/15" : "border-border",
+          tinted ? "border-white/25" : "border-border",
         )}
       >
         <div className="min-w-0">

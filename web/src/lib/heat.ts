@@ -52,18 +52,21 @@ const STOPS: Stop[] = [
 /**
  * What goes on top of them.
  *
- * Dark, where tado uses white. Their colours are right and their
- * foreground is not: white on the yellow at 19° measures 1.57:1, which
- * is unreadable, and 2.6:1 on the greens. The same ink reads 4.7:1 at
- * worst and 10.8:1 at best across the whole scale, which clears AA for
- * ordinary text rather than only for headings.
+ * White, as tado has it, and asked for after seeing both.
+ *
+ * Worth recording what it costs, because the scale is not evenly dark:
+ * white measures 3.5:1 on the teal at 5° and 3.1:1 on the orange at
+ * 25°, which is AA for large text — but only 1.6:1 on the yellow around
+ * 19°, which is the lightest point of the scale and genuinely hard to
+ * read. The text nearest that band is the one sized up below. Capping
+ * the yellow's lightness would fix it and would also stop it being
+ * yellow, which is why the colour won.
  *
  * A fixed value rather than a token, because the sheet's colour does
  * not change with the theme and so its text cannot either — a
- * light-mode foreground on a dark-mode page would be the same mistake
- * in reverse.
+ * dark-mode foreground on this would be the same mistake in reverse.
  */
-export const HEAT_INK = "#1c1c1e";
+export const HEAT_INK = "#ffffff";
 
 /** Off is not on the scale. It is the absence of one. */
 const OFF = "oklch(0.66 0.018 250)";
