@@ -432,6 +432,18 @@ function isTable(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * The arranged room order, as `[rooms] order` holds it.
+ *
+ * Read in two places — the dashboard that obeys it and the settings
+ * page that writes it — and they have to agree about what a missing or
+ * malformed entry means, which is "no opinion" rather than "no rooms".
+ */
+export function roomOrder(effective: unknown): string[] {
+  const value = valueAt(effective, "rooms.order");
+  return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
+}
+
 /** Read a dotted path out of a nested object. */
 export function valueAt(root: unknown, path: string): unknown {
   return path

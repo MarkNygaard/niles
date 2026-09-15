@@ -5,7 +5,7 @@ import { RoomCard } from "@/components/RoomCard";
 import type { SetZone } from "@/components/RoomCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, roomOrder } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
 import { BoostButton } from "@/components/BoostButton";
 import { HouseBar } from "@/components/HouseBar";
@@ -103,6 +103,12 @@ export function RoomDashboard() {
     },
   });
 
+
+  // Only for the order the cards sit in, which is why nothing here
+  // waits on it: rooms in the alphabet for the half-second before it
+  // lands is a page that arranges itself, not a page that is missing
+  // something. The key is the one Settings writes and invalidates.
+  const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
   const setZone = useMutation({
     mutationFn: ({ zone, body }: { zone: number; body: SetZone }) =>
       api.setZone(zone, body),
@@ -154,7 +160,11 @@ export function RoomDashboard() {
     );
   }
 
-  const rooms = roomsOf(devices.data ?? [], climate.data ?? []);
+  const rooms = roomsOf(
+    devices.data ?? [],
+    climate.data ?? [],
+    roomOrder(config.data?.effective),
+  );
   // What a boost has left running. Derived rather than remembered: a
   // boost started on a phone is one this page can end, and one that
   // expired while nobody was looking is one it has already forgotten.

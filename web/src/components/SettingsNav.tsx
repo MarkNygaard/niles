@@ -4,6 +4,7 @@ import {
   FileCode,
   House,
   KeyRound,
+  LayoutGrid,
   Lightbulb,
   MessagesSquare,
   Mic,
@@ -46,6 +47,12 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
         label: "Home",
         hint: "Where the house is, and what clock it keeps",
         icon: House,
+      },
+      {
+        id: "rooms",
+        label: "Rooms",
+        hint: "The order they sit in on the front page",
+        icon: LayoutGrid,
       },
       {
         id: "satellites",

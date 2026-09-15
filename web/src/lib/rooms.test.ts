@@ -545,3 +545,44 @@ describe("a boost that is still running", () => {
     );
   });
 });
+
+describe("the order rooms come out in", () => {
+  const house = [
+    device("z2m:office/lamp", { state: { on: true } }),
+    device("z2m:bedroom/lamp", { state: { on: true } }),
+    device("z2m:living_room/lamp", { state: { on: true } }),
+  ];
+
+  it("falls back to the alphabet when nobody has arranged them", () => {
+    expect(roomsOf(house).map((r) => r.name)).toEqual([
+      "bedroom",
+      "living_room",
+      "office",
+    ]);
+  });
+
+  it("puts the arranged rooms first, in the order they were arranged", () => {
+    expect(roomsOf(house, [], ["living_room", "office"]).map((r) => r.name)).toEqual([
+      "living_room",
+      "office",
+      "bedroom",
+    ]);
+  });
+
+  it("keeps a room nobody has arranged rather than dropping it", () => {
+    // A light paired into a new room has to turn up somewhere, and
+    // last is the answer that does not make it look lost.
+    const named = roomsOf(house, [], ["office"]).map((r) => r.name);
+    expect(named[0]).toBe("office");
+    expect(named).toContain("bedroom");
+    expect(named).toContain("living_room");
+  });
+
+  it("ignores a room in the order that no longer exists", () => {
+    expect(roomsOf(house, [], ["attic", "office"]).map((r) => r.name)).toEqual([
+      "office",
+      "bedroom",
+      "living_room",
+    ]);
+  });
+});

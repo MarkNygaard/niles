@@ -27,6 +27,7 @@ pub mod persistence;
 pub mod presence;
 pub mod providers;
 pub mod recognition;
+pub mod rooms;
 pub mod satellites;
 pub mod secrets;
 pub mod setup;
@@ -59,6 +60,7 @@ pub use persistence::PersistenceConfig;
 pub use presence::{PresenceConfig, TadoConfigDto};
 pub use providers::{ProviderConfig, Role};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
+pub use rooms::RoomsConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
 pub use secrets::Source;
 use serde::Deserialize;
@@ -189,6 +191,12 @@ pub fn section_reload(section: &str) -> Reload {
         // takes effect on their next request, and so does removing
         // them — one property serving both.
         "auth" => Reload::Hot,
+        // Nothing in this process reads it: the only consumer is the
+        // dashboard, which asks for the config with every other query
+        // it makes. Calling it Boot would tell somebody who has just
+        // dragged a room up the list to restart Niles, which is not
+        // true and is the one thing this flag exists to get right.
+        "rooms" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
@@ -217,6 +225,7 @@ pub const SECTIONS: &[&str] = &[
     "notifications",
     "presence",
     "providers",
+    "rooms",
     "skills",
     "web_search",
     "wled",
@@ -269,6 +278,8 @@ pub struct Config {
     pub notifications: NotificationsConfig,
     #[serde(default)]
     pub presence: PresenceConfig,
+    #[serde(default)]
+    pub rooms: RoomsConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
     #[serde(default)]
@@ -344,6 +355,7 @@ impl Config {
         self.memory.validate()?;
         self.notifications.validate()?;
         self.presence.validate()?;
+        self.rooms.validate()?;
         self.skills.validate()?;
         self.web_search.validate()?;
         self.wled.validate()?;
