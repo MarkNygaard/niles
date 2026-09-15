@@ -6,14 +6,20 @@ export const MIN_C = 5;
 export const MAX_C = 25;
 
 /**
- * How much of the column below 5°C means off.
+ * How much of the column sits below 5°C.
  *
- * Off is not a colder temperature, it is the absence of one — so it
- * gets a place of its own at the bottom rather than being what 5°
- * quietly turns into. Small, because it is a corner of the control you
- * should be able to reach deliberately and not fall into.
+ * Two jobs at once, which is why it is one number. Dragging into it
+ * means off — off is not a colder temperature, it is the absence of
+ * one, so it gets a place of its own rather than being what 5° quietly
+ * turns into. And it is where the fill stands when the zone is off,
+ * because an empty column reads as broken rather than as off: the
+ * rounded cap and the grip have to be somewhere.
+ *
+ * Big enough to be a comfortable thumb target for turning the heating
+ * off deliberately, and to leave a fill you can see. Small enough that
+ * it costs almost nothing off the top of the range.
  */
-const OFF_ZONE = 0.06;
+const OFF_ZONE = 0.12;
 
 export interface ThermostatDialProps {
   /** The temperature it is holding, or `null` when the zone is off. */
@@ -33,9 +39,15 @@ export interface ThermostatDialProps {
   onDraft?: (celsius: number | null) => void;
 }
 
-/** Where a setting sits in the column, 0 at the bottom. */
+/**
+ * Where a setting sits in the column.
+ *
+ * Off sits exactly where the coldest temperature does, so turning a
+ * zone off does not empty the control — it lands it at the bottom of
+ * its travel, which is what off looks like on a dial.
+ */
 export function fractionOf(celsius: number | null): number {
-  if (celsius === null) return 0;
+  if (celsius === null) return OFF_ZONE;
   const clamped = clamp(celsius);
   return OFF_ZONE + ((clamped - MIN_C) / (MAX_C - MIN_C)) * (1 - OFF_ZONE);
 }
@@ -186,15 +198,14 @@ export function ThermostatDial({
           className="absolute inset-x-0 bottom-0 bg-white/85 transition-[height] duration-100"
           style={{ height: `${fractionOf(draft) * 100}%` }}
         />
-        {/* The grip, where a thumb expects one. Hidden at the very
-            bottom, where there is no fill to sit on the edge of. */}
-        {draft !== null && (
-          <div
-            aria-hidden
-            className="absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-black/20"
-            style={{ bottom: `calc(${fractionOf(draft) * 100}% - 0.75rem)` }}
-          />
-        )}
+        {/* The grip, where a thumb expects one — including when the
+            zone is off, because that is a position on the dial rather
+            than the absence of one. */}
+        <div
+          aria-hidden
+          className="absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-black/20"
+          style={{ bottom: `calc(${fractionOf(draft) * 100}% - 0.75rem)` }}
+        />
       </div>
     </div>
   );
