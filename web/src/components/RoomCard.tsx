@@ -288,7 +288,7 @@ export function RoomCard({
             {measured(room) !== undefined && (
               <Reading celsius={measured(room)!} />
             )}
-            <span className="font-heading mt-1 block truncate text-base leading-snug font-semibold sm:text-lg">
+            <span className="font-heading mt-1 block truncate text-base leading-snug font-semibold">
               {room.label}
             </span>
             {/* `text-sm`, not `text-xs`: white on these colours is about
