@@ -226,8 +226,18 @@ export function RoomCard({
       }}
     >
       <DialogContent
+        // Focus only when a keyboard opened it. Base UI's default is
+        // the first tabbable element in the popup, which is the X in
+        // the corner — so opening the sheet with a finger left a focus
+        // ring drawn round it, and the ring is the brand green.
+        initialFocus={(openType) => openType === "keyboard"}
         className={cn(
-          "inset-0 max-h-none rounded-t-none transition-colors duration-200",
+          // `max-h-dvh`, not `max-h-none`: tailwind-merge cannot tell
+          // that `none` conflicts with the component's own
+          // `max-h-[85dvh]`, so both survived and the arbitrary one
+          // won — a sheet 85% tall, pinned to the top, with the last
+          // fifteen percent of the screen showing through underneath.
+          "inset-0 max-h-dvh rounded-t-none transition-colors duration-200",
           // A dialog is positioned against the viewport, not the body,
           // so the body's own safe-area padding does nothing for it —
           // and this one covers the screen, which put the room's name
@@ -241,12 +251,12 @@ export function RoomCard({
         <div className="flex items-center gap-2 px-3 py-3">
           <DialogClose
             aria-label="Close"
-            // `outline-none` unconditionally, not just on focus-visible:
-            // the stylesheet colours every outline with the brand green,
-            // so a tap that leaves focus behind drew a green ring around
-            // the X. The keyboard indicator is the ring below, which
-            // only a keyboard brings up.
-            className="focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-lg outline-none hover:bg-black/10"
+            // `outline-none` unconditionally, because the stylesheet
+            // colours every outline with the brand green. The ring that
+            // replaces it is white: this sheet is orange or teal, and
+            // the one colour that has no business on it is the app's
+            // own accent.
+            className="focus-visible:ring-3 focus-visible:ring-white/70 flex size-9 shrink-0 items-center justify-center rounded-lg outline-none hover:bg-black/10"
           >
             <X aria-hidden className="size-5" />
           </DialogClose>
