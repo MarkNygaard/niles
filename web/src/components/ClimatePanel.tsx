@@ -95,7 +95,7 @@ export function ClimatePanel({
           variant="ghost"
           disabled={saving}
           onClick={onResume}
-          className="rounded-full bg-black/30 px-5 text-inherit hover:bg-black/50"
+          className="rounded-full bg-black/20 px-5 font-normal text-inherit hover:bg-black/40"
         >
           <CalendarSync aria-hidden /> Resume schedule
         </Button>

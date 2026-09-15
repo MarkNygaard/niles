@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Droplets, Power, X } from "lucide-react";
+import { ChevronRight, Droplets, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -37,11 +37,20 @@ export interface RoomCardProps {
 /**
  * What a room tile is painted.
  *
- * Measured out of tado's own tiles: a near-flat vertical gradient that
- * darkens and saturates very slightly downwards. It is subtle enough
- * that you would not name it if asked, and flat fill next to it looks
- * like a swatch rather than a surface — which is most of why theirs
- * reads as a physical thing.
+ * Measured out of tado's own tiles, and not the vertical gradient it
+ * looks like: a light corner at the top left, falling away evenly in
+ * every direction. Two pairs give it away — the top middle matches the
+ * middle left, and the top right matches the bottom left. Equal values
+ * at equal distances from one corner is a circle, not a slope.
+ *
+ * It reaches the far colour at the anti-diagonal and stays there, so
+ * the whole bottom-right half of the tile is one flat colour. That is
+ * the `70.7%`: the corner-to-corner distance is 1.414 of a side, and
+ * the gradient is finished at 1.0 of one.
+ *
+ * Subtle enough that you would not name it if asked, and a flat fill
+ * beside one looks like a swatch rather than a surface — which is most
+ * of why theirs reads as a physical thing.
  *
  * Which one shows is the lights, not the heating. The tile is the light
  * switch, so its colour has to be what pressing it changes.
@@ -53,8 +62,8 @@ export interface RoomCardProps {
  * because nothing smaller survives this background.
  */
 const TILE = {
-  on: "linear-gradient(180deg, #fd963f 0%, #fd8c2e 100%)",
-  off: "linear-gradient(180deg, #acb6c1 0%, #98a2b1 100%)",
+  on: "radial-gradient(circle at top left, #fd9740 0%, #fd8b2d 70.7%)",
+  off: "radial-gradient(circle at top left, #adb7c2 0%, #97a2b0 70.7%)",
 };
 
 /** What the drawer can ask of a heating zone. */
@@ -204,23 +213,10 @@ export function RoomCard({
             Heating for {room.label}
           </DialogDescription>
 
-          {/* Off has a place of its own up here as well as the bottom
-              of the dial. Dragging the whole way down is the gesture;
-              this is the shortcut for when you already know. */}
-          <button
-            type="button"
-            aria-label={`Turn heating off in ${room.label}`}
-            aria-pressed={!room.zone.on}
-            disabled={disabled}
-            onClick={() => onSetZone({ action: "off" })}
-            className={cn(
-              "focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-full focus-visible:outline-none",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-              room.zone.on ? "hover:bg-black/10" : "bg-white/25",
-            )}
-          >
-            <Power aria-hidden className="size-5" />
-          </button>
+          {/* Nothing on the right. Off is the bottom of the dial, and a
+              second way to reach it up here was one control too many on
+              a screen that has exactly one. */}
+          <span aria-hidden className="size-9 shrink-0" />
         </div>
 
         <DialogBody className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto">
