@@ -103,14 +103,14 @@ describe("RoomCard", () => {
     // target, not a long-press a mouse can't perform.
     const { onSetRoom } = setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Adjust 2 lights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
     expect(onSetRoom).not.toHaveBeenCalled();
   });
 
   it("closes with a button on a desktop", () => {
     setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Adjust 2 lights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
   });
 
@@ -120,7 +120,7 @@ describe("RoomCard", () => {
     onAPhone();
     setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Adjust 2 lights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
     expect(
       screen.getByRole("button", { name: /^All lights in Kitchen/ }),
     ).toBeInTheDocument();
@@ -128,15 +128,18 @@ describe("RoomCard", () => {
   });
 
   it("says when a door is standing open", () => {
+    // On the face itself now, as a glyph with its label as the title:
+    // at a glance it is the one thing on a card you might act on, and
+    // a square card has no room for it as a third line of text.
     setup([light("ceiling", true), contact("door", true)]);
-    expect(screen.getByText("Door open")).toBeInTheDocument();
+    expect(screen.getByTitle("Door open")).toBeInTheDocument();
   });
 
   it("says nothing at all when everything is shut", () => {
     // A closed door is the ordinary case. Drawing it would put an icon
     // on every card in the house that never means anything.
     setup([light("ceiling", true), contact("door", false)]);
-    expect(screen.queryByText(/open/i)).toBeNull();
+    expect(screen.queryByTitle(/open/i)).toBeNull();
   });
 
   it("counts windows rather than repeating the icon", () => {
@@ -145,12 +148,20 @@ describe("RoomCard", () => {
       contact("bay_window", true),
       contact("side_window", true),
     ]);
-    expect(screen.getByText("2 windows open")).toBeInTheDocument();
+    expect(screen.getByTitle("2 windows open")).toBeInTheDocument();
   });
 
-  it("shows what the room is reporting alongside its lights", () => {
+  it("leads with the temperature, the way a thermostat tile does", () => {
+    // The number is the first thing on the card now rather than a
+    // footnote under the light count.
     setup([light("ceiling", true), sensor("thermometer", 21.42, 54.3)]);
-    expect(screen.getByText("21.4°C")).toBeInTheDocument();
+    expect(screen.getByText("21.4")).toBeInTheDocument();
     expect(screen.getByText("54%")).toBeInTheDocument();
+  });
+
+  it("offers heating only where there is a zone", () => {
+    // A room with no radiator gets one button, not a dead second one.
+    setup([light("ceiling", true)]);
+    expect(screen.queryByRole("button", { name: "Heating" })).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Droplets, Thermometer, X } from "lucide-react";
+import { ChevronRight, Droplets, X } from "lucide-react";
 import {
   Dialog,
   DialogClose,
@@ -13,13 +13,12 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import { BulbGlyph } from "@/components/BulbGlyph";
 import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { ClimatePanel } from "@/components/ClimatePanel";
-import { measured, roomSummary, roomToggle, wanted } from "@/lib/rooms";
+import { measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -58,7 +57,8 @@ export function RoomCard({
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
-  const [open, setOpen] = useState(false);
+  const heating = room.zone !== undefined && onSetZone !== undefined;
+  const [open, setOpen] = useState<"lights" | "heating" | null>(null);
   // A drag handle is meaningless with a mouse and a centred modal is
   // wrong in a hand, so this picks the component rather than restyling
   // one of them. Matches the `sm` breakpoint the card already uses.
@@ -78,13 +78,15 @@ export function RoomCard({
                 {room.label}
               </DrawerTitle>
               <DrawerDescription className="text-muted-foreground text-sm">
-                {roomSummary(room)}
+                {open === "heating" ? "Heating" : roomSummary(room)}
               </DrawerDescription>
             </>
           ) : (
             <>
               <DialogTitle>{room.label}</DialogTitle>
-              <DialogDescription>{roomSummary(room)}</DialogDescription>
+              <DialogDescription>
+                {open === "heating" ? "Heating" : roomSummary(room)}
+              </DialogDescription>
             </>
           )}
         </div>
@@ -108,32 +110,32 @@ export function RoomCard({
         </div>
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
-        {room.zone && onSetZone && (
-          <div className="pb-2">
-            <ClimatePanel
-              zone={room.zone}
-              saving={disabled}
-              onHeat={(celsius) =>
-                onSetZone({ action: "heat", celsius })
-              }
-              onOff={() => onSetZone({ action: "off" })}
-              onResume={() => onSetZone({ action: "resume" })}
-            />
-          </div>
+        {/* One subject at a time. Both together meant scrolling past a
+            thermostat to reach a light, which is the wrong way round:
+            lights are adjusted many times a day and heating rarely. */}
+        {open === "heating" && room.zone && onSetZone && (
+          <ClimatePanel
+            zone={room.zone}
+            saving={disabled}
+            onHeat={(celsius) => onSetZone({ action: "heat", celsius })}
+            onOff={() => onSetZone({ action: "off" })}
+            onResume={() => onSetZone({ action: "resume" })}
+          />
         )}
-        {room.lights.map((light) => (
+        {open === "lights" &&
+          room.lights.map((light) => (
           <LightRow
             key={light.id}
             light={light}
             disabled={disabled}
             onSet={(body) => onSetLight(light, body)}
           />
-        ))}
+          ))}
         {/* Named rather than simply gone. A control that publishes to
             something not listening looks broken, but a light that
             vanishes when its battery dies is one nobody notices has
             died. */}
-        {room.unreachable.length > 0 && (
+        {open === "lights" && room.unreachable.length > 0 && (
           <p className="text-muted-foreground py-3 text-xs">
             {room.unreachable.join(", ")}{" "}
             {room.unreachable.length === 1 ? "is" : "are"} not answering.
@@ -149,96 +151,130 @@ export function RoomCard({
           separated from the page by its own fill, and the only thing
           carrying colour is the switch — which is the only thing on it
           reporting a state. */}
-      <div className="flex flex-col overflow-hidden rounded-xl bg-card text-card-foreground">
+      {/* Filled rather than tinted, and by the lights rather than the
+          heating: the whole card is the light switch, so the colour has
+          to be the thing the press changes. The temperature on it is a
+          reading, not a control. */}
+      <div
+        className={cn(
+          "flex flex-col overflow-hidden rounded-xl transition-colors",
+          // Square everywhere. It was only square on a phone because two
+          // to a row made it so; a wide screen stretching them into
+          // letterboxes made the same grid read as a different one.
+          "aspect-square",
+          lit
+            ? "bg-lit text-lit-foreground"
+            : "bg-card text-card-foreground",
+        )}
+      >
         <button
           type="button"
           disabled={disabled}
           aria-label={`${room.label}, ${roomSummary(room)}. Turn all ${toggle.on ? "on" : "off"}.`}
           onClick={() => onSetRoom(toggle)}
           className={cn(
-            // Two cards to a row on a phone leaves each about 170px, so
-            // the glyph goes above the name rather than stealing a
-            // third of the width from it. Side by side from `sm`, where
-            // there is room for both.
-            "flex flex-1 flex-col items-start gap-2 p-3 text-left transition-colors",
-            "sm:flex-row sm:items-center sm:gap-3 sm:p-4",
-            "hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
+            "flex flex-1 flex-col items-start gap-1 p-3 text-left sm:p-4",
+            "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",
+            lit ? "hover:bg-black/5" : "hover:bg-muted/50",
           )}
         >
-          {/* The whole card is the switch, so the icon is a read-out
-              rather than a second target inside the first — which is
-              why it is a bulb and no longer a power symbol on a filled
-              disc. A lit bulb needs no legend; a disc had to carry the
-              colour because a stroked glyph could not hold it, and a
-              grid of filled amber discs reads as a warning panel. */}
-          <BulbGlyph
-            className={cn(
-              "size-9 transition-colors sm:size-11",
-              lit ? "text-lit" : "text-unlit",
-            )}
-          />
-
-          <span className="w-full min-w-0 flex-1">
-            <span className="font-heading block truncate text-sm leading-snug font-medium sm:text-base">
-              {room.label}
-            </span>
-            <span className="text-muted-foreground block truncate text-xs sm:text-sm">
-              {roomSummary(room)}
-            </span>
-            {(measured(room) !== undefined ||
-              room.humidity !== undefined ||
-              room.openings.length > 0) && (
-              <span className="text-muted-foreground/80 mt-1 flex flex-wrap items-center gap-x-3 text-xs">
-                {measured(room) !== undefined && (
-                  <span className="flex items-center gap-1">
-                    <Thermometer aria-hidden className="size-3" />
-                    {measured(room)!.toFixed(1)}°C
-                    {/* Measured, then wanted. Two numbers that mean
-                        different things, so the arrow does the work of
-                        saying which is which. */}
-                    {wanted(room) !== undefined && (
-                      <span className="text-muted-foreground/70">
-                        → {wanted(room)}
-                      </span>
-                    )}
-                  </span>
+          <span className="flex w-full items-start justify-between gap-2">
+            {room.humidity !== undefined && (
+              <span
+                className={cn(
+                  "flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
+                  lit ? "bg-white/20" : "bg-muted",
                 )}
-                {room.humidity !== undefined && (
-                  <span className="flex items-center gap-1">
-                    <Droplets aria-hidden className="size-3" />
-                    {Math.round(room.humidity)}%
-                  </span>
-                )}
-                {/* Open doors and windows sit with the other things the
-                    room is reporting rather than getting a badge of
-                    their own: this is another reading, not an alarm. */}
-                {room.openings.map((opening) => (
-                  <span key={opening.kind} className="flex items-center gap-1">
-                    <OpeningGlyph kind={opening.kind} />
-                    {openingLabel(opening)}
-                  </span>
-                ))}
+              >
+                <Droplets aria-hidden className="size-3" />
+                {Math.round(room.humidity)}%
               </span>
             )}
+            {/* Open doors and windows sit up here rather than in the
+                readings below: at a glance it is the one thing on the
+                card you might act on. */}
+            <span className="ml-auto flex items-center gap-1.5">
+              {room.openings.map((opening) => (
+                <span key={opening.kind} title={openingLabel(opening)}>
+                  <OpeningGlyph kind={opening.kind} />
+                </span>
+              ))}
+            </span>
+          </span>
+
+          <span className="mt-auto w-full min-w-0">
+            {measured(room) !== undefined && (
+              <span className="font-heading block text-3xl leading-none font-medium tabular-nums sm:text-4xl">
+                {measured(room)!.toFixed(1)}
+                <span className="align-top text-lg sm:text-xl">°</span>
+              </span>
+            )}
+            <span className="font-heading mt-1 block truncate text-sm leading-snug font-medium sm:text-base">
+              {room.label}
+            </span>
+            <span
+              className={cn(
+                "block truncate text-xs",
+                lit ? "text-lit-foreground/80" : "text-muted-foreground",
+              )}
+            >
+              {subtitle(room)}
+            </span>
           </span>
         </button>
 
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 flex items-center justify-between gap-1 border-t px-3 py-2.5 text-left text-xs transition-colors focus-visible:outline-none sm:px-4 sm:gap-2">
-          <span className="truncate">
-            {room.lights.length === 1
-              ? "Adjust this light"
-              : `Adjust ${room.lights.length} lights`}
-          </span>
-          <ChevronRight aria-hidden className="size-4 shrink-0" />
-        </button>
+        {/* Two, so the common one costs nothing. Lights are adjusted
+            many times a day and heating rarely, and a single button
+            labelled for lights is one nobody finds the thermostat
+            behind. */}
+        <div
+          className={cn(
+            "flex border-t text-xs",
+            lit ? "border-black/10" : "border-border/60",
+          )}
+        >
+          <button
+            type="button"
+            onClick={() => setOpen("lights")}
+            className={cn(
+              "flex flex-1 items-center justify-between gap-1 px-3 py-2.5 text-left transition-colors sm:px-4",
+              "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
+              lit
+                ? "hover:bg-black/5"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <span className="truncate">Lights</span>
+            <ChevronRight aria-hidden className="size-4 shrink-0" />
+          </button>
+          {heating && (
+            <button
+              type="button"
+              onClick={() => setOpen("heating")}
+              className={cn(
+                "flex flex-1 items-center justify-between gap-1 border-l px-3 py-2.5 text-left transition-colors sm:px-4",
+                "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
+                lit
+                  ? "border-black/10 hover:bg-black/5"
+                  : "border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              <span className="truncate">Heating</span>
+              <ChevronRight aria-hidden className="size-4 shrink-0" />
+            </button>
+          )}
+        </div>
       </div>
 
       {phone ? (
-        <Drawer open={open} onOpenChange={setOpen} showSwipeHandle>
+        <Drawer
+          open={open !== null}
+          onOpenChange={(next: boolean) => {
+            if (!next) setOpen(null);
+          }}
+          showSwipeHandle
+        >
           {/* Square across the top. It is already flush to the bottom
               and both sides — the rounded corners are the component's
               default and belong to a sheet that floats, which this one
@@ -249,7 +285,12 @@ export function RoomCard({
           </DrawerContent>
         </Drawer>
       ) : (
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog
+          open={open !== null}
+          onOpenChange={(next: boolean) => {
+            if (!next) setOpen(null);
+          }}
+        >
           <DialogContent>{contents}</DialogContent>
         </Dialog>
       )}
