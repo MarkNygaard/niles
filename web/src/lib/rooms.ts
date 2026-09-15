@@ -70,8 +70,20 @@ export interface Opening {
  *
  * Rooms without a light are left out. The dashboard is for controlling
  * lights, and a card you can't press is a card that only takes up room.
+ *
+ * `order` is the arrangement somebody chose, by room name. Rooms it
+ * does not mention keep the alphabet and follow the ones it does: a
+ * light paired into a new room has to turn up somewhere, and last is
+ * the answer that does not make it look lost.
  */
-export function roomsOf(devices: Device[], zones: Zone[] = []): Room[] {
+export function roomsOf(
+  devices: Device[],
+  zones: Zone[] = [],
+  order: string[] = [],
+): Room[] {
+  const rank = new Map(order.map((name, i) => [name, i]));
+  const place = (name: string) => rank.get(name) ?? Number.MAX_SAFE_INTEGER;
+
   const byRoom = new Map<string, Device[]>();
   for (const device of devices) {
     const existing = byRoom.get(device.room);
@@ -109,7 +121,10 @@ export function roomsOf(devices: Device[], zones: Zone[] = []): Room[] {
         room.lights.length + room.unreachable.length > 0 ||
         room.zone !== undefined,
     )
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort(
+      (a, b) =>
+        place(a.name) - place(b.name) || a.label.localeCompare(b.label),
+    );
 }
 
 /**
