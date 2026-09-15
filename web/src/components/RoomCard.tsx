@@ -20,7 +20,7 @@ import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { ClimatePanel } from "@/components/ClimatePanel";
 import { HEAT_INK, heatSheet } from "@/lib/heat";
-import { measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
+import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -288,10 +288,10 @@ export function RoomCard({
                 reading together as one thing without competing with
                 the card's own colour, which is the only thing on here
                 carrying a state. */}
-            {room.humidity !== undefined && (
+            {humid(room) !== undefined && (
               <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-base leading-none font-medium">
                 <Droplets aria-hidden className="size-4" />
-                {Math.round(room.humidity)}%
+                {Math.round(humid(room)!)}%
               </span>
             )}
             {/* Open doors and windows sit up here rather than in the

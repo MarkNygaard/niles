@@ -11,6 +11,8 @@ import {
   openingsOf,
   subtitle,
   targets,
+  humid,
+  measured,
 } from "./rooms";
 import type { Room } from "./rooms";
 import type { Device, DeviceState, Zone } from "./api";
@@ -445,5 +447,54 @@ describe("subtitle", () => {
     // Its last known setting is not the room's setting any more, and
     // saying so on the card leaves the card saying nothing at all.
     expect(subtitle(withZone({ reachable: false }))).toBe("All 2 on");
+  });
+});
+
+describe("a room's readings", () => {
+  const room = (
+    devices: Device[],
+    zone?: Partial<Zone>,
+  ): Room => ({
+    ...roomsOf([device("z2m:kitchen/ceiling", { state: { on: true } }), ...devices])[0],
+    zone: zone && ({
+      id: 1,
+      name: "Kitchen",
+      room: "kitchen",
+      temperature: 21,
+      humidity: 44,
+      target: 21.5,
+      on: true,
+      overridden: false,
+      reachable: true,
+      until: null,
+      placed_by: "paired",
+      ...zone,
+    } as Zone),
+  });
+
+  const thermometer = device("z2m:kitchen/sensor", {
+    class: "sensor",
+    state: { temperature_celsius: 19.5, humidity_percent: 61 },
+  });
+
+  it("takes both readings from the valve that is heating the room", () => {
+    // Half of them used to come from the valve and half from a sensor,
+    // so a room tado heats and nothing else measures showed a
+    // temperature with no humidity beside it.
+    const kitchen = room([], {});
+    expect(measured(kitchen)).toBe(21);
+    expect(humid(kitchen)).toBe(44);
+  });
+
+  it("falls back to a sensor when there is no valve", () => {
+    const kitchen = room([thermometer]);
+    expect(measured(kitchen)).toBe(19.5);
+    expect(humid(kitchen)).toBe(61);
+  });
+
+  it("lets the sensor answer for a valve that is not answering", () => {
+    const kitchen = room([thermometer], { temperature: null, humidity: null });
+    expect(measured(kitchen)).toBe(19.5);
+    expect(humid(kitchen)).toBe(61);
   });
 });

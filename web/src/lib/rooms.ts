@@ -170,6 +170,20 @@ export function measured(room: Room): number | undefined {
 }
 
 /**
+ * The humidity to show for a room, on the same rule as the temperature.
+ *
+ * A tado valve reports both, and the card was taking its temperature
+ * from the valve while looking for humidity on a Zigbee sensor — so a
+ * room heated by tado and measured by nothing else showed a reading and
+ * no humidity beside it, which looked like the card had lost half of
+ * itself. `null` from an unreachable valve falls through to the sensor,
+ * the same way a missing one does.
+ */
+export function humid(room: Room): number | undefined {
+  return room.zone?.humidity ?? room.humidity;
+}
+
+/**
  * What the room is being heated towards, as it should read on a card.
  *
  * A string because "off" is one of the answers, and a zone that is off
