@@ -19,7 +19,7 @@ import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { ClimatePanel } from "@/components/ClimatePanel";
-import { HEAT_INK, heatColor } from "@/lib/heat";
+import { HEAT_INK, heatSheet } from "@/lib/heat";
 import { measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
@@ -187,7 +187,7 @@ export function RoomCard({
     >
       <DialogContent
         className="inset-0 max-h-none rounded-t-none transition-colors duration-200 sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:max-h-[85vh] sm:rounded-xl"
-        style={{ backgroundColor: heatColor(draft), color: HEAT_INK }}
+        style={{ backgroundImage: heatSheet(draft), color: HEAT_INK }}
       >
         <div className="flex items-center gap-2 px-3 py-3">
           <DialogClose

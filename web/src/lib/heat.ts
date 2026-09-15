@@ -83,6 +83,51 @@ export function heatColor(celsius: number | null): string {
   return `oklch(${round(stop.l)} ${round(stop.c)} ${round(stop.h, 1)})`;
 }
 
+/**
+ * How far the sheet's gradient travels either side of its colour.
+ *
+ * Measured off the screenshots. `5.png` has the clearest lightness and
+ * chroma travel — across the height of the screen its lightness falls
+ * 0.057 and its chroma rises 0.024 — and `1.png` has almost none of
+ * either, but rotates its hue 179 to 199. Applying a share of all three
+ * either side of the stop reproduces both well enough that neither
+ * looks flat, without moving the colour the scale actually names.
+ *
+ * Note the direction: tado's sheets darken and saturate *downwards*.
+ */
+const SHEET_TRAVEL = { l: 0.02, c: 0.008, h: 8 };
+
+/**
+ * Which way the hue turns on the way down.
+ *
+ * Away from green, in both samples: the teal runs 179 → 199 and the
+ * orange 54 → 40, one climbing and one falling but both moving further
+ * from the middle of the scale. One rule covers them because it is the
+ * same rule — a sheet deepens into its own colour rather than drifting
+ * towards its neighbour.
+ */
+function away(hue: number): number {
+  return hue > 120 ? 1 : -1;
+}
+
+/**
+ * The sheet behind the dial, as a CSS gradient.
+ *
+ * A flat fill beside one of tado's reads as a swatch rather than a
+ * surface — the same thing that makes their tiles look physical, at the
+ * size of a whole screen.
+ */
+export function heatSheet(celsius: number | null): string {
+  if (celsius === null) {
+    return `linear-gradient(180deg, oklch(0.688 0.016 250) 0%, oklch(0.632 0.020 256) 100%)`;
+  }
+  const { l, c, h } = between(celsius);
+  const turn = away(h) * SHEET_TRAVEL.h;
+  const top = `oklch(${round(l + SHEET_TRAVEL.l)} ${round(c - SHEET_TRAVEL.c)} ${round(h - turn, 1)})`;
+  const bottom = `oklch(${round(l - SHEET_TRAVEL.l)} ${round(c + SHEET_TRAVEL.c)} ${round(h + turn, 1)})`;
+  return `linear-gradient(180deg, ${top} 0%, ${bottom} 100%)`;
+}
+
 /** The interpolated stop at a temperature, clamped to the ends. */
 function between(celsius: number): Omit<Stop, "at"> {
   const first = STOPS[0];
