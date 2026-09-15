@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { heatColor } from "@/lib/heat";
 import { cn } from "@/lib/utils";
 
 /** tado's own range. */
@@ -200,11 +201,20 @@ export function ThermostatDial({
         />
         {/* The grip, where a thumb expects one — including when the
             zone is off, because that is a position on the dial rather
-            than the absence of one. */}
+            than the absence of one.
+
+            Painted the colour of the sheet behind rather than a dark
+            wash, so it reads as a slot cut through the fill. Worked out
+            here rather than passed in: the dial already knows the value
+            the sheet is coloured from, and anything handed down would
+            arrive a frame late during a drag. */}
         <div
           aria-hidden
-          className="absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-black/20"
-          style={{ bottom: `calc(${fractionOf(draft) * 100}% - 0.75rem)` }}
+          className="absolute left-1/2 h-1 w-10 -translate-x-1/2 rounded-full"
+          style={{
+            bottom: `calc(${fractionOf(draft) * 100}% - 0.75rem)`,
+            backgroundColor: heatColor(draft),
+          }}
         />
       </div>
     </div>
