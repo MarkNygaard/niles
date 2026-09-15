@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Droplets, Flame, Lightbulb, X } from "lucide-react";
+import { Droplets, Flame, Lightbulb, Power, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -245,7 +245,7 @@ export function RoomCard({
           reading, not a control. */}
       <div
         className={cn(
-          "flex flex-col overflow-hidden rounded-xl text-white",
+          "relative flex flex-col overflow-hidden rounded-xl text-white",
           // Square everywhere. It was only square on a phone because two
           // to a row made it so; a wide screen stretching them into
           // letterboxes made the same grid read as a different one.
@@ -253,6 +253,19 @@ export function RoomCard({
         )}
         style={{ backgroundImage: lit ? TILE.on : TILE.off }}
       >
+        {/* A watermark, not a control — the whole tile is already the
+            switch. It says what the grey says, in the one shape nobody
+            has to learn, and at a tenth of black it is closer to a
+            texture in the card than to something drawn on it. Only
+            when the room is dark: a lit room announces itself in
+            colour and does not need telling twice. */}
+        {!lit && (
+          <Power
+            aria-hidden
+            className="pointer-events-none absolute top-3 right-3 h-1/3 w-1/3 text-black/10 sm:top-4 sm:right-4"
+          />
+        )}
+
         <button
           type="button"
           disabled={disabled}
