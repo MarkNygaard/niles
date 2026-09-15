@@ -346,15 +346,21 @@ struct DeviceLocation {
     at_home: Option<bool>,
 }
 
-#[async_trait]
-impl PresenceSource for TadoSource {
-    async fn poll(&self) -> Result<PresenceSignal> {
+impl TadoSource {
+    /// GET a path under this home, with a live token.
+    ///
+    /// Shared with the zone reader rather than copied, because the
+    /// interesting part is not the URL — it is dropping the cached
+    /// token on a 401 so the next call fetches a new one. A second copy
+    /// of that would be a second place to forget it.
+    pub(crate) async fn get_home_path(&self, path: &str) -> Result<String> {
         let token = self.ensure_token().await?;
         let home = self.home_id(&token).await?;
         let url = format!(
-            "{}/api/v2/homes/{}/mobileDevices",
+            "{}/api/v2/homes/{}/{}",
             self.cfg.base_url.trim_end_matches('/'),
-            home
+            home,
+            path
         );
 
         let (status, body) = self.transport.get_bearer(&url, &token).await?;
@@ -368,6 +374,14 @@ impl PresenceSource for TadoSource {
         if !(200..300).contains(&status) {
             return Err(Error::BadStatus { status, body });
         }
+        Ok(body)
+    }
+}
+
+#[async_trait]
+impl PresenceSource for TadoSource {
+    async fn poll(&self) -> Result<PresenceSignal> {
+        let body = self.get_home_path("mobileDevices").await?;
 
         let devices: Vec<MobileDevice> = serde_json::from_str(&body).map_err(|e| Error::Parse {
             reason: format!("mobile devices: {e}"),
