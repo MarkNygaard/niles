@@ -75,7 +75,7 @@ export interface RoomCardProps {
  */
 const FOOT = [
   "flex flex-1 items-center justify-center px-3 py-2.5 text-white/50 transition-colors",
-  "hover:bg-black/10 hover:text-white/80",
+  "hover:bg-white/10 hover:text-white",
   "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
 ].join(" ");
 
@@ -325,7 +325,10 @@ export function RoomCard({
             "flex flex-1 flex-col items-start gap-1 p-3 pb-1.5 text-left sm:p-4",
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",
-            "hover:bg-black/5",
+            // White, not black: a wash that darkens reads as the card
+            // dimming, which on the one control that turns the lights
+            // on is the wrong direction entirely.
+            "hover:bg-white/5",
           )}
         >
           <span className="flex w-full items-start justify-between gap-2">
