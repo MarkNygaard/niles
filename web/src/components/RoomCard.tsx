@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ChevronRight, Droplets, X } from "lucide-react";
+import { ChevronRight, Droplets, Power, X } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogClose,
   DialogContent,
   DialogDescription,
@@ -81,7 +82,7 @@ export function RoomCard({
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
-  const heating = room.zone !== undefined && onSetZone !== undefined;
+  const hasZone = room.zone !== undefined && onSetZone !== undefined;
   const [open, setOpen] = useState<"lights" | "heating" | null>(null);
   /**
    * What the heating sheet is coloured, following the dial as it moves.
@@ -91,7 +92,6 @@ export function RoomCard({
    * open so a sheet never flashes the last room's temperature.
    */
   const [draft, setDraft] = useState<number | null>(null);
-  const tinted = open === "heating" && room.zone?.reachable;
   // A drag handle is meaningless with a mouse and a centred modal is
   // wrong in a hand, so this picks the component rather than restyling
   // one of them. Matches the `sm` breakpoint the card already uses.
@@ -103,29 +103,22 @@ export function RoomCard({
   // parts that carry the accessible name are swapped.
   const contents = (
     <>
-      <div
-        className={cn(
-          "flex items-start justify-between gap-3 border-b px-4 py-3",
-          tinted ? "border-white/25" : "border-border",
-        )}
-      >
+      <div className="border-border flex items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
           {phone ? (
             <>
               <DrawerTitle className="font-heading text-base leading-snug font-medium">
                 {room.label}
               </DrawerTitle>
-              <DrawerDescription
-                className={cn("text-sm", tinted ? "opacity-80" : "text-muted-foreground")}
-              >
-                {open === "heating" ? "Heating" : roomSummary(room)}
+              <DrawerDescription className="text-muted-foreground text-sm">
+                {roomSummary(room)}
               </DrawerDescription>
             </>
           ) : (
             <>
               <DialogTitle>{room.label}</DialogTitle>
               <DialogDescription>
-                {open === "heating" ? "Heating" : roomSummary(room)}
+                {roomSummary(room)}
               </DialogDescription>
             </>
           )}
@@ -150,10 +143,87 @@ export function RoomCard({
         </div>
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
-        {/* One subject at a time. Both together meant scrolling past a
-            thermostat to reach a light, which is the wrong way round:
-            lights are adjusted many times a day and heating rarely. */}
-        {open === "heating" && room.zone && onSetZone && (
+        {room.lights.map((light) => (
+          <LightRow
+            key={light.id}
+            light={light}
+            disabled={disabled}
+            onSet={(body) => onSetLight(light, body)}
+          />
+        ))}
+        {/* Named rather than simply gone. A control that publishes to
+            something not listening looks broken, but a light that
+            vanishes when its battery dies is one nobody notices has
+            died. */}
+        {room.unreachable.length > 0 && (
+          <p className="text-muted-foreground py-3 text-xs">
+            {room.unreachable.join(", ")}{" "}
+            {room.unreachable.length === 1 ? "is" : "are"} not answering.
+          </p>
+        )}
+      </div>
+    </>
+  );
+
+  /**
+   * Heating, as a sheet rather than a drawer.
+   *
+   * A drawer is dismissed by dragging it downwards, which is the same
+   * gesture as turning the heating down — so every attempt to reach 5°
+   * threw the sheet off the bottom of the screen instead. A dialog has
+   * no such gesture, and on a phone it already rises from the bottom
+   * edge, so it looks like the drawer it replaces without fighting the
+   * one control on it.
+   *
+   * Full height there too, because the dial wants the room and there is
+   * nothing else on this screen to share it with.
+   */
+  const heatingSheet = room.zone && onSetZone && (
+    <Dialog
+      open={open === "heating"}
+      onOpenChange={(next: boolean) => {
+        if (!next) setOpen(null);
+      }}
+    >
+      <DialogContent
+        className="inset-0 max-h-none rounded-t-none transition-colors duration-200 sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:max-h-[85vh] sm:rounded-xl"
+        style={{ backgroundColor: heatColor(draft), color: HEAT_INK }}
+      >
+        <div className="flex items-center gap-2 px-3 py-3">
+          <DialogClose
+            aria-label="Close"
+            className="focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-lg hover:bg-black/10 focus-visible:outline-none"
+          >
+            <X aria-hidden className="size-5" />
+          </DialogClose>
+
+          <DialogTitle className="font-heading min-w-0 flex-1 truncate text-center text-base font-semibold">
+            {room.label}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            Heating for {room.label}
+          </DialogDescription>
+
+          {/* Off has a place of its own up here as well as the bottom
+              of the dial. Dragging the whole way down is the gesture;
+              this is the shortcut for when you already know. */}
+          <button
+            type="button"
+            aria-label={`Turn heating off in ${room.label}`}
+            aria-pressed={!room.zone.on}
+            disabled={disabled}
+            onClick={() => onSetZone({ action: "off" })}
+            className={cn(
+              "focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-full focus-visible:outline-none",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+              room.zone.on ? "hover:bg-black/10" : "bg-white/25",
+            )}
+          >
+            <Power aria-hidden className="size-5" />
+          </button>
+        </div>
+
+        <DialogBody className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto">
           <ClimatePanel
             zone={room.zone}
             saving={disabled}
@@ -162,28 +232,9 @@ export function RoomCard({
             onOff={() => onSetZone({ action: "off" })}
             onResume={() => onSetZone({ action: "resume" })}
           />
-        )}
-        {open === "lights" &&
-          room.lights.map((light) => (
-          <LightRow
-            key={light.id}
-            light={light}
-            disabled={disabled}
-            onSet={(body) => onSetLight(light, body)}
-          />
-          ))}
-        {/* Named rather than simply gone. A control that publishes to
-            something not listening looks broken, but a light that
-            vanishes when its battery dies is one nobody notices has
-            died. */}
-        {open === "lights" && room.unreachable.length > 0 && (
-          <p className="text-muted-foreground py-3 text-xs">
-            {room.unreachable.join(", ")}{" "}
-            {room.unreachable.length === 1 ? "is" : "are"} not answering.
-          </p>
-        )}
-      </div>
-    </>
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
   );
 
   return (
@@ -272,7 +323,7 @@ export function RoomCard({
             <span className="truncate">Lights</span>
             <ChevronRight aria-hidden className="size-4 shrink-0" />
           </button>
-          {heating && (
+          {hasZone && (
             <button
               type="button"
               onClick={() => {
@@ -292,9 +343,11 @@ export function RoomCard({
         </div>
       </div>
 
+      {heatingSheet}
+
       {phone ? (
         <Drawer
-          open={open !== null}
+          open={open === "lights"}
           onOpenChange={(next: boolean) => {
             if (!next) setOpen(null);
           }}
@@ -305,36 +358,18 @@ export function RoomCard({
               default and belong to a sheet that floats, which this one
               does not. Overridden here rather than in the component, so
               `shadcn add drawer` can still update it cleanly. */}
-          <DrawerContent
-            className={cn(
-              "data-[swipe-direction=down]:rounded-t-none transition-colors duration-200",
-            )}
-            style={
-              tinted
-                ? { backgroundColor: heatColor(draft), color: HEAT_INK }
-                : undefined
-            }
-          >
+          <DrawerContent className="data-[swipe-direction=down]:rounded-t-none">
             {contents}
           </DrawerContent>
         </Drawer>
       ) : (
         <Dialog
-          open={open !== null}
+          open={open === "lights"}
           onOpenChange={(next: boolean) => {
             if (!next) setOpen(null);
           }}
         >
-          <DialogContent
-            className="transition-colors duration-200"
-            style={
-              tinted
-                ? { backgroundColor: heatColor(draft), color: HEAT_INK }
-                : undefined
-            }
-          >
-            {contents}
-          </DialogContent>
+          <DialogContent>{contents}</DialogContent>
         </Dialog>
       )}
     </>
