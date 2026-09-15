@@ -33,6 +33,29 @@ export interface RoomCardProps {
   onSetZone?: (body: SetZone) => void;
 }
 
+/**
+ * What a room tile is painted.
+ *
+ * Measured out of tado's own tiles: a near-flat vertical gradient that
+ * darkens and saturates very slightly downwards. It is subtle enough
+ * that you would not name it if asked, and flat fill next to it looks
+ * like a swatch rather than a surface — which is most of why theirs
+ * reads as a physical thing.
+ *
+ * Which one shows is the lights, not the heating. The tile is the light
+ * switch, so its colour has to be what pressing it changes.
+ *
+ * White text on both measures about 2.1–2.6:1, which is below AA. That
+ * is what tado ships and what was asked for here; the weights below are
+ * heavier than the rest of the app to buy back what legibility a weight
+ * can, and the secondary line is `text-sm` rather than `text-xs`
+ * because nothing smaller survives this background.
+ */
+const TILE = {
+  on: "linear-gradient(180deg, #fd963f 0%, #fd8c2e 100%)",
+  off: "linear-gradient(180deg, #acb6c1 0%, #98a2b1 100%)",
+};
+
 /** What the drawer can ask of a heating zone. */
 export type SetZone =
   | { action: "heat"; celsius: number }
@@ -175,15 +198,13 @@ export function RoomCard({
           reading, not a control. */}
       <div
         className={cn(
-          "flex flex-col overflow-hidden rounded-xl transition-colors",
+          "flex flex-col overflow-hidden rounded-xl text-white",
           // Square everywhere. It was only square on a phone because two
           // to a row made it so; a wide screen stretching them into
           // letterboxes made the same grid read as a different one.
           "aspect-square",
-          lit
-            ? "bg-lit text-lit-foreground"
-            : "bg-card text-card-foreground",
         )}
+        style={{ backgroundImage: lit ? TILE.on : TILE.off }}
       >
         <button
           type="button"
@@ -194,17 +215,12 @@ export function RoomCard({
             "flex flex-1 flex-col items-start gap-1 p-3 text-left sm:p-4",
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",
-            lit ? "hover:bg-black/5" : "hover:bg-muted/50",
+            "hover:bg-black/5",
           )}
         >
           <span className="flex w-full items-start justify-between gap-2">
             {room.humidity !== undefined && (
-              <span
-                className={cn(
-                  "flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
-                  lit ? "bg-white/20" : "bg-muted",
-                )}
-              >
+              <span className="flex items-center gap-1 rounded-full bg-white/25 px-2 py-0.5 text-xs font-semibold">
                 <Droplets aria-hidden className="size-3" />
                 {Math.round(room.humidity)}%
               </span>
@@ -223,20 +239,17 @@ export function RoomCard({
 
           <span className="mt-auto w-full min-w-0">
             {measured(room) !== undefined && (
-              <span className="font-heading block text-3xl leading-none font-medium tabular-nums sm:text-4xl">
+              <span className="font-heading block text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
                 {measured(room)!.toFixed(1)}
                 <span className="align-top text-lg sm:text-xl">°</span>
               </span>
             )}
-            <span className="font-heading mt-1 block truncate text-sm leading-snug font-medium sm:text-base">
+            <span className="font-heading mt-1 block truncate text-base leading-snug font-semibold sm:text-lg">
               {room.label}
             </span>
-            <span
-              className={cn(
-                "block truncate text-xs",
-                lit ? "text-lit-foreground/80" : "text-muted-foreground",
-              )}
-            >
+            {/* `text-sm`, not `text-xs`: white on these colours is about
+                2.3:1, and nothing smaller than this survives it. */}
+            <span className="block truncate text-sm font-medium opacity-90">
               {subtitle(room)}
             </span>
           </span>
@@ -246,21 +259,14 @@ export function RoomCard({
             many times a day and heating rarely, and a single button
             labelled for lights is one nobody finds the thermostat
             behind. */}
-        <div
-          className={cn(
-            "flex border-t text-xs",
-            lit ? "border-black/10" : "border-border/60",
-          )}
-        >
+        <div className="flex border-t border-white/25 text-sm font-medium">
           <button
             type="button"
             onClick={() => setOpen("lights")}
             className={cn(
               "flex flex-1 items-center justify-between gap-1 px-3 py-2.5 text-left transition-colors sm:px-4",
               "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
-              lit
-                ? "hover:bg-black/5"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              "hover:bg-black/10",
             )}
           >
             <span className="truncate">Lights</span>
@@ -274,11 +280,9 @@ export function RoomCard({
               setOpen("heating");
             }}
               className={cn(
-                "flex flex-1 items-center justify-between gap-1 border-l px-3 py-2.5 text-left transition-colors sm:px-4",
+                "flex flex-1 items-center justify-between gap-1 border-l border-white/25 px-3 py-2.5 text-left transition-colors sm:px-4",
                 "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
-                lit
-                  ? "border-black/10 hover:bg-black/5"
-                  : "border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground",
+                "hover:bg-black/10",
               )}
             >
               <span className="truncate">Heating</span>
