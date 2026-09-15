@@ -102,6 +102,12 @@ export interface Zone {
   on: boolean;
   overridden: boolean;
   reachable: boolean;
+  /**
+   * When the override ends, if it ends by itself. Absent for one that
+   * lasts until somebody resumes the schedule — which is the one worth
+   * saying out loud, because it is the one that gets forgotten.
+   */
+  until: string | null;
   /** Whether the room was chosen, guessed from the name, or neither. */
   placed_by: "paired" | "name" | "nowhere";
 }
@@ -277,6 +283,17 @@ export const api = {
   clearSecret: (key: string) =>
     request<void>(`/secrets/${encodeURIComponent(key)}`, { method: "DELETE" }),
   climate: () => request<Zone[]>("/climate"),
+  setZone: (
+    zone: number,
+    body:
+      | { action: "heat"; celsius: number }
+      | { action: "off" }
+      | { action: "resume" },
+  ) =>
+    request<void>(`/climate/${zone}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   scenes: () => request<string[]>("/scenes"),
   applyScene: (name: string) =>
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),

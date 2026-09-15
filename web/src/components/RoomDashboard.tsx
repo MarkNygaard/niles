@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { RoomCard } from "@/components/RoomCard";
+import type { SetZone } from "@/components/RoomCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api } from "@/lib/api";
@@ -68,6 +69,26 @@ export function RoomDashboard() {
   });
 
   const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });
+  // Each call reaches tado, so this is polled slowly. Heating moves in
+  // tens of minutes; a radiator is not a light switch.
+  const climate = useQuery({
+    queryKey: ["climate"],
+    queryFn: api.climate,
+    refetchInterval: 120_000,
+  });
+  const setZone = useMutation({
+    mutationFn: ({ zone, body }: { zone: number; body: SetZone }) =>
+      api.setZone(zone, body),
+    onError: (failure) =>
+      setError(failure instanceof ApiError ? failure.message : String(failure)),
+    // tado takes a moment to report the change back, and asking
+    // immediately would show the old answer as if the press had missed.
+    onSuccess: () =>
+      setTimeout(
+        () => queryClient.invalidateQueries({ queryKey: ["climate"] }),
+        1500,
+      ),
+  });
   const applyScene = useMutation({
     mutationFn: (name: string) => api.applyScene(name),
     // A scene moves several lights at once, and the reports arrive
@@ -87,7 +108,7 @@ export function RoomDashboard() {
     );
   }
 
-  const rooms = roomsOf(devices.data ?? []);
+  const rooms = roomsOf(devices.data ?? [], climate.data ?? []);
   if (rooms.length === 0) {
     return (
       <Notice>
@@ -120,6 +141,11 @@ export function RoomDashboard() {
             }
             onSetLight={(light, body) =>
               command.mutate({ target: { scope: "light", light }, body })
+            }
+            onSetZone={
+              room.zone
+                ? (body) => setZone.mutate({ zone: room.zone!.id, body })
+                : undefined
             }
           />
         ))}

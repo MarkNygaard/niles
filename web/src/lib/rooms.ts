@@ -1,4 +1,4 @@
-import type { Device, DeviceState, SetLight } from "@/lib/api";
+import type { Device, DeviceState, SetLight, Zone } from "@/lib/api";
 
 /** `tv_lightstrip` → `Tv lightstrip`. Ids are snake_case by rule. */
 export function humanize(raw: string): string {
@@ -48,6 +48,8 @@ export interface Room {
   humidity?: number;
   /** What is standing open in it. Empty when everything is shut. */
   openings: Opening[];
+  /** The heating zone paired with this room, when there is one. */
+  zone?: Zone;
 }
 
 /**
@@ -69,12 +71,17 @@ export interface Opening {
  * Rooms without a light are left out. The dashboard is for controlling
  * lights, and a card you can't press is a card that only takes up room.
  */
-export function roomsOf(devices: Device[]): Room[] {
+export function roomsOf(devices: Device[], zones: Zone[] = []): Room[] {
   const byRoom = new Map<string, Device[]>();
   for (const device of devices) {
     const existing = byRoom.get(device.room);
     if (existing) existing.push(device);
     else byRoom.set(device.room, [device]);
+  }
+  // A room with a radiator and no lights is still a room. Without this
+  // it would have no entry to group into and would never get a card.
+  for (const zone of zones) {
+    if (zone.room && !byRoom.has(zone.room)) byRoom.set(zone.room, []);
   }
 
   return [...byRoom.entries()]
@@ -91,12 +98,17 @@ export function roomsOf(devices: Device[]): Room[] {
           .filter((d) => d.available === false)
           .map((d) => humanize(d.name)),
         on: lights.filter((light) => light.state.on === true).length,
+        zone: zones.find((z) => z.room === name),
         temperature: firstReported(all, "temperature_celsius"),
         humidity: firstReported(all, "humidity_percent"),
         openings: openingsOf(all),
       };
     })
-    .filter((room) => room.lights.length + room.unreachable.length > 0)
+    .filter(
+      (room) =>
+        room.lights.length + room.unreachable.length > 0 ||
+        room.zone !== undefined,
+    )
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
@@ -140,6 +152,35 @@ function firstReported(
  */
 export function roomToggle(room: Room): SetLight {
   return { on: room.on === 0 };
+}
+
+/**
+ * The temperature to show for a room.
+ *
+ * The thermostat first, where there is one: it is the thing heating the
+ * room, and a Zigbee sensor on a shelf two metres away disagreeing with
+ * it by half a degree is a question nobody wants to have. Falls back to
+ * whatever sensor the room has.
+ *
+ * An unreachable valve reports nothing, so the sensor takes over —
+ * which is the right answer rather than a gap.
+ */
+export function measured(room: Room): number | undefined {
+  return room.zone?.temperature ?? room.temperature;
+}
+
+/**
+ * What the room is being heated towards, as it should read on a card.
+ *
+ * A string because "off" is one of the answers, and a zone that is off
+ * has no target at all — rendering that as a number would put "0°" on
+ * a card for a room nobody asked to freeze.
+ */
+export function wanted(room: Room): string | undefined {
+  const zone = room.zone;
+  if (!zone || !zone.reachable) return undefined;
+  if (!zone.on) return "off";
+  return zone.target === null ? "on" : `${zone.target.toFixed(1)}°`;
 }
 
 /** How the card reads under the room's name. */

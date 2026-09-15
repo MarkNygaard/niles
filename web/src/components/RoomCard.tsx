@@ -18,7 +18,8 @@ import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { roomSummary, roomToggle } from "@/lib/rooms";
+import { ClimatePanel } from "@/components/ClimatePanel";
+import { measured, roomSummary, roomToggle, wanted } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -28,7 +29,15 @@ export interface RoomCardProps {
   disabled?: boolean;
   onSetRoom: (body: SetLight) => void;
   onSetLight: (light: Device, body: SetLight) => void;
+  /** Absent when this instance has no tado connection. */
+  onSetZone?: (body: SetZone) => void;
 }
+
+/** What the drawer can ask of a heating zone. */
+export type SetZone =
+  | { action: "heat"; celsius: number }
+  | { action: "off" }
+  | { action: "resume" };
 
 /**
  * A room, at the size you use it at.
@@ -45,6 +54,7 @@ export function RoomCard({
   disabled,
   onSetRoom,
   onSetLight,
+  onSetZone,
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
@@ -98,6 +108,19 @@ export function RoomCard({
         </div>
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
+        {room.zone && onSetZone && (
+          <div className="pb-2">
+            <ClimatePanel
+              zone={room.zone}
+              saving={disabled}
+              onHeat={(celsius) =>
+                onSetZone({ action: "heat", celsius })
+              }
+              onOff={() => onSetZone({ action: "off" })}
+              onResume={() => onSetZone({ action: "resume" })}
+            />
+          </div>
+        )}
         {room.lights.map((light) => (
           <LightRow
             key={light.id}
@@ -163,14 +186,22 @@ export function RoomCard({
             <span className="text-muted-foreground block truncate text-xs sm:text-sm">
               {roomSummary(room)}
             </span>
-            {(room.temperature !== undefined ||
+            {(measured(room) !== undefined ||
               room.humidity !== undefined ||
               room.openings.length > 0) && (
               <span className="text-muted-foreground/80 mt-1 flex flex-wrap items-center gap-x-3 text-xs">
-                {room.temperature !== undefined && (
+                {measured(room) !== undefined && (
                   <span className="flex items-center gap-1">
                     <Thermometer aria-hidden className="size-3" />
-                    {room.temperature.toFixed(1)}°C
+                    {measured(room)!.toFixed(1)}°C
+                    {/* Measured, then wanted. Two numbers that mean
+                        different things, so the arrow does the work of
+                        saying which is which. */}
+                    {wanted(room) !== undefined && (
+                      <span className="text-muted-foreground/70">
+                        → {wanted(room)}
+                      </span>
+                    )}
                   </span>
                 )}
                 {room.humidity !== undefined && (
