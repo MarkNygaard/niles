@@ -155,6 +155,46 @@ export function roomToggle(room: Room): SetLight {
 }
 
 /**
+ * The zones running on a timer, which is what a boost leaves behind.
+ *
+ * A boost is the only thing Niles sets with an end time — everything
+ * else it writes lasts until somebody says otherwise — so a timer
+ * still running is a boost still running, and these are the zones that
+ * ending it would hand back. Zones somebody set by hand have no expiry
+ * and are deliberately not in this list: ending a boost must not also
+ * undo a room that was set an hour ago.
+ *
+ * `now` is a parameter so the expiry can be tested without waiting for
+ * one.
+ */
+export function boosted(zones: Zone[], now: number = Date.now()): number[] {
+  return zones
+    .filter((zone) => {
+      if (!zone.until) return false;
+      const ends = Date.parse(zone.until);
+      return Number.isFinite(ends) && ends > now;
+    })
+    .map((zone) => zone.id);
+}
+
+/**
+ * When the running boost ends, as a timestamp — the soonest of them.
+ *
+ * So a page can put the button back by itself at the moment the timer
+ * runs out, rather than at whatever poll happens next. `null` when
+ * nothing is running.
+ */
+export function boostEndsAt(
+  zones: Zone[],
+  now: number = Date.now(),
+): number | null {
+  const ends = zones
+    .map((zone) => (zone.until ? Date.parse(zone.until) : NaN))
+    .filter((at) => Number.isFinite(at) && at > now);
+  return ends.length > 0 ? Math.min(...ends) : null;
+}
+
+/**
  * The temperature to show for a room.
  *
  * The thermostat first, where there is one: it is the thing heating the

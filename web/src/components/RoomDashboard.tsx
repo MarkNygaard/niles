@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { RoomCard } from "@/components/RoomCard";
@@ -7,9 +7,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
+import { BoostButton } from "@/components/BoostButton";
 import { HouseBar } from "@/components/HouseBar";
 import { SceneBar } from "@/components/SceneBar";
-import { houseToggle, optimistic, roomsOf, targets } from "@/lib/rooms";
+import {
+  boostEndsAt,
+  boosted,
+  houseToggle,
+  optimistic,
+  roomsOf,
+  targets,
+} from "@/lib/rooms";
 import type { Target } from "@/lib/rooms";
 
 /**
@@ -76,6 +84,25 @@ export function RoomDashboard() {
     queryFn: api.climate,
     refetchInterval: 120_000,
   });
+  const boost = useMutation({
+    mutationFn: (running: number[]) =>
+      running.length > 0
+        ? api.resumeZones(running).then(() => undefined)
+        : api.boostHeating().then(() => undefined),
+    onError: (failure) =>
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "Couldn't reach Niles to change the heating.",
+      ),
+    // Every room's target has just changed, and this is the one page
+    // that shows them all.
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["climate"] });
+    },
+  });
+
   const setZone = useMutation({
     mutationFn: ({ zone, body }: { zone: number; body: SetZone }) =>
       api.setZone(zone, body),
@@ -97,6 +124,25 @@ export function RoomDashboard() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["devices"] }),
   });
 
+  /**
+   * Ask again the moment a boost runs out.
+   *
+   * Tado ends it on its own clock and tells nobody, so without this the
+   * button goes on offering to end a boost that is already over until
+   * the next poll — up to two minutes of a control that does nothing.
+   * A second of slack, because the two clocks are not the same one.
+   */
+  const endsAt = boostEndsAt(climate.data ?? []);
+  useEffect(() => {
+    if (endsAt === null) return;
+    const wait = Math.max(0, endsAt - Date.now()) + 1_000;
+    const timer = setTimeout(
+      () => queryClient.invalidateQueries({ queryKey: ["climate"] }),
+      wait,
+    );
+    return () => clearTimeout(timer);
+  }, [endsAt, queryClient]);
+
   // Every hook is above the early returns. React counts them per
   // render, so one sitting below `isLoading` is called on the second
   // render and not the first — which is not a warning, it is the whole
@@ -109,6 +155,10 @@ export function RoomDashboard() {
   }
 
   const rooms = roomsOf(devices.data ?? [], climate.data ?? []);
+  // What a boost has left running. Derived rather than remembered: a
+  // boost started on a phone is one this page can end, and one that
+  // expired while nobody was looking is one it has already forgotten.
+  const running = boosted(climate.data ?? []);
   if (rooms.length === 0) {
     return (
       <Notice>
@@ -125,12 +175,30 @@ export function RoomDashboard() {
         scenes={scenes.data ?? []}
         onApply={(name) => applyScene.mutate(name)}
       />
-      <HouseBar
-        rooms={rooms}
-        onToggle={() =>
-          command.mutate({ target: { scope: "house" }, body: houseToggle(rooms) })
-        }
-      />
+      {/* The two statements about the whole house, side by side. Boost
+          only where there is heating to boost: a button that reports
+          "no tado connection" is a button that should not be there. */}
+      <div className="flex items-stretch gap-2">
+        {rooms.some((room) => room.zone) && (
+          <BoostButton
+            boosting={running.length > 0}
+            pending={boost.isPending}
+            onBoost={() => boost.mutate([])}
+            onResume={() => boost.mutate(running)}
+          />
+        )}
+        <div className="min-w-0 flex-1">
+          <HouseBar
+            rooms={rooms}
+            onToggle={() =>
+              command.mutate({
+                target: { scope: "house" },
+                body: houseToggle(rooms),
+              })
+            }
+          />
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {rooms.map((room) => (
           <RoomCard

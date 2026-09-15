@@ -112,6 +112,68 @@ pub async fn list_zones(State(state): State<AppState>) -> Result<Json<Vec<ZoneDt
     ))
 }
 
+/// What a boost does, which is what tado's own boost does.
+///
+/// Warm, not hot, and short: the button exists for a cold half hour in
+/// a room somebody has just walked into, and anything longer is what
+/// the schedule is for. Timed rather than held, so a house nobody
+/// remembers to turn back down turns itself back down.
+const BOOST_CELSIUS: f32 = 25.0;
+const BOOST_SECONDS: u32 = 30 * 60;
+
+/// What a boost did, so the page can say so.
+#[derive(Debug, serde::Serialize)]
+pub struct BoostedDto {
+    pub rooms: usize,
+    pub celsius: f32,
+    pub minutes: u32,
+}
+
+/// `POST /climate/boost` — warm every room for half an hour.
+pub async fn boost(State(state): State<AppState>) -> Result<Json<BoostedDto>, Failure> {
+    let tado = state.tado.as_ref().ok_or((
+        StatusCode::NOT_IMPLEMENTED,
+        "this Niles instance has no tado connection".to_string(),
+    ))?;
+
+    let rooms = tado
+        .boost_all(BOOST_CELSIUS, BOOST_SECONDS)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("tado refused it: {e}")))?;
+
+    Ok(Json(BoostedDto {
+        rooms,
+        celsius: BOOST_CELSIUS,
+        minutes: BOOST_SECONDS / 60,
+    }))
+}
+
+/// Which zones to hand back to their schedules.
+#[derive(Debug, serde::Deserialize)]
+pub struct ResumeZones {
+    pub zones: Vec<u64>,
+}
+
+/// `POST /climate/resume` — end a boost early.
+///
+/// Named zones rather than all of them, because ending a boost must
+/// not also undo a room somebody set by hand an hour ago.
+pub async fn resume_zones(
+    State(state): State<AppState>,
+    Json(body): Json<ResumeZones>,
+) -> Result<StatusCode, Failure> {
+    let tado = state.tado.as_ref().ok_or((
+        StatusCode::NOT_IMPLEMENTED,
+        "this Niles instance has no tado connection".to_string(),
+    ))?;
+
+    tado.resume_all(&body.zones)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("tado refused it: {e}")))?;
+
+    Ok(StatusCode::ACCEPTED)
+}
+
 /// `POST /climate/{zone}` — heat it, turn it off, or hand it back.
 pub async fn set_zone(
     State(state): State<AppState>,
