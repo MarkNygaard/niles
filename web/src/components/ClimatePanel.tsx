@@ -42,7 +42,10 @@ export function ClimatePanel({
 
   return (
     <div className="flex flex-col items-center gap-5 py-4">
-      <div className="flex items-center gap-4 text-sm opacity-90">
+      {/* Upright and spaced, the way a readout is labelled rather than
+          the way a sentence is written: these two are captions on the
+          numbers beside them, not prose about them. */}
+      <div className="flex items-center gap-4 text-sm tracking-wide uppercase opacity-90">
         {zone.temperature !== null && (
           <span>
             Inside now{" "}
@@ -85,10 +88,14 @@ export function ClimatePanel({
           this is the one thing the dial cannot say: give it back. */}
       {zone.overridden && (
         <Button
-          variant="outline"
+          // A dark wash rather than a light one: the sheet behind runs
+          // from a dark teal to a light yellow, and only something
+          // darker than all of them reads on all of them. No outline
+          // either — the fill is the shape.
+          variant="ghost"
           disabled={saving}
           onClick={onResume}
-          className="border-black/20 bg-white/30 text-inherit hover:bg-white/50"
+          className="rounded-full bg-black/30 px-5 text-inherit hover:bg-black/50"
         >
           <CalendarSync aria-hidden /> Resume schedule
         </Button>

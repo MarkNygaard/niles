@@ -39,15 +39,21 @@ function setup(z: Zone) {
 // The dial is dragged, which jsdom has no geometry for — so the two
 // conversions it is built on are tested directly.
 describe("the dial's range", () => {
-  it("keeps off at the very bottom and the warmest at the top", () => {
-    expect(fractionOf(null)).toBe(0);
+  it("keeps off at the bottom and the warmest at the top", () => {
     expect(fractionOf(25)).toBe(1);
+    expect(fractionOf(null)).toBeLessThan(0.2);
   });
 
-  it("puts the coldest temperature above off, not on it", () => {
-    // Off is not a colder temperature, it is the absence of one, so it
-    // has a place of its own rather than being what 5° turns into.
-    expect(fractionOf(5)).toBeGreaterThan(0);
+  it("draws off where the coldest setting is, not on an empty column", () => {
+    // An empty column reads as broken rather than as off: the rounded
+    // cap and the grip have to be somewhere.
+    expect(fractionOf(null)).toBe(fractionOf(5));
+    expect(fractionOf(null)).toBeGreaterThan(0);
+  });
+
+  it("still treats the bottom of the travel as off rather than as 5°", () => {
+    // Drawn the same, meant differently — which is what the sheet
+    // colour and the reading are for.
     expect(settingAt(0)).toBeNull();
     expect(settingAt(fractionOf(5))).toBe(5);
   });

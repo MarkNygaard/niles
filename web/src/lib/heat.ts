@@ -52,18 +52,21 @@ const STOPS: Stop[] = [
 /**
  * What goes on top of them.
  *
- * Dark, where tado uses white. Their colours are right and their
- * foreground is not: white on the yellow at 19° measures 1.57:1, which
- * is unreadable, and 2.6:1 on the greens. The same ink reads 4.7:1 at
- * worst and 10.8:1 at best across the whole scale, which clears AA for
- * ordinary text rather than only for headings.
+ * White, as tado has it, and asked for after seeing both.
+ *
+ * Worth recording what it costs, because the scale is not evenly dark:
+ * white measures 3.5:1 on the teal at 5° and 3.1:1 on the orange at
+ * 25°, which is AA for large text — but only 1.6:1 on the yellow around
+ * 19°, which is the lightest point of the scale and genuinely hard to
+ * read. The text nearest that band is the one sized up below. Capping
+ * the yellow's lightness would fix it and would also stop it being
+ * yellow, which is why the colour won.
  *
  * A fixed value rather than a token, because the sheet's colour does
  * not change with the theme and so its text cannot either — a
- * light-mode foreground on a dark-mode page would be the same mistake
- * in reverse.
+ * dark-mode foreground on this would be the same mistake in reverse.
  */
-export const HEAT_INK = "#1c1c1e";
+export const HEAT_INK = "#ffffff";
 
 /** Off is not on the scale. It is the absence of one. */
 const OFF = "oklch(0.66 0.018 250)";
@@ -78,6 +81,51 @@ export function heatColor(celsius: number | null): string {
   if (celsius === null) return OFF;
   const stop = between(celsius);
   return `oklch(${round(stop.l)} ${round(stop.c)} ${round(stop.h, 1)})`;
+}
+
+/**
+ * How far the sheet's gradient travels either side of its colour.
+ *
+ * Measured off the screenshots. `5.png` has the clearest lightness and
+ * chroma travel — across the height of the screen its lightness falls
+ * 0.057 and its chroma rises 0.024 — and `1.png` has almost none of
+ * either, but rotates its hue 179 to 199. Applying a share of all three
+ * either side of the stop reproduces both well enough that neither
+ * looks flat, without moving the colour the scale actually names.
+ *
+ * Note the direction: tado's sheets darken and saturate *downwards*.
+ */
+const SHEET_TRAVEL = { l: 0.02, c: 0.008, h: 8 };
+
+/**
+ * Which way the hue turns on the way down.
+ *
+ * Away from green, in both samples: the teal runs 179 → 199 and the
+ * orange 54 → 40, one climbing and one falling but both moving further
+ * from the middle of the scale. One rule covers them because it is the
+ * same rule — a sheet deepens into its own colour rather than drifting
+ * towards its neighbour.
+ */
+function away(hue: number): number {
+  return hue > 120 ? 1 : -1;
+}
+
+/**
+ * The sheet behind the dial, as a CSS gradient.
+ *
+ * A flat fill beside one of tado's reads as a swatch rather than a
+ * surface — the same thing that makes their tiles look physical, at the
+ * size of a whole screen.
+ */
+export function heatSheet(celsius: number | null): string {
+  if (celsius === null) {
+    return `linear-gradient(180deg, oklch(0.688 0.016 250) 0%, oklch(0.632 0.020 256) 100%)`;
+  }
+  const { l, c, h } = between(celsius);
+  const turn = away(h) * SHEET_TRAVEL.h;
+  const top = `oklch(${round(l + SHEET_TRAVEL.l)} ${round(c - SHEET_TRAVEL.c)} ${round(h - turn, 1)})`;
+  const bottom = `oklch(${round(l - SHEET_TRAVEL.l)} ${round(c + SHEET_TRAVEL.c)} ${round(h + turn, 1)})`;
+  return `linear-gradient(180deg, ${top} 0%, ${bottom} 100%)`;
 }
 
 /** The interpolated stop at a temperature, clamped to the ends. */
