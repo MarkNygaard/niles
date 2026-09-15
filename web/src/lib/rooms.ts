@@ -192,13 +192,15 @@ export function wanted(room: Room): string | undefined {
  * phrasing and the right one: it is not the temperature, it is the
  * instruction.
  *
- * Without a zone it falls back to the lights, which then have the line
- * to themselves.
+ * Without a zone — or with one that is not answering, whose last known
+ * setting is not worth reporting as if it were current — it falls back
+ * to the lights, which then have the line to themselves. The heating
+ * sheet is where a silent valve is worth saying out loud; a card that
+ * says "Not answering" says nothing about the room.
  */
 export function subtitle(room: Room): string {
   const zone = room.zone;
-  if (!zone) return roomSummary(room);
-  if (!zone.reachable) return "Not answering";
+  if (!zone || !zone.reachable) return roomSummary(room);
   // tado's word, and worth borrowing: a zone that is off still heats
   // below about 5°C, so "off" alone understates it.
   if (!zone.on) return "Frost protection";

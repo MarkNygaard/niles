@@ -103,14 +103,14 @@ describe("RoomCard", () => {
     // target, not a long-press a mouse can't perform.
     const { onSetRoom } = setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
     expect(onSetRoom).not.toHaveBeenCalled();
   });
 
   it("closes with a button on a desktop", () => {
     setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
   });
 
@@ -120,7 +120,7 @@ describe("RoomCard", () => {
     onAPhone();
     setup([light("ceiling", true), light("counter", true)]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Lights" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
     expect(
       screen.getByRole("button", { name: /^All lights in Kitchen/ }),
     ).toBeInTheDocument();
@@ -153,15 +153,27 @@ describe("RoomCard", () => {
 
   it("leads with the temperature, the way a thermostat tile does", () => {
     // The number is the first thing on the card now rather than a
-    // footnote under the light count.
+    // footnote under the light count — and it is set in two sizes, so
+    // the whole degrees and the tenth are separate elements.
     setup([light("ceiling", true), sensor("thermometer", 21.42, 54.3)]);
-    expect(screen.getByText("21.4")).toBeInTheDocument();
+    expect(screen.getByText("21")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByText("54%")).toBeInTheDocument();
+  });
+
+  it("keeps the tenth out of the way of the degrees", () => {
+    // The whole degrees carry the reading; the tenth is a footnote and
+    // is sized as one, with the degree sign stacked over it.
+    setup([light("ceiling", true), sensor("thermometer", 21.42, 54.3)]);
+    const whole = screen.getByText("21");
+    const tenth = screen.getByText("4");
+    expect(whole.className).toMatch(/text-4xl/);
+    expect(tenth.className).toMatch(/text-base/);
   });
 
   it("offers heating only where there is a zone", () => {
     // A room with no radiator gets one button, not a dead second one.
     setup([light("ceiling", true)]);
-    expect(screen.queryByRole("button", { name: "Heating" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Heating in / })).toBeNull();
   });
 });

@@ -140,22 +140,31 @@
      reason it is a token rather than a shade written into three
      components: it means something, so it is named once.
 
-     Darker here than on dark, which looks backwards until you measure
-     it: the dark theme's amber against a white card is 2.14:1, so a lit
-     room read as a pale wash rather than as a state. Presence on white
-     only comes from going down. 3.75:1 here, against 8.35:1 for the
-     dark theme's — the same job, done to the ground it lands on, the
-     way `--mark` already is. */
-  --lit: oklch(0.62 0.17 70.1);
+     The hue is the room cards' own orange — #fd8b2d, oklch hue 55 —
+     because a card that is on and a bulb that is on are one statement
+     about the house, and two ambers a few degrees apart read as a
+     mistake rather than as a pair.
+
+     Darker here than the card is, which looks backwards until you
+     measure it: the card's orange against a white card is 2.36:1, and
+     this bulb is a state indicator, which wants 3:1. Stepping the
+     lightness down to 0.68 buys 3.03 without leaving the card's colour
+     — presence on white only comes from going down. The dark theme
+     takes the card's value untouched, because on near-black it already
+     clears everything. */
+  --lit: oklch(0.68 0.17 56);
   /* White, because the deeper amber can no longer carry dark ink. */
   --lit-foreground: oklch(0.99 0 0);
-  /* A bulb that is off. Named rather than dimmed with an opacity,
-     because one opacity cannot serve both grounds: at the value that
-     reads correctly on near-black, an unlit bulb on white came out at
-     2.97:1 against the lit one's 3.75 — near enough to it that off was
-     as loud as on, which is the whole bug being fixed here. Off has to
-     be visibly a state and audibly quieter. 1.87:1 against 3.75. */
-  --unlit: oklch(0.80 0.004 285);
+  /* A bulb that is off, in the cool grey the cards go when their room
+     is — #adb7c2, which is the top-left stop of that gradient. Named
+     rather than dimmed with an opacity, because one opacity cannot
+     serve both grounds: at the value that reads correctly on
+     near-black, an unlit bulb on white came out at 2.97:1 against the
+     lit one's 3.75 — near enough to it that off was as loud as on.
+     Off has to be visibly a state and audibly quieter: 2.03:1 against
+     3.03, and a hue 200° away from the lit one besides, which is what
+     actually separates them at a glance. */
+  --unlit: oklch(0.775 0.019 251);
   --secondary: oklch(0.95 0.002 286);
   --secondary-foreground: oklch(0.25 0.006 285);
   --muted: oklch(0.95 0.002 286);
@@ -254,12 +263,12 @@
   --mark: oklch(0.62 0.1 158);
   /* See the light palette. Bright here: this amber has near-black under
      it, where it reads as a lamp rather than as a warning. */
-  --lit: oklch(0.769 0.165 70.1);
+  --lit: oklch(0.769 0.17 56);
   --lit-foreground: oklch(0.279 0.074 45.6);
   /* Lighter than the light theme's, for the same reason the amber is:
      it has to climb off a dark ground rather than sink into a white
      one. 3.54:1 against the lit bulb's 8.35. */
-  --unlit: oklch(0.54 0 0);
+  --unlit: oklch(0.54 0.02 252);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);

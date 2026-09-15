@@ -9,9 +9,11 @@ import {
   houseToggle,
   roomsOf,
   openingsOf,
+  subtitle,
   targets,
 } from "./rooms";
-import type { Device, DeviceState } from "./api";
+import type { Room } from "./rooms";
+import type { Device, DeviceState, Zone } from "./api";
 
 function state(partial: Partial<DeviceState> = {}): DeviceState {
   return {
@@ -400,5 +402,48 @@ describe("openingsOf", () => {
     expect(
       openingsOf([shut("z2m:office/door"), device("z2m:office/hatch", { class: "contact" })]),
     ).toEqual([]);
+  });
+});
+
+describe("subtitle", () => {
+  const lamps = roomsOf([
+    device("z2m:kitchen/ceiling", { state: { on: true } }),
+    device("z2m:kitchen/counter", { state: { on: true } }),
+  ])[0];
+
+  const withZone = (zone: Partial<Zone>): Room => ({
+    ...lamps,
+    zone: {
+      id: 1,
+      name: "Kitchen",
+      room: "kitchen",
+      temperature: 21,
+      humidity: 44,
+      target: 21.5,
+      on: true,
+      overridden: false,
+      reachable: true,
+      until: null,
+      placed_by: "paired",
+      ...zone,
+    },
+  });
+
+  it("gives the line to the lights when there is no heating", () => {
+    expect(subtitle(lamps)).toBe("All 2 on");
+  });
+
+  it("says what the heating was told to do", () => {
+    expect(subtitle(withZone({}))).toBe("Set to 21.5°");
+  });
+
+  it("names the floor a zone that is off still holds", () => {
+    expect(subtitle(withZone({ on: false }))).toBe("Frost protection");
+  });
+
+  it("falls back to the lights rather than report a silent valve", () => {
+    // Its last known setting is not the room's setting any more, and
+    // saying so on the card leaves the card saying nothing at all.
+    expect(subtitle(withZone({ reachable: false }))).toBe("All 2 on");
   });
 });

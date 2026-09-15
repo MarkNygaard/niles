@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Droplets, X } from "lucide-react";
+import { Droplets, Flame, Lightbulb, Power, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -245,7 +245,7 @@ export function RoomCard({
           reading, not a control. */}
       <div
         className={cn(
-          "flex flex-col overflow-hidden rounded-xl text-white",
+          "relative flex flex-col overflow-hidden rounded-xl text-white",
           // Square everywhere. It was only square on a phone because two
           // to a row made it so; a wide screen stretching them into
           // letterboxes made the same grid read as a different one.
@@ -253,22 +253,44 @@ export function RoomCard({
         )}
         style={{ backgroundImage: lit ? TILE.on : TILE.off }}
       >
+        {/* A watermark, not a control — the whole tile is already the
+            switch. It says what the grey says, in the one shape nobody
+            has to learn, and at a tenth of black it is closer to a
+            texture in the card than to something drawn on it. Only
+            when the room is dark: a lit room announces itself in
+            colour and does not need telling twice. */}
+        {!lit && (
+          <Power
+            aria-hidden
+            className="pointer-events-none absolute top-3 right-3 h-1/3 w-1/3 text-black/10 sm:top-4 sm:right-4"
+          />
+        )}
+
         <button
           type="button"
           disabled={disabled}
           aria-label={`${room.label}, ${roomSummary(room)}. Turn all ${toggle.on ? "on" : "off"}.`}
           onClick={() => onSetRoom(toggle)}
           className={cn(
-            "flex flex-1 flex-col items-start gap-1 p-3 text-left sm:p-4",
+            // Tighter under the subtitle than around it, and only where
+            // the tile is small: at two cards to a row the line under
+            // the room's name was floating a third of the way off the
+            // rule below it, which read as the rule belonging to
+            // something else.
+            "flex flex-1 flex-col items-start gap-1 p-3 pb-1.5 text-left sm:p-4",
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",
             "hover:bg-black/5",
           )}
         >
           <span className="flex w-full items-start justify-between gap-2">
+            {/* Barely there: white at a tenth is enough to hold the
+                reading together as one thing without competing with
+                the card's own colour, which is the only thing on here
+                carrying a state. */}
             {room.humidity !== undefined && (
-              <span className="flex items-center gap-1 rounded-full bg-white/25 px-2 py-0.5 text-xs font-semibold">
-                <Droplets aria-hidden className="size-3" />
+              <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-base leading-none font-medium">
+                <Droplets aria-hidden className="size-4" />
                 {Math.round(room.humidity)}%
               </span>
             )}
@@ -286,17 +308,16 @@ export function RoomCard({
 
           <span className="mt-auto w-full min-w-0">
             {measured(room) !== undefined && (
-              <span className="font-heading block text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
-                {measured(room)!.toFixed(1)}
-                <span className="align-top text-lg sm:text-xl">°</span>
-              </span>
+              <Reading celsius={measured(room)!} />
             )}
-            <span className="font-heading mt-1 block truncate text-base leading-snug font-semibold sm:text-lg">
+            <span className="font-heading mt-1 block truncate text-base leading-snug font-semibold">
               {room.label}
             </span>
             {/* `text-sm`, not `text-xs`: white on these colours is about
-                2.3:1, and nothing smaller than this survives it. */}
-            <span className="block truncate text-sm font-medium opacity-90">
+                2.3:1, and nothing smaller than this survives it. Full
+                white rather than dimmed, since the weight is already
+                doing the work of making it secondary. */}
+            <span className="block truncate text-sm font-thin">
               {subtitle(room)}
             </span>
           </span>
@@ -306,34 +327,41 @@ export function RoomCard({
             many times a day and heating rarely, and a single button
             labelled for lights is one nobody finds the thermostat
             behind. */}
-        <div className="flex border-t border-white/25 text-sm font-medium">
+        {/* Drawn rather than written. Two words and two chevrons took a
+            fifth of the card to say what a bulb and a flame say at a
+            glance, and the card's own colour and reading are what that
+            space is for. The name is still there for anything not
+            reading the picture. */}
+        <div className="flex border-t border-white/25">
           <button
             type="button"
+            aria-label={`Lights in ${room.label}`}
+            title="Lights"
             onClick={() => setOpen("lights")}
             className={cn(
-              "flex flex-1 items-center justify-between gap-1 px-3 py-2.5 text-left transition-colors sm:px-4",
+              "flex flex-1 items-center justify-center px-3 py-2.5 transition-colors",
               "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
               "hover:bg-black/10",
             )}
           >
-            <span className="truncate">Lights</span>
-            <ChevronRight aria-hidden className="size-4 shrink-0" />
+            <Lightbulb aria-hidden className="size-5" />
           </button>
           {hasZone && (
             <button
               type="button"
+              aria-label={`Heating in ${room.label}`}
+              title="Heating"
               onClick={() => {
-              setDraft(room.zone?.on ? (room.zone.target ?? null) : null);
-              setOpen("heating");
-            }}
+                setDraft(room.zone?.on ? (room.zone.target ?? null) : null);
+                setOpen("heating");
+              }}
               className={cn(
-                "flex flex-1 items-center justify-between gap-1 border-l border-white/25 px-3 py-2.5 text-left transition-colors sm:px-4",
+                "flex flex-1 items-center justify-center border-l border-white/25 px-3 py-2.5 transition-colors",
                 "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
                 "hover:bg-black/10",
               )}
             >
-              <span className="truncate">Heating</span>
-              <ChevronRight aria-hidden className="size-4 shrink-0" />
+              <Flame aria-hidden className="size-5" />
             </button>
           )}
         </div>
@@ -369,5 +397,28 @@ export function RoomCard({
         </Dialog>
       )}
     </>
+  );
+}
+
+/**
+ * A temperature, set the way a gauge sets one.
+ *
+ * The whole degrees carry it and the tenth is a footnote — small enough
+ * to read as one, with the degree sign stacked above it so the pair
+ * occupies a single column rather than trailing off the end. Which is
+ * also how it stays legible at the size a phone gives two cards to a
+ * row: the number you actually read is as large as the space allows,
+ * and the part you rarely read is not competing with it.
+ */
+function Reading({ celsius }: { celsius: number }) {
+  const [whole, tenth] = celsius.toFixed(1).split(".");
+  return (
+    <span className="font-heading flex items-start text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
+      {whole}
+      <span className="ml-0.5 flex flex-col items-center leading-none">
+        <span className="text-xl sm:text-2xl">°</span>
+        <span className="text-base sm:text-lg">{tenth}</span>
+      </span>
+    </span>
   );
 }
