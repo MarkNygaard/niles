@@ -1,4 +1,4 @@
-import { CalendarSync, Power } from "lucide-react";
+import { CalendarSync } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThermostatDial } from "@/components/ThermostatDial";
 import type { Zone } from "@/lib/api";
@@ -58,44 +58,32 @@ export function ClimatePanel({
         )}
       </div>
 
-      {zone.on ? (
-        <ThermostatDial
-          value={zone.target}
-          disabled={saving}
-          onCommit={onHeat}
-        />
-      ) : (
-        <div className="flex flex-col items-center gap-2 py-8">
-          <div className="font-heading text-4xl leading-none font-medium">
-            Off
-          </div>
-          {/* tado's own word for it, and worth borrowing: a zone that is
-              off is not doing nothing — it still heats below about 5°
-              so the pipes survive. */}
-          <p className="text-muted-foreground text-xs">Frost protection</p>
-        </div>
-      )}
+      {/* Off is the bottom of the same column rather than a different
+          screen: turning the heating off and turning it down are the
+          same motion. */}
+      <ThermostatDial
+        value={zone.on ? zone.target : null}
+        // tado's own word, and worth borrowing: a zone that is off is
+        // not doing nothing — it still heats below about 5°C so the
+        // pipes survive.
+        offLabel="Frost protection"
+        disabled={saving}
+        onCommit={(celsius) =>
+          celsius === null ? onOff() : onHeat(celsius)
+        }
+      />
 
       <p className="text-muted-foreground text-center text-xs">
         {summarise(zone)}
       </p>
 
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        {zone.overridden && (
-          <Button variant="outline" disabled={saving} onClick={onResume}>
-            <CalendarSync aria-hidden /> Resume schedule
-          </Button>
-        )}
-        {zone.on ? (
-          <Button variant="ghost" disabled={saving} onClick={onOff}>
-            <Power aria-hidden /> Turn off
-          </Button>
-        ) : (
-          <Button variant="ghost" disabled={saving} onClick={() => onHeat(20)}>
-            <Power aria-hidden /> Turn on
-          </Button>
-        )}
-      </div>
+      {/* The only button left. On and off are the dial's job now, and
+          this is the one thing the dial cannot say: give it back. */}
+      {zone.overridden && (
+        <Button variant="outline" disabled={saving} onClick={onResume}>
+          <CalendarSync aria-hidden /> Resume schedule
+        </Button>
+      )}
     </div>
   );
 }

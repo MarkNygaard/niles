@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ClimatePanel, summarise } from "@/components/ClimatePanel";
-import { celsiusAt, fractionOf } from "@/components/ThermostatDial";
+import { fractionOf, settingAt } from "@/components/ThermostatDial";
 import type { Zone } from "@/lib/api";
 
 function zone(overrides: Partial<Zone> = {}): Zone {
@@ -39,27 +39,40 @@ function setup(z: Zone) {
 // The dial is dragged, which jsdom has no geometry for — so the two
 // conversions it is built on are tested directly.
 describe("the dial's range", () => {
-  it("puts the coldest setting at the bottom", () => {
-    expect(fractionOf(5)).toBe(0);
+  it("keeps off at the very bottom and the warmest at the top", () => {
+    expect(fractionOf(null)).toBe(0);
     expect(fractionOf(25)).toBe(1);
-    expect(fractionOf(15)).toBe(0.5);
+  });
+
+  it("puts the coldest temperature above off, not on it", () => {
+    // Off is not a colder temperature, it is the absence of one, so it
+    // has a place of its own rather than being what 5° turns into.
+    expect(fractionOf(5)).toBeGreaterThan(0);
+    expect(settingAt(0)).toBeNull();
+    expect(settingAt(fractionOf(5))).toBe(5);
   });
 
   it("clamps rather than running past tado's range", () => {
-    expect(celsiusAt(-1)).toBe(5);
-    expect(celsiusAt(2)).toBe(25);
+    expect(settingAt(2)).toBe(25);
   });
 
   it("lands on half degrees", () => {
     // The resolution tado takes. A thermostat you can set to 20.37°
     // is one that rounds your answer without telling you.
-    expect(celsiusAt(0.5)).toBe(15);
-    // 15.2 rounds down to 15, 15.4 rounds up to 15.5 — never to a
-    // third decimal nobody asked for.
-    expect(celsiusAt(0.51)).toBe(15);
-    expect(celsiusAt(0.52)).toBe(15.5);
+    for (const fraction of [0.3, 0.45, 0.6, 0.77, 0.9]) {
+      const setting = settingAt(fraction)!;
+      expect(setting * 2).toBe(Math.round(setting * 2));
+    }
+  });
+
+  it("reaches every temperature between the two ends", () => {
+    expect(settingAt(OFF_EDGE)).toBe(5);
+    expect(settingAt(1)).toBe(25);
   });
 });
+
+/** Just inside the temperature part of the column. */
+const OFF_EDGE = fractionOf(5);
 
 describe("summarise", () => {
   it("names the override that nothing will end", () => {
@@ -91,11 +104,29 @@ describe("ClimatePanel", () => {
     expect(screen.getByText("Frost protection")).toBeInTheDocument();
   });
 
-  it("offers the dial only when the zone is heating", () => {
+  it("keeps the dial when the zone is off", () => {
+    // Turning the heating off and turning it down are the same motion.
+    // Swapping the control for a block of text at the end of that
+    // motion would break the gesture halfway through.
+    setup(zone({ on: false }));
+    const dial = screen.getByRole("slider", { name: "Target temperature" });
+    expect(dial).toHaveAttribute("aria-valuetext", "Off");
+  });
+
+  it("shows the dial at the temperature it is holding", () => {
     setup(zone({ on: true, target: 21 }));
     expect(
       screen.getByRole("slider", { name: "Target temperature" }),
-    ).toBeInTheDocument();
+    ).toHaveAttribute("aria-valuenow", "21");
+  });
+
+  it("turns the zone off by taking the dial to the bottom", () => {
+    const { onOff } = setup(zone({ on: true, target: 5 }));
+    fireEvent.keyDown(
+      screen.getByRole("slider", { name: "Target temperature" }),
+      { key: "ArrowDown" },
+    );
+    expect(onOff).toHaveBeenCalled();
   });
 
   it("hands the zone back to the schedule", () => {
