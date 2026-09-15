@@ -126,6 +126,62 @@ describe("ClimatePanel", () => {
     ).toHaveAttribute("aria-valuenow", "21");
   });
 
+  /**
+   * Drive a real drag.
+   *
+   * jsdom has no layout, so the column has to be told how tall it is,
+   * and no pointer capture, so that has to be stubbed. Worth the
+   * trouble: the snap-back only happens when `dragging` goes false,
+   * which the keyboard path never does — a keyboard-only test passes
+   * against the bug.
+   */
+  function drag(dial: HTMLElement, toY: number) {
+    dial.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 200, height: 200, left: 0, right: 100, width: 100 }) as DOMRect;
+    dial.setPointerCapture = () => {};
+    fireEvent.pointerDown(dial, { clientY: 180, pointerId: 1 });
+    fireEvent.pointerMove(dial, { clientY: toY, pointerId: 1 });
+    fireEvent.pointerUp(dial, { clientY: toY, pointerId: 1 });
+  }
+
+  it("goes on showing what was asked for until the zone agrees", () => {
+    // Letting go used to snap the dial back to the old target, because
+    // tado has only just been told and the page does not ask again for
+    // a second or so. It jumped back, then forward — twice, for one
+    // drag.
+    const props = { onHeat: vi.fn(), onOff: vi.fn(), onResume: vi.fn() };
+    const { rerender } = render(
+      <ClimatePanel zone={zone({ on: true, target: 20 })} {...props} />,
+    );
+    const dial = screen.getByRole("slider", { name: "Target temperature" });
+    // Halfway up the column, which is a good deal warmer than 20.
+    drag(dial, 100);
+    const asked = dial.getAttribute("aria-valuenow");
+    expect(asked).not.toBe("20");
+
+    // The zone still reports the old value, as it will for a second.
+    rerender(<ClimatePanel zone={zone({ on: true, target: 20 })} {...props} />);
+    expect(dial).toHaveAttribute("aria-valuenow", asked!);
+  });
+
+  it("takes the zone's word once it catches up", () => {
+    const props = { onHeat: vi.fn(), onOff: vi.fn(), onResume: vi.fn() };
+    const { rerender } = render(
+      <ClimatePanel zone={zone({ on: true, target: 20 })} {...props} />,
+    );
+    const dial = screen.getByRole("slider", { name: "Target temperature" });
+    drag(dial, 100);
+    const asked = Number(dial.getAttribute("aria-valuenow"));
+
+    rerender(<ClimatePanel zone={zone({ on: true, target: asked })} {...props} />);
+    expect(dial).toHaveAttribute("aria-valuenow", String(asked));
+
+    // And a change from somewhere else lands afterwards, rather than
+    // being held off by a request that is long since finished.
+    rerender(<ClimatePanel zone={zone({ on: true, target: 18 })} {...props} />);
+    expect(dial).toHaveAttribute("aria-valuenow", "18");
+  });
+
   it("turns the zone off by taking the dial to the bottom", () => {
     const { onOff } = setup(zone({ on: true, target: 5 }));
     fireEvent.keyDown(

@@ -96,23 +96,51 @@ export function ThermostatDial({
   const [dragging, setDragging] = useState(false);
   const column = useRef<HTMLDivElement | null>(null);
 
+  /**
+   * What was asked for and has not come back yet.
+   *
+   * Letting go used to snap the dial to `value`, which is still the old
+   * target: tado has only just been told, and the page does not ask
+   * again for a second or so. So it jumped back to where it started and
+   * then jumped forward again when the answer arrived — twice, for one
+   * drag.
+   *
+   * Holding what was asked for until the zone agrees removes both.
+   * `at` is there so a request that is never agreed to — refused, lost,
+   * rounded somewhere unexpected — gives up rather than leaving the
+   * dial permanently showing something that is not true.
+   */
+  const pending = useRef<{ want: number | null; at: number } | null>(null);
+
   const setDraft = (next: number | null) => {
     setDraftState(next);
     onDraft?.(next);
   };
 
-  // While a drag is in flight the draft is the truth; afterwards the
-  // zone is, so a value that came back different is shown rather than
-  // the one that was asked for.
+  // While a drag is in flight the draft is the truth. Afterwards the
+  // zone is — once it has caught up, or once waiting for it has stopped
+  // being reasonable.
   useEffect(() => {
-    if (!dragging) {
-      setDraftState(value);
-      onDraft?.(value);
+    if (dragging) return;
+    const waiting = pending.current;
+    if (waiting) {
+      const agreed = waiting.want === value;
+      const stale = Date.now() - waiting.at > 15_000;
+      if (!agreed && !stale) return;
+      pending.current = null;
     }
+    setDraftState(value);
+    onDraft?.(value);
     // `onDraft` is a fresh closure every render; depending on it would
     // run this on every one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, dragging]);
+
+  /** Ask for a setting, and go on showing it until the zone agrees. */
+  const commit = (next: number | null) => {
+    pending.current = { want: next, at: Date.now() };
+    onCommit(next);
+  };
 
   function settingAtY(clientY: number): number | null {
     const box = column.current?.getBoundingClientRect();
@@ -186,7 +214,7 @@ export function ThermostatDial({
           const next = settingAtY(e.clientY);
           setDragging(false);
           setDraft(next);
-          onCommit(next);
+          commit(next);
         }}
         onKeyDown={(e) => {
           const by =
@@ -195,12 +223,18 @@ export function ThermostatDial({
           e.preventDefault();
           const next = stepped(by);
           setDraft(next);
-          onCommit(next);
+          commit(next);
         }}
       >
         <div
           aria-hidden
-          className="absolute inset-x-0 bottom-0 bg-white/95 transition-[height] duration-100"
+          className={cn(
+            "absolute inset-x-0 bottom-0 bg-white/95",
+            // Only between positions, never during a drag: a fill that
+            // eases towards your thumb is a fill that is always behind
+            // it, and on a control this size that reads as lag.
+            !dragging && "transition-[height] duration-100",
+          )}
           style={{ height: `${fractionOf(draft) * 100}%` }}
         />
         {/* The grip, where a thumb expects one — including when the
