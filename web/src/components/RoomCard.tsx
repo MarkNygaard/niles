@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Droplets, Flame, Lightbulb, Power, X } from "lucide-react";
+import { Droplets, Power, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -14,13 +14,15 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from "@/components/ui/drawer";
+import { BulbOutlineGlyph } from "@/components/BulbGlyph";
+import { FlameGlyph } from "@/components/FlameGlyph";
 import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { ClimatePanel } from "@/components/ClimatePanel";
 import { HEAT_INK, heatSheet } from "@/lib/heat";
-import { measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
+import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -61,6 +63,22 @@ export interface RoomCardProps {
  * can, and the secondary line is `text-sm` rather than `text-xs`
  * because nothing smaller survives this background.
  */
+/**
+ * The two ways into a room, along the bottom of its card.
+ *
+ * No rules and no fill: the card is one object, and three lines across
+ * it turned a tile into a small table. What is left is a pair of marks
+ * pressed into the colour — half-strength white, which is about where
+ * an icon stops looking applied to the card and starts looking part of
+ * it, while still holding its shape at this size. The hover wash is
+ * what says they can be pressed.
+ */
+const FOOT = [
+  "flex flex-1 items-center justify-center px-3 py-2.5 text-white/50 transition-colors",
+  "hover:bg-black/10 hover:text-white/80",
+  "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
+].join(" ");
+
 const TILE = {
   on: "radial-gradient(circle at top left, #fd9740 0%, #fd8b2d 70.7%)",
   off: "radial-gradient(circle at top left, #adb7c2 0%, #97a2b0 70.7%)",
@@ -288,10 +306,10 @@ export function RoomCard({
                 reading together as one thing without competing with
                 the card's own colour, which is the only thing on here
                 carrying a state. */}
-            {room.humidity !== undefined && (
+            {humid(room) !== undefined && (
               <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-base leading-none font-medium">
                 <Droplets aria-hidden className="size-4" />
-                {Math.round(room.humidity)}%
+                {Math.round(humid(room)!)}%
               </span>
             )}
             {/* Open doors and windows sit up here rather than in the
@@ -332,19 +350,15 @@ export function RoomCard({
             glance, and the card's own colour and reading are what that
             space is for. The name is still there for anything not
             reading the picture. */}
-        <div className="flex border-t border-white/25">
+        <div className="flex">
           <button
             type="button"
             aria-label={`Lights in ${room.label}`}
             title="Lights"
             onClick={() => setOpen("lights")}
-            className={cn(
-              "flex flex-1 items-center justify-center px-3 py-2.5 transition-colors",
-              "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
-              "hover:bg-black/10",
-            )}
+            className={FOOT}
           >
-            <Lightbulb aria-hidden className="size-5" />
+            <BulbOutlineGlyph className="size-6" />
           </button>
           {hasZone && (
             <button
@@ -355,13 +369,9 @@ export function RoomCard({
                 setDraft(room.zone?.on ? (room.zone.target ?? null) : null);
                 setOpen("heating");
               }}
-              className={cn(
-                "flex flex-1 items-center justify-center border-l border-white/25 px-3 py-2.5 transition-colors",
-                "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
-                "hover:bg-black/10",
-              )}
+              className={FOOT}
             >
-              <Flame aria-hidden className="size-5" />
+              <FlameGlyph className="size-6" />
             </button>
           )}
         </div>
@@ -413,12 +423,26 @@ export function RoomCard({
 function Reading({ celsius }: { celsius: number }) {
   const [whole, tenth] = celsius.toFixed(1).split(".");
   return (
-    <span className="font-heading flex items-start text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
-      {whole}
-      <span className="ml-0.5 flex flex-col items-center leading-none">
-        <span className="text-xl sm:text-2xl">°</span>
-        <span className="text-base sm:text-lg">{tenth}</span>
+    <span className="font-heading flex items-baseline text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
+      {/* Aligned on the baseline, which is the only edge the two sizes
+          agree on: stacking them in a column lined up their boxes
+          instead, and a box is mostly empty space above a degree sign
+          and below a digit — so the tenth sat well under the number it
+          belongs to. */}
+      <span aria-hidden>{whole}</span>
+      <span aria-hidden className="relative ml-0.5 text-base leading-none sm:text-lg">
+        {/* Lifted clear of the tenth rather than stacked on it. The
+            glyph is drawn in the top quarter of its own box, so its
+            box has to be pushed most of the way back down to bring the
+            ring near the digit under it. */}
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 translate-y-[0.6em] text-xl leading-none sm:text-2xl">
+          °
+        </span>
+        <span>{tenth}</span>
       </span>
+      {/* Said once, properly. Read in the order they are drawn, the
+          pieces above come out as "twenty-two degrees eight". */}
+      <span className="sr-only">{celsius.toFixed(1)} degrees</span>
     </span>
   );
 }
