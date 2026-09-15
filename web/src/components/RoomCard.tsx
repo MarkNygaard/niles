@@ -413,12 +413,26 @@ export function RoomCard({
 function Reading({ celsius }: { celsius: number }) {
   const [whole, tenth] = celsius.toFixed(1).split(".");
   return (
-    <span className="font-heading flex items-start text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
-      {whole}
-      <span className="ml-0.5 flex flex-col items-center leading-none">
-        <span className="text-xl sm:text-2xl">°</span>
-        <span className="text-base sm:text-lg">{tenth}</span>
+    <span className="font-heading flex items-baseline text-4xl leading-none font-semibold tabular-nums sm:text-5xl">
+      {/* Aligned on the baseline, which is the only edge the two sizes
+          agree on: stacking them in a column lined up their boxes
+          instead, and a box is mostly empty space above a degree sign
+          and below a digit — so the tenth sat well under the number it
+          belongs to. */}
+      <span aria-hidden>{whole}</span>
+      <span aria-hidden className="relative ml-0.5 text-base leading-none sm:text-lg">
+        {/* Lifted clear of the tenth rather than stacked on it. The
+            glyph is drawn in the top quarter of its own box, so its
+            box has to be pushed most of the way back down to bring the
+            ring near the digit under it. */}
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 translate-y-[0.6em] text-xl leading-none sm:text-2xl">
+          °
+        </span>
+        <span>{tenth}</span>
       </span>
+      {/* Said once, properly. Read in the order they are drawn, the
+          pieces above come out as "twenty-two degrees eight". */}
+      <span className="sr-only">{celsius.toFixed(1)} degrees</span>
     </span>
   );
 }

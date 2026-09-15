@@ -165,10 +165,15 @@ describe("RoomCard", () => {
     // The whole degrees carry the reading; the tenth is a footnote and
     // is sized as one, with the degree sign stacked over it.
     setup([light("ceiling", true), sensor("thermometer", 21.42, 54.3)]);
+    // Each is measured by the nearest thing setting a size: the whole
+    // degrees take the reading's own, the tenth a smaller one of its
+    // own — which is also what keeps the degree sign above the tenth
+    // rather than in the middle of the number.
     const whole = screen.getByText("21");
     const tenth = screen.getByText("4");
-    expect(whole.className).toMatch(/text-4xl/);
-    expect(tenth.className).toMatch(/text-base/);
+    expect(whole.closest("[class*='text-4xl']")).not.toBeNull();
+    expect(tenth.closest("[class*='text-base']")).not.toBeNull();
+    expect(screen.getByText("21.4 degrees")).toHaveClass("sr-only");
   });
 
   it("offers heating only where there is a zone", () => {
