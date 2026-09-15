@@ -6,12 +6,14 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
+import { BrightnessBar } from "@/components/BrightnessBar";
 import { ColorWheel, parseHex, toHex } from "@/components/ColorField";
 import {
   ColorSwatch,
   KELVIN_MAX,
   KELVIN_MIN,
   KelvinSwatch,
+  kelvinSwatch,
 } from "@/components/LightSwatches";
 import { PowerButton } from "@/components/PowerButton";
 import { brightnessOf, humanize, isDimmable } from "@/lib/rooms";
@@ -35,6 +37,12 @@ export function LightRow({ light, disabled, onSet }: LightRowProps) {
   const on = light.state.on;
   const color = light.state.rgb ? toHex(light.state.rgb) : undefined;
   const dimmable = isDimmable(light);
+  const level = brightnessOf(light);
+  // What the bar says while a thumb is on it. The light itself will not
+  // hear about it until the drag ends, and a percentage that disagrees
+  // with the bar above it is the reading nobody trusts afterwards.
+  const [draft, setDraft] = useState(level);
+  useEffect(() => setDraft(level), [level]);
 
   return (
     <div className="flex flex-col gap-2 py-3">
@@ -54,7 +62,7 @@ export function LightRow({ light, disabled, onSet }: LightRowProps) {
             {on === null
               ? "Not heard from yet"
               : on && dimmable
-                ? `On · ${brightnessOf(light)}%`
+                ? `On · ${draft}%`
                 : on
                   ? "On"
                   : "Off"}
@@ -102,12 +110,12 @@ export function LightRow({ light, disabled, onSet }: LightRowProps) {
       {/* A plug has one thing it can be told; a slider that publishes
           a level nothing acts on would look broken, not unsupported. */}
       {dimmable && (
-        <CommitSlider
+        <BrightnessBar
           label={`${humanize(light.name)} brightness`}
-          value={brightnessOf(light)}
-          min={1}
-          max={100}
+          value={level}
+          color={lightColor(light)}
           disabled={disabled}
+          onDraft={setDraft}
           // Sending a brightness to a light that is off turns it on at
           // that level, which is what dragging this while off means.
           onCommit={(brightness) => onSet({ brightness })}
@@ -115,6 +123,22 @@ export function LightRow({ light, disabled, onSet }: LightRowProps) {
       )}
     </div>
   );
+}
+
+/**
+ * The colour to fill the brightness bar with.
+ *
+ * Whatever the light is actually set to, in the order it can be known:
+ * a colour it reports, else the white it is holding, else the amber
+ * this app paints every lit thing with. A bulb that has never said
+ * still gets a lamp's colour rather than a grey one — grey would read
+ * as a light that is off, which is a claim the bar is not making.
+ */
+function lightColor(light: Device): string {
+  if (light.state.rgb) return toHex(light.state.rgb);
+  if (light.state.color_temp_kelvin)
+    return kelvinSwatch(light.state.color_temp_kelvin);
+  return "var(--lit)";
 }
 
 function Control({
