@@ -259,7 +259,12 @@ export function RoomCard({
           aria-label={`${room.label}, ${roomSummary(room)}. Turn all ${toggle.on ? "on" : "off"}.`}
           onClick={() => onSetRoom(toggle)}
           className={cn(
-            "flex flex-1 flex-col items-start gap-1 p-3 text-left sm:p-4",
+            // Tighter under the subtitle than around it, and only where
+            // the tile is small: at two cards to a row the line under
+            // the room's name was floating a third of the way off the
+            // rule below it, which read as the rule belonging to
+            // something else.
+            "flex flex-1 flex-col items-start gap-1 p-3 pb-1.5 text-left sm:p-4",
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",
             "hover:bg-black/5",
