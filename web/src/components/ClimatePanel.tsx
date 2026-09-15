@@ -85,10 +85,14 @@ export function ClimatePanel({
           this is the one thing the dial cannot say: give it back. */}
       {zone.overridden && (
         <Button
-          variant="outline"
+          // A dark wash rather than a light one: the sheet behind runs
+          // from a dark teal to a light yellow, and only something
+          // darker than all of them reads on all of them. No outline
+          // either — the fill is the shape.
+          variant="ghost"
           disabled={saving}
           onClick={onResume}
-          className="border-white/40 bg-white/15 text-inherit hover:bg-white/25"
+          className="rounded-full bg-black/30 px-5 text-inherit hover:bg-black/50"
         >
           <CalendarSync aria-hidden /> Resume schedule
         </Button>
