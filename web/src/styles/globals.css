@@ -26,6 +26,25 @@
 body {
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
+  /* So the page reaches the bottom of the screen even when it has
+     little on it. A short body leaves the area under it to the canvas,
+     which on an installed app is the strip behind the home indicator —
+     and an unpainted strip there is the black bar at the bottom. */
+  min-height: 100dvh;
+}
+
+/* Painted on the root as well, because a background only travels from
+   the body up to the canvas while the root has none of its own. Belt
+   and braces: whichever of the two a phone decides to show behind the
+   insets, it is this colour rather than black. */
+html {
+  background-color: var(--background);
+}
+
+/* The one corner the rules above leave: where two scrollbars meet,
+   which is a small opaque square in the browser's own colours. */
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* Installed on a phone, the things that give a web page away.

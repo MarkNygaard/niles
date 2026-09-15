@@ -75,13 +75,26 @@ export interface RoomCardProps {
  */
 const FOOT = [
   "flex flex-1 items-center justify-center px-3 py-2.5 text-white/50 transition-colors",
-  "hover:bg-black/10 hover:text-white/80",
+  "hover:bg-white/10 hover:text-white",
   "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
 ].join(" ");
 
+/**
+ * A room, lit and unlit.
+ *
+ * Radial from the top-left corner, which is how tado draws theirs and
+ * what the samples off their app show: equal values at equal distance
+ * from that corner rather than at equal height.
+ *
+ * `--tile-shade` rides on top as a flat layer — nothing in the light
+ * theme, a wash of black in the dark one. A stacked background rather
+ * than an overlay element, so the shade cannot land above anything
+ * drawn on the card.
+ */
+const SHADE = "linear-gradient(var(--tile-shade), var(--tile-shade))";
 const TILE = {
-  on: "radial-gradient(circle at top left, #fd9740 0%, #fd8b2d 70.7%)",
-  off: "radial-gradient(circle at top left, #adb7c2 0%, #97a2b0 70.7%)",
+  on: `${SHADE}, radial-gradient(circle at top left, #fd9740 0%, #fd8b2d 70.7%)`,
+  off: `${SHADE}, radial-gradient(circle at top left, #adb7c2 0%, #97a2b0 70.7%)`,
 };
 
 /** What the drawer can ask of a heating zone. */
@@ -213,13 +226,27 @@ export function RoomCard({
       }}
     >
       <DialogContent
-        className="inset-0 max-h-none rounded-t-none transition-colors duration-200 sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:max-h-[85vh] sm:rounded-xl"
+        className={cn(
+          "inset-0 max-h-none rounded-t-none transition-colors duration-200",
+          // A dialog is positioned against the viewport, not the body,
+          // so the body's own safe-area padding does nothing for it —
+          // and this one covers the screen, which put the room's name
+          // under the clock. The bottom inset it inherits; the top it
+          // has to ask for.
+          "pt-[env(safe-area-inset-top)]",
+          "sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:max-h-[85vh] sm:rounded-xl sm:pt-0",
+        )}
         style={{ backgroundImage: heatSheet(draft), color: HEAT_INK }}
       >
         <div className="flex items-center gap-2 px-3 py-3">
           <DialogClose
             aria-label="Close"
-            className="focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-lg hover:bg-black/10 focus-visible:outline-none"
+            // `outline-none` unconditionally, not just on focus-visible:
+            // the stylesheet colours every outline with the brand green,
+            // so a tap that leaves focus behind drew a green ring around
+            // the X. The keyboard indicator is the ring below, which
+            // only a keyboard brings up.
+            className="focus-visible:ring-3 focus-visible:ring-ring/50 flex size-9 shrink-0 items-center justify-center rounded-lg outline-none hover:bg-black/10"
           >
             <X aria-hidden className="size-5" />
           </DialogClose>
@@ -290,15 +317,19 @@ export function RoomCard({
           aria-label={`${room.label}, ${roomSummary(room)}. Turn all ${toggle.on ? "on" : "off"}.`}
           onClick={() => onSetRoom(toggle)}
           className={cn(
-            // Tighter under the subtitle than around it, and only where
-            // the tile is small: at two cards to a row the line under
-            // the room's name was floating a third of the way off the
-            // rule below it, which read as the rule belonging to
-            // something else.
-            "flex flex-1 flex-col items-start gap-1 p-3 pb-1.5 text-left sm:p-4",
+            // Tighter under the subtitle than around it, and only
+            // where the tile is small: at two cards to a row the line
+            // under the room's name was floating well off the buttons
+            // below it, which read as those buttons belonging to
+            // something else. 2px, on top of the space the line itself
+            // leaves under its own letters.
+            "flex flex-1 flex-col items-start gap-1 p-3 pb-0.5 text-left sm:p-4",
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",
-            "hover:bg-black/5",
+            // White, not black: a wash that darkens reads as the card
+            // dimming, which on the one control that turns the lights
+            // on is the wrong direction entirely.
+            "hover:bg-white/5",
           )}
         >
           <span className="flex w-full items-start justify-between gap-2">
@@ -307,8 +338,17 @@ export function RoomCard({
                 the card's own colour, which is the only thing on here
                 carrying a state. */}
             {humid(room) !== undefined && (
-              <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-base leading-none font-medium">
-                <Droplets aria-hidden className="size-4" />
+              <span
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm leading-none font-medium",
+                  // Which way the wash goes follows the card: a fifth
+                  // of white lifts the pill off the orange, and the
+                  // same again in black does the job on the grey,
+                  // which white barely marks.
+                  lit ? "bg-white/20" : "bg-black/20",
+                )}
+              >
+                <Droplets aria-hidden className="size-3.5" />
                 {Math.round(humid(room)!)}%
               </span>
             )}
@@ -435,7 +475,7 @@ function Reading({ celsius }: { celsius: number }) {
             glyph is drawn in the top quarter of its own box, so its
             box has to be pushed most of the way back down to bring the
             ring near the digit under it. */}
-        <span className="absolute bottom-full left-1/2 -translate-x-1/2 translate-y-[0.6em] text-xl leading-none sm:text-2xl">
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 translate-y-[0.2em] text-xl leading-none sm:text-2xl">
           °
         </span>
         <span>{tenth}</span>

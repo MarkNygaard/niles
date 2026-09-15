@@ -155,6 +155,47 @@ impl TadoSource {
             .map(|_| ())
     }
 
+    /// Hold a zone at a temperature for a while, then let go.
+    ///
+    /// `TIMER` termination, which is the other half of what tado's own
+    /// app offers and the only one that suits a boost: a room warmed
+    /// for half an hour should go back to its schedule by itself, or
+    /// the house spends the evening at 25° because nobody remembered.
+    pub async fn boost(&self, zone: u64, celsius: f32, seconds: u32) -> Result<()> {
+        let body = serde_json::json!({
+            "setting": {
+                "type": "HEATING",
+                "power": "ON",
+                "temperature": { "celsius": celsius },
+            },
+            "termination": { "type": "TIMER", "durationInSeconds": seconds },
+        });
+        self.write_home_path(&format!("zones/{zone}/overlay"), Some(body.to_string()))
+            .await
+            .map(|_| ())
+    }
+
+    /// Boost every heating zone at once.
+    ///
+    /// The loop lives here rather than in the caller so that "warm the
+    /// house" is one request from the page: doing it a zone at a time
+    /// over HTTP means a page that is half-boosted while it waits, and
+    /// a failure in the middle that only the browser knows about.
+    ///
+    /// Stops at the first refusal. Tado saying no is nearly always
+    /// about the connection — an expired token, a rate limit — rather
+    /// than about one zone, so carrying on would mostly mean making
+    /// the same failed request several more times.
+    pub async fn boost_all(&self, celsius: f32, seconds: u32) -> Result<usize> {
+        let listed = self.list_zones().await?;
+        let mut boosted = 0;
+        for zone in listed.into_iter().filter(|z| z.kind == "HEATING") {
+            self.boost(zone.id, celsius, seconds).await?;
+            boosted += 1;
+        }
+        Ok(boosted)
+    }
+
     /// Turn a zone off — which in tado means frost protection, not
     /// nothing: it still heats below about 5°C so the pipes survive.
     pub async fn turn_off(&self, zone: u64) -> Result<()> {
@@ -165,6 +206,21 @@ impl TadoSource {
         self.write_home_path(&format!("zones/{zone}/overlay"), Some(body.to_string()))
             .await
             .map(|_| ())
+    }
+
+    /// Hand several zones back to their schedules.
+    ///
+    /// Told which ones rather than working it out: the page already
+    /// knows, from the same `/climate` it drew the button with, and
+    /// asking tado again would be a second opinion about a thing the
+    /// caller is looking at. It also keeps this off the zones nobody
+    /// asked about — a room somebody set by hand is not part of a
+    /// boost and should not be swept up by ending one.
+    pub async fn resume_all(&self, zones: &[u64]) -> Result<usize> {
+        for zone in zones {
+            self.resume_schedule(*zone).await?;
+        }
+        Ok(zones.len())
     }
 
     /// Drop the override and let the schedule have the zone back.

@@ -25,6 +25,11 @@ pub fn router(state: AppState) -> Router {
         .route("/events/stream", get(crate::events::events_stream))
         .route("/setup", get(crate::presence::setup_report))
         .route("/climate", get(crate::climate::list_zones))
+        // Before the zone route on purpose, and a literal segment
+        // besides: "boost" is not a zone id and must not be read as
+        // one.
+        .route("/climate/boost", post(crate::climate::boost))
+        .route("/climate/resume", post(crate::climate::resume_zones))
         .route("/climate/{zone}", post(crate::climate::set_zone))
         .route("/scenes", get(crate::scenes::list_scenes))
         .route(

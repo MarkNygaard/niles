@@ -449,10 +449,14 @@ mod tests {
     /// URL plus the form fields it was posted with.
     type PostLog = Arc<StdMutex<Vec<(String, Vec<(String, String)>)>>>;
 
+    /// URL plus the JSON body it was written with.
+    type PutLog = Arc<StdMutex<Vec<(String, String)>>>;
+
     #[derive(Clone)]
     struct MockTransport {
         post_calls: PostLog,
         get_calls: Arc<StdMutex<Vec<String>>>,
+        put_calls: PutLog,
         responses: ResponseQueue,
     }
 
@@ -461,6 +465,7 @@ mod tests {
             Self {
                 post_calls: Arc::new(StdMutex::new(Vec::new())),
                 get_calls: Arc::new(StdMutex::new(Vec::new())),
+                put_calls: Arc::new(StdMutex::new(Vec::new())),
                 responses: Arc::new(StdMutex::new(responses)),
             }
         }
@@ -471,6 +476,11 @@ mod tests {
 
         fn get_count(&self) -> usize {
             self.get_calls.lock().unwrap().len()
+        }
+
+        /// Every write, as (url, body), for asserting on what was sent.
+        fn puts(&self) -> Vec<(String, String)> {
+            self.put_calls.lock().unwrap().clone()
         }
 
         /// The form fields of the nth POST, for asserting on grant types.
@@ -495,6 +505,11 @@ mod tests {
 
         async fn get_bearer(&self, url: &str, _token: &str) -> Result<(u16, String)> {
             self.get_calls.lock().unwrap().push(url.to_string());
+            self.responses.lock().unwrap().remove(0)
+        }
+
+        async fn put_bearer(&self, url: &str, _token: &str, body: String) -> Result<(u16, String)> {
+            self.put_calls.lock().unwrap().push((url.to_string(), body));
             self.responses.lock().unwrap().remove(0)
         }
     }
@@ -734,6 +749,44 @@ mod tests {
     async fn mobile_devices_all_away_returns_false() {
         let (_mock, source) = source_with(vec![token_ok("r2"), devices_away()]);
         assert!(!source.poll().await.unwrap().anyone_home);
+    }
+
+    #[tokio::test]
+    async fn a_boost_ends_by_itself() {
+        // The whole point of the button: a room warmed for half an hour
+        // goes back to its schedule without anybody remembering it.
+        // `MANUAL` here would leave the house at 25 all evening.
+        let (mock, source) = source_with(vec![token_ok("r2"), Ok((204, String::new()))]);
+        source.boost(7, 25.0, 1800).await.expect("boosted");
+
+        let (url, body) = mock.puts().into_iter().next().expect("wrote one overlay");
+        assert!(url.ends_with("/zones/7/overlay"), "{url}");
+        let sent: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(sent["termination"]["type"], "TIMER");
+        assert_eq!(sent["termination"]["durationInSeconds"], 1800);
+        assert_eq!(sent["setting"]["temperature"]["celsius"], 25.0);
+        assert_eq!(sent["setting"]["power"], "ON");
+    }
+
+    #[tokio::test]
+    async fn boosting_the_house_skips_the_hot_water() {
+        // Hot water is a zone tado lists and not a room anybody is
+        // cold in — and it has no temperature to boost to.
+        let zones = r#"[{"id":1,"name":"Living Room","type":"HEATING"},
+                        {"id":2,"name":"Hot Water","type":"HOT_WATER"},
+                        {"id":3,"name":"Office","type":"HEATING"}]"#;
+        let (mock, source) = source_with(vec![
+            token_ok("r2"),
+            Ok((200, zones.into())),
+            Ok((204, String::new())),
+            Ok((204, String::new())),
+        ]);
+
+        assert_eq!(source.boost_all(25.0, 1800).await.expect("boosted"), 2);
+        let written: Vec<String> = mock.puts().into_iter().map(|(url, _)| url).collect();
+        assert!(written[0].ends_with("/zones/1/overlay"), "{written:?}");
+        assert!(written[1].ends_with("/zones/3/overlay"), "{written:?}");
+        assert_eq!(written.len(), 2);
     }
 
     #[tokio::test]

@@ -112,6 +112,13 @@ export interface Zone {
   placed_by: "paired" | "name" | "nowhere";
 }
 
+/** What a boost did, so the page can say what it asked for. */
+export interface Boosted {
+  rooms: number;
+  celsius: number;
+  minutes: number;
+}
+
 /** A place the house might be, as `/places` returns it. */
 export interface Place {
   label: string;
@@ -293,6 +300,13 @@ export const api = {
     request<void>(`/climate/${zone}`, {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  boostHeating: () =>
+    request<Boosted>("/climate/boost", { method: "POST" }),
+  resumeZones: (zones: number[]) =>
+    request<void>("/climate/resume", {
+      method: "POST",
+      body: JSON.stringify({ zones }),
     }),
   scenes: () => request<string[]>("/scenes"),
   applyScene: (name: string) =>

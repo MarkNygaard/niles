@@ -13,6 +13,8 @@ import {
   targets,
   humid,
   measured,
+  boosted,
+  boostEndsAt,
 } from "./rooms";
 import type { Room } from "./rooms";
 import type { Device, DeviceState, Zone } from "./api";
@@ -496,6 +498,51 @@ describe("a room's readings", () => {
     const kitchen = room([thermometer], { temperature: null, humidity: null });
     expect(measured(kitchen)).toBe(19.5);
     expect(humid(kitchen)).toBe(61);
+  });
+});
+
+describe("a boost that is still running", () => {
+  const zone = (id: number, until: string | null): Zone => ({
+    id,
+    name: `Zone ${id}`,
+    room: null,
+    temperature: 21,
+    humidity: 44,
+    target: 25,
+    on: true,
+    overridden: until !== null,
+    reachable: true,
+    until,
+    placed_by: "paired",
+  });
+
+  const noon = Date.parse("2026-09-15T12:00:00Z");
+  const soon = "2026-09-15T12:20:00Z";
+  const later = "2026-09-15T12:30:00Z";
+
+  it("is the zones whose timer has not run out", () => {
+    expect(boosted([zone(1, soon), zone(2, later)], noon)).toEqual([1, 2]);
+  });
+
+  it("leaves out a room somebody set by hand", () => {
+    // Niles writes an end time on nothing else, so a zone without one
+    // is not part of a boost and ending one must not undo it.
+    expect(boosted([zone(1, soon), zone(2, null)], noon)).toEqual([1]);
+  });
+
+  it("forgets a timer that has already passed", () => {
+    const gone = "2026-09-15T11:59:00Z";
+    expect(boosted([zone(1, gone)], noon)).toEqual([]);
+    expect(boostEndsAt([zone(1, gone)], noon)).toBeNull();
+  });
+
+  it("ends when the first of them ends", () => {
+    // The page puts the button back at that moment rather than at the
+    // next poll, so it cannot go on offering to end something that is
+    // already over.
+    expect(boostEndsAt([zone(1, later), zone(2, soon)], noon)).toBe(
+      Date.parse(soon),
+    );
   });
 });
 
