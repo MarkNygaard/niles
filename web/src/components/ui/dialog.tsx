@@ -39,7 +39,12 @@ function DialogContent({ className, ...props }: DialogPrimitive.Popup.Props) {
     <DialogPrimitive.Portal>
       <DialogPrimitive.Backdrop
         data-slot="dialog-backdrop"
-        className="fixed inset-0 z-50 bg-black/50 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0"
+        // `h-dvh` as well as `inset-0`: the inset is measured against
+        // whatever turns out to be the containing block, and a
+        // viewport height is measured against the screen. On a phone
+        // the two disagreed and the backdrop stopped short of the
+        // bottom, with the page showing under it.
+        className="fixed inset-0 z-50 h-dvh bg-black/50 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0"
       />
       <DialogPrimitive.Popup
         data-slot="dialog-content"

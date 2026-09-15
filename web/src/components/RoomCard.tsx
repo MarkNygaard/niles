@@ -237,7 +237,7 @@ export function RoomCard({
           // `max-h-[85dvh]`, so both survived and the arbitrary one
           // won — a sheet 85% tall, pinned to the top, with the last
           // fifteen percent of the screen showing through underneath.
-          "inset-0 max-h-dvh rounded-t-none transition-colors duration-200",
+          "inset-0 h-dvh max-h-dvh rounded-t-none transition-colors duration-200",
           // A dialog is positioned against the viewport, not the body,
           // so the body's own safe-area padding does nothing for it —
           // and this one covers the screen, which put the room's name
