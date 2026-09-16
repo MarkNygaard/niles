@@ -20,8 +20,9 @@ import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useThemeColor } from "@/hooks/useThemeColor";
 import { ClimatePanel } from "@/components/ClimatePanel";
-import { HEAT_INK, heatSheet } from "@/lib/heat";
+import { HEAT_INK, heatSheet, heatTop } from "@/lib/heat";
 import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
@@ -136,6 +137,11 @@ export function RoomCard({
   // wrong in a hand, so this picks the component rather than restyling
   // one of them. Matches the `sm` breakpoint the card already uses.
   const phone = useMediaQuery("(max-width: 639px)");
+  // While the heating sheet is open it owns the status bar too, or
+  // there is a white band across the top of a screen that is otherwise
+  // one colour. It follows the dial, so dragging warms the strip above
+  // it as well.
+  useThemeColor(open === "heating" ? heatTop(draft) : null);
 
   // DialogHeader and DrawerHeader disagree — one is a row with a
   // divider, the other a centred column — and the panel is the same
@@ -306,10 +312,12 @@ export function RoomCard({
           // ground reads brighter than it did before the dimming —
           // which is the opposite of what the shade is for.
           "dark:text-white/85",
-          // Square everywhere. It was only square on a phone because two
-          // to a row made it so; a wide screen stretching them into
-          // letterboxes made the same grid read as a different one.
-          "aspect-square",
+          // Square until `lg`, wider than tall after it — which is the
+          // same breakpoint the grid goes to three columns on, and the
+          // first width at which a card has more of it than anything
+          // on the card needs. A tablet still gets squares, because
+          // two to a row is what makes them square in the first place.
+          "aspect-square lg:aspect-[4/3]",
         )}
         style={{ backgroundImage: lit ? TILE.on : TILE.off }}
       >
