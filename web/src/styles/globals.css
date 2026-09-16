@@ -57,9 +57,24 @@ html {
    the browser decides whether a second one is coming — without that. */
 body {
   -webkit-tap-highlight-color: transparent;
-  /* No rubber-band at the top of the list, and no pull-to-refresh
-     reloading an app that updates itself over a websocket. */
-  overscroll-behavior-y: none;
+  /* Kept for the browsers that read it here. Chrome propagates this
+     one from the body; Safari does not, which is why the rule that
+     actually stops the bounce is on the root below. */
+  overscroll-behavior: none;
+}
+
+/* No rubber-band, on a page with nothing to scroll to.
+ *
+ * `overscroll-behavior` is taken from the root element and, unlike
+ * `overflow`, is not propagated up from the body — so the rule we had
+ * on the body alone left iOS bouncing. It is worth stopping for more
+ * than tidiness: the bounce is the gesture that makes a browser
+ * re-measure the screen, which is how the heating sheet came to be the
+ * wrong height until somebody happened to tug at the page. And there
+ * is nothing on the other end of the gesture: this app hears about
+ * changes over a websocket, so there is no refresh to pull for. */
+html {
+  overscroll-behavior: none;
 }
 
 /* Controls, not text. A long press on a button should do nothing, the
