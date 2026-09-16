@@ -20,8 +20,9 @@ import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useThemeColor } from "@/hooks/useThemeColor";
 import { ClimatePanel } from "@/components/ClimatePanel";
-import { HEAT_INK, heatSheet } from "@/lib/heat";
+import { HEAT_INK, heatSheet, heatTop } from "@/lib/heat";
 import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
@@ -136,6 +137,11 @@ export function RoomCard({
   // wrong in a hand, so this picks the component rather than restyling
   // one of them. Matches the `sm` breakpoint the card already uses.
   const phone = useMediaQuery("(max-width: 639px)");
+  // While the heating sheet is open it owns the status bar too, or
+  // there is a white band across the top of a screen that is otherwise
+  // one colour. It follows the dial, so dragging warms the strip above
+  // it as well.
+  useThemeColor(open === "heating" ? heatTop(draft) : null);
 
   // DialogHeader and DrawerHeader disagree — one is a row with a
   // divider, the other a centred column — and the panel is the same

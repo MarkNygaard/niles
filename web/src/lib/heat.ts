@@ -118,14 +118,32 @@ function away(hue: number): number {
  * size of a whole screen.
  */
 export function heatSheet(celsius: number | null): string {
+  const [top, bottom] = sheetStops(celsius);
+  return `linear-gradient(180deg, ${top} 0%, ${bottom} 100%)`;
+}
+
+/**
+ * The colour at the very top of that sheet.
+ *
+ * For the status bar above it. In a standalone app the strip behind
+ * the clock belongs to iOS rather than to the page, and the only say
+ * the page has over it is the `theme-color` meta — so the sheet hands
+ * it the colour its own first pixel has, and the seam disappears.
+ */
+export function heatTop(celsius: number | null): string {
+  return sheetStops(celsius)[0];
+}
+
+function sheetStops(celsius: number | null): [string, string] {
   if (celsius === null) {
-    return `linear-gradient(180deg, oklch(0.688 0.016 250) 0%, oklch(0.632 0.020 256) 100%)`;
+    return ["oklch(0.688 0.016 250)", "oklch(0.632 0.020 256)"];
   }
   const { l, c, h } = between(celsius);
   const turn = away(h) * SHEET_TRAVEL.h;
-  const top = `oklch(${round(l + SHEET_TRAVEL.l)} ${round(c - SHEET_TRAVEL.c)} ${round(h - turn, 1)})`;
-  const bottom = `oklch(${round(l - SHEET_TRAVEL.l)} ${round(c + SHEET_TRAVEL.c)} ${round(h + turn, 1)})`;
-  return `linear-gradient(180deg, ${top} 0%, ${bottom} 100%)`;
+  return [
+    `oklch(${round(l + SHEET_TRAVEL.l)} ${round(c - SHEET_TRAVEL.c)} ${round(h - turn, 1)})`,
+    `oklch(${round(l - SHEET_TRAVEL.l)} ${round(c + SHEET_TRAVEL.c)} ${round(h + turn, 1)})`,
+  ];
 }
 
 /** The interpolated stop at a temperature, clamped to the ends. */
