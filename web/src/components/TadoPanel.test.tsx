@@ -19,7 +19,14 @@ function setup(
       status={status}
       lights={lights}
       lightOptions={[
-        { id: "z2m:hall/lamp", value: "hall/lamp", label: "Hall lamp", room: "hall" },
+        {
+          value: "z2m:hall/lamp",
+          label: "Hall lamp",
+          room: "hall",
+          source: "z2m",
+          supportsRgb: false,
+          supportsColorTemp: true,
+        },
       ]}
       onLightsChange={onLightsChange}
       onToggle={vi.fn()}
