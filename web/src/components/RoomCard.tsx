@@ -20,7 +20,6 @@ import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { ClimatePanel } from "@/components/ClimatePanel";
 import { HEAT_INK, heatSheet } from "@/lib/heat";
 import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
@@ -137,7 +136,6 @@ export function RoomCard({
   // wrong in a hand, so this picks the component rather than restyling
   // one of them. Matches the `sm` breakpoint the card already uses.
   const phone = useMediaQuery("(max-width: 639px)");
-  const screen = useViewportHeight();
 
   // DialogHeader and DrawerHeader disagree — one is a row with a
   // divider, the other a centred column — and the panel is the same
@@ -248,16 +246,7 @@ export function RoomCard({
           "pt-[env(safe-area-inset-top)]",
           "sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:max-h-[85vh] sm:rounded-xl sm:pt-0",
         )}
-        style={{
-          backgroundImage: heatSheet(draft),
-          color: HEAT_INK,
-          // Measured rather than declared, on a phone only. `100dvh`
-          // left the sheet short at the bottom until something forced
-          // the browser to re-measure the screen — a scroll gesture on
-          // a page with nothing to scroll was enough — and a height in
-          // pixels is the same number without the staleness.
-          ...(phone ? { height: screen } : {}),
-        }}
+        style={{ backgroundImage: heatSheet(draft), color: HEAT_INK }}
       >
         <div className="flex items-center gap-2 px-3 py-3">
           <DialogClose
@@ -312,6 +301,11 @@ export function RoomCard({
       <div
         className={cn(
           "relative flex flex-col overflow-hidden rounded-xl text-white",
+          // Not quite white at night. The tile is already dimmed under
+          // `--tile-shade`, and ink left at full strength on a dimmed
+          // ground reads brighter than it did before the dimming —
+          // which is the opposite of what the shade is for.
+          "dark:text-white/85",
           // Square everywhere. It was only square on a phone because two
           // to a row made it so; a wide screen stretching them into
           // letterboxes made the same grid read as a different one.
@@ -365,8 +359,10 @@ export function RoomCard({
                   // Which way the wash goes follows the card: a fifth
                   // of white lifts the pill off the orange, and the
                   // same again in black does the job on the grey,
-                  // which white barely marks.
-                  lit ? "bg-white/20" : "bg-black/20",
+                  // which white barely marks. On a dark theme it is
+                  // black either way — lifting anything with white at
+                  // night is working against the room.
+                  lit ? "bg-white/20 dark:bg-black/20" : "bg-black/20",
                 )}
               >
                 <Droplet aria-hidden className="size-3.5" />

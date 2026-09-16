@@ -35,6 +35,10 @@ export function HouseBar({ rooms, disabled, onToggle }: HouseBarProps) {
       onClick={onToggle}
       className={cn(
         "flex w-full items-center gap-3 rounded-xl bg-card px-3 py-2.5 text-left transition-colors sm:px-4",
+        // Muted at night the way the room cards are, and by the same
+        // amount, so the row above the grid reads as part of it rather
+        // than as the one thing still at full strength.
+        "dark:text-white/85",
         "hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
         "disabled:cursor-not-allowed disabled:opacity-60",
       )}
@@ -45,7 +49,12 @@ export function HouseBar({ rooms, disabled, onToggle }: HouseBarProps) {
       <BulbGlyph
         className={cn(
           "size-8 transition-colors",
-          lit ? "text-lit" : "text-unlit",
+          // The bulb takes the tiles' own dimming rather than the
+          // ink's: it is the same statement they make, in the same
+          // colours, so it should sit as far back as they do. The
+          // token carries it, which is why there is no `dark:` here —
+          // in the light theme it is the colour itself.
+          lit ? "text-lit-dim" : "text-unlit-dim",
         )}
       />
 

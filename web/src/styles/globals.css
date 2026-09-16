@@ -26,11 +26,41 @@
 body {
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
-  /* So the page reaches the bottom of the screen even when it has
-     little on it. A short body leaves the area under it to the canvas,
-     which on an installed app is the strip behind the home indicator —
-     and an unpainted strip there is the black bar at the bottom. */
-  min-height: 100dvh;
+  /* Exactly the screen, and never scrolled: the app scrolls inside
+     `#root` below. See the note there — this is the half that makes
+     the document itself have no scroll offset to give away. It also
+     means the page always reaches the bottom of the screen, which is
+     what keeps the canvas from showing as a black strip behind the
+     home indicator. */
+  height: 100%;
+  overflow: hidden;
+}
+
+/*
+ * The app scrolls; the document does not.
+ *
+ * Which sounds like a preference and is not. When a modal dialog or
+ * drawer opens, Base UI locks the page by rewriting `<body>` to
+ * `position: relative; height: 100dvh; overflow: hidden` and *moving
+ * the page's scroll offset into the body* — `body.scrollTop =
+ * scrollTop`, in `@base-ui/utils/useScrollLock`. WebKit then draws the
+ * portalled `position: fixed` overlays offset upwards by that amount,
+ * so a sheet opened on a page scrolled 47px stopped 47px short of the
+ * bottom, with the undimmed page showing under it. Measured off a
+ * screenshot at exactly that: 141 device pixels, 47 CSS, undimmed.
+ *
+ * Nothing in the overlay could fix it, which is why four attempts at
+ * its height did not. A document with no scroll offset has none to
+ * hand over, and the offset moves to an element the lock does not
+ * touch.
+ *
+ * The insets stay on the body rather than moving here: padding on a
+ * scroll container scrolls away with the content, which would put the
+ * first row of cards under the clock the moment somebody scrolled.
+ */
+#root {
+  height: 100%;
+  overflow-y: auto;
 }
 
 /* Painted on the root as well, because a background only travels from
@@ -39,6 +69,7 @@ body {
    insets, it is this colour rather than black. */
 html {
   background-color: var(--background);
+  height: 100%;
 }
 
 /* The one corner the rules above leave: where two scrollbars meet,
