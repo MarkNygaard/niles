@@ -5041,21 +5041,44 @@ async fn run_morning_routine_tick(
     // Phase 2 — at start, on a fire-day: claim + kick-on devices that are off.
     let mut just_kicked_on = HashSet::new();
     let firing = should_fire_today(routine, today);
+    if minute_of_day == morning_start && !firing {
+        tracing::info!(
+            "[routine {minute_of_day}] not a fire-day ({}), sitting this one out",
+            today.weekday()
+        );
+    }
     if minute_of_day == morning_start && firing {
         for id in &target_ids {
+            // Every skip below says so. A wake-up light that does not
+            // fire is the one thing here somebody notices hours later,
+            // in a dark room, with nothing in the log to explain it —
+            // which is exactly how two mornings were lost before this
+            // line existed. `info`, not `debug`: the whole point is
+            // that it survives to be read afterwards.
             if tracker.is_flagged(id) {
+                tracing::info!(
+                    "[routine {minute_of_day}] skipped {id}: set by hand,                      and still flagged — turn it off and on to release it"
+                );
                 continue;
             }
             let Some(device) = registry.get(id) else {
+                tracing::info!(
+                    "[routine {minute_of_day}] skipped {id}: no such device —                      it is named in the routine but nothing is reporting it"
+                );
                 continue;
             };
             if !device.is_curve_driven(ambient) {
+                tracing::info!(
+                    "[routine {minute_of_day}] skipped {id}: not curve-driven                      (an ambient light, or not a light at all)"
+                );
                 continue;
             }
             if device.state.on == Some(true) {
+                tracing::info!("[routine {minute_of_day}] skipped {id}: already on");
                 continue;
             }
             if claim_tracker.is_claimed(id) {
+                tracing::info!("[routine {minute_of_day}] skipped {id}: already claimed");
                 continue;
             }
             let target = DeviceState {
