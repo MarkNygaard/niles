@@ -204,6 +204,18 @@ kelvin = 2000
 # # How long everyone has to be gone before the house counts as away.
 # away_debounce_minutes = 5
 #
+# # What presence does besides answer the question. Both are off until
+# # somebody says otherwise: switching presence on to know whether the
+# # house is empty should not also hand it the light switches. Easier
+# # set from the tado card in Settings than typed here.
+# #
+# # Off takes whatever is on at the moment the last person goes; a light
+# # already off, or one that has never reported, is left alone. On names
+# # its lights, because arriving is not the same shape of event as
+# # leaving — the hall and the kitchen, not the whole house.
+# lights_off_when_away = true
+# lights_on_when_home = ["hall/lamp", "kitchen/ceiling"]
+#
 # [presence.tado]
 # # Discovered from /api/v2/me. Only worth setting if the account has
 # # more than one home.

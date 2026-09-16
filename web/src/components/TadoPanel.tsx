@@ -2,12 +2,20 @@ import { useEffect, useState } from "react";
 import { Check, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { DevicePicker } from "@/components/DevicePicker";
+import type { DeviceOption } from "@/components/DevicePicker";
 import { ZonePairing, UnplacedNotice } from "@/components/ZonePairing";
 import { api } from "@/lib/api";
 import type { TadoStatus, Zone } from "@/lib/api";
 
 export interface TadoPanelProps {
   status: TadoStatus;
+  /** What presence does to the lights, as `[presence]` has it. */
+  lights?: { offWhenAway: boolean; onWhenHome: string[] };
+  /** Every light in the house, for choosing the ones to come home to. */
+  lightOptions?: DeviceOption[];
+  /** Writes to `presence.*`, batched as one revision. */
+  onLightsChange?: (entries: { path: string; value: unknown }[]) => void;
   /** Start or stop reading presence. Only offered once connected. */
   onToggle: (on: boolean) => void;
   saving?: boolean;
@@ -36,6 +44,9 @@ export function TadoPanel({
   status,
   onToggle,
   saving,
+  lights,
+  lightOptions,
+  onLightsChange,
   onChanged,
   zones,
   rooms,
@@ -147,6 +158,59 @@ export function TadoPanel({
               onCheckedChange={onToggle}
             />
           </label>
+
+          {/* What presence is for, beyond answering the question. Both
+              are off until somebody says otherwise: switching presence
+              on to know whether the house is empty should not also
+              hand it the light switches. */}
+          {status.presence_enabled && lights && onLightsChange && (
+            <div className="flex flex-col gap-4 border-t pt-4">
+              <label className="flex items-center justify-between gap-4">
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">
+                    Lights off when everyone leaves
+                  </span>
+                  <span className="text-muted-foreground block text-xs">
+                    Whatever is on at the moment the last person goes.
+                    Anything already off is left alone.
+                  </span>
+                </span>
+                <Switch
+                  checked={lights.offWhenAway}
+                  disabled={saving}
+                  onCheckedChange={(on) =>
+                    onLightsChange([
+                      { path: "presence.lights_off_when_away", value: on },
+                    ])
+                  }
+                />
+              </label>
+
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium">
+                  Lights on when somebody comes home
+                </span>
+                <span className="text-muted-foreground text-xs">
+                  The hall and the kitchen, rather than the whole house —
+                  which is why this is a list and the one above is a
+                  switch. A light already on is left as it is.
+                </span>
+                <DevicePicker
+                  id="lights-on-when-home"
+                  aria-label="Lights on when somebody comes home"
+                  value={lights.onWhenHome}
+                  options={lightOptions ?? []}
+                  disabled={saving}
+                  emptyMessage="No lights yet."
+                  onChange={(value) =>
+                    onLightsChange([
+                      { path: "presence.lights_on_when_home", value },
+                    ])
+                  }
+                />
+              </div>
+            </div>
+          )}
 
           {zones && zones.length > 0 && onPair && (
             <div className="flex flex-col gap-3 border-t pt-4">

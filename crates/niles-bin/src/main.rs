@@ -4371,6 +4371,22 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         router: router.clone(),
         dry_run: args.dry_run,
     });
+
+    // Lights that follow the house emptying and filling. Read at
+    // startup like the rules beside it: both build a task around the
+    // settings, and neither rebuilds it underneath itself.
+    let presence_lights = Arc::new(niles_automations::PresenceLights::new(
+        registry.clone(),
+        automation_sink.clone(),
+        cfg.presence.lights_off_when_away,
+        cfg.presence
+            .arrival_lights()
+            .inspect_err(|e| tracing::warn!("presence lights disabled: {e}"))
+            .unwrap_or_default(),
+    ));
+    let _presence_lights_handle = presence_lights
+        .wanted()
+        .then(|| presence_lights.clone().spawn(bus.clone()));
     let automation_notifier = Arc::new(CenterNotifier {
         center: notifications.clone(),
     });

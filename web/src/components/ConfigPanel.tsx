@@ -190,6 +190,12 @@ function hostOf(baseUrl?: string): string | undefined {
 }
 
 /** The satellites as `[satellites.<name>]` has them, sorted by name. */
+/** A list of strings at a dotted path, with anything else read as none. */
+function stringsAt(root: unknown, path: string): string[] {
+  const value = valueAt(root, path);
+  return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
+}
+
 function satellitesAt(root: unknown): Satellite[] {
   const value = valueAt(root, "satellites");
   if (!value || typeof value !== "object") return [];
@@ -723,6 +729,11 @@ export function ConfigPanel() {
             tado={tado.data}
             zones={climate.data}
             rooms={[...new Set((devices.data ?? []).map((d) => d.room))].sort()}
+            presenceLights={{
+              offWhenAway: valueAt(view.effective, "presence.lights_off_when_away") === true,
+              onWhenHome: stringsAt(view.effective, "presence.lights_on_when_home"),
+            }}
+            lightOptions={lights}
             linear={
               (view.effective.integrations as
                 | { linear?: { team?: string; trigger_label?: string } }

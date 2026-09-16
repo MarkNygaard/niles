@@ -74,6 +74,22 @@ pub struct PresenceConfig {
     pub poll_seconds: u64,
     #[serde(default = "default_away_debounce_minutes")]
     pub away_debounce_minutes: u64,
+    /// Turn the lights off when the last person leaves.
+    ///
+    /// Off by default, and deliberately: presence can be switched on
+    /// to answer "is anybody home" without also handing it the light
+    /// switches. Somebody has to say that this is wanted.
+    #[serde(default)]
+    pub lights_off_when_away: bool,
+    /// The lights to turn on when somebody comes back.
+    ///
+    /// Named rather than "all of them", because arriving is not the
+    /// same shape of event as leaving: turning everything off on the
+    /// way out is what a person would do anyway, while turning
+    /// everything on as they come through the door is nobody's idea of
+    /// coming home. The hall and the kitchen, not the whole house.
+    #[serde(default)]
+    pub lights_on_when_home: Vec<String>,
     #[serde(default)]
     pub tado: Option<TadoConfigDto>,
 }
@@ -84,12 +100,39 @@ impl Default for PresenceConfig {
             enabled: false,
             poll_seconds: default_poll_seconds(),
             away_debounce_minutes: default_away_debounce_minutes(),
+            lights_off_when_away: false,
+            lights_on_when_home: Vec::new(),
             tado: None,
         }
     }
 }
 
 impl PresenceConfig {
+    /// The lights to turn on when somebody arrives, parsed.
+    ///
+    /// The single place an entry becomes a `DeviceId`, so a caller
+    /// cannot re-derive it differently — the bug `ambient_lights`
+    /// documents from the other end.
+    pub fn arrival_lights(&self) -> Result<Vec<niles_core::DeviceId>> {
+        self.lights_on_when_home
+            .iter()
+            .map(|raw| self.light_id(raw))
+            .collect()
+    }
+
+    /// An unqualified name is Zigbee, as everywhere else in the config.
+    fn light_id(&self, raw: &str) -> Result<niles_core::DeviceId> {
+        let qualified = if raw.contains(':') {
+            raw.to_string()
+        } else {
+            format!("z2m:{raw}")
+        };
+        niles_core::DeviceId::parse(&qualified).map_err(|e| Error::InvalidSection {
+            section: "presence",
+            reason: format!("lights_on_when_home: {raw:?} is not a device id: {e}"),
+        })
+    }
+
     pub fn validate(&self) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -111,6 +154,13 @@ impl PresenceConfig {
                 section: "presence",
                 reason: "away_debounce_minutes must be <= 120".into(),
             });
+        }
+        // Checked here rather than where they are used: a light named
+        // wrongly in this list would otherwise be a thing that quietly
+        // does not happen at the door, hours later, with nothing to
+        // read about it.
+        for light in &self.lights_on_when_home {
+            self.light_id(light)?;
         }
         if let Some(tado) = &self.tado {
             // No credential checks: there are no credentials. An
@@ -187,6 +237,7 @@ home_id = 123
                 base_url: "https://my.tado.com".into(),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
     }
@@ -198,6 +249,7 @@ home_id = 123
             poll_seconds: 5,
             away_debounce_minutes: 5,
             tado: Some(TadoConfigDto::default()),
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
@@ -216,6 +268,7 @@ home_id = 123
             poll_seconds: 4000,
             away_debounce_minutes: 5,
             tado: Some(TadoConfigDto::default()),
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
@@ -234,6 +287,7 @@ home_id = 123
             poll_seconds: 300,
             away_debounce_minutes: 121,
             tado: Some(TadoConfigDto::default()),
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
@@ -243,6 +297,31 @@ home_id = 123
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_lights_to_turn_on_have_to_be_lights_that_exist() {
+        // Caught here, or it is a thing that quietly does not happen at
+        // the door hours later with nothing to read about it.
+        let cfg = PresenceConfig {
+            enabled: true,
+            lights_on_when_home: vec!["not a device".into()],
+            tado: Some(TadoConfigDto::default()),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("lights_on_when_home"), "{err}");
+    }
+
+    #[test]
+    fn an_unqualified_light_is_zigbee_like_everywhere_else() {
+        let cfg = PresenceConfig {
+            lights_on_when_home: vec!["hall/lamp".into(), "wled:office/strip".into()],
+            ..Default::default()
+        };
+        let ids = cfg.arrival_lights().expect("both parse");
+        assert_eq!(ids[0].to_string(), "z2m:hall/lamp");
+        assert_eq!(ids[1].to_string(), "wled:office/strip");
     }
 
     #[test]
@@ -256,6 +335,7 @@ home_id = 123
                 base_url: "https://my.tado.com".into(),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
@@ -278,6 +358,7 @@ home_id = 123
                 base_url: "my.tado.com".into(),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
