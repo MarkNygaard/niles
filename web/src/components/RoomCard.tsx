@@ -135,7 +135,11 @@ export function RoomCard({
   const [draft, setDraft] = useState<number | null>(null);
   // Temporary, with `ViewportProbe`: what the sheet's own box comes out
   // as on the phone, which is the one number nobody here can guess.
+  // Behind `?probe` so the readout only appears for somebody who went
+  // looking for it — this ships to a house that is using the app.
   const [sheetEl, setSheetEl] = useState<HTMLElement | null>(null);
+  const probing =
+    typeof window !== "undefined" && window.location.search.includes("probe");
   // A drag handle is meaningless with a mouse and a centred modal is
   // wrong in a hand, so this picks the component rather than restyling
   // one of them. Matches the `sm` breakpoint the card already uses.
@@ -253,7 +257,7 @@ export function RoomCard({
         style={{ backgroundImage: heatSheet(draft), color: HEAT_INK }}
         ref={setSheetEl}
       >
-        <ViewportProbe of={sheetEl} />
+        {probing && <ViewportProbe of={sheetEl} />}
         <div className="flex items-center gap-2 px-3 py-3">
           <DialogClose
             aria-label="Close"
