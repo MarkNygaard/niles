@@ -38,7 +38,7 @@ export function HouseBar({ rooms, disabled, onToggle }: HouseBarProps) {
         // Muted at night the way the room cards are, and by the same
         // amount, so the row above the grid reads as part of it rather
         // than as the one thing still at full strength.
-        "dark:text-foreground/85",
+        "dark:text-white/85",
         "hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
         "disabled:cursor-not-allowed disabled:opacity-60",
       )}
@@ -51,10 +51,10 @@ export function HouseBar({ rooms, disabled, onToggle }: HouseBarProps) {
           "size-8 transition-colors",
           // The bulb takes the tiles' own dimming rather than the
           // ink's: it is the same statement they make, in the same
-          // colours, so it should sit as far back as they do. Still
-          // 4.11:1 against the card, which is more than the unlit grey
-          // has ever had.
-          lit ? "text-lit dark:text-lit/65" : "text-unlit dark:text-unlit/65",
+          // colours, so it should sit as far back as they do. The
+          // token carries it, which is why there is no `dark:` here —
+          // in the light theme it is the colour itself.
+          lit ? "text-lit-dim" : "text-unlit-dim",
         )}
       />
 

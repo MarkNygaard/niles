@@ -34,6 +34,8 @@
   --color-mark: var(--mark);
   --color-lit: var(--lit);
   --color-unlit: var(--unlit);
+  --color-lit-dim: var(--lit-dim);
+  --color-unlit-dim: var(--unlit-dim);
   --color-lit-foreground: var(--lit-foreground);
   --color-accent-orange: var(--accent-orange);
   --color-accent-orange-light: var(--accent-orange-light);
@@ -157,6 +159,9 @@
      sampled. */
   --tile-shade: transparent;
   --lit: oklch(0.68 0.17 56);
+  /* The bulb as it appears on a surface that is not itself dimmed.
+     Nothing to do in the light theme: it is the colour itself. */
+  --lit-dim: var(--lit);
   /* White, because the deeper amber can no longer carry dark ink. */
   --lit-foreground: oklch(0.99 0 0);
   /* A bulb that is off, in the cool grey the cards go when their room
@@ -169,6 +174,7 @@
      3.03, and a hue 200° away from the lit one besides, which is what
      actually separates them at a glance. */
   --unlit: oklch(0.775 0.019 251);
+  --unlit-dim: var(--unlit);
   --secondary: oklch(0.95 0.002 286);
   --secondary-foreground: oklch(0.25 0.006 285);
   --muted: oklch(0.95 0.002 286);
@@ -275,11 +281,17 @@
      tiles and there is one place to change how far this goes. */
   --tile-shade: rgb(0 0 0 / 35%);
   --lit: oklch(0.769 0.17 56);
+  /* The same third of black the tiles take, mixed in rather than laid
+     over: a glyph has no ground of its own to put a wash on. One
+     number for both, so the bulb above the grid and the grid itself
+     dim together or not at all. */
+  --lit-dim: color-mix(in srgb, var(--lit), black 35%);
   --lit-foreground: oklch(0.279 0.074 45.6);
   /* Lighter than the light theme's, for the same reason the amber is:
      it has to climb off a dark ground rather than sink into a white
      one. 3.54:1 against the lit bulb's 8.35. */
   --unlit: oklch(0.54 0.02 252);
+  --unlit-dim: color-mix(in srgb, var(--unlit), black 35%);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
