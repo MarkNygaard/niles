@@ -5,7 +5,11 @@ import { useEffect, useState } from "react";
  *
  * Five attempts at the gap under the sheet have been reasoned from
  * descriptions and every one was wrong, so this prints the numbers
- * instead. It comes out in the same change as the fix it leads to.
+ * instead. Shown unconditionally: the gap only appears in the app
+ * installed on the Home Screen, which opens at its manifest's
+ * `start_url` and so can never be handed a query string to switch
+ * anything on with. It comes out in the same change as the fix it
+ * leads to.
  */
 export function ViewportProbe({ of }: { of: HTMLElement | null }) {
   const [lines, setLines] = useState<string[]>([]);

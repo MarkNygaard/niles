@@ -50,7 +50,7 @@ export function App() {
   const settings = view === "settings";
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-4 sm:px-6 sm:py-6">
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pt-[calc(env(safe-area-inset-top)+1rem)] pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:px-6 sm:pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
       <header className="flex items-center gap-2">
         {settings && (
           <button
