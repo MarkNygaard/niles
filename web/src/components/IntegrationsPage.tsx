@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { BrandMark } from "@/components/BrandMark";
+import type { DeviceOption } from "@/components/DevicePicker";
 import { SecretField } from "@/components/SecretField";
 import { TadoPanel } from "@/components/TadoPanel";
 import { LinearPanel } from "@/components/LinearPanel";
@@ -36,6 +37,9 @@ export interface IntegrationsPageProps {
   /** tado's heating zones, and the rooms they can be paired with. */
   zones?: Zone[];
   rooms?: string[];
+  /** What presence does to the lights, and the lights to choose from. */
+  presenceLights?: { offWhenAway: boolean; onWhenHome: string[] };
+  lightOptions?: DeviceOption[];
   /** The Linear section as the config has it, if there is one. */
   linear?: { team?: string; trigger_label?: string };
   saving?: boolean;
@@ -66,6 +70,8 @@ export function IntegrationsPage({
   tado,
   zones,
   rooms,
+  presenceLights,
+  lightOptions,
   linear,
   saving,
   error,
@@ -257,6 +263,9 @@ export function IntegrationsPage({
                       ])
                     }
                     onChanged={onTadoChanged}
+                    lights={presenceLights}
+                    lightOptions={lightOptions}
+                    onLightsChange={(entries) => onChange("presence", entries)}
                     zones={zones}
                     rooms={rooms}
                     onPair={(zoneId, room) =>
