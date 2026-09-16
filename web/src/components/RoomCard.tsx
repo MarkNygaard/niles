@@ -306,10 +306,12 @@ export function RoomCard({
           // ground reads brighter than it did before the dimming —
           // which is the opposite of what the shade is for.
           "dark:text-white/85",
-          // Square everywhere. It was only square on a phone because two
-          // to a row made it so; a wide screen stretching them into
-          // letterboxes made the same grid read as a different one.
-          "aspect-square",
+          // Square until `lg`, wider than tall after it — which is the
+          // same breakpoint the grid goes to three columns on, and the
+          // first width at which a card has more of it than anything
+          // on the card needs. A tablet still gets squares, because
+          // two to a row is what makes them square in the first place.
+          "aspect-square lg:aspect-[4/3]",
         )}
         style={{ backgroundImage: lit ? TILE.on : TILE.off }}
       >
