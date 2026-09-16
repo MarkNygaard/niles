@@ -56,8 +56,26 @@
       again, so changing them means removing the app and re-adding it.
     -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <!-- Light status-bar text, drawn over the page. -->
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!--
+      `default`, not `black-translucent`.
+
+      Translucent is supposed to hand the page the whole screen and let
+      it run under the status bar. Measured on the device it does not:
+      `innerHeight`, `clientHeight` and `100dvh` all came back 797 on an
+      844pt screen — 47 short, exactly the status bar — while the page
+      was still drawn from the top edge. So iOS sized the viewport as
+      though the status bar were opaque and then positioned it as though
+      it were not, leaving 47pt at the bottom that belongs to no page.
+      That is the gap under the heating sheet, and no CSS could ever
+      have closed it: the sheet filled its viewport perfectly, 0..797 of
+      797, every time.
+
+      `default` asks for the honest version of the same thing — the page
+      gets the screen below the status bar, all of it — which also
+      matches what this app wants anyway: nothing of ours belongs under
+      the clock.
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Niles" />
 
     <!-- iOS reads only this one, and ignores the manifest's icons. -->
