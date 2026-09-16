@@ -267,13 +267,13 @@
   --mark: oklch(0.62 0.1 158);
   /* See the light palette. Bright here: this amber has near-black under
      it, where it reads as a lamp rather than as a warning. */
-  /* A quarter of black over every tile. The colours were measured off
+  /* A third of black over every tile. The colours were measured off
      a phone in daylight, and at night a wall of them at full strength
      is the brightest thing in the room — which is a poor quality in a
      page whose job is to turn the lights down. Black rather than a
      second set of colours, so the tiles stay recognisably the same
      tiles and there is one place to change how far this goes. */
-  --tile-shade: rgb(0 0 0 / 25%);
+  --tile-shade: rgb(0 0 0 / 35%);
   --lit: oklch(0.769 0.17 56);
   --lit-foreground: oklch(0.279 0.074 45.6);
   /* Lighter than the light theme's, for the same reason the amber is:

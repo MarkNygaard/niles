@@ -301,6 +301,11 @@ export function RoomCard({
       <div
         className={cn(
           "relative flex flex-col overflow-hidden rounded-xl text-white",
+          // Not quite white at night. The tile is already dimmed under
+          // `--tile-shade`, and ink left at full strength on a dimmed
+          // ground reads brighter than it did before the dimming —
+          // which is the opposite of what the shade is for.
+          "dark:text-white/85",
           // Square everywhere. It was only square on a phone because two
           // to a row made it so; a wide screen stretching them into
           // letterboxes made the same grid read as a different one.
@@ -354,8 +359,10 @@ export function RoomCard({
                   // Which way the wash goes follows the card: a fifth
                   // of white lifts the pill off the orange, and the
                   // same again in black does the job on the grey,
-                  // which white barely marks.
-                  lit ? "bg-white/20" : "bg-black/20",
+                  // which white barely marks. On a dark theme it is
+                  // black either way — lifting anything with white at
+                  // night is working against the room.
+                  lit ? "bg-white/20 dark:bg-black/20" : "bg-black/20",
                 )}
               >
                 <Droplet aria-hidden className="size-3.5" />
