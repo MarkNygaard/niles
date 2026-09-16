@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Droplets, Power, X } from "lucide-react";
+import { Droplet, Power, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -350,7 +350,7 @@ export function RoomCard({
             {humid(room) !== undefined && (
               <span
                 className={cn(
-                  "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm leading-none font-medium",
+                  "flex items-center gap-1 rounded-full px-1.5 py-1 text-xs leading-none font-medium",
                   // Which way the wash goes follows the card: a fifth
                   // of white lifts the pill off the orange, and the
                   // same again in black does the job on the grey,
@@ -358,7 +358,7 @@ export function RoomCard({
                   lit ? "bg-white/20" : "bg-black/20",
                 )}
               >
-                <Droplets aria-hidden className="size-3.5" />
+                <Droplet aria-hidden className="size-3.5" />
                 {Math.round(humid(room)!)}%
               </span>
             )}
