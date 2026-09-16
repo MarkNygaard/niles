@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { initials } from "@/components/AccountMenu";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { AccountMenu, initials } from "@/components/AccountMenu";
 
 describe("initials", () => {
   it("takes both parts of a dotted address", () => {
@@ -19,5 +20,17 @@ describe("initials", () => {
     // Sign-in can be off entirely, and the menu still holds the
     // appearance setting.
     expect(initials(undefined)).toBe("·");
+  });
+});
+
+describe("AccountMenu", () => {
+  it("shuts itself on the way to settings", () => {
+    // It used to stay open over the page it had just navigated to.
+    const onOpenSettings = vi.fn();
+    render(<AccountMenu email="mark@example.com" onOpenSettings={onOpenSettings} />);
+    fireEvent.click(screen.getByRole("button", { name: /Account/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
   });
 });

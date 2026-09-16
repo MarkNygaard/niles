@@ -31,9 +31,14 @@ export function AccountMenu({ email, avatarUrl, onOpenSettings }: AccountMenuPro
   // letters rather than leaving a hole where the button was.
   const [broken, setBroken] = useState(false);
   const picture = avatarUrl && !broken;
+  // Held here rather than left to the popover, so that the one item
+  // that takes you somewhere else can shut it on the way out. The
+  // appearance switches deliberately do not: changing the theme is
+  // something you do while looking at it.
+  const [open, setOpen] = useState(false);
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         aria-label={email ? `Account — ${email}` : "Account and appearance"}
         className={cn(
@@ -89,7 +94,13 @@ export function AccountMenu({ email, avatarUrl, onOpenSettings }: AccountMenuPro
         </div>
 
         <div className="p-1">
-          <MenuItem icon={<SlidersHorizontal />} onClick={onOpenSettings}>
+          <MenuItem
+            icon={<SlidersHorizontal />}
+            onClick={() => {
+              setOpen(false);
+              onOpenSettings();
+            }}
+          >
             Settings
           </MenuItem>
           {/* A link, not a fetch: signing out clears a cookie on a
