@@ -28,7 +28,8 @@ pub use curve::{
 pub use error::{Error, Result};
 pub use manual_mode::ManualModeTracker;
 pub use morning::{
-    MorningClaimTracker, MorningRoutineConfig, routine_brightness_at, should_fire_today,
+    MorningClaimTracker, MorningRoutineConfig, Skipped, kick_on_skip, routine_brightness_at,
+    should_fire_today,
 };
 pub use scenes::{SceneEntry, ScenePersistence, SceneStore};
 pub use sink::{BRIGHTNESS_DEBOUNCE, build_ambient_target, build_curve_target};

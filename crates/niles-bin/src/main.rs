@@ -30,7 +30,7 @@ use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
     SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant, brightness_at,
     build_ambient_target, build_curve_target, classify_action, color_temp_at, effective_minute,
-    routine_brightness_at, should_fire_today,
+    kick_on_skip, routine_brightness_at, should_fire_today,
 };
 use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
@@ -5065,36 +5065,22 @@ async fn run_morning_routine_tick(
     }
     if minute_of_day == morning_start && firing {
         for id in &target_ids {
-            // Every skip below says so. A wake-up light that does not
-            // fire is the one thing here somebody notices hours later,
-            // in a dark room, with nothing in the log to explain it —
-            // which is exactly how two mornings were lost before this
-            // line existed. `info`, not `debug`: the whole point is
-            // that it survives to be read afterwards.
-            if tracker.is_flagged(id) {
+            // The rule lives in `kick_on_skip`, where it can be tested;
+            // this end only says what it decided. A wake-up that does
+            // not happen is noticed hours later in a dark room, so the
+            // reason has to survive to be read then — `info`, not
+            // `debug`.
+            let device = registry.get(id);
+            if let Some(reason) = kick_on_skip(
+                device.is_some(),
+                device.as_ref().is_some_and(|d| d.is_curve_driven(ambient)),
+                device.as_ref().and_then(|d| d.state.on),
+                claim_tracker.is_claimed(id),
+            ) {
                 tracing::info!(
-                    "[routine {minute_of_day}] skipped {id}: set by hand,                      and still flagged — turn it off and on to release it"
+                    "[routine {minute_of_day}] skipped {id}: {}",
+                    reason.reason()
                 );
-                continue;
-            }
-            let Some(device) = registry.get(id) else {
-                tracing::info!(
-                    "[routine {minute_of_day}] skipped {id}: no such device —                      it is named in the routine but nothing is reporting it"
-                );
-                continue;
-            };
-            if !device.is_curve_driven(ambient) {
-                tracing::info!(
-                    "[routine {minute_of_day}] skipped {id}: not curve-driven                      (an ambient light, or not a light at all)"
-                );
-                continue;
-            }
-            if device.state.on == Some(true) {
-                tracing::info!("[routine {minute_of_day}] skipped {id}: already on");
-                continue;
-            }
-            if claim_tracker.is_claimed(id) {
-                tracing::info!("[routine {minute_of_day}] skipped {id}: already claimed");
                 continue;
             }
             let target = DeviceState {
