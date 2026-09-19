@@ -262,6 +262,53 @@ pub fn parse_device_list(json: &[u8]) -> crate::Result<Vec<Z2mDevice>> {
     Ok(serde_json::from_slice(json)?)
 }
 
+/// One entry of `bridge/groups`.
+///
+/// A Zigbee group is a light in its own right: it has a friendly name
+/// shaped like any other, publishes state on that topic, and takes
+/// commands there. What it does not have is a `definition`, so what it
+/// can be told has to be read off its members.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Z2mGroup {
+    pub id: u32,
+    pub friendly_name: String,
+    pub members: Vec<Z2mGroupMember>,
+}
+
+/// One member of a group: a device, and which of its endpoints joined.
+///
+/// The endpoint is Z2M's business rather than ours — a bulb's light
+/// lives on one endpoint and its Green Power proxy on another, and a
+/// group holding the wrong one accepts commands and does nothing. We
+/// only need to know *which device* is in, so the whole device can be
+/// hidden behind the group.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Z2mGroupMember {
+    pub ieee_address: String,
+    pub endpoint: u32,
+}
+
+impl Z2mGroup {
+    /// The group as a device, given what its members can do.
+    ///
+    /// Capabilities are the union: a group holding one colour bulb and
+    /// one white one can be told a colour, and the white one will
+    /// ignore it — which is Z2M's business and exactly what happens if
+    /// you send it by hand. Taking the intersection instead would hide
+    /// a control the group really does have.
+    pub fn to_device(&self, members: LightCapabilities) -> crate::Result<Device> {
+        let id = DeviceId::parse(&format!("z2m:{}", self.friendly_name))?;
+        Ok(Device::new(id, DeviceState::default(), DeviceClass::Light).with_capabilities(members))
+    }
+}
+
+/// Parse a `bridge/groups` payload.
+pub fn parse_group_list(json: &[u8]) -> crate::Result<Vec<Z2mGroup>> {
+    Ok(serde_json::from_slice(json)?)
+}
+
 /// Parse the body of a `<prefix>/<friendly_name>` state message.
 pub fn parse_state(json: &[u8]) -> crate::Result<Z2mState> {
     Ok(serde_json::from_slice(json)?)
