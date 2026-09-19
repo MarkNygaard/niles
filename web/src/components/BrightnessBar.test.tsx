@@ -58,6 +58,43 @@ describe("BrightnessBar", () => {
     expect(onDraft.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it("holds what was asked for while the group catches up", () => {
+    // A single bulb echoes one state back. A group reports again as
+    // each of its members acks, and again through a fade — every one
+    // of those numbers is true and none of them is what was asked for.
+    // Taking them made the bar walk back down the fade and up again.
+    const { rerender } = render(
+      <BrightnessBar value={20} onCommit={vi.fn()} {...props} />,
+    );
+    const bar = screen.getByRole("slider", { name: "Lamp brightness" });
+    drag(bar, 200);
+    expect(bar).toHaveAttribute("aria-valuenow", "100");
+
+    // The first member reports, still mid-fade.
+    rerender(<BrightnessBar value={62} onCommit={vi.fn()} {...props} />);
+    expect(bar).toHaveAttribute("aria-valuenow", "100");
+    // And the second, from where it started.
+    rerender(<BrightnessBar value={20} onCommit={vi.fn()} {...props} />);
+    expect(bar).toHaveAttribute("aria-valuenow", "100");
+  });
+
+  it("settles as soon as the light agrees", () => {
+    const { rerender } = render(
+      <BrightnessBar value={20} onCommit={vi.fn()} {...props} />,
+    );
+    const bar = screen.getByRole("slider", { name: "Lamp brightness" });
+    drag(bar, 200);
+    // Within one, because a percentage goes to Z2M as 0–254 and comes
+    // back rounded: asking for 100 can honestly answer 99.
+    rerender(<BrightnessBar value={99} onCommit={vi.fn()} {...props} />);
+    expect(bar).toHaveAttribute("aria-valuenow", "99");
+
+    // And afterwards it follows the light again — the curve and the
+    // voice move it too.
+    rerender(<BrightnessBar value={40} onCommit={vi.fn()} {...props} />);
+    expect(bar).toHaveAttribute("aria-valuenow", "40");
+  });
+
   it("takes the light's word when nothing is being dragged", () => {
     const { rerender } = render(
       <BrightnessBar value={20} onCommit={vi.fn()} {...props} />,

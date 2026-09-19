@@ -82,16 +82,49 @@ export function BrightnessBar({
     onDraft?.(next);
   };
 
+  /**
+   * What was asked for and has not come back yet.
+   *
+   * Letting go used to hand the bar straight back to the light, and a
+   * light does not answer at once or in one piece. It fades — fifteen
+   * seconds of it, by default — reporting itself on the way, and a
+   * group reports again as each of its bulbs catches up. Every one of
+   * those is a number that is true and is not what you asked for, so
+   * the bar walked back down the fade and up again.
+   *
+   * Holding what was asked for until the light agrees removes all of
+   * it. `at` is there so a request that is never agreed to — refused,
+   * lost, rounded somewhere unexpected — gives up rather than leaving
+   * the bar showing something that is not true.
+   */
+  const pending = useRef<{ want: number; at: number } | null>(null);
+
   // While a finger is down the draft is the truth. Afterwards the light
-  // is: the curve and the voice move it too.
+  // is — once it has caught up, or once waiting for it has stopped
+  // being reasonable.
   useEffect(() => {
     if (dragging) return;
+    const waiting = pending.current;
+    if (waiting) {
+      // Within one, not exactly: a percentage goes to Z2M as 0–254 and
+      // comes back rounded, so asking for 43 can honestly answer 42.
+      const agreed = Math.abs(waiting.want - value) <= 1;
+      const stale = Date.now() - waiting.at > 15_000;
+      if (!agreed && !stale) return;
+      pending.current = null;
+    }
     setDraftState(value);
     onDraft?.(value);
     // `onDraft` is a fresh closure every render; depending on it would
     // run this on every one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, dragging]);
+
+  /** Ask for a level, and go on showing it until the light agrees. */
+  const commit = (next: number) => {
+    pending.current = { want: next, at: Date.now() };
+    onCommit(next);
+  };
 
   function percentAtX(clientX: number): number {
     const box = track.current?.getBoundingClientRect();
@@ -135,7 +168,7 @@ export function BrightnessBar({
         const next = percentAtX(e.clientX);
         setDragging(false);
         setDraft(next);
-        onCommit(next);
+        commit(next);
       }}
       onKeyDown={(e) => {
         const by = e.key === "ArrowRight" ? 5 : e.key === "ArrowLeft" ? -5 : 0;
@@ -143,7 +176,7 @@ export function BrightnessBar({
         e.preventDefault();
         const next = clamp(draft + by);
         setDraft(next);
-        onCommit(next);
+        commit(next);
       }}
     >
       {/* Clipped rather than resized, so the gradient stays fixed to
