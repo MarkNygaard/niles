@@ -701,6 +701,16 @@ mod tests {
             ids(&registry),
             vec!["z2m:living_room/table", "z2m:office/lamp"]
         );
+
+        // And the capabilities catch up. Arriving first, the group had
+        // no device list to read its members from and could only be
+        // told on and off; the list landing fixes it, because every
+        // device list rebuilds the groups on top of itself.
+        let group = registry
+            .get(&DeviceId::parse("z2m:living_room/table").unwrap())
+            .expect("the group is a device");
+        assert!(group.capabilities.color_temp);
+        assert!(group.capabilities.rgb);
     }
 
     #[test]
