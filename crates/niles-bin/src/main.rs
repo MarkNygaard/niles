@@ -1260,6 +1260,18 @@ fn build_weather_client() -> Option<Arc<niles_weather::OpenMeteoClient>> {
 struct PresenceSetup {
     aggregator: Arc<PresenceAggregator>,
     sources: Vec<Arc<dyn PresenceSource>>,
+    /// The UniFi console, when there is one — kept out of `sources` as
+    /// well as in it, because the pairing route asks it a question no
+    /// other source can answer: which device is making this request.
+    unifi: Option<Arc<niles_presence::UnifiSource>>,
+    /// The phones that count as somebody being home.
+    ///
+    /// Shared with the UniFi source and refreshed from config on every
+    /// tick, so pairing a phone takes hold without a restart — which
+    /// matters more here than anywhere: pairing is the first thing
+    /// somebody does, and being told to restart afterwards would make
+    /// the button look broken.
+    watching: Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
 }
 
 /// Build a `PresenceSetup` from the `[presence]` section.
@@ -1313,6 +1325,12 @@ fn build_presence(
     if let (Some(t), true) = (&tado, cfg.tado.is_some()) {
         sources.push(t.clone() as Arc<dyn PresenceSource>);
     }
+    let watching = Arc::new(std::sync::RwLock::new(std::collections::HashSet::new()));
+    let unifi = build_unifi(cfg, watching.clone());
+    if let Some(u) = &unifi {
+        sources.push(u.clone() as Arc<dyn PresenceSource>);
+    }
+
     if sources.is_empty() {
         return None;
     }
@@ -1323,12 +1341,62 @@ fn build_presence(
     Some(PresenceSetup {
         aggregator,
         sources,
+        unifi,
+        watching,
     })
+}
+
+/// The UniFi console, when the config names one and a key can be found.
+///
+/// A missing key is reported rather than swallowed: the section exists
+/// because somebody filled it in, so silence would leave them watching
+/// a hall light that never comes on with nothing to read.
+fn build_unifi(
+    cfg: &niles_config::PresenceConfig,
+    watching: Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+) -> Option<Arc<niles_presence::UnifiSource>> {
+    if !cfg.unifi.is_configured() {
+        return None;
+    }
+    let api_key = match cfg.unifi.resolve_api_key() {
+        Ok(key) => key,
+        Err(e) => {
+            tracing::warn!("UniFi presence disabled: {e}");
+            return None;
+        }
+    };
+    let transport = match niles_presence::HttpUnifiTransport::new(Duration::from_secs(10)) {
+        Ok(t) => Arc::new(t),
+        Err(e) => {
+            tracing::warn!("UniFi presence disabled: {e}");
+            return None;
+        }
+    };
+    Some(Arc::new(niles_presence::UnifiSource::new(
+        &cfg.unifi.host,
+        &cfg.unifi.site,
+        api_key,
+        transport,
+        watching,
+    )))
+}
+
+/// The phones on the people list, as the network writes them.
+fn paired_macs(cfg: &niles_config::Config) -> std::collections::HashSet<String> {
+    cfg.auth
+        .allowed
+        .iter()
+        .filter_map(|p| p.device_mac.as_deref())
+        .map(|m| m.trim().to_lowercase())
+        .filter(|m| !m.is_empty())
+        .collect()
 }
 
 fn spawn_presence_poll_loop(
     aggregator: Arc<PresenceAggregator>,
     sources: Vec<Arc<dyn PresenceSource>>,
+    // Shared with the UniFi source; refreshed from config each tick.
+    watching: Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
     startup: niles_config::PresenceConfig,
     store: Option<Arc<niles_config::ConfigStore>>,
     bus: EventBus,
@@ -1340,10 +1408,17 @@ fn spawn_presence_poll_loop(
             // Settings takes hold on the next tick instead of at the
             // next restart. `[presence]` is `Reload::Hot` for this
             // reason, and this loop is the thing that makes it true.
-            let cfg = store
+            let snapshot = store.as_ref().map(|s| s.current());
+            let cfg = snapshot
                 .as_ref()
-                .map(|s| s.current().presence.clone())
+                .map(|c| c.presence.clone())
                 .unwrap_or_else(|| startup.clone());
+            // Who counts as home, read live. Pairing a phone writes one
+            // of these, and being told to restart afterwards would make
+            // the button look like it had not worked.
+            if let Some(current) = &snapshot {
+                *watching.write().unwrap_or_else(|e| e.into_inner()) = paired_macs(current);
+            }
 
             if !cfg.enabled {
                 // Idle, but not asleep: checking every half minute is
@@ -1366,7 +1441,16 @@ fn spawn_presence_poll_loop(
                 });
             }
 
-            tokio::time::sleep(Duration::from_secs(cfg.poll_seconds.max(10))).await;
+            // The shortest interval any source asks for. UniFi is on
+            // the LAN and wants seconds; tado is rate-limited by the
+            // day and wants minutes. Polling both at the slower rate
+            // would throw away the only reason UniFi is here.
+            let wait = if cfg.unifi.is_configured() {
+                cfg.poll_seconds.min(cfg.unifi.poll_seconds).max(2)
+            } else {
+                cfg.poll_seconds.max(10)
+            };
+            tokio::time::sleep(Duration::from_secs(wait)).await;
         }
     })
 }
@@ -1940,6 +2024,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
             p.sources.clone(),
+            p.watching.clone(),
             cfg.presence.clone(),
             None,
             bus.clone(),
@@ -2430,6 +2515,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
             p.sources.clone(),
+            p.watching.clone(),
             cfg.presence.clone(),
             None,
             bus.clone(),
@@ -4522,6 +4608,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         spawn_presence_poll_loop(
             p.aggregator.clone(),
             p.sources.clone(),
+            p.watching.clone(),
             cfg.presence.clone(),
             Some(store.clone()),
             bus.clone(),
@@ -4689,6 +4776,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_tado(tado.clone())
     .with_voices(voices.clone())
     .with_captures(captures.clone())
+    .with_unifi(presence.as_ref().and_then(|p| p.unifi.clone()))
     .with_secrets(secret_store.clone())
     .with_api_token(cfg.auth.resolve_api_token());
 
