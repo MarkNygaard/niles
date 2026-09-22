@@ -274,14 +274,22 @@ fn match_enroll_speaker(t: &str) -> Option<Intent> {
 fn light_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Two phrasings:
+        // Three phrasings:
         //   "turn (on|off) [the] <room> light[s]"
+        //   "turn (on|off) [the] light[s] in [the] <room>"
         //   "<room> light[s] (on|off)"
+        //
+        // The middle one is the way people actually say it. Four of the
+        // six sentences that reached the LLM in three days were that
+        // word order, and every one of them was a light being switched
+        // in a room Tier 0 already knew.
         Regex::new(
             r"(?x)
               ^
               (?:
                 (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state1>on|off)\s+(?:the\s+)?(?P<room1>.+?)\s+lights?
+              |
+                (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state3>on|off)\s+(?:the\s+)?lights?\s+in\s+(?:the\s+)?(?P<room3>.+?)
               |
                 (?P<room2>.+?)\s+lights?\s+(?P<state2>on|off)
               )
@@ -295,13 +303,21 @@ fn match_light(t: &str) -> Option<Intent> {
     let caps = light_regex().captures(t)?;
     let (state, room) = if let Some(s) = caps.name("state1") {
         (s.as_str(), caps.name("room1")?.as_str())
+    } else if let Some(s) = caps.name("state3") {
+        (s.as_str(), caps.name("room3")?.as_str())
     } else {
         (caps.name("state2")?.as_str(), caps.name("room2")?.as_str())
     };
     // "turn on the lights" would otherwise capture room="the" because the
     // optional `the` group can decline to match. Reject so the caller can
     // escalate to Tier 1 instead of producing a bogus room.
-    if room == "the" {
+    //
+    // "here" and "this room" are rejected for a different reason: they
+    // name a room correctly, and the room they name is the one the
+    // satellite is standing in. Refusing them here is what lets the
+    // context-aware matcher answer, which is the only thing that knows
+    // where "here" is.
+    if matches!(room, "the" | "here" | "this room") {
         return None;
     }
     Some(Intent::LightSet {
@@ -557,6 +573,7 @@ fn light_set_implicit_room_regex() -> &'static Regex {
                 lights?\s+(?P<state1>on|off)
               |
                 (?:turn(?:ed|s)?|switch(?:ed|es)?)\s+(?P<state2>on|off)\s+(?:the\s+)?lights?
+                (?:\s+in\s+(?:here|this\s+room))?
               )
               $",
         )
@@ -2214,6 +2231,62 @@ mod tests {
         );
     }
 
+    // ---- Word order ----
+
+    #[test]
+    fn the_room_may_come_after_the_light() {
+        // The phrasing four of six escalations used. Same sentence as
+        // "turn off the living room lights", said the way people say
+        // it, and it used to cost an LLM round trip.
+        let want = Some(Intent::LightSet {
+            room: "living room".into(),
+            on: false,
+        });
+        for said in [
+            "turn off the light in the living room",
+            "turn off the lights in the living room",
+            "turn off the light in living room",
+            "switch off the lights in the living room",
+        ] {
+            assert_eq!(parse(said), want, "{said}");
+        }
+    }
+
+    #[test]
+    fn both_word_orders_mean_the_same_thing() {
+        assert_eq!(
+            parse("turn on the kitchen lights"),
+            parse("turn on the lights in the kitchen")
+        );
+        assert_eq!(
+            parse("turn off the office light"),
+            parse("turn off the light in the office")
+        );
+    }
+
+    #[test]
+    fn the_new_order_carries_courtesy_too() {
+        // The two changes have to compose: this is the sentence from
+        // the living room, in the order it was actually said.
+        assert_eq!(
+            parse("Can you turn off the lights in the living room?"),
+            Some(Intent::LightSet {
+                room: "living room".into(),
+                on: false
+            })
+        );
+    }
+
+    #[test]
+    fn here_is_not_a_room_this_pattern_can_answer() {
+        // It names a room correctly, and the room it names is wherever
+        // the satellite is. Only the context-aware matcher knows that,
+        // so this one has to decline rather than invent a room called
+        // "here".
+        assert_eq!(parse("turn off the lights in here"), None);
+        assert_eq!(parse("turn off the lights in this room"), None);
+    }
+
     // ---- Politeness ----
 
     #[test]
@@ -3141,6 +3214,40 @@ mod context_tests {
 
     fn parse_with(transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
         IntentRouter::new().parse_with_context(transcript, ctx)
+    }
+
+    #[test]
+    fn in_here_is_the_room_the_satellite_stands_in() {
+        // The other half of `here_is_not_a_room_this_pattern_can_answer`:
+        // declining it above is only correct because this answers it.
+        let idx = fixture_unique();
+        let kitchen = RoomName::parse("kitchen").expect("valid");
+        let ctx = ctx_with(&idx, Some(&kitchen));
+        for said in [
+            "turn off the lights in here",
+            "turn off the lights in this room",
+            "turn off the lights",
+        ] {
+            assert_eq!(
+                parse_with(said, ctx),
+                Some(Intent::LightSet {
+                    room: "kitchen".into(),
+                    on: false
+                }),
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_here_from_nowhere_still_asks_the_llm() {
+        // A satellite whose room nobody wrote down has no "here", and
+        // guessing one would switch lights in a room nobody named.
+        let idx = fixture_unique();
+        assert_eq!(
+            parse_with("turn off the lights in here", ctx_with(&idx, None)),
+            None
+        );
     }
 
     #[test]
