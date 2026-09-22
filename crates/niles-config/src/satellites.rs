@@ -22,6 +22,22 @@ pub struct SatellitesConfig {
 pub struct SatelliteConfig {
     pub ip: String,
     pub room: String,
+    /// How loud Niles should be through this satellite, as a percent.
+    ///
+    /// The board has no volume control — no button, and nothing in its
+    /// firmware Niles can reach — but Niles makes the audio, so the
+    /// place to make it quieter is before it leaves. Per satellite,
+    /// because a bedroom at midnight and a kitchen at breakfast are not
+    /// the same room.
+    ///
+    /// 100 is the audio exactly as Piper rendered it, and is what an
+    /// entry that says nothing means.
+    #[serde(default = "default_volume")]
+    pub volume: u8,
+}
+
+fn default_volume() -> u8 {
+    100
 }
 
 impl SatellitesConfig {
@@ -56,6 +72,15 @@ impl SatellitesConfig {
                     reason: format!(
                         "satellites.{name}.room = {:?} is not a valid canonical room name",
                         sat.room
+                    ),
+                });
+            }
+            if sat.volume > 100 {
+                return Err(Error::InvalidSection {
+                    section: "satellites",
+                    reason: format!(
+                        "satellites.{name}.volume = {} is a percent, so it must be 0..=100",
+                        sat.volume
                     ),
                 });
             }

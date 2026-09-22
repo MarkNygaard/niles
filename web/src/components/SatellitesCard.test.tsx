@@ -103,3 +103,28 @@ describe("SatellitesCard", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 });
+
+describe("volume", () => {
+  it("shows the shipped 100% when the entry says nothing", () => {
+    // An entry written before volume existed is not a silent one.
+    setup([KITCHEN]);
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("shows what is configured", () => {
+    setup([{ ...KITCHEN, volume: 40 }]);
+    expect(screen.getByText("40%")).toBeInTheDocument();
+  });
+
+  it("gives the control a name that says which satellite it belongs to", () => {
+    // There is one of these per satellite, so "Volume" alone would be
+    // ambiguous to anybody not looking at the screen.
+    setup([KITCHEN, { ...KITCHEN, name: "office_sat", ip: "192.168.42.31" }]);
+    expect(
+      screen.getByRole("slider", { name: "kitchen_echo volume" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("slider", { name: "office_sat volume" }),
+    ).toBeInTheDocument();
+  });
+});

@@ -9,7 +9,16 @@ use std::net::{IpAddr, SocketAddr};
 /// can thread origin context into the Tier 1 system prompt.
 #[derive(Debug, Default, Clone)]
 pub struct SatelliteRegistry {
-    pub by_ip: HashMap<IpAddr, RoomName>,
+    pub by_ip: HashMap<IpAddr, Satellite>,
+}
+
+/// What Niles knows about one satellite, keyed by the address it calls
+/// from.
+#[derive(Debug, Clone)]
+pub struct Satellite {
+    pub room: RoomName,
+    /// How loud to be through it, as a percent of what Piper rendered.
+    pub volume: u8,
 }
 
 impl SatelliteRegistry {
@@ -35,7 +44,11 @@ impl SatelliteRegistry {
                 );
                 continue;
             };
-            if by_ip.insert(ip, room).is_some() {
+            let entry = Satellite {
+                room,
+                volume: sat.volume,
+            };
+            if by_ip.insert(ip, entry).is_some() {
                 tracing::warn!(
                     "duplicate IP {ip} for satellite {name}, overwriting previous entry"
                 );
@@ -49,7 +62,16 @@ impl SatelliteRegistry {
     /// Keys on `peer.ip()` only — the source port varies per Wyoming
     /// connection, so we ignore it.
     pub fn room_for(&self, peer: SocketAddr) -> Option<&RoomName> {
-        self.by_ip.get(&peer.ip())
+        self.by_ip.get(&peer.ip()).map(|s| &s.room)
+    }
+
+    /// How loud to be through the satellite at `peer`.
+    ///
+    /// 100 for one nobody has configured, which is the audio exactly as
+    /// Piper rendered it — a satellite Niles does not recognise should
+    /// sound the way it always has, not be silently quietened.
+    pub fn volume_for(&self, peer: SocketAddr) -> u8 {
+        self.by_ip.get(&peer.ip()).map_or(100, |s| s.volume)
     }
 
     /// Where to reach the satellite in `room`.
@@ -60,7 +82,7 @@ impl SatelliteRegistry {
     pub fn ip_for(&self, room: &RoomName) -> Option<IpAddr> {
         self.by_ip
             .iter()
-            .find(|(_, r)| *r == room)
+            .find(|(_, s)| &s.room == room)
             .map(|(ip, _)| *ip)
     }
 }
@@ -78,6 +100,7 @@ mod tests {
             niles_config::SatelliteConfig {
                 ip: "192.168.69.188".into(),
                 room: "office".into(),
+                volume: 100,
             },
         );
         let reg = SatelliteRegistry::from_config(&cfg);
@@ -103,6 +126,7 @@ mod tests {
             niles_config::SatelliteConfig {
                 ip: "192.168.1.10".to_string(),
                 room: "living_room".to_string(),
+                volume: 100,
             },
         );
         satellites.insert(
@@ -110,6 +134,7 @@ mod tests {
             niles_config::SatelliteConfig {
                 ip: "192.168.1.20".to_string(),
                 room: "kitchen".to_string(),
+                volume: 100,
             },
         );
         let cfg = SatellitesConfig { satellites };
@@ -136,6 +161,7 @@ mod tests {
             niles_config::SatelliteConfig {
                 ip: "10.0.0.5".to_string(),
                 room: "bedroom".to_string(),
+                volume: 100,
             },
         );
         let cfg = SatellitesConfig { satellites };
@@ -156,6 +182,7 @@ mod tests {
             niles_config::SatelliteConfig {
                 ip: "not-an-ip".to_string(),
                 room: "living_room".to_string(),
+                volume: 100,
             },
         );
         satellites.insert(
@@ -163,6 +190,7 @@ mod tests {
             niles_config::SatelliteConfig {
                 ip: "192.168.1.1".to_string(),
                 room: "living_room".to_string(),
+                volume: 100,
             },
         );
         let cfg = SatellitesConfig { satellites };
