@@ -2957,10 +2957,14 @@ async fn dispatch_transcript(
             // switched on/off whether or not niles has seen its state yet.
             // Filtering on `state.on.is_some()` made a freshly-started
             // `serve` report "no devices support this action" until Z2M
-            // retained state arrived — while Tier 1's `set_device` (which
-            // filters on `is_light()`) and the all-lights arm worked fine.
+            // retained state arrived.
+            //
+            // Switchable rather than a light, which is what a wall
+            // switch in the same room already does: a lamp on a smart
+            // plug is a lamp, and leaving it lit is not what "turn off
+            // the lights in here" meant.
             let (_canonical, targets) =
-                match resolve_room_targets(ctx, peer, &room, |d| d.is_light()) {
+                match resolve_room_targets(ctx, peer, &room, |d| d.is_switchable()) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName | RoomResolve::NoDevices => {
                         // Tier 0 matched a light intent but found no target
@@ -2995,11 +2999,13 @@ async fn dispatch_transcript(
         Intent::DateTimeQuery { date } => Some(response::datetime_now(&ctx.home.timezone, date)),
         Intent::EnrollSpeaker { name } => Some(enroll_by_voice(ctx, peer, &name, voice).await),
         Intent::LightSetAll { on } => {
+            // Switchable, not lights: "turn everything off" includes
+            // the lamp that happens to be on a plug.
             let targets: Vec<Device> = ctx
                 .registry
                 .list_all()
                 .into_iter()
-                .filter(|d| d.is_light())
+                .filter(|d| d.is_switchable())
                 .collect();
             if targets.is_empty() {
                 if ctx.registry.is_empty() {
