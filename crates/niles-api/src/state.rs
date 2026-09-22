@@ -46,6 +46,9 @@ pub struct AppState {
     /// can get it authorised: the device flow needs a person with a
     /// browser, which a service does not have.
     pub tado: Option<Arc<niles_presence::TadoSource>>,
+    /// The enrolled voices, when recognition is running. Absent
+    /// otherwise, and `/voices` says so rather than 500ing.
+    pub voices: Option<Arc<dyn niles_recognition::VoiceRoster>>,
     /// Which lights the lighting curve must leave alone.
     ///
     /// Absent when nothing is driving a curve — `niles api` serves the
@@ -76,6 +79,7 @@ impl AppState {
             manual_mode: None,
             scenes: None,
             tado: None,
+            voices: None,
             secrets: None,
         }
     }
@@ -90,6 +94,12 @@ impl AppState {
     /// authorising it.
     pub fn with_tado(mut self, tado: Option<Arc<niles_presence::TadoSource>>) -> Self {
         self.tado = tado;
+        self
+    }
+
+    /// The enrolled voices, when recognition is running.
+    pub fn with_voices(mut self, voices: Option<Arc<dyn niles_recognition::VoiceRoster>>) -> Self {
+        self.voices = voices;
         self
     }
 

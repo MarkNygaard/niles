@@ -18,6 +18,23 @@ use crate::error::Result;
 use async_trait::async_trait;
 
 /// Durable storage for enrolled voices.
+/// The enrolled voices, for showing and for forgetting.
+///
+/// Narrower than [`EnrollmentBackend`] on purpose: the app needs to see
+/// who is enrolled and to delete one, and has no business adding clips
+/// or reading embeddings. It is also not the backend itself, because
+/// forgetting somebody has to rebuild the live matcher as well as the
+/// store — deleting only from the store would leave Niles recognising
+/// a voice it had been told to forget until the next restart.
+#[async_trait]
+pub trait VoiceRoster: Send + Sync {
+    /// Everybody enrolled, for display.
+    async fn voices(&self) -> Result<Vec<EnrolledSpeaker>>;
+
+    /// Forget one entirely, store and matcher both.
+    async fn forget(&self, speaker: &str) -> Result<()>;
+}
+
 #[async_trait]
 pub trait EnrollmentBackend: Send + Sync {
     /// Every enrolled speaker. Read once at startup to build the

@@ -3,7 +3,7 @@
 use crate::handlers;
 use crate::state::AppState;
 use axum::Router;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -37,6 +37,8 @@ pub fn router(state: AppState) -> Router {
             post(crate::scenes::apply_scene).delete(crate::scenes::delete_scene),
         )
         .route("/integrations", get(crate::integrations::list))
+        .route("/voices", get(crate::voices::list))
+        .route("/voices/{speaker}", delete(crate::voices::forget))
         .route("/places", get(crate::places::search))
         .route("/timezones", get(crate::places::timezones))
         .route("/secrets", get(crate::secrets::list_secrets))

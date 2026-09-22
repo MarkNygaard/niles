@@ -12,7 +12,7 @@ pub mod matcher;
 pub mod preprocess;
 pub mod similarity;
 
-pub use backend::EnrollmentBackend;
+pub use backend::{EnrollmentBackend, VoiceRoster};
 pub use embedder::{EcapaTdnnEmbedder, EmbedderConfig};
 pub use enrollment::{
     EnrolledSpeaker, EnrollmentEntry, EnrollmentStore, default_display_name, validate_speaker_slug,

@@ -34,6 +34,7 @@ pub mod scenes;
 pub mod secrets;
 pub mod server;
 pub mod state;
+pub mod voices;
 #[cfg(feature = "ui")]
 pub mod web;
 pub mod webhook;

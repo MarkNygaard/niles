@@ -43,6 +43,24 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
     fn knows_anybody(&self) -> bool;
 }
 
+#[async_trait::async_trait]
+impl niles_recognition::VoiceRoster for EcapaIdentifier {
+    async fn voices(&self) -> niles_recognition::Result<Vec<niles_recognition::EnrolledSpeaker>> {
+        self.backend.load_all().await
+    }
+
+    async fn forget(&self, speaker: &str) -> niles_recognition::Result<()> {
+        self.backend.delete(speaker).await?;
+        // The matcher holds its roster in memory, so a delete that
+        // only reached the store would leave Niles recognising a voice
+        // it had been told to forget until something restarted it.
+        let speakers = self.backend.load_all().await?;
+        let next = Matcher::new(speakers, self.threshold, self.strategy);
+        *self.matcher.write().unwrap_or_else(|e| e.into_inner()) = next;
+        Ok(())
+    }
+}
+
 /// Map a matcher outcome into an identity, reporting the sighting.
 ///
 /// `heard` is a send, not a write: identification runs on a blocking
@@ -191,7 +209,7 @@ impl SpeakerIdentifier for EcapaIdentifier {
 pub(crate) async fn build_speaker_identifier(
     cfg: &RecognitionConfig,
     backend: Option<Arc<dyn EnrollmentBackend>>,
-) -> anyhow::Result<Option<Arc<dyn SpeakerIdentifier>>> {
+) -> anyhow::Result<Option<Arc<EcapaIdentifier>>> {
     if !cfg.enabled {
         return Ok(None);
     }

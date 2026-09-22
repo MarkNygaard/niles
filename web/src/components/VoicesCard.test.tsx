@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { VoicesCard } from "@/components/VoicesCard";
+import { VoicesCard, voiceSummary } from "@/components/VoicesCard";
 
 function setup(props: Partial<React.ComponentProps<typeof VoicesCard>> = {}) {
   const onChange = vi.fn();
@@ -54,5 +54,69 @@ describe("VoicesCard", () => {
     expect(
       screen.queryByText(/not set up to recognise voices/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+const MARK = {
+  speaker: "mark",
+  display_name: "Mark",
+  clip_count: 3,
+  created_at: "2026-09-22T19:43:12Z",
+  last_seen_at: "2026-09-22T20:10:00Z",
+};
+
+describe("the enrolled voices", () => {
+  it("says nobody is enrolled, and how to change that", () => {
+    setup({ voices: [] });
+    expect(screen.getByText(/Nobody yet/)).toBeInTheDocument();
+  });
+
+  it("shows nothing at all until they have loaded", () => {
+    // Undefined is "still asking". Saying "nobody" then would be a
+    // claim about the house made from a pending request.
+    setup({ voices: undefined });
+    expect(screen.queryByText(/Nobody yet/)).not.toBeInTheDocument();
+  });
+
+  it("lists who Niles knows", () => {
+    setup({ voices: [MARK] });
+    expect(screen.getByText("Mark")).toBeInTheDocument();
+  });
+
+  it("forgets one by its slug, not its display name", () => {
+    // The slug is what the store and `auth.allowed[].speaker` use.
+    const onForget = vi.fn();
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[MARK]}
+        onChange={vi.fn()}
+        onForget={onForget}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Forget Mark" }));
+    expect(onForget).toHaveBeenCalledWith("mark");
+  });
+});
+
+describe("voiceSummary", () => {
+  it("calls a single clip thin, and asks for more", () => {
+    // One clip is the state that cannot recognise anybody, and it is
+    // indistinguishable from a working enrolment everywhere else.
+    expect(voiceSummary({ ...MARK, clip_count: 1 })).toContain("1 clip");
+    expect(voiceSummary({ ...MARK, clip_count: 1 })).toContain("thin");
+  });
+
+  it("stops asking once there are three", () => {
+    expect(voiceSummary({ ...MARK, clip_count: 3 })).not.toContain("thin");
+  });
+
+  it("says plainly when a voice has never been recognised", () => {
+    // Which is the shape of an enrolment that is not working, and the
+    // reason this card exists.
+    expect(voiceSummary({ ...MARK, last_seen_at: null })).toContain(
+      "never recognised since",
+    );
   });
 });

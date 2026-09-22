@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { PeopleCard } from "@/components/PeopleCard";
+import { PeopleCard, speakerChoices } from "@/components/PeopleCard";
 import type { Person } from "@/components/PeopleCard";
 
-function setup(people: Person[]) {
+function setup(people: Person[], voices?: string[]) {
   const onChange = vi.fn();
-  render(<PeopleCard people={people} onChange={onChange} />);
+  render(<PeopleCard people={people} voices={voices} onChange={onChange} />);
   return { onChange };
 }
 
@@ -70,7 +70,41 @@ describe("PeopleCard", () => {
   });
 
   it("shows the voice identity when one is linked", () => {
+    setup([{ email: "mark@example.com", speaker: "mark" }], ["mark"]);
+    expect(
+      screen.getByRole("combobox", { name: "mark@example.com voice" }),
+    ).toHaveTextContent("mark");
+  });
+
+  it("offers no pairing until the voices are known", () => {
+    // Undefined is still loading, and a control that offers "No voice"
+    // before it knows any would read as "there are none".
     setup([{ email: "mark@example.com", speaker: "mark" }]);
-    expect(screen.getByText(/same person as/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+});
+
+// The dropdown cannot be opened in jsdom — Base UI's Select hangs it —
+// so the rule that decides what it offers is tested here.
+describe("speakerChoices", () => {
+  it("offers the enrolled voices", () => {
+    expect(speakerChoices(["mark", "majse"], undefined)).toEqual([
+      "mark",
+      "majse",
+    ]);
+  });
+
+  it("keeps a pairing whose voice has been deleted", () => {
+    // Worth showing rather than silently dropping: the fix is to
+    // repair it, and you cannot repair what the page will not display.
+    expect(speakerChoices(["majse"], "mark")).toEqual(["majse", "mark"]);
+  });
+
+  it("does not offer a voice twice", () => {
+    expect(speakerChoices(["mark"], "mark")).toEqual(["mark"]);
+  });
+
+  it("is empty before the voices have loaded", () => {
+    expect(speakerChoices(undefined, undefined)).toEqual([]);
   });
 });
