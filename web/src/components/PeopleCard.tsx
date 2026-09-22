@@ -28,18 +28,28 @@ export interface Person {
  * and you cannot repair what the page will not display.
  */
 export function speakerChoices(
-  enrolled: string[] | undefined,
+  enrolled: { speaker: string; display_name: string }[] | undefined,
   current: string | undefined,
-): string[] {
+): { speaker: string; display_name: string }[] {
   const list = enrolled ?? [];
-  if (!current || list.includes(current)) return list;
-  return [...list, current];
+  if (!current || list.some((v) => v.speaker === current)) return list;
+  // A pairing whose voice has been deleted has no name to show, so it
+  // shows its slug — which is still better than vanishing, because the
+  // fix is to repair it and you cannot repair what is not displayed.
+  return [...list, { speaker: current, display_name: current }];
 }
 
 export interface PeopleCardProps {
   people: Person[];
-  /** Enrolled voice slugs, for pairing. Undefined while loading. */
-  voices?: string[];
+  /**
+   * The enrolled voices, for pairing. Undefined while loading.
+   *
+   * Both halves are needed: the slug is what gets saved, and the name
+   * is what anybody can recognise. Offering the slug alone showed
+   * "maisel" — which is what Whisper heard, not what she is called,
+   * and changing the name left the list still saying it.
+   */
+  voices?: { speaker: string; display_name: string }[];
   saving?: boolean;
   error?: string;
   onChange: (people: Person[]) => void;
@@ -132,8 +142,8 @@ export function PeopleCard({
                     <SelectContent>
                       <SelectItem value={NO_VOICE}>No voice</SelectItem>
                       {speakerChoices(voices, person.speaker).map((v) => (
-                        <SelectItem key={v} value={v}>
-                          {v}
+                        <SelectItem key={v.speaker} value={v.speaker}>
+                          {v.display_name}
                         </SelectItem>
                       ))}
                     </SelectContent>

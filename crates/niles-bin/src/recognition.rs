@@ -41,6 +41,14 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
     /// key the store is indexed by, and "Mark" is not "mark".
     fn whose_voice(&self, embedding: &[f32]) -> Option<String>;
 
+    /// How to say a speaker's name aloud.
+    ///
+    /// Not the slug. The slug came from a transcript — "maisel" is what
+    /// Whisper heard, not what anybody is called — and until now it was
+    /// what Niles said back, so correcting the name on the card changed
+    /// the card and nothing else.
+    fn how_to_say(&self, speaker: &str) -> Option<String>;
+
     /// Whether anybody is enrolled at all.
     ///
     /// The lock checks this before it refuses anyone: a house where
@@ -54,6 +62,18 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
 impl niles_recognition::VoiceRoster for EcapaIdentifier {
     async fn voices(&self) -> niles_recognition::Result<Vec<niles_recognition::EnrolledSpeaker>> {
         self.backend.load_all().await
+    }
+
+    async fn set_spoken_as(
+        &self,
+        speaker: &str,
+        spoken_as: Option<&str>,
+    ) -> niles_recognition::Result<()> {
+        self.backend.set_spoken_as(speaker, spoken_as).await?;
+        let speakers = self.backend.load_all().await?;
+        let next = Matcher::new(speakers, self.threshold, self.strategy);
+        *self.matcher.write().unwrap_or_else(|e| e.into_inner()) = next;
+        Ok(())
     }
 
     async fn rename(&self, speaker: &str, display_name: &str) -> niles_recognition::Result<()> {
@@ -168,6 +188,10 @@ impl SpeakerIdentifier for EcapaIdentifier {
             MatchOutcome::Match { speaker, .. } => Some(speaker),
             _ => None,
         }
+    }
+
+    fn how_to_say(&self, speaker: &str) -> Option<String> {
+        self.read_matcher().how_to_say(speaker).map(str::to_string)
     }
 
     fn knows_anybody(&self) -> bool {

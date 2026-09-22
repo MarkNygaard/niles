@@ -81,6 +81,11 @@ pub async fn forget(
 #[derive(Debug, Deserialize)]
 pub struct Rename {
     pub display_name: String,
+    /// Absent leaves it as it was; empty clears it back to saying the
+    /// display name. A blank box has to mean "no respelling" rather
+    /// than "say nothing".
+    #[serde(default)]
+    pub spoken_as: Option<String>,
 }
 
 /// `PUT /voices/{speaker}` — correct the name.
@@ -98,12 +103,25 @@ pub async fn rename(
     if name.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "a name cannot be blank".into()));
     }
-    roster(&state)?.rename(&speaker, name).await.map_err(|e| {
+    let roster = roster(&state)?;
+    roster.rename(&speaker, name).await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("could not rename them: {e}"),
         )
     })?;
+    if let Some(spoken) = &body.spoken_as {
+        let spoken = spoken.trim();
+        roster
+            .set_spoken_as(&speaker, (!spoken.is_empty()).then_some(spoken))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("could not set how to say it: {e}"),
+                )
+            })?;
+    }
     tracing::info!("the voice {speaker:?} is now called {name:?}");
     Ok(StatusCode::NO_CONTENT)
 }

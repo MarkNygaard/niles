@@ -60,6 +60,7 @@ describe("VoicesCard", () => {
 const MARK = {
   speaker: "mark",
   display_name: "Mark",
+  spoken_as: null,
   clip_count: 3,
   created_at: "2026-09-22T19:43:12Z",
   last_seen_at: "2026-09-22T20:10:00Z",
@@ -173,5 +174,58 @@ describe("correcting a name", () => {
     fireEvent.blur(field);
     expect(onRename).not.toHaveBeenCalled();
     expect(field).toHaveValue("Mark");
+  });
+});
+
+describe("saying a name correctly", () => {
+  it("writes the respelling against the slug", () => {
+    // Piper reads letters, not phonemes, so a Danish "Majse" comes out
+    // wrong from an English voice and has to be respelled.
+    const onSpokenAs = vi.fn();
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[{ ...MARK, speaker: "maisel", display_name: "Majse" }]}
+        onChange={vi.fn()}
+        onSpokenAs={onSpokenAs}
+      />,
+    );
+    const field = screen.getByLabelText("maisel pronunciation");
+    fireEvent.change(field, { target: { value: "Mayse" } });
+    fireEvent.blur(field);
+    expect(onSpokenAs).toHaveBeenCalledWith("maisel", "Mayse");
+  });
+
+  it("lets a respelling be cleared", () => {
+    // Empty is a value here, unlike the name: it means "say it the way
+    // it is written", which is what most names want.
+    const onSpokenAs = vi.fn();
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[{ ...MARK, spoken_as: "Mayse" }]}
+        onChange={vi.fn()}
+        onSpokenAs={onSpokenAs}
+      />,
+    );
+    const field = screen.getByLabelText("mark pronunciation");
+    fireEvent.change(field, { target: { value: "" } });
+    fireEvent.blur(field);
+    expect(onSpokenAs).toHaveBeenCalledWith("mark", "");
+  });
+
+  it("shows the respelling that is already set", () => {
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[{ ...MARK, spoken_as: "Mayse" }]}
+        onChange={vi.fn()}
+        onSpokenAs={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("mark pronunciation")).toHaveValue("Mayse");
   });
 });

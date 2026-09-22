@@ -280,6 +280,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Voice {
   speaker: string;
   display_name: string;
+  /** How to say it, when spelling and saying it differ. */
+  spoken_as: string | null;
   /** One is thin — Niles asks for more until it has three. */
   clip_count: number;
   created_at: string;
@@ -325,10 +327,10 @@ export const api = {
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   voices: () => request<Voice[]>("/voices"),
-  renameVoice: (speaker: string, display_name: string) =>
+  renameVoice: (speaker: string, display_name: string, spoken_as?: string) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {
       method: "PUT",
-      body: JSON.stringify({ display_name }),
+      body: JSON.stringify({ display_name, spoken_as }),
     }),
   forgetVoice: (speaker: string) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {
