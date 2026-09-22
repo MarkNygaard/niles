@@ -325,6 +325,11 @@ export const api = {
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   voices: () => request<Voice[]>("/voices"),
+  renameVoice: (speaker: string, display_name: string) =>
+    request<void>(`/voices/${encodeURIComponent(speaker)}`, {
+      method: "PUT",
+      body: JSON.stringify({ display_name }),
+    }),
   forgetVoice: (speaker: string) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {
       method: "DELETE",

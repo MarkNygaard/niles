@@ -38,7 +38,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/integrations", get(crate::integrations::list))
         .route("/voices", get(crate::voices::list))
-        .route("/voices/{speaker}", delete(crate::voices::forget))
+        .route(
+            "/voices/{speaker}",
+            delete(crate::voices::forget).put(crate::voices::rename),
+        )
         .route("/places", get(crate::places::search))
         .route("/timezones", get(crate::places::timezones))
         .route("/secrets", get(crate::secrets::list_secrets))

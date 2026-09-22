@@ -11,6 +11,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use serde::Deserialize;
 
 type Failure = (StatusCode, String);
 
@@ -74,5 +75,35 @@ pub async fn forget(
         )
     })?;
     tracing::info!("forgot the voice {speaker:?}");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Rename {
+    pub display_name: String,
+}
+
+/// `PUT /voices/{speaker}` — correct the name.
+///
+/// The name came from a transcript, and a transcript is a guess.
+/// Whisper spelled one Danish name four ways in four attempts; the
+/// slug is stuck with whichever it produced first, but what anybody
+/// reads does not have to be.
+pub async fn rename(
+    State(state): State<AppState>,
+    Path(speaker): Path<String>,
+    axum::Json(body): axum::Json<Rename>,
+) -> Result<StatusCode, Failure> {
+    let name = body.display_name.trim();
+    if name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "a name cannot be blank".into()));
+    }
+    roster(&state)?.rename(&speaker, name).await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("could not rename them: {e}"),
+        )
+    })?;
+    tracing::info!("the voice {speaker:?} is now called {name:?}");
     Ok(StatusCode::NO_CONTENT)
 }
