@@ -72,6 +72,18 @@ pub const KNOWN: &[Known] = &[
         ],
     },
     Known {
+        id: "cerebras",
+        label: "Cerebras",
+        blurb: "Language models on wafer-scale silicon — the fastest way to answer out loud.",
+        kind: Kind::Provider,
+        base_url: Some("https://api.cerebras.ai/v1"),
+        // Language only. There is no speech endpoint here, and
+        // offering one would fail as a 404 from somebody else's
+        // server rather than as something this page could explain.
+        serves: &[Role::Llm],
+        models: &[(Role::Llm, "gpt-oss-120b"), (Role::Llm, "qwen-3.8-27b")],
+    },
+    Known {
         id: "tado",
         label: "tado°",
         blurb: "Who is home, from the thermostats that already know.",
@@ -173,6 +185,34 @@ mod tests {
     fn the_first_model_for_a_role_is_the_default() {
         assert_eq!(default_model(Role::Stt), "whisper-large-v3-turbo");
         assert_eq!(default_model(Role::Llm), "openai/gpt-oss-20b");
+    }
+
+    #[test]
+    fn a_provider_is_only_offered_for_what_it_serves() {
+        // What keeps Cerebras out of the speech dropdown. It has no
+        // transcription endpoint, and the settings page filters on
+        // exactly this: offering it there would fail as a 404 from
+        // somebody else's server.
+        let cerebras = find("cerebras").expect("in the catalogue");
+        assert_eq!(cerebras.serves, &[Role::Llm]);
+        assert!(cerebras.models_for(Role::Stt).next().is_none());
+        assert_eq!(cerebras.models_for(Role::Llm).next(), Some("gpt-oss-120b"));
+    }
+
+    #[test]
+    fn every_provider_has_somewhere_to_keep_a_key() {
+        // The Integrations card shows a key field when there is a place
+        // to put it, and the route that saves one accepts only keys
+        // Niles reads. A provider without this is one the page offers
+        // and nobody can finish setting up.
+        for known in KNOWN.iter().filter(|k| k.kind == Kind::Provider) {
+            assert_eq!(
+                known.secret_key().as_deref(),
+                Some(format!("provider.{}.api_key", known.id).as_str()),
+                "{}",
+                known.id
+            );
+        }
     }
 
     #[test]

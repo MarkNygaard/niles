@@ -16,6 +16,7 @@ niles-core.workspace = true
 niles-scheduler.workspace = true
 niles-recognition.workspace = true
 niles-notifications.workspace = true
+niles-llm.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 tokio = { workspace = true }

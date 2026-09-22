@@ -1631,6 +1631,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "niles-core",
+ "niles-llm",
  "niles-notifications",
  "niles-recognition",
  "niles-scheduler",

@@ -174,6 +174,8 @@ These are the current recommendations; the system should be provider-agnostic so
 | TTS | Piper (self-hosted) | Free, ~100ms first audio, decent voices | ~100ms | Free |
 | TTS upgrade option | ElevenLabs Flash v2.5 or Cartesia Sonic | Better quality, ~75–90ms first audio | ~75–90ms | Paid |
 
+**Tier 1 alternative — Cerebras GPT-OSS 120B:** a larger model that is also faster (~3000 t/s), and a free tier with 90K TPM against Groq's 8K. The free tier caps requests at 5/minute rather than tokens, so it rewards a turn that asks for a room in one call instead of one call per device.
+
 **All-Anthropic alternative:** Claude Haiku 4.5 as Tier 1 (~690ms TTFT, ~95 t/s, excellent tool calling), Sonnet 4.6 as Tier 2.
 
 **Fully-local alternative** (requires GPU node): whisper.cpp `base.en` or `distil-small.en` for STT, Llama 3.1 8B locally for Tier 1, escalate to a hosted Tier 2 only when needed.

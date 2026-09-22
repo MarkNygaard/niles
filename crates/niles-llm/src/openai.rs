@@ -4,7 +4,7 @@
 //! Shares wire types and HTTP logic with [`crate::groq::GroqClient`].
 
 use crate::backend::LlmBackend;
-use crate::chat::{ChatRequest, ChatResponse};
+use crate::chat::{ChatRequest, ChatResponse, ReasoningEffort};
 use crate::error::Result;
 use std::time::Duration;
 use tracing::debug;
@@ -15,6 +15,9 @@ pub struct OpenAiConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// How hard to think before answering. `None` sends nothing
+    /// and leaves the provider to its own default.
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub request_timeout: Duration,
 }
 
@@ -41,6 +44,7 @@ impl OpenAiClient {
             &self.cfg.base_url,
             &self.cfg.api_key,
             &self.cfg.model,
+            self.cfg.reasoning_effort,
             &req,
         )
         .await
@@ -71,6 +75,7 @@ mod tests {
             api_key: "sk-test".into(),
             base_url,
             model: "gpt-5.5".into(),
+            reasoning_effort: None,
             request_timeout: Duration::from_secs(5),
         }
     }
@@ -154,6 +159,45 @@ mod tests {
         };
         let resp = client.chat(req).await.unwrap();
         assert_eq!(resp.content, Some("ok".into()));
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_reaches_the_wire_when_it_is_set() {
+        // The tests above pin the body exactly with it unset, which is
+        // what proves nothing is sent by default. This is the other
+        // half: that asking for it actually asks.
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(json!({
+                "model": "gpt-5.5",
+                "reasoning_effort": "low",
+                "messages": [{"role": "user", "content": "hello"}],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "message": { "role": "assistant", "content": "ok" },
+                    "finish_reason": "stop"
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = OpenAiConfig {
+            reasoning_effort: Some(ReasoningEffort::Low),
+            ..test_cfg(server.uri())
+        };
+        let client = OpenAiClient::new(cfg).unwrap();
+        let req = ChatRequest {
+            messages: vec![Message::User {
+                content: "hello".into(),
+            }],
+            tools: None,
+            tool_choice: None,
+        };
+        assert_eq!(client.chat(req).await.unwrap().content, Some("ok".into()));
     }
 
     #[tokio::test]
