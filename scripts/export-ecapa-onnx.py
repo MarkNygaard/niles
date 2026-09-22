@@ -7,7 +7,7 @@ PyTorch weights — so somebody has to run this once. The result is about
 30 MB and is the same file forever; it is not part of the repository
 because a public repo is a poor place for a binary nothing diffs.
 
-    pip install torch speechbrain onnx
+    pip install torch speechbrain onnx onnxscript
     python scripts/export-ecapa-onnx.py -o ecapa.onnx
 
 Then attach it to a GitHub release and point the image build at it, per
@@ -25,7 +25,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+import tempfile
 from pathlib import Path
+
+# torch's exporter prints progress with a tick in it, and a Windows
+# console is cp1252 by default — which turns a successful export into a
+# UnicodeEncodeError from inside a library that is only being chatty.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):  # not a real console, already utf-8
+        pass
 
 SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
 SAMPLE_RATE = 16_000
@@ -47,6 +57,12 @@ def parse_args() -> argparse.Namespace:
         default=17,
         help="ONNX opset (default: 17)",
     )
+    p.add_argument(
+        "--savedir",
+        type=Path,
+        default=Path(tempfile.gettempdir()) / "ecapa",
+        help="where SpeechBrain unpacks the checkpoint (default: a temp dir)",
+    )
     return p.parse_args()
 
 
@@ -58,11 +74,23 @@ def main() -> int:
         from speechbrain.inference.speaker import EncoderClassifier
     except ImportError as e:
         print(f"missing dependency: {e}", file=sys.stderr)
-        print("try: pip install torch speechbrain onnx", file=sys.stderr)
+        print("try: pip install torch speechbrain onnx onnxscript", file=sys.stderr)
         return 1
 
     print(f"fetching {SOURCE} …", file=sys.stderr)
-    classifier = EncoderClassifier.from_hparams(source=SOURCE, savedir="/tmp/ecapa")
+    fetch_args = {"source": SOURCE, "savedir": str(args.savedir)}
+    try:
+        # SpeechBrain links the cached checkpoint into `savedir`, and its
+        # default is a symlink — which on Windows needs Developer Mode or
+        # an elevated shell and otherwise fails with WinError 1314. Copying
+        # costs a few tens of megabytes once and works everywhere.
+        from speechbrain.utils.fetching import LocalStrategy
+
+        fetch_args["local_strategy"] = LocalStrategy.COPY
+    except ImportError:
+        # Older SpeechBrain has no such option and copies anyway.
+        pass
+    classifier = EncoderClassifier.from_hparams(**fetch_args)
 
     class Encoder(torch.nn.Module):
         """Mel features and the encoder as one graph.
@@ -113,12 +141,25 @@ def main() -> int:
         opset_version=args.opset,
     )
 
+    # torch's exporter writes weights to a sibling `.onnx.data` when they
+    # are large, which ECAPA's are. Two files is one more than the image
+    # can carry — `model_path` names a file, and a graph whose weights
+    # went missing fails at load with nothing pointing at the cause. Fold
+    # them back in.
     try:
         import onnx
 
+        model = onnx.load(str(args.output))
+        onnx.save_model(model, str(args.output), save_as_external_data=False)
+        sidecar = args.output.with_suffix(args.output.suffix + ".data")
+        if sidecar.exists():
+            sidecar.unlink()
+            print(f"folded {sidecar.name} back into the model", file=sys.stderr)
         onnx.checker.check_model(str(args.output))
     except ImportError:
-        print("onnx not installed; skipping the validity check", file=sys.stderr)
+        print("onnx not installed — cannot fold in external weights", file=sys.stderr)
+        print("install it and re-run: pip install onnx", file=sys.stderr)
+        return 1
 
     data = args.output.read_bytes()
     print(f"\n{args.output}", file=sys.stderr)

@@ -31,9 +31,15 @@ asks for; changing the `ort` dependency means checking `ORT_VERSION` and
 it. Once:
 
 ```sh
-pip install torch speechbrain onnx
+pip install torch speechbrain onnx onnxscript
 python scripts/export-ecapa-onnx.py -o ecapa.onnx
 ```
+
+It takes a few minutes and produces one file of about **80 MB**. `torch`
+writes the weights to a sidecar `.onnx.data` when they are large; the
+script folds them back in, because `model_path` names a file and a graph
+whose weights went missing fails at load with nothing pointing at the
+cause.
 
 The script prints the size and sha256. Attach `ecapa.onnx` to a GitHub
 release, then set two **repository variables** (Settings → Secrets and
