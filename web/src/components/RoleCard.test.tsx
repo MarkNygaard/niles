@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { RoleCard, choices, usableFor } from "@/components/RoleCard";
+import {
+  EFFORTS,
+  RoleCard,
+  choices,
+  effortToSave,
+  effortValue,
+  usableFor,
+} from "@/components/RoleCard";
 import type { Provider } from "@/lib/api";
 
 const GROQ: Provider = {
@@ -104,6 +111,9 @@ describe("RoleCard", () => {
     expect(onSave).toHaveBeenCalledWith({
       provider: "cerebras",
       model: "llama3.1-8b",
+      // Untouched, and saved as unset rather than omitted: the row is
+      // written whole, so leaving it out would keep a stale value.
+      effort: null,
     });
   });
 
@@ -149,5 +159,36 @@ describe("RoleCard", () => {
     // would be worse than saying nothing.
     setup("stt", { current: undefined, fallbackHost: "api.groq.com" });
     expect(screen.getByText(/api\.groq\.com/)).toBeInTheDocument();
+  });
+});
+
+describe("how hard to think", () => {
+  it("offers the provider's own default first", () => {
+    // Niles must not choose on behalf of a provider nobody asked
+    // about: not every model takes the field, and one that does not
+    // answers 400.
+    expect(EFFORTS[0].label).toBe("Provider default");
+    expect(effortToSave(EFFORTS[0].value)).toBeNull();
+  });
+
+  it("offers only what a model will accept", () => {
+    // `none` is deliberately absent: two models take it and the rest
+    // reject it.
+    expect(EFFORTS.map((e) => e.value).slice(1)).toEqual([
+      "low",
+      "medium",
+      "high",
+    ]);
+  });
+
+  it("shows an unset value as the default rather than as blank", () => {
+    expect(effortValue(undefined)).toBe(EFFORTS[0].value);
+    expect(effortValue("")).toBe(EFFORTS[0].value);
+    expect(effortValue("  ")).toBe(EFFORTS[0].value);
+  });
+
+  it("shows a configured value as itself", () => {
+    expect(effortValue("low")).toBe("low");
+    expect(effortToSave("low")).toBe("low");
   });
 });

@@ -16,7 +16,9 @@ mod groq;
 mod openai;
 
 pub use backend::LlmBackend;
-pub use chat::{ChatRequest, ChatResponse, FinishReason, Message, Tool, ToolCall, ToolChoice};
+pub use chat::{
+    ChatRequest, ChatResponse, FinishReason, Message, ReasoningEffort, Tool, ToolCall, ToolChoice,
+};
 pub use error::{Error, Result};
 pub use groq::{GroqClient, GroqConfig};
 pub use openai::{OpenAiClient, OpenAiConfig};

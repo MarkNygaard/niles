@@ -728,6 +728,7 @@ fn build_groq_client(cfg: &Config) -> anyhow::Result<GroqClient> {
         api_key: endpoint.api_key,
         base_url: endpoint.base_url,
         model: cfg.llm.model.clone(),
+        reasoning_effort: cfg.llm.reasoning_effort,
         request_timeout: Duration::from_secs(cfg.llm.timeout_seconds),
     };
     GroqClient::new(groq_cfg).context("building Groq HTTP client")
@@ -754,6 +755,7 @@ fn build_tier2_client(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ChatProvide
         api_key: endpoint.api_key,
         base_url: endpoint.base_url,
         model: tier2_cfg.model.clone(),
+        reasoning_effort: tier2_cfg.reasoning_effort,
         request_timeout: Duration::from_secs(tier2_cfg.timeout_seconds),
     };
     let client = OpenAiClient::new(openai_cfg).context("building OpenAI HTTP client")?;

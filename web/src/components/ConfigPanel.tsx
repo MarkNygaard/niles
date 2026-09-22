@@ -703,6 +703,7 @@ export function ConfigPanel() {
                   providers={providers}
                   current={roleValue("llm", "provider")}
                   model={roleValue("llm", "model") ?? ""}
+                  effort={roleValue("llm", "reasoning_effort")}
                   fallbackHost={hostOf(roleValue("llm", "base_url"))}
                   defaultModel={stringAt(view.defaults, "llm.model")}
                   models={modelsFor("llm")}
@@ -713,6 +714,10 @@ export function ConfigPanel() {
                       entries: [
                         { path: "llm.provider", value: change.provider ?? null },
                         { path: "llm.model", value: change.model },
+                        {
+                          path: "llm.reasoning_effort",
+                          value: change.effort ?? null,
+                        },
                       ],
                     })
                   }

@@ -52,7 +52,7 @@ pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
 pub use integrations::{IntegrationsConfig, LinearConfigDto};
 pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
-pub use llm::{LlmConfig, LlmTier2Config};
+pub use llm::{LlmConfig, LlmTier2Config, ReasoningEffort};
 pub use memory::MemoryConfig;
 pub use mqtt::MqttConfig;
 pub use notifications::NotificationsConfig;
@@ -768,6 +768,7 @@ mod tests {
             base_url: "https://example".into(),
             model: "m".into(),
             timeout_seconds: 30,
+            reasoning_effort: None,
             tier2: None,
         };
         assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test_llm");
@@ -785,6 +786,7 @@ mod tests {
             base_url: "https://example".into(),
             model: "m".into(),
             timeout_seconds: 30,
+            reasoning_effort: None,
             tier2: None,
         };
         let err = cfg.resolve_api_key().unwrap_err();
@@ -874,6 +876,7 @@ timeout_seconds = 60
             base_url: "https://example".into(),
             model: "m".into(),
             timeout_seconds: 30,
+            reasoning_effort: None,
         };
         assert_eq!(cfg.resolve_api_key().unwrap(), "sk_test_tier2");
     }
@@ -890,6 +893,7 @@ timeout_seconds = 60
             base_url: "https://example".into(),
             model: "m".into(),
             timeout_seconds: 30,
+            reasoning_effort: None,
         };
         let err = cfg.resolve_api_key().unwrap_err();
         assert!(matches!(

@@ -6,7 +6,7 @@
 //! implementation.
 
 use crate::backend::LlmBackend;
-use crate::chat::{ChatRequest, ChatResponse};
+use crate::chat::{ChatRequest, ChatResponse, ReasoningEffort};
 use crate::error::Result;
 use std::time::Duration;
 use tracing::debug;
@@ -17,6 +17,9 @@ pub struct GroqConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// How hard to think before answering. `None` sends nothing
+    /// and leaves the provider to its own default.
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub request_timeout: Duration,
 }
 
@@ -43,6 +46,7 @@ impl GroqClient {
             &self.cfg.base_url,
             &self.cfg.api_key,
             &self.cfg.model,
+            self.cfg.reasoning_effort,
             &req,
         )
         .await
@@ -69,6 +73,7 @@ mod tests {
             api_key: "fake-key".into(),
             base_url: "https://example.invalid".into(),
             model: "test-model".into(),
+            reasoning_effort: None,
             request_timeout: Duration::from_secs(5),
         }
     }

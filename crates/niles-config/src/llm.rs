@@ -5,6 +5,7 @@
 //! startup so secrets stay out of the config file.
 
 use crate::error::{Error, Result};
+pub use niles_llm::ReasoningEffort;
 use serde::Deserialize;
 
 /// `[llm]` section of the config file.
@@ -31,6 +32,15 @@ pub struct LlmConfig {
     /// Provider request timeout in seconds.
     #[serde(default = "default_timeout_secs")]
     pub timeout_seconds: u64,
+    /// How hard the model should think before answering.
+    ///
+    /// Unset by default, which sends nothing and leaves the provider
+    /// to its own — `medium` on the gpt-oss models. `low` is what
+    /// Tier 1 usually wants: this tier exists to be quick, and
+    /// reasoning tokens are generated while somebody waits for a light
+    /// to come on, then charged against the same budget as the answer.
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Optional Tier 2 backend configuration.
     #[serde(default)]
     pub tier2: Option<LlmTier2Config>,
@@ -60,6 +70,10 @@ pub struct LlmTier2Config {
     /// Provider request timeout in seconds.
     #[serde(default = "default_timeout_secs")]
     pub timeout_seconds: u64,
+    /// How hard the model should think before answering. The tier that
+    /// exists because something was hard is the one that can afford it.
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 fn default_base_url() -> String {
@@ -174,5 +188,57 @@ impl LlmTier2Config {
     /// Returns an `InvalidSection` error if it's unset.
     pub fn resolve_api_key(&self) -> Result<String> {
         resolve_api_key(&self.api_key_env, "llm.tier2")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn llm(toml: &str) -> LlmConfig {
+        toml::from_str(toml).expect("valid")
+    }
+
+    #[test]
+    fn nothing_is_asked_for_unless_somebody_asks() {
+        // Unset is the default on purpose: not every model accepts the
+        // field, and a value nobody chose is a 400 from somebody
+        // else's server.
+        assert_eq!(LlmConfig::default().reasoning_effort, None);
+    }
+
+    #[test]
+    fn the_effort_is_read_off_the_config() {
+        assert_eq!(
+            llm("reasoning_effort = \"low\"").reasoning_effort,
+            Some(ReasoningEffort::Low)
+        );
+        assert_eq!(
+            llm("reasoning_effort = \"high\"").reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
+    }
+
+    #[test]
+    fn a_word_no_provider_knows_is_refused_here() {
+        // At load, where it names the file, rather than as a 400 in the
+        // middle of somebody asking for the lights.
+        assert!(toml::from_str::<LlmConfig>("reasoning_effort = \"maximum\"").is_err());
+    }
+
+    #[test]
+    fn the_escalation_tier_has_its_own() {
+        // The two tiers want opposite things: Tier 1 is quick, Tier 2
+        // exists because something was hard.
+        let cfg = llm(r#"
+            reasoning_effort = "low"
+            [tier2]
+            reasoning_effort = "high"
+            "#);
+        assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::Low));
+        assert_eq!(
+            cfg.tier2.expect("present").reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
     }
 }

@@ -25,6 +25,29 @@ pub struct ChatRequest {
     pub tool_choice: Option<ToolChoice>,
 }
 
+/// How much thinking to do before answering.
+///
+/// A property of the role rather than of a turn: Tier 1 exists to be
+/// quick, and Tier 2 exists because something was hard. The gpt-oss
+/// models default to `Medium`, which for a question asked out loud
+/// means reasoning tokens generated while somebody stands in a dark
+/// hall — and on a metered tier, paid for twice over, since they count
+/// against the same budget as the answer.
+///
+/// Left unset by default, which sends nothing and leaves the provider
+/// to its own default. Not every model accepts the field, and a value
+/// nobody asked for is a 400 from somebody else's server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum ReasoningEffort {
+    /// No reasoning at all, where the model offers that.
+    None,
+    Low,
+    Medium,
+    High,
+}
+
 /// A message in the conversation. Uses OpenAI's `role` discriminator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
@@ -220,6 +243,10 @@ pub(crate) struct RawFunctionCall {
 #[derive(Serialize)]
 pub(crate) struct WireChatRequest<'a> {
     model: &'a str,
+    /// From the client's configuration rather than the request: it is
+    /// how this role is set up, not something a single turn decides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
     #[serde(flatten)]
     req: &'a ChatRequest,
 }
@@ -237,10 +264,15 @@ pub(crate) async fn post_chat_completions(
     base_url: &str,
     api_key: &str,
     model: &str,
+    reasoning_effort: Option<ReasoningEffort>,
     req: &ChatRequest,
 ) -> Result<ChatResponse> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body = WireChatRequest { model, req };
+    let body = WireChatRequest {
+        model,
+        reasoning_effort,
+        req,
+    };
 
     debug!(model = %model, "sending chat-completion request");
     let resp = http
