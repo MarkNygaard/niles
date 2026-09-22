@@ -115,20 +115,83 @@ pub struct RouterContext<'a> {
     pub scenes: &'a [String],
 }
 
-/// Lowercase, trim, collapse internal whitespace, strip trailing
-/// sentence punctuation (`.`, `!`, `?`, `,`, `;`, `:`).
-///
-/// Note: we explicitly enumerate the trailing chars to strip rather
-/// than "anything non-alphanumeric" — otherwise `%` gets eaten and
+/// The sentence punctuation worth removing, enumerated rather than
+/// "anything non-alphanumeric" — otherwise `%` gets eaten and
 /// `dim the kitchen lights to 30%` becomes `... to 30`, which the
 /// `light_dim` regex can't anchor on.
+const SENTENCE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
+
+/// Lowercase, trim, collapse internal whitespace, strip sentence
+/// punctuation and the politeness around the instruction.
 pub(crate) fn normalize(s: &str) -> String {
-    s.trim()
+    let collapsed = s
+        .trim()
         .to_lowercase()
-        .trim_end_matches(['.', '!', '?', ',', ';', ':'])
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    strip_politeness(&collapsed).to_string()
+}
+
+/// Courtesy, which carries no instruction.
+///
+/// Every Tier 0 pattern is anchored at both ends, so "can you turn off
+/// the living room lights" missed all of them and went to the LLM —
+/// where the same request costs a round trip to Groq, several hundred
+/// milliseconds and a slice of a rate limit, to arrive at what a regex
+/// already knew. Two courteous words should not change which tier
+/// answers.
+///
+/// Stripped in one place rather than folded into each pattern: there
+/// are two dozen patterns and only a few ways to be polite. Whatever
+/// is left still has to match a pattern exactly, so stripping too
+/// eagerly escalates to Tier 1 rather than mis-routing.
+fn strip_politeness(mut t: &str) -> &str {
+    // Deliberately short: "i was wondering if you could" is a sentence
+    // for the LLM to read, not one to pattern-match.
+    const OPENERS: [&str; 5] = ["please", "can you", "could you", "would you", "will you"];
+    // "turn off the kitchen light please" is the same sentence said the
+    // other way round.
+    const CLOSERS: [&str; 4] = ["please", "thanks", "thank you", "for me"];
+
+    loop {
+        let before = t;
+        // Between strips as well as before them: taking "please" off
+        // "turn off the lights, please" leaves a comma behind.
+        t = t.trim_matches(|c: char| c == ' ' || SENTENCE_PUNCT.contains(&c));
+
+        for opener in OPENERS {
+            if let Some(rest) = t.strip_prefix(opener)
+                && ends_a_word(rest)
+            {
+                t = rest;
+                break;
+            }
+        }
+        for closer in CLOSERS {
+            if let Some(head) = t.strip_suffix(closer)
+                && starts_a_word(head)
+            {
+                t = head;
+                break;
+            }
+        }
+
+        if t == before {
+            return t;
+        }
+    }
+}
+
+/// Whether what follows a stripped opener begins a new word: "can you"
+/// is courtesy in "can you dim the hall" and half a word in "can
+/// youth club win".
+fn ends_a_word(rest: &str) -> bool {
+    rest.is_empty() || rest.starts_with(|c: char| c == ' ' || SENTENCE_PUNCT.contains(&c))
+}
+
+fn starts_a_word(head: &str) -> bool {
+    head.is_empty() || head.ends_with(|c: char| c == ' ' || SENTENCE_PUNCT.contains(&c))
 }
 
 /// "turn it back on" / "turn them off again" / "switch it on".
@@ -2149,6 +2212,92 @@ mod tests {
                 on: false
             })
         );
+    }
+
+    // ---- Politeness ----
+
+    #[test]
+    fn courtesy_in_front_of_an_instruction_still_reaches_tier_0() {
+        // The sentence that sent this to the LLM and came back a rate
+        // limit instead of a dark living room.
+        let want = Some(Intent::LightSet {
+            room: "living room".into(),
+            on: false,
+        });
+        for said in [
+            "can you turn off the living room lights",
+            "could you turn off the living room lights",
+            "would you turn off the living room lights",
+            "will you turn off the living room lights",
+            "please turn off the living room lights",
+        ] {
+            assert_eq!(parse(said), want, "{said}");
+        }
+    }
+
+    #[test]
+    fn courtesy_after_the_instruction_counts_too() {
+        let want = Some(Intent::LightSet {
+            room: "kitchen".into(),
+            on: false,
+        });
+        for said in [
+            "turn off the kitchen light please",
+            "turn off the kitchen light, please",
+            "turn off the kitchen light thanks",
+            "turn off the kitchen light thank you",
+            "turn off the kitchen light for me",
+        ] {
+            assert_eq!(parse(said), want, "{said}");
+        }
+    }
+
+    #[test]
+    fn courtesy_stacks_at_both_ends() {
+        assert_eq!(
+            parse("Can you please turn off the kitchen light, thanks!"),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: false
+            })
+        );
+        assert_eq!(
+            parse("please can you turn off the kitchen light"),
+            Some(Intent::LightSet {
+                room: "kitchen".into(),
+                on: false
+            })
+        );
+    }
+
+    #[test]
+    fn courtesy_does_not_change_the_instruction_it_wraps() {
+        // Stripping is only allowed to decide which tier answers.
+        assert_eq!(
+            parse("could you dim the kitchen lights to 30%"),
+            Some(Intent::LightDim {
+                room: "kitchen".into(),
+                percent: 30
+            })
+        );
+        // And an ambiguous sentence stays ambiguous.
+        assert_eq!(parse("can you turn off the lights"), None);
+    }
+
+    #[test]
+    fn a_polite_word_inside_another_word_is_left_alone() {
+        // "can you" is courtesy in front of an instruction and the
+        // first half of a word in "can youth club". Neither routes
+        // anywhere, but stripping mid-word would be the bug that lets
+        // one sentence arrive as a different one.
+        assert_eq!(parse("can youth club win"), None);
+        assert_eq!(parse("pleasant kitchen light"), None);
+    }
+
+    #[test]
+    fn courtesy_alone_asks_for_nothing() {
+        assert_eq!(parse("please"), None);
+        assert_eq!(parse("thanks"), None);
     }
 
     // ---- Media pause ----
