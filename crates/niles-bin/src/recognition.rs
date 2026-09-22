@@ -62,7 +62,21 @@ fn outcome_to_identity(
             let _ = heard.send(speaker);
             Some((display_name, confidence))
         }
-        MatchOutcome::Unknown { .. } => None,
+        // Logged rather than dropped. "Not recognised" on its own gives
+        // nobody anything to tune: the threshold is a number, and the
+        // only way to know whether it is the wrong one is to see what
+        // the voice actually scored against it.
+        MatchOutcome::Unknown {
+            best_similarity,
+            ref nearest_speaker,
+        } => {
+            tracing::info!(
+                best_similarity,
+                nearest = nearest_speaker.as_deref().unwrap_or("nobody"),
+                "speaker not recognised"
+            );
+            None
+        }
         _ => None,
     }
 }
@@ -148,10 +162,23 @@ impl SpeakerIdentifier for EcapaIdentifier {
         if enrolled.embeddings.is_empty() {
             return false;
         }
-        !matches!(
-            self.read_matcher().classify(embedding),
-            MatchOutcome::Match { ref speaker, .. } if speaker == &enrolled.speaker
-        )
+        // Refuse only a voice that is confidently *somebody else*.
+        //
+        // This used to refuse anything that did not already classify as
+        // the claimed name, which made enrolment unable to finish: one
+        // clip is too thin to match against, so the second "my name is
+        // Mark" was turned away by the first. Niles asked for one or
+        // two more and then refused them — the reply and the guard
+        // disagreed, and the guard won.
+        //
+        // Unknown is the ordinary case while somebody is still being
+        // learned, and it has to be allowed for the clips to accumulate
+        // at all. What that opens — a stranger adding themselves to a
+        // name nobody is watching — is what `known_voices_only` is for,
+        // and enrolment is meant to be done with that switch off.
+        self.read_matcher()
+            .classify(embedding)
+            .is_someone_other_than(&enrolled.speaker)
     }
 }
 

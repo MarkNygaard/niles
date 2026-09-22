@@ -29,6 +29,24 @@ pub enum MatchOutcome {
     },
 }
 
+impl MatchOutcome {
+    /// Whether this voice is confidently somebody other than `claimed`.
+    ///
+    /// The question enrolment has to ask, and it is deliberately not
+    /// "does this sound like `claimed`". Asking it that way makes
+    /// enrolment unable to finish: the first clip is too thin to match
+    /// against, so the second attempt is turned away by the first, and
+    /// a voice print never grows past one.
+    ///
+    /// `Unknown` is therefore *allowed*. It is the ordinary state of
+    /// somebody still being learned, and refusing it refuses the whole
+    /// process. What that opens — a stranger adding themselves to a
+    /// name — is what the known-voices lock is for.
+    pub fn is_someone_other_than(&self, claimed: &str) -> bool {
+        matches!(self, MatchOutcome::Match { speaker, .. } if speaker != claimed)
+    }
+}
+
 /// Classifies query embeddings against enrolled speakers.
 pub struct Matcher {
     speakers: Vec<EnrolledSpeaker>,
@@ -374,5 +392,43 @@ mod tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod impostor_tests {
+    use super::*;
+
+    fn matched(speaker: &str) -> MatchOutcome {
+        MatchOutcome::Match {
+            speaker: speaker.into(),
+            display_name: speaker.into(),
+            confidence: 0.9,
+        }
+    }
+
+    #[test]
+    fn a_voice_that_is_somebody_else_is_refused() {
+        // A guest saying "I am Mark" while Niles can hear they are
+        // Sofia. This is the case the guard exists for.
+        assert!(matched("sofia").is_someone_other_than("mark"));
+    }
+
+    #[test]
+    fn your_own_voice_is_not_an_impostor() {
+        assert!(!matched("mark").is_someone_other_than("mark"));
+    }
+
+    #[test]
+    fn an_unrecognised_voice_is_allowed_to_go_on_enrolling() {
+        // The bug this replaced. One clip is too thin to match
+        // against, so the second "my name is Mark" scored below the
+        // threshold and was refused by the first — Niles asked for one
+        // or two more and then turned them away.
+        let unknown = MatchOutcome::Unknown {
+            best_similarity: 0.41,
+            nearest_speaker: Some("mark".into()),
+        };
+        assert!(!unknown.is_someone_other_than("mark"));
     }
 }
