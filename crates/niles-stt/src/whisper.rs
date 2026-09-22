@@ -38,6 +38,33 @@ pub struct Transcript {
     pub text: String,
     pub language: Option<String>,
     pub duration_seconds: Option<f64>,
+    /// What Whisper thought of its own answer.
+    ///
+    /// `None` from a provider that does not say, which is not the same
+    /// as a confident answer and must not be read as one.
+    pub confidence: Option<Confidence>,
+}
+
+/// Whisper's own opinion of whether that was speech.
+///
+/// A door closing near a satellite wakes it, and Whisper is then asked
+/// to transcribe a room with nothing being said in it. It does not
+/// return nothing — it returns a short, ordinary, entirely invented
+/// sentence, because that is what a model trained to produce text does
+/// with noise. "Thank you." is the classic one, and no rule about
+/// sentence shape can tell that from somebody actually saying it.
+///
+/// These two numbers can. They are already on the wire — `verbose_json`
+/// has always carried them and this crate decoded three fields and
+/// dropped the rest — so reading them costs a struct, not a request.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Confidence {
+    /// How sure Whisper is that the audio contained no speech at all.
+    /// Nearer 1 is more sure there was nothing.
+    pub no_speech_prob: f64,
+    /// Mean log-probability of the tokens it chose. Less than about
+    /// -1 means it was guessing.
+    pub avg_logprob: f64,
 }
 
 /// HTTP client around Groq's Whisper endpoint. Owns its own
@@ -104,8 +131,36 @@ impl WhisperClient {
             text: parsed.text,
             language: parsed.language,
             duration_seconds: parsed.duration,
+            confidence: confidence_of(&parsed.segments),
         })
     }
+}
+
+/// The whole utterance's confidence, from its segments.
+///
+/// Worst segment rather than an average: a wake word heard clearly
+/// followed by three seconds of room would average out to something
+/// reassuring, and it is the three seconds of room that decide whether
+/// there was a command in there.
+///
+/// `None` when there are no segments, because a provider that says
+/// nothing has not said the audio was fine.
+fn confidence_of(segments: &[RawSegment]) -> Option<Confidence> {
+    let no_speech_prob = segments
+        .iter()
+        .map(|s| s.no_speech_prob)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let avg_logprob = segments
+        .iter()
+        .map(|s| s.avg_logprob)
+        .fold(f64::INFINITY, f64::min);
+    if segments.is_empty() {
+        return None;
+    }
+    Some(Confidence {
+        no_speech_prob,
+        avg_logprob,
+    })
 }
 
 /// Wire shape of the `verbose_json` response. Only the fields we
@@ -117,6 +172,21 @@ struct RawTranscript {
     language: Option<String>,
     #[serde(default)]
     duration: Option<f64>,
+    /// Absent from a provider that does not do `verbose_json`, and
+    /// from a response with nothing in it.
+    #[serde(default)]
+    segments: Vec<RawSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSegment {
+    #[serde(default)]
+    no_speech_prob: f64,
+    /// Defaults to 0 rather than something damning: a provider that
+    /// omits it has not reported a bad transcription, and treating
+    /// silence as a low score would drop real speech.
+    #[serde(default)]
+    avg_logprob: f64,
 }
 
 #[cfg(test)]
@@ -131,6 +201,53 @@ mod tests {
             language: None,
             request_timeout: Duration::from_secs(5),
         }
+    }
+
+    fn seg(no_speech_prob: f64, avg_logprob: f64) -> RawSegment {
+        RawSegment {
+            no_speech_prob,
+            avg_logprob,
+        }
+    }
+
+    #[test]
+    fn a_provider_that_says_nothing_is_not_a_provider_saying_it_was_fine() {
+        // The distinction the caller depends on: absent means unknown,
+        // and unknown must not read as confident.
+        assert_eq!(confidence_of(&[]), None);
+    }
+
+    #[test]
+    fn the_worst_segment_decides() {
+        // A wake word heard clearly followed by three seconds of room
+        // averages out to something reassuring, and it is the three
+        // seconds of room that say whether a command was in there.
+        let c = confidence_of(&[seg(0.01, -0.2), seg(0.93, -1.7)]).expect("some");
+        assert_eq!(c.no_speech_prob, 0.93);
+        assert_eq!(c.avg_logprob, -1.7);
+    }
+
+    #[test]
+    fn segments_are_read_off_the_wire() {
+        let body = br#"{"text":"Thank you.","segments":[
+            {"id":0,"no_speech_prob":0.81,"avg_logprob":-1.4,"compression_ratio":1.1}
+        ]}"#;
+        let parsed: RawTranscript = serde_json::from_slice(body).unwrap();
+        let c = confidence_of(&parsed.segments).expect("some");
+        assert_eq!(c.no_speech_prob, 0.81);
+        assert_eq!(c.avg_logprob, -1.4);
+    }
+
+    #[test]
+    fn a_segment_missing_its_scores_is_not_treated_as_damning() {
+        // A provider that omits them has not reported a bad
+        // transcription, and reading silence as a low score would drop
+        // real speech.
+        let body = br#"{"text":"hello","segments":[{"id":0,"start":0.0,"end":1.0}]}"#;
+        let parsed: RawTranscript = serde_json::from_slice(body).unwrap();
+        let c = confidence_of(&parsed.segments).expect("some");
+        assert_eq!(c.no_speech_prob, 0.0);
+        assert_eq!(c.avg_logprob, 0.0);
     }
 
     #[test]

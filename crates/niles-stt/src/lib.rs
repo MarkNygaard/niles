@@ -15,4 +15,4 @@ mod whisper;
 
 pub use error::{Error, Result};
 pub use wav::{PcmFormat, pcm_to_wav};
-pub use whisper::{Transcript, WhisperClient, WhisperConfig};
+pub use whisper::{Confidence, Transcript, WhisperClient, WhisperConfig};

@@ -69,7 +69,7 @@ pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
 pub use speakers::{SpeakerConfig, SpeakersConfig};
 use std::path::Path;
 pub use store::{Applied, Change, ChangeSource, ConfigStore, LoadOutcome, Revision, SectionChange};
-pub use stt::SttConfig;
+pub use stt::{NoiseGate, SttConfig};
 pub use tts::TtsConfig;
 pub use web_search::WebSearchConfig;
 pub use wled::{WledConfig, WledDeviceConfig};
@@ -688,6 +688,7 @@ mod tests {
             model: "m".into(),
             language: None,
             timeout_seconds: 30,
+            noise_gate: Default::default(),
         };
         assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test");
     }
@@ -708,6 +709,7 @@ mod tests {
             model: "m".into(),
             language: None,
             timeout_seconds: 30,
+            noise_gate: Default::default(),
         };
         let err = cfg.resolve_api_key().unwrap_err();
         assert!(matches!(err, Error::InvalidSection { section: "stt", .. }));
