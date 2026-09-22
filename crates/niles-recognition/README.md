@@ -5,9 +5,12 @@ identify *who* is speaking once enrollment + matching land in a follow-up PR.
 
 ## Model
 
-Recommended model: `speechbrain/spkrec-ecapa-voxceleb` on HuggingFace. To run,
-export to ONNX. The resulting `.onnx` file is ~30 MB and lives outside the
-repo. Point `[recognition].model_path` at the file.
+Recommended model: `speechbrain/spkrec-ecapa-voxceleb` on HuggingFace, exported
+to ONNX by [`scripts/export-ecapa-onnx.py`](../../scripts/export-ecapa-onnx.py).
+The resulting `.onnx` file is about **80 MB** and lives outside the repo.
+Point `[recognition].model_path` at the file.
+
+The image can carry it — see [deploy/docker/README.md](../../deploy/docker/README.md).
 
 ## Testing
 
