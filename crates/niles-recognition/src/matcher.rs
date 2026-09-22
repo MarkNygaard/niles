@@ -53,6 +53,16 @@ impl Matcher {
         }
     }
 
+    /// Whether anybody is enrolled at all.
+    ///
+    /// Asked before refusing a stranger: a house where nobody has
+    /// introduced themselves has no known voices, so "only answer
+    /// voices I know" would answer nobody — including whoever wants
+    /// to turn it back off.
+    pub fn knows_anybody(&self) -> bool {
+        self.speakers.iter().any(|s| !s.embeddings.is_empty())
+    }
+
     /// Classify `query` against the roster.
     ///
     /// # Panics

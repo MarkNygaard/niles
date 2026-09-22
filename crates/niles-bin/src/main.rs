@@ -2522,6 +2522,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         stt_gate: cfg.stt.noise_gate,
+        known_voices_only: cfg.recognition.known_voices_only,
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),
@@ -2631,6 +2632,8 @@ struct DispatchCtx {
     home: Arc<niles_config::HomeConfig>,
     /// When to disbelieve a transcript outright.
     stt_gate: niles_config::NoiseGate,
+    /// Whether a voice Niles does not know is answered at all.
+    known_voices_only: bool,
     review: niles_config::SkillsReviewConfig,
     conversation: Arc<conversation::ConversationMemory>,
     /// What "it" refers to, per room. See [`last_target`].
@@ -2964,6 +2967,28 @@ async fn dispatch_transcript(
         // closed is the same interruption as acting on it, minus the
         // lights.
         return None;
+    }
+
+    // The words are fine and somebody really said them. Whether it was
+    // somebody who lives here is a different question, and the only
+    // one that separates a command from a television.
+    //
+    // Placed before Tier 0, not after: a stranger must not be able to
+    // switch a light off through a regex either. And before the
+    // enrolment pattern, which is the point — "I am Sofia" from an
+    // unknown voice is exactly what the lock is for.
+    if ctx.known_voices_only && matches!(speaker, SpeakerContext::Unknown) {
+        // Nobody enrolled means nobody known, and a lock with no key
+        // cut would refuse the whole house — including whoever wants
+        // to turn it off.
+        let anyone_known = ctx.identifier.as_ref().is_some_and(|i| i.knows_anybody());
+        if anyone_known {
+            tracing::info!("[{peer}] not acting on {text:?}: voice not recognised");
+            return Some(response::voice_not_recognised());
+        }
+        tracing::warn!(
+            "[{peer}] known_voices_only is on and nobody is enrolled; letting {text:?} through"
+        );
     }
 
     let origin_room = ctx.satellites.room_for(peer);
@@ -4584,6 +4609,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         stt_gate: cfg.stt.noise_gate,
+        known_voices_only: cfg.recognition.known_voices_only,
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),
@@ -7209,6 +7235,10 @@ mod system_prompt_tests {
 
         async fn is_someone_else(&self, name: &str, _embedding: &[f32]) -> bool {
             self.taken.iter().any(|n| n == name)
+        }
+
+        fn knows_anybody(&self) -> bool {
+            !self.enrolled.lock().unwrap().is_empty() || !self.taken.is_empty()
         }
     }
 

@@ -17,6 +17,7 @@ import { CurveChart } from "@/components/CurveChart";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
+import { VoicesCard } from "@/components/VoicesCard";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
 import { RoleCard } from "@/components/RoleCard";
 import { SecretsCard } from "@/components/SecretsCard";
@@ -653,6 +654,27 @@ export function ConfigPanel() {
               />
             </CardContent>
           </Card>
+          <div className="pt-4">
+            <VoicesCard
+              knownVoicesOnly={
+                (view.effective.recognition as { known_voices_only?: boolean } | undefined)
+                  ?.known_voices_only === true
+              }
+              recognitionOn={
+                (view.effective.recognition as { enabled?: boolean } | undefined)
+                  ?.enabled === true
+              }
+              saving={save.isPending}
+              onChange={(value) =>
+                save.mutate({
+                  row: "recognition",
+                  entries: [
+                    { path: "recognition.known_voices_only", value },
+                  ],
+                })
+              }
+            />
+          </div>
         </TabsContent>
 
         <TabsContent value="credentials" className="flex flex-col gap-4">

@@ -19,6 +19,20 @@ pub struct RecognitionConfig {
     pub use_gpu: bool,
     #[serde(default)]
     pub matcher: MatcherConfig,
+    /// Refuse anything said by a voice Niles does not know.
+    ///
+    /// The lock, and it is one switch rather than two on purpose: the
+    /// question a household actually asks is "does Niles trust this
+    /// voice", and the answer decides both whether it acts and whether
+    /// it will learn a new name.
+    ///
+    /// Off by default. On, a stranger is told they are not recognised
+    /// and nothing happens — which includes "I am Sofia", because an
+    /// enrolment nobody in the house asked for is how a television
+    /// becomes a resident. Adding somebody means switching this off
+    /// for as long as it takes them to say their name.
+    #[serde(default)]
+    pub known_voices_only: bool,
 }
 
 impl RecognitionConfig {
@@ -144,7 +158,36 @@ mod tests {
                 threshold: 0.65,
                 strategy: MatchStrategy::default(),
             },
+            known_voices_only: false,
         };
+        assert!(cfg.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn the_door_is_open_until_somebody_closes_it() {
+        // A house that has never heard of this setting must not have
+        // been locked by upgrading.
+        assert!(!RecognitionConfig::default().known_voices_only);
+    }
+
+    #[test]
+    fn it_is_read_off_the_config() {
+        let cfg: RecognitionConfig = toml::from_str("known_voices_only = true").expect("valid");
+        assert!(cfg.known_voices_only);
+    }
+
+    #[test]
+    fn locking_does_not_require_recognition_to_be_configured_here() {
+        // Validation stays about paths. Whether the lock can do
+        // anything is a question for the running system — which
+        // answers it by asking whether anybody is enrolled — not for
+        // a file that cannot see the roster.
+        let cfg: RecognitionConfig = toml::from_str("known_voices_only = true").expect("valid");
         assert!(cfg.validate().is_ok());
     }
 }
