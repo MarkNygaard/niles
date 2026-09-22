@@ -34,7 +34,7 @@ use niles_scheduler::{
 };
 use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
-use niles_stt::{PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
+use niles_stt::{Confidence, PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
 use niles_tools::{LookUpCapability, ToolRegistry};
 use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingSender, WyomingServer};
@@ -2079,7 +2079,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
                         // need a bounded worker pool.
                         let client = client.clone();
                         tokio::spawn(async move {
-                            if let Some((peer, text, timing)) =
+                            if let Some((peer, text, _confidence, timing)) =
                                 transcribe_session(&client, session).await
                             {
                                 println!("[{peer}] \"{text}\"");
@@ -2122,7 +2122,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
 async fn transcribe_session(
     client: &WhisperClient,
     session: niles_wyoming::AudioSession,
-) -> Option<(SocketAddr, String, TurnTiming)> {
+) -> Option<(SocketAddr, String, Option<Confidence>, TurnTiming)> {
     let pcm_format = PcmFormat {
         sample_rate_hz: session.format.sample_rate_hz,
         bits_per_sample: session.format.bits_per_sample,
@@ -2143,15 +2143,30 @@ async fn transcribe_session(
     let audio_ms = wav_duration_ms(&session);
     let started = Instant::now();
     match client.transcribe(wav, "session.wav").await {
-        Ok(t) => Some((
-            session.from,
-            t.text.trim().to_string(),
-            TurnTiming {
-                audio_ms,
-                stt_ms: started.elapsed().as_millis(),
-                ..TurnTiming::default()
-            },
-        )),
+        Ok(t) => {
+            let text = t.text.trim().to_string();
+            // Logged for every utterance, including the ones dropped
+            // below, because the thresholds worth using are the ones
+            // read off a real room rather than off somebody's blog.
+            if let Some(c) = t.confidence {
+                tracing::info!(
+                    no_speech_prob = c.no_speech_prob,
+                    avg_logprob = c.avg_logprob,
+                    "[{}] whisper heard {text:?}",
+                    session.from
+                );
+            }
+            Some((
+                session.from,
+                text,
+                t.confidence,
+                TurnTiming {
+                    audio_ms,
+                    stt_ms: started.elapsed().as_millis(),
+                    ..TurnTiming::default()
+                },
+            ))
+        }
         Err(e) => {
             tracing::warn!("{}: transcription failed: {e}", session.from);
             None
@@ -2230,7 +2245,9 @@ fn spawn_dispatch_task(
                 (identity, voice)
             })
         });
-        if let Some((peer, text, mut timing)) = transcribe_session(&whisper, session).await {
+        if let Some((peer, text, confidence, mut timing)) =
+            transcribe_session(&whisper, session).await
+        {
             let (ident, voice) = match id_handle {
                 Some(h) => match h.await {
                     Ok(result) => result,
@@ -2253,7 +2270,8 @@ fn spawn_dispatch_task(
             }
             let speaker = speaker_context_from(attempted, ident);
             let dispatch_started = Instant::now();
-            let say = handle_transcript(&ctx, peer, &text, &speaker, voice.as_deref()).await;
+            let say =
+                handle_transcript(&ctx, peer, &text, confidence, &speaker, voice.as_deref()).await;
             timing.dispatch_ms = dispatch_started.elapsed().as_millis();
             let entry = CommandEntry {
                 ts: chrono::Utc::now(),
@@ -2503,6 +2521,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
+        stt_gate: cfg.stt.noise_gate,
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),
@@ -2610,6 +2629,8 @@ struct DispatchCtx {
     memory: Arc<MemoryStore>,
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
+    /// When to disbelieve a transcript outright.
+    stt_gate: niles_config::NoiseGate,
     review: niles_config::SkillsReviewConfig,
     conversation: Arc<conversation::ConversationMemory>,
     /// What "it" refers to, per room. See [`last_target`].
@@ -2673,10 +2694,11 @@ async fn handle_transcript(
     ctx: &DispatchCtx,
     peer: SocketAddr,
     text: &str,
+    confidence: Option<Confidence>,
     speaker: &SpeakerContext,
     voice: Option<&[f32]>,
 ) -> Option<String> {
-    let response = dispatch_transcript(ctx, peer, text, speaker, voice).await;
+    let response = dispatch_transcript(ctx, peer, text, confidence, speaker, voice).await;
     if let Some(reply) = &response {
         ctx.conversation
             .record(ctx.satellites.room_for(peer), text, reply);
@@ -2892,6 +2914,8 @@ async fn dispatch_transcript(
     ctx: &DispatchCtx,
     peer: SocketAddr,
     text: &str,
+    // What Whisper thought of its own answer, when the provider says.
+    confidence: Option<Confidence>,
     speaker: &SpeakerContext,
     // The voice print of this very utterance, so "I am Mark" can enrol
     // the sentence that said it. `None` when recognition is off or the
@@ -2920,6 +2944,25 @@ async fn dispatch_transcript(
     // burn a Tier 1 round-trip and a spoken non-sequitur reply.
     if is_foreign_script_hallucination(text, &ctx.home.resolved_language()) {
         tracing::debug!("[{peer}] dropping foreign-script hallucination: {text:?}");
+        return None;
+    }
+
+    // Everything above reads the words. This reads Whisper's opinion of
+    // whether there were any, which is the only thing that can tell a
+    // door closing from somebody saying "thank you" — the invented
+    // sentence is a perfectly ordinary one, and no rule about shape
+    // will catch it.
+    if let Some(c) = confidence
+        && ctx.stt_gate.rejects(c)
+    {
+        tracing::info!(
+            no_speech_prob = c.no_speech_prob,
+            avg_logprob = c.avg_logprob,
+            "[{peer}] not acting on {text:?}: whisper does not think that was speech"
+        );
+        // Silent on purpose. The house saying "sorry?" to a door being
+        // closed is the same interruption as acting on it, minus the
+        // lights.
         return None;
     }
 
@@ -4540,6 +4583,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
+        stt_gate: cfg.stt.noise_gate,
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),

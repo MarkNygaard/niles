@@ -1635,6 +1635,7 @@ dependencies = [
  "niles-notifications",
  "niles-recognition",
  "niles-scheduler",
+ "niles-stt",
  "serde",
  "tempfile",
  "thiserror",
