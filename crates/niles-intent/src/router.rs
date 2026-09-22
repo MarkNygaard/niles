@@ -73,6 +73,7 @@ impl IntentRouter {
             .or_else(|| match_light_set_last(&t))
             .or_else(|| match_datetime_query(&t))
             .or_else(|| match_enroll_speaker(&t))
+            .or_else(|| match_who_am_i(&t))
     }
 
     /// Try the existing Tier-0 patterns first, then fall through to
@@ -246,6 +247,24 @@ fn match_datetime_query(t: &str) -> Option<Intent> {
 /// lot of sentences that have nothing to do with who is speaking. The
 /// name is a single word: a household is on first-name terms, and
 /// allowing a phrase would swallow half of whatever was misheard.
+/// "who am I" / "what's my name" / "do you know who I am".
+///
+/// Anchored like the rest. "who am I to say" is a different sentence
+/// and belongs to the LLM.
+fn who_am_i_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^(?:who\s+am\s+i|who\s+is\s+this|do\s+you\s+know\s+(?:who\s+i\s+am|my\s+name)|what(?:'s| is)\s+my\s+name)$",
+        )
+        .expect("who_am_i regex compiles")
+    })
+}
+
+fn match_who_am_i(t: &str) -> Option<Intent> {
+    who_am_i_regex().is_match(t).then_some(Intent::WhoAmI)
+}
+
 fn enroll_speaker_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -2229,6 +2248,40 @@ mod tests {
                 on: false
             })
         );
+    }
+
+    // ---- Who am I ----
+
+    #[test]
+    fn asking_who_you_are_is_answered_without_a_model() {
+        for said in [
+            "who am I?",
+            "Who is this",
+            "what's my name",
+            "what is my name",
+            "do you know who I am",
+            "Do you know my name?",
+        ] {
+            assert_eq!(parse(said), Some(Intent::WhoAmI), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_rephrasing_this_does_not_know_still_reaches_the_llm() {
+        // The pattern covers the ways people actually ask, not every
+        // way they could. Anything else escalates, which is the
+        // behaviour that was there before this existed.
+        assert_eq!(parse("can you tell me my name"), None);
+        assert_eq!(parse("remind me who I am"), None);
+    }
+
+    #[test]
+    fn a_longer_sentence_is_a_question_for_the_llm() {
+        // "who am I to say" is not somebody asking their own name, and
+        // the anchors are what keep it out.
+        assert_eq!(parse("who am I to say"), None);
+        assert_eq!(parse("who is this song by"), None);
+        assert_eq!(parse("what's my name in the system"), None);
     }
 
     // ---- Word order ----

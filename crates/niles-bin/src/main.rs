@@ -3096,6 +3096,22 @@ async fn dispatch_transcript(
         }
         Intent::DateTimeQuery { date } => Some(response::datetime_now(&ctx.home.timezone, date)),
         Intent::EnrollSpeaker { name } => Some(enroll_by_voice(ctx, peer, &name, voice).await),
+        Intent::WhoAmI => {
+            // Answered from what the turn already knows. The voice was
+            // matched in parallel with transcription, so this costs a
+            // string rather than a round trip — and it still answers
+            // when the language model is unreachable, which is when
+            // somebody is most likely to be asking.
+            let name = match speaker {
+                SpeakerContext::Identified(name) => Some(name.as_str()),
+                _ => None,
+            };
+            Some(response::who_you_are(
+                name,
+                ctx.identifier.is_some(),
+                ctx.identifier.as_ref().is_some_and(|i| i.knows_anybody()),
+            ))
+        }
         Intent::LightSetAll { on } => {
             // Switchable, not lights: "turn everything off" includes
             // the lamp that happens to be on a plug.

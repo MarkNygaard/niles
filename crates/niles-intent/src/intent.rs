@@ -46,6 +46,18 @@ pub enum Intent {
         name: String,
     },
 
+    /// "who am I" / "what's my name" — say who Niles thinks is
+    /// speaking.
+    ///
+    /// Tier 0 because the answer is already in hand: the voice print is
+    /// matched in parallel with transcription, so by the time this
+    /// intent exists the name does too. Sending it to a language model
+    /// would be paying a round trip to be told something Niles was
+    /// already holding — and it would go unanswered whenever the model
+    /// is unreachable, which is exactly when somebody is most likely to
+    /// be asking whether the house still knows them.
+    WhoAmI,
+
     /// "turn off all the lights" / "everything off" — whole-home set.
     /// No room means dispatch fans out to every device satisfying
     /// `Device::is_light()`.
