@@ -49,3 +49,9 @@ desktop.ini
 # Reference screenshots dropped in for a design discussion. Useful in
 # the moment, not part of the project.
 /Tado screenshots/
+
+# The speaker-recognition model, exported by scripts/export-ecapa-onnx.py.
+# 80 MB of weights that nothing diffs, in a public repo. It belongs on a
+# release, which is where the image build fetches it from.
+*.onnx
+*.onnx.data
