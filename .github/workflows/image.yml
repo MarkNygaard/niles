@@ -48,5 +48,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # The speaker model, when there is one. Repository variables
+          # rather than secrets: a URL and a checksum are not secret,
+          # and a secret would be masked out of the build log at
+          # exactly the moment somebody is working out why it failed.
+          # Unset is the normal case and builds an image without it.
+          build-args: |
+            ECAPA_URL=${{ vars.ECAPA_URL }}
+            ECAPA_SHA256=${{ vars.ECAPA_SHA256 }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -16,6 +16,50 @@ Built and pushed to **GHCR** by [`.github/workflows/image.yml`](../../.github/wo
 
 No local Docker needed — the build runs in CI.
 
+## Speaker recognition
+
+Two files the Rust build does not produce.
+
+**ONNX Runtime** is baked in already. `ort` is built `load-dynamic`, so it
+opens `libonnxruntime.so` at *runtime* and panics if it cannot — a runtime
+image without it does not quietly run with recognition off, it dies the
+moment `[recognition] enabled` is true. The version is pinned to what `ort`
+asks for; changing the `ort` dependency means checking `ORT_VERSION` and
+`ORT_SHA256` against it.
+
+**The ECAPA model** is not, because it does not exist until somebody makes
+it. Once:
+
+```sh
+pip install torch speechbrain onnx
+python scripts/export-ecapa-onnx.py -o ecapa.onnx
+```
+
+The script prints the size and sha256. Attach `ecapa.onnx` to a GitHub
+release, then set two **repository variables** (Settings → Secrets and
+variables → Actions → Variables):
+
+| Variable | Value |
+|---|---|
+| `ECAPA_URL` | the release asset's download URL |
+| `ECAPA_SHA256` | the checksum the script printed |
+
+Variables rather than secrets: neither is secret, and a secret would be
+masked out of the build log at exactly the moment somebody is working out
+why a build failed.
+
+The next image then carries the model at
+`/usr/local/share/niles/ecapa.onnx`. Point config at it:
+
+```toml
+[recognition]
+enabled = true
+model_path = "/usr/local/share/niles/ecapa.onnx"
+```
+
+With the variables unset — the normal case — the build is unchanged and the
+image ships without a model.
+
 ### GHCR visibility
 
 GHCR packages are **private by default**. Either:
