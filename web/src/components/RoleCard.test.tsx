@@ -6,6 +6,8 @@ import {
   choices,
   effortToSave,
   effortValue,
+  modelForProvider,
+  offeredFor,
   usableFor,
 } from "@/components/RoleCard";
 import type { Provider } from "@/lib/api";
@@ -190,5 +192,56 @@ describe("how hard to think", () => {
   it("shows a configured value as itself", () => {
     expect(effortValue("low")).toBe("low");
     expect(effortToSave("low")).toBe("low");
+  });
+});
+
+describe("the model list follows the provider", () => {
+  const MODELS = {
+    groq: ["openai/gpt-oss-20b", "llama-3.3-70b-versatile"],
+    cerebras: ["gpt-oss-120b", "qwen-3.8-27b"],
+  };
+
+  it("offers a provider only its own models", () => {
+    // The bug this replaced: picking Cerebras still listed Groq's
+    // models, because the configured value was appended whatever
+    // provider it belonged to.
+    expect(offeredFor(MODELS, "cerebras", "groq", "openai/gpt-oss-20b")).toEqual([
+      "gpt-oss-120b",
+      "qwen-3.8-27b",
+    ]);
+  });
+
+  it("still shows a configured model the shipped list has not caught up with", () => {
+    // Which is what `choices` is for, and is correct as long as the
+    // provider is the one it was configured against.
+    expect(offeredFor(MODELS, "groq", "groq", "some-new-groq-model")).toEqual([
+      "openai/gpt-oss-20b",
+      "llama-3.3-70b-versatile",
+      "some-new-groq-model",
+    ]);
+  });
+
+  it("does not list a configured model twice", () => {
+    expect(offeredFor(MODELS, "groq", "groq", "openai/gpt-oss-20b")).toEqual(
+      MODELS.groq,
+    );
+  });
+
+  it("is empty for a provider nothing is known about", () => {
+    // Which drops the box back to being typed in.
+    expect(offeredFor(MODELS, "mystery", "groq", "x")).toEqual([]);
+  });
+
+  it("moves the model to the new provider's first one", () => {
+    // A model name is not portable, so a switch that kept the old one
+    // would save a pair that fails at somebody else's server.
+    expect(modelForProvider(MODELS, "cerebras")).toBe("gpt-oss-120b");
+    expect(modelForProvider(MODELS, "groq")).toBe("openai/gpt-oss-20b");
+  });
+
+  it("leaves the box empty for a provider it knows no models for", () => {
+    // Rather than filling it with a guess.
+    expect(modelForProvider(MODELS, "mystery")).toBe("");
+    expect(modelForProvider(undefined, "groq")).toBe("");
   });
 });
