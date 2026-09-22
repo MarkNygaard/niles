@@ -2429,9 +2429,18 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
-    let identifier = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
+    // Concrete, so it can be handed to dispatch as a `SpeakerIdentifier`
+    // and to the app as a `VoiceRoster` — the same object answering two
+    // questions, rather than two views of the roster that can disagree.
+    let recogniser = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
         .await
         .context("initializing speaker recognition")?;
+    let identifier = recogniser
+        .clone()
+        .map(|r| r as Arc<dyn crate::recognition::SpeakerIdentifier>);
+    // `voice-dispatch` serves no API, so there is nobody to show the
+    // roster to.
+    drop(recogniser);
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
@@ -4417,9 +4426,16 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if tier2.is_some() {
         niles_tools::register_escalate_tool(&mut tools);
     }
-    let identifier = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
+    // Concrete, so it can be handed to dispatch as a `SpeakerIdentifier`
+    // and to the app as a `VoiceRoster` — the same object answering two
+    // questions, rather than two views of the roster that can disagree.
+    let recogniser = build_speaker_identifier(&cfg.recognition, build_enrollment_backend(&cfg)?)
         .await
         .context("initializing speaker recognition")?;
+    let identifier = recogniser
+        .clone()
+        .map(|r| r as Arc<dyn crate::recognition::SpeakerIdentifier>);
+    let voices = recogniser.map(|r| r as Arc<dyn niles_recognition::VoiceRoster>);
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
         .await
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
@@ -4525,6 +4541,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
     .with_tado(tado.clone())
+    .with_voices(voices.clone())
     .with_secrets(secret_store.clone())
     .with_api_token(cfg.auth.resolve_api_token());
 

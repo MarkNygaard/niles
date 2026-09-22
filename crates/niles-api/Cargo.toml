@@ -20,6 +20,7 @@ niles-mqtt.workspace = true
 niles-notifications.workspace = true
 niles-db.workspace = true
 niles-presence.workspace = true
+niles-recognition.workspace = true
 niles-scheduler.workspace = true
 niles-integration-linear.workspace = true
 async-trait.workspace = true

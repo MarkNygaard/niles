@@ -276,6 +276,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** One voice Niles has been taught. */
+export interface Voice {
+  speaker: string;
+  display_name: string;
+  /** One is thin — Niles asks for more until it has three. */
+  clip_count: number;
+  created_at: string;
+  /** Null on a voice enrolled and never matched since, which is the
+      shape of an enrolment that is not working. */
+  last_seen_at: string | null;
+}
+
 export const api = {
   getConfig: () => request<ConfigView>("/config"),
 
@@ -312,6 +324,11 @@ export const api = {
   applyScene: (name: string) =>
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
+  voices: () => request<Voice[]>("/voices"),
+  forgetVoice: (speaker: string) =>
+    request<void>(`/voices/${encodeURIComponent(speaker)}`, {
+      method: "DELETE",
+    }),
   places: (q: string) =>
     request<Place[]>(`/places?q=${encodeURIComponent(q)}`),
   timezones: () => request<string[]>("/timezones"),

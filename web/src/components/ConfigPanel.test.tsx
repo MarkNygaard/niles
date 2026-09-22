@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ConfigPanel } from "@/components/ConfigPanel";
+import { ConfigPanel, satellitesAt } from "@/components/ConfigPanel";
 import { api } from "@/lib/api";
 
 /**
@@ -97,5 +97,36 @@ describe("ConfigPanel", () => {
     await waitFor(() =>
       expect(vi.mocked(api.secrets).mock.calls.length).toBeGreaterThan(before),
     );
+  });
+});
+
+describe("satellitesAt", () => {
+  it("reads the volume back", () => {
+    // The bug this pins: the slider wrote `satellites.<name>.volume`
+    // and this never read it, so every reload showed the shipped 100
+    // and the setting looked as though it had not saved.
+    const got = satellitesAt({
+      satellites: {
+        kitchen: { ip: "192.168.42.30", room: "kitchen", volume: 40 },
+      },
+    });
+    expect(got).toEqual([
+      { name: "kitchen", ip: "192.168.42.30", room: "kitchen", volume: 40 },
+    ]);
+  });
+
+  it("leaves volume unset for an entry that has none", () => {
+    // Undefined rather than 100: the card decides what an unset volume
+    // looks like, and deciding it twice is how the two come to
+    // disagree.
+    const got = satellitesAt({
+      satellites: { kitchen: { ip: "192.168.42.30", room: "kitchen" } },
+    });
+    expect(got[0].volume).toBeUndefined();
+  });
+
+  it("survives a config with no satellites at all", () => {
+    expect(satellitesAt({})).toEqual([]);
+    expect(satellitesAt(null)).toEqual([]);
   });
 });

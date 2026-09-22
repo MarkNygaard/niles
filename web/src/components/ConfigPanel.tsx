@@ -197,14 +197,27 @@ function stringsAt(root: unknown, path: string): string[] {
   return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
 }
 
-function satellitesAt(root: unknown): Satellite[] {
+/**
+ * The satellites, as the live config has them.
+ *
+ * Exported for the test that pins the round trip: a field this does not
+ * read is a field the card silently shows its default for, which is how
+ * the volume slider appeared to save and then came back at 100.
+ */
+export function satellitesAt(root: unknown): Satellite[] {
   const value = valueAt(root, "satellites");
   if (!value || typeof value !== "object") return [];
-  return Object.entries(value as Record<string, { ip?: string; room?: string }>)
+  return Object.entries(
+    value as Record<string, { ip?: string; room?: string; volume?: number }>,
+  )
     .map(([name, entry]) => ({
       name,
       ip: entry?.ip ?? "",
       room: entry?.room ?? "",
+      // Left undefined rather than defaulted to 100 here: the card
+      // shows the shipped default for an entry that has no volume, and
+      // deciding that twice is how the two come to disagree.
+      volume: entry?.volume,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -228,6 +241,18 @@ export function ConfigPanel() {
   const integrations = useQuery({
     queryKey: ["integrations"],
     queryFn: api.integrations,
+  });
+  // Answers 501 when recognition is off, which is a fine answer and not
+  // worth retrying at: an empty list then stands for "nobody", and the
+  // card says separately that recognition is not running.
+  const voices = useQuery({
+    queryKey: ["voices"],
+    queryFn: api.voices,
+    retry: false,
+  });
+  const forget = useMutation({
+    mutationFn: api.forgetVoice,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
   });
   // Every call reaches tado, so this is asked once rather than on a
   // timer: it is a setup list, not a readout.
@@ -643,6 +668,7 @@ export function ConfigPanel() {
             <CardContent>
               <PeopleCard
                 people={peopleAt(view.effective)}
+                voices={voices.data?.map((v) => v.speaker)}
                 saving={save.isPending}
                 error={rowError?.row === "auth.allowed" ? rowError.message : undefined}
                 onChange={(people) =>
@@ -656,6 +682,8 @@ export function ConfigPanel() {
           </Card>
           <div className="pt-4">
             <VoicesCard
+              voices={voices.data ?? (voices.isError ? [] : undefined)}
+              onForget={(speaker) => forget.mutate(speaker)}
               knownVoicesOnly={
                 (view.effective.recognition as { known_voices_only?: boolean } | undefined)
                   ?.known_voices_only === true
@@ -664,7 +692,7 @@ export function ConfigPanel() {
                 (view.effective.recognition as { enabled?: boolean } | undefined)
                   ?.enabled === true
               }
-              saving={save.isPending}
+              saving={save.isPending || forget.isPending}
               onChange={(value) =>
                 save.mutate({
                   row: "recognition",

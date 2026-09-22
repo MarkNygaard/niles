@@ -2,6 +2,16 @@ import { useState } from "react";
 import { Trash2, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+/** The sentinel for "paired with nobody", which is not a voice. */
+const NO_VOICE = " none";
 import { cn } from "@/lib/utils";
 
 export interface Person {
@@ -9,8 +19,27 @@ export interface Person {
   speaker?: string;
 }
 
+/**
+ * The voices a person can be paired with.
+ *
+ * Whatever is already configured is kept even when no voice by that
+ * name is enrolled — a pairing that points at a deleted voice is worth
+ * showing rather than silently dropping, since the fix is to repair it
+ * and you cannot repair what the page will not display.
+ */
+export function speakerChoices(
+  enrolled: string[] | undefined,
+  current: string | undefined,
+): string[] {
+  const list = enrolled ?? [];
+  if (!current || list.includes(current)) return list;
+  return [...list, current];
+}
+
 export interface PeopleCardProps {
   people: Person[];
+  /** Enrolled voice slugs, for pairing. Undefined while loading. */
+  voices?: string[];
   saving?: boolean;
   error?: string;
   onChange: (people: Person[]) => void;
@@ -24,7 +53,13 @@ export interface PeopleCardProps {
  * an invitation flow: adding somebody is an edit, so there is no
  * message to send and nothing to expire.
  */
-export function PeopleCard({ people, saving, error, onChange }: PeopleCardProps) {
+export function PeopleCard({
+  people,
+  voices,
+  saving,
+  error,
+  onChange,
+}: PeopleCardProps) {
   const [draft, setDraft] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -65,10 +100,44 @@ export function PeopleCard({ people, saving, error, onChange }: PeopleCardProps)
             >
               <div className="min-w-0">
                 <div className="truncate text-sm">{person.email}</div>
-                {person.speaker && (
-                  <div className="text-muted-foreground text-xs">
-                    same person as “{person.speaker}” by voice
-                  </div>
+                {voices !== undefined && (
+                  <Select
+                    value={person.speaker ?? NO_VOICE}
+                    disabled={saving}
+                    onValueChange={(next: string | null) =>
+                      onChange(
+                        people.map((other) =>
+                          other.email === person.email
+                            ? {
+                                ...other,
+                                // Omitted rather than blank: the config
+                                // refuses an empty speaker and says to
+                                // leave the key out instead.
+                                speaker:
+                                  !next || next === NO_VOICE
+                                    ? undefined
+                                    : next,
+                              }
+                            : other,
+                        ),
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      aria-label={`${person.email} voice`}
+                      className="mt-1 h-7 w-full text-xs"
+                    >
+                      <SelectValue placeholder="No voice" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_VOICE}>No voice</SelectItem>
+                      {speakerChoices(voices, person.speaker).map((v) => (
+                        <SelectItem key={v} value={v}>
+                          {v}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
               </div>
               <Button

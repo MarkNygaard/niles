@@ -6,14 +6,39 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import { Trash2 } from "lucide-react";
+import type { Voice } from "@/lib/api";
+
+/**
+ * What to say about a voice, in one line.
+ *
+ * `last_seen_at` is the number that matters and the one nobody would
+ * think to ask for: a voice enrolled and never matched since is
+ * exactly what a failing enrolment looks like, and it looks identical
+ * to a working one everywhere else.
+ */
+export function voiceSummary(voice: Voice): string {
+  const clips =
+    voice.clip_count === 1 ? "1 clip" : `${voice.clip_count} clips`;
+  const thin = voice.clip_count < 3 ? " — thin, say the name again" : "";
+  const heard = voice.last_seen_at
+    ? `heard ${new Date(voice.last_seen_at).toLocaleDateString()}`
+    : "never recognised since";
+  return `${clips}${thin} · ${heard}`;
+}
 
 export interface VoicesCardProps {
   /** Whether a voice Niles does not know is answered at all. */
   knownVoicesOnly: boolean;
   /** Whether recognition is running. The lock needs it to mean anything. */
   recognitionOn: boolean;
+  /** Who Niles has been taught. Undefined while it is being fetched. */
+  voices?: Voice[];
   saving?: boolean;
   onChange: (knownVoicesOnly: boolean) => void;
+  /** Forget one entirely — the way to start a voice over. */
+  onForget?: (speaker: string) => void;
 }
 
 /**
@@ -35,8 +60,10 @@ export interface VoicesCardProps {
 export function VoicesCard({
   knownVoicesOnly,
   recognitionOn,
+  voices,
   saving,
   onChange,
+  onForget,
 }: VoicesCardProps) {
   return (
     <Card>
@@ -49,6 +76,46 @@ export function VoicesCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {/* The list first. Who Niles knows is the question somebody
+            opens this card with; the lock is what they do about it. */}
+        {voices !== undefined && (
+          <div className="flex flex-col gap-2 border-b pb-3">
+            {voices.length === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                Nobody yet. Say “my name is ” and your name to a satellite,
+                three or four times, from where you usually speak.
+              </p>
+            ) : (
+              voices.map((voice) => (
+                <div
+                  key={voice.speaker}
+                  className="flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">
+                      {voice.display_name}
+                    </div>
+                    <div className="text-muted-foreground text-xs">
+                      {voiceSummary(voice)}
+                    </div>
+                  </div>
+                  {onForget && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Forget ${voice.display_name}`}
+                      disabled={saving}
+                      onClick={() => onForget(voice.speaker)}
+                    >
+                      <Trash2 aria-hidden />
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
         <label className="flex items-center justify-between gap-4">
           <span className="min-w-0">
             <span className="block text-sm font-medium">
