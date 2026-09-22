@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,12 +16,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { humanize } from "@/lib/rooms";
 
 export interface Satellite {
   name: string;
   ip: string;
   room: string;
+  /** Percent of what Piper rendered. Absent means the shipped 100. */
+  volume?: number;
 }
 
 export interface SatellitesCardProps {
@@ -172,6 +175,16 @@ export function SatellitesCard({
                 </Select>
               </label>
             </div>
+            <VolumeField
+              value={satellite.volume}
+              label={`${satellite.name} volume`}
+              disabled={saving}
+              onCommit={(value) =>
+                onChange([
+                  { path: `satellites.${satellite.name}.volume`, value },
+                ])
+              }
+            />
           </div>
         ))}
 
@@ -215,6 +228,62 @@ export function roomChoices(rooms: string[], current?: string): string[] {
 }
 
 /** Writes when you leave it, so half an address is never saved. */
+/**
+ * How loud Niles is through this satellite.
+ *
+ * The board has no volume control — no button, and nothing in its
+ * firmware Niles can reach — so this is the only way to change it. The
+ * audio is scaled before it is sent, which is why it can be a setting
+ * at all.
+ *
+ * Floors at 10 rather than 0. Silence is a legitimate thing to
+ * configure and the server accepts it, but a slider that reaches it is
+ * a slider somebody drags to the end and then believes Niles has
+ * broken.
+ */
+function VolumeField({
+  value,
+  label,
+  disabled,
+  onCommit,
+}: {
+  value?: number;
+  label: string;
+  disabled?: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? 100);
+  useEffect(() => setDraft(value ?? 100), [value]);
+
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-muted-foreground flex items-baseline justify-between text-xs">
+        <span>Volume</span>
+        <span className="font-mono tabular-nums">{draft}%</span>
+      </span>
+      <Slider
+        value={draft}
+        min={10}
+        max={100}
+        step={5}
+        thumbLabel={label}
+        thumbValueText={`${draft}%`}
+        disabled={disabled}
+        onValueChange={(next, details) => {
+          const picked = Array.isArray(next) ? next[0] : next;
+          setDraft(picked);
+          // A tap on the track never reaches `onValueCommitted` on a
+          // touch screen — the same Base UI quirk the light rows hit.
+          if (details.reason === "track-press") onCommit(picked);
+        }}
+        onValueCommitted={(next) =>
+          onCommit(Array.isArray(next) ? next[0] : next)
+        }
+      />
+    </label>
+  );
+}
+
 function AddressField({
   value,
   label,

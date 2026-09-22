@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use niles_speakers::{SonosClient, TransportState};
 use niles_tts::PiperClient;
 use niles_wyoming::{AudioFormat, WyomingSender};
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -126,6 +127,45 @@ pub(crate) async fn try_duck(
 
 /// Synthesize `text` via Piper, decode the returned WAV, and send
 /// the PCM to `peer` through the Wyoming sender.
+/// The same audio, quieter.
+///
+/// The satellite has no volume control — no button on the board, and
+/// nothing in its firmware Niles can reach. But Niles makes this
+/// audio, so the place to make it quieter is before it leaves.
+///
+/// Borrowed unchanged at 100, which is both the default and the common
+/// case: the ordinary path should not copy a buffer to multiply it by
+/// one.
+///
+/// Only 16-bit samples are scaled. Piper renders 16-bit and always
+/// has; anything else is left alone rather than reinterpreted, because
+/// treating 8- or 24-bit audio as `i16` would not be quiet, it would
+/// be noise.
+fn at_volume(pcm: &[u8], bits_per_sample: u16, percent: u8) -> Cow<'_, [u8]> {
+    if percent >= 100 || bits_per_sample != 16 {
+        if percent < 100 {
+            tracing::warn!(
+                "not scaling {bits_per_sample}-bit audio; volume only applies to 16-bit"
+            );
+        }
+        return Cow::Borrowed(pcm);
+    }
+    // Rounded through i32 so the quietest samples do not all collapse
+    // to zero, which is what makes a scaled-down voice sound gritty
+    // rather than simply softer.
+    let scaled: Vec<u8> = pcm
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .flat_map(|s| {
+            let sample = i16::from_le_bytes(*s);
+            let quieter = (i32::from(sample) * i32::from(percent) / 100) as i16;
+            quieter.to_le_bytes()
+        })
+        .collect();
+    Cow::Owned(scaled)
+}
+
 pub async fn speak_back(
     piper: &PiperClient,
     sender: &WyomingSender,
@@ -138,7 +178,8 @@ pub async fn speak_back(
     let result: Result<()> = async {
         let synth = piper.synthesize(text, None).await?;
         let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
-        sender.send_audio(peer, &pcm, format).await?;
+        let quieted = at_volume(&pcm, format.bits_per_sample, satellites.volume_for(peer));
+        sender.send_audio(peer, &quieted, format).await?;
         Ok(())
     }
     .await;
@@ -154,6 +195,64 @@ pub async fn speak_back(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pcm(samples: &[i16]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    fn samples(bytes: &[u8]) -> Vec<i16> {
+        bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| i16::from_le_bytes(*c))
+            .collect()
+    }
+
+    #[test]
+    fn full_volume_does_not_touch_the_audio() {
+        // The common case and the default. Multiplying a buffer by one
+        // should not copy it.
+        let audio = pcm(&[1000, -1000, 32767]);
+        let out = at_volume(&audio, 16, 100);
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out.as_ref(), audio.as_slice());
+    }
+
+    #[test]
+    fn half_volume_halves_every_sample() {
+        let audio = pcm(&[1000, -1000, 32766, 0]);
+        let out = at_volume(&audio, 16, 50);
+        assert_eq!(samples(&out), vec![500, -500, 16383, 0]);
+    }
+
+    #[test]
+    fn silence_is_a_volume_somebody_may_want() {
+        let audio = pcm(&[32767, -32768]);
+        let out = at_volume(&audio, 16, 0);
+        assert_eq!(samples(&out), vec![0, 0]);
+    }
+
+    #[test]
+    fn a_quiet_sample_does_not_become_a_loud_one() {
+        // The failure worth guarding: scaling a negative sample through
+        // an unsigned or narrower type wraps it to the opposite
+        // extreme, which is not quiet audio but a click.
+        let audio = pcm(&[-32768, -30000]);
+        let out = at_volume(&audio, 16, 10);
+        let got = samples(&out);
+        assert!(got.iter().all(|s| *s < 0), "{got:?}");
+        assert_eq!(got, vec![-3276, -3000]);
+    }
+
+    #[test]
+    fn audio_that_is_not_16_bit_is_left_alone() {
+        // Reinterpreting 8- or 24-bit samples as i16 would not be
+        // quieter, it would be noise.
+        let audio = pcm(&[1000, -1000]);
+        let out = at_volume(&audio, 24, 50);
+        assert_eq!(out.as_ref(), audio.as_slice());
+    }
 
     /// Build a minimal valid PCM WAV in memory.
     fn make_wav(rate: u32, channels: u16, bps: u16, data: &[u8]) -> Vec<u8> {
@@ -446,7 +545,8 @@ mod tests {
 
     fn make_satellite_registry(ip: IpAddr, room: RoomName) -> SatelliteRegistry {
         let mut reg = SatelliteRegistry::default();
-        reg.by_ip.insert(ip, room);
+        reg.by_ip
+            .insert(ip, crate::satellites::Satellite { room, volume: 100 });
         reg
     }
 
