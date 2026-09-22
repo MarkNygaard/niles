@@ -120,6 +120,44 @@ export function choices(offered?: string[], current?: string): string[] {
   return [...list, current];
 }
 
+/**
+ * What to put in the model box when the provider changes.
+ *
+ * A model name is not portable between providers — which is the whole
+ * reason this card saves the two together — so carrying the old one
+ * across a switch produces exactly the request that fails at somebody
+ * else's server. Picking the new provider's first model instead means
+ * the pair is always one a provider can actually serve.
+ *
+ * Empty for a provider nothing is known about, which drops the box
+ * back to being typed in rather than filling it with a guess.
+ */
+export function modelForProvider(
+  models: Record<string, string[]> | undefined,
+  provider: string,
+): string {
+  return models?.[provider]?.[0] ?? "";
+}
+
+/**
+ * The models to show for the provider now selected.
+ *
+ * `configured` is only honoured while the provider is still the one it
+ * was configured against. It exists so a model already in the config
+ * stays visible even when the shipped list has gone stale — but held
+ * across a provider switch it put Groq's models in Cerebras's
+ * dropdown, which is the opposite of what this card is for.
+ */
+export function offeredFor(
+  models: Record<string, string[]> | undefined,
+  provider: string,
+  configuredProvider: string,
+  configured: string,
+): string[] {
+  const known = models?.[provider] ?? [];
+  return provider === configuredProvider ? choices(known, configured) : known;
+}
+
 export function usableFor(providers: Provider[], role: "stt" | "llm") {
   return providers.filter(
     (p) => !p.serves || p.serves.length === 0 || p.serves.includes(role),
@@ -154,7 +192,10 @@ export function RoleCard({
     model !== draft ||
     effortValue(effort) !== thinking;
   const known = models?.[provider] ?? [];
-  const offered = choices(known, draft || defaultModel);
+  // `defaultModel` is deliberately not in here. It is what Niles ships
+  // with, which belongs to the provider Niles ships with — offering it
+  // under a different one is the leak this replaced.
+  const offered = offeredFor(models, provider, current ?? "", draft);
   // A list Niles ships will go stale the week a provider adds
   // something, so typing one stays possible — just not the first thing
   // you are asked to do. Decided by what the *provider* offers, not by
@@ -181,7 +222,16 @@ export function RoleCard({
           <Select
             value={provider || null}
             disabled={saving}
-            onValueChange={(next: string | null) => setProvider(next ?? "")}
+            onValueChange={(next: string | null) => {
+              const picked = next ?? "";
+              setProvider(picked);
+              // The model follows. Leaving the old one selected under a
+              // new provider is a pair that fails at the far end.
+              if (picked !== provider) {
+                setTyping(false);
+                setDraft(modelForProvider(models, picked));
+              }
+            }}
           >
             <SelectTrigger
               aria-label={`${title} provider`}
