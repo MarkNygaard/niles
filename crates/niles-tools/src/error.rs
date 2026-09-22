@@ -20,8 +20,14 @@ pub enum Error {
     #[error("device not found: {id}")]
     DeviceNotFound { id: String },
 
-    #[error("device {id} is a {class:?}; set_device only accepts lights")]
-    WrongDeviceClass {
+    #[error("device {id} is a {class:?}; it can only be switched on and off")]
+    NotDimmable {
+        id: String,
+        class: niles_core::DeviceClass,
+    },
+
+    #[error("device {id} is a {class:?}; it cannot be switched")]
+    NotSwitchable {
         id: String,
         class: niles_core::DeviceClass,
     },

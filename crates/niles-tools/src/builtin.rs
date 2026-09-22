@@ -193,17 +193,17 @@ fn state_entry_value(entry: &niles_history::StateEntry) -> Value {
 /// Extract and validate `DeviceState` from `set_device` arguments.
 /// Returns `InvalidArgs` if no state fields are provided or if values
 /// are out of range.
-pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
+pub(crate) fn extract_set_state(tool: &'static str, args: &Value) -> Result<DeviceState> {
     let on = args.get("on").and_then(|v| v.as_bool());
     let brightness = match args.get("brightness") {
         Some(v) => {
             let n = v.as_u64().ok_or_else(|| Error::InvalidArgs {
-                tool: "set_device".into(),
+                tool: tool.into(),
                 reason: "brightness must be an integer".into(),
             })?;
             if n > 100 {
                 return Err(Error::InvalidArgs {
-                    tool: "set_device".into(),
+                    tool: tool.into(),
                     reason: format!("brightness {n} exceeds maximum 100"),
                 });
             }
@@ -214,12 +214,12 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
     let color_temp_kelvin = match args.get("color_temp_kelvin") {
         Some(v) => {
             let n = v.as_u64().ok_or_else(|| Error::InvalidArgs {
-                tool: "set_device".into(),
+                tool: tool.into(),
                 reason: "color_temp_kelvin must be an integer".into(),
             })?;
             if !(1000..=10000).contains(&n) {
                 return Err(Error::InvalidArgs {
-                    tool: "set_device".into(),
+                    tool: tool.into(),
                     reason: format!("color_temp_kelvin {n} outside valid range 1000..=10000"),
                 });
             }
@@ -227,7 +227,7 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
         }
         None => None,
     };
-    let rgb = parse_rgb("set_device", args)?;
+    let rgb = parse_rgb(tool, args)?;
     let state = DeviceState {
         on,
         brightness,
@@ -237,11 +237,52 @@ pub(crate) fn extract_set_state(args: &Value) -> Result<DeviceState> {
     };
     if !has_set_device_field(&state) {
         return Err(Error::InvalidArgs {
-            tool: "set_device".into(),
+            tool: tool.into(),
             reason: "must specify at least one of on, brightness, color_temp_kelvin, rgb".into(),
         });
     }
     Ok(state)
+}
+
+/// Whether `device` can do what `target` asks of it.
+///
+/// Asked per request rather than per device, because the answer
+/// depends on the question. A smart plug cannot dim, but "turn it
+/// off" is the one thing it is for — and refusing that used to be a
+/// real failure: "turn off the lights in the living room" reached
+/// Tier 1, the first device it tried was a lamp on a plug, and the
+/// error it got back cost the round trip that exhausted the token
+/// budget for the whole turn. The lights stayed on.
+pub(crate) fn check_can_do(
+    device: &niles_core::Device,
+    target: &DeviceState,
+    raw: &str,
+) -> Result<()> {
+    if !device.is_switchable() {
+        return Err(Error::NotSwitchable {
+            id: raw.into(),
+            class: device.class,
+        });
+    }
+    if wants_more_than_on_off(target) && !device.is_light() {
+        return Err(Error::NotDimmable {
+            id: raw.into(),
+            class: device.class,
+        });
+    }
+    Ok(())
+}
+
+/// The same question without a name to complain about, for callers
+/// choosing between devices rather than checking the one they were
+/// handed.
+pub(crate) fn can_do(device: &niles_core::Device, target: &DeviceState) -> bool {
+    device.is_switchable() && (device.is_light() || !wants_more_than_on_off(target))
+}
+
+/// Whether the request asks for anything a plug could not do.
+fn wants_more_than_on_off(target: &DeviceState) -> bool {
+    target.brightness.is_some() || target.color_temp_kelvin.is_some() || target.rgb.is_some()
 }
 
 // ---------- explain_device formatters ----------
@@ -569,15 +610,18 @@ impl<P: Publisher> Tool for SetDevice<P> {
         let raw = required_str("set_device", &args, "device_id")?;
 
         let device = resolve_device(&self.registry, "set_device", raw)?;
-
-        if !device.is_light() {
-            return Err(Error::WrongDeviceClass {
+        // Asked before the arguments are parsed, so a sensor is told it
+        // is a sensor rather than sent away to fix arguments that would
+        // fail the same way on the next round trip.
+        if !device.is_switchable() {
+            return Err(Error::NotSwitchable {
                 id: raw.into(),
                 class: device.class,
             });
         }
+        let target = extract_set_state("set_device", &args)?;
+        check_can_do(&device, &target, raw)?;
 
-        let target = extract_set_state(&args)?;
         let (topic, payload) =
             self.router
                 .format(&device.id, &target)
@@ -594,6 +638,114 @@ impl<P: Publisher> Tool for SetDevice<P> {
         Ok(json!({ "ok": true, "topic": topic }))
     }
 }
+
+// ---------- SetRoom ----------
+
+/// Every switchable device in a room, set in one call.
+///
+/// "Turn off the lights in the living room" is one instruction, and
+/// without this tool it was seven: the model listed the room and then
+/// called `set_device` per device, re-sending the whole conversation
+/// each time. That is how a single sentence exhausted a
+/// tokens-per-minute budget and answered with a rate limit instead of
+/// a dark room.
+pub struct SetRoom<P: Publisher = MqttPublisher> {
+    registry: Arc<DeviceRegistry>,
+    publisher: P,
+    router: Arc<CommandRouter>,
+    dry_run: bool,
+}
+
+impl<P: Publisher> SetRoom<P> {
+    pub fn new(
+        registry: Arc<DeviceRegistry>,
+        publisher: P,
+        router: Arc<CommandRouter>,
+        dry_run: bool,
+    ) -> Self {
+        Self {
+            registry,
+            publisher,
+            router,
+            dry_run,
+        }
+    }
+}
+
+#[async_trait]
+impl<P: Publisher> Tool for SetRoom<P> {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "set_room".into(),
+            description: "Set every light in one room at once. Prefer this over repeated set_device calls whenever the request names a room rather than a single device. At least one of on/brightness/color_temp_kelvin/rgb is required.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "room": { "type": "string", "description": "Canonical room name, lower_snake, e.g. 'living_room'." },
+                    "on": { "type": "boolean" },
+                    "brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "color_temp_kelvin": { "type": "integer", "minimum": 1000, "maximum": 10000 },
+                    "rgb": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 3, "maxItems": 3 }
+                },
+                "required": ["room"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let raw = required_str("set_room", &args, "room")?;
+        let room = RoomName::parse(raw).map_err(|_| Error::RoomNotFound { name: raw.into() })?;
+        let target = extract_set_state("set_room", &args)?;
+
+        // What the room can do, not what was asked of each device: a
+        // plug among the lamps is skipped for a brightness it cannot
+        // reach, and switched for an on/off it can. Erroring on it
+        // instead — as `set_device` once did — turns one awkward
+        // device into a failed instruction for the whole room.
+        let targets: Vec<_> = self
+            .registry
+            .list_room(&room)
+            .into_iter()
+            .filter(|d| can_do(d, &target))
+            .collect();
+
+        if targets.is_empty() {
+            return Err(Error::InvalidArgs {
+                tool: "set_room".into(),
+                reason: format!("no device in {raw} can do that"),
+            });
+        }
+
+        let mut set = Vec::new();
+        let mut skipped = Vec::new();
+        for device in &targets {
+            let id = device.id.to_string();
+            let Some((topic, payload)) = self.router.format(&device.id, &target) else {
+                // Nothing this device could act on. Reported rather
+                // than hidden, so a room that half-answers says so.
+                skipped.push(id);
+                continue;
+            };
+            if self.dry_run {
+                tracing::info!("[dry-run] would publish {topic} {payload}");
+            } else {
+                tracing::debug!("publishing {topic} {payload}");
+                self.publisher.publish(&topic, payload.into_bytes()).await?;
+            }
+            set.push(id);
+        }
+
+        let mut out = json!({ "ok": true, "room": room.as_str(), "set": set });
+        if !skipped.is_empty() {
+            out["skipped"] = json!(skipped);
+        }
+        if self.dry_run {
+            out["dry_run"] = json!(true);
+        }
+        Ok(out)
+    }
+}
+
 // ---------- SetLightEffect ----------
 
 pub struct SetLightEffect<P: Publisher = MqttPublisher> {
@@ -653,7 +805,7 @@ impl<P: Publisher> Tool for SetLightEffect<P> {
             });
         }
         if !device.is_light() {
-            return Err(Error::WrongDeviceClass {
+            return Err(Error::NotDimmable {
                 id: raw.into(),
                 class: device.class,
             });
@@ -1249,6 +1401,12 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
         router.clone(),
         dry_run,
     )));
+    reg.register(Box::new(SetRoom::new(
+        registry.clone(),
+        publisher.clone(),
+        router.clone(),
+        dry_run,
+    )));
     reg.register(Box::new(SetDevice::new(
         registry, publisher, router, dry_run,
     )));
@@ -1320,6 +1478,16 @@ mod tests {
             DeviceClass::Light,
             DeviceState {
                 on: Some(false),
+                ..Default::default()
+            },
+        ));
+        // A lamp on a smart plug, as the real living room has: the
+        // device that used to fail the whole room.
+        reg.upsert(device(
+            "living_room/corner_lamp",
+            DeviceClass::Outlet,
+            DeviceState {
+                on: Some(true),
                 ..Default::default()
             },
         ));
@@ -1442,7 +1610,7 @@ mod tests {
         let tool = ListAllDevices::new(reg);
         let result = tool.execute(json!({})).await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 5);
+        assert_eq!(arr.len(), 6);
     }
 
     #[tokio::test]
@@ -1457,14 +1625,14 @@ mod tests {
     #[test]
     fn set_device_args_no_state_fields_errors_invalid_args() {
         let args = json!({ "device_id": "kitchen/ceiling_light" });
-        let err = extract_set_state(&args).unwrap_err();
+        let err = extract_set_state("set_device", &args).unwrap_err();
         assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_device"));
     }
 
     #[test]
     fn set_device_args_brightness_out_of_range_errors() {
         let args = json!({ "device_id": "kitchen/ceiling_light", "brightness": 999 });
-        let err = extract_set_state(&args).unwrap_err();
+        let err = extract_set_state("set_device", &args).unwrap_err();
         assert!(
             matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_device" && reason.contains("999"))
         );
@@ -1473,7 +1641,7 @@ mod tests {
     #[test]
     fn extract_set_state_happy_path() {
         let args = json!({ "device_id": "kitchen/ceiling_light", "on": false, "brightness": 50 });
-        let state = extract_set_state(&args).unwrap();
+        let state = extract_set_state("set_device", &args).unwrap();
         assert_eq!(state.on, Some(false));
         assert_eq!(state.brightness, Some(50));
         assert_eq!(state.color_temp_kelvin, None);
@@ -1489,7 +1657,7 @@ mod tests {
     #[test]
     fn set_device_args_color_temp_kelvin_below_range_errors() {
         let args = json!({ "device_id": "kitchen/ceiling_light", "color_temp_kelvin": 500 });
-        let err = extract_set_state(&args).unwrap_err();
+        let err = extract_set_state("set_device", &args).unwrap_err();
         assert!(
             matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_device" && reason.contains("500"))
         );
@@ -1498,7 +1666,7 @@ mod tests {
     #[test]
     fn set_device_args_color_temp_kelvin_above_range_errors() {
         let args = json!({ "device_id": "kitchen/ceiling_light", "color_temp_kelvin": 50000 });
-        let err = extract_set_state(&args).unwrap_err();
+        let err = extract_set_state("set_device", &args).unwrap_err();
         assert!(
             matches!(err, Error::InvalidArgs { tool, reason } if tool == "set_device" && reason.contains("50000"))
         );
@@ -1507,14 +1675,14 @@ mod tests {
     #[test]
     fn set_device_args_color_temp_kelvin_in_range_accepted() {
         let args = json!({ "device_id": "kitchen/ceiling_light", "color_temp_kelvin": 4000 });
-        let state = extract_set_state(&args).unwrap();
+        let state = extract_set_state("set_device", &args).unwrap();
         assert_eq!(state.color_temp_kelvin, Some(4000));
     }
 
     #[test]
     fn set_device_args_rgb_only_accepted() {
         let args = json!({ "device_id": "kitchen/ceiling_light", "rgb": [255, 128, 0] });
-        let state = extract_set_state(&args).unwrap();
+        let state = extract_set_state("set_device", &args).unwrap();
         assert_eq!(state.rgb, Some([255, 128, 0]));
     }
 
@@ -1677,35 +1845,155 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_device_switch_returns_wrong_device_class() {
+    async fn an_outlet_can_be_switched() {
+        // The failure this whole change exists for: "turn off the
+        // lights in the living room" picked the lamp on a plug first,
+        // got an error back, and spent the round trip that exhausted
+        // the turn's token budget.
+        let (mock, tool) = set_device_setup(false);
+        let args = json!({ "device_id": "living_room/corner_lamp", "on": false });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(mock.topics.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_outlet_still_cannot_be_dimmed() {
+        // There is no wrong answer to give a plug asked for 40%, so it
+        // says which part it cannot do rather than pretending.
+        let (mock, tool) = set_device_setup(false);
+        let args = json!({ "device_id": "living_room/corner_lamp", "brightness": 40 });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(
+            matches!(err, Error::NotDimmable { id, class } if id == "living_room/corner_lamp" && class == DeviceClass::Outlet)
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_device_switch_cannot_be_set() {
         let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "hallway/wall_switch", "on": true });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
-            matches!(err, Error::WrongDeviceClass { id, class } if id == "hallway/wall_switch" && class == DeviceClass::Switch)
+            matches!(err, Error::NotSwitchable { id, class } if id == "hallway/wall_switch" && class == DeviceClass::Switch)
         );
         assert!(mock.topics.lock().await.is_empty());
     }
 
     #[tokio::test]
-    async fn set_device_sensor_returns_wrong_device_class() {
+    async fn set_device_sensor_cannot_be_set() {
         let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "office/temp_sensor", "on": true });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
-            matches!(err, Error::WrongDeviceClass { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
+            matches!(err, Error::NotSwitchable { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
         );
         assert!(mock.topics.lock().await.is_empty());
     }
 
     #[tokio::test]
-    async fn set_device_unknown_returns_wrong_device_class() {
+    async fn set_device_unknown_cannot_be_set() {
         let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "garage/unknown_thing", "on": true });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
-            matches!(err, Error::WrongDeviceClass { id, class } if id == "garage/unknown_thing" && class == DeviceClass::Unknown)
+            matches!(err, Error::NotSwitchable { id, class } if id == "garage/unknown_thing" && class == DeviceClass::Unknown)
         );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    // ---- set_room ----
+
+    fn set_room_setup(dry_run: bool) -> (MockPublisher, SetRoom<MockPublisher>) {
+        let mock = MockPublisher::default();
+        let tool = SetRoom::new(
+            fixture_registry(),
+            mock.clone(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            dry_run,
+        );
+        (mock, tool)
+    }
+
+    #[tokio::test]
+    async fn a_room_goes_off_in_one_call() {
+        // One call, not one per device. Seven `set_device` calls with
+        // the whole conversation re-sent each time is what put the
+        // turn over Groq's tokens-per-minute limit.
+        let (mock, tool) = set_room_setup(false);
+        let args = json!({ "room": "living_room", "on": false });
+        let result = tool.execute(args).await.unwrap();
+        assert_eq!(result["ok"], true);
+
+        let set = result["set"].as_array().unwrap();
+        assert_eq!(set.len(), 2, "{result}");
+        assert_eq!(mock.topics.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_plug_among_the_lamps_does_not_fail_the_room() {
+        // It is skipped for the brightness it cannot reach, and the
+        // lights that can still get it.
+        let (mock, tool) = set_room_setup(false);
+        let args = json!({ "room": "living_room", "brightness": 40 });
+        let result = tool.execute(args).await.unwrap();
+
+        let set: Vec<&str> = result["set"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(set, ["z2m:living_room/floor_lamp"]);
+        assert_eq!(mock.topics.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_room_that_can_do_nothing_says_so() {
+        let (mock, tool) = set_room_setup(false);
+        let args = json!({ "room": "office", "on": true });
+        let err = tool.execute(args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs { tool, .. } if tool == "set_room"));
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_room_is_not_an_empty_one() {
+        let (_mock, tool) = set_room_setup(false);
+        let err = tool
+            .execute(json!({ "room": "not a room", "on": true }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::RoomNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn set_room_needs_something_to_set() {
+        // And says so as set_room. The complaint is read by a model
+        // deciding what to call next, so naming the wrong tool sends it
+        // somewhere else.
+        let (mock, tool) = set_room_setup(false);
+        let err = tool
+            .execute(json!({ "room": "living_room" }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArgs { ref tool, .. } if tool == "set_room"),
+            "{err}"
+        );
+        assert!(mock.topics.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_room_dry_run_publishes_nothing() {
+        let (mock, tool) = set_room_setup(true);
+        let result = tool
+            .execute(json!({ "room": "living_room", "on": false }))
+            .await
+            .unwrap();
+        assert_eq!(result["dry_run"], true);
+        assert_eq!(result["set"].as_array().unwrap().len(), 2);
         assert!(mock.topics.lock().await.is_empty());
     }
 
@@ -1719,12 +2007,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_device_sensor_with_no_args_returns_wrong_device_class_before_invalid_args() {
+    async fn set_device_says_sensor_before_it_complains_about_arguments() {
         let (mock, tool) = set_device_setup(false);
         let args = json!({ "device_id": "office/temp_sensor" });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
-            matches!(err, Error::WrongDeviceClass { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
+            matches!(err, Error::NotSwitchable { id, class } if id == "office/temp_sensor" && class == DeviceClass::Sensor)
         );
         assert!(mock.topics.lock().await.is_empty());
     }
@@ -1983,7 +2271,7 @@ mod tests {
         let args = json!({ "device": "hallway/switch", "effect": "fire" });
         let err = tool.execute(args).await.unwrap_err();
         assert!(
-            matches!(err, Error::WrongDeviceClass { id, class } if id == "hallway/switch" && class == DeviceClass::Switch)
+            matches!(err, Error::NotDimmable { id, class } if id == "hallway/switch" && class == DeviceClass::Switch)
         );
         assert!(mock.topics.lock().await.is_empty());
     }
