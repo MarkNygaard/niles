@@ -109,8 +109,21 @@ impl Default for MatcherConfig {
     }
 }
 
+/// Measured, not borrowed.
+///
+/// 0.65 is the figure the ECAPA literature quotes, and against this
+/// export it recognises nobody: four clips of one person scored
+/// 0.467–0.598 against their own print, so the threshold sat above
+/// every score they could produce. A different speaker in the same
+/// room scored 0.084.
+///
+/// 0.35 sits in that gap with room on both sides — 0.117 clear of the
+/// worst true match and 0.266 clear of the observed impostor. The
+/// absolute numbers are low for ECAPA because the enrolment phrase is
+/// about two seconds; the separation is what a threshold has to
+/// respect, and the separation is wide.
 fn default_threshold() -> f32 {
-    0.65
+    0.35
 }
 
 #[cfg(test)]

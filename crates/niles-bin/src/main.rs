@@ -2880,6 +2880,25 @@ async fn enroll_by_voice(
     let Some(voice) = voice else {
         return response::enrollment_no_audio();
     };
+    // A voice Niles already knows is that person, whatever Whisper made
+    // of the name this time.
+    //
+    // The name is the primary key, and it comes from a transcript. That
+    // is fine for "Mark" and disastrous for a name Whisper cannot spell
+    // twice: one person introducing herself four times became Maisa,
+    // Maise, Maize and Meise, four residents with one clip each and no
+    // way to recognise any of them. Matching on the voice first makes
+    // the spelling a label rather than an identity.
+    let known = identifier.whose_voice(voice);
+    if let Some(known) = &known
+        && known != name
+    {
+        tracing::info!(
+            "[{peer}] heard the name {name:?}, but this voice is {known:?} — adding a clip to them"
+        );
+    }
+    let name = known.as_deref().unwrap_or(name);
+
     if identifier.is_someone_else(name, voice).await {
         tracing::warn!("[{peer}] refused to enrol {name}: voice does not match the enrolled one");
         return response::enrollment_name_taken(name);
@@ -7252,6 +7271,10 @@ mod system_prompt_tests {
 
         async fn is_someone_else(&self, name: &str, _embedding: &[f32]) -> bool {
             self.taken.iter().any(|n| n == name)
+        }
+
+        fn whose_voice(&self, _embedding: &[f32]) -> Option<String> {
+            self.result.as_ref().map(|(name, _)| name.to_lowercase())
         }
 
         fn knows_anybody(&self) -> bool {

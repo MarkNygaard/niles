@@ -254,6 +254,11 @@ export function ConfigPanel() {
     mutationFn: api.forgetVoice,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
   });
+  const rename = useMutation({
+    mutationFn: ({ speaker, name }: { speaker: string; name: string }) =>
+      api.renameVoice(speaker, name),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
+  });
   // Every call reaches tado, so this is asked once rather than on a
   // timer: it is a setup list, not a readout.
   const climate = useQuery({
@@ -684,6 +689,7 @@ export function ConfigPanel() {
             <VoicesCard
               voices={voices.data ?? (voices.isError ? [] : undefined)}
               onForget={(speaker) => forget.mutate(speaker)}
+              onRename={(speaker, name) => rename.mutate({ speaker, name })}
               knownVoicesOnly={
                 (view.effective.recognition as { known_voices_only?: boolean } | undefined)
                   ?.known_voices_only === true
@@ -692,7 +698,7 @@ export function ConfigPanel() {
                 (view.effective.recognition as { enabled?: boolean } | undefined)
                   ?.enabled === true
               }
-              saving={save.isPending || forget.isPending}
+              saving={save.isPending || forget.isPending || rename.isPending}
               onChange={(value) =>
                 save.mutate({
                   row: "recognition",

@@ -33,6 +33,14 @@ pub trait VoiceRoster: Send + Sync {
 
     /// Forget one entirely, store and matcher both.
     async fn forget(&self, speaker: &str) -> Result<()>;
+
+    /// Give one a different display name.
+    ///
+    /// The slug stays: it is what `auth.allowed[].speaker` points at
+    /// and what the clips are filed under, and renaming *that* would
+    /// break a pairing to fix a spelling. Only the name a person reads
+    /// changes — which is the half Whisper got wrong.
+    async fn rename(&self, speaker: &str, display_name: &str) -> Result<()>;
 }
 
 #[async_trait]
@@ -52,6 +60,9 @@ pub trait EnrollmentBackend: Send + Sync {
 
     /// Forget a speaker entirely.
     async fn delete(&self, speaker: &str) -> Result<()>;
+
+    /// Set the display name, leaving the slug and the clips alone.
+    async fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()>;
 
     /// Record that this speaker was just heard.
     ///

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Card,
   CardContent,
@@ -7,6 +8,7 @@ import {
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Trash2 } from "lucide-react";
 import type { Voice } from "@/lib/api";
 
@@ -39,6 +41,8 @@ export interface VoicesCardProps {
   onChange: (knownVoicesOnly: boolean) => void;
   /** Forget one entirely — the way to start a voice over. */
   onForget?: (speaker: string) => void;
+  /** Correct the name, which came from a transcript and is a guess. */
+  onRename?: (speaker: string, displayName: string) => void;
 }
 
 /**
@@ -64,6 +68,7 @@ export function VoicesCard({
   saving,
   onChange,
   onForget,
+  onRename,
 }: VoicesCardProps) {
   return (
     <Card>
@@ -91,10 +96,19 @@ export function VoicesCard({
                   key={voice.speaker}
                   className="flex items-center justify-between gap-3"
                 >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {voice.display_name}
-                    </div>
+                  <div className="min-w-0 flex-1">
+                    {onRename ? (
+                      <NameField
+                        value={voice.display_name}
+                        label={`${voice.speaker} name`}
+                        disabled={saving}
+                        onCommit={(name) => onRename(voice.speaker, name)}
+                      />
+                    ) : (
+                      <div className="truncate text-sm font-medium">
+                        {voice.display_name}
+                      </div>
+                    )}
                     <div className="text-muted-foreground text-xs">
                       {voiceSummary(voice)}
                     </div>
@@ -155,5 +169,52 @@ export function VoicesCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The name, correctable.
+ *
+ * Whisper spelled one Danish name four ways in four attempts, and the
+ * first spelling is what the slug is stuck with. What anybody reads
+ * does not have to be. Commits on blur rather than per keystroke: each
+ * one is a write and a matcher rebuild.
+ */
+function NameField({
+  value,
+  label,
+  disabled,
+  onCommit,
+}: {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [seen, setSeen] = useState(value);
+  if (seen !== value) {
+    setSeen(value);
+    setDraft(value);
+  }
+
+  return (
+    <Input
+      value={draft}
+      aria-label={label}
+      disabled={disabled}
+      spellCheck={false}
+      className="h-7 border-transparent px-1 text-sm font-medium hover:border-input"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        const next = draft.trim();
+        if (next && next !== value) onCommit(next);
+        else setDraft(value);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") setDraft(value);
+      }}
+    />
   );
 }

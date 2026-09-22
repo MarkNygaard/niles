@@ -34,6 +34,13 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
     /// Adding clips to someone else's identity is how you become them.
     async fn is_someone_else(&self, name: &str, embedding: &[f32]) -> bool;
 
+    /// The *slug* of whoever this voice belongs to, if anybody.
+    ///
+    /// Separate from [`Self::classify`], which answers with the display
+    /// name because it is feeding a spoken reply. Enrolment needs the
+    /// key the store is indexed by, and "Mark" is not "mark".
+    fn whose_voice(&self, embedding: &[f32]) -> Option<String>;
+
     /// Whether anybody is enrolled at all.
     ///
     /// The lock checks this before it refuses anyone: a house where
@@ -47,6 +54,17 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
 impl niles_recognition::VoiceRoster for EcapaIdentifier {
     async fn voices(&self) -> niles_recognition::Result<Vec<niles_recognition::EnrolledSpeaker>> {
         self.backend.load_all().await
+    }
+
+    async fn rename(&self, speaker: &str, display_name: &str) -> niles_recognition::Result<()> {
+        self.backend.set_display_name(speaker, display_name).await?;
+        // The matcher carries display names into spoken replies, so a
+        // rename that only reached the store would have Niles going on
+        // greeting somebody by the name they just corrected.
+        let speakers = self.backend.load_all().await?;
+        let next = Matcher::new(speakers, self.threshold, self.strategy);
+        *self.matcher.write().unwrap_or_else(|e| e.into_inner()) = next;
+        Ok(())
     }
 
     async fn forget(&self, speaker: &str) -> niles_recognition::Result<()> {
@@ -143,6 +161,13 @@ impl SpeakerIdentifier for EcapaIdentifier {
 
     fn classify(&self, embedding: &[f32]) -> Option<(String, f32)> {
         outcome_to_identity(self.read_matcher().classify(embedding), &self.heard)
+    }
+
+    fn whose_voice(&self, embedding: &[f32]) -> Option<String> {
+        match self.read_matcher().classify(embedding) {
+            MatchOutcome::Match { speaker, .. } => Some(speaker),
+            _ => None,
+        }
     }
 
     fn knows_anybody(&self) -> bool {

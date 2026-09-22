@@ -164,6 +164,17 @@ impl EnrollmentBackend for PostgresEnrollments {
         Ok(())
     }
 
+    async fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()> {
+        self.ensure_schema().await?;
+        sqlx::query("update enrolled_speakers set display_name = $2 where speaker = $1")
+            .bind(speaker)
+            .bind(display_name)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(())
+    }
+
     async fn bump_last_seen(&self, speaker: &str) -> Result<()> {
         self.ensure_schema().await?;
         sqlx::query("update enrolled_speakers set last_seen_at = now() where speaker = $1")

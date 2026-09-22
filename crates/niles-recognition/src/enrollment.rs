@@ -157,6 +157,22 @@ impl EnrollmentStore {
         Ok(())
     }
 
+    /// Set the display name, leaving the slug and the clips alone.
+    pub fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()> {
+        validate_speaker_slug(speaker)?;
+        let _in_process = self.in_process_lock.lock().unwrap();
+        let path = self.path_for(speaker);
+        let lock_path = self.lock_path_for(speaker);
+        let _lock = lock_file(&lock_path, Duration::from_secs(5))?;
+
+        let raw = std::fs::read_to_string(&path)?;
+        let mut record: EnrolledSpeaker = serde_json::from_str(&raw)?;
+        record.display_name = display_name.to_string();
+        let bytes = serde_json::to_vec_pretty(&record)?;
+        atomic_write(&path, &bytes)?;
+        Ok(())
+    }
+
     /// Remove a speaker from the store.
     pub fn delete(&self, speaker: &str) -> Result<()> {
         validate_speaker_slug(speaker)?;
@@ -320,6 +336,10 @@ impl crate::EnrollmentBackend for EnrollmentStore {
 
     async fn delete(&self, speaker: &str) -> Result<()> {
         EnrollmentStore::delete(self, speaker)
+    }
+
+    async fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()> {
+        EnrollmentStore::set_display_name(self, speaker, display_name)
     }
 
     async fn bump_last_seen(&self, speaker: &str) -> Result<()> {

@@ -1910,7 +1910,10 @@ exclude_devices = ["wled:living_room/tv_light"]
     fn recognition_matcher_section_absent_defaults() {
         let cfg = Config::load_from_str(valid_toml()).unwrap();
         cfg.validate().unwrap();
-        assert!((cfg.recognition.matcher.threshold - 0.65).abs() < 1e-6);
+        // 0.35, measured rather than borrowed: 0.65 is the figure the
+        // literature quotes and against this export it recognised
+        // nobody. See `default_threshold`.
+        assert!((cfg.recognition.matcher.threshold - 0.35).abs() < 1e-6);
         assert_eq!(
             cfg.recognition.matcher.strategy,
             MatchStrategy::MaxSimilarity

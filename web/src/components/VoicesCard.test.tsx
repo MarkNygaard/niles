@@ -120,3 +120,58 @@ describe("voiceSummary", () => {
     );
   });
 });
+
+describe("correcting a name", () => {
+  it("writes the new name against the slug on blur", () => {
+    // Whisper spelled one Danish name four ways in four attempts. The
+    // slug is stuck with the first; what anybody reads is not.
+    const onRename = vi.fn();
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[MARK]}
+        onChange={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    const field = screen.getByLabelText("mark name");
+    fireEvent.change(field, { target: { value: "Majse" } });
+    fireEvent.blur(field);
+    expect(onRename).toHaveBeenCalledWith("mark", "Majse");
+  });
+
+  it("does not write an unchanged name", () => {
+    // Each rename is a write and a matcher rebuild.
+    const onRename = vi.fn();
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[MARK]}
+        onChange={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    fireEvent.blur(screen.getByLabelText("mark name"));
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("refuses to blank a name", () => {
+    const onRename = vi.fn();
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[MARK]}
+        onChange={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    const field = screen.getByLabelText("mark name");
+    fireEvent.change(field, { target: { value: "   " } });
+    fireEvent.blur(field);
+    expect(onRename).not.toHaveBeenCalled();
+    expect(field).toHaveValue("Mark");
+  });
+});
