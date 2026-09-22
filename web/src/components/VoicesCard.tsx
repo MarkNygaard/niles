@@ -1,0 +1,92 @@
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
+
+export interface VoicesCardProps {
+  /** Whether a voice Niles does not know is answered at all. */
+  knownVoicesOnly: boolean;
+  /** Whether recognition is running. The lock needs it to mean anything. */
+  recognitionOn: boolean;
+  saving?: boolean;
+  onChange: (knownVoicesOnly: boolean) => void;
+}
+
+/**
+ * Whether Niles answers a voice it does not know.
+ *
+ * One switch rather than two, because the question a household asks is
+ * "does Niles trust this voice", and the answer decides both whether
+ * it acts and whether it will learn a new name. Splitting them would
+ * mean explaining, on a settings page, why a stranger who cannot turn
+ * a light on can still tell the house who they are.
+ *
+ * That pairing is also the point. A satellite listens to a room, and a
+ * television in that room says sentences — one of them said "Russia
+ * still has no knowledge of holding your love, correct?" and Niles
+ * answered it. With the lock on, a voice nobody has introduced cannot
+ * act *or* introduce itself, which is what stops a programme becoming
+ * a resident.
+ */
+export function VoicesCard({
+  knownVoicesOnly,
+  recognitionOn,
+  saving,
+  onChange,
+}: VoicesCardProps) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Voices</CardTitle>
+        <CardDescription>
+          Niles learns a voice when someone says “I am ” and their name. A
+          satellite listens to a whole room, so this decides whether it
+          answers one it has never heard before.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <label className="flex items-center justify-between gap-4">
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">
+              Only answer voices Niles knows
+            </span>
+            <span className="text-muted-foreground block text-xs">
+              An unfamiliar voice is told so, and nothing happens — including
+              introducing itself, which is what keeps the television from
+              becoming a resident.
+            </span>
+          </span>
+          <Switch
+            checked={knownVoicesOnly}
+            disabled={saving}
+            // Wrapped rather than passed straight through: Base UI
+            // calls this with the event details as a second argument,
+            // and the prop above promises one.
+            onCheckedChange={(next) => onChange(next)}
+          />
+        </label>
+
+        {/* The chicken-and-egg, said before it is hit rather than after. */}
+        {knownVoicesOnly && (
+          <p className="text-muted-foreground border-t pt-3 text-xs">
+            To add somebody, switch this off, have them say “I am ” and their
+            name to a satellite a few times, then switch it back on.
+          </p>
+        )}
+
+        {/* A switch that governs something not running would otherwise
+            look like it had been obeyed. */}
+        {!recognitionOn && (
+          <p className="text-muted-foreground border-t pt-3 text-xs">
+            Niles is not set up to recognise voices yet, so this has no effect
+            until it is. Every voice is answered in the meantime.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

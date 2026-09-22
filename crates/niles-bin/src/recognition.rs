@@ -33,6 +33,14 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
     /// Whether `name` is already enrolled and this voice is not it.
     /// Adding clips to someone else's identity is how you become them.
     async fn is_someone_else(&self, name: &str, embedding: &[f32]) -> bool;
+
+    /// Whether anybody is enrolled at all.
+    ///
+    /// The lock checks this before it refuses anyone: a house where
+    /// nobody has introduced themselves has no known voices, so
+    /// "only answer voices I know" would answer nobody — including
+    /// whoever wants to turn it back off.
+    fn knows_anybody(&self) -> bool;
 }
 
 /// Map a matcher outcome into an identity, reporting the sighting.
@@ -103,6 +111,10 @@ impl SpeakerIdentifier for EcapaIdentifier {
 
     fn classify(&self, embedding: &[f32]) -> Option<(String, f32)> {
         outcome_to_identity(self.read_matcher().classify(embedding), &self.heard)
+    }
+
+    fn knows_anybody(&self) -> bool {
+        self.read_matcher().knows_anybody()
     }
 
     async fn enroll(&self, name: &str, embedding: &[f32]) -> anyhow::Result<usize> {
