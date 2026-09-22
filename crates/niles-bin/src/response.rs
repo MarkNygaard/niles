@@ -351,6 +351,25 @@ pub fn enrollment_name_taken(name: &str) -> String {
     )
 }
 
+/// The answer to "who am I", in each of the four states recognition
+/// can be in.
+///
+/// Four rather than two because they want four different things done
+/// about them, and a house that says the same thing to all of them
+/// tells you nothing: recognition off is a setting, nobody enrolled is
+/// an introduction, and a voice that does not match is the one case
+/// worth investigating.
+pub fn who_you_are(speaker: Option<&str>, recognition_on: bool, anyone_enrolled: bool) -> String {
+    match (speaker, recognition_on, anyone_enrolled) {
+        (Some(name), _, _) => format!("You're {}.", capitalize_first(name)),
+        (None, false, _) => "I'm not set up to recognise voices yet.".into(),
+        (None, true, false) => {
+            "I don't know yet. Say \"my name is\" and your name, a few times.".into()
+        }
+        (None, true, true) => "I don't recognise your voice.".into(),
+    }
+}
+
 pub fn enrollment_unavailable() -> String {
     "I'm not set up to recognise voices yet.".to_string()
 }
@@ -437,6 +456,33 @@ fn ordinal(day: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn who_you_are_names_a_recognised_speaker() {
+        assert_eq!(who_you_are(Some("mark"), true, true), "You're Mark.");
+    }
+
+    #[test]
+    fn who_you_are_tells_the_four_states_apart() {
+        // Four rather than two because they want four different things
+        // done about them. A house that answers all of them the same
+        // way tells you nothing.
+        let off = who_you_are(None, false, false);
+        let nobody = who_you_are(None, true, false);
+        let stranger = who_you_are(None, true, true);
+        assert!(off.contains("not set up"), "{off}");
+        assert!(nobody.contains("my name is"), "{nobody}");
+        assert!(stranger.contains("don't recognise"), "{stranger}");
+        assert_ne!(nobody, stranger);
+    }
+
+    #[test]
+    fn a_known_speaker_is_named_whatever_else_is_true() {
+        // Recognition cannot be off while it has just recognised
+        // somebody, but the reply should not depend on the caller
+        // getting those two flags consistent.
+        assert_eq!(who_you_are(Some("majse"), false, false), "You're Majse.");
+    }
+
     #[test]
     fn the_time_is_spoken_not_printed() {
         let said = datetime_now("Europe/Copenhagen", false);
