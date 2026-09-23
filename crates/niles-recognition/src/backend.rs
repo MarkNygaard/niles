@@ -41,6 +41,9 @@ pub trait VoiceRoster: Send + Sync {
     /// break a pairing to fix a spelling. Only the name a person reads
     /// changes — which is the half Whisper got wrong.
     async fn rename(&self, speaker: &str, display_name: &str) -> Result<()>;
+
+    /// Set how the name is said. `None` means say the display name.
+    async fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()>;
 }
 
 #[async_trait]
@@ -63,6 +66,9 @@ pub trait EnrollmentBackend: Send + Sync {
 
     /// Set the display name, leaving the slug and the clips alone.
     async fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()>;
+
+    /// Set how the name is said. `None` means say the display name.
+    async fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()>;
 
     /// Record that this speaker was just heard.
     ///

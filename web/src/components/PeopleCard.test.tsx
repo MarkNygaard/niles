@@ -3,7 +3,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { PeopleCard, speakerChoices } from "@/components/PeopleCard";
 import type { Person } from "@/components/PeopleCard";
 
-function setup(people: Person[], voices?: string[]) {
+function setup(
+  people: Person[],
+  voices?: { speaker: string; display_name: string }[],
+) {
   const onChange = vi.fn();
   render(<PeopleCard people={people} voices={voices} onChange={onChange} />);
   return { onChange };
@@ -70,7 +73,9 @@ describe("PeopleCard", () => {
   });
 
   it("shows the voice identity when one is linked", () => {
-    setup([{ email: "mark@example.com", speaker: "mark" }], ["mark"]);
+    setup([{ email: "mark@example.com", speaker: "mark" }], [
+      { speaker: "mark", display_name: "Mark" },
+    ]);
     expect(
       screen.getByRole("combobox", { name: "mark@example.com voice" }),
     ).toHaveTextContent("mark");
@@ -87,21 +92,33 @@ describe("PeopleCard", () => {
 // The dropdown cannot be opened in jsdom — Base UI's Select hangs it —
 // so the rule that decides what it offers is tested here.
 describe("speakerChoices", () => {
+  const MARK = { speaker: "mark", display_name: "Mark" };
+  const MAJSE = { speaker: "maisel", display_name: "Majse" };
+
   it("offers the enrolled voices", () => {
-    expect(speakerChoices(["mark", "majse"], undefined)).toEqual([
-      "mark",
-      "majse",
-    ]);
+    expect(speakerChoices([MARK, MAJSE], undefined)).toEqual([MARK, MAJSE]);
+  });
+
+  it("shows the name, not the slug Whisper heard", () => {
+    // The slug is "maisel" because that is what Whisper made of a
+    // Danish name. It is the value that gets saved; it is not what
+    // anybody should have to recognise in a list.
+    const [, majse] = speakerChoices([MARK, MAJSE], undefined);
+    expect(majse.display_name).toBe("Majse");
+    expect(majse.speaker).toBe("maisel");
   });
 
   it("keeps a pairing whose voice has been deleted", () => {
     // Worth showing rather than silently dropping: the fix is to
     // repair it, and you cannot repair what the page will not display.
-    expect(speakerChoices(["majse"], "mark")).toEqual(["majse", "mark"]);
+    expect(speakerChoices([MAJSE], "mark")).toEqual([
+      MAJSE,
+      { speaker: "mark", display_name: "mark" },
+    ]);
   });
 
   it("does not offer a voice twice", () => {
-    expect(speakerChoices(["mark"], "mark")).toEqual(["mark"]);
+    expect(speakerChoices([MARK], "mark")).toEqual([MARK]);
   });
 
   it("is empty before the voices have loaded", () => {

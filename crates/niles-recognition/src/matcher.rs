@@ -81,6 +81,18 @@ impl Matcher {
         self.speakers.iter().any(|s| !s.embeddings.is_empty())
     }
 
+    /// How to say one speaker's name.
+    ///
+    /// `spoken_as` when it is set, the display name otherwise. The slug
+    /// is never the answer: it is a key, and "maisel" is what Whisper
+    /// heard rather than anything anybody is called.
+    pub fn how_to_say(&self, speaker: &str) -> Option<&str> {
+        self.speakers
+            .iter()
+            .find(|s| s.speaker == speaker)
+            .map(|s| s.spoken_as.as_deref().unwrap_or(&s.display_name))
+    }
+
     /// Classify `query` against the roster.
     ///
     /// # Panics
@@ -210,6 +222,7 @@ mod tests {
         EnrolledSpeaker {
             speaker: name.to_string(),
             display_name: name.to_string(),
+            spoken_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: entries.len(),
@@ -321,6 +334,7 @@ mod tests {
         let empty_speaker = EnrolledSpeaker {
             speaker: "empty".to_string(),
             display_name: "Empty".to_string(),
+            spoken_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -343,6 +357,7 @@ mod tests {
         let empty_speaker = EnrolledSpeaker {
             speaker: "empty".to_string(),
             display_name: "Empty".to_string(),
+            spoken_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -365,6 +380,7 @@ mod tests {
         let empty_a = EnrolledSpeaker {
             speaker: "a".to_string(),
             display_name: "A".to_string(),
+            spoken_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -373,6 +389,7 @@ mod tests {
         let empty_b = EnrolledSpeaker {
             speaker: "b".to_string(),
             display_name: "B".to_string(),
+            spoken_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,

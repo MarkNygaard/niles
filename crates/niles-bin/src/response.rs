@@ -366,7 +366,15 @@ pub fn who_you_are(speaker: Option<&str>, recognition_on: bool, anyone_enrolled:
         (None, true, false) => {
             "I don't know yet. Say \"my name is\" and your name, a few times.".into()
         }
-        (None, true, true) => "I don't recognise your voice.".into(),
+        // Says why, and what to do about it. "Who am I" is about a
+        // second of audio and a second is under what a voice print
+        // needs, so the commonest reason for landing here is not being
+        // a stranger — it is having asked too briefly. A bare "I don't
+        // recognise you" sends an enrolled person off to re-enrol a
+        // voice that was already fine.
+        (None, true, true) => {
+            "I didn't catch enough of your voice. Ask again with a bit more?".into()
+        }
     }
 }
 
@@ -471,7 +479,7 @@ mod tests {
         let stranger = who_you_are(None, true, true);
         assert!(off.contains("not set up"), "{off}");
         assert!(nobody.contains("my name is"), "{nobody}");
-        assert!(stranger.contains("don't recognise"), "{stranger}");
+        assert!(stranger.contains("didn't catch enough"), "{stranger}");
         assert_ne!(nobody, stranger);
     }
 

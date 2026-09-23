@@ -255,8 +255,15 @@ export function ConfigPanel() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
   });
   const rename = useMutation({
-    mutationFn: ({ speaker, name }: { speaker: string; name: string }) =>
-      api.renameVoice(speaker, name),
+    mutationFn: ({
+      speaker,
+      name,
+      spokenAs,
+    }: {
+      speaker: string;
+      name: string;
+      spokenAs?: string;
+    }) => api.renameVoice(speaker, name, spokenAs),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
   });
   // Every call reaches tado, so this is asked once rather than on a
@@ -673,7 +680,7 @@ export function ConfigPanel() {
             <CardContent>
               <PeopleCard
                 people={peopleAt(view.effective)}
-                voices={voices.data?.map((v) => v.speaker)}
+                voices={voices.data}
                 saving={save.isPending}
                 error={rowError?.row === "auth.allowed" ? rowError.message : undefined}
                 onChange={(people) =>
@@ -690,6 +697,15 @@ export function ConfigPanel() {
               voices={voices.data ?? (voices.isError ? [] : undefined)}
               onForget={(speaker) => forget.mutate(speaker)}
               onRename={(speaker, name) => rename.mutate({ speaker, name })}
+              onSpokenAs={(speaker, spokenAs) => {
+                const voice = voices.data?.find((v) => v.speaker === speaker);
+                if (voice)
+                  rename.mutate({
+                    speaker,
+                    name: voice.display_name,
+                    spokenAs,
+                  });
+              }}
               knownVoicesOnly={
                 (view.effective.recognition as { known_voices_only?: boolean } | undefined)
                   ?.known_voices_only === true

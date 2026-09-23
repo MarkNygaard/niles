@@ -31,6 +31,10 @@ create table if not exists enrolled_speakers (
     last_seen_at  timestamptz,
     embeddings    jsonb not null
 );
+-- Added after the table shipped, so `add column if not exists` rather
+-- than a new table: a house that enrolled a voice before this existed
+-- must keep it.
+alter table enrolled_speakers add column if not exists spoken_as text;
 ";
 
 pub struct PostgresEnrollments {
@@ -74,6 +78,7 @@ fn row_to_speaker(row: &PgRow) -> Result<EnrolledSpeaker> {
     Ok(EnrolledSpeaker {
         speaker: row.try_get("speaker").map_err(storage)?,
         display_name: row.try_get("display_name").map_err(storage)?,
+        spoken_as: row.try_get("spoken_as").map_err(storage)?,
         created_at: row.try_get("created_at").map_err(storage)?,
         last_seen_at: row.try_get("last_seen_at").map_err(storage)?,
         clip_count: embeddings.len(),
@@ -169,6 +174,17 @@ impl EnrollmentBackend for PostgresEnrollments {
         sqlx::query("update enrolled_speakers set display_name = $2 where speaker = $1")
             .bind(speaker)
             .bind(display_name)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()> {
+        self.ensure_schema().await?;
+        sqlx::query("update enrolled_speakers set spoken_as = $2 where speaker = $1")
+            .bind(speaker)
+            .bind(spoken_as)
             .execute(&self.pool)
             .await
             .map_err(storage)?;

@@ -2906,7 +2906,13 @@ async fn enroll_by_voice(
     match identifier.enroll(name, voice).await {
         Ok(clips) => {
             tracing::info!("[{peer}] enrolled {name} ({clips} clip(s))");
-            response::enrolled(name, clips)
+            // Said, not keyed. The slug is what Whisper heard; what
+            // Niles says back is the name somebody wrote down, or the
+            // respelling that makes Piper pronounce it.
+            let spoken = identifier
+                .how_to_say(name)
+                .unwrap_or_else(|| name.to_string());
+            response::enrolled(&spoken, clips)
         }
         Err(e) => {
             tracing::warn!("[{peer}] enrolling {name} failed: {e:#}");
@@ -3102,12 +3108,22 @@ async fn dispatch_transcript(
             // string rather than a round trip — and it still answers
             // when the language model is unreachable, which is when
             // somebody is most likely to be asking.
-            let name = match speaker {
-                SpeakerContext::Identified(name) => Some(name.as_str()),
-                _ => None,
+            // Resolved from the voice rather than from `speaker`,
+            // which carries the *display* name for the LLM to read.
+            // This answer is spoken, and the two are different strings
+            // whenever somebody has had to respell a name to make Piper
+            // say it.
+            let spoken = match (ctx.identifier.as_ref(), voice) {
+                (Some(id), Some(voice)) => {
+                    id.whose_voice(voice).and_then(|slug| id.how_to_say(&slug))
+                }
+                _ => match speaker {
+                    SpeakerContext::Identified(name) => Some(name.clone()),
+                    _ => None,
+                },
             };
             Some(response::who_you_are(
-                name,
+                spoken.as_deref(),
                 ctx.identifier.is_some(),
                 ctx.identifier.as_ref().is_some_and(|i| i.knows_anybody()),
             ))
@@ -7287,6 +7303,10 @@ mod system_prompt_tests {
 
         async fn is_someone_else(&self, name: &str, _embedding: &[f32]) -> bool {
             self.taken.iter().any(|n| n == name)
+        }
+
+        fn how_to_say(&self, speaker: &str) -> Option<String> {
+            Some(speaker.to_string())
         }
 
         fn whose_voice(&self, _embedding: &[f32]) -> Option<String> {

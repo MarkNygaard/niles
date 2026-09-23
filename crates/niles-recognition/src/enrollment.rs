@@ -22,6 +22,16 @@ pub struct EnrollmentEntry {
 pub struct EnrolledSpeaker {
     pub speaker: String,
     pub display_name: String,
+    /// How to say the name, when spelling it correctly and saying it
+    /// correctly are not the same string.
+    ///
+    /// Piper reads graphemes, so a Danish "Majse" comes out wrong from
+    /// an English voice. Respelling it as "Mayse" fixes the speech and
+    /// breaks the writing, which is why this is its own field rather
+    /// than a second use of `display_name`. `None` means say the
+    /// display name, which is the normal case.
+    #[serde(default)]
+    pub spoken_as: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub clip_count: usize,
@@ -72,6 +82,7 @@ impl EnrollmentStore {
             EnrolledSpeaker {
                 speaker: speaker.to_string(),
                 display_name: default_display_name(speaker),
+                spoken_as: None,
                 created_at: Utc::now(),
                 last_seen_at: None,
                 clip_count: 0,
@@ -157,8 +168,15 @@ impl EnrollmentStore {
         Ok(())
     }
 
-    /// Set the display name, leaving the slug and the clips alone.
-    pub fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()> {
+    /// Set how the name is said, leaving how it is written alone.
+    pub fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()> {
+        self.edit(speaker, |record| {
+            record.spoken_as = spoken_as.map(str::to_string);
+        })
+    }
+
+    /// Read, change, write back under the speaker's lock.
+    fn edit(&self, speaker: &str, change: impl FnOnce(&mut EnrolledSpeaker)) -> Result<()> {
         validate_speaker_slug(speaker)?;
         let _in_process = self.in_process_lock.lock().unwrap();
         let path = self.path_for(speaker);
@@ -167,10 +185,17 @@ impl EnrollmentStore {
 
         let raw = std::fs::read_to_string(&path)?;
         let mut record: EnrolledSpeaker = serde_json::from_str(&raw)?;
-        record.display_name = display_name.to_string();
+        change(&mut record);
         let bytes = serde_json::to_vec_pretty(&record)?;
         atomic_write(&path, &bytes)?;
         Ok(())
+    }
+
+    /// Set the display name, leaving the slug and the clips alone.
+    pub fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()> {
+        self.edit(speaker, |record| {
+            record.display_name = display_name.to_string();
+        })
     }
 
     /// Remove a speaker from the store.
@@ -340,6 +365,10 @@ impl crate::EnrollmentBackend for EnrollmentStore {
 
     async fn set_display_name(&self, speaker: &str, display_name: &str) -> Result<()> {
         EnrollmentStore::set_display_name(self, speaker, display_name)
+    }
+
+    async fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()> {
+        EnrollmentStore::set_spoken_as(self, speaker, spoken_as)
     }
 
     async fn bump_last_seen(&self, speaker: &str) -> Result<()> {
