@@ -17,5 +17,5 @@ pub use state::{HomeState, Override, PresenceSignal, PresenceSnapshot, SourceRea
 pub use tado::{DEVICE_CLIENT_ID, DeviceActivation, TadoConfig, TadoSource};
 pub use tokens::{MemoryTokenStore, TokenStore};
 pub use transport::{HttpTadoTransport, HttpUnifiTransport, TadoTransport};
-pub use unifi::{UnifiClient, UnifiSource, UnifiTransport};
+pub use unifi::{UnifiClient, UnifiSettings, UnifiSource, UnifiTransport};
 pub use zones::{Placed, Zone};

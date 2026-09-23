@@ -93,6 +93,15 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
+        id: "unifi",
+        label: "UniFi",
+        blurb: "Who is home, from the Wi-Fi — the moment a phone is in range.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        models: &[],
+    },
+    Known {
         id: "linear",
         label: "Linear",
         blurb: "Turns an issue into work Niles picks up.",
@@ -122,6 +131,7 @@ impl Known {
             Kind::Provider => Some(format!("provider.{}.api_key", self.id)),
             // tado has tokens rather than a key, and fetches them itself.
             Kind::Service if self.id == "linear" => Some("integrations.linear.api_key".into()),
+            Kind::Service if self.id == "unifi" => Some("presence.unifi.api_key".into()),
             Kind::Service => None,
         }
     }

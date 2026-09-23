@@ -80,16 +80,48 @@ struct UnifiSite {
     label: Option<String>,
 }
 
+/// Where the console is and how to talk to it, at the moment of asking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiSettings {
+    /// An address on the LAN, not a URL: `192.168.1.1`.
+    pub host: String,
+    /// What the config calls the site — a name, or an id already.
+    pub site: String,
+    pub api_key: String,
+}
+
+impl UnifiSettings {
+    fn base_url(&self) -> String {
+        format!(
+            "https://{}/proxy/network/integration/v1",
+            self.host.trim().trim_end_matches('/')
+        )
+    }
+
+    /// What a cached site id belongs to. Pointing Niles at a different
+    /// console, or a different site on the same one, must not reuse the
+    /// old answer.
+    fn cache_key(&self) -> String {
+        format!("{}|{}", self.host.trim(), self.site.trim())
+    }
+}
+
+type SettingsFn = dyn Fn() -> Option<UnifiSettings> + Send + Sync;
+
 /// The console, and the phones worth watching for.
 pub struct UnifiSource {
-    /// `https://<host>/proxy/network/integration/v1`
-    base_url: String,
-    /// What the config calls the site — a name, or an id already.
-    site: String,
-    api_key: String,
+    /// Asked every time, not once.
+    ///
+    /// The host and the key are typed into the app, and a source built
+    /// from them at boot would go on using whatever was there at boot —
+    /// saving a key would report success and change nothing until
+    /// something restarted. `None` means there is no console to ask
+    /// yet, which is a state, not a fault.
+    settings: Arc<SettingsFn>,
     transport: Arc<dyn UnifiTransport>,
-    /// Resolved once: the console answers by id, people write names.
-    site_id: RwLock<Option<String>>,
+    /// Resolved once per console: the console answers by id, people
+    /// write names. Keyed so a changed host or site asks again.
+    site_id: RwLock<Option<(String, String)>>,
     /// The addresses that count as somebody being home.
     ///
     /// Shared rather than owned because they are edited from the app —
@@ -100,6 +132,7 @@ pub struct UnifiSource {
 }
 
 impl UnifiSource {
+    /// A console whose address and key never change.
     pub fn new(
         host: &str,
         site: &str,
@@ -107,17 +140,37 @@ impl UnifiSource {
         transport: Arc<dyn UnifiTransport>,
         watching: Arc<RwLock<HashSet<String>>>,
     ) -> Self {
-        Self {
-            base_url: format!(
-                "https://{}/proxy/network/integration/v1",
-                host.trim().trim_end_matches('/')
-            ),
+        let fixed = UnifiSettings {
+            host: host.trim().to_string(),
             site: site.trim().to_string(),
             api_key: api_key.into(),
+        };
+        Self::live(move || Some(fixed.clone()), transport, watching)
+    }
+
+    /// A console read from wherever the settings live, each time.
+    pub fn live(
+        settings: impl Fn() -> Option<UnifiSettings> + Send + Sync + 'static,
+        transport: Arc<dyn UnifiTransport>,
+        watching: Arc<RwLock<HashSet<String>>>,
+    ) -> Self {
+        Self {
+            settings: Arc::new(settings),
             transport,
             site_id: RwLock::new(None),
             watching,
         }
+    }
+
+    /// Whether there is a console to ask right now.
+    pub fn is_configured(&self) -> bool {
+        (self.settings)().is_some()
+    }
+
+    fn current(&self) -> Result<UnifiSettings> {
+        (self.settings)().ok_or_else(|| Error::Parse {
+            reason: "no UniFi console is set up".into(),
+        })
     }
 
     /// The site's id, resolved from its name the first time.
@@ -125,16 +178,20 @@ impl UnifiSource {
     /// The integration API addresses sites by id, and nobody knows
     /// theirs. A console with one site answers for it whatever the
     /// config says, which is the common case and worth not failing on.
-    async fn site_id(&self) -> Result<String> {
-        if let Some(id) = self
+    async fn site_id(&self, settings: &UnifiSettings) -> Result<String> {
+        let key = settings.cache_key();
+        if let Some((for_key, id)) = self
             .site_id
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+            && for_key == key
         {
             return Ok(id);
         }
-        let body = self.get(&format!("{}/sites", self.base_url)).await?;
+        let body = self
+            .get(settings, &format!("{}/sites", settings.base_url()))
+            .await?;
         let sites: Vec<UnifiSite> = serde_json::from_str::<Listed<UnifiSite>>(&body)
             .map_err(|e| Error::Parse {
                 reason: format!("unifi sites: {e}"),
@@ -143,11 +200,11 @@ impl UnifiSource {
 
         let chosen = sites
             .iter()
-            .find(|s| s.id == self.site)
+            .find(|s| s.id == settings.site)
             .or_else(|| {
                 sites
                     .iter()
-                    .find(|s| s.label.as_deref().is_some_and(|l| l == self.site))
+                    .find(|s| s.label.as_deref().is_some_and(|l| l == settings.site))
             })
             .or(sites.first())
             .ok_or_else(|| Error::Parse {
@@ -155,15 +212,19 @@ impl UnifiSource {
             })?;
 
         let id = chosen.id.clone();
-        *self.site_id.write().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+        *self.site_id.write().unwrap_or_else(|e| e.into_inner()) = Some((key, id.clone()));
         Ok(id)
     }
 
     /// Everything the console can currently see on the network.
     pub async fn clients(&self) -> Result<Vec<UnifiClient>> {
-        let site = self.site_id().await?;
+        let settings = self.current()?;
+        let site = self.site_id(&settings).await?;
         let body = self
-            .get(&format!("{}/sites/{site}/clients", self.base_url))
+            .get(
+                &settings,
+                &format!("{}/sites/{site}/clients", settings.base_url()),
+            )
             .await?;
         Ok(serde_json::from_str::<Listed<UnifiClient>>(&body)
             .map_err(|e| Error::Parse {
@@ -186,8 +247,8 @@ impl UnifiSource {
             .find(|c| c.ip_address.as_deref() == Some(ip)))
     }
 
-    async fn get(&self, url: &str) -> Result<String> {
-        let (status, body) = self.transport.get(url, &self.api_key).await?;
+    async fn get(&self, settings: &UnifiSettings, url: &str) -> Result<String> {
+        let (status, body) = self.transport.get(url, &settings.api_key).await?;
         match status {
             200 => Ok(body),
             401 | 403 => Err(Error::Auth {
@@ -285,6 +346,79 @@ mod tests {
         ));
         let source = UnifiSource::new("192.168.1.1", "default", "key", mock.clone(), watching);
         (mock, source)
+    }
+
+    #[tokio::test]
+    async fn a_console_nobody_has_set_up_is_not_asked() {
+        // Not configured is a state, not a fault: the source exists so it
+        // can pick settings up later, and until then it says so rather
+        // than calling an address it does not have.
+        let mock = MockTransport::new(vec![]);
+        let source =
+            UnifiSource::live(|| None, mock.clone(), Arc::new(RwLock::new(HashSet::new())));
+        assert!(!source.is_configured());
+        assert!(source.clients().await.is_err());
+        assert!(mock.urls.lock().unwrap().is_empty(), "nothing was called");
+    }
+
+    #[tokio::test]
+    async fn settings_typed_in_later_are_used_on_the_next_call() {
+        // The bug this replaced: the source was built once at boot, so a
+        // host and key saved in the app reported success and changed
+        // nothing until something restarted.
+        let settings: Arc<Mutex<Option<UnifiSettings>>> = Arc::new(Mutex::new(None));
+        let mock = MockTransport::new(vec![Ok((200, SITES.into())), Ok((200, CLIENTS.into()))]);
+        let read = settings.clone();
+        let source = UnifiSource::live(
+            move || read.lock().unwrap().clone(),
+            mock.clone(),
+            Arc::new(RwLock::new(HashSet::new())),
+        );
+        assert!(!source.is_configured());
+
+        *settings.lock().unwrap() = Some(UnifiSettings {
+            host: "192.168.1.1".into(),
+            site: "default".into(),
+            api_key: "key".into(),
+        });
+        assert!(source.is_configured());
+        assert_eq!(source.clients().await.expect("answers").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_different_console_is_asked_for_its_own_site() {
+        // A cached site id belongs to the console it came from. Pointing
+        // Niles somewhere else must not reuse it.
+        let host = Arc::new(Mutex::new("192.168.1.1".to_string()));
+        let mock = MockTransport::new(vec![
+            Ok((200, SITES.into())),
+            Ok((200, CLIENTS.into())),
+            Ok((200, SITES.into())),
+            Ok((200, CLIENTS.into())),
+        ]);
+        let read = host.clone();
+        let source = UnifiSource::live(
+            move || {
+                Some(UnifiSettings {
+                    host: read.lock().unwrap().clone(),
+                    site: "default".into(),
+                    api_key: "key".into(),
+                })
+            },
+            mock.clone(),
+            Arc::new(RwLock::new(HashSet::new())),
+        );
+        source.clients().await.expect("first console");
+        *host.lock().unwrap() = "10.0.0.1".into();
+        source.clients().await.expect("second console");
+
+        let urls = mock.urls.lock().unwrap().clone();
+        assert_eq!(
+            urls.iter().filter(|u| u.ends_with("/sites")).count(),
+            2,
+            "{urls:?}"
+        );
+        assert!(urls.last().unwrap().starts_with("https://10.0.0.1/"));
     }
 
     #[tokio::test]

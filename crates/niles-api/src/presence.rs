@@ -222,7 +222,10 @@ pub async fn device_status(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> Json<DeviceView> {
-    let Some(unifi) = state.unifi.as_ref() else {
+    // Configured, not merely constructed: the source always exists now,
+    // so it can pick up a host and key typed in while Niles is running.
+    // Whether it can answer is the question.
+    let Some(unifi) = state.unifi.as_ref().filter(|u| u.is_configured()) else {
         return Json(DeviceView {
             available: false,
             on_home_network: false,
@@ -279,7 +282,7 @@ pub async fn pair_device(
         StatusCode::NOT_IMPLEMENTED,
         "this Niles instance has nowhere to save it".to_string(),
     ))?;
-    let unifi = state.unifi.as_ref().ok_or((
+    let unifi = state.unifi.as_ref().filter(|u| u.is_configured()).ok_or((
         StatusCode::NOT_IMPLEMENTED,
         "no UniFi console is configured".to_string(),
     ))?;

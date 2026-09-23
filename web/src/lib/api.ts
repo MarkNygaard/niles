@@ -300,6 +300,19 @@ export interface Capture {
   bytes: number;
 }
 
+/** What the UniFi console says about whoever is asking. */
+export interface DeviceView {
+  /** Whether there is a console to ask at all. */
+  available: boolean;
+  /** Whether this request came from the house rather than the tunnel. */
+  on_home_network: boolean;
+  mac: string | null;
+  /** What the console calls it — "Mark's iPhone". */
+  name: string | null;
+  paired: boolean;
+  signed_in: boolean;
+}
+
 export const api = {
   getConfig: () => request<ConfigView>("/config"),
 
@@ -337,6 +350,8 @@ export const api = {
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   voices: () => request<Voice[]>("/voices"),
+  deviceStatus: () => request<DeviceView>("/presence/device"),
+  pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),
   clearCaptures: () => request<void>("/captures", { method: "DELETE" }),
   renameVoice: (speaker: string, display_name: string, spoken_as?: string) =>
