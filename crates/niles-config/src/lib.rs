@@ -11,6 +11,7 @@ pub mod auth;
 pub mod automations;
 pub mod backend;
 pub mod capabilities;
+mod capture;
 pub mod catalogue;
 pub mod database;
 mod env;
@@ -46,6 +47,7 @@ pub use auth::{AllowedPerson, AuthConfig};
 pub use automations::{ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, TriggerDto};
 pub use backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
 pub use capabilities::CapabilitiesConfig;
+pub use capture::CaptureConfig;
 pub use database::DatabaseConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
@@ -258,6 +260,8 @@ pub struct Config {
     #[serde(default)]
     pub capabilities: CapabilitiesConfig,
     #[serde(default)]
+    pub capture: CaptureConfig,
+    #[serde(default)]
     pub persistence: PersistenceConfig,
     /// Optional. When present, config overrides live here instead of on
     /// disk — see `niles-db`.
@@ -343,6 +347,7 @@ impl Config {
         self.api.validate()?;
         self.auth.validate()?;
         self.capabilities.validate()?;
+        self.capture.validate()?;
         self.persistence.validate()?;
         if let Some(database) = &self.database {
             database.validate()?;

@@ -290,6 +290,16 @@ export interface Voice {
   last_seen_at: string | null;
 }
 
+/** One kept recording of a wake, without its audio. */
+export interface Capture {
+  id: number;
+  heard_at: string;
+  transcript: string;
+  /** `answered` or `dropped` — the label a training set needs. */
+  outcome: string;
+  bytes: number;
+}
+
 export const api = {
   getConfig: () => request<ConfigView>("/config"),
 
@@ -327,6 +337,8 @@ export const api = {
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   voices: () => request<Voice[]>("/voices"),
+  captures: () => request<Capture[]>("/captures"),
+  clearCaptures: () => request<void>("/captures", { method: "DELETE" }),
   renameVoice: (speaker: string, display_name: string, spoken_as?: string) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {
       method: "PUT",
