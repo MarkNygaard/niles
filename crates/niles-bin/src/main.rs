@@ -3079,6 +3079,50 @@ async fn enroll_by_voice(
     }
 }
 
+/// Whether this is "stop" said to a ringing alarm.
+///
+/// That gets past both the noise gate and the voice lock. It is one short
+/// word — the least Whisper can be sure of and the least a voice print can
+/// be matched on — and the one command a house must never lose. A
+/// television that stops somebody's timer has done less harm than an
+/// alarm nobody can silence; with nothing ringing the gates apply as
+/// ever, so "stop" from the television still gets silence rather than
+/// "nothing's running".
+fn is_stopping_an_alarm(text: &str, timers: &TimerStore) -> bool {
+    matches!(
+        IntentRouter::new().parse(text),
+        Some(Intent::Stop | Intent::Cancel)
+    ) && timers.list().iter().any(|t| t.is_ringing())
+}
+
+/// The command, without the name that summoned it.
+///
+/// The satellite sends the second before its wake word as well as what
+/// follows, so Whisper hears "Niles, stop" rather than "stop". Every
+/// Tier 0 pattern is anchored at both ends, and a name in front of the
+/// command is enough to miss all of them — which sends "stop" to the
+/// LLM, and a ringing timer on ringing.
+///
+/// Whisper spells the name several ways. The name itself and its
+/// wake-word spelling go whatever follows; the look-alikes only with a
+/// comma, because "Miles to kilometres" is a question.
+fn strip_wake_word(text: &str) -> &str {
+    const NAMES: [&str; 3] = ["niles", "nyles", "nyle"];
+    const LOOK_ALIKES: [&str; 5] = ["miles", "nile", "nile's", "neil", "niels"];
+    let t = text.trim_start();
+    let word_end = t
+        .find(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .unwrap_or(t.len());
+    let (word, rest) = t.split_at(word_end);
+    let word = word.to_lowercase();
+    let comma = rest.starts_with(',');
+    if NAMES.contains(&word.as_str()) || (comma && LOOK_ALIKES.contains(&word.as_str())) {
+        rest.trim_start_matches(|c: char| c == ',' || c == '.' || c == '!' || c.is_whitespace())
+    } else {
+        text
+    }
+}
+
 /// Whether this is more likely something the room said than something
 /// said to Niles.
 ///
@@ -3117,6 +3161,8 @@ async fn dispatch_transcript(
     // audio was unusable.
     voice: Option<&[f32]>,
 ) -> Option<String> {
+    let text = strip_wake_word(text);
+
     // `transcribe_session` already trims, so an empty `text` here means
     // Whisper returned nothing for a silent/noise session. Don't burn
     // a Groq round-trip on it — Tier 0 wouldn't match either.
@@ -3159,7 +3205,10 @@ async fn dispatch_transcript(
         .as_ref()
         .is_some_and(|c| c.recognition.known_voices_only);
 
+    let stopping_an_alarm = is_stopping_an_alarm(text, &ctx.timers);
+
     if let Some(c) = confidence
+        && !stopping_an_alarm
         && stt_gate.rejects(c)
     {
         tracing::info!(
@@ -3181,7 +3230,7 @@ async fn dispatch_transcript(
     // switch a light off through a regex either. And before the
     // enrolment pattern, which is the point — "I am Sofia" from an
     // unknown voice is exactly what the lock is for.
-    if known_voices_only && matches!(speaker, SpeakerContext::Unknown) {
+    if known_voices_only && !stopping_an_alarm && matches!(speaker, SpeakerContext::Unknown) {
         // Nobody enrolled means nobody known, and a lock with no key
         // cut would refuse the whole house — including whoever wants
         // to turn it off.
@@ -5732,6 +5781,59 @@ fn format_intent(intent: &Intent) -> String {
 #[cfg(test)]
 mod noise_transcript_tests {
     use super::*;
+
+    #[test]
+    fn the_name_in_front_of_a_command_is_not_part_of_it() {
+        assert_eq!(strip_wake_word("Niles, stop."), "stop.");
+        assert_eq!(strip_wake_word("Niles stop"), "stop");
+        assert_eq!(
+            strip_wake_word("Nyles, what time is it?"),
+            "what time is it?"
+        );
+        assert_eq!(
+            strip_wake_word("Miles, turn off the lights."),
+            "turn off the lights."
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_the_sentence_is_left_alone() {
+        // "Miles to kilometres" is a question, not a wake word.
+        assert_eq!(
+            strip_wake_word("Miles to kilometres?"),
+            "Miles to kilometres?"
+        );
+        assert_eq!(strip_wake_word("turn on the lights"), "turn on the lights");
+        assert_eq!(strip_wake_word("Nilesh is here"), "Nilesh is here");
+    }
+
+    #[test]
+    fn stop_gets_through_while_an_alarm_rings() {
+        let timers = TimerStore::new();
+        let origin: SocketAddr = "10.0.0.5:1234".parse().unwrap();
+        let id = timers.set(std::time::Duration::from_secs(60), None, origin, Utc::now());
+        assert!(
+            !is_stopping_an_alarm("stop", &timers),
+            "nothing ringing yet"
+        );
+        timers.mark_ringing(id);
+        assert!(is_stopping_an_alarm("stop", &timers));
+        assert!(is_stopping_an_alarm(
+            strip_wake_word("Niles, stop."),
+            &timers
+        ));
+        assert!(is_stopping_an_alarm("stop the alarm", &timers));
+        assert!(
+            !is_stopping_an_alarm("turn off the lights", &timers),
+            "only stopping gets past the gates"
+        );
+    }
+
+    #[test]
+    fn the_name_alone_leaves_nothing_to_do() {
+        assert_eq!(strip_wake_word("Niles."), "");
+        assert_eq!(strip_wake_word("Niles!"), "");
+    }
 
     #[test]
     fn drops_wordless_output() {
