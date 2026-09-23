@@ -35,6 +35,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
@@ -45,6 +47,8 @@
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 #include <fcntl.h>
+
+#include <atomic>
 
 #include "secrets.h"
 
@@ -202,6 +206,9 @@ static constexpr gpio_num_t PIN_SDA = GPIO_NUM_5;
 static constexpr gpio_num_t PIN_SCL = GPIO_NUM_6;
 
 static i2c_master_dev_handle_t xmos_dev = nullptr;
+// Two tasks drive the ring now -- the wake loop and the speaker -- and a
+// colour and an effect are two writes that must not interleave.
+static SemaphoreHandle_t led_lock = nullptr;
 
 static void xmos_write(uint8_t res, uint8_t cmd, const uint8_t* data, uint8_t n) {
   if (!xmos_dev) return;
@@ -262,11 +269,14 @@ static void leds_show(Leds state) {
   }
   // Colour first: setting the effect last means the ring never shows
   // the new effect in the old colour, however briefly.
+  if (led_lock) xSemaphoreTake(led_lock, portMAX_DELAY);
   led_color(rgb[0], rgb[1], rgb[2]);
   xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_EFFECT, &effect, 1);
+  if (led_lock) xSemaphoreGive(led_lock);
 }
 
 static void leds_init() {
+  led_lock = xSemaphoreCreateMutex();
   i2c_master_bus_config_t bus_cfg = {};
   bus_cfg.i2c_port = I2C_NUM_0;
   bus_cfg.sda_io_num = PIN_SDA;
@@ -299,16 +309,27 @@ static void leds_init() {
   ESP_LOGI(TAG, "LED ring under our control (direction-of-arrival off)");
 }
 
-static void i2s_deinit_rx();
+// ---- I2S: one port, both directions, always on ----
+//
+// The microphone and the speaker share this port. It used to carry one
+// direction at a time -- tear the microphone down, play at the reply's
+// rate, bring the microphone back -- so a satellite that was talking
+// could not hear. A ringing timer could only be stopped in the gaps
+// between chimes, and an answer could not be interrupted at all.
+//
+// Both directions on one port share one clock, so everything plays at the
+// microphone's 16 kHz and play_stream() converts whatever arrives. The
+// XVF3800 cancels its own speaker out of the microphone -- the audio sent
+// to it here is its echo reference -- which is what lets the wake word be
+// heard over the satellite's own voice.
+static i2s_chan_handle_t tx_chan = nullptr;
 
-// Safe to call whether or not RX is already up. It is called again after
-// every reply, and on the timeout path playback never ran — so nothing had
-// released the RX channel, and creating a second one on the same controller
-// aborted the firmware. A failed reply used to reboot the satellite.
-static void i2s_init() {
-  i2s_deinit_rx();
+static void i2s_init_duplex() {
   i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, nullptr, &rx_chan));
+  // With nothing to play the port must send silence, not repeat the last
+  // buffer it was given -- the tail of every reply, looping forever.
+  chan_cfg.auto_clear_after_cb = true;
+  ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_chan, &rx_chan));
   i2s_std_config_t std_cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
@@ -317,55 +338,15 @@ static void i2s_init() {
           .mclk = I2S_GPIO_UNUSED,
           .bclk = PIN_BCLK,
           .ws = PIN_WS,
-          .dout = I2S_GPIO_UNUSED,
+          .dout = PIN_DOUT,
           .din = PIN_DIN,
           .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
       },
   };
-  ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
-  ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
-}
-
-// Playback uses a TX channel at the reply's sample rate. The I2S port has one
-// active direction at a time, so we tear down RX, play, then restore RX. (True
-// duplex / barge-in is a later stage.)
-static i2s_chan_handle_t tx_chan = nullptr;
-
-static void i2s_deinit_rx() {
-  if (rx_chan) {
-    i2s_channel_disable(rx_chan);
-    i2s_del_channel(rx_chan);
-    rx_chan = nullptr;
-  }
-}
-
-static void i2s_start_tx(int rate) {
-  i2s_deinit_rx();
-  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_chan, nullptr));
-  i2s_std_config_t std_cfg = {
-      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG((uint32_t)rate),
-      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
-                                                      I2S_SLOT_MODE_STEREO),
-      .gpio_cfg = {
-          .mclk = I2S_GPIO_UNUSED,
-          .bclk = PIN_BCLK,
-          .ws = PIN_WS,
-          .dout = PIN_DOUT,
-          .din = I2S_GPIO_UNUSED,
-          .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
-      },
-  };
   ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &std_cfg));
+  ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
   ESP_ERROR_CHECK(i2s_channel_enable(tx_chan));
-}
-
-static void i2s_stop_tx() {
-  if (tx_chan) {
-    i2s_channel_disable(tx_chan);
-    i2s_del_channel(tx_chan);
-    tx_chan = nullptr;
-  }
+  ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
 }
 
 static void model_init() {
@@ -491,32 +472,6 @@ static bool send_all(int sock, const void* buf, size_t len) {
   return true;
 }
 
-// ---- Reply playback (Stage 3) ----
-// Read a newline-terminated line from the socket (Wyoming headers are JSON
-// lines). Returns length, or -1 on EOF/timeout.
-static int sock_read_line(int sock, char* buf, int max) {
-  int idx = 0;
-  while (idx < max - 1) {
-    char c;
-    int n = recv(sock, &c, 1, 0);
-    if (n <= 0) return -1;
-    if (c == '\n') break;
-    buf[idx++] = c;
-  }
-  buf[idx] = 0;
-  return idx;
-}
-
-static bool sock_read_full(int sock, uint8_t* buf, int n) {
-  int got = 0;
-  while (got < n) {
-    int r = recv(sock, buf + got, n - got, 0);
-    if (r <= 0) return false;
-    got += r;
-  }
-  return true;
-}
-
 // Parse the integer right after `key` in a JSON header line (e.g. "\"rate\":").
 static long json_int_after(const char* s, const char* key) {
   const char* p = strstr(s, key);
@@ -524,67 +479,154 @@ static long json_int_after(const char* s, const char* key) {
   return atol(p + strlen(key));
 }
 
-// After audio-stop, niles runs STT + intent + TTS and streams its spoken reply
-// back over the same socket (audio-start{rate} / audio-chunk+PCM / audio-stop).
-// Play it via I2S TX (mono 16-bit -> stereo 32-bit, L=R), reconfiguring the
-// I2S rate to the reply's rate, then restore RX for wake detection.
-static void play_reply(int sock) {
-  struct timeval tv = {.tv_sec = 10, .tv_usec = 0}; // niles needs time to think
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+// ---- Playback, on its own task ----
+//
+// Everything the satellite plays -- a reply, or something niles dialled in
+// to say -- goes through the speaker task, so the wake loop never stops
+// listening. Saying the wake word over it bumps play_gen, and whatever was
+// playing gives way: that is barge-in, for a chime and an answer alike.
+struct PlayJob {
+  int sock;
+  uint32_t gen;  // play_gen when queued; anything newer means "stop"
+  bool reply;    // a reply waits for niles to think; a push does not
+};
+static QueueHandle_t play_q = nullptr;
+static std::atomic<uint32_t> play_gen{0};
+static std::atomic<bool> playing_now{false};
+
+static bool superseded(const PlayJob& job) { return job.gen != play_gen.load(); }
+
+// recv() that gives up when the job is superseded, rather than holding the
+// speaker for the whole of niles's thinking time after somebody has already
+// asked something else. Short socket timeouts, and an overall idle limit.
+static int recv_or_abort(const PlayJob& job, void* buf, int n) {
+  int idle_ms = 0;
+  const int limit_ms = job.reply ? 10000 : 3000;  // niles needs time to think
+  while (true) {
+    int r = recv(job.sock, buf, n, 0);
+    if (r > 0) return r;
+    if (r == 0) return -1;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    if (superseded(job)) return -1;
+    idle_ms += 100;
+    if (idle_ms >= limit_ms) return -1;
+  }
+}
+
+static int job_read_line(const PlayJob& job, char* buf, int max) {
+  int idx = 0;
+  while (idx < max - 1) {
+    char c;
+    if (recv_or_abort(job, &c, 1) < 0) return -1;
+    if (c == '\n') break;
+    buf[idx++] = c;
+  }
+  buf[idx] = 0;
+  return idx;
+}
+
+static bool job_read_full(const PlayJob& job, uint8_t* buf, int n) {
+  int got = 0;
+  while (got < n) {
+    int r = recv_or_abort(job, buf + got, n - got);
+    if (r < 0) return false;
+    got += r;
+  }
+  return true;
+}
+
+// Mono 16-bit in at any rate; stereo 32-bit out at SAMPLE_RATE, L=R.
+// Linear interpolation, carried across chunks so the joins are seamless.
+struct Resampler {
+  float step = 1.0f;  // input samples per output sample
+  float t = 0.0f;     // where the next output falls between prev and the next input
+  int16_t prev = 0;
+};
+static constexpr int kTxFrames = 512;
+static int32_t tx_buf[kTxFrames * 2];
+static int tx_fill = 0;
+
+static void tx_flush() {
+  if (tx_fill == 0) return;
+  size_t wrote = 0;
+  i2s_channel_write(tx_chan, tx_buf, tx_fill * 2 * sizeof(int32_t), &wrote, portMAX_DELAY);
+  tx_fill = 0;
+}
+
+static void tx_put(int16_t s) {
+  int32_t v = (int32_t)s << 16;
+  tx_buf[tx_fill * 2] = v;
+  tx_buf[tx_fill * 2 + 1] = v;
+  if (++tx_fill == kTxFrames) tx_flush();
+}
+
+static void resample_into_tx(Resampler& rs, const int16_t* in, int n) {
+  for (int i = 0; i < n; i++) {
+    const int16_t x = in[i];
+    while (rs.t < 1.0f) {
+      tx_put((int16_t)(rs.prev + (x - rs.prev) * rs.t));
+      rs.t += rs.step;
+    }
+    rs.t -= 1.0f;
+    rs.prev = x;
+  }
+}
+
+// Play one Wyoming audio stream (audio-start{rate} / audio-chunk+PCM /
+// audio-stop) from the job's socket. Returns false if it was cut off.
+static bool play_stream(const PlayJob& job) {
+  struct timeval tv = {.tv_sec = 0, .tv_usec = 100 * 1000};
+  setsockopt(job.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
   char line[192];
   uint8_t pcm[1024];
-  static int32_t stereo[512 * 2]; // up to 512 mono samples -> stereo32
-  bool playing = false;
+  Resampler rs;
+  bool started = false;
 
-  while (true) {
-    int len = sock_read_line(sock, line, sizeof(line));
+  while (!superseded(job)) {
+    int len = job_read_line(job, line, sizeof(line));
     if (len < 0) {
-      ESP_LOGW(TAG, "no reply / timeout");
+      if (!superseded(job)) ESP_LOGW(TAG, "no reply / timeout");
       break;
     }
     if (strstr(line, "audio-start")) {
       long rate = json_int_after(line, "\"rate\":");
       if (rate <= 0) rate = 22050;
-      ESP_LOGI(TAG, "reply audio-start rate=%ld", rate);
-      i2s_start_tx((int)rate);
-      leds_show(Leds::Speaking);
-      playing = true;
+      rs = Resampler{};
+      rs.step = (float)rate / (float)SAMPLE_RATE;
+      ESP_LOGI(TAG, "playing, audio-start rate=%ld", rate);
+      if (!superseded(job)) leds_show(Leds::Speaking);
+      playing_now = true;
+      started = true;
     } else if (strstr(line, "audio-chunk")) {
       long rem = json_int_after(line, "\"payload_length\":");
       if (rem <= 0) continue;
       while (rem > 0) {
         int want = rem < (long)sizeof(pcm) ? (int)rem : (int)sizeof(pcm);
-        if (!sock_read_full(sock, pcm, want)) {
-          ESP_LOGW(TAG, "reply chunk read failed");
+        if (!job_read_full(job, pcm, want)) {
           rem = 0;
           break;
         }
-        if (playing && tx_chan) {
-          const int16_t* s = reinterpret_cast<const int16_t*>(pcm);
-          int ns = want / (int)sizeof(int16_t);
-          for (int i = 0; i < ns; i++) {
-            int32_t v = (int32_t)s[i] << 16;
-            stereo[i * 2] = v;
-            stereo[i * 2 + 1] = v;
-          }
-          size_t wrote = 0;
-          i2s_channel_write(tx_chan, stereo, ns * 2 * sizeof(int32_t), &wrote, portMAX_DELAY);
-        }
+        if (started && !superseded(job))
+          resample_into_tx(rs, reinterpret_cast<const int16_t*>(pcm),
+                           want / (int)sizeof(int16_t));
         rem -= want;
       }
     } else if (strstr(line, "audio-stop")) {
-      ESP_LOGI(TAG, "reply done");
       break;
     }
   }
-  i2s_stop_tx();
-  i2s_init(); // restore RX @ 16 kHz for wake detection
+  const bool cut_off = superseded(job);
+  if (!cut_off) tx_flush();
+  tx_fill = 0;
+  playing_now = false;
+  if (started) ESP_LOGI(TAG, "%s", cut_off ? "playback cut off by the wake word" : "playback done");
+  return !cut_off;
 }
 
 // After wake detection, open a Wyoming TCP connection to niles and stream the
 // spoken command as mono 16 kHz 16-bit PCM (raw downmix, no MIC_GAIN — cleaner
-// for STT), ending on silence (energy VAD) or a hard cap. No playback yet.
+// for STT), ending on silence (energy VAD) or a hard cap.
 // ---- Niles calling us ----
 //
 // The satellite has only ever spoken first: connect, stream, hear the
@@ -638,40 +680,47 @@ static void push_listener_init() {
   ESP_LOGI(TAG, "listening for niles pushes on :%d", NILES_PUSH_PORT);
 }
 
-// Play anything niles has to say. Returns true if something arrived.
-static bool push_poll() {
-  if (push_listener < 0) return false;
-  int client = accept(push_listener, nullptr, nullptr);
-  if (client < 0) return false;  // EWOULDBLOCK — the normal case
-
-  ESP_LOGI(TAG, ">>> niles is calling <<<");
-  // The accepted socket inherits O_NONBLOCK on some stacks, and
-  // play_reply expects to block on reads.
-  fcntl(client, F_SETFL, 0);
-  leds_show(Leds::Speaking);
-  play_reply(client);
-  close(client);
-  leds_show(Leds::Idle);
-  return true;
+// Everything that plays, one stream at a time: replies handed over by the
+// wake loop, and anything niles dials in to say.
+static void speaker_task(void*) {
+  while (true) {
+    PlayJob job;
+    if (xQueueReceive(play_q, &job, pdMS_TO_TICKS(20)) != pdTRUE) {
+      if (push_listener < 0) continue;
+      int client = accept(push_listener, nullptr, nullptr);
+      if (client < 0) continue;  // EWOULDBLOCK -- the normal case
+      ESP_LOGI(TAG, ">>> niles is calling <<<");
+      // The accepted socket inherits O_NONBLOCK on some stacks; the reads
+      // rely on SO_RCVTIMEO instead.
+      fcntl(client, F_SETFL, 0);
+      job = PlayJob{client, play_gen.load(), false};
+    }
+    const bool finished = play_stream(job);
+    close(job.sock);
+    // Cut off means somebody is talking to it now, and the wake loop owns
+    // the ring until they have finished.
+    if (finished) leds_show(Leds::Idle);
+  }
 }
 
-static void stream_utterance(float wake_avg) {
+// Returns true if the socket went to the speaker task to await a reply.
+static bool stream_utterance(float wake_avg, uint32_t gen) {
   struct sockaddr_in dest = {};
   dest.sin_family = AF_INET;
   dest.sin_port = htons(NILES_PORT);
   if (inet_pton(AF_INET, NILES_HOST, &dest.sin_addr) != 1) {
     ESP_LOGE(TAG, "bad NILES_HOST '%s'", NILES_HOST);
-    return;
+    return false;
   }
   int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
   if (sock < 0) {
     ESP_LOGE(TAG, "socket() failed");
-    return;
+    return false;
   }
   if (connect(sock, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest)) != 0) {
     ESP_LOGE(TAG, "connect %s:%d failed (errno %d)", NILES_HOST, NILES_PORT, errno);
     close(sock);
-    return;
+    return false;
   }
 
   // The probability that fired rides along with the audio. It only
@@ -686,14 +735,14 @@ static void stream_utterance(float wake_avg) {
                     (double)wake_avg);
   if (!send_all(sock, start, sn)) {
     close(sock);
-    return;
+    return false;
   }
 
   // Everything heard just before the wake word, before anything live:
   // the sound that triggered this is the one worth having.
   if (!send_preroll(sock)) {
     close(sock);
-    return;
+    return false;
   }
 
   // End-of-speech is measured RELATIVE to how loud this sentence is,
@@ -806,9 +855,14 @@ static void stream_utterance(float wake_avg) {
            total, total * 10, started ? "spoke" : "no-speech",
            total >= MAX_FRAMES ? ", HIT CAP" : "", emin, emax, speech_peak, stop_rms);
 
-  // Read + play niles' spoken reply on the same socket (Stage 3), then close.
-  play_reply(sock);
-  close(sock);
+  // The reply comes back on this socket. The speaker task plays it, so the
+  // wake loop is listening again while niles thinks and while it talks.
+  PlayJob job{sock, gen, true};
+  if (xQueueSend(play_q, &job, 0) != pdTRUE) {
+    close(sock);
+    return false;
+  }
+  return true;
 }
 
 // ---- WiFi (station) ----
@@ -871,9 +925,13 @@ extern "C" void app_main(void) {
   if (!preroll) {
     ESP_LOGW(TAG, "no PSRAM for the pre-roll; wakes will be sent without it");
   }
-  i2s_init();
+  i2s_init_duplex();
   leds_init();
   push_listener_init();
+  play_q = xQueueCreate(2, sizeof(PlayJob));
+  // The other core: the wake loop keeps this one busy, and playback must
+  // never make it late for a frame.
+  xTaskCreatePinnedToCore(speaker_task, "speaker", 6144, nullptr, 5, nullptr, 1);
   memset(window, 0, sizeof(window));
   ESP_LOGI(TAG, "listening — say 'nyles'");
 
@@ -888,6 +946,7 @@ extern "C" void app_main(void) {
   int hb_featmax = -128;   // max feature value this heartbeat
   float hb_maxprob = 0.0f; // max single-inference probability this heartbeat
   float hb_maxavg = 0.0f;  // max averaged probability -- what now decides
+  bool hb_played = false;  // whether the speaker played during this heartbeat
 
   // The model takes 3 feature slices (3 * 40 = 120 int8) per inference and is
   // invoked every 30 ms (3 fresh slices). This cadence detects clearly better
@@ -895,15 +954,6 @@ extern "C" void app_main(void) {
   static int8_t feat3[3 * kFeatureSize];
   int slot = 0;
   while (true) {
-    // Before listening for our own name, see whether niles is trying to
-    // say something. Cheap: one non-blocking accept per 10 ms frame.
-    if (push_poll()) {
-      // Playback reconfigured I2S and swallowed real time; drop the
-      // stale window rather than run the detector over a gap.
-      slot = 0;
-      warmup = WINDOW_SAMPLES / STRIDE_SAMPLES;
-      last_fire_ms = esp_log_timestamp();
-    }
     push_slice();
     if (warmup > 0) { warmup--; continue; }
 
@@ -963,9 +1013,11 @@ extern "C" void app_main(void) {
           // Before the socket: the ring is the acknowledgement that it
           // heard its name, and it has to arrive while you are still
           // speaking, not after the network has had its turn.
+          // Whatever is playing gives way: a chime, or an answer being
+          // talked over.
+          const uint32_t gen = ++play_gen;
           leds_show(Leds::Listening);
-          stream_utterance(avg);
-          leds_show(Leds::Idle);
+          if (!stream_utterance(avg, gen)) leds_show(Leds::Idle);
           // Reset wake state so stale slices don't immediately re-fire.
           // The ring included: the average that just fired would otherwise
           // still be most of the way to firing again.
@@ -980,9 +1032,14 @@ extern "C" void app_main(void) {
     // ~1 s heartbeat (each iter is 10 ms): the MAX mic peak, MAX feature, and
     // MAX probability seen this second. featmax jumps when you speak; maxprob
     // jumps when you say "nyles". Use this to set PROB_CUTOFF (see above).
+    // play=1 marks a second in which the speaker was playing: how much of
+    // the satellite's own voice survives the XVF3800's echo cancellation is
+    // read off maxavg on those lines.
+    if (playing_now) hb_played = true;
     if (++iter % 100 == 0) {
-      ESP_LOGI(TAG, "peak=%ld featmax=%d maxprob=%.3f maxavg=%.3f", (long)hb_peak,
-               hb_featmax, (double)hb_maxprob, (double)hb_maxavg);
+      ESP_LOGI(TAG, "peak=%ld featmax=%d maxprob=%.3f maxavg=%.3f play=%d", (long)hb_peak,
+               hb_featmax, (double)hb_maxprob, (double)hb_maxavg, hb_played ? 1 : 0);
+      hb_played = false;
       hb_peak = 0;
       hb_maxavg = 0.0f;
       hb_featmax = -128;

@@ -13,10 +13,15 @@ built up in de-risking stages:
 - **Stage 2 (done):** on detection → open the Wyoming TCP stream to niles,
   capture + send the command.
 - **Stage 3 (done):** play niles' spoken reply back over the same socket.
-- **Barge-in (next):** run the detector *during* playback (XVF3800 AEC) so
-  "nyles" interrupts a reply/chime.
-- **Persistent connection** → niles can push chimes/alarms/notifications to an
-  idle satellite.
+- **Niles calls in (done):** the satellite listens on `:10301`, so niles can
+  push a timer chime or a notification to an idle satellite.
+- **Barge-in (done, 2026-09-23):** I2S runs full duplex at 16 kHz and playback
+  has its own task, so the detector keeps running while the satellite talks.
+  "Niles" over a chime or an answer cuts it off and starts a new command. The
+  XVF3800's echo cancellation is what makes this work: on hardware a chime
+  reads ~3000 peak for its first two seconds while AEC converges, then ~400,
+  which is room level. Incoming audio at any rate is resampled to 16 kHz on
+  the device. The heartbeat's `play=1` marks seconds with the speaker on.
 
 The wake word is a custom microWakeWord v2 model ("nyles", spelled for the TTS
 pronunciation of *Niles*) trained on microwakeword.com.

@@ -141,7 +141,7 @@ pub(crate) async fn try_duck(
 /// has; anything else is left alone rather than reinterpreted, because
 /// treating 8- or 24-bit audio as `i16` would not be quiet, it would
 /// be noise.
-fn at_volume(pcm: &[u8], bits_per_sample: u16, percent: u8) -> Cow<'_, [u8]> {
+pub(crate) fn at_volume(pcm: &[u8], bits_per_sample: u16, percent: u8) -> Cow<'_, [u8]> {
     if percent >= 100 || bits_per_sample != 16 {
         if percent < 100 {
             tracing::warn!(
