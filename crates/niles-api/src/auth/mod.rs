@@ -177,7 +177,12 @@ fn session_from(headers: &HeaderMap, config: &niles_config::Config) -> Option<se
     session::verify(&secret, &token)
 }
 
-fn signed_in_as(headers: &HeaderMap, config: &niles_config::Config) -> Option<String> {
+/// The address of whoever holds this browser, if anybody does.
+///
+/// Public because a route that acts *on behalf of a person* — pairing
+/// their phone, say — needs to know which person, and the session is
+/// the only thing that knows.
+pub fn signed_in_as(headers: &HeaderMap, config: &niles_config::Config) -> Option<String> {
     session_from(headers, config).map(|s| s.email)
 }
 

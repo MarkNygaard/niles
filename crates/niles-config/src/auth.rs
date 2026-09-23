@@ -50,6 +50,19 @@ pub struct AllowedPerson {
     /// web share one identity and one memory. Optional: without it the
     /// account is web-only.
     pub speaker: Option<String>,
+    /// The phone this person carries, as the network sees it.
+    ///
+    /// One address, on the person, so "one phone per person" is true by
+    /// construction rather than by rule. Paired from the phone itself —
+    /// the app asks the network which client is making the request —
+    /// so nobody types a MAC address, and a new phone is re-paired the
+    /// same way.
+    ///
+    /// iOS presents a private address per network, stable for that
+    /// network. Which is fine, and is why this is worth re-pairing
+    /// rather than treating as permanent.
+    #[serde(default)]
+    pub device_mac: Option<String>,
 }
 
 impl AuthConfig {
@@ -239,6 +252,7 @@ mod tests {
         AllowedPerson {
             email: email.into(),
             speaker: None,
+            device_mac: None,
         }
     }
 

@@ -88,3 +88,43 @@ impl TadoTransport for HttpTadoTransport {
         Ok((status, body))
     }
 }
+
+/// The UniFi console, over HTTPS on the LAN.
+///
+/// Certificate verification is off, and that is not laziness: a UniFi
+/// console serves a self-signed certificate for an address rather than
+/// a name, and no certificate authority will ever vouch for
+/// `192.168.1.1`. The exposure is a request that never leaves the
+/// house, carrying a key that only works inside it. Pinning the
+/// console's own certificate would be better and is worth doing if this
+/// ever talks to anything further away than the hall cupboard.
+pub struct HttpUnifiTransport {
+    http: reqwest::Client,
+}
+
+impl HttpUnifiTransport {
+    pub fn new(timeout: Duration) -> Result<Self> {
+        let http = reqwest::Client::builder()
+            .timeout(timeout)
+            .danger_accept_invalid_certs(true)
+            .build()
+            .map_err(Error::Http)?;
+        Ok(Self { http })
+    }
+}
+
+#[async_trait]
+impl crate::unifi::UnifiTransport for HttpUnifiTransport {
+    async fn get(&self, url: &str, api_key: &str) -> Result<(u16, String)> {
+        let resp = self
+            .http
+            .get(url)
+            .header("X-API-KEY", api_key)
+            .header("accept", "application/json")
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await?;
+        Ok((status, body))
+    }
+}

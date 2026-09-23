@@ -9,6 +9,7 @@ import { ApiError, api, roomOrder } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
 import { BoostButton } from "@/components/BoostButton";
 import { HouseBar } from "@/components/HouseBar";
+import { PairPhoneCard } from "@/components/PairPhoneCard";
 import { SceneBar } from "@/components/SceneBar";
 import {
   boostEndsAt,
@@ -32,6 +33,20 @@ export function RoomDashboard() {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   useDeviceStream();
+
+  // Asked once per visit and never retried: a 501 means there is no
+  // console, which is a fine answer, and the card renders nothing until
+  // an answer exists — so it can never appear and then withdraw.
+  const phone = useQuery({
+    queryKey: ["presence-device"],
+    queryFn: api.deviceStatus,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const pair = useMutation({
+    mutationFn: api.pairDevice,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["presence-device"] }),
+  });
 
   const devices = useQuery({
     queryKey: ["devices"],
@@ -209,6 +224,11 @@ export function RoomDashboard() {
           />
         </div>
       </div>
+      <PairPhoneCard
+        device={phone.data}
+        pairing={pair.isPending}
+        onPair={() => pair.mutate()}
+      />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {rooms.map((room) => (
           <RoomCard

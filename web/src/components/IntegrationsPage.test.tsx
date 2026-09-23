@@ -37,12 +37,39 @@ const SECRETS: SecretsReport = {
   ],
 };
 
-function setup(integrations: Integration[], secrets: SecretsReport = SECRETS) {
+const UNIFI: Integration = {
+  id: "unifi",
+  label: "UniFi",
+  blurb: "Who is home, from the Wi-Fi.",
+  kind: "service",
+  base_url: null,
+  serves: [],
+  added: false,
+  secret_key: "presence.unifi.api_key",
+};
+
+const UNIFI_KEY: SecretsReport = {
+  writable: true,
+  secrets: [
+    {
+      key: "presence.unifi.api_key",
+      label: "UniFi console API key",
+      source: "unset",
+    },
+  ],
+};
+
+function setup(
+  integrations: Integration[],
+  secrets: SecretsReport = SECRETS,
+  unifiHost?: string,
+) {
   const onChange = vi.fn();
   render(
     <IntegrationsPage
       integrations={integrations}
       secrets={secrets}
+      unifiHost={unifiHost}
       onChange={onChange}
       onSecretsChanged={vi.fn()}
       onTadoChanged={vi.fn()}
@@ -151,5 +178,42 @@ describe("IntegrationsPage", () => {
     setup([{ ...GROQ, added: true }]);
     openAddList();
     expect(screen.getByText(/already set up/)).toBeInTheDocument();
+  });
+
+  it("asks for the console's address and key when UniFi is added", () => {
+    const { onChange } = setup([UNIFI], UNIFI_KEY);
+    openAddList();
+    fireEvent.click(screen.getByRole("button", { name: /UniFi/ }));
+
+    // Adding it writes nothing: an empty address is not a console.
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Console address")).toBeTruthy();
+    expect(screen.getByText("UniFi console API key")).toBeTruthy();
+  });
+
+  it("saves the address when you leave the field", () => {
+    const { onChange } = setup([{ ...UNIFI, added: true }], UNIFI_KEY, "");
+    fireEvent.click(screen.getByRole("button", { name: /UniFi/ }));
+    const field = screen.getByLabelText("Console address");
+    fireEvent.change(field, { target: { value: " 192.168.1.1 " } });
+    fireEvent.blur(field);
+
+    expect(onChange).toHaveBeenCalledWith("presence.unifi", [
+      { path: "presence.unifi.host", value: "192.168.1.1" },
+    ]);
+  });
+
+  it("removing UniFi forgets the console", () => {
+    const { onChange } = setup(
+      [{ ...UNIFI, added: true }],
+      UNIFI_KEY,
+      "192.168.1.1",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /UniFi/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove UniFi/ }));
+
+    expect(onChange).toHaveBeenCalledWith("presence.unifi", [
+      { path: "presence.unifi.host", value: "" },
+    ]);
   });
 });

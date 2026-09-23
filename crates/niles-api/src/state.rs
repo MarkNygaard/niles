@@ -51,6 +51,12 @@ pub struct AppState {
     pub voices: Option<Arc<dyn niles_recognition::VoiceRoster>>,
     /// The kept wake audio, when a database is configured.
     pub captures: Option<Arc<niles_db::PostgresCaptures>>,
+    /// The UniFi console, when presence names one.
+    ///
+    /// Here for one question the console alone can answer: which device
+    /// is making *this* request. That is how a phone is paired to a
+    /// person without anybody typing a MAC address.
+    pub unifi: Option<Arc<niles_presence::UnifiSource>>,
     /// Which lights the lighting curve must leave alone.
     ///
     /// Absent when nothing is driving a curve — `niles api` serves the
@@ -76,6 +82,7 @@ impl AppState {
             linear_webhook: None,
             config: None,
             logs: None,
+            unifi: None,
             attempts: Arc::new(crate::auth::flow::Attempts::new()),
             api_token: None,
             manual_mode: None,
@@ -103,6 +110,13 @@ impl AppState {
     /// The kept wake audio, for getting it back out.
     pub fn with_captures(mut self, captures: Option<Arc<niles_db::PostgresCaptures>>) -> Self {
         self.captures = captures;
+        self
+    }
+
+    /// The UniFi console, for the one question only it can answer:
+    /// which device is making this request.
+    pub fn with_unifi(mut self, unifi: Option<Arc<niles_presence::UnifiSource>>) -> Self {
+        self.unifi = unifi;
         self
     }
 

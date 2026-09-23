@@ -92,6 +92,9 @@ pub struct PresenceConfig {
     pub lights_on_when_home: Vec<String>,
     #[serde(default)]
     pub tado: Option<TadoConfigDto>,
+    /// The network's own answer to who is home, from the UniFi console.
+    #[serde(default)]
+    pub unifi: crate::unifi::UnifiConfig,
 }
 
 impl Default for PresenceConfig {
@@ -103,6 +106,7 @@ impl Default for PresenceConfig {
             lights_off_when_away: false,
             lights_on_when_home: Vec::new(),
             tado: None,
+            unifi: crate::unifi::UnifiConfig::default(),
         }
     }
 }
@@ -137,7 +141,7 @@ impl PresenceConfig {
         if !self.enabled {
             return Ok(());
         }
-        if self.tado.is_none() {
+        if self.tado.is_none() && !self.unifi.is_configured() {
             return Err(Error::InvalidSection {
                 section: "presence",
                 reason: "no adapter configured".into(),
@@ -162,6 +166,7 @@ impl PresenceConfig {
         for light in &self.lights_on_when_home {
             self.light_id(light)?;
         }
+        self.unifi.validate()?;
         if let Some(tado) = &self.tado {
             // No credential checks: there are no credentials. An
             // explicit home_id of 0 is still a mistake, but leaving it

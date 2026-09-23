@@ -21,6 +21,7 @@ import type { DeviceOption } from "@/components/DevicePicker";
 import { SecretField } from "@/components/SecretField";
 import { TadoPanel } from "@/components/TadoPanel";
 import { LinearPanel } from "@/components/LinearPanel";
+import { UnifiPanel } from "@/components/UnifiPanel";
 import { cn } from "@/lib/utils";
 import type {
   Integration,
@@ -42,6 +43,8 @@ export interface IntegrationsPageProps {
   lightOptions?: DeviceOption[];
   /** The Linear section as the config has it, if there is one. */
   linear?: { team?: string; trigger_label?: string };
+  /** The UniFi console's address, empty until one is typed in. */
+  unifiHost?: string;
   saving?: boolean;
   error?: string;
   /** Config writes, batched as one revision per action. */
@@ -73,6 +76,7 @@ export function IntegrationsPage({
   presenceLights,
   lightOptions,
   linear,
+  unifiHost,
   saving,
   error,
   onChange,
@@ -100,6 +104,11 @@ export function IntegrationsPage({
   function ready(integration: Integration): boolean {
     if (integration.id === "tado") return Boolean(tado?.authorised);
     if (integration.id === "linear") return Boolean(linear?.team?.trim());
+    if (integration.id === "unifi")
+      return (
+        Boolean(unifiHost?.trim()) &&
+        secretFor(integration.secret_key)?.source !== "unset"
+      );
     return secretFor(integration.secret_key)?.source !== "unset";
   }
 
@@ -119,6 +128,10 @@ export function IntegrationsPage({
         return onChange("integrations.linear", [
           { path: "integrations.linear", value: { team: "" } },
         ]);
+      case "unifi":
+        // Nothing to write yet: the address is what makes it added, and
+        // that is the first thing the dialog asks for.
+        return;
       default:
         // A provider is its endpoint and the roles it serves, both of
         // which Niles already knows. Appending rather than replacing:
@@ -138,6 +151,10 @@ export function IntegrationsPage({
       case "tado":
         return onChange("presence", [
           { path: "presence.enabled", value: false },
+        ]);
+      case "unifi":
+        return onChange("presence.unifi", [
+          { path: "presence.unifi.host", value: "" },
         ]);
       default:
         return onChange("providers", [
@@ -288,6 +305,21 @@ export function IntegrationsPage({
                     saving={saving}
                     onChange={(entries) =>
                       onChange("integrations.linear", entries)
+                    }
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "unifi" && (
+                  <UnifiPanel
+                    host={unifiHost ?? ""}
+                    secret={secretFor(current.secret_key)}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onHost={(host) =>
+                      onChange("presence.unifi", [
+                        { path: "presence.unifi.host", value: host },
+                      ])
                     }
                     onSecretsChanged={onSecretsChanged}
                   />

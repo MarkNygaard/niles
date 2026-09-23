@@ -843,6 +843,7 @@ export function ConfigPanel() {
                 | { linear?: { team?: string; trigger_label?: string } }
                 | undefined)?.linear
             }
+            unifiHost={stringAt(view.effective, "presence.unifi.host")}
             saving={save.isPending}
             error={rowError ? rowError.message : undefined}
             onChange={(row, entries) => save.mutate({ row, entries })}
