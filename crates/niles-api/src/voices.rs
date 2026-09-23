@@ -21,6 +21,13 @@ pub struct VoiceDto {
     /// The slug commands and `auth.allowed[].speaker` refer to.
     pub speaker: String,
     pub display_name: String,
+    /// How to say it, when spelling it right and saying it right are not
+    /// the same string. `None` means say the display name.
+    ///
+    /// This was accepted on the way in and not returned on the way out,
+    /// so a respelling saved correctly, was never read back, and looked
+    /// to anybody using it like a field that would not save.
+    pub spoken_as: Option<String>,
     /// How many clips the print is built from. One is thin; the voice
     /// asks for more until it has three.
     pub clip_count: usize,
@@ -50,6 +57,7 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<VoiceDto>>, 
             .map(|v| VoiceDto {
                 speaker: v.speaker,
                 display_name: v.display_name,
+                spoken_as: v.spoken_as,
                 clip_count: v.clip_count,
                 created_at: v.created_at.to_rfc3339(),
                 last_seen_at: v.last_seen_at.map(|t| t.to_rfc3339()),
