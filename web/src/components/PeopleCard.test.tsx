@@ -72,13 +72,26 @@ describe("PeopleCard", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("shows the voice identity when one is linked", () => {
-    setup([{ email: "mark@example.com", speaker: "mark" }], [
-      { speaker: "mark", display_name: "Mark" },
+  it("shows the voice identity by name, not by slug", () => {
+    // Base UI renders the raw value unless told otherwise, and the value
+    // is the slug — so the list said "Majse" and the box said "maisel"
+    // the moment you picked it, which reads as the choice not sticking.
+    setup([{ email: "majse@example.com", speaker: "maisel" }], [
+      { speaker: "maisel", display_name: "Majse" },
     ]);
+    const box = screen.getByRole("combobox", { name: "majse@example.com voice" });
+    expect(box).toHaveTextContent("Majse");
+    expect(box).not.toHaveTextContent("maisel");
+  });
+
+  it("falls back to the slug when the voice is gone", () => {
+    // A pairing pointing at a deleted voice has no name to show. The slug
+    // is worse than a name and far better than blank, because the fix is
+    // to repair the pairing and you cannot repair what is not displayed.
+    setup([{ email: "majse@example.com", speaker: "maisel" }], []);
     expect(
-      screen.getByRole("combobox", { name: "mark@example.com voice" }),
-    ).toHaveTextContent("mark");
+      screen.getByRole("combobox", { name: "majse@example.com voice" }),
+    ).toHaveTextContent("maisel");
   });
 
   it("offers no pairing until the voices are known", () => {

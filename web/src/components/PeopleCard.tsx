@@ -137,7 +137,18 @@ export function PeopleCard({
                       aria-label={`${person.email} voice`}
                       className="mt-1 h-7 w-full text-xs"
                     >
-                      <SelectValue placeholder="No voice" />
+                      {/* Base UI renders the raw value unless told
+                          otherwise, and the value is the slug — so the
+                          list said "Majse" and the box said "maisel"
+                          the moment you picked it. */}
+                      <SelectValue placeholder="No voice">
+                        {(value: string) =>
+                          value === NO_VOICE
+                            ? "No voice"
+                            : (voices?.find((v) => v.speaker === value)
+                                ?.display_name ?? value)
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value={NO_VOICE}>No voice</SelectItem>
