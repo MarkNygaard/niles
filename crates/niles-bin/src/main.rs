@@ -2155,6 +2155,7 @@ async fn transcribe_session(
 
     let audio_ms = wav_duration_ms(&session);
     let sample_rate_hz = session.format.sample_rate_hz;
+    let wake_probability = session.wake_probability;
     let started = Instant::now();
     match client.transcribe(wav.clone(), "session.wav").await {
         Ok(t) => {
@@ -2163,9 +2164,14 @@ async fn transcribe_session(
             // below, because the thresholds worth using are the ones
             // read off a real room rather than off somebody's blog.
             if let Some(c) = t.confidence {
+                // The wake probability rides along, so one line answers both
+                // questions a false wake raises: was that speech, and was it
+                // confident enough to be the wake word. Tuning the satellite
+                // used to need the satellite on a desk.
                 tracing::info!(
                     no_speech_prob = c.no_speech_prob,
                     avg_logprob = c.avg_logprob,
+                    wake = wake_probability.unwrap_or(f32::NAN),
                     "[{}] whisper heard {text:?}",
                     session.from
                 );

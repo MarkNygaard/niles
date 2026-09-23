@@ -61,12 +61,21 @@ pub struct AudioSession {
     pub from: SocketAddr,
     pub format: AudioFormat,
     pub pcm: Vec<u8>,
+    /// How confident the satellite's wake word was, if it said.
+    ///
+    /// The number that decided this session exists. It lived only on the
+    /// satellite's serial console, so tuning the threshold meant carrying
+    /// the device to a desk and hoping the room misbehaved on cue — which
+    /// is how it was set twice from four minutes of evidence and twice
+    /// got it wrong. `None` from firmware that does not report it.
+    pub wake_probability: Option<f32>,
 }
 
 #[derive(Debug)]
 struct InFlight {
     format: AudioFormat,
     pcm: Vec<u8>,
+    wake_probability: Option<f32>,
     /// True once we've decided to discard this session (e.g.
     /// oversize, malformed). Subsequent chunks are ignored until
     /// `audio-stop` resets the slot.
@@ -97,6 +106,7 @@ impl SessionTracker {
                 if self.in_flight.contains_key(&from) {
                     warn!("{from}: audio-start while a session was already open — restarting");
                 }
+                let wake_probability = parse_wake_probability(&event);
                 match parse_audio_format(&event) {
                     Ok(format) => {
                         self.in_flight.insert(
@@ -104,6 +114,7 @@ impl SessionTracker {
                             InFlight {
                                 format,
                                 pcm: Vec::new(),
+                                wake_probability,
                                 poisoned: false,
                             },
                         );
@@ -117,6 +128,7 @@ impl SessionTracker {
                             InFlight {
                                 format: AudioFormat::new(0, 0, 0),
                                 pcm: Vec::new(),
+                                wake_probability,
                                 poisoned: true,
                             },
                         );
@@ -151,6 +163,7 @@ impl SessionTracker {
                     from,
                     format: slot.format,
                     pcm: slot.pcm,
+                    wake_probability: slot.wake_probability,
                 })
             }
             // Voice-started / voice-stopped / ping etc. don't gate
@@ -178,6 +191,19 @@ impl SessionTracker {
 /// Pull `rate` / `width` / `channels` out of an `audio-start` event's
 /// `data` field. Returns a human-readable reason on the way out so
 /// the caller can log it.
+/// The wake probability, when the satellite reports one.
+///
+/// Absent rather than an error: firmware that predates this is not
+/// broken, and a session is worth having without it.
+fn parse_wake_probability(event: &Event) -> Option<f32> {
+    event
+        .data
+        .as_object()?
+        .get("wake_avg")?
+        .as_f64()
+        .map(|v| v as f32)
+}
+
 fn parse_audio_format(event: &Event) -> std::result::Result<AudioFormat, String> {
     let obj = event
         .data
@@ -212,6 +238,39 @@ fn parse_audio_format(event: &Event) -> std::result::Result<AudioFormat, String>
 
 #[cfg(test)]
 mod tests {
+    fn start_with(data: serde_json::Value) -> Event {
+        Event {
+            kind: EventKind::AudioStart,
+            data,
+            payload: Vec::new(),
+            version: None,
+        }
+    }
+
+    #[test]
+    fn a_satellite_that_reports_its_wake_probability_is_believed() {
+        // The number that decided the session exists. It used to live only
+        // on the satellite's serial console, which is how the threshold got
+        // set twice from four minutes of evidence and twice got it wrong.
+        let event = start_with(serde_json::json!({
+            "rate": 16000, "width": 2, "channels": 1, "wake_avg": 0.573
+        }));
+        let got = parse_wake_probability(&event).expect("reported");
+        assert!((got - 0.573).abs() < 1e-6, "{got}");
+    }
+
+    #[test]
+    fn firmware_that_says_nothing_is_not_an_error() {
+        // A satellite predating this is not broken, and the session is
+        // worth having without the number.
+        let event = start_with(serde_json::json!({ "rate": 16000, "width": 2, "channels": 1 }));
+        assert_eq!(parse_wake_probability(&event), None);
+        assert!(
+            parse_audio_format(&event).is_ok(),
+            "the session still opens"
+        );
+    }
+
     use super::*;
     use crate::event::EventKind;
     use serde_json::Value;
