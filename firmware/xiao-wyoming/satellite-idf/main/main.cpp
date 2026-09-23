@@ -96,6 +96,59 @@ static constexpr gpio_num_t PIN_DOUT = GPIO_NUM_44;
 static constexpr float PROB_CUTOFF = 0.90f;
 static constexpr int WINDOW_AVG = 5;
 
+// 2026-09-23: the next false wake arrived, and then fifty-two more. One day
+// of logs: 53 wakes, 43 of them answered into an empty room -- "Thank you."
+// nine times, and television dialogue transcribed perfectly. PROB_CUTOFF was
+// doing what it could; the problem is that it judges ONE inference.
+//
+// The detector runs every 30 ms, and a word that merely resembles "nyles"
+// produces a single high slice. The wake word itself produces a run of them.
+// So the ring declared below -- present and unused since this was written --
+// is now filled, and the decision is made on the average of the last
+// WINDOW_AVG inferences (~150 ms).
+//
+// That changes what the number means, so it gets its own. A real detection
+// peaks near 1.0 across two or three slices of five and averages well below
+// its peak; a one-slice accident averages to almost nothing. Both are logged
+// per heartbeat as maxprob / maxavg -- tune AVG_CUTOFF from those, the way
+// PROB_CUTOFF was tuned from maxprob.
+//
+// Measured the same evening, five real wakes against "nice" and "files"
+// said deliberately at the same distance:
+//
+//   "nyles"          avg 0.573 0.576 0.633 0.670 0.849
+//   nice / files     avg 0.355 0.264 0.160 0.121 0.109
+//
+// A gap of 0.218, which is the thing the single-frame check could not see:
+// on maxprob those two sets overlap almost completely (a "nice" peaked at
+// 0.945). 0.45 sits near the middle of the gap -- 0.123 below the weakest
+// real wake and 0.095 above the loudest impostor. The first guess of 0.55
+// cleared the weakest real wake by 0.023, which is not a margin.
+//
+// Except those impostors were the wrong ones. "nice" and "files" are single
+// short words, which average low whatever they peak at; a television speaks
+// continuously, and at 0.45 it woke the house nine times in twenty-six
+// minutes. The negatives that matter are the ones actually in the room.
+//
+// Back to 0.55 while the real distribution is collected -- which is what the
+// wake_avg reported below is for. A threshold argued from four minutes at a
+// desk is how this went wrong twice.
+static constexpr float AVG_CUTOFF = 0.55f;
+
+// ~1 s of audio kept before the wake word, in PSRAM.
+//
+// The satellite used to start streaming at the moment of detection, so the
+// sound that triggered it was the one sound never sent. That makes a false
+// wake impossible to learn from: niles received the silence afterwards and
+// Whisper turned it into "Thank you.". Retraining needs the trigger itself.
+//
+// It also un-clips real commands, which began a fraction of a second before
+// the stream opened.
+static constexpr int PREROLL_SAMPLES = SAMPLE_RATE; // 1.0 s at 16 kHz
+// Up here rather than inside stream_utterance, because the pre-roll has to
+// apply the same gain as the live stream or the seam is audible.
+static constexpr int STREAM_GAIN = 6;
+
 // The XVF3800 mono downmix is low-level; the wake-word preprocessor expects
 // normal-level PCM, so we amplify before feature extraction. TUNE THIS: too
 // low and features floor at -128; too high and speech CLIPS (heartbeat peak
@@ -107,6 +160,12 @@ static constexpr int MIC_GAIN = 4;
 static i2s_chan_handle_t rx_chan = nullptr;
 static int32_t i2s_buf[STRIDE_SAMPLES * 2]; // XVF3800 = 2ch / 32-bit
 static int16_t window[WINDOW_SAMPLES];      // 30 ms sliding window of mono int16
+// Raw mono, pre-gain: the stream applies its own STREAM_GAIN, and storing
+// the detector's MIC_GAIN copy would amplify it twice. Allocated from PSRAM
+// at boot, because 32 KB of internal SRAM is worth more elsewhere.
+static int16_t* preroll = nullptr;
+static int preroll_pos = 0;  // next slot to write
+static bool preroll_full = false;
 
 // ---- wake-word model (the preprocessor model lives in micro_features_generator) ----
 static constexpr int kArenaSize = 64 * 1024;
@@ -371,12 +430,53 @@ static void push_slice() {
   memmove(window, window + STRIDE_SAMPLES, (WINDOW_SAMPLES - STRIDE_SAMPLES) * sizeof(int16_t));
   int16_t* tail = window + (WINDOW_SAMPLES - STRIDE_SAMPLES);
   for (int f = 0; f < frames; f++) {
-    int32_t s = (int32_t)(i2s_buf[f * 2] >> 16) * MIC_GAIN;
+    int32_t raw = (int32_t)(i2s_buf[f * 2] >> 16);
+    if (preroll) {
+      preroll[preroll_pos] = (int16_t)raw;
+      if (++preroll_pos >= PREROLL_SAMPLES) {
+        preroll_pos = 0;
+        preroll_full = true;
+      }
+    }
+    int32_t s = raw * MIC_GAIN;
     if (s > 32767) s = 32767;
     else if (s < -32768) s = -32768;
     tail[f] = (int16_t)s;
   }
   for (int f = frames; f < STRIDE_SAMPLES; f++) tail[f] = 0;
+}
+
+// Defined below, with the rest of the socket helpers; declared here because
+// the pre-roll belongs beside the ring it drains, not beside the socket.
+static bool send_all(int sock, const void* buf, size_t len);
+
+/// Send everything kept before the wake word, oldest first.
+///
+/// The ring is written continuously and never paused, so this runs before
+/// the live loop starts reading I2S again; a slice arriving in between would
+/// land in the ring and be sent twice.
+static bool send_preroll(int sock) {
+  if (!preroll) return true;
+  int have = preroll_full ? PREROLL_SAMPLES : preroll_pos;
+  int start = preroll_full ? preroll_pos : 0;
+  char hdr[64];
+  int16_t slice[STRIDE_SAMPLES];
+  for (int sent = 0; sent < have; sent += STRIDE_SAMPLES) {
+    int n = have - sent;
+    if (n > STRIDE_SAMPLES) n = STRIDE_SAMPLES;
+    for (int f = 0; f < n; f++) {
+      int32_t g = preroll[(start + sent + f) % PREROLL_SAMPLES] * STREAM_GAIN;
+      if (g > 32767) g = 32767;
+      else if (g < -32768) g = -32768;
+      slice[f] = (int16_t)g;
+    }
+    for (int f = n; f < STRIDE_SAMPLES; f++) slice[f] = 0;
+    int pb = STRIDE_SAMPLES * (int)sizeof(int16_t);
+    int hn = snprintf(hdr, sizeof(hdr),
+                      "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
+    if (!send_all(sock, hdr, hn) || !send_all(sock, slice, pb)) return false;
+  }
+  return true;
 }
 
 // ---- Wyoming streaming to niles (Stage 2) ----
@@ -555,7 +655,7 @@ static bool push_poll() {
   return true;
 }
 
-static void stream_utterance() {
+static void stream_utterance(float wake_avg) {
   struct sockaddr_in dest = {};
   dest.sin_family = AF_INET;
   dest.sin_port = htons(NILES_PORT);
@@ -574,9 +674,24 @@ static void stream_utterance() {
     return;
   }
 
-  const char* start =
-      "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,\"channels\":1}}\n";
-  if (!send_all(sock, start, strlen(start))) {
+  // The probability that fired rides along with the audio. It only
+  // existed on the serial console before, so tuning the threshold meant
+  // carrying the satellite to a desk and hoping the television performed.
+  // niles logs it beside the transcript; a week of the real room then
+  // says where the bar belongs.
+  char start[192];
+  int sn = snprintf(start, sizeof(start),
+                    "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,"
+                    "\"channels\":1,\"wake_avg\":%.3f}}\n",
+                    (double)wake_avg);
+  if (!send_all(sock, start, sn)) {
+    close(sock);
+    return;
+  }
+
+  // Everything heard just before the wake word, before anything live:
+  // the sound that triggered this is the one worth having.
+  if (!send_preroll(sock)) {
     close(sock);
     return;
   }
@@ -619,7 +734,6 @@ static void stream_utterance() {
   // PCM so it lands at a healthy level; speech ~3000 raw * 6 ~= 55% FS, and
   // the loudest observed (~4600) stays just under clipping. VAD still measures
   // the RAW level so STOP_RMS tuning is unaffected.
-  static const int STREAM_GAIN = 6;
 
   int16_t slice[STRIDE_SAMPLES];
   char hdr[64];
@@ -751,6 +865,12 @@ extern "C" void app_main(void) {
     abort();
   }
   model_init();
+  // PSRAM: 32 KB of internal SRAM is worth more elsewhere, and this is
+  // written once per 10 ms frame, nowhere near a bottleneck.
+  preroll = (int16_t*)heap_caps_malloc(PREROLL_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+  if (!preroll) {
+    ESP_LOGW(TAG, "no PSRAM for the pre-roll; wakes will be sent without it");
+  }
   i2s_init();
   leds_init();
   push_listener_init();
@@ -766,7 +886,8 @@ extern "C" void app_main(void) {
   int iter = 0;
   int32_t hb_peak = 0;     // max audio peak this heartbeat
   int hb_featmax = -128;   // max feature value this heartbeat
-  float hb_maxprob = 0.0f; // max probability this heartbeat
+  float hb_maxprob = 0.0f; // max single-inference probability this heartbeat
+  float hb_maxavg = 0.0f;  // max averaged probability -- what now decides
 
   // The model takes 3 feature slices (3 * 40 = 120 int8) per inference and is
   // invoked every 30 ms (3 fresh slices). This cadence detects clearly better
@@ -822,19 +943,35 @@ extern "C" void app_main(void) {
         // Read it unsigned.
         float prob = output->data.uint8[0] * output->params.scale;
         if (prob > hb_maxprob) hb_maxprob = prob;
+
+        // The decision is the average of the last WINDOW_AVG inferences. A
+        // single loud coincidence cannot carry it; the wake word, which
+        // stays high across several slices, can.
+        ring[idx] = prob;
+        idx = (idx + 1) % WINDOW_AVG;
+        float avg = 0.0f;
+        for (int i = 0; i < WINDOW_AVG; i++) avg += ring[i];
+        avg /= WINDOW_AVG;
+        if (avg > hb_maxavg) hb_maxavg = avg;
+
         int64_t now_ms = esp_log_timestamp();
-        if (prob >= PROB_CUTOFF && now_ms - last_fire_ms > 1500) {
+        if (avg >= AVG_CUTOFF && now_ms - last_fire_ms > 1500) {
           last_fire_ms = now_ms;
-          ESP_LOGI(TAG, ">>> WAKE WORD DETECTED (prob=%.3f) — streaming command <<<",
-                   (double)prob);
+          ESP_LOGI(TAG,
+                   ">>> WAKE WORD DETECTED (avg=%.3f, last=%.3f) — streaming command <<<",
+                   (double)avg, (double)prob);
           // Before the socket: the ring is the acknowledgement that it
           // heard its name, and it has to arrive while you are still
           // speaking, not after the network has had its turn.
           leds_show(Leds::Listening);
-          stream_utterance();
+          stream_utterance(avg);
           leds_show(Leds::Idle);
           // Reset wake state so stale slices don't immediately re-fire.
+          // The ring included: the average that just fired would otherwise
+          // still be most of the way to firing again.
           slot = 0;
+          memset(ring, 0, sizeof(ring));
+          idx = 0;
           last_fire_ms = esp_log_timestamp();
         }
       }
@@ -844,9 +981,10 @@ extern "C" void app_main(void) {
     // MAX probability seen this second. featmax jumps when you speak; maxprob
     // jumps when you say "nyles". Use this to set PROB_CUTOFF (see above).
     if (++iter % 100 == 0) {
-      ESP_LOGI(TAG, "peak=%ld featmax=%d maxprob=%.3f", (long)hb_peak, hb_featmax,
-               (double)hb_maxprob);
+      ESP_LOGI(TAG, "peak=%ld featmax=%d maxprob=%.3f maxavg=%.3f", (long)hb_peak,
+               hb_featmax, (double)hb_maxprob, (double)hb_maxavg);
       hb_peak = 0;
+      hb_maxavg = 0.0f;
       hb_featmax = -128;
       hb_maxprob = 0.0f;
     }
