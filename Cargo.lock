@@ -1665,6 +1665,7 @@ dependencies = [
  "niles-presence",
  "niles-recognition",
  "rand 0.10.2",
+ "serde",
  "sqlx",
  "tokio",
  "toml",

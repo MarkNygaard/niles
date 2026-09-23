@@ -37,6 +37,11 @@ pub fn router(state: AppState) -> Router {
             post(crate::scenes::apply_scene).delete(crate::scenes::delete_scene),
         )
         .route("/integrations", get(crate::integrations::list))
+        .route(
+            "/captures",
+            get(crate::captures::list).delete(crate::captures::clear),
+        )
+        .route("/captures/{id}", get(crate::captures::download))
         .route("/voices", get(crate::voices::list))
         .route(
             "/voices/{speaker}",

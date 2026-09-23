@@ -27,10 +27,12 @@
 //! replacement, so a retry after a connection dies mid-write cannot apply
 //! anything twice.
 
+mod captures;
 mod enrollments;
 mod scenes;
 mod secrets;
 mod tado_tokens;
+pub use captures::{Capture, PostgresCaptures};
 pub use enrollments::PostgresEnrollments;
 pub use scenes::PostgresScenes;
 pub use secrets::{PostgresSecrets, Sealer};

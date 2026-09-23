@@ -18,6 +18,7 @@
 //! ```
 
 pub mod auth;
+pub mod captures;
 pub mod climate;
 pub mod config;
 #[cfg(test)]

@@ -18,6 +18,7 @@ import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
 import { VoicesCard } from "@/components/VoicesCard";
+import { CaptureCard } from "@/components/CaptureCard";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
 import { RoleCard } from "@/components/RoleCard";
 import { SecretsCard } from "@/components/SecretsCard";
@@ -253,6 +254,15 @@ export function ConfigPanel() {
   const forget = useMutation({
     mutationFn: api.forgetVoice,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
+  });
+  const captures = useQuery({
+    queryKey: ["captures"],
+    queryFn: api.captures,
+    retry: false,
+  });
+  const clearCaptures = useMutation({
+    mutationFn: api.clearCaptures,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["captures"] }),
   });
   const rename = useMutation({
     mutationFn: ({
@@ -723,6 +733,23 @@ export function ConfigPanel() {
                   ],
                 })
               }
+            />
+          </div>
+          <div className="pt-4">
+            <CaptureCard
+              enabled={
+                (view.effective.capture as { enabled?: boolean } | undefined)
+                  ?.enabled === true
+              }
+              captures={captures.data}
+              saving={save.isPending || clearCaptures.isPending}
+              onChange={(value) =>
+                save.mutate({
+                  row: "capture",
+                  entries: [{ path: "capture.enabled", value }],
+                })
+              }
+              onClear={() => clearCaptures.mutate()}
             />
           </div>
         </TabsContent>

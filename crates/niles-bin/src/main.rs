@@ -2079,11 +2079,9 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
                         // need a bounded worker pool.
                         let client = client.clone();
                         tokio::spawn(async move {
-                            if let Some((peer, text, _confidence, timing)) =
-                                transcribe_session(&client, session).await
-                            {
-                                println!("[{peer}] \"{text}\"");
-                                timing.log(peer, &text);
+                            if let Some(heard) = transcribe_session(&client, session).await {
+                                println!("[{}] \"{}\"", heard.peer, heard.text);
+                                heard.timing.log(heard.peer, &heard.text);
                             }
                         });
                     }
@@ -2119,10 +2117,25 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
 /// (trimmed) transcript on success, `None` on any failure — errors
 /// are logged in place so a single bad request doesn't take the
 /// listener down.
+/// One wake, transcribed.
+///
+/// A struct rather than a wider tuple because the audio joined it: the
+/// WAV is built for Whisper anyway, and keeping it is what lets a
+/// false wake become a training sample instead of a log line.
+struct Heard {
+    peer: SocketAddr,
+    text: String,
+    confidence: Option<Confidence>,
+    timing: TurnTiming,
+    /// What was sent to Whisper, ready to write to disk unchanged.
+    wav: Vec<u8>,
+    sample_rate_hz: u32,
+}
+
 async fn transcribe_session(
     client: &WhisperClient,
     session: niles_wyoming::AudioSession,
-) -> Option<(SocketAddr, String, Option<Confidence>, TurnTiming)> {
+) -> Option<Heard> {
     let pcm_format = PcmFormat {
         sample_rate_hz: session.format.sample_rate_hz,
         bits_per_sample: session.format.bits_per_sample,
@@ -2141,8 +2154,9 @@ async fn transcribe_session(
     };
 
     let audio_ms = wav_duration_ms(&session);
+    let sample_rate_hz = session.format.sample_rate_hz;
     let started = Instant::now();
-    match client.transcribe(wav, "session.wav").await {
+    match client.transcribe(wav.clone(), "session.wav").await {
         Ok(t) => {
             let text = t.text.trim().to_string();
             // Logged for every utterance, including the ones dropped
@@ -2156,16 +2170,18 @@ async fn transcribe_session(
                     session.from
                 );
             }
-            Some((
-                session.from,
+            Some(Heard {
+                peer: session.from,
                 text,
-                t.confidence,
-                TurnTiming {
+                confidence: t.confidence,
+                timing: TurnTiming {
                     audio_ms,
                     stt_ms: started.elapsed().as_millis(),
                     ..TurnTiming::default()
                 },
-            ))
+                wav,
+                sample_rate_hz,
+            })
         }
         Err(e) => {
             tracing::warn!("{}: transcription failed: {e}", session.from);
@@ -2245,9 +2261,15 @@ fn spawn_dispatch_task(
                 (identity, voice)
             })
         });
-        if let Some((peer, text, confidence, mut timing)) =
-            transcribe_session(&whisper, session).await
-        {
+        if let Some(heard) = transcribe_session(&whisper, session).await {
+            let Heard {
+                peer,
+                text,
+                confidence,
+                mut timing,
+                wav,
+                sample_rate_hz,
+            } = heard;
             let (ident, voice) = match id_handle {
                 Some(h) => match h.await {
                     Ok(result) => result,
@@ -2273,6 +2295,27 @@ fn spawn_dispatch_task(
             let say =
                 handle_transcript(&ctx, peer, &text, confidence, &speaker, voice.as_deref()).await;
             timing.dispatch_ms = dispatch_started.elapsed().as_millis();
+
+            // Kept before anything else looks at it, because what makes
+            // this worth keeping is precisely the turns nothing else
+            // wanted. `say` is the label: nothing said back means Niles
+            // decided this was not addressed to it, which is the
+            // negative a wake word needs to be trained on.
+            if let Some(captures) = ctx.captures.clone() {
+                let live = ctx.settings.as_ref().map(|s| s.current().capture);
+                if let Some(cfg) = live.filter(|c| c.enabled) {
+                    let outcome = if say.is_some() { "answered" } else { "dropped" };
+                    let text = text.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = captures
+                            .keep(&text, outcome, sample_rate_hz, &wav, i64::from(cfg.keep))
+                            .await
+                        {
+                            tracing::warn!("keeping the wake audio failed: {e}");
+                        }
+                    });
+                }
+            }
             let entry = CommandEntry {
                 ts: chrono::Utc::now(),
                 peer,
@@ -2530,6 +2573,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
+        captures: None,
         settings: None,
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
@@ -2638,6 +2682,8 @@ struct DispatchCtx {
     memory: Arc<MemoryStore>,
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
+    /// Where kept wake audio goes, when there is a database for it.
+    captures: Option<Arc<niles_db::PostgresCaptures>>,
     /// The live config, for settings a person changes and expects to
     /// take effect.
     ///
@@ -4048,6 +4094,24 @@ fn build_secret_store(cfg: &Config) -> Option<Arc<niles_db::PostgresSecrets>> {
     }
 }
 
+/// Where kept wake audio goes, when there is a database.
+///
+/// Built whether or not capture is switched on: the switch lives in
+/// the config and moves while Niles is running, and a store that only
+/// exists if it was on at boot would make flipping it do nothing —
+/// which is the bug that let a television talk to an empty house all
+/// day.
+fn build_capture_store(cfg: &Config) -> Option<Arc<niles_db::PostgresCaptures>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    let describe = backend.describe_target();
+    Some(Arc::new(niles_db::PostgresCaptures::new(
+        backend.pool(),
+        describe,
+    )))
+}
+
 /// Writes scenes to Postgres on a task of its own.
 ///
 /// [`SceneStore`] is sync — it is read on paths that cannot await — so
@@ -4232,6 +4296,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // `require_secret`, and until this runs that only sees the
     // environment.
     let secret_store = build_secret_store(&cfg);
+    let captures = build_capture_store(&cfg);
     if let Some(secrets) = &secret_store {
         match secrets.load_all().await {
             Ok(values) => {
@@ -4617,6 +4682,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_scenes(Some(scenes.clone()))
     .with_tado(tado.clone())
     .with_voices(voices.clone())
+    .with_captures(captures.clone())
     .with_secrets(secret_store.clone())
     .with_api_token(cfg.auth.resolve_api_token());
 
@@ -4700,6 +4766,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
+        captures: captures.clone(),
         settings: Some(store.clone()),
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),

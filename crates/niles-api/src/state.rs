@@ -49,6 +49,8 @@ pub struct AppState {
     /// The enrolled voices, when recognition is running. Absent
     /// otherwise, and `/voices` says so rather than 500ing.
     pub voices: Option<Arc<dyn niles_recognition::VoiceRoster>>,
+    /// The kept wake audio, when a database is configured.
+    pub captures: Option<Arc<niles_db::PostgresCaptures>>,
     /// Which lights the lighting curve must leave alone.
     ///
     /// Absent when nothing is driving a curve — `niles api` serves the
@@ -80,6 +82,7 @@ impl AppState {
             scenes: None,
             tado: None,
             voices: None,
+            captures: None,
             secrets: None,
         }
     }
@@ -94,6 +97,12 @@ impl AppState {
     /// authorising it.
     pub fn with_tado(mut self, tado: Option<Arc<niles_presence::TadoSource>>) -> Self {
         self.tado = tado;
+        self
+    }
+
+    /// The kept wake audio, for getting it back out.
+    pub fn with_captures(mut self, captures: Option<Arc<niles_db::PostgresCaptures>>) -> Self {
+        self.captures = captures;
         self
     }
 
