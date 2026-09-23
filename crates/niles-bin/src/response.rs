@@ -374,17 +374,6 @@ pub fn enrollment_unavailable() -> String {
     "I'm not set up to recognise voices yet.".to_string()
 }
 
-/// Said to a voice the house does not know, when the lock is on.
-///
-/// Says which thing is refusing, and how to undo it. A bare "no" from
-/// a house is indistinguishable from a house that has broken, and the
-/// person most likely to hear this is a guest who cannot be expected
-/// to guess at a setting.
-pub fn voice_not_recognised() -> String {
-    "I don't recognise your voice, so I'm not going to act on that.      Someone in the house can let you in from the settings."
-        .to_string()
-}
-
 /// Recognition is on but this utterance produced no usable voice print
 /// — usually too short, which "I am Mark" can be.
 pub fn enrollment_no_audio() -> String {
