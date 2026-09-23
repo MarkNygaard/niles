@@ -465,6 +465,201 @@ fn ordinal(day: u32) -> String {
     format!("{day}{suffix}")
 }
 
+// ---- Weather ----------------------------------------------------------------
+//
+// A sentence, not a report. Asked "what's the weather", people want to
+// know what to wear: how warm, and whether it rains. Wind, humidity and
+// sunrise are all in the forecast and none of them are the answer.
+
+/// A whole number of degrees, as Piper should say it.
+///
+/// "-3" is read out as "dash three" often enough to spell it.
+fn degrees(value: f64) -> String {
+    let n = value.round() as i64;
+    if n < 0 {
+        format!("minus {}", -n)
+    } else {
+        n.to_string()
+    }
+}
+
+/// One day of a forecast, reduced to what gets said.
+pub struct DaySummary<'a> {
+    pub description: &'a str,
+    pub low: f64,
+    pub high: f64,
+    /// How much falls, in the forecast's own unit.
+    pub precipitation: f64,
+    /// Whether that much is worth mentioning, which depends on the unit.
+    pub wet: bool,
+    /// Whether what falls is snow.
+    pub snow: bool,
+}
+
+impl DaySummary<'_> {
+    fn falls(&self) -> &'static str {
+        if self.snow { "snow" } else { "rain" }
+    }
+}
+
+/// "12 degrees and overcast now, up to 14 today. Expect rain."
+///
+/// The high is left out once it has passed: in the evening "up to 14"
+/// is a number that already happened.
+pub fn weather_now(temperature: f64, description: &str, today: &DaySummary) -> String {
+    let mut out = format!("{} degrees and {} now", degrees(temperature), description);
+    if today.high.round() > temperature.round() {
+        out.push_str(&format!(", up to {} today", degrees(today.high)));
+    }
+    out.push('.');
+    if today.wet {
+        out.push_str(&format!(" Expect {}.", today.falls()));
+    }
+    out
+}
+
+/// "Tomorrow: slight rain, 9 to 14 degrees."
+pub fn weather_on(day: &str, forecast: &DaySummary) -> String {
+    format!(
+        "{}: {}, {} to {} degrees.",
+        capitalize_first(day),
+        forecast.description,
+        degrees(forecast.low),
+        degrees(forecast.high)
+    )
+}
+
+/// "Yes, about 4 millimetres of rain tomorrow." / "No rain expected today."
+pub fn rain_on(day: &str, forecast: &DaySummary, metric: bool) -> String {
+    if !forecast.wet {
+        return format!("No {} expected {day}.", forecast.falls());
+    }
+    let amount = if metric {
+        let mm = forecast.precipitation.round().max(1.0) as i64;
+        format!(
+            "{mm} {}",
+            if mm == 1 { "millimetre" } else { "millimetres" }
+        )
+    } else {
+        format!("{:.1} inches", forecast.precipitation.max(0.1))
+    };
+    format!("Yes, about {amount} of {} {day}.", forecast.falls())
+}
+
+pub fn weather_unavailable() -> String {
+    "I couldn't get the forecast.".into()
+}
+
+// ---- Heating ----------------------------------------------------------------
+
+/// Tenths of a degree, as said: 210 is "21", 205 is "20.5".
+pub fn tenths_spoken(tenths: u16) -> String {
+    if tenths.is_multiple_of(10) {
+        (tenths / 10).to_string()
+    } else {
+        format!("{}.{}", tenths / 10, tenths % 10)
+    }
+}
+
+/// A reading to the nearest tenth, as said.
+fn celsius_spoken(value: f32) -> String {
+    tenths_spoken((value * 10.0).round().max(0.0) as u16)
+}
+
+/// Where a heating command landed: one room, or all of them.
+pub enum Heated<'a> {
+    Room(&'a str),
+    Everywhere,
+}
+
+/// "Living room set to 21 degrees." / "Every room set to 21 degrees."
+pub fn heating_set(place: Heated, tenths: u16) -> String {
+    match place {
+        Heated::Room(room) => format!(
+            "{} set to {} degrees.",
+            capitalize_first(&spoken_room(room)),
+            tenths_spoken(tenths)
+        ),
+        Heated::Everywhere => format!("Every room set to {} degrees.", tenths_spoken(tenths)),
+    }
+}
+
+/// "Every room turned up a degree."
+pub fn heating_stepped_everywhere(up: bool) -> String {
+    format!(
+        "Every room turned {} a degree.",
+        if up { "up" } else { "down" }
+    )
+}
+
+/// "It's 20.5 degrees in the living room, heating to 21."
+///
+/// The target only when it is being worked towards: "heating to 19" in
+/// a room at 21 describes a radiator that is off.
+pub fn heating_reading(room: &str, temperature: Option<f32>, target: Option<f32>) -> String {
+    let room = spoken_room(room);
+    let Some(now) = temperature else {
+        return format!("The {room} thermostat isn't answering.");
+    };
+    match target {
+        Some(target) if target > now + 0.2 => format!(
+            "It's {} degrees in the {room}, heating to {}.",
+            celsius_spoken(now),
+            celsius_spoken(target)
+        ),
+        _ => format!("It's {} degrees in the {room}.", celsius_spoken(now)),
+    }
+}
+
+/// "Living room 21, bedroom 19 and office 20 degrees."
+pub fn heating_readings(readings: &[(String, Option<f32>)]) -> String {
+    let said: Vec<String> = readings
+        .iter()
+        .filter_map(|(room, t)| t.map(|t| format!("{} {}", spoken_room(room), celsius_spoken(t))))
+        .collect();
+    if said.is_empty() {
+        return "None of the thermostats are answering.".into();
+    }
+    format!("{} degrees.", capitalize_first(&join_spoken(&said)))
+}
+
+/// "Heating off in the living room." / "Heating off everywhere."
+pub fn heating_off(place: Heated) -> String {
+    match place {
+        Heated::Room(room) => format!("Heating off in the {}.", spoken_room(room)),
+        Heated::Everywhere => "Heating off everywhere.".into(),
+    }
+}
+
+/// "The living room is back on its schedule."
+pub fn heating_resumed(place: Heated) -> String {
+    match place {
+        Heated::Room(room) => format!("The {} is back on its schedule.", spoken_room(room)),
+        Heated::Everywhere => "Every room is back on its schedule.".into(),
+    }
+}
+
+/// "There's no heating I know of in the office."
+pub fn heating_no_zone(room: &str) -> String {
+    format!("There's no heating I know of in the {}.", spoken_room(room))
+}
+
+pub fn heating_which_room() -> String {
+    "Which room? I don't know where this speaker is.".into()
+}
+
+pub fn heating_out_of_range() -> String {
+    "The heating goes from 5 to 25 degrees.".into()
+}
+
+pub fn heating_unavailable() -> String {
+    "Niles isn't connected to tado.".into()
+}
+
+pub fn heating_failed() -> String {
+    "tado didn't answer.".into()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -786,6 +981,136 @@ mod tests {
         assert_eq!(
             timer_stopped(Some("pasta_sauce"), Duration::from_secs(3600)),
             "Your 1 hour pasta sauce timer has been stopped."
+        );
+    }
+
+    fn dry(description: &str, low: f64, high: f64) -> DaySummary<'_> {
+        DaySummary {
+            description,
+            low,
+            high,
+            precipitation: 0.0,
+            wet: false,
+            snow: false,
+        }
+    }
+
+    #[test]
+    fn the_weather_now_is_one_sentence() {
+        assert_eq!(
+            weather_now(12.3, "overcast", &dry("overcast", 8.0, 14.4)),
+            "12 degrees and overcast now, up to 14 today."
+        );
+    }
+
+    #[test]
+    fn a_wet_day_says_so() {
+        let day = DaySummary {
+            precipitation: 4.2,
+            wet: true,
+            ..dry("slight rain", 8.0, 14.0)
+        };
+        assert_eq!(
+            weather_now(12.0, "slight rain", &day),
+            "12 degrees and slight rain now, up to 14 today. Expect rain."
+        );
+        assert_eq!(
+            rain_on("today", &day, true),
+            "Yes, about 4 millimetres of rain today."
+        );
+    }
+
+    #[test]
+    fn the_high_is_dropped_once_it_has_passed() {
+        assert_eq!(
+            weather_now(14.2, "clear sky", &dry("clear sky", 8.0, 14.0)),
+            "14 degrees and clear sky now."
+        );
+    }
+
+    #[test]
+    fn tomorrow_is_a_range() {
+        assert_eq!(
+            weather_on("tomorrow", &dry("slight rain", 9.4, 13.6)),
+            "Tomorrow: slight rain, 9 to 14 degrees."
+        );
+    }
+
+    #[test]
+    fn below_zero_is_spelled() {
+        assert_eq!(
+            weather_on("tomorrow", &dry("fog", -3.2, 1.0)),
+            "Tomorrow: fog, minus 3 to 1 degrees."
+        );
+    }
+
+    #[test]
+    fn no_rain_is_a_short_no() {
+        assert_eq!(
+            rain_on("tomorrow", &dry("clear sky", 5.0, 9.0), true),
+            "No rain expected tomorrow."
+        );
+    }
+
+    #[test]
+    fn snow_is_called_snow() {
+        let day = DaySummary {
+            precipitation: 0.3,
+            wet: true,
+            snow: true,
+            ..dry("slight snow fall", -2.0, 1.0)
+        };
+        assert_eq!(
+            rain_on("tomorrow", &day, false),
+            "Yes, about 0.3 inches of snow tomorrow."
+        );
+    }
+
+    #[test]
+    fn heating_replies() {
+        assert_eq!(
+            heating_set(Heated::Room("living_room"), 210),
+            "Living room set to 21 degrees."
+        );
+        assert_eq!(
+            heating_set(Heated::Everywhere, 185),
+            "Every room set to 18.5 degrees."
+        );
+        assert_eq!(
+            heating_off(Heated::Room("bedroom")),
+            "Heating off in the bedroom."
+        );
+        assert_eq!(
+            heating_resumed(Heated::Everywhere),
+            "Every room is back on its schedule."
+        );
+    }
+
+    #[test]
+    fn a_reading_mentions_the_target_only_while_heating_to_it() {
+        assert_eq!(
+            heating_reading("living_room", Some(20.46), Some(21.0)),
+            "It's 20.5 degrees in the living room, heating to 21."
+        );
+        assert_eq!(
+            heating_reading("bedroom", Some(21.0), Some(19.0)),
+            "It's 21 degrees in the bedroom."
+        );
+        assert_eq!(
+            heating_reading("office", None, Some(20.0)),
+            "The office thermostat isn't answering."
+        );
+    }
+
+    #[test]
+    fn every_room_at_once() {
+        assert_eq!(
+            heating_readings(&[
+                ("living_room".into(), Some(21.0)),
+                ("bedroom".into(), Some(19.0)),
+                ("office".into(), None),
+            ]),
+            "Living room 21 and bedroom 19 degrees."
         );
     }
 

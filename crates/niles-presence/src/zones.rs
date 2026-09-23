@@ -94,11 +94,28 @@ impl TadoSource {
         rooms: &[String],
         paired: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<Zone>> {
+        self.zones_where(rooms, paired, |_, _| true).await
+    }
+
+    /// The heating zones `keep` accepts, given each one's name and room.
+    ///
+    /// The state is fetched only for those. tado counts requests against
+    /// a daily allowance, and "set the bedroom to 19" asking after every
+    /// radiator in the house first spends it several times over.
+    pub async fn zones_where(
+        &self,
+        rooms: &[String],
+        paired: &std::collections::HashMap<String, String>,
+        keep: impl Fn(&str, Option<&str>) -> bool,
+    ) -> Result<Vec<Zone>> {
         let listed = self.list_zones().await?;
         let mut zones = Vec::with_capacity(listed.len());
         for zone in listed.into_iter().filter(|z| z.kind == "HEATING") {
-            let state = self.zone_state(zone.id).await?;
             let (room, placed_by) = place(zone.id, &zone.name, rooms, paired);
+            if !keep(&zone.name, room.as_deref()) {
+                continue;
+            }
+            let state = self.zone_state(zone.id).await?;
             // Absent means tado said nothing about the link, which for a
             // zone that answered at all is likelier to be a shape we
             // have not seen than a dead valve.

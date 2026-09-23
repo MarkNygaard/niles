@@ -50,6 +50,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod climate;
 mod conversation;
 mod last_target;
 mod manifest;
@@ -2684,6 +2685,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),
+        weather: weather_client.clone(),
+        tado: tado.clone(),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -2805,6 +2808,12 @@ struct DispatchCtx {
     conversation: Arc<conversation::ConversationMemory>,
     /// What "it" refers to, per room. See [`last_target`].
     last_target: Arc<last_target::LastTarget>,
+    /// For "what's the weather", answered without the LLM.
+    weather: Option<Arc<niles_weather::OpenMeteoClient>>,
+    /// For the heating by voice. The same session the dashboard and
+    /// presence use: tado rotates its refresh token on every use, so
+    /// there can only be one.
+    tado: Option<Arc<TadoSource>>,
 }
 
 /// Parse a transcript and act on any Tier 0 intent it produces.
@@ -3281,6 +3290,12 @@ async fn dispatch_transcript(
 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     match intent {
+        Intent::WeatherQuery { day, rain } => Some(climate::weather(ctx, day, rain).await),
+        heating @ (Intent::HeatingQuery { .. }
+        | Intent::HeatingSet { .. }
+        | Intent::HeatingStep { .. }
+        | Intent::HeatingOff { .. }
+        | Intent::HeatingResume { .. }) => Some(climate::heating(ctx, peer, &heating).await),
         Intent::LightSet { room, on } => {
             // Filter on device class, not observed state: a light can be
             // switched on/off whether or not niles has seen its state yet.
@@ -4913,6 +4928,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),
+        weather: weather_client.clone(),
+        tado: tado.clone(),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
