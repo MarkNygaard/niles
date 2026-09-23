@@ -49,11 +49,11 @@ pub struct SttConfig {
 /// rule about sentence shape separates an invented "thank you" from a
 /// real one. These two numbers do.
 ///
-/// **Both** have to be damning, which is the whole design. Either one
-/// alone fires on real speech often enough to be worse than the
-/// problem: a quiet command scores badly on `no_speech_prob`, and an
-/// unusual one scores badly on `avg_logprob`. Together they mean
-/// Whisper both heard no speech *and* was guessing at the words.
+/// Both have to be damning **where both are reported**. Groq's Whisper
+/// returns `no_speech_prob = 0.0` for every segment, including ones
+/// whose entire transcript is "." — so requiring it made this unable
+/// to fire at all. A provider that says nothing has not said the audio
+/// was speech, and its silence must not veto the other half.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoiseGate {
@@ -61,10 +61,16 @@ pub struct NoiseGate {
     /// can be looked at before it is filtered.
     #[serde(default)]
     pub enabled: bool,
-    /// Drop above this. 0.6 is OpenAI's own suggestion.
+    /// Drop above this, where the provider reports it. Ignored when it
+    /// is flat zero, which is what Groq returns.
     #[serde(default = "default_no_speech_prob")]
     pub no_speech_prob: f64,
-    /// And below this. Less than -1 is a model guessing.
+    /// And below this.
+    ///
+    /// -0.5, measured over a day of a real house: commands scored
+    /// -0.06 to -0.43, and the silence hallucinations that woke it
+    /// ("Thank you." nine times, "Okay.", ".") scored -0.40 to -1.24.
+    /// -1.0, the figure this shipped with, caught almost none of them.
     #[serde(default = "default_avg_logprob")]
     pub avg_logprob: f64,
 }
@@ -74,7 +80,7 @@ fn default_no_speech_prob() -> f64 {
 }
 
 fn default_avg_logprob() -> f64 {
-    -1.0
+    -0.5
 }
 
 impl Default for NoiseGate {
@@ -90,7 +96,21 @@ impl Default for NoiseGate {
 impl NoiseGate {
     /// Whether to disbelieve a transcript with these scores.
     pub fn rejects(&self, c: niles_stt::Confidence) -> bool {
-        self.enabled && c.no_speech_prob > self.no_speech_prob && c.avg_logprob < self.avg_logprob
+        if !self.enabled {
+            return false;
+        }
+        // A provider that reports nothing has not said the audio was
+        // speech, so its silence must not veto the other half. Groq
+        // returns 0.0 for every segment — including ones whose whole
+        // transcript is "." — so requiring both meant this could never
+        // fire, which is how it sat switched off looking like a
+        // working feature.
+        let bad_enough = c.avg_logprob < self.avg_logprob;
+        if c.no_speech_prob > 0.0 {
+            c.no_speech_prob > self.no_speech_prob && bad_enough
+        } else {
+            bad_enough
+        }
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -197,9 +217,10 @@ mod noise_gate_tests {
         }
     }
 
-    /// A door closing: Whisper is sure there was no speech, and was
-    /// guessing at the words it produced anyway.
-    const DOOR: (f64, f64) = (0.92, -1.6);
+    /// A door closing, as Groq actually reports one: `no_speech_prob`
+    /// flat zero — it reports that for everything — and a logprob that
+    /// says the words were invented.
+    const DOOR: (f64, f64) = (0.0, -1.6);
 
     fn on() -> NoiseGate {
         NoiseGate {
@@ -225,15 +246,23 @@ mod noise_gate_tests {
     }
 
     #[test]
-    fn one_bad_number_is_not_enough() {
-        // This is the whole design. A quiet command scores badly on
-        // no_speech_prob; an unusual one scores badly on avg_logprob.
-        // Acting on either alone drops real speech.
+    fn a_provider_that_reports_no_speech_still_needs_both() {
+        // Where the number is real it is the better signal, so it is
+        // respected: confident words are kept even when the provider
+        // thought the audio was quiet.
         assert!(!on().rejects(heard(0.95, -0.2)), "quiet but confident");
-        assert!(
-            !on().rejects(heard(0.05, -1.9)),
-            "unusual, but clearly speech"
-        );
+        assert!(on().rejects(heard(0.95, -1.9)), "quiet and invented");
+    }
+
+    #[test]
+    fn a_flat_zero_does_not_veto_the_other_half() {
+        // The bug this replaced. Groq returns 0.0 for every segment,
+        // including ones whose whole transcript is "." — so requiring
+        // it meant the gate could never fire, and sat switched off
+        // looking like a working feature.
+        assert!(on().rejects(heard(0.0, -1.24)), "\"I'm going to go.\"");
+        assert!(on().rejects(heard(0.0, -0.81)), "\"Thank you.\"");
+        assert!(!on().rejects(heard(0.0, -0.11)), "a real command");
     }
 
     #[test]
@@ -282,7 +311,7 @@ mod noise_gate_tests {
         let cfg: SttConfig = toml::from_str("").expect("valid");
         assert!(!cfg.noise_gate.enabled);
         assert_eq!(cfg.noise_gate.no_speech_prob, 0.6);
-        assert_eq!(cfg.noise_gate.avg_logprob, -1.0);
+        assert_eq!(cfg.noise_gate.avg_logprob, -0.5);
     }
 
     #[test]
@@ -298,7 +327,7 @@ mod noise_gate_tests {
         assert!(cfg.noise_gate.enabled);
         assert_eq!(cfg.noise_gate.no_speech_prob, 0.75);
         // Untouched keys keep their shipped value.
-        assert_eq!(cfg.noise_gate.avg_logprob, -1.0);
+        assert_eq!(cfg.noise_gate.avg_logprob, -0.5);
         assert!(cfg.validate().is_ok());
     }
 }

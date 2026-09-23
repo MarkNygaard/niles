@@ -2530,8 +2530,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
-        stt_gate: cfg.stt.noise_gate,
-        known_voices_only: cfg.recognition.known_voices_only,
+        settings: None,
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),
@@ -2639,10 +2638,17 @@ struct DispatchCtx {
     memory: Arc<MemoryStore>,
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
-    /// When to disbelieve a transcript outright.
-    stt_gate: niles_config::NoiseGate,
-    /// Whether a voice Niles does not know is answered at all.
-    known_voices_only: bool,
+    /// The live config, for settings a person changes and expects to
+    /// take effect.
+    ///
+    /// These were copied out at startup, which is how "Only answer
+    /// voices Niles knows" could be switched on in the app and go on
+    /// answering the television all day: the switch wrote the config,
+    /// the config reloaded, and dispatch kept the value it had read
+    /// before anybody touched it. A snapshot is right for `home`,
+    /// which nobody edits mid-sentence. It is wrong for anything with
+    /// a switch in front of it.
+    settings: Option<Arc<niles_config::ConfigStore>>,
     review: niles_config::SkillsReviewConfig,
     conversation: Arc<conversation::ConversationMemory>,
     /// What "it" refers to, per room. See [`last_target`].
@@ -2983,8 +2989,20 @@ async fn dispatch_transcript(
     // door closing from somebody saying "thank you" — the invented
     // sentence is a perfectly ordinary one, and no rule about shape
     // will catch it.
+    // Read per turn, not copied at startup: there is a switch in front
+    // of this in the app, and a setting that needs a restart to take
+    // effect is a setting somebody will reasonably believe is on.
+    let settings = ctx.settings.as_ref().map(|s| s.current());
+    let stt_gate = settings
+        .as_ref()
+        .map(|c| c.stt.noise_gate)
+        .unwrap_or_default();
+    let known_voices_only = settings
+        .as_ref()
+        .is_some_and(|c| c.recognition.known_voices_only);
+
     if let Some(c) = confidence
-        && ctx.stt_gate.rejects(c)
+        && stt_gate.rejects(c)
     {
         tracing::info!(
             no_speech_prob = c.no_speech_prob,
@@ -3005,14 +3023,20 @@ async fn dispatch_transcript(
     // switch a light off through a regex either. And before the
     // enrolment pattern, which is the point — "I am Sofia" from an
     // unknown voice is exactly what the lock is for.
-    if ctx.known_voices_only && matches!(speaker, SpeakerContext::Unknown) {
+    if known_voices_only && matches!(speaker, SpeakerContext::Unknown) {
         // Nobody enrolled means nobody known, and a lock with no key
         // cut would refuse the whole house — including whoever wants
         // to turn it off.
         let anyone_known = ctx.identifier.as_ref().is_some_and(|i| i.knows_anybody());
         if anyone_known {
             tracing::info!("[{peer}] not acting on {text:?}: voice not recognised");
-            return Some(response::voice_not_recognised());
+            // Silent, for the same reason the noise gate is. A
+            // television set this off fifty-three times in one day; a
+            // house that answers each one with "I don't recognise your
+            // voice" has replaced a wrong answer with a longer wrong
+            // answer. Somebody who genuinely wants to know can ask
+            // "who am I", which still answers.
+            return None;
         }
         tracing::warn!(
             "[{peer}] known_voices_only is on and nobody is enrolled; letting {text:?} through"
@@ -4660,8 +4684,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
         skill_store,
         home: Arc::new(cfg.home.clone()),
-        stt_gate: cfg.stt.noise_gate,
-        known_voices_only: cfg.recognition.known_voices_only,
+        settings: Some(store.clone()),
         review: cfg.skills.review.clone(),
         conversation: Arc::new(conversation::ConversationMemory::default()),
         last_target: Arc::new(last_target::LastTarget::default()),
