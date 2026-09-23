@@ -4,10 +4,9 @@
 //! is easy to miss from the next room. A timer is an alarm: it keeps
 //! going until you deal with it.
 //!
-//! The satellite cannot listen while it plays — playback holds the I2S
-//! bus the microphone reads from — so the chime comes in bursts, and
-//! the quiet between them is when "Niles, stop" can be heard. A
-//! continuous tone would be an alarm nobody could stop by voice.
+//! The satellite hears its wake word over its own speaker — the XVF3800
+//! cancels the chime out of the microphone — so "Niles, stop" works
+//! mid-chime, and cuts the chime off where it is.
 
 use crate::satellites::SatelliteRegistry;
 use niles_core::{Event, EventBus, RoomName};
@@ -20,10 +19,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// One chime, then quiet until the next. Long enough that the gap holds
-/// a wake word and the start of "stop"; short enough that it still
-/// sounds like something ringing rather than something that rang.
-pub const EVERY: Duration = Duration::from_secs(5);
+/// A 1.4 s chime, then a breath before the next: close enough together
+/// to sound like something ringing rather than something that rang.
+pub const EVERY: Duration = Duration::from_secs(3);
 
 /// A timer nobody is home to hear should not ring into an empty house
 /// all afternoon.
