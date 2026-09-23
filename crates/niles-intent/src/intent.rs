@@ -216,4 +216,53 @@ pub enum Intent {
     /// Acknowledgments used to stop an in-progress alarm.
     Stop,
     Cancel,
+
+    /// "what's the weather" / "will it rain tomorrow" — the forecast for
+    /// home, in a sentence.
+    ///
+    /// Somewhere else ("the weather in Paris") is the LLM's: it has to
+    /// be looked up first, and the tool that does that is the LLM's.
+    WeatherQuery {
+        day: ForecastDay,
+        /// Asked about rain specifically, so the answer is yes or no.
+        rain: bool,
+    },
+
+    /// "what's the temperature in the bedroom" / "how warm is it in here".
+    ///
+    /// `room` is as said; `None` is the room the satellite is in, and
+    /// `"everywhere"` is every zone — on each heating intent below.
+    HeatingQuery {
+        room: Option<String>,
+    },
+
+    /// "set the living room to 21 degrees" / "set the heating to 21".
+    HeatingSet {
+        room: Option<String>,
+        /// Tenths of a degree Celsius, so the enum stays `Eq`: 215 is 21.5°.
+        tenths: u16,
+    },
+
+    /// "turn the heating up" — a degree either way.
+    HeatingStep {
+        room: Option<String>,
+        up: bool,
+    },
+
+    /// "turn off the heating".
+    HeatingOff {
+        room: Option<String>,
+    },
+
+    /// "put the heating back on the schedule" / "turn the heating on".
+    HeatingResume {
+        room: Option<String>,
+    },
+}
+
+/// Which day a forecast question is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForecastDay {
+    Today,
+    Tomorrow,
 }

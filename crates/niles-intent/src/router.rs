@@ -59,6 +59,10 @@ impl IntentRouter {
             .or_else(|| match_scene_apply(&t))
             .or_else(|| match_scene_list(&t))
             .or_else(|| match_scene_delete(&t))
+            // Before the speakers: "turn the heating back on" is also the
+            // shape of "turn the kitchen speaker back on".
+            .or_else(|| crate::climate::match_weather(&t))
+            .or_else(|| crate::climate::match_heating(&t))
             .or_else(|| match_media_play(&t))
             .or_else(|| match_media_pause(&t))
             .or_else(|| match_media_next(&t))
@@ -2227,7 +2231,8 @@ mod tests {
 
     #[test]
     fn unmatched_returns_none() {
-        assert_eq!(parse("what's the weather like today"), None);
+        // Weather is Tier 0 now; somewhere else still is not.
+        assert_eq!(parse("what's the weather like in rome"), None);
         assert_eq!(parse(""), None);
         assert_eq!(parse("turn off"), None); // missing room
         assert_eq!(parse("timer"), None); // missing duration

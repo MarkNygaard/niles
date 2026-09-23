@@ -9,12 +9,13 @@
 //! `"living room"`). Resolution against the device registry happens
 //! at a higher layer.
 
-pub mod devices;
+mod climate;
+mod devices;
 pub mod intent;
 pub mod router;
 pub mod topic;
 
 pub use devices::DeviceIndex;
-pub use intent::Intent;
+pub use intent::{ForecastDay, Intent};
 pub use router::{IntentRouter, RouterContext};
 pub use topic::{CapabilityIndex, CapabilityIndexEntry, detect_topics};
