@@ -57,6 +57,7 @@ mod push;
 mod recognition;
 mod response;
 mod review;
+mod ringer;
 mod satellites;
 mod speak;
 mod speakers;
@@ -2629,31 +2630,14 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let notifications = Arc::new(notifications);
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
 
-    // Notification subscriber for timer expiry.
-    let _timer_notification_handle = {
-        let center = notifications.clone();
-        let satellites = satellites.clone();
-        let mut bus_rx = bus.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match bus_rx.recv().await {
-                    Ok(Event::TimerFired { name, origin, .. }) => {
-                        let room = satellites.room_for(origin).map(|r| r.as_str().to_string());
-                        let text = match name {
-                            Some(n) => format!("'{n}' timer finished"),
-                            None => "Timer finished".to_string(),
-                        };
-                        center.deliver(text, room, niles_notifications::Priority::Important);
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("notification subscriber lagged by {n} events");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        })
-    };
+    // A fired timer rings in the room it was set from until stopped.
+    let _timer_alarms = ringer::spawn_timer_alarms(
+        &bus,
+        timers.clone(),
+        satellites.clone(),
+        peer_index.clone(),
+        notifications.clone(),
+    );
 
     let tools = Arc::new(tools);
 
@@ -3654,8 +3638,9 @@ async fn dispatch_transcript(
             // (previously this only stopped a *ringing* timer).
             if let Some(entry) = ctx.timers.stop_most_recent_ringing() {
                 println!("[{peer}] stopped {}", timer_label(&entry));
-                Some(response::stop_outcome(
-                    response::StopOutcome::StoppedRinging,
+                Some(response::timer_stopped(
+                    entry.name.as_deref(),
+                    entry.duration,
                 ))
             } else if let Some(entry) = ctx.timers.cancel_soonest_pending() {
                 println!("[{peer}] cancelled pending {}", timer_label(&entry));
@@ -4767,31 +4752,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // `spawn_timer_driver` for behavior + the 60 s sleep-cap caveat.
     let timer_handle = spawn_timer_driver(Arc::clone(&timers), bus.clone());
 
-    // Notification subscriber for timer expiry.
-    let _timer_notification_handle = {
-        let center = notifications.clone();
-        let satellites = satellites.clone();
-        let mut bus_rx = bus.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match bus_rx.recv().await {
-                    Ok(Event::TimerFired { name, origin, .. }) => {
-                        let room = satellites.room_for(origin).map(|r| r.as_str().to_string());
-                        let text = match name {
-                            Some(n) => format!("'{n}' timer finished"),
-                            None => "Timer finished".to_string(),
-                        };
-                        center.deliver(text, room, niles_notifications::Priority::Important);
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("notification subscriber lagged by {n} events");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        })
-    };
+    // A fired timer rings in the room it was set from until stopped.
+    let _timer_alarms = ringer::spawn_timer_alarms(
+        &bus,
+        timers.clone(),
+        satellites.clone(),
+        peer_index.clone(),
+        notifications.clone(),
+    );
 
     // HTTP API
     let api_state = AppState::new(

@@ -192,20 +192,34 @@ pub fn timer_list(count: usize) -> String {
     }
 }
 
-/// Outcome of a generic "stop"/"cancel": stopped a ringing alarm,
-/// cancelled a counting-down timer, or found nothing.
+/// Outcome of a generic "stop"/"cancel" that found nothing ringing:
+/// cancelled a counting-down timer, or found nothing at all. A ringing
+/// one is answered by [`timer_stopped`].
 pub enum StopOutcome {
-    StoppedRinging,
     CancelledPending,
     Nothing,
 }
 
-/// "Stopped." / "Okay, cancelled the timer." / "Nothing's running."
+/// "Okay, cancelled the timer." / "Nothing's running."
 pub fn stop_outcome(outcome: StopOutcome) -> String {
     match outcome {
-        StopOutcome::StoppedRinging => "Stopped.".into(),
         StopOutcome::CancelledPending => "Okay, cancelled the timer.".into(),
         StopOutcome::Nothing => "Nothing's running.".into(),
+    }
+}
+
+/// What an alarm that was ringing turned out to be, now that it isn't.
+///
+/// "Stopped." answered the question nobody asked. With two timers going
+/// the one that matters is which of them just went quiet.
+///
+/// "Your 10 minute timer has been stopped." /
+/// "Your 10 minute pasta timer has been stopped."
+pub fn timer_stopped(name: Option<&str>, duration: Duration) -> String {
+    let (n, unit) = format_duration_phrase(duration);
+    match name.map(|n| n.replace('_', " ")) {
+        Some(name) => format!("Your {n} {unit} {name} timer has been stopped."),
+        None => format!("Your {n} {unit} timer has been stopped."),
     }
 }
 
@@ -756,6 +770,26 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_timer_says_how_long_it_was() {
+        assert_eq!(
+            timer_stopped(None, Duration::from_secs(600)),
+            "Your 10 minute timer has been stopped."
+        );
+    }
+
+    #[test]
+    fn a_stopped_timer_says_its_name() {
+        assert_eq!(
+            timer_stopped(Some("pasta"), Duration::from_secs(600)),
+            "Your 10 minute pasta timer has been stopped."
+        );
+        assert_eq!(
+            timer_stopped(Some("pasta_sauce"), Duration::from_secs(3600)),
+            "Your 1 hour pasta sauce timer has been stopped."
+        );
+    }
+
+    #[test]
     fn timer_list_zero() {
         assert_eq!(timer_list(0), "No timers running.");
     }
@@ -843,7 +877,6 @@ mod tests {
 
     #[test]
     fn stop_outcome_phrasings() {
-        assert_eq!(stop_outcome(StopOutcome::StoppedRinging), "Stopped.");
         assert_eq!(
             stop_outcome(StopOutcome::CancelledPending),
             "Okay, cancelled the timer."

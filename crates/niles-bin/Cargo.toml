@@ -58,3 +58,5 @@ hound.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Paused time, so a ten-minute alarm is tested in no time at all.
+tokio = { workspace = true, features = ["test-util"] }

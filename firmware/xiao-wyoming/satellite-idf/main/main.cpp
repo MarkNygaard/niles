@@ -902,7 +902,11 @@ extern "C" void app_main(void) {
       // stale window rather than run the detector over a gap.
       slot = 0;
       warmup = WINDOW_SAMPLES / STRIDE_SAMPLES;
-      last_fire_ms = esp_log_timestamp();
+      // Listen again half a second after, not the usual 1.5 s: a
+      // ringing timer is a chime every few seconds, and the quiet
+      // between them is the only time "Niles, stop" can be heard.
+      // Nothing is playing any more to wake on.
+      last_fire_ms = esp_log_timestamp() - 1000;
     }
     push_slice();
     if (warmup > 0) { warmup--; continue; }

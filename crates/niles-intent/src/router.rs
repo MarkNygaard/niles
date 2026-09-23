@@ -1383,7 +1383,8 @@ fn match_timer_remaining(t: &str) -> Option<Intent> {
 
 fn match_stop_cancel(t: &str) -> Option<Intent> {
     match t {
-        "stop" | "stop timer" | "stop the timer" | "stop my timer" => Some(Intent::Stop),
+        "stop" | "stop timer" | "stop the timer" | "stop my timer" | "stop alarm"
+        | "stop the alarm" => Some(Intent::Stop),
         "cancel" | "cancel timer" | "cancel the timer" | "cancel my timer" => Some(Intent::Cancel),
         _ => None,
     }
@@ -1793,6 +1794,7 @@ mod tests {
         assert_eq!(parse("stop the timer"), Some(Intent::Stop));
         assert_eq!(parse("stop timer"), Some(Intent::Stop));
         assert_eq!(parse("stop my timer"), Some(Intent::Stop));
+        assert_eq!(parse("stop the alarm"), Some(Intent::Stop));
         assert_eq!(parse("cancel the timer"), Some(Intent::Cancel));
         assert_eq!(parse("cancel my timer"), Some(Intent::Cancel));
     }
