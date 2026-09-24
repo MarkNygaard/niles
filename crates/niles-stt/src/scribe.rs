@@ -49,8 +49,16 @@ impl ScribeClient {
         let mut form = Form::new()
             .text("model_id", self.cfg.model.clone())
             .text("tag_audio_events", "false")
-            .text("timestamps_granularity", "word")
-            .part("file", Part::bytes(audio).file_name(filename.to_string()));
+            .text("timestamps_granularity", "word");
+        // The satellite's audio as it came, when it is the one format
+        // Scribe takes raw: it skips decoding, which measured ~80 ms off
+        // a ~760 ms request. Anything else goes as the file it is.
+        form = match raw_pcm_16k_mono(&audio) {
+            Some(pcm) => form
+                .text("file_format", "pcm_s16le_16")
+                .part("file", Part::bytes(pcm.to_vec()).file_name("audio.pcm")),
+            None => form.part("file", Part::bytes(audio).file_name(filename.to_string())),
+        };
         if let Some(lang) = &self.cfg.language {
             form = form.text("language_code", lang.clone());
         }
@@ -103,6 +111,27 @@ impl ScribeClient {
             confidence: None,
         })
     }
+}
+
+/// The samples inside a canonical 16 kHz, mono, 16-bit PCM WAV — the
+/// 44-byte header [`crate::pcm_to_wav`] writes — or `None` for anything
+/// else, which is then sent whole for Scribe to decode.
+fn raw_pcm_16k_mono(wav: &[u8]) -> Option<&[u8]> {
+    let u16_at = |i: usize| u16::from_le_bytes([wav[i], wav[i + 1]]);
+    let u32_at = |i: usize| u32::from_le_bytes([wav[i], wav[i + 1], wav[i + 2], wav[i + 3]]);
+    if wav.len() < 44 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" || &wav[12..16] != b"fmt "
+    {
+        return None;
+    }
+    let pcm = u16_at(20) == 1;
+    let mono = u16_at(22) == 1;
+    let rate = u32_at(24) == 16_000;
+    let bits = u16_at(34) == 16;
+    if !(pcm && mono && rate && bits && &wav[36..40] == b"data") {
+        return None;
+    }
+    let len = u32_at(40) as usize;
+    wav.get(44..44 + len)
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,6 +227,36 @@ mod tests {
     fn nothing_heard_scores_nothing() {
         let parsed: RawScribe = serde_json::from_slice(br#"{"text": ""}"#).unwrap();
         assert_eq!(parsed.word_scores().count, 0);
+    }
+
+    fn wav(rate: u32, channels: u16) -> Vec<u8> {
+        crate::pcm_to_wav(
+            &[1, 0, 2, 0, 3, 0, 4, 0],
+            crate::PcmFormat {
+                sample_rate_hz: rate,
+                bits_per_sample: 16,
+                channels,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_satellites_own_audio_goes_raw() {
+        assert_eq!(
+            raw_pcm_16k_mono(&wav(16_000, 1)),
+            Some(&[1, 0, 2, 0, 3, 0, 4, 0][..])
+        );
+    }
+
+    #[test]
+    fn anything_else_goes_as_the_file_it_is() {
+        assert_eq!(raw_pcm_16k_mono(&wav(22_050, 1)), None);
+        assert_eq!(raw_pcm_16k_mono(&wav(16_000, 2)), None);
+        assert_eq!(
+            raw_pcm_16k_mono(b"ID3 not a wav at all, but long enough to look at"),
+            None
+        );
     }
 
     #[test]
