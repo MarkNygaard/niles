@@ -31,20 +31,44 @@ pub trait UnifiTransport: Send + Sync {
 
 /// A client as the console reports it.
 ///
-/// Field names carry aliases because UniFi's integration API is
-/// documented by its own console rather than publicly, and the two
-/// spellings both appear in the wild. Getting this wrong would look
-/// like an empty house rather than like an error, which is the sort of
-/// failure worth spending a few aliases to avoid.
+/// UniFi's integration API is documented by its own console rather than
+/// publicly, and several spellings of each field appear in the wild —
+/// often more than one in the same row. They are read as separate
+/// fields and combined, rather than as serde aliases: an alias makes a
+/// row carrying two of its spellings a *duplicate field*, which fails
+/// the whole response, and an untagged enum around it reported that only
+/// as "did not match any variant". That is how the site list came
+/// back unreadable from a real console, which sends both `name` and
+/// `internalReference`.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(from = "RawClient")]
 pub struct UnifiClient {
-    #[serde(alias = "mac")]
     pub mac_address: Option<String>,
-    #[serde(alias = "ip")]
     pub ip_address: Option<String>,
-    #[serde(alias = "hostname", alias = "displayName")]
     pub name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawClient {
+    mac_address: Option<String>,
+    mac: Option<String>,
+    ip_address: Option<String>,
+    ip: Option<String>,
+    name: Option<String>,
+    display_name: Option<String>,
+    hostname: Option<String>,
+}
+
+impl From<RawClient> for UnifiClient {
+    fn from(raw: RawClient) -> Self {
+        Self {
+            mac_address: raw.mac_address.or(raw.mac),
+            ip_address: raw.ip_address.or(raw.ip),
+            // What somebody named it before what the phone calls itself.
+            name: raw.name.or(raw.display_name).or(raw.hostname),
+        }
+    }
 }
 
 impl UnifiClient {
@@ -55,29 +79,44 @@ impl UnifiClient {
     }
 }
 
-/// The console's list endpoints wrap their rows; older ones do not.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum Listed<T> {
-    Wrapped { data: Vec<T> },
-    Bare(Vec<T>),
-}
-
-impl<T> Listed<T> {
-    fn rows(self) -> Vec<T> {
-        match self {
-            Listed::Wrapped { data } => data,
-            Listed::Bare(rows) => rows,
-        }
+/// The rows of a list response: under `data` from the integration API,
+/// a bare array from older consoles.
+///
+/// Decided by looking, rather than by an untagged enum trying both: when
+/// every variant fails, serde reports only "did not match any variant",
+/// which is all a real console's unreadable site list ever said. Picking
+/// the shape first leaves the error that actually happened — a duplicate
+/// field, a missing id — to be reported.
+fn rows_of<T: serde::de::DeserializeOwned>(body: &str) -> serde_json::Result<Vec<T>> {
+    match serde_json::from_str::<serde_json::Value>(body)? {
+        serde_json::Value::Object(mut wrapped) => match wrapped.remove("data") {
+            Some(data) => serde_json::from_value(data),
+            None => Err(serde::de::Error::custom(
+                "a list response with no `data` in it",
+            )),
+        },
+        bare => serde_json::from_value(bare),
     }
 }
 
+/// `internalReference` is the short name a config writes (`default`),
+/// `name` the one the console shows (`Default`). Consoles send both.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UnifiSite {
     id: String,
-    #[serde(alias = "name", alias = "internalReference")]
-    label: Option<String>,
+    internal_reference: Option<String>,
+    name: Option<String>,
+}
+
+impl UnifiSite {
+    fn is_called(&self, site: &str) -> bool {
+        self.internal_reference.as_deref() == Some(site)
+            || self
+                .name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(site))
+    }
 }
 
 /// Where the console is and how to talk to it, at the moment of asking.
@@ -192,20 +231,14 @@ impl UnifiSource {
         let body = self
             .get(settings, &format!("{}/sites", settings.base_url()))
             .await?;
-        let sites: Vec<UnifiSite> = serde_json::from_str::<Listed<UnifiSite>>(&body)
-            .map_err(|e| Error::Parse {
-                reason: format!("unifi sites: {e}"),
-            })?
-            .rows();
+        let sites: Vec<UnifiSite> = rows_of(&body).map_err(|e| Error::Parse {
+            reason: format!("unifi sites: {e}"),
+        })?;
 
         let chosen = sites
             .iter()
             .find(|s| s.id == settings.site)
-            .or_else(|| {
-                sites
-                    .iter()
-                    .find(|s| s.label.as_deref().is_some_and(|l| l == settings.site))
-            })
+            .or_else(|| sites.iter().find(|s| s.is_called(&settings.site)))
             .or(sites.first())
             .ok_or_else(|| Error::Parse {
                 reason: "unifi reports no sites at all".into(),
@@ -226,11 +259,9 @@ impl UnifiSource {
                 &format!("{}/sites/{site}/clients", settings.base_url()),
             )
             .await?;
-        Ok(serde_json::from_str::<Listed<UnifiClient>>(&body)
-            .map_err(|e| Error::Parse {
-                reason: format!("unifi clients: {e}"),
-            })?
-            .rows())
+        rows_of(&body).map_err(|e| Error::Parse {
+            reason: format!("unifi clients: {e}"),
+        })
     }
 
     /// The MAC of whoever is making a request from `ip`.
@@ -346,6 +377,55 @@ mod tests {
         ));
         let source = UnifiSource::new("192.168.1.1", "default", "key", mock.clone(), watching);
         (mock, source)
+    }
+
+    /// The shape a real console sends: paged, and every site with both
+    /// its short and its display name. The first fixture had one name,
+    /// which is why the tests passed while the console's answer failed.
+    const REAL_SITES: &str = r#"{"offset":0,"limit":25,"count":1,"totalCount":1,"data":[
+        {"id":"88f7af54-98f8-306a-a1c7-c9349722b1f6","internalReference":"default","name":"Default"}
+    ]}"#;
+
+    #[tokio::test]
+    async fn a_site_with_both_its_names_is_read() {
+        let (mock, source) = source(
+            vec![Ok((200, REAL_SITES.into())), Ok((200, CLIENTS.into()))],
+            &[],
+        );
+        assert_eq!(source.clients().await.expect("answers").len(), 3);
+        let urls = mock.urls.lock().unwrap();
+        assert!(
+            urls[1].contains("88f7af54-98f8-306a-a1c7-c9349722b1f6"),
+            "asked the site it found: {}",
+            urls[1]
+        );
+    }
+
+    #[test]
+    fn a_client_with_several_names_is_read() {
+        // Any two of these in one row made serde's aliases a duplicate
+        // field, and the whole list unreadable.
+        let body = r#"{"data":[{"macAddress":"AA:BB:CC:DD:EE:FF","mac":"aa:bb:cc:dd:ee:ff",
+            "ipAddress":"192.168.10.173","name":"Mark's iPhone","hostname":"iPhone"}]}"#;
+        let rows: Vec<UnifiClient> = rows_of(body).expect("parses");
+        assert_eq!(rows[0].mac().as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(rows[0].ip_address.as_deref(), Some("192.168.10.173"));
+        assert_eq!(rows[0].name.as_deref(), Some("Mark's iPhone"));
+    }
+
+    #[test]
+    fn an_unreadable_row_says_what_is_wrong_with_it() {
+        let body = r#"{"data":[{"name":"no id here"}]}"#;
+        let err = rows_of::<UnifiSite>(body).unwrap_err().to_string();
+        assert!(err.contains("missing field `id`"), "{err}");
+    }
+
+    #[test]
+    fn an_older_consoles_spellings_still_work() {
+        let body = r#"[{"mac":"aa:bb:cc:dd:ee:ff","ip":"10.0.0.2","hostname":"iPhone"}]"#;
+        let rows: Vec<UnifiClient> = rows_of(body).expect("parses");
+        assert_eq!(rows[0].ip_address.as_deref(), Some("10.0.0.2"));
+        assert_eq!(rows[0].name.as_deref(), Some("iPhone"));
     }
 
     #[tokio::test]
