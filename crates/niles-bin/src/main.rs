@@ -326,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
             // `niles::` — an earlier `niles_bin=` directive matched nothing
             // and silently swallowed every log line from this file.
             EnvFilter::new(
-                "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_mqtt=info,niles_scheduler=info,niles_tools=info",
+                "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_mqtt=info,niles_presence=info,niles_scheduler=info,niles_stt=info,niles_tools=info",
             )
         });
     // The same events go to stdout and to a small in-memory ring the
@@ -3146,8 +3146,8 @@ fn is_stopping_an_alarm(text: &str, timers: &TimerStore) -> bool {
 /// command, and spells it however it likes: Myles, Miles, Charles, Lars,
 /// Nines, Nodels — all from one afternoon. [`strip_wake_word`] knows the
 /// spellings it can be sure of; this is for the rest. A single word set
-/// off by a comma or an exclamation at the start of a command is a name
-/// being called.
+/// off by a comma, a full stop or an exclamation at the start of a
+/// command is a name being called.
 ///
 /// Only ever a second attempt at Tier 0, after the sentence as heard has
 /// failed: if what is left is not a command either, nothing changes, so a
@@ -3155,7 +3155,9 @@ fn is_stopping_an_alarm(text: &str, timers: &TimerStore) -> bool {
 /// way to the LLM.
 fn without_vocative(text: &str) -> Option<&str> {
     let t = text.trim_start();
-    let end = t.find([',', '!', '?'])?;
+    // A full stop too: "Nice. Turn off the light." is how Whisper wrote
+    // a misheard name, and the rest is only kept if it is a command.
+    let end = t.find([',', '!', '?', '.'])?;
     let word = &t[..end];
     if word.is_empty()
         || word.len() > 12
@@ -5921,6 +5923,7 @@ mod noise_transcript_tests {
             "Myles, turn off the kitchen lights.",
             "Charles, what time is it?",
             "Nodels! What time is it?",
+            "Nice. Turn off the kitchen lights.",
         ] {
             let rest = without_vocative(heard).expect(heard);
             assert!(
