@@ -3098,10 +3098,41 @@ async fn enroll_by_voice(
 /// ever, so "stop" from the television still gets silence rather than
 /// "nothing's running".
 fn is_stopping_an_alarm(text: &str, timers: &TimerStore) -> bool {
-    matches!(
-        IntentRouter::new().parse(text),
-        Some(Intent::Stop | Intent::Cancel)
-    ) && timers.list().iter().any(|t| t.is_ringing())
+    let router = IntentRouter::new();
+    let parsed = router
+        .parse(text)
+        .or_else(|| without_vocative(text).and_then(|rest| router.parse(rest)));
+    matches!(parsed, Some(Intent::Stop | Intent::Cancel))
+        && timers.list().iter().any(|t| t.is_ringing())
+}
+
+/// The sentence after a first word that addressed somebody.
+///
+/// Whisper hears the wake word the satellite sends in front of every
+/// command, and spells it however it likes: Myles, Miles, Charles, Lars,
+/// Nines, Nodels — all from one afternoon. [`strip_wake_word`] knows the
+/// spellings it can be sure of; this is for the rest. A single word set
+/// off by a comma or an exclamation at the start of a command is a name
+/// being called.
+///
+/// Only ever a second attempt at Tier 0, after the sentence as heard has
+/// failed: if what is left is not a command either, nothing changes, so a
+/// sentence that merely starts with "Well," is never cut short on its
+/// way to the LLM.
+fn without_vocative(text: &str) -> Option<&str> {
+    let t = text.trim_start();
+    let end = t.find([',', '!', '?'])?;
+    let word = &t[..end];
+    if word.is_empty()
+        || word.len() > 12
+        || !word
+            .chars()
+            .all(|c| c.is_alphabetic() || c == '\'' || c == '’')
+    {
+        return None;
+    }
+    let rest = t[end + 1..].trim_start();
+    (!rest.is_empty()).then_some(rest)
 }
 
 /// The command, without the name that summoned it.
@@ -3274,7 +3305,10 @@ async fn dispatch_transcript(
             origin_room,
             scenes: &scene_names,
         };
-        IntentRouter::new().parse_with_context(text, router_ctx)
+        let router = IntentRouter::new();
+        router.parse_with_context(text, router_ctx).or_else(|| {
+            without_vocative(text).and_then(|rest| router.parse_with_context(rest, router_ctx))
+        })
     };
 
     let intent = match parsed {
@@ -5844,6 +5878,38 @@ mod noise_transcript_tests {
             !is_stopping_an_alarm("turn off the lights", &timers),
             "only stopping gets past the gates"
         );
+    }
+
+    #[test]
+    fn any_spelling_of_the_name_gives_way_to_the_command() {
+        let router = IntentRouter::new();
+        for heard in [
+            "Myles, turn off the kitchen lights.",
+            "Charles, what time is it?",
+            "Nodels! What time is it?",
+        ] {
+            let rest = without_vocative(heard).expect(heard);
+            assert!(
+                router.parse(rest).is_some(),
+                "{heard:?} -> {rest:?} should be a command"
+            );
+        }
+    }
+
+    #[test]
+    fn only_one_word_is_ever_a_name() {
+        assert_eq!(without_vocative("Well then, turn it off"), None);
+        assert_eq!(without_vocative("turn off the lights"), None);
+        assert_eq!(without_vocative("Myles,"), None);
+    }
+
+    #[test]
+    fn a_misheard_name_still_stops_an_alarm() {
+        let timers = TimerStore::new();
+        let origin: SocketAddr = "10.0.0.5:1234".parse().unwrap();
+        let id = timers.set(std::time::Duration::from_secs(60), None, origin, Utc::now());
+        timers.mark_ringing(id);
+        assert!(is_stopping_an_alarm("Myles, stop.", &timers));
     }
 
     #[test]
