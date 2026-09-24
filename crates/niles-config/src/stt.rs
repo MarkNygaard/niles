@@ -38,6 +38,14 @@ pub struct SttConfig {
     /// When to disbelieve a transcript outright.
     #[serde(default)]
     pub noise_gate: NoiseGate,
+    /// Words the provider should listen for, where it takes them.
+    ///
+    /// Only Scribe does. Niles's own name is the one that matters: the
+    /// satellite sends the wake word in front of every command, and a
+    /// transcriber that writes it as "Myles" has already started the
+    /// sentence wrong.
+    #[serde(default = "default_keyterms")]
+    pub keyterms: Vec<String>,
 }
 
 /// When Whisper's own numbers say that was not speech.
@@ -141,6 +149,10 @@ fn default_base_url() -> String {
 // because somebody remembered to change both.
 fn default_model() -> String {
     crate::catalogue::default_model(crate::providers::Role::Stt).into()
+}
+
+fn default_keyterms() -> Vec<String> {
+    vec!["Niles".into()]
 }
 
 fn default_timeout_secs() -> u64 {

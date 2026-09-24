@@ -26,6 +26,18 @@ pub enum Kind {
     Service,
 }
 
+/// Which API a provider speaks.
+///
+/// Every provider here but one answers the OpenAI shape at its base URL,
+/// which is why a provider has always been a URL and a key. ElevenLabs
+/// does not, so the catalogue has to say which client to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Api {
+    OpenAi,
+    ElevenLabs,
+}
+
 pub struct Known {
     pub id: &'static str,
     pub label: &'static str,
@@ -35,6 +47,8 @@ pub struct Known {
     /// to look it up or mistype it.
     pub base_url: Option<&'static str>,
     pub serves: &'static [Role],
+    /// Services have none and say `OpenAi`, which nothing reads.
+    pub api: Api,
     /// What it can be asked for, per role. **The first entry for a role
     /// is what Niles uses when nothing is written down.**
     ///
@@ -61,6 +75,7 @@ pub const KNOWN: &[Known] = &[
         kind: Kind::Provider,
         base_url: Some("https://api.groq.com/openai/v1"),
         serves: &[Role::Stt, Role::Llm],
+        api: Api::OpenAi,
         models: &[
             (Role::Stt, "whisper-large-v3-turbo"),
             (Role::Stt, "whisper-large-v3"),
@@ -81,7 +96,18 @@ pub const KNOWN: &[Known] = &[
         // offering one would fail as a 404 from somebody else's
         // server rather than as something this page could explain.
         serves: &[Role::Llm],
+        api: Api::OpenAi,
         models: &[(Role::Llm, "gpt-oss-120b"), (Role::Llm, "qwen-3.8-27b")],
+    },
+    Known {
+        id: "elevenlabs",
+        label: "ElevenLabs",
+        blurb: "Scribe speech-to-text: listens for Niles's own name, and scores every word.",
+        kind: Kind::Provider,
+        base_url: Some("https://api.elevenlabs.io/v1"),
+        serves: &[Role::Stt],
+        api: Api::ElevenLabs,
+        models: &[(Role::Stt, "scribe_v2")],
     },
     Known {
         id: "tado",
@@ -90,6 +116,7 @@ pub const KNOWN: &[Known] = &[
         kind: Kind::Service,
         base_url: None,
         serves: &[],
+        api: Api::OpenAi,
         models: &[],
     },
     Known {
@@ -99,6 +126,7 @@ pub const KNOWN: &[Known] = &[
         kind: Kind::Service,
         base_url: None,
         serves: &[],
+        api: Api::OpenAi,
         models: &[],
     },
     Known {
@@ -108,6 +136,7 @@ pub const KNOWN: &[Known] = &[
         kind: Kind::Service,
         base_url: None,
         serves: &[],
+        api: Api::OpenAi,
         models: &[],
     },
 ];
@@ -159,6 +188,24 @@ pub fn default_base_url() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elevenlabs_is_the_one_that_does_not_speak_openai() {
+        // The client Niles builds for speech-to-text is chosen from this;
+        // a provider marked wrongly gets requests it cannot parse.
+        for known in KNOWN.iter().filter(|k| k.kind == Kind::Provider) {
+            let expected = if known.id == "elevenlabs" {
+                Api::ElevenLabs
+            } else {
+                Api::OpenAi
+            };
+            assert_eq!(known.api, expected, "{}", known.id);
+        }
+        assert_eq!(
+            find("elevenlabs").unwrap().models_for(Role::Stt).next(),
+            Some("scribe_v2")
+        );
+    }
 
     #[test]
     fn the_default_provider_exists_and_is_one() {

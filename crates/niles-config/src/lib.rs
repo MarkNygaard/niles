@@ -696,6 +696,7 @@ mod tests {
             language: None,
             timeout_seconds: 30,
             noise_gate: Default::default(),
+            keyterms: Vec::new(),
         };
         assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test");
     }
@@ -717,6 +718,7 @@ mod tests {
             language: None,
             timeout_seconds: 30,
             noise_gate: Default::default(),
+            keyterms: Vec::new(),
         };
         let err = cfg.resolve_api_key().unwrap_err();
         assert!(matches!(err, Error::InvalidSection { section: "stt", .. }));

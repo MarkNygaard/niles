@@ -34,7 +34,10 @@ use niles_scheduler::{
 };
 use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
-use niles_stt::{Confidence, PcmFormat, WhisperClient, WhisperConfig, pcm_to_wav};
+use niles_stt::{
+    Confidence, PcmFormat, ScribeClient, ScribeConfig, SttClient, WhisperClient, WhisperConfig,
+    pcm_to_wav,
+};
 use niles_tools::{LookUpCapability, ToolRegistry};
 use niles_tts::{PiperClient, PiperConfig};
 use niles_wyoming::{SessionTracker, WyomingSender, WyomingServer};
@@ -689,9 +692,14 @@ async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a `WhisperClient` from the `[stt]` section of an already-
-/// validated config, resolving the API key from the environment.
-fn build_whisper_client(cfg: &Config) -> anyhow::Result<WhisperClient> {
+/// Build the speech-to-text client the `[stt]` section points at,
+/// resolving the API key from the environment or the secret store.
+///
+/// Which client depends on the API the provider speaks, as the catalogue
+/// records it. A provider not in the catalogue, or a config from before
+/// providers existed, is taken to speak the OpenAI shape, as every
+/// provider did until ElevenLabs.
+fn build_stt_client(cfg: &Config) -> anyhow::Result<SttClient> {
     // Through the provider when the role names one, and the section's
     // own fields when it does not — so a config written before
     // `[[providers]]` existed behaves exactly as it did.
@@ -704,14 +712,36 @@ fn build_whisper_client(cfg: &Config) -> anyhow::Result<WhisperClient> {
             "stt",
         )
         .context("resolving where speech-to-text should go")?;
-    let whisper_cfg = WhisperConfig {
-        api_key: endpoint.api_key,
-        base_url: endpoint.base_url,
-        model: cfg.stt.model.clone(),
-        language: cfg.stt.language.clone(),
-        request_timeout: Duration::from_secs(cfg.stt.timeout_seconds),
-    };
-    WhisperClient::new(whisper_cfg).context("building Whisper HTTP client")
+    let api = cfg
+        .stt
+        .provider
+        .as_deref()
+        .and_then(niles_config::catalogue::find)
+        .map_or(niles_config::catalogue::Api::OpenAi, |known| known.api);
+    let timeout = Duration::from_secs(cfg.stt.timeout_seconds);
+    Ok(match api {
+        niles_config::catalogue::Api::ElevenLabs => SttClient::Scribe(
+            ScribeClient::new(ScribeConfig {
+                api_key: endpoint.api_key,
+                base_url: endpoint.base_url,
+                model: cfg.stt.model.clone(),
+                language: cfg.stt.language.clone(),
+                keyterms: cfg.stt.keyterms.clone(),
+                request_timeout: timeout,
+            })
+            .context("building Scribe HTTP client")?,
+        ),
+        niles_config::catalogue::Api::OpenAi => SttClient::Whisper(
+            WhisperClient::new(WhisperConfig {
+                api_key: endpoint.api_key,
+                base_url: endpoint.base_url,
+                model: cfg.stt.model.clone(),
+                language: cfg.stt.language.clone(),
+                request_timeout: timeout,
+            })
+            .context("building Whisper HTTP client")?,
+        ),
+    })
 }
 
 /// Build a `GroqClient` from the `[llm]` section of an already-
@@ -1682,7 +1712,7 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_else(|| "audio".into());
 
-    let client = build_whisper_client(&cfg)?;
+    let client = build_stt_client(&cfg)?;
 
     eprintln!(
         "Transcribing {} ({} bytes) via {} ({}) ...",
@@ -2164,7 +2194,7 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
 
-    let client = Arc::new(build_whisper_client(&cfg)?);
+    let client = Arc::new(build_stt_client(&cfg)?);
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
@@ -2249,7 +2279,7 @@ struct Heard {
 }
 
 async fn transcribe_session(
-    client: &WhisperClient,
+    client: &SttClient,
     session: niles_wyoming::AudioSession,
 ) -> Option<Heard> {
     let pcm_format = PcmFormat {
@@ -2279,19 +2309,23 @@ async fn transcribe_session(
             // Logged for every utterance, including the ones dropped
             // below, because the thresholds worth using are the ones
             // read off a real room rather than off somebody's blog.
-            if let Some(c) = t.confidence {
-                // The wake probability rides along, so one line answers both
-                // questions a false wake raises: was that speech, and was it
-                // confident enough to be the wake word. Tuning the satellite
-                // used to need the satellite on a desk.
-                tracing::info!(
-                    no_speech_prob = c.no_speech_prob,
-                    avg_logprob = c.avg_logprob,
-                    wake = wake_probability.unwrap_or(f32::NAN),
-                    "[{}] whisper heard {text:?}",
-                    session.from
-                );
-            }
+            // The wake probability rides along, so one line answers both
+            // questions a false wake raises: was that speech, and was it
+            // confident enough to be the wake word. Tuning the satellite
+            // used to need the satellite on a desk. Logged whether or not
+            // the provider scores itself — Scribe does so on a line of
+            // its own — or a provider switch silently loses the record
+            // of what was heard.
+            let (no_speech_prob, avg_logprob) = t
+                .confidence
+                .map_or((f64::NAN, f64::NAN), |c| (c.no_speech_prob, c.avg_logprob));
+            tracing::info!(
+                no_speech_prob,
+                avg_logprob,
+                wake = wake_probability.unwrap_or(f32::NAN),
+                "[{}] whisper heard {text:?}",
+                session.from
+            );
             Some(Heard {
                 peer: session.from,
                 text,
@@ -2356,7 +2390,7 @@ fn wav_duration_ms(session: &niles_wyoming::AudioSession) -> u128 {
 /// Spawn a fire-and-forget task that transcribes `session`, dispatches
 /// the transcript, and speaks the response back to the satellite.
 fn spawn_dispatch_task(
-    whisper: &Arc<WhisperClient>,
+    whisper: &Arc<SttClient>,
     ctx: &DispatchCtx,
     piper: &Arc<PiperClient>,
     sender: &WyomingSender,
@@ -2489,7 +2523,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .wyoming
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
-    let whisper = Arc::new(build_whisper_client(&cfg)?);
+    let whisper = Arc::new(build_stt_client(&cfg)?);
     let piper = Arc::new(build_piper_client(&cfg)?);
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
@@ -4548,7 +4582,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         None => tracing::info!("morning routine: off (no wake-up light)"),
     }
 
-    let whisper = Arc::new(build_whisper_client(&cfg)?);
+    let whisper = Arc::new(build_stt_client(&cfg)?);
     let piper = Arc::new(build_piper_client(&cfg)?);
 
     let registry = Arc::new(DeviceRegistry::new());
