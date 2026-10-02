@@ -2423,10 +2423,11 @@ async fn transcribe_session(
                 .confidence
                 .map_or((f64::NAN, f64::NAN), |c| (c.no_speech_prob, c.avg_logprob));
             tracing::info!(
+                stt = client.name(),
                 no_speech_prob,
                 avg_logprob,
                 wake = wake_probability.unwrap_or(f32::NAN),
-                "[{}] whisper heard {text:?}",
+                "[{}] heard {text:?}",
                 session.from
             );
             Some(Heard {
@@ -3438,7 +3439,7 @@ async fn dispatch_transcript(
         tracing::info!(
             no_speech_prob = c.no_speech_prob,
             avg_logprob = c.avg_logprob,
-            "[{peer}] not acting on {text:?}: whisper does not think that was speech"
+            "[{peer}] not acting on {text:?}: the transcriber does not think that was speech"
         );
         // Silent on purpose. The house saying "sorry?" to a door being
         // closed is the same interruption as acting on it, minus the

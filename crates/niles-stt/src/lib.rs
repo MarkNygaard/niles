@@ -26,6 +26,14 @@ pub enum SttClient {
 }
 
 impl SttClient {
+    /// Which one this is, for the log line that says what was heard.
+    pub fn name(&self) -> &'static str {
+        match self {
+            SttClient::Whisper(_) => "whisper",
+            SttClient::Scribe(_) => "scribe",
+        }
+    }
+
     pub async fn transcribe(&self, audio: Vec<u8>, filename: &str) -> Result<Transcript> {
         match self {
             SttClient::Whisper(c) => c.transcribe(audio, filename).await,
