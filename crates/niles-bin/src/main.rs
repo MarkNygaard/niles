@@ -692,14 +692,23 @@ async fn wyoming_tap(args: WyomingTapArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the speech-to-text client the `[stt]` section points at,
-/// resolving the API key from the environment or the secret store.
+/// Everything a speech-to-text client is built from, resolved.
 ///
-/// Which client depends on the API the provider speaks, as the catalogue
-/// records it. A provider not in the catalogue, or a config from before
-/// providers existed, is taken to speak the OpenAI shape, as every
-/// provider did until ElevenLabs.
-fn build_stt_client(cfg: &Config) -> anyhow::Result<SttClient> {
+/// Compared whole to decide whether the client in hand is still the one
+/// the config asks for — including the key, which is changed in the app
+/// like everything else.
+#[derive(Clone, PartialEq)]
+struct SttSettings {
+    api: niles_config::catalogue::Api,
+    base_url: String,
+    api_key: String,
+    model: String,
+    language: Option<String>,
+    keyterms: Vec<String>,
+    timeout: Duration,
+}
+
+fn stt_settings(cfg: &Config) -> anyhow::Result<SttSettings> {
     // Through the provider when the role names one, and the section's
     // own fields when it does not — so a config written before
     // `[[providers]]` existed behaves exactly as it did.
@@ -712,36 +721,111 @@ fn build_stt_client(cfg: &Config) -> anyhow::Result<SttClient> {
             "stt",
         )
         .context("resolving where speech-to-text should go")?;
+    // Which client depends on the API the provider speaks, as the
+    // catalogue records it. A provider not in the catalogue, or a config
+    // from before providers existed, speaks the OpenAI shape, as every
+    // provider did until ElevenLabs.
     let api = cfg
         .stt
         .provider
         .as_deref()
         .and_then(niles_config::catalogue::find)
         .map_or(niles_config::catalogue::Api::OpenAi, |known| known.api);
-    let timeout = Duration::from_secs(cfg.stt.timeout_seconds);
-    Ok(match api {
+    Ok(SttSettings {
+        api,
+        base_url: endpoint.base_url,
+        api_key: endpoint.api_key,
+        model: cfg.stt.model.clone(),
+        language: cfg.stt.language.clone(),
+        keyterms: cfg.stt.keyterms.clone(),
+        timeout: Duration::from_secs(cfg.stt.timeout_seconds),
+    })
+}
+
+fn build_stt(settings: SttSettings) -> anyhow::Result<SttClient> {
+    Ok(match settings.api {
         niles_config::catalogue::Api::ElevenLabs => SttClient::Scribe(
             ScribeClient::new(ScribeConfig {
-                api_key: endpoint.api_key,
-                base_url: endpoint.base_url,
-                model: cfg.stt.model.clone(),
-                language: cfg.stt.language.clone(),
-                keyterms: cfg.stt.keyterms.clone(),
-                request_timeout: timeout,
+                api_key: settings.api_key,
+                base_url: settings.base_url,
+                model: settings.model,
+                language: settings.language,
+                keyterms: settings.keyterms,
+                request_timeout: settings.timeout,
             })
             .context("building Scribe HTTP client")?,
         ),
         niles_config::catalogue::Api::OpenAi => SttClient::Whisper(
             WhisperClient::new(WhisperConfig {
-                api_key: endpoint.api_key,
-                base_url: endpoint.base_url,
-                model: cfg.stt.model.clone(),
-                language: cfg.stt.language.clone(),
-                request_timeout: timeout,
+                api_key: settings.api_key,
+                base_url: settings.base_url,
+                model: settings.model,
+                language: settings.language,
+                request_timeout: settings.timeout,
             })
             .context("building Whisper HTTP client")?,
         ),
     })
+}
+
+/// Build the speech-to-text client the `[stt]` section points at, once.
+fn build_stt_client(cfg: &Config) -> anyhow::Result<SttClient> {
+    build_stt(stt_settings(cfg)?)
+}
+
+/// The speech-to-text client the config asks for *now*.
+///
+/// It was built once at startup, so choosing ElevenLabs in the app was
+/// saved, shown on a page that says changes apply immediately, and
+/// ignored for a week — Whisper went on transcribing until something
+/// restarted the pod. Now the settings are read for every utterance and
+/// the client rebuilt when they differ from the ones it was built from.
+///
+/// A switch that cannot be built — a provider with no key yet — keeps
+/// the client that works and says so, rather than leaving the house
+/// unable to hear.
+struct LiveStt {
+    store: Option<Arc<ConfigStore>>,
+    built: Mutex<(SttSettings, Arc<SttClient>)>,
+}
+
+impl LiveStt {
+    fn new(store: Option<Arc<ConfigStore>>, cfg: &Config) -> anyhow::Result<Self> {
+        let settings = stt_settings(cfg)?;
+        let client = Arc::new(build_stt(settings.clone())?);
+        Ok(Self {
+            store,
+            built: Mutex::new((settings, client)),
+        })
+    }
+
+    fn current(&self) -> Arc<SttClient> {
+        let mut built = self.built.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(store) = self.store.as_ref() else {
+            return built.1.clone();
+        };
+        match stt_settings(&store.current()) {
+            Ok(settings) if settings == built.0 => {}
+            Ok(settings) => match build_stt(settings.clone()) {
+                Ok(client) => {
+                    tracing::info!(
+                        "speech-to-text is now {:?} / {} at {}",
+                        settings.api,
+                        settings.model,
+                        settings.base_url
+                    );
+                    *built = (settings, Arc::new(client));
+                }
+                Err(e) => {
+                    tracing::warn!("speech-to-text change not applied, keeping the last one: {e:#}")
+                }
+            },
+            Err(e) => {
+                tracing::warn!("speech-to-text settings unreadable, keeping the last ones: {e:#}")
+            }
+        }
+        built.1.clone()
+    }
 }
 
 /// Build a `GroqClient` from the `[llm]` section of an already-
@@ -2390,7 +2474,7 @@ fn wav_duration_ms(session: &niles_wyoming::AudioSession) -> u128 {
 /// Spawn a fire-and-forget task that transcribes `session`, dispatches
 /// the transcript, and speaks the response back to the satellite.
 fn spawn_dispatch_task(
-    whisper: &Arc<SttClient>,
+    whisper: &Arc<LiveStt>,
     ctx: &DispatchCtx,
     piper: &Arc<PiperClient>,
     sender: &WyomingSender,
@@ -2417,7 +2501,7 @@ fn spawn_dispatch_task(
                 (identity, voice)
             })
         });
-        if let Some(heard) = transcribe_session(&whisper, session).await {
+        if let Some(heard) = transcribe_session(&whisper.current(), session).await {
             let Heard {
                 peer,
                 text,
@@ -2523,7 +2607,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .wyoming
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
-    let whisper = Arc::new(build_stt_client(&cfg)?);
+    let whisper = Arc::new(LiveStt::new(None, &cfg)?);
     let piper = Arc::new(build_piper_client(&cfg)?);
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
@@ -3182,9 +3266,10 @@ fn without_vocative(text: &str) -> Option<&str> {
 /// Whisper spells the name several ways. The name itself and its
 /// wake-word spelling go whatever follows; the look-alikes only with a
 /// comma, because "Miles to kilometres" is a question.
+const NAMES: [&str; 3] = ["niles", "nyles", "nyle"];
+const LOOK_ALIKES: [&str; 6] = ["miles", "myles", "nile", "nile's", "neil", "niels"];
+
 fn strip_wake_word(text: &str) -> &str {
-    const NAMES: [&str; 3] = ["niles", "nyles", "nyle"];
-    const LOOK_ALIKES: [&str; 5] = ["miles", "nile", "nile's", "neil", "niels"];
     let t = text.trim_start();
     let word_end = t
         .find(|c: char| !(c.is_alphanumeric() || c == '\''))
@@ -3197,6 +3282,21 @@ fn strip_wake_word(text: &str) -> &str {
     } else {
         text
     }
+}
+
+/// Whether the transcript begins by calling Niles.
+///
+/// The satellite sends the wake word with the command, so a real wake
+/// starts with the name — or with the handful of ways a transcriber
+/// writes it. The television that set the satellite off does not.
+fn heard_its_name(text: &str) -> bool {
+    let first: String = text
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphabetic() || *c == '\'')
+        .collect::<String>()
+        .to_lowercase();
+    NAMES.contains(&first.as_str()) || LOOK_ALIKES.contains(&first.as_str())
 }
 
 /// Whether this is more likely something the room said than something
@@ -3237,6 +3337,7 @@ async fn dispatch_transcript(
     // audio was unusable.
     voice: Option<&[f32]>,
 ) -> Option<String> {
+    let addressed = heard_its_name(text);
     let text = strip_wake_word(text);
 
     // `transcribe_session` already trims, so an empty `text` here means
@@ -3306,6 +3407,15 @@ async fn dispatch_transcript(
     // switch a light off through a regex either. And before the
     // enrolment pattern, which is the point — "I am Sofia" from an
     // unknown voice is exactly what the lock is for.
+    // A wake the transcript does not start with the name for is the
+    // room, not a person: a television, a conversation. Silent, like the
+    // other gates — and "stop" to a ringing alarm still gets through.
+    let require_name = settings.as_ref().is_some_and(|c| c.stt.require_name);
+    if require_name && !addressed && !stopping_an_alarm {
+        tracing::info!("[{peer}] not acting on {text:?}: it did not start with Niles's name");
+        return None;
+    }
+
     if known_voices_only && !stopping_an_alarm && matches!(speaker, SpeakerContext::Unknown) {
         // Nobody enrolled means nobody known, and a lock with no key
         // cut would refuse the whole house — including whoever wants
@@ -4584,7 +4694,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         None => tracing::info!("morning routine: off (no wake-up light)"),
     }
 
-    let whisper = Arc::new(build_stt_client(&cfg)?);
+    let whisper = Arc::new(LiveStt::new(Some(store.clone()), &cfg)?);
     let piper = Arc::new(build_piper_client(&cfg)?);
 
     let registry = Arc::new(DeviceRegistry::new());
@@ -5947,6 +6057,31 @@ mod noise_transcript_tests {
         let id = timers.set(std::time::Duration::from_secs(60), None, origin, Utc::now());
         timers.mark_ringing(id);
         assert!(is_stopping_an_alarm("Myles, stop.", &timers));
+    }
+
+    #[test]
+    fn a_command_that_calls_niles_is_addressed() {
+        for heard in [
+            "Niles, turn off the light.",
+            "Myles, what time is it?",
+            "nyles stop",
+            "Niles.",
+        ] {
+            assert!(heard_its_name(heard), "{heard:?}");
+        }
+    }
+
+    #[test]
+    fn the_television_is_not_addressed() {
+        for heard in [
+            "What's up y'all man, today we're checking out this Danish comedian",
+            "Yeah, I mean, I think it's a good idea.",
+            "Thank you.",
+            "",
+            "Nilesh is here",
+        ] {
+            assert!(!heard_its_name(heard), "{heard:?}");
+        }
     }
 
     #[test]
