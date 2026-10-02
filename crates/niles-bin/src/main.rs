@@ -55,6 +55,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 mod climate;
 mod conversation;
+mod courtesy;
 mod last_target;
 mod manifest;
 mod push;
@@ -2831,6 +2832,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
         tado: tado.clone(),
+        courtesy: Arc::new(courtesy::Courtesy::default()),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -2954,6 +2956,8 @@ struct DispatchCtx {
     last_target: Arc<last_target::LastTarget>,
     /// For "what's the weather", answered without the LLM.
     weather: Option<Arc<niles_weather::OpenMeteoClient>>,
+    /// Who has been called "Sir" lately, and greeted this morning.
+    courtesy: Arc<courtesy::Courtesy>,
     /// For the heating by voice. The same session the dashboard and
     /// presence use: tado rotates its refresh token on every use, so
     /// there can only be one.
@@ -3021,7 +3025,37 @@ async fn handle_transcript(
     speaker: &SpeakerContext,
     voice: Option<&[f32]>,
 ) -> Option<String> {
-    let response = dispatch_transcript(ctx, peer, text, confidence, speaker, voice).await;
+    // The first thing somebody says to Niles in a morning is greeted, as
+    // Alexa does. Decided before the reply is built, because a greeting
+    // addresses them and the confirmation must not then do it again.
+    let greeting = match speaker {
+        SpeakerContext::Identified { name, address } => {
+            let local = ctx
+                .home
+                .timezone
+                .parse::<chrono_tz::Tz>()
+                .ok()
+                .map(|tz| Utc::now().with_timezone(&tz));
+            let whom = address.clone().or_else(|| {
+                let id = ctx.identifier.as_ref()?;
+                id.whose_voice(voice?).and_then(|slug| id.how_to_say(&slug))
+            });
+            local
+                .filter(|l| {
+                    ctx.courtesy
+                        .greet_now(name, l.date_naive(), l.hour(), Instant::now())
+                })
+                .map(|_| (name.clone(), whom.unwrap_or_else(|| name.clone())))
+        }
+        _ => None,
+    };
+    let mut response = dispatch_transcript(ctx, peer, text, confidence, speaker, voice).await;
+    if let Some((name, whom)) = greeting {
+        match &response {
+            Some(reply) => response = Some(courtesy::greeted(reply, &whom)),
+            None => ctx.courtesy.ungreet(&name),
+        }
+    }
     if let Some(reply) = &response {
         ctx.conversation
             .record(ctx.satellites.room_for(peer), text, reply);
@@ -3312,9 +3346,13 @@ fn strip_wake_word(text: &str) -> &str {
 
 /// A short confirmation with the speaker's form of address at the end.
 ///
-/// "Living room lights off." becomes "Living room lights off, Sir." —
+/// "Living room lights off." becomes "Living room lights off Sir." —
 /// the address goes before the closing mark, and a reply of several
 /// sentences gets it on the last one only.
+///
+/// No comma, though a comma is what the grammar wants: this text is only
+/// ever spoken, and Piper pauses at every comma, which made ", Sir" sound
+/// bolted on. Run on, it is said the way a person says it.
 fn addressed(reply: &str, address: Option<&str>) -> String {
     let Some(address) = address.map(str::trim).filter(|a| !a.is_empty()) else {
         return reply.to_string();
@@ -3323,11 +3361,11 @@ fn addressed(reply: &str, address: Option<&str>) -> String {
     match trimmed.chars().last() {
         Some(mark @ ('.' | '!' | '?')) => {
             format!(
-                "{}, {address}{mark}",
+                "{} {address}{mark}",
                 &trimmed[..trimmed.len() - mark.len_utf8()]
             )
         }
-        Some(_) => format!("{trimmed}, {address}."),
+        Some(_) => format!("{trimmed} {address}."),
         None => reply.to_string(),
     }
 }
@@ -3520,7 +3558,10 @@ async fn dispatch_transcript(
     // "Lights off, Sir." — but not on the replies that are about who
     // somebody is, which have to be the name.
     let address = match speaker {
-        SpeakerContext::Identified { address, .. } => address.clone(),
+        SpeakerContext::Identified {
+            name,
+            address: Some(address),
+        } => Some((name.clone(), address.clone())),
         _ => None,
     }
     .filter(|_| !matches!(intent, Intent::WhoAmI | Intent::EnrollSpeaker { .. }));
@@ -3999,7 +4040,11 @@ async fn dispatch_transcript(
             Some(response::fallback())
         }
     };
-    reply.map(|r| addressed(&r, address.as_deref()))
+    // Once in a while rather than every time: see `courtesy`.
+    reply.map(|r| match &address {
+        Some((name, a)) if ctx.courtesy.address_now(name, Instant::now()) => addressed(&r, Some(a)),
+        _ => r,
+    })
 }
 
 /// Outcome of resolving a room name to a device list.
@@ -5166,6 +5211,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
         tado: tado.clone(),
+        courtesy: Arc::new(courtesy::Courtesy::default()),
     };
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
@@ -6119,14 +6165,14 @@ mod noise_transcript_tests {
     fn a_confirmation_ends_with_the_form_of_address() {
         assert_eq!(
             addressed("Living room lights off.", Some("Sir")),
-            "Living room lights off, Sir."
+            "Living room lights off Sir."
         );
-        assert_eq!(addressed("Which room?", Some("Sir")), "Which room, Sir?");
+        assert_eq!(addressed("Which room?", Some("Sir")), "Which room Sir?");
         assert_eq!(
             addressed("12 degrees now. Expect rain.", Some("Sir")),
-            "12 degrees now. Expect rain, Sir."
+            "12 degrees now. Expect rain Sir."
         );
-        assert_eq!(addressed("Done", Some("Miss")), "Done, Miss.");
+        assert_eq!(addressed("Done", Some("Miss")), "Done Miss.");
     }
 
     #[test]
