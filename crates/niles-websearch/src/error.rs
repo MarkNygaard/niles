@@ -20,4 +20,12 @@ pub enum Error {
 
     #[error("invalid input: {reason}")]
     InvalidInput { reason: String },
+
+    /// A page Niles will not fetch: not the public internet.
+    #[error("refused: {reason}")]
+    Refused { reason: String },
+
+    /// A page that could not be turned into text.
+    #[error("could not read it: {reason}")]
+    Unreadable { reason: String },
 }

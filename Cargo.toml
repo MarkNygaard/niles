@@ -50,6 +50,7 @@ mime_guess = "2"
 hound = "3"
 fs2 = "0.4"
 urlencoding = "2"
+html2text = "0.17"
 aes-gcm = "0.11"
 base64 = "0.22"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }

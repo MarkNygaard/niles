@@ -16,6 +16,8 @@ urlencoding.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+html2text.workspace = true
+tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

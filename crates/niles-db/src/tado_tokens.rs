@@ -90,4 +90,13 @@ impl TokenStore for PostgresTadoTokens {
         .map_err(|e| self.storage(e))?;
         Ok(())
     }
+
+    async fn clear(&self) -> Result<()> {
+        self.ensure_schema().await?;
+        sqlx::query("delete from tado_tokens where id = 1")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| self.storage(e))?;
+        Ok(())
+    }
 }
