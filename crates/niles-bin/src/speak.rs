@@ -166,6 +166,95 @@ pub(crate) fn at_volume(pcm: &[u8], bits_per_sample: u16, percent: u8) -> Cow<'_
     Cow::Owned(scaled)
 }
 
+/// The rate the satellite plays at.
+///
+/// It listens while it talks, so its microphone and speaker share one
+/// clock, and the microphone needs 16 kHz.
+pub(crate) const SATELLITE_RATE: u32 = 16_000;
+
+/// Speech as the satellite should be handed it: 16 kHz.
+///
+/// Piper renders 22.05 kHz. The satellite used to convert that itself by
+/// joining the dots between samples, which folds everything between 8 and
+/// 11 kHz back down into the audible range as a rasp on every "s". Done
+/// here with a low-pass first, the treble 16 kHz cannot carry is simply
+/// not there, rather than turned into noise.
+///
+/// Mono 16-bit only, which is what Piper produces; anything else is left
+/// alone for the satellite to deal with as before.
+pub(crate) fn for_satellite(pcm: Vec<u8>, format: AudioFormat) -> (Vec<u8>, AudioFormat) {
+    if format.sample_rate_hz == SATELLITE_RATE
+        || format.bits_per_sample != 16
+        || format.channels != 1
+    {
+        return (pcm, format);
+    }
+    let input: Vec<f32> = pcm
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|s| f32::from(i16::from_le_bytes(*s)))
+        .collect();
+    let output = resample(&input, format.sample_rate_hz, SATELLITE_RATE);
+    let bytes = output
+        .iter()
+        .flat_map(|s| (s.round().clamp(-32768.0, 32767.0) as i16).to_le_bytes())
+        .collect();
+    (bytes, AudioFormat::new(SATELLITE_RATE, 16, 1))
+}
+
+/// Windowed-sinc resampling, computed per output sample.
+///
+/// A few seconds of speech is ~50 000 output samples at 48 taps each:
+/// nothing next to the synthesis that produced it, so no polyphase table.
+fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+    // Half the filter, in input samples. Long enough for a steep edge
+    // just under the new Nyquist; short enough to be free.
+    const HALF: i64 = 24;
+    let ratio = f64::from(from) / f64::from(to);
+    // Below the output's Nyquist, with room for the filter's slope.
+    let cutoff = 0.92 * (f64::from(to) / f64::from(from)).min(1.0);
+    let out_len = (input.len() as f64 / ratio).floor() as usize;
+    let sinc = |x: f64| {
+        if x.abs() < 1e-9 {
+            1.0
+        } else {
+            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+        }
+    };
+    // Blackman, over the filter's whole width.
+    let window = |x: f64| {
+        let n = (x / HALF as f64 + 1.0) / 2.0;
+        0.42 - 0.5 * (2.0 * std::f64::consts::PI * n).cos()
+            + 0.08 * (4.0 * std::f64::consts::PI * n).cos()
+    };
+    (0..out_len)
+        .map(|n| {
+            let centre = n as f64 * ratio;
+            let first = centre.floor() as i64 - HALF + 1;
+            let (mut sum, mut weight) = (0.0f64, 0.0f64);
+            for k in first..first + 2 * HALF {
+                let x = centre - k as f64;
+                if x.abs() >= HALF as f64 {
+                    continue;
+                }
+                let w = cutoff * sinc(cutoff * x) * window(x);
+                if let Some(&s) = usize::try_from(k).ok().and_then(|k| input.get(k)) {
+                    sum += f64::from(s) * w;
+                }
+                weight += w;
+            }
+            // Normalised by the weights actually used, so the edges of the
+            // clip — where the filter hangs off the end — keep their level.
+            (if weight.abs() > 1e-9 {
+                sum / weight
+            } else {
+                0.0
+            }) as f32
+        })
+        .collect()
+}
+
 pub async fn speak_back(
     piper: &PiperClient,
     sender: &WyomingSender,
@@ -178,6 +267,7 @@ pub async fn speak_back(
     let result: Result<()> = async {
         let synth = piper.synthesize(text, None).await?;
         let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
+        let (pcm, format) = for_satellite(pcm, format);
         let quieted = at_volume(&pcm, format.bits_per_sample, satellites.volume_for(peer));
         sender.send_audio(peer, &quieted, format).await?;
         Ok(())
@@ -195,6 +285,58 @@ pub async fn speak_back(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tone(freq: f64, rate: u32, seconds: f64) -> Vec<f32> {
+        (0..(f64::from(rate) * seconds) as usize)
+            .map(|i| {
+                (10_000.0 * (2.0 * std::f64::consts::PI * freq * i as f64 / f64::from(rate)).sin())
+                    as f32
+            })
+            .collect()
+    }
+
+    fn rms(x: &[f32]) -> f64 {
+        // The middle only: the ends are where the filter runs off the clip.
+        let mid = &x[x.len() / 4..x.len() * 3 / 4];
+        (mid.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / mid.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn a_second_of_speech_is_a_second_at_the_new_rate() {
+        assert_eq!(resample(&vec![0.0; 22_050], 22_050, 16_000).len(), 16_000);
+    }
+
+    #[test]
+    fn a_voice_comes_through_at_its_own_level() {
+        let input = tone(1_000.0, 22_050, 1.0);
+        let output = resample(&input, 22_050, 16_000);
+        let ratio = rms(&output) / rms(&input);
+        assert!((0.97..1.03).contains(&ratio), "1 kHz kept at {ratio:.3}");
+    }
+
+    #[test]
+    fn treble_the_satellite_cannot_play_is_removed_not_folded_back() {
+        // 9.5 kHz would fold to 6.5 kHz at 16 kHz: a rasp where a hiss was.
+        let output = resample(&tone(9_500.0, 22_050, 1.0), 22_050, 16_000);
+        let left = rms(&output) / rms(&tone(9_500.0, 22_050, 1.0));
+        assert!(left < 0.02, "9.5 kHz left at {left:.3}");
+    }
+
+    #[test]
+    fn audio_already_at_16k_is_untouched() {
+        let pcm = vec![1u8, 0, 2, 0];
+        let (out, fmt) = for_satellite(pcm.clone(), AudioFormat::new(16_000, 16, 1));
+        assert_eq!(out, pcm);
+        assert_eq!(fmt.sample_rate_hz, 16_000);
+    }
+
+    #[test]
+    fn piper_is_handed_over_at_16k() {
+        let pcm: Vec<u8> = vec![0u8; 22_050 * 2];
+        let (out, fmt) = for_satellite(pcm, AudioFormat::new(22_050, 16, 1));
+        assert_eq!(fmt.sample_rate_hz, 16_000);
+        assert_eq!(out.len(), 16_000 * 2);
+    }
 
     fn pcm(samples: &[i16]) -> Vec<u8> {
         samples.iter().flat_map(|s| s.to_le_bytes()).collect()

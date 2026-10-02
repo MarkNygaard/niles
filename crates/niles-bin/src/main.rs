@@ -1303,7 +1303,7 @@ impl niles_notifications::NotificationDelivery for WyomingDelivery {
             match piper.synthesize(&text, None).await {
                 Ok(synthesis) => {
                     let (pcm, format) = match crate::speak::wav_to_pcm(&synthesis.audio_wav) {
-                        Ok(parts) => parts,
+                        Ok((pcm, format)) => crate::speak::for_satellite(pcm, format),
                         Err(e) => {
                             tracing::warn!("could not decode synthesized notification: {e:#}");
                             return;
