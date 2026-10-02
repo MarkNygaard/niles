@@ -6,10 +6,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("HTTP request to Linear API failed: {source}")]
+    #[error("HTTP request to Linear API failed: {error}")]
     Http {
         #[from]
-        source: reqwest::Error,
+        error: reqwest::Error,
     },
 
     #[error("upstream returned HTTP {status}: {body}")]
