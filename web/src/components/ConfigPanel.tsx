@@ -794,6 +794,30 @@ export function ConfigPanel() {
                   })
                 }
               />
+              <label className="flex items-center justify-between gap-4 pt-5">
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">
+                    Only when it hears its name
+                  </span>
+                  <span className="text-muted-foreground block text-xs">
+                    Ignore a wake unless what was heard starts with
+                    &ldquo;Niles&rdquo; &mdash; the television that set the
+                    satellite off almost never says it. Best with ElevenLabs,
+                    which spells the name right.
+                  </span>
+                </span>
+                <Switch
+                  aria-label="Only when it hears its name"
+                  checked={valueAt(view.effective, "stt.require_name") === true}
+                  disabled={save.isPending}
+                  onCheckedChange={(next: boolean) =>
+                    save.mutate({
+                      row: "stt",
+                      entries: [{ path: "stt.require_name", value: next }],
+                    })
+                  }
+                />
+              </label>
               <div className="pt-5">
                 <RoleCard
                   role="llm"

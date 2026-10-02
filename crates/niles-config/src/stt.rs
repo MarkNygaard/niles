@@ -46,6 +46,15 @@ pub struct SttConfig {
     /// sentence wrong.
     #[serde(default = "default_keyterms")]
     pub keyterms: Vec<String>,
+    /// Only act on a wake whose transcript starts with Niles's name.
+    ///
+    /// The satellite sends the wake word along with the command, so a
+    /// real wake is heard as "Niles, …" and a television that set it off
+    /// almost never is. Off by default: it is only as good as the
+    /// transcriber's spelling of the name — Scribe, with the name as a
+    /// key term, wrote it right 46 times in 46, and Whisper 31.
+    #[serde(default)]
+    pub require_name: bool,
 }
 
 /// When Whisper's own numbers say that was not speech.

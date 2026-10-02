@@ -160,10 +160,9 @@ kelvin = 2000
 /// poll loop, an embedded model — and cannot be re-pointed by writing a
 /// new value.
 ///
-/// So today exactly one section is hot: `lighting`, which the curve
-/// dispatcher re-reads each tick. Others join it only when their consumer
-/// is deliberately rewired to take a fresh snapshot, which is a code
-/// change, not a config change.
+/// A section joins the hot ones only when its consumer is deliberately
+/// rewired to take a fresh snapshot, which is a code change, not a config
+/// change — see [`section_reload`] for which, and why.
 ///
 /// The distinction exists so a write can be *refused or flagged* rather
 /// than silently accepted and ignored — the worst outcome being a user
@@ -201,6 +200,14 @@ pub fn section_reload(section: &str) -> Reload {
         // dragged a room up the list to restart Niles, which is not
         // true and is the one thing this flag exists to get right.
         "rooms" => Reload::Hot,
+        // The speech-to-text client is checked against the live config
+        // for every utterance and rebuilt when it differs; the noise
+        // gate was already read per turn. Marked Boot, a switch to
+        // ElevenLabs sat unused for a week behind a page that said
+        // changes apply immediately.
+        "stt" => Reload::Hot,
+        // Read on every wake, keep included.
+        "capture" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
@@ -697,6 +704,7 @@ mod tests {
             timeout_seconds: 30,
             noise_gate: Default::default(),
             keyterms: Vec::new(),
+            require_name: false,
         };
         assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test");
     }
@@ -719,6 +727,7 @@ mod tests {
             timeout_seconds: 30,
             noise_gate: Default::default(),
             keyterms: Vec::new(),
+            require_name: false,
         };
         let err = cfg.resolve_api_key().unwrap_err();
         assert!(matches!(err, Error::InvalidSection { section: "stt", .. }));
