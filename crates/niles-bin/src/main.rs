@@ -1550,6 +1550,10 @@ fn spawn_presence_poll_loop(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut last_published: Option<niles_presence::HomeState> = None;
+        // When each source may next be asked, and whether its login was
+        // refused — see `retry_after`.
+        let mut due: Vec<std::time::Instant> = vec![std::time::Instant::now(); sources.len()];
+        let mut refused: Vec<bool> = vec![false; sources.len()];
         loop {
             // Read live rather than captured, so turning presence on in
             // Settings takes hold on the next tick instead of at the
@@ -1575,10 +1579,36 @@ fn spawn_presence_poll_loop(
                 continue;
             }
 
-            for src in &sources {
+            // Each at its own pace. The loop ticks at the shortest
+            // interval anyone wants — UniFi's seconds — and asking tado
+            // on every one of those ticks spent its daily allowance in a
+            // morning and got the login refused.
+            let interval = Duration::from_secs(cfg.poll_seconds);
+            for (i, src) in sources.iter().enumerate() {
+                let now = std::time::Instant::now();
+                if now < due[i] {
+                    continue;
+                }
                 match src.poll().await {
-                    Ok(signal) => aggregator.ingest(signal),
-                    Err(e) => tracing::warn!("presence source '{}' poll failed: {e}", src.name()),
+                    Ok(signal) => {
+                        if refused[i] {
+                            tracing::info!("presence source '{}' is answering again", src.name());
+                        }
+                        refused[i] = false;
+                        aggregator.ingest(signal);
+                        due[i] = now + interval;
+                    }
+                    Err(e) => {
+                        let auth = matches!(e, niles_presence::Error::Auth { .. });
+                        // Once, not every attempt: the cure is a person
+                        // reconnecting it in Settings, and repeating the
+                        // news does not bring that sooner.
+                        if !(auth && refused[i]) {
+                            tracing::warn!("presence source '{}' poll failed: {e}", src.name());
+                        }
+                        refused[i] = auth;
+                        due[i] = now + retry_after(auth, interval);
+                    }
                 }
             }
             // Asked only when it can answer: a console set up in the app,
@@ -1617,6 +1647,19 @@ fn spawn_presence_poll_loop(
             tokio::time::sleep(Duration::from_secs(wait)).await;
         }
     })
+}
+
+/// How long before asking a presence source again after it failed.
+///
+/// A refused login does not fix itself — somebody has to reconnect it —
+/// so it is asked rarely rather than at every interval: tado counts
+/// requests against a daily allowance, refused ones included.
+fn retry_after(auth_refused: bool, interval: Duration) -> Duration {
+    if auth_refused {
+        interval.max(Duration::from_secs(30 * 60))
+    } else {
+        interval
+    }
 }
 
 /// Pure transition detector — returns `Some(state)` when `resolved`
@@ -6161,6 +6204,21 @@ mod noise_transcript_tests {
         let id = timers.set(std::time::Duration::from_secs(60), None, origin, Utc::now());
         timers.mark_ringing(id);
         assert!(is_stopping_an_alarm("Myles, stop.", &timers));
+    }
+
+    #[test]
+    fn a_refused_login_is_not_asked_again_for_half_an_hour() {
+        let five = Duration::from_secs(300);
+        assert_eq!(retry_after(true, five), Duration::from_secs(1800));
+        assert_eq!(
+            retry_after(false, five),
+            five,
+            "a passing failure keeps the pace"
+        );
+        assert_eq!(
+            retry_after(true, Duration::from_secs(3600)),
+            Duration::from_secs(3600)
+        );
     }
 
     #[test]
