@@ -269,11 +269,13 @@ export function ConfigPanel() {
       speaker,
       name,
       spokenAs,
+      addressAs,
     }: {
       speaker: string;
       name: string;
       spokenAs?: string;
-    }) => api.renameVoice(speaker, name, spokenAs),
+      addressAs?: string;
+    }) => api.renameVoice(speaker, name, spokenAs, addressAs),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
   });
   // Every call reaches tado, so this is asked once rather than on a
@@ -714,6 +716,15 @@ export function ConfigPanel() {
                     speaker,
                     name: voice.display_name,
                     spokenAs,
+                  });
+              }}
+              onAddressAs={(speaker, addressAs) => {
+                const voice = voices.data?.find((v) => v.speaker === speaker);
+                if (voice)
+                  rename.mutate({
+                    speaker,
+                    name: voice.display_name,
+                    addressAs,
                   });
               }}
               knownVoicesOnly={

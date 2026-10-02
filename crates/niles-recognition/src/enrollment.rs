@@ -32,6 +32,11 @@ pub struct EnrolledSpeaker {
     /// display name, which is the normal case.
     #[serde(default)]
     pub spoken_as: Option<String>,
+    /// How to address them, the way a butler does: "Sir". Beside the
+    /// name rather than instead of it — Niles still knows who it is
+    /// talking to, and "who am I" still answers with the name.
+    #[serde(default)]
+    pub address_as: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub clip_count: usize,
@@ -83,6 +88,7 @@ impl EnrollmentStore {
                 speaker: speaker.to_string(),
                 display_name: default_display_name(speaker),
                 spoken_as: None,
+                address_as: None,
                 created_at: Utc::now(),
                 last_seen_at: None,
                 clip_count: 0,
@@ -172,6 +178,13 @@ impl EnrollmentStore {
     pub fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()> {
         self.edit(speaker, |record| {
             record.spoken_as = spoken_as.map(str::to_string);
+        })
+    }
+
+    /// Set how they are addressed. `None` means by nothing in particular.
+    pub fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()> {
+        self.edit(speaker, |record| {
+            record.address_as = address_as.map(str::to_string);
         })
     }
 
@@ -369,6 +382,10 @@ impl crate::EnrollmentBackend for EnrollmentStore {
 
     async fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()> {
         EnrollmentStore::set_spoken_as(self, speaker, spoken_as)
+    }
+
+    async fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()> {
+        EnrollmentStore::set_address_as(self, speaker, address_as)
     }
 
     async fn bump_last_seen(&self, speaker: &str) -> Result<()> {

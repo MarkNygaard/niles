@@ -282,6 +282,8 @@ export interface Voice {
   display_name: string;
   /** How to say it, when spelling and saying it differ. */
   spoken_as: string | null;
+  /** How Niles addresses them — "Sir" — beside the name, not instead. */
+  address_as: string | null;
   /** One is thin — Niles asks for more until it has three. */
   clip_count: number;
   created_at: string;
@@ -354,10 +356,15 @@ export const api = {
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),
   clearCaptures: () => request<void>("/captures", { method: "DELETE" }),
-  renameVoice: (speaker: string, display_name: string, spoken_as?: string) =>
+  renameVoice: (
+    speaker: string,
+    display_name: string,
+    spoken_as?: string,
+    address_as?: string,
+  ) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {
       method: "PUT",
-      body: JSON.stringify({ display_name, spoken_as }),
+      body: JSON.stringify({ display_name, spoken_as, address_as }),
     }),
   forgetVoice: (speaker: string) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {

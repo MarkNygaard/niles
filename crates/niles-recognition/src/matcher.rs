@@ -93,6 +93,14 @@ impl Matcher {
             .map(|s| s.spoken_as.as_deref().unwrap_or(&s.display_name))
     }
 
+    /// How to address one speaker, if anybody has said.
+    pub fn address_as(&self, speaker: &str) -> Option<&str> {
+        self.speakers
+            .iter()
+            .find(|s| s.speaker == speaker)
+            .and_then(|s| s.address_as.as_deref())
+    }
+
     /// Classify `query` against the roster.
     ///
     /// # Panics
@@ -223,6 +231,7 @@ mod tests {
             speaker: name.to_string(),
             display_name: name.to_string(),
             spoken_as: None,
+            address_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: entries.len(),
@@ -335,6 +344,7 @@ mod tests {
             speaker: "empty".to_string(),
             display_name: "Empty".to_string(),
             spoken_as: None,
+            address_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -358,6 +368,7 @@ mod tests {
             speaker: "empty".to_string(),
             display_name: "Empty".to_string(),
             spoken_as: None,
+            address_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -381,6 +392,7 @@ mod tests {
             speaker: "a".to_string(),
             display_name: "A".to_string(),
             spoken_as: None,
+            address_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -390,6 +402,7 @@ mod tests {
             speaker: "b".to_string(),
             display_name: "B".to_string(),
             spoken_as: None,
+            address_as: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,

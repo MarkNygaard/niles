@@ -45,6 +45,8 @@ export interface VoicesCardProps {
   onRename?: (speaker: string, displayName: string) => void;
   /** Respell it so Piper says it right. Empty clears the respelling. */
   onSpokenAs?: (speaker: string, spokenAs: string) => void;
+  /** How Niles addresses them — "Sir". Empty clears it. */
+  onAddressAs?: (speaker: string, addressAs: string) => void;
 }
 
 /**
@@ -72,6 +74,7 @@ export function VoicesCard({
   onForget,
   onRename,
   onSpokenAs,
+  onAddressAs,
 }: VoicesCardProps) {
   return (
     <Card>
@@ -128,6 +131,18 @@ export function VoicesCard({
                         allowEmpty
                         disabled={saving}
                         onCommit={(said) => onSpokenAs(voice.speaker, said)}
+                      />
+                    )}
+                    {/* Beside the name, never instead of it: Niles
+                        still knows who it is talking to. */}
+                    {onAddressAs && (
+                      <NameField
+                        value={voice.address_as ?? ""}
+                        label={`${voice.speaker} form of address`}
+                        placeholder="Address as… (e.g. Sir)"
+                        allowEmpty
+                        disabled={saving}
+                        onCommit={(address) => onAddressAs(voice.speaker, address)}
                       />
                     )}
                   </div>
