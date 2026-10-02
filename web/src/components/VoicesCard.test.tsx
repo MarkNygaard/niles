@@ -61,6 +61,7 @@ const MARK = {
   speaker: "mark",
   display_name: "Mark",
   spoken_as: null,
+  address_as: null,
   clip_count: 3,
   created_at: "2026-09-22T19:43:12Z",
   last_seen_at: "2026-09-22T20:10:00Z",
@@ -227,5 +228,40 @@ describe("saying a name correctly", () => {
       />,
     );
     expect(screen.getByLabelText("mark pronunciation")).toHaveValue("Mayse");
+  });
+
+  it("saves how somebody is addressed, beside their name", () => {
+    // "Sir" goes next to the name, never over it: Niles still knows
+    // who it is talking to.
+    const onAddressAs = vi.fn();
+    const onRename = vi.fn();
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[MARK]}
+        onChange={vi.fn()}
+        onRename={onRename}
+        onAddressAs={onAddressAs}
+      />,
+    );
+    const field = screen.getByLabelText("mark form of address");
+    fireEvent.change(field, { target: { value: "Sir" } });
+    fireEvent.blur(field);
+    expect(onAddressAs).toHaveBeenCalledWith("mark", "Sir");
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("shows the form of address that is already set", () => {
+    render(
+      <VoicesCard
+        knownVoicesOnly={false}
+        recognitionOn
+        voices={[{ ...MARK, address_as: "Sir" }]}
+        onChange={vi.fn()}
+        onAddressAs={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("mark form of address")).toHaveValue("Sir");
   });
 });

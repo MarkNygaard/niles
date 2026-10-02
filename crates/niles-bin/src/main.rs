@@ -949,8 +949,12 @@ fn origin_context(room: &RoomName) -> String {
 #[derive(Debug)]
 enum SpeakerContext {
     Disabled,
-    /// Confident match (display name).
-    Identified(String),
+    /// Confident match: the display name, and how they like to be
+    /// addressed if they have said ("Sir").
+    Identified {
+        name: String,
+        address: Option<String>,
+    },
     /// Recognition ran but found no confident match.
     Unknown,
 }
@@ -958,7 +962,18 @@ enum SpeakerContext {
 fn speaker_context(speaker: &SpeakerContext) -> Option<String> {
     match speaker {
         SpeakerContext::Disabled => None,
-        SpeakerContext::Identified(name) => Some(format!(
+        SpeakerContext::Identified {
+            name,
+            address: Some(address),
+        } => Some(format!(
+            "\n\n# Speaker\n\nThe speaker is **{name}**. Address them as \"{address}\" the way a \
+             butler would — in greetings, acknowledgements and where it reads naturally, not in \
+             every sentence. Their name is still {name}: use it when they ask who they are.\n"
+        )),
+        SpeakerContext::Identified {
+            name,
+            address: None,
+        } => Some(format!(
             "\n\n# Speaker\n\nThe speaker is **{name}**. Use their name when it makes the reply more natural.\n"
         )),
         SpeakerContext::Unknown => {
@@ -970,12 +985,16 @@ fn speaker_context(speaker: &SpeakerContext) -> Option<String> {
 /// Map a raw identification result into a `SpeakerContext`.
 /// `attempted` is false when recognition is disabled or the audio
 /// format was unsupported, so the prompt stays unchanged.
-fn speaker_context_from(attempted: bool, ident: Option<(String, f32)>) -> SpeakerContext {
+fn speaker_context_from(
+    attempted: bool,
+    ident: Option<(String, f32)>,
+    address: Option<String>,
+) -> SpeakerContext {
     if !attempted {
         return SpeakerContext::Disabled;
     }
     match ident {
-        Some((name, _)) => SpeakerContext::Identified(name),
+        Some((name, _)) => SpeakerContext::Identified { name, address },
         None => SpeakerContext::Unknown,
     }
 }
@@ -2530,7 +2549,13 @@ fn spawn_dispatch_task(
                     }
                 }
             }
-            let speaker = speaker_context_from(attempted, ident);
+            // By the voice, like "who am I": the slug is the key the
+            // address is kept under, and the display name is not.
+            let address = match (ctx.identifier.as_ref(), voice.as_deref()) {
+                (Some(id), Some(v)) => id.whose_voice(v).and_then(|slug| id.address_as(&slug)),
+                _ => None,
+            };
+            let speaker = speaker_context_from(attempted, ident, address);
             let dispatch_started = Instant::now();
             let say =
                 handle_transcript(&ctx, peer, &text, confidence, &speaker, voice.as_deref()).await;
@@ -2566,7 +2591,7 @@ fn spawn_dispatch_task(
                 transcript: text.clone(),
                 spoken_response: say.clone(),
                 speaker: match &speaker {
-                    SpeakerContext::Identified(name) => Some(name.clone()),
+                    SpeakerContext::Identified { name, .. } => Some(name.clone()),
                     _ => None,
                 },
             };
@@ -3284,6 +3309,28 @@ fn strip_wake_word(text: &str) -> &str {
     }
 }
 
+/// A short confirmation with the speaker's form of address at the end.
+///
+/// "Living room lights off." becomes "Living room lights off, Sir." —
+/// the address goes before the closing mark, and a reply of several
+/// sentences gets it on the last one only.
+fn addressed(reply: &str, address: Option<&str>) -> String {
+    let Some(address) = address.map(str::trim).filter(|a| !a.is_empty()) else {
+        return reply.to_string();
+    };
+    let trimmed = reply.trim_end();
+    match trimmed.chars().last() {
+        Some(mark @ ('.' | '!' | '?')) => {
+            format!(
+                "{}, {address}{mark}",
+                &trimmed[..trimmed.len() - mark.len_utf8()]
+            )
+        }
+        Some(_) => format!("{trimmed}, {address}."),
+        None => reply.to_string(),
+    }
+}
+
 /// Whether the transcript begins by calling Niles.
 ///
 /// The satellite sends the wake word with the command, so a real wake
@@ -3337,7 +3384,7 @@ async fn dispatch_transcript(
     // audio was unusable.
     voice: Option<&[f32]>,
 ) -> Option<String> {
-    let addressed = heard_its_name(text);
+    let called_by_name = heard_its_name(text);
     let text = strip_wake_word(text);
 
     // `transcribe_session` already trims, so an empty `text` here means
@@ -3411,7 +3458,7 @@ async fn dispatch_transcript(
     // room, not a person: a television, a conversation. Silent, like the
     // other gates — and "stop" to a ringing alarm still gets through.
     let require_name = settings.as_ref().is_some_and(|c| c.stt.require_name);
-    if require_name && !addressed && !stopping_an_alarm {
+    if require_name && !called_by_name && !stopping_an_alarm {
         tracing::info!("[{peer}] not acting on {text:?}: it did not start with Niles's name");
         return None;
     }
@@ -3469,7 +3516,14 @@ async fn dispatch_transcript(
     };
 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
-    match intent {
+    // "Lights off, Sir." — but not on the replies that are about who
+    // somebody is, which have to be the name.
+    let address = match speaker {
+        SpeakerContext::Identified { address, .. } => address.clone(),
+        _ => None,
+    }
+    .filter(|_| !matches!(intent, Intent::WhoAmI | Intent::EnrollSpeaker { .. }));
+    let reply = match intent {
         Intent::WeatherQuery { day, rain } => Some(climate::weather(ctx, day, rain).await),
         heating @ (Intent::HeatingQuery { .. }
         | Intent::HeatingSet { .. }
@@ -3538,7 +3592,7 @@ async fn dispatch_transcript(
                     id.whose_voice(voice).and_then(|slug| id.how_to_say(&slug))
                 }
                 _ => match speaker {
-                    SpeakerContext::Identified(name) => Some(name.clone()),
+                    SpeakerContext::Identified { name, .. } => Some(name.clone()),
                     _ => None,
                 },
             };
@@ -3943,7 +3997,8 @@ async fn dispatch_transcript(
             tracing::info!("{peer}: unknown intent variant, skipping dispatch");
             Some(response::fallback())
         }
-    }
+    };
+    reply.map(|r| addressed(&r, address.as_deref()))
 }
 
 /// Outcome of resolving a room name to a device list.
@@ -6060,6 +6115,37 @@ mod noise_transcript_tests {
     }
 
     #[test]
+    fn a_confirmation_ends_with_the_form_of_address() {
+        assert_eq!(
+            addressed("Living room lights off.", Some("Sir")),
+            "Living room lights off, Sir."
+        );
+        assert_eq!(addressed("Which room?", Some("Sir")), "Which room, Sir?");
+        assert_eq!(
+            addressed("12 degrees now. Expect rain.", Some("Sir")),
+            "12 degrees now. Expect rain, Sir."
+        );
+        assert_eq!(addressed("Done", Some("Miss")), "Done, Miss.");
+    }
+
+    #[test]
+    fn nobody_addressed_is_left_as_it_was() {
+        assert_eq!(addressed("Lights off.", None), "Lights off.");
+        assert_eq!(addressed("Lights off.", Some("  ")), "Lights off.");
+    }
+
+    #[test]
+    fn the_language_model_is_told_how_to_address_them() {
+        let prompt = speaker_context(&SpeakerContext::Identified {
+            name: "Mark".into(),
+            address: Some("Sir".into()),
+        })
+        .unwrap();
+        assert!(prompt.contains("Address them as \"Sir\""), "{prompt}");
+        assert!(prompt.contains("Their name is still Mark"), "{prompt}");
+    }
+
+    #[test]
     fn a_command_that_calls_niles_is_addressed() {
         for heard in [
             "Niles, turn off the light.",
@@ -7736,7 +7822,10 @@ mod system_prompt_tests {
             None,
             None,
             None,
-            &SpeakerContext::Identified("Mark".into()),
+            &SpeakerContext::Identified {
+                name: "Mark".into(),
+                address: None,
+            },
         );
         assert!(
             out.contains("# Speaker"),
@@ -7849,6 +7938,10 @@ mod system_prompt_tests {
             Some(speaker.to_string())
         }
 
+        fn address_as(&self, _speaker: &str) -> Option<String> {
+            None
+        }
+
         fn whose_voice(&self, _embedding: &[f32]) -> Option<String> {
             self.result.as_ref().map(|(name, _)| name.to_lowercase())
         }
@@ -7901,14 +7994,14 @@ mod system_prompt_tests {
     #[test]
     fn speaker_context_from_attempted_match() {
         let mock = MockIdentifier::with(Some(("Mark".into(), 0.95)));
-        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]));
-        assert!(matches!(ctx, SpeakerContext::Identified(ref name) if name == "Mark"),);
+        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]), None);
+        assert!(matches!(ctx, SpeakerContext::Identified { ref name, .. } if name == "Mark"),);
     }
 
     #[test]
     fn speaker_context_from_attempted_unknown() {
         let mock = MockIdentifier::with(None);
-        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]));
+        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]), None);
         assert!(
             matches!(ctx, SpeakerContext::Unknown),
             "expected Unknown, got {ctx:?}"
@@ -7918,7 +8011,7 @@ mod system_prompt_tests {
     #[test]
     fn speaker_context_from_not_attempted_disabled() {
         let mock = MockIdentifier::with(Some(("Mark".into(), 0.95)));
-        let ctx = speaker_context_from(false, mock.classify(&[0.0; 192]));
+        let ctx = speaker_context_from(false, mock.classify(&[0.0; 192]), None);
         assert!(
             matches!(ctx, SpeakerContext::Disabled),
             "expected Disabled when attempted=false, got {ctx:?}"

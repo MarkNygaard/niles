@@ -44,6 +44,9 @@ pub trait VoiceRoster: Send + Sync {
 
     /// Set how the name is said. `None` means say the display name.
     async fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()>;
+
+    /// Set how they are addressed. `None` means by nothing in particular.
+    async fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()>;
 }
 
 #[async_trait]
@@ -69,6 +72,9 @@ pub trait EnrollmentBackend: Send + Sync {
 
     /// Set how the name is said. `None` means say the display name.
     async fn set_spoken_as(&self, speaker: &str, spoken_as: Option<&str>) -> Result<()>;
+
+    /// Set how they are addressed. `None` means by nothing in particular.
+    async fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()>;
 
     /// Record that this speaker was just heard.
     ///
