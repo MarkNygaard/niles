@@ -22,6 +22,10 @@ pub trait TokenStore: Send + Sync {
 
     /// Replace the stored refresh token.
     async fn save(&self, refresh_token: &str) -> Result<()>;
+
+    /// Forget it — tado refused it, and a dead token kept on file reads
+    /// as "connected" and hides the way to connect again.
+    async fn clear(&self) -> Result<()>;
 }
 
 /// A store that forgets, for tests and for `niles presence --once`.
@@ -51,6 +55,11 @@ impl TokenStore for MemoryTokenStore {
 
     async fn save(&self, refresh_token: &str) -> Result<()> {
         *self.token.lock().unwrap() = Some(refresh_token.to_string());
+        Ok(())
+    }
+
+    async fn clear(&self) -> Result<()> {
+        *self.token.lock().unwrap() = None;
         Ok(())
     }
 }

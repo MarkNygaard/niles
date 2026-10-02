@@ -257,8 +257,15 @@ impl TadoSource {
         let (status, body) = self.transport.post_form(&url, &form).await?;
 
         if status == 400 || status == 401 {
+            // Forgotten, not kept: Settings decides "connected" by whether
+            // a token is on file, so a refused one left there showed the
+            // card as connected and refused the button to connect again.
+            if let Err(e) = self.tokens.clear().await {
+                tracing::warn!("could not forget tado's refused token: {e}");
+            }
             return Err(Error::Auth {
-                reason: "the stored refresh token was refused — authorise again".into(),
+                reason: "the stored refresh token was refused — connect tado again in Settings"
+                    .into(),
             });
         }
         if !(200..300).contains(&status) {
@@ -661,9 +668,23 @@ mod tests {
         let (_mock, source) = source_with(vec![Ok((400, r#"{"error":"invalid_grant"}"#.into()))]);
         let err = source.poll().await.unwrap_err();
         match err {
-            Error::Auth { reason } => assert!(reason.contains("authorise again"), "{reason}"),
+            Error::Auth { reason } => assert!(reason.contains("connect tado again"), "{reason}"),
             other => panic!("expected an auth error, got {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_refused_token_is_forgotten_so_it_can_be_connected_again() {
+        // Kept on file, it read as "connected": the card showed no way to
+        // connect, and connecting answered "already connected".
+        let store = Arc::new(MemoryTokenStore::with_token("refresh-1"));
+        let (_mock, source) = with_store(
+            vec![Ok((400, r#"{"error":"invalid_grant"}"#.into()))],
+            store,
+        );
+        assert!(source.is_authorised().await.unwrap());
+        let _ = source.poll().await;
+        assert!(!source.is_authorised().await.unwrap());
     }
 
     #[tokio::test]
