@@ -166,19 +166,20 @@ pub(crate) fn at_volume(pcm: &[u8], bits_per_sample: u16, percent: u8) -> Cow<'_
     Cow::Owned(scaled)
 }
 
-/// The rate the satellite plays at.
+/// The rate the satellite plays at: its whole I2S bus.
 ///
 /// It listens while it talks, so its microphone and speaker share one
-/// clock, and the microphone needs 16 kHz.
-pub(crate) const SATELLITE_RATE: u32 = 16_000;
+/// clock. That clock used to be the microphone's 16 kHz, which cut off
+/// everything above 8 kHz — the "s" and "t" of every word. Since the
+/// XVF3800 runs its 48 kHz firmware and drives the clock itself, the bus is
+/// 48 kHz and the satellite decimates the microphone on its own side.
+pub(crate) const SATELLITE_RATE: u32 = 48_000;
 
-/// Speech as the satellite should be handed it: 16 kHz.
+/// Speech as the satellite should be handed it: at the bus rate.
 ///
-/// Piper renders 22.05 kHz. The satellite used to convert that itself by
-/// joining the dots between samples, which folds everything between 8 and
-/// 11 kHz back down into the audible range as a rasp on every "s". Done
-/// here with a low-pass first, the treble 16 kHz cannot carry is simply
-/// not there, rather than turned into noise.
+/// Piper renders 22.05 kHz. The satellite would otherwise convert it by
+/// joining the dots between samples, which images and aliases; done here
+/// with a windowed sinc, it arrives ready to play.
 ///
 /// Mono 16-bit only, which is what Piper produces; anything else is left
 /// alone for the satellite to deal with as before.
@@ -304,6 +305,7 @@ mod tests {
     #[test]
     fn a_second_of_speech_is_a_second_at_the_new_rate() {
         assert_eq!(resample(&vec![0.0; 22_050], 22_050, 16_000).len(), 16_000);
+        assert_eq!(resample(&vec![0.0; 22_050], 22_050, 48_000).len(), 48_000);
     }
 
     #[test]
@@ -323,19 +325,19 @@ mod tests {
     }
 
     #[test]
-    fn audio_already_at_16k_is_untouched() {
+    fn audio_already_at_the_bus_rate_is_untouched() {
         let pcm = vec![1u8, 0, 2, 0];
-        let (out, fmt) = for_satellite(pcm.clone(), AudioFormat::new(16_000, 16, 1));
+        let (out, fmt) = for_satellite(pcm.clone(), AudioFormat::new(48_000, 16, 1));
         assert_eq!(out, pcm);
-        assert_eq!(fmt.sample_rate_hz, 16_000);
+        assert_eq!(fmt.sample_rate_hz, 48_000);
     }
 
     #[test]
-    fn piper_is_handed_over_at_16k() {
+    fn piper_is_handed_over_at_48k() {
         let pcm: Vec<u8> = vec![0u8; 22_050 * 2];
         let (out, fmt) = for_satellite(pcm, AudioFormat::new(22_050, 16, 1));
-        assert_eq!(fmt.sample_rate_hz, 16_000);
-        assert_eq!(out.len(), 16_000 * 2);
+        assert_eq!(fmt.sample_rate_hz, 48_000);
+        assert_eq!(out.len(), 48_000 * 2);
     }
 
     fn pcm(samples: &[i16]) -> Vec<u8> {
