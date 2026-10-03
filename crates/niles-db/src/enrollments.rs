@@ -36,6 +36,8 @@ create table if not exists enrolled_speakers (
 -- must keep it.
 alter table enrolled_speakers add column if not exists spoken_as text;
 alter table enrolled_speakers add column if not exists address_as text;
+alter table enrolled_speakers add column if not exists notes text;
+alter table enrolled_speakers add column if not exists birthday text;
 ";
 
 pub struct PostgresEnrollments {
@@ -81,6 +83,8 @@ fn row_to_speaker(row: &PgRow) -> Result<EnrolledSpeaker> {
         display_name: row.try_get("display_name").map_err(storage)?,
         spoken_as: row.try_get("spoken_as").map_err(storage)?,
         address_as: row.try_get("address_as").map_err(storage)?,
+        notes: row.try_get("notes").map_err(storage)?,
+        birthday: row.try_get("birthday").map_err(storage)?,
         created_at: row.try_get("created_at").map_err(storage)?,
         last_seen_at: row.try_get("last_seen_at").map_err(storage)?,
         clip_count: embeddings.len(),
@@ -198,6 +202,28 @@ impl EnrollmentBackend for PostgresEnrollments {
         sqlx::query("update enrolled_speakers set address_as = $2 where speaker = $1")
             .bind(speaker)
             .bind(address_as)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn set_notes(&self, speaker: &str, notes: Option<&str>) -> Result<()> {
+        self.ensure_schema().await?;
+        sqlx::query("update enrolled_speakers set notes = $2 where speaker = $1")
+            .bind(speaker)
+            .bind(notes)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn set_birthday(&self, speaker: &str, birthday: Option<&str>) -> Result<()> {
+        self.ensure_schema().await?;
+        sqlx::query("update enrolled_speakers set birthday = $2 where speaker = $1")
+            .bind(speaker)
+            .bind(birthday)
             .execute(&self.pool)
             .await
             .map_err(storage)?;

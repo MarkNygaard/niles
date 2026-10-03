@@ -47,6 +47,12 @@ pub trait VoiceRoster: Send + Sync {
 
     /// Set how they are addressed. `None` means by nothing in particular.
     async fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()>;
+
+    /// Replace their notes. `None` clears them.
+    async fn set_notes(&self, speaker: &str, notes: Option<&str>) -> Result<()>;
+
+    /// Set their birthday as "MM-DD". `None` clears it.
+    async fn set_birthday(&self, speaker: &str, birthday: Option<&str>) -> Result<()>;
 }
 
 #[async_trait]
@@ -75,6 +81,12 @@ pub trait EnrollmentBackend: Send + Sync {
 
     /// Set how they are addressed. `None` means by nothing in particular.
     async fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()>;
+
+    /// Replace their notes. `None` clears them.
+    async fn set_notes(&self, speaker: &str, notes: Option<&str>) -> Result<()>;
+
+    /// Set their birthday as "MM-DD". `None` clears it.
+    async fn set_birthday(&self, speaker: &str, birthday: Option<&str>) -> Result<()>;
 
     /// Record that this speaker was just heard.
     ///

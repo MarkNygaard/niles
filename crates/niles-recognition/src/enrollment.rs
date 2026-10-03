@@ -17,6 +17,10 @@ pub struct EnrollmentEntry {
     pub embedding: Vec<f32>,
 }
 
+/// How long somebody's notes may be: a page of facts, short enough to go
+/// in every prompt they are the speaker of.
+pub const NOTES_LIMIT: usize = 1500;
+
 /// On-disk record for one enrolled speaker.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EnrolledSpeaker {
@@ -37,6 +41,15 @@ pub struct EnrolledSpeaker {
     /// talking to, and "who am I" still answers with the name.
     #[serde(default)]
     pub address_as: Option<String>,
+    /// What Niles knows about them: their own USER.md. Theirs alone — the
+    /// app shows it only to them, and the LLM sees it only when it is
+    /// them speaking.
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// "MM-DD", so the morning greeting can say happy birthday. No year:
+    /// nobody needs Niles counting.
+    #[serde(default)]
+    pub birthday: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub clip_count: usize,
@@ -89,6 +102,8 @@ impl EnrollmentStore {
                 display_name: default_display_name(speaker),
                 spoken_as: None,
                 address_as: None,
+                notes: None,
+                birthday: None,
                 created_at: Utc::now(),
                 last_seen_at: None,
                 clip_count: 0,
@@ -185,6 +200,16 @@ impl EnrollmentStore {
     pub fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()> {
         self.edit(speaker, |record| {
             record.address_as = address_as.map(str::to_string);
+        })
+    }
+
+    pub fn set_notes(&self, speaker: &str, notes: Option<&str>) -> Result<()> {
+        self.edit(speaker, |record| record.notes = notes.map(str::to_string))
+    }
+
+    pub fn set_birthday(&self, speaker: &str, birthday: Option<&str>) -> Result<()> {
+        self.edit(speaker, |record| {
+            record.birthday = birthday.map(str::to_string)
         })
     }
 
@@ -386,6 +411,14 @@ impl crate::EnrollmentBackend for EnrollmentStore {
 
     async fn set_address_as(&self, speaker: &str, address_as: Option<&str>) -> Result<()> {
         EnrollmentStore::set_address_as(self, speaker, address_as)
+    }
+
+    async fn set_notes(&self, speaker: &str, notes: Option<&str>) -> Result<()> {
+        EnrollmentStore::set_notes(self, speaker, notes)
+    }
+
+    async fn set_birthday(&self, speaker: &str, birthday: Option<&str>) -> Result<()> {
+        EnrollmentStore::set_birthday(self, speaker, birthday)
     }
 
     async fn bump_last_seen(&self, speaker: &str) -> Result<()> {

@@ -58,6 +58,7 @@ mod conversation;
 mod courtesy;
 mod last_target;
 mod manifest;
+mod profile;
 mod push;
 mod recognition;
 mod response;
@@ -950,11 +951,11 @@ fn origin_context(room: &RoomName) -> String {
 #[derive(Debug)]
 enum SpeakerContext {
     Disabled,
-    /// Confident match: the display name, and how they like to be
-    /// addressed if they have said ("Sir").
+    /// Confident match: the display name, and what Niles knows about
+    /// them — how they like to be addressed, their notes, their birthday.
     Identified {
         name: String,
-        address: Option<String>,
+        known: profile::Known,
     },
     /// Recognition ran but found no confident match.
     Unknown,
@@ -963,20 +964,28 @@ enum SpeakerContext {
 fn speaker_context(speaker: &SpeakerContext) -> Option<String> {
     match speaker {
         SpeakerContext::Disabled => None,
-        SpeakerContext::Identified {
-            name,
-            address: Some(address),
-        } => Some(format!(
-            "\n\n# Speaker\n\nThe speaker is **{name}**. Address them as \"{address}\" the way a \
-             butler would — in greetings, acknowledgements and where it reads naturally, not in \
-             every sentence. Their name is still {name}: use it when they ask who they are.\n"
-        )),
-        SpeakerContext::Identified {
-            name,
-            address: None,
-        } => Some(format!(
-            "\n\n# Speaker\n\nThe speaker is **{name}**. Use their name when it makes the reply more natural.\n"
-        )),
+        SpeakerContext::Identified { name, known } => {
+            let mut section = match &known.address {
+                Some(address) => format!(
+                    "\n\n# Speaker\n\nThe speaker is **{name}**. Address them as \"{address}\" the way a \
+                     butler would — in greetings, acknowledgements and where it reads naturally, not in \
+                     every sentence. Their name is still {name}: use it when they ask who they are.\n"
+                ),
+                None => format!(
+                    "\n\n# Speaker\n\nThe speaker is **{name}**. Use their name when it makes the reply more natural.\n"
+                ),
+            };
+            if let Some(day) = known.birthday.as_deref().and_then(profile::spoken_birthday) {
+                section.push_str(&format!("Their birthday is {day}.\n"));
+            }
+            if let Some(notes) = known.notes.as_deref().filter(|n| !n.trim().is_empty()) {
+                section.push_str(&format!(
+                    "\n## What you know about {name}\n\nTheir own notes, which they can read and \
+                     which you keep with remember_about_me:\n\n{notes}\n"
+                ));
+            }
+            Some(section)
+        }
         SpeakerContext::Unknown => {
             Some("\n\n# Speaker\n\nThe speaker is not recognized.\n".to_string())
         }
@@ -989,13 +998,13 @@ fn speaker_context(speaker: &SpeakerContext) -> Option<String> {
 fn speaker_context_from(
     attempted: bool,
     ident: Option<(String, f32)>,
-    address: Option<String>,
+    known: profile::Known,
 ) -> SpeakerContext {
     if !attempted {
         return SpeakerContext::Disabled;
     }
     match ident {
-        Some((name, _)) => SpeakerContext::Identified { name, address },
+        Some((name, _)) => SpeakerContext::Identified { name, known },
         None => SpeakerContext::Unknown,
     }
 }
@@ -2597,12 +2606,20 @@ fn spawn_dispatch_task(
                 }
             }
             // By the voice, like "who am I": the slug is the key the
-            // address is kept under, and the display name is not.
-            let address = match (ctx.identifier.as_ref(), voice.as_deref()) {
-                (Some(id), Some(v)) => id.whose_voice(v).and_then(|slug| id.address_as(&slug)),
-                _ => None,
+            // profile is kept under, and the display name is not.
+            let known = match (ctx.identifier.as_ref(), voice.as_deref()) {
+                (Some(id), Some(v)) => id.whose_voice(v).map_or_else(Default::default, |slug| {
+                    let (notes, birthday) = id.profile(&slug);
+                    profile::Known {
+                        address: id.address_as(&slug),
+                        notes,
+                        birthday,
+                        slug: Some(slug),
+                    }
+                }),
+                _ => profile::Known::default(),
             };
-            let speaker = speaker_context_from(attempted, ident, address);
+            let speaker = speaker_context_from(attempted, ident, known);
             let dispatch_started = Instant::now();
             let say =
                 handle_transcript(&ctx, peer, &text, confidence, &speaker, voice.as_deref()).await;
@@ -2795,9 +2812,9 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let identifier = recogniser
         .clone()
         .map(|r| r as Arc<dyn crate::recognition::SpeakerIdentifier>);
-    // `voice-dispatch` serves no API, so there is nobody to show the
-    // roster to.
-    drop(recogniser);
+    if let Some(roster) = recogniser {
+        profile::register(&mut tools, roster);
+    }
 
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(bind)
         .await
@@ -3074,14 +3091,14 @@ async fn handle_transcript(
     // Alexa does. Decided before the reply is built, because a greeting
     // addresses them and the confirmation must not then do it again.
     let greeting = match speaker {
-        SpeakerContext::Identified { name, address } => {
+        SpeakerContext::Identified { name, known } => {
             let local = ctx
                 .home
                 .timezone
                 .parse::<chrono_tz::Tz>()
                 .ok()
                 .map(|tz| Utc::now().with_timezone(&tz));
-            let whom = address.clone().or_else(|| {
+            let whom = known.address.clone().or_else(|| {
                 let id = ctx.identifier.as_ref()?;
                 id.whose_voice(voice?).and_then(|slug| id.how_to_say(&slug))
             });
@@ -3090,14 +3107,28 @@ async fn handle_transcript(
                     ctx.courtesy
                         .greet_now(name, l.date_naive(), l.hour(), Instant::now())
                 })
-                .map(|_| (name.clone(), whom.unwrap_or_else(|| name.clone())))
+                .map(|l| {
+                    let birthday = profile::is_birthday(known.birthday.as_deref(), l.date_naive());
+                    (name.clone(), whom.unwrap_or_else(|| name.clone()), birthday)
+                })
         }
         _ => None,
     };
-    let mut response = dispatch_transcript(ctx, peer, text, confidence, speaker, voice).await;
-    if let Some((name, whom)) = greeting {
+    // The profile tools write to whoever is speaking, and nobody else:
+    // the voice decides that, not the model.
+    let slug = match speaker {
+        SpeakerContext::Identified { known, .. } => known.slug.clone(),
+        _ => None,
+    };
+    let mut response = profile::SPEAKER
+        .scope(
+            slug,
+            dispatch_transcript(ctx, peer, text, confidence, speaker, voice),
+        )
+        .await;
+    if let Some((name, whom, birthday)) = greeting {
         match &response {
-            Some(reply) => response = Some(courtesy::greeted(reply, &whom)),
+            Some(reply) => response = Some(courtesy::greeted(reply, &whom, birthday)),
             None => ctx.courtesy.ungreet(&name),
         }
     }
@@ -3603,10 +3634,10 @@ async fn dispatch_transcript(
     // "Lights off, Sir." — but not on the replies that are about who
     // somebody is, which have to be the name.
     let address = match speaker {
-        SpeakerContext::Identified {
-            name,
-            address: Some(address),
-        } => Some((name.clone(), address.clone())),
+        SpeakerContext::Identified { name, known } => known
+            .address
+            .as_ref()
+            .map(|address| (name.clone(), address.clone())),
         _ => None,
     }
     .filter(|_| !matches!(intent, Intent::WhoAmI | Intent::EnrollSpeaker { .. }));
@@ -5075,6 +5106,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .clone()
         .map(|r| r as Arc<dyn crate::recognition::SpeakerIdentifier>);
     let voices = recogniser.map(|r| r as Arc<dyn niles_recognition::VoiceRoster>);
+    if let Some(roster) = &voices {
+        profile::register(&mut tools, roster.clone());
+    }
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
         .await
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
@@ -6245,11 +6279,40 @@ mod noise_transcript_tests {
     fn the_language_model_is_told_how_to_address_them() {
         let prompt = speaker_context(&SpeakerContext::Identified {
             name: "Mark".into(),
-            address: Some("Sir".into()),
+            known: profile::Known {
+                address: Some("Sir".into()),
+                ..Default::default()
+            },
         })
         .unwrap();
         assert!(prompt.contains("Address them as \"Sir\""), "{prompt}");
         assert!(prompt.contains("Their name is still Mark"), "{prompt}");
+    }
+
+    #[test]
+    fn the_language_model_is_shown_their_notes_and_birthday() {
+        let prompt = speaker_context(&SpeakerContext::Identified {
+            name: "Mark".into(),
+            known: profile::Known {
+                notes: Some("- Prefers tea to coffee".into()),
+                birthday: Some("10-03".into()),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert!(prompt.contains("Prefers tea to coffee"), "{prompt}");
+        assert!(prompt.contains("Their birthday is 3 October"), "{prompt}");
+    }
+
+    #[test]
+    fn nothing_known_adds_nothing() {
+        let prompt = speaker_context(&SpeakerContext::Identified {
+            name: "Mark".into(),
+            known: profile::Known::default(),
+        })
+        .unwrap();
+        assert!(!prompt.contains("birthday"), "{prompt}");
+        assert!(!prompt.contains("What you know"), "{prompt}");
     }
 
     #[test]
@@ -7931,7 +7994,7 @@ mod system_prompt_tests {
             None,
             &SpeakerContext::Identified {
                 name: "Mark".into(),
-                address: None,
+                known: profile::Known::default(),
             },
         );
         assert!(
@@ -8049,6 +8112,10 @@ mod system_prompt_tests {
             None
         }
 
+        fn profile(&self, _speaker: &str) -> (Option<String>, Option<String>) {
+            (None, None)
+        }
+
         fn whose_voice(&self, _embedding: &[f32]) -> Option<String> {
             self.result.as_ref().map(|(name, _)| name.to_lowercase())
         }
@@ -8101,14 +8168,14 @@ mod system_prompt_tests {
     #[test]
     fn speaker_context_from_attempted_match() {
         let mock = MockIdentifier::with(Some(("Mark".into(), 0.95)));
-        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]), None);
+        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]), profile::Known::default());
         assert!(matches!(ctx, SpeakerContext::Identified { ref name, .. } if name == "Mark"),);
     }
 
     #[test]
     fn speaker_context_from_attempted_unknown() {
         let mock = MockIdentifier::with(None);
-        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]), None);
+        let ctx = speaker_context_from(true, mock.classify(&[0.0; 192]), profile::Known::default());
         assert!(
             matches!(ctx, SpeakerContext::Unknown),
             "expected Unknown, got {ctx:?}"
@@ -8118,7 +8185,8 @@ mod system_prompt_tests {
     #[test]
     fn speaker_context_from_not_attempted_disabled() {
         let mock = MockIdentifier::with(Some(("Mark".into(), 0.95)));
-        let ctx = speaker_context_from(false, mock.classify(&[0.0; 192]), None);
+        let ctx =
+            speaker_context_from(false, mock.classify(&[0.0; 192]), profile::Known::default());
         assert!(
             matches!(ctx, SpeakerContext::Disabled),
             "expected Disabled when attempted=false, got {ctx:?}"

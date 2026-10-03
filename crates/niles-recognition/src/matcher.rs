@@ -101,6 +101,14 @@ impl Matcher {
             .and_then(|s| s.address_as.as_deref())
     }
 
+    /// Their notes and birthday, if they have any.
+    pub fn profile(&self, speaker: &str) -> Option<(Option<&str>, Option<&str>)> {
+        self.speakers
+            .iter()
+            .find(|s| s.speaker == speaker)
+            .map(|s| (s.notes.as_deref(), s.birthday.as_deref()))
+    }
+
     /// Classify `query` against the roster.
     ///
     /// # Panics
@@ -232,6 +240,8 @@ mod tests {
             display_name: name.to_string(),
             spoken_as: None,
             address_as: None,
+            notes: None,
+            birthday: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: entries.len(),
@@ -345,6 +355,8 @@ mod tests {
             display_name: "Empty".to_string(),
             spoken_as: None,
             address_as: None,
+            notes: None,
+            birthday: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -369,6 +381,8 @@ mod tests {
             display_name: "Empty".to_string(),
             spoken_as: None,
             address_as: None,
+            notes: None,
+            birthday: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -393,6 +407,8 @@ mod tests {
             display_name: "A".to_string(),
             spoken_as: None,
             address_as: None,
+            notes: None,
+            birthday: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
@@ -403,6 +419,8 @@ mod tests {
             display_name: "B".to_string(),
             spoken_as: None,
             address_as: None,
+            notes: None,
+            birthday: None,
             created_at: Utc::now(),
             last_seen_at: None,
             clip_count: 0,
