@@ -18,7 +18,6 @@ import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
 import { VoicesCard } from "@/components/VoicesCard";
-import { MeCard } from "@/components/MeCard";
 import { CaptureCard } from "@/components/CaptureCard";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
 import { RoleCard } from "@/components/RoleCard";
@@ -270,23 +269,6 @@ export function ConfigPanel() {
       api.renameVoice(speaker, name),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["voices"] }),
   });
-  // Answers 401 to the API token, which is nobody in particular.
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
-  // The dashboard's key, so pairing here takes its offer away there.
-  const phoneStatus = useQuery({
-    queryKey: ["presence-device"],
-    queryFn: api.deviceStatus,
-    retry: false,
-  });
-  const afterMe = () => {
-    queryClient.invalidateQueries({ queryKey: ["me"] });
-    queryClient.invalidateQueries({ queryKey: ["presence-device"] });
-    // The voice list shows the name, and the address is beside it.
-    queryClient.invalidateQueries({ queryKey: ["voices"] });
-  };
-  const updateMe = useMutation({ mutationFn: api.updateMe, onSuccess: afterMe });
-  const pairPhone = useMutation({ mutationFn: api.pairDevice, onSuccess: afterMe });
-  const unpairPhone = useMutation({ mutationFn: api.unpairPhone, onSuccess: afterMe });
   // Every call reaches tado, so this is asked once rather than on a
   // timer: it is a setup list, not a readout.
   const climate = useQuery({
@@ -687,24 +669,6 @@ export function ConfigPanel() {
               reset.mutate({ row: "satellites", paths: [`satellites.${name}`] })
             }
           />
-        </TabsContent>
-
-        <TabsContent value="me">
-          {me.isError ? (
-            <p className="text-muted-foreground text-sm">
-              This page belongs to whoever is signed in, and nobody is.
-            </p>
-          ) : (
-            <MeCard
-              me={me.data}
-              device={phoneStatus.data}
-              saving={updateMe.isPending || pairPhone.isPending || unpairPhone.isPending}
-              error={updateMe.error?.message ?? unpairPhone.error?.message ?? pairPhone.error?.message}
-              onSave={(update) => updateMe.mutate(update)}
-              onPair={() => pairPhone.mutate()}
-              onUnpair={() => unpairPhone.mutate()}
-            />
-          )}
         </TabsContent>
 
         <TabsContent value="people">

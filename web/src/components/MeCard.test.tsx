@@ -34,25 +34,35 @@ function setup(props: Partial<React.ComponentProps<typeof MeCard>> = {}) {
 }
 
 describe("birthday", () => {
-  it("is month and day, padded", () => {
-    expect(birthdayFrom("10", "3")).toBe("10-03");
-    expect(birthdayFrom("2", "29")).toBe("02-29");
+  const parts = (year: string, month: string, day: string) => ({ year, month, day });
+
+  it("is month and day, padded, with the year when given", () => {
+    expect(birthdayFrom(parts("", "10", "3"))).toBe("10-03");
+    expect(birthdayFrom(parts("1990", "10", "3"))).toBe("1990-10-03");
+    expect(birthdayFrom(parts("", "2", "29"))).toBe("02-29");
   });
 
-  it("is nothing until both halves are there and the day exists", () => {
-    expect(birthdayFrom("10", "")).toBeNull();
-    expect(birthdayFrom("", "3")).toBeNull();
-    expect(birthdayFrom("2", "30")).toBeNull();
-    expect(birthdayFrom("4", "31")).toBeNull();
+  it("is nothing until day and month are there and the day exists", () => {
+    expect(birthdayFrom(parts("", "10", ""))).toBeNull();
+    expect(birthdayFrom(parts("1990", "", "3"))).toBeNull();
+    expect(birthdayFrom(parts("", "2", "30"))).toBeNull();
+    expect(birthdayFrom(parts("1991", "2", "29"))).toBeNull();
   });
 
-  it("clears when both are emptied", () => {
-    expect(birthdayFrom("", "")).toBe("");
+  it("takes only a year somebody could have been born in", () => {
+    expect(birthdayFrom(parts("2027", "1", "1"), 2026)).toBeNull();
+    expect(birthdayFrom(parts("199", "1", "1"), 2026)).toBeNull();
+    expect(birthdayFrom(parts("1850", "1", "1"), 2026)).toBeNull();
+  });
+
+  it("clears when everything is emptied", () => {
+    expect(birthdayFrom(parts("", "", ""))).toBe("");
   });
 
   it("reads back what was saved", () => {
-    expect(birthdayParts("10-03")).toEqual({ month: "10", day: "3" });
-    expect(birthdayParts(null)).toEqual({ month: "", day: "" });
+    expect(birthdayParts("10-03")).toEqual(parts("", "10", "3"));
+    expect(birthdayParts("1990-10-03")).toEqual(parts("1990", "10", "3"));
+    expect(birthdayParts(null)).toEqual(parts("", "", ""));
   });
 });
 
@@ -104,13 +114,21 @@ describe("MeCard", () => {
     expect(onSave).toHaveBeenCalledWith({ birthday: "10-04" });
   });
 
+  it("saves the year when it is added", () => {
+    const { onSave } = setup();
+    const year = screen.getByLabelText("Birthday year");
+    fireEvent.change(year, { target: { value: "1990" } });
+    fireEvent.blur(year);
+    expect(onSave).toHaveBeenCalledWith({ birthday: "1990-10-03" });
+  });
+
   it("does not save a day the month does not have", () => {
     const { onSave } = setup({ me: { ...ME, birthday: "02-01" } });
     const day = screen.getByLabelText("Birthday day");
     fireEvent.change(day, { target: { value: "30" } });
     fireEvent.blur(day);
     expect(onSave).not.toHaveBeenCalled();
-    expect(screen.getByText("That day is not in that month.")).toBeInTheDocument();
+    expect(screen.getByText(/That is not a date/)).toBeInTheDocument();
   });
 
   it("explains a sign-in with no voice instead of offering empty fields", () => {

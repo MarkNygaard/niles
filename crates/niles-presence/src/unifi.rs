@@ -88,16 +88,37 @@ impl UnifiClient {
 /// the shape first leaves the error that actually happened — a duplicate
 /// field, a missing id — to be reported.
 fn rows_of<T: serde::de::DeserializeOwned>(body: &str) -> serde_json::Result<Vec<T>> {
+    page_of(body).map(|(rows, _)| rows)
+}
+
+/// The rows, and how many there are in all when the console pages them.
+/// A bare array is the whole list.
+fn page_of<T: serde::de::DeserializeOwned>(
+    body: &str,
+) -> serde_json::Result<(Vec<T>, Option<usize>)> {
     match serde_json::from_str::<serde_json::Value>(body)? {
-        serde_json::Value::Object(mut wrapped) => match wrapped.remove("data") {
-            Some(data) => serde_json::from_value(data),
-            None => Err(serde::de::Error::custom(
-                "a list response with no `data` in it",
-            )),
-        },
-        bare => serde_json::from_value(bare),
+        serde_json::Value::Object(mut wrapped) => {
+            let total = wrapped
+                .get("totalCount")
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| n as usize);
+            match wrapped.remove("data") {
+                Some(data) => Ok((serde_json::from_value(data)?, total)),
+                None => Err(serde::de::Error::custom(
+                    "a list response with no `data` in it",
+                )),
+            }
+        }
+        bare => Ok((serde_json::from_value(bare)?, None)),
     }
 }
+
+/// Rows asked for at a time. The integration API sends 25 unless told
+/// otherwise, and reading only that first page is how a phone on the
+/// Wi-Fi came to be "a device the console does not know": a house of
+/// bulbs, plugs, strips and satellites has more than 25 clients, and
+/// whichever came after the 25th did not exist as far as Niles knew.
+const CLIENTS_PER_PAGE: usize = 200;
 
 /// `internalReference` is the short name a config writes (`default`),
 /// `name` the one the console shows (`Default`). Consoles send both.
@@ -253,15 +274,25 @@ impl UnifiSource {
     pub async fn clients(&self) -> Result<Vec<UnifiClient>> {
         let settings = self.current()?;
         let site = self.site_id(&settings).await?;
-        let body = self
-            .get(
-                &settings,
-                &format!("{}/sites/{site}/clients", settings.base_url()),
-            )
-            .await?;
-        rows_of(&body).map_err(|e| Error::Parse {
-            reason: format!("unifi clients: {e}"),
-        })
+        let mut all = Vec::new();
+        loop {
+            let url = format!(
+                "{}/sites/{site}/clients?offset={}&limit={CLIENTS_PER_PAGE}",
+                settings.base_url(),
+                all.len()
+            );
+            let body = self.get(&settings, &url).await?;
+            let (rows, total) = page_of::<UnifiClient>(&body).map_err(|e| Error::Parse {
+                reason: format!("unifi clients: {e}"),
+            })?;
+            // An empty page ends it whatever the total says, so a console
+            // that miscounts cannot keep this asking forever.
+            let got = rows.len();
+            all.extend(rows);
+            if got == 0 || total.is_none_or(|total| all.len() >= total) {
+                return Ok(all);
+            }
+        }
     }
 
     /// The MAC of whoever is making a request from `ip`.
@@ -399,6 +430,42 @@ mod tests {
             "asked the site it found: {}",
             urls[1]
         );
+    }
+
+    #[tokio::test]
+    async fn a_phone_past_the_first_page_is_found() {
+        // The console pages its clients; the phone asking was the 26th.
+        let first = r#"{"offset":0,"limit":2,"count":2,"totalCount":3,"data":[
+            {"macAddress":"11:11:11:11:11:11","ipAddress":"192.168.1.2","name":"Bulb"},
+            {"macAddress":"22:22:22:22:22:22","ipAddress":"192.168.1.3","name":"Plug"}
+        ]}"#;
+        let second = r#"{"offset":2,"limit":2,"count":1,"totalCount":3,"data":[
+            {"macAddress":"AA:BB:CC:DD:EE:FF","ipAddress":"192.168.10.173","name":"Mark's iPhone"}
+        ]}"#;
+        let (mock, source) = source(
+            vec![
+                Ok((200, SITES.into())),
+                Ok((200, first.into())),
+                Ok((200, second.into())),
+            ],
+            &[],
+        );
+        let phone = source.mac_at("192.168.10.173").await.expect("answers");
+        assert_eq!(
+            phone.and_then(|c| c.mac()).as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+        let urls = mock.urls.lock().unwrap();
+        assert!(urls[1].contains("offset=0"), "{}", urls[1]);
+        assert!(urls[2].contains("offset=2"), "{}", urls[2]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_page_ends_the_list_whatever_the_total_says() {
+        let short = r#"{"offset":0,"limit":200,"count":0,"totalCount":9,"data":[]}"#;
+        let (mock, source) = source(vec![Ok((200, SITES.into())), Ok((200, short.into()))], &[]);
+        assert!(source.clients().await.expect("answers").is_empty());
+        assert_eq!(mock.urls.lock().unwrap().len(), 2);
     }
 
     #[test]
