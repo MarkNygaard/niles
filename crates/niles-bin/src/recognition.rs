@@ -52,6 +52,9 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
     /// How to address a speaker — "Sir" — when anybody has said.
     fn address_as(&self, speaker: &str) -> Option<String>;
 
+    /// Their notes and their birthday ("MM-DD"), whichever they have.
+    fn profile(&self, speaker: &str) -> (Option<String>, Option<String>);
+
     /// Whether anybody is enrolled at all.
     ///
     /// The lock checks this before it refuses anyone: a house where
@@ -85,6 +88,26 @@ impl niles_recognition::VoiceRoster for EcapaIdentifier {
         address_as: Option<&str>,
     ) -> niles_recognition::Result<()> {
         self.backend.set_address_as(speaker, address_as).await?;
+        let speakers = self.backend.load_all().await?;
+        let next = Matcher::new(speakers, self.threshold, self.strategy);
+        *self.matcher.write().unwrap_or_else(|e| e.into_inner()) = next;
+        Ok(())
+    }
+
+    async fn set_notes(&self, speaker: &str, notes: Option<&str>) -> niles_recognition::Result<()> {
+        self.backend.set_notes(speaker, notes).await?;
+        let speakers = self.backend.load_all().await?;
+        let next = Matcher::new(speakers, self.threshold, self.strategy);
+        *self.matcher.write().unwrap_or_else(|e| e.into_inner()) = next;
+        Ok(())
+    }
+
+    async fn set_birthday(
+        &self,
+        speaker: &str,
+        birthday: Option<&str>,
+    ) -> niles_recognition::Result<()> {
+        self.backend.set_birthday(speaker, birthday).await?;
         let speakers = self.backend.load_all().await?;
         let next = Matcher::new(speakers, self.threshold, self.strategy);
         *self.matcher.write().unwrap_or_else(|e| e.into_inner()) = next;
@@ -211,6 +234,13 @@ impl SpeakerIdentifier for EcapaIdentifier {
 
     fn address_as(&self, speaker: &str) -> Option<String> {
         self.read_matcher().address_as(speaker).map(str::to_string)
+    }
+
+    fn profile(&self, speaker: &str) -> (Option<String>, Option<String>) {
+        self.read_matcher()
+            .profile(speaker)
+            .map(|(notes, birthday)| (notes.map(str::to_string), birthday.map(str::to_string)))
+            .unwrap_or_default()
     }
 
     fn knows_anybody(&self) -> bool {

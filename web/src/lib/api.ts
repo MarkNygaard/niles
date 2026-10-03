@@ -292,6 +292,27 @@ export interface Voice {
   last_seen_at: string | null;
 }
 
+/** The signed-in person's own page. */
+export interface Me {
+  email: string;
+  /** The voice they are linked to. Null: no profile until one is. */
+  speaker: string | null;
+  display_name: string | null;
+  spoken_as: string | null;
+  address_as: string | null;
+  /** Their own USER.md. */
+  notes: string | null;
+  /** "MM-DD". */
+  birthday: string | null;
+  /** The MAC presence follows them by. */
+  phone: string | null;
+}
+
+/** Each field: absent leaves it, empty clears it. */
+export type MeUpdate = Partial<
+  Pick<Me, "spoken_as" | "address_as" | "notes" | "birthday">
+>;
+
 /** One kept recording of a wake, without its audio. */
 export interface Capture {
   id: number;
@@ -352,19 +373,18 @@ export const api = {
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   voices: () => request<Voice[]>("/voices"),
+  me: () => request<Me>("/me"),
+  updateMe: (update: MeUpdate) =>
+    request<void>("/me", { method: "PUT", body: JSON.stringify(update) }),
+  unpairPhone: () => request<void>("/me/phone", { method: "DELETE" }),
   deviceStatus: () => request<DeviceView>("/presence/device"),
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),
   clearCaptures: () => request<void>("/captures", { method: "DELETE" }),
-  renameVoice: (
-    speaker: string,
-    display_name: string,
-    spoken_as?: string,
-    address_as?: string,
-  ) =>
+  renameVoice: (speaker: string, display_name: string) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {
       method: "PUT",
-      body: JSON.stringify({ display_name, spoken_as, address_as }),
+      body: JSON.stringify({ display_name }),
     }),
   forgetVoice: (speaker: string) =>
     request<void>(`/voices/${encodeURIComponent(speaker)}`, {

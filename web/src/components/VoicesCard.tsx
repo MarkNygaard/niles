@@ -43,10 +43,6 @@ export interface VoicesCardProps {
   onForget?: (speaker: string) => void;
   /** Correct the name, which came from a transcript and is a guess. */
   onRename?: (speaker: string, displayName: string) => void;
-  /** Respell it so Piper says it right. Empty clears the respelling. */
-  onSpokenAs?: (speaker: string, spokenAs: string) => void;
-  /** How Niles addresses them — "Sir". Empty clears it. */
-  onAddressAs?: (speaker: string, addressAs: string) => void;
 }
 
 /**
@@ -73,8 +69,6 @@ export function VoicesCard({
   onChange,
   onForget,
   onRename,
-  onSpokenAs,
-  onAddressAs,
 }: VoicesCardProps) {
   return (
     <Card>
@@ -118,33 +112,6 @@ export function VoicesCard({
                     <div className="text-muted-foreground text-xs">
                       {voiceSummary(voice)}
                     </div>
-                    {/* Piper reads letters, not phonemes, so a name it
-                        mispronounces is respelled until it sounds
-                        right. Separate from the name above because
-                        "Mayse" is how you say it and not how it is
-                        written. */}
-                    {onSpokenAs && (
-                      <NameField
-                        value={voice.spoken_as ?? ""}
-                        label={`${voice.speaker} pronunciation`}
-                        placeholder="Say it like…"
-                        allowEmpty
-                        disabled={saving}
-                        onCommit={(said) => onSpokenAs(voice.speaker, said)}
-                      />
-                    )}
-                    {/* Beside the name, never instead of it: Niles
-                        still knows who it is talking to. */}
-                    {onAddressAs && (
-                      <NameField
-                        value={voice.address_as ?? ""}
-                        label={`${voice.speaker} form of address`}
-                        placeholder="Address as… (e.g. Sir)"
-                        allowEmpty
-                        disabled={saving}
-                        onCommit={(address) => onAddressAs(voice.speaker, address)}
-                      />
-                    )}
                   </div>
                   {onForget && (
                     <Button
@@ -216,16 +183,11 @@ export function VoicesCard({
 function NameField({
   value,
   label,
-  placeholder,
-  allowEmpty,
   disabled,
   onCommit,
 }: {
   value: string;
   label: string;
-  placeholder?: string;
-  /** Whether clearing it is a value in its own right. */
-  allowEmpty?: boolean;
   disabled?: boolean;
   onCommit: (value: string) => void;
 }) {
@@ -240,14 +202,13 @@ function NameField({
     <Input
       value={draft}
       aria-label={label}
-      placeholder={placeholder}
       disabled={disabled}
       spellCheck={false}
       className="h-7 border-transparent px-1 text-sm font-medium hover:border-input"
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         const next = draft.trim();
-        if (next !== value && (allowEmpty || next)) onCommit(next);
+        if (next !== value && next) onCommit(next);
         else setDraft(value);
       }}
       onKeyDown={(e) => {

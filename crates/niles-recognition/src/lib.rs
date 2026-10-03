@@ -15,7 +15,8 @@ pub mod similarity;
 pub use backend::{EnrollmentBackend, VoiceRoster};
 pub use embedder::{EcapaTdnnEmbedder, EmbedderConfig};
 pub use enrollment::{
-    EnrolledSpeaker, EnrollmentEntry, EnrollmentStore, default_display_name, validate_speaker_slug,
+    EnrolledSpeaker, EnrollmentEntry, EnrollmentStore, NOTES_LIMIT, default_display_name,
+    validate_speaker_slug,
 };
 pub use error::{Error, Result};
 pub use matcher::{MatchOutcome, MatchStrategy, Matcher};

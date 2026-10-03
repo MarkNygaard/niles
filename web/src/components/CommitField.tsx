@@ -6,12 +6,15 @@ export function CommitField({
   label,
   value,
   placeholder,
+  allowEmpty,
   disabled,
   onCommit,
 }: {
   label: string;
   value: string;
   placeholder: string;
+  /** Whether clearing it is a value in its own right. */
+  allowEmpty?: boolean;
   disabled?: boolean;
   onCommit: (value: string) => void;
 }) {
@@ -32,7 +35,8 @@ export function CommitField({
         disabled={disabled}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
-          if (draft.trim() && draft !== value) onCommit(draft.trim());
+          const next = draft.trim();
+          if ((next || allowEmpty) && next !== value) onCommit(next);
           else setDraft(value);
         }}
         onKeyDown={(e) => {

@@ -74,14 +74,19 @@ impl Courtesy {
     }
 }
 
-/// "Good morning, Sir. Living room lights on."
+/// "Good morning, Sir. Living room lights on." — and on their birthday,
+/// "Good morning, and happy birthday, Sir."
 ///
-/// Left alone when the reply already says good morning — "Niles, good
-/// morning" is answered by the language model in kind, and two in a row
-/// is one too many.
-pub fn greeted(reply: &str, whom: &str) -> String {
-    if reply.to_lowercase().contains("good morning") {
+/// Left alone when the reply already says it — "Niles, good morning" is
+/// answered by the language model in kind, and two in a row is one too
+/// many. The same goes for the birthday: the model knows the date too.
+pub fn greeted(reply: &str, whom: &str, birthday: bool) -> String {
+    let said = reply.to_lowercase();
+    if said.contains("good morning") {
         return reply.to_string();
+    }
+    if birthday && !said.contains("happy birthday") {
+        return format!("Good morning, and happy birthday, {whom}. {reply}");
     }
     format!("Good morning, {whom}. {reply}")
 }
@@ -154,15 +159,27 @@ mod tests {
     #[test]
     fn the_greeting_goes_first() {
         assert_eq!(
-            greeted("Living room lights on.", "Sir"),
+            greeted("Living room lights on.", "Sir", false),
             "Good morning, Sir. Living room lights on."
+        );
+    }
+
+    #[test]
+    fn on_their_birthday_the_greeting_says_so() {
+        assert_eq!(
+            greeted("Living room lights on.", "Sir", true),
+            "Good morning, and happy birthday, Sir. Living room lights on."
+        );
+        assert_eq!(
+            greeted("Happy birthday, Sir! Lights on.", "Sir", true),
+            "Good morning, Sir. Happy birthday, Sir! Lights on."
         );
     }
 
     #[test]
     fn a_reply_that_already_says_good_morning_is_left_alone() {
         assert_eq!(
-            greeted("Good morning, Sir! Lovely day.", "Sir"),
+            greeted("Good morning, Sir! Lovely day.", "Sir", true),
             "Good morning, Sir! Lovely day."
         );
     }

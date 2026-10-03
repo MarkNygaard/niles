@@ -268,6 +268,47 @@ pub async fn device_status(
     })
 }
 
+/// A config patch giving `who` this phone, or none.
+///
+/// The whole list, because an array is replaced rather than merged —
+/// and because "one phone per person" is a property of this list
+/// being rewritten as a whole.
+pub(crate) fn with_phone(
+    config: &niles_config::Config,
+    who: &str,
+    mac: Option<&str>,
+) -> toml::map::Map<String, toml::Value> {
+    let allowed: Vec<toml::Value> = config
+        .auth
+        .allowed
+        .iter()
+        .map(|person| {
+            let mut row = toml::map::Map::new();
+            row.insert("email".into(), toml::Value::String(person.email.clone()));
+            if let Some(speaker) = &person.speaker {
+                row.insert("speaker".into(), toml::Value::String(speaker.clone()));
+            }
+            // As `person_for` matches: GitHub returns an address as its
+            // holder typed it, not as the allowlist spells it.
+            let device = if person.email.eq_ignore_ascii_case(who.trim()) {
+                mac.map(str::to_string)
+            } else {
+                person.device_mac.clone()
+            };
+            if let Some(device) = device {
+                row.insert("device_mac".into(), toml::Value::String(device));
+            }
+            toml::Value::Table(row)
+        })
+        .collect();
+
+    let mut auth = toml::map::Map::new();
+    auth.insert("allowed".into(), toml::Value::Array(allowed));
+    let mut patch = toml::map::Map::new();
+    patch.insert("auth".into(), toml::Value::Table(auth));
+    patch
+}
+
 /// `POST /presence/device` — this phone is mine.
 ///
 /// Writes the address the console reports onto the signed-in person, so
@@ -319,38 +360,11 @@ pub async fn pair_device(
         "the console reported that device without an address".to_string(),
     ))?;
 
-    // The whole list, because an array is replaced rather than merged —
-    // and because "one phone per person" is a property of this list
-    // being rewritten as a whole.
-    let allowed: Vec<toml::Value> = config
-        .auth
-        .allowed
-        .iter()
-        .map(|person| {
-            let mut row = toml::map::Map::new();
-            row.insert("email".into(), toml::Value::String(person.email.clone()));
-            if let Some(speaker) = &person.speaker {
-                row.insert("speaker".into(), toml::Value::String(speaker.clone()));
-            }
-            let device = if person.email == who {
-                Some(mac.clone())
-            } else {
-                person.device_mac.clone()
-            };
-            if let Some(device) = device {
-                row.insert("device_mac".into(), toml::Value::String(device));
-            }
-            toml::Value::Table(row)
-        })
-        .collect();
-
-    let mut auth = toml::map::Map::new();
-    auth.insert("allowed".into(), toml::Value::Array(allowed));
-    let mut patch = toml::map::Map::new();
-    patch.insert("auth".into(), toml::Value::Table(auth));
-
     store
-        .apply(&patch, niles_config::ChangeSource::Api)
+        .apply(
+            &with_phone(&config, &who, Some(&mac)),
+            niles_config::ChangeSource::Api,
+        )
         .await
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
 

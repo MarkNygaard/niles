@@ -54,6 +54,8 @@ pub fn router(state: AppState) -> Router {
             "/secrets/{key}",
             put(crate::secrets::set_secret).delete(crate::secrets::clear_secret),
         )
+        .route("/me", get(crate::me::get).put(crate::me::update))
+        .route("/me/phone", delete(crate::me::forget_phone))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))
         .route("/presence/tado", get(crate::presence::tado_status))
