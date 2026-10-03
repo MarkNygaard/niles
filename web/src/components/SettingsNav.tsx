@@ -9,7 +9,6 @@ import {
   MessagesSquare,
   Mic,
   Plug,
-  UserRound,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -28,17 +27,6 @@ export interface Section {
  * it than a page should pretend to curate.
  */
 export const SECTIONS: { group: string; items: Section[] }[] = [
-  {
-    group: "You",
-    items: [
-      {
-        id: "me",
-        label: "Me",
-        hint: "What Niles knows about you, and your phone",
-        icon: UserRound,
-      },
-    ],
-  },
   {
     group: "The house",
     items: [

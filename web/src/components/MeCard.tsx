@@ -42,24 +42,38 @@ const MONTHS = [
 
 const MONTH_ITEMS = MONTHS.map((label, i) => ({ label, value: String(i + 1) }));
 
-/** "10-03" as its month and day, or blanks for none. */
-export function birthdayParts(birthday: string | null): { month: string; day: string } {
-  const [m, d] = (birthday ?? "").split("-");
-  return birthday ? { month: String(Number(m)), day: String(Number(d)) } : { month: "", day: "" };
+export interface BirthdayParts {
+  year: string;
+  month: string;
+  day: string;
+}
+
+/** "1990-10-03" or "10-03" as its parts, or blanks for none. */
+export function birthdayParts(birthday: string | null): BirthdayParts {
+  if (!birthday) return { year: "", month: "", day: "" };
+  const parts = birthday.split("-");
+  const [y, m, d] = parts.length === 3 ? parts : ["", ...parts];
+  return { year: y, month: String(Number(m)), day: String(Number(d)) };
 }
 
 /**
- * Month and day as "MM-DD" — `""` when both are cleared, `null` while
- * only half is filled in or the day does not exist in that month.
- * A leap year is used to check, so 29 February is a birthday.
+ * "YYYY-MM-DD", or "MM-DD" without a year — `""` when all are cleared,
+ * `null` while day or month is missing, or the day does not exist that
+ * month (in that year, when there is one; 29 February otherwise counts).
  */
-export function birthdayFrom(month: string, day: string): string | null {
-  if (!month && !day) return "";
+export function birthdayFrom(
+  { year, month, day }: BirthdayParts,
+  thisYear = new Date().getFullYear(),
+): string | null {
+  if (!year && !month && !day) return "";
+  const y = year ? Number(year) : 2024;
   const m = Number(month);
   const d = Number(day);
   if (!Number.isInteger(m) || !Number.isInteger(d) || m < 1 || m > 12 || d < 1) return null;
-  if (d > new Date(2024, m, 0).getDate()) return null;
-  return `${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  if (year && (!/^\d{4}$/.test(year) || y < 1900 || y > thisYear)) return null;
+  if (d > new Date(y, m, 0).getDate()) return null;
+  const md = `${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return year ? `${year}-${md}` : md;
 }
 
 export interface MeCardProps {
@@ -217,7 +231,7 @@ function NotesCard({
   );
 }
 
-/** Month and day, no year: nobody needs Niles counting. */
+/** Day and month, and the year if you want Niles to know your age. */
 function BirthdayField({
   birthday,
   disabled,
@@ -227,48 +241,51 @@ function BirthdayField({
   disabled?: boolean;
   onCommit: (birthday: string) => void;
 }) {
-  const parts = birthdayParts(birthday);
-  const [month, setMonth] = useState(parts.month);
-  const [day, setDay] = useState(parts.day);
+  const [parts, setParts] = useState(birthdayParts(birthday));
   const [seen, setSeen] = useState(birthday);
   if (seen !== birthday) {
     setSeen(birthday);
-    setMonth(parts.month);
-    setDay(parts.day);
+    setParts(birthdayParts(birthday));
   }
 
-  const commit = (m: string, d: string) => {
-    const next = birthdayFrom(m, d);
-    if (next !== null && next !== (birthday ?? "")) onCommit(next);
+  const commit = (next: BirthdayParts) => {
+    const value = birthdayFrom(next);
+    if (value !== null && value !== (birthday ?? "")) onCommit(value);
   };
-  const invalid = birthdayFrom(month, day) === null && month !== "" && day !== "";
+  const invalid =
+    birthdayFrom(parts) === null && parts.month !== "" && parts.day !== "";
+  const digits = (field: "day" | "year", max: number) => ({
+    value: parts[field],
+    disabled,
+    inputMode: "numeric" as const,
+    "aria-invalid": invalid || undefined,
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+      setParts({ ...parts, [field]: e.target.value.replace(/\D/g, "").slice(0, max) }),
+    onBlur: () => commit(parts),
+    onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") e.currentTarget.blur();
+    },
+  });
 
   return (
     <div className="flex flex-col gap-1">
       <span className="text-muted-foreground text-xs">Birthday</span>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Input
           id="me-birthday-day"
           aria-label="Birthday day"
-          inputMode="numeric"
           placeholder="Day"
           className="w-16"
-          value={day}
-          disabled={disabled}
-          aria-invalid={invalid || undefined}
-          onChange={(e) => setDay(e.target.value.replace(/\D/g, "").slice(0, 2))}
-          onBlur={() => commit(month, day)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
+          {...digits("day", 2)}
         />
         <Select
           items={MONTH_ITEMS}
-          value={month || null}
+          value={parts.month || null}
           disabled={disabled}
           onValueChange={(next: string | null) => {
-            setMonth(next ?? "");
-            commit(next ?? "", day);
+            const updated = { ...parts, month: next ?? "" };
+            setParts(updated);
+            commit(updated);
           }}
         >
           <SelectTrigger aria-label="Birthday month" className="h-8 w-40">
@@ -284,14 +301,20 @@ function BirthdayField({
             </SelectGroup>
           </SelectContent>
         </Select>
+        <Input
+          id="me-birthday-year"
+          aria-label="Birthday year"
+          placeholder="Year"
+          className="w-20"
+          {...digits("year", 4)}
+        />
         {birthday && (
           <Button
             variant="ghost"
             size="sm"
             disabled={disabled}
             onClick={() => {
-              setMonth("");
-              setDay("");
+              setParts({ year: "", month: "", day: "" });
               onCommit("");
             }}
           >
@@ -301,8 +324,8 @@ function BirthdayField({
       </div>
       <span className="text-muted-foreground text-xs">
         {invalid
-          ? "That day is not in that month."
-          : "On the day, Niles opens the morning with happy birthday."}
+          ? "That is not a date — check the day and the year."
+          : "On the day, Niles opens the morning with happy birthday. The year is optional; with it, Niles knows your age."}
       </span>
     </div>
   );

@@ -33,4 +33,24 @@ describe("AccountMenu", () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
   });
+
+  it("opens your own page from the avatar, not from Settings", () => {
+    const onOpenProfile = vi.fn();
+    render(
+      <AccountMenu
+        email="majse@example.com"
+        onOpenSettings={vi.fn()}
+        onOpenProfile={onOpenProfile}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Account/ }));
+    fireEvent.click(screen.getByRole("button", { name: "My profile" }));
+    expect(onOpenProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it("has no profile to offer with sign-in off", () => {
+    render(<AccountMenu onOpenSettings={vi.fn()} onOpenProfile={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Account/ }));
+    expect(screen.queryByRole("button", { name: "My profile" })).toBeNull();
+  });
 });

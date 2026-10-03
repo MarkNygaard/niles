@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, LogOut, Monitor, Moon, SlidersHorizontal, Sun } from "lucide-react";
+import { Check, LogOut, Monitor, Moon, SlidersHorizontal, Sun, UserRound } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -15,6 +15,8 @@ export interface AccountMenuProps {
   /** Their GitHub avatar, when there is one. */
   avatarUrl?: string;
   onOpenSettings: () => void;
+  /** Your own page: notes, birthday, phone. Only when signed in. */
+  onOpenProfile?: () => void;
 }
 
 /**
@@ -24,7 +26,12 @@ export interface AccountMenuProps {
  * thing you came to use — the house is the page, and how it looks and
  * who you are are both one press away rather than half the top bar.
  */
-export function AccountMenu({ email, avatarUrl, onOpenSettings }: AccountMenuProps) {
+export function AccountMenu({
+  email,
+  avatarUrl,
+  onOpenSettings,
+  onOpenProfile,
+}: AccountMenuProps) {
   const [theme, setTheme] = useTheme();
   // The picture comes from GitHub, so it can be slow, blocked by a
   // content blocker, or simply gone. Any of those falls back to the
@@ -94,6 +101,19 @@ export function AccountMenu({ email, avatarUrl, onOpenSettings }: AccountMenuPro
         </div>
 
         <div className="p-1">
+          {/* First, because it is the one everybody has a use for. A
+              page about you needs a you, so not with sign-in off. */}
+          {email && onOpenProfile && (
+            <MenuItem
+              icon={<UserRound />}
+              onClick={() => {
+                setOpen(false);
+                onOpenProfile();
+              }}
+            >
+              My profile
+            </MenuItem>
+          )}
           <MenuItem
             icon={<SlidersHorizontal />}
             onClick={() => {
