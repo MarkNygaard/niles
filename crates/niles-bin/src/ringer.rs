@@ -27,12 +27,8 @@ pub const EVERY: Duration = Duration::from_secs(3);
 /// all afternoon.
 pub const GIVE_UP_AFTER: Duration = Duration::from_secs(10 * 60);
 
-/// The satellite's own rate. A stream at any other rate is an answer, and
-/// the satellite plays answers at their own rate with its microphone
-/// parked, for the treble 16 kHz cuts off — which would leave a ringing
-/// alarm impossible to stop by voice. The bell's highest partial is under
-/// 3 kHz; 16 kHz loses nothing of it.
-const RATE: u32 = 16_000;
+/// The satellite's own rate, so the bell is played exactly as made.
+const RATE: u32 = crate::speak::SATELLITE_RATE;
 
 /// The chime, as 16-bit mono PCM.
 ///
