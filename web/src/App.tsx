@@ -3,13 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
 import { AccountMenu } from "@/components/AccountMenu";
 import { ConfigPanel } from "@/components/ConfigPanel";
+import { MyProfile } from "@/components/MyProfile";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { SignIn } from "@/components/SignIn";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type View = "home" | "settings";
+type View = "home" | "settings" | "profile";
 
 /**
  * The house, with everything about *you* behind the avatar.
@@ -47,12 +48,12 @@ export function App() {
     return <SignIn error={refusal ?? undefined} />;
   }
 
-  const settings = view === "settings";
+  const away = view !== "home";
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pt-[calc(env(safe-area-inset-top)+1rem)] pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:px-6 sm:pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
       <header className="flex items-center gap-2">
-        {settings && (
+        {away && (
           <button
             type="button"
             aria-label="Back to the house"
@@ -73,9 +74,9 @@ export function App() {
             size a header bar can carry. "Settings" is a screen title,
             not the name, so it stays in the heading face: a serif there
             would be the brand claiming to be a destination. */}
-        {settings ? (
+        {away ? (
           <h1 className="font-heading flex-1 truncate text-2xl font-semibold tracking-tight">
-            Settings
+            {view === "settings" ? "Settings" : "My profile"}
           </h1>
         ) : (
           <h1 className="font-wordmark flex-1 truncate text-2xl font-medium tracking-wide">
@@ -86,10 +87,17 @@ export function App() {
           email={auth.data?.signed_in_as ?? undefined}
           avatarUrl={auth.data?.avatar_url ?? undefined}
           onOpenSettings={() => setView("settings")}
+          onOpenProfile={() => setView("profile")}
         />
       </header>
 
-      {settings ? <ConfigPanel /> : <RoomDashboard />}
+      {view === "settings" ? (
+        <ConfigPanel />
+      ) : view === "profile" ? (
+        <MyProfile />
+      ) : (
+        <RoomDashboard />
+      )}
     </main>
   );
 }

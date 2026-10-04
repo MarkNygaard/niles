@@ -5,6 +5,7 @@
 //! speaker matching.
 
 pub mod backend;
+pub mod birthday;
 pub mod embedder;
 pub mod enrollment;
 pub mod error;

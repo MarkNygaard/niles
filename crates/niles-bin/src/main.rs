@@ -961,7 +961,13 @@ enum SpeakerContext {
     Unknown,
 }
 
-fn speaker_context(speaker: &SpeakerContext) -> Option<String> {
+/// Today in the house's timezone, when it has a valid one.
+fn local_today(timezone: &str) -> Option<chrono::NaiveDate> {
+    let tz = timezone.parse::<chrono_tz::Tz>().ok()?;
+    Some(Utc::now().with_timezone(&tz).date_naive())
+}
+
+fn speaker_context(speaker: &SpeakerContext, today: Option<chrono::NaiveDate>) -> Option<String> {
     match speaker {
         SpeakerContext::Disabled => None,
         SpeakerContext::Identified { name, known } => {
@@ -975,8 +981,13 @@ fn speaker_context(speaker: &SpeakerContext) -> Option<String> {
                     "\n\n# Speaker\n\nThe speaker is **{name}**. Use their name when it makes the reply more natural.\n"
                 ),
             };
-            if let Some(day) = known.birthday.as_deref().and_then(profile::spoken_birthday) {
-                section.push_str(&format!("Their birthday is {day}.\n"));
+            if let Some(line) = known
+                .birthday
+                .as_deref()
+                .and_then(|b| profile::birthday_line(b, today))
+            {
+                section.push_str(&line);
+                section.push('\n');
             }
             if let Some(notes) = known.notes.as_deref().filter(|n| !n.trim().is_empty()) {
                 section.push_str(&format!(
@@ -1193,7 +1204,7 @@ fn assemble_system_prompt_with_optional_capabilities(
     if let Some(room) = origin_room {
         out.push_str(&origin_context(room));
     }
-    if let Some(section) = speaker_context(speaker) {
+    if let Some(section) = speaker_context(speaker, local_today(&home.timezone)) {
         out.push_str(&section);
     }
 
@@ -3108,7 +3119,10 @@ async fn handle_transcript(
                         .greet_now(name, l.date_naive(), l.hour(), Instant::now())
                 })
                 .map(|l| {
-                    let birthday = profile::is_birthday(known.birthday.as_deref(), l.date_naive());
+                    let birthday = known
+                        .birthday
+                        .as_deref()
+                        .is_some_and(|b| niles_recognition::birthday::is_today(b, l.date_naive()));
                     (name.clone(), whom.unwrap_or_else(|| name.clone()), birthday)
                 })
         }
@@ -6277,13 +6291,16 @@ mod noise_transcript_tests {
 
     #[test]
     fn the_language_model_is_told_how_to_address_them() {
-        let prompt = speaker_context(&SpeakerContext::Identified {
-            name: "Mark".into(),
-            known: profile::Known {
-                address: Some("Sir".into()),
-                ..Default::default()
+        let prompt = speaker_context(
+            &SpeakerContext::Identified {
+                name: "Mark".into(),
+                known: profile::Known {
+                    address: Some("Sir".into()),
+                    ..Default::default()
+                },
             },
-        })
+            None,
+        )
         .unwrap();
         assert!(prompt.contains("Address them as \"Sir\""), "{prompt}");
         assert!(prompt.contains("Their name is still Mark"), "{prompt}");
@@ -6291,25 +6308,32 @@ mod noise_transcript_tests {
 
     #[test]
     fn the_language_model_is_shown_their_notes_and_birthday() {
-        let prompt = speaker_context(&SpeakerContext::Identified {
-            name: "Mark".into(),
-            known: profile::Known {
-                notes: Some("- Prefers tea to coffee".into()),
-                birthday: Some("10-03".into()),
-                ..Default::default()
+        let prompt = speaker_context(
+            &SpeakerContext::Identified {
+                name: "Mark".into(),
+                known: profile::Known {
+                    notes: Some("- Prefers tea to coffee".into()),
+                    birthday: Some("10-03".into()),
+                    ..Default::default()
+                },
             },
-        })
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 3),
+        )
         .unwrap();
         assert!(prompt.contains("Prefers tea to coffee"), "{prompt}");
         assert!(prompt.contains("Their birthday is 3 October"), "{prompt}");
+        assert!(prompt.contains("Today is their birthday"), "{prompt}");
     }
 
     #[test]
     fn nothing_known_adds_nothing() {
-        let prompt = speaker_context(&SpeakerContext::Identified {
-            name: "Mark".into(),
-            known: profile::Known::default(),
-        })
+        let prompt = speaker_context(
+            &SpeakerContext::Identified {
+                name: "Mark".into(),
+                known: profile::Known::default(),
+            },
+            None,
+        )
         .unwrap();
         assert!(!prompt.contains("birthday"), "{prompt}");
         assert!(!prompt.contains("What you know"), "{prompt}");

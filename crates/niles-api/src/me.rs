@@ -13,6 +13,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 
 type Failure = (StatusCode, String);
@@ -28,7 +29,7 @@ pub struct MeDto {
     pub address_as: Option<String>,
     /// Their own USER.md.
     pub notes: Option<String>,
-    /// "MM-DD".
+    /// "MM-DD", or "YYYY-MM-DD" with the year.
     pub birthday: Option<String>,
     /// The phone presence follows them by, if one is paired.
     pub phone: Option<String>,
@@ -73,16 +74,6 @@ fn roster(state: &AppState) -> Result<&dyn niles_recognition::VoiceRoster, Failu
 
 fn unreachable(what: &str) -> impl Fn(niles_recognition::Error) -> Failure + '_ {
     move |e| (StatusCode::BAD_GATEWAY, format!("could not {what}: {e}"))
-}
-
-/// "MM-DD" for a day that exists, or why not.
-pub fn valid_birthday(birthday: &str) -> Result<String, String> {
-    let bad = || format!("{birthday:?} is not a birthday — give it as MM-DD");
-    let (m, d) = birthday.split_once('-').ok_or_else(bad)?;
-    let (m, d): (u32, u32) = (m.parse().map_err(|_| bad())?, d.parse().map_err(|_| bad())?);
-    // A leap year, so 29 February is somebody's birthday.
-    chrono::NaiveDate::from_ymd_opt(2024, m, d).ok_or_else(bad)?;
-    Ok(format!("{m:02}-{d:02}"))
 }
 
 /// `GET /me`
@@ -139,7 +130,8 @@ pub async fn update(
         None => None,
         Some("") => Some(None),
         Some(b) => Some(Some(
-            valid_birthday(b).map_err(|e| (StatusCode::BAD_REQUEST, e))?,
+            niles_recognition::birthday::normalise(b, chrono::Utc::now().year())
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?,
         )),
     };
     if let Some(notes) = &body.notes
@@ -377,14 +369,15 @@ allowed = [
     async fn saving_writes_to_the_callers_voice_only() {
         let roster = Arc::new(Roster::with(&["mark", "majse"]));
         let app = app(roster.clone());
-        let body = json!({ "notes": "- Prefers tea", "birthday": "10-03", "address_as": "Sir" });
+        let body =
+            json!({ "notes": "- Prefers tea", "birthday": "1990-10-03", "address_as": "Sir" });
         let (status, _) = send(&app, by("mark@example.com", "PUT", "/me", Some(body))).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let all = roster.voices().await.unwrap();
         let mark = all.iter().find(|v| v.speaker == "mark").unwrap();
         let majse = all.iter().find(|v| v.speaker == "majse").unwrap();
         assert_eq!(mark.notes.as_deref(), Some("- Prefers tea"));
-        assert_eq!(mark.birthday.as_deref(), Some("10-03"));
+        assert_eq!(mark.birthday.as_deref(), Some("1990-10-03"));
         assert_eq!(mark.address_as.as_deref(), Some("Sir"));
         assert_eq!(majse.notes.as_deref(), Some("- private to majse"));
     }
@@ -419,14 +412,5 @@ allowed = [
         let (_, me) = send(&app, by("mark@example.com", "GET", "/me", None)).await;
         assert_eq!(me["phone"], Value::Null);
         assert_eq!(me["speaker"], "mark", "the voice link survives");
-    }
-
-    #[test]
-    fn a_birthday_is_month_and_day() {
-        assert_eq!(valid_birthday("10-03").unwrap(), "10-03");
-        assert_eq!(valid_birthday("2-29").unwrap(), "02-29");
-        assert!(valid_birthday("02-30").is_err());
-        assert!(valid_birthday("3 October").is_err());
-        assert!(valid_birthday("13-01").is_err());
     }
 }

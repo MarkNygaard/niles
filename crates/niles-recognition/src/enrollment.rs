@@ -46,8 +46,8 @@ pub struct EnrolledSpeaker {
     /// them speaking.
     #[serde(default)]
     pub notes: Option<String>,
-    /// "MM-DD", so the morning greeting can say happy birthday. No year:
-    /// nobody needs Niles counting.
+    /// "MM-DD", or "YYYY-MM-DD" when they have said the year, so the
+    /// morning greeting can say happy birthday. See [`crate::birthday`].
     #[serde(default)]
     pub birthday: Option<String>,
     pub created_at: DateTime<Utc>,
