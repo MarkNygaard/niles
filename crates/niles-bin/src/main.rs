@@ -3037,6 +3037,16 @@ struct DispatchCtx {
     tado: Option<Arc<TadoSource>>,
 }
 
+impl DispatchCtx {
+    /// The plugs that have a lamp on them, as the config has it now.
+    fn lamp_plugs(&self) -> HashSet<DeviceId> {
+        self.settings
+            .as_ref()
+            .map(|s| s.current().lamp_plugs.ids().clone())
+            .unwrap_or_default()
+    }
+}
+
 /// Parse a transcript and act on any Tier 0 intent it produces.
 /// True if `text` has no actual words — it's pure punctuation / symbols
 /// / music notes (e.g. "...", "♪") that Whisper sometimes emits for
@@ -3669,12 +3679,13 @@ async fn dispatch_transcript(
             // `serve` report "no devices support this action" until Z2M
             // retained state arrived.
             //
-            // Switchable rather than a light, which is what a wall
-            // switch in the same room already does: a lamp on a smart
-            // plug is a lamp, and leaving it lit is not what "turn off
-            // the lights in here" meant.
+            // Lamps rather than lights, which is what a wall switch in
+            // the same room already does: a lamp on a smart plug is a
+            // lamp, and leaving it lit is not what "turn off the lights
+            // in here" meant.
+            let lamps = ctx.lamp_plugs();
             let (_canonical, targets) =
-                match resolve_room_targets(ctx, peer, &room, |d| d.is_switchable()) {
+                match resolve_room_targets(ctx, peer, &room, |d| d.is_lamp(&lamps)) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName | RoomResolve::NoDevices => {
                         // Tier 0 matched a light intent but found no target
@@ -3735,13 +3746,14 @@ async fn dispatch_transcript(
             ))
         }
         Intent::LightSetAll { on } => {
-            // Switchable, not lights: "turn everything off" includes
-            // the lamp that happens to be on a plug.
+            // Lamps, not lights: "turn everything off" includes the
+            // lamp that happens to be on a plug, and not the fridge.
+            let lamps = ctx.lamp_plugs();
             let targets: Vec<Device> = ctx
                 .registry
                 .list_all()
                 .into_iter()
-                .filter(|d| d.is_switchable())
+                .filter(|d| d.is_lamp(&lamps))
                 .collect();
             if targets.is_empty() {
                 if ctx.registry.is_empty() {
@@ -3909,7 +3921,9 @@ async fn dispatch_transcript(
                 }
                 None => None,
             };
-            let n = ctx.scenes.save(&name, &ctx.registry, canonical.as_ref());
+            let n = ctx
+                .scenes
+                .save(&name, &ctx.registry, canonical.as_ref(), &ctx.lamp_plugs());
             match &canonical {
                 Some(r) => println!("[{peer}] saved scene {name:?} with {n} devices in {r}"),
                 None => println!("[{peer}] saved scene {name:?} with {n} devices (whole home)"),
@@ -4477,6 +4491,11 @@ impl Lighting {
         self.snapshot.ambient_lights.ids()
     }
 
+    /// Which plugs have a lamp on them, as the current config has it.
+    fn lamp_plugs(&self) -> &HashSet<DeviceId> {
+        self.snapshot.lamp_plugs.ids()
+    }
+
     /// How long the ramps give a light to arrive.
     fn transition(&self) -> Duration {
         self.snapshot.lighting.transition()
@@ -4910,6 +4929,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_tracker = tracker.clone();
     let observer_claim_tracker = claim_tracker.clone();
     let observer_registry = registry.clone();
+    let observer_config = store.clone();
     let observer_device_index = Arc::clone(&device_index);
     let observer_publisher = publisher.clone();
     let observer_router = router.clone();
@@ -4971,7 +4991,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         // Includes _release variants and unknown strings.
                         continue;
                     };
-                    let targets = switch_targets(&observer_registry, &id);
+                    let lamps = observer_config.current().lamp_plugs.ids().clone();
+                    let targets = switch_targets(&observer_registry, &id, &lamps);
                     if targets.is_empty() {
                         tracing::debug!(
                             "switch {id} pressed but no actionable lights for room {}",
@@ -5404,6 +5425,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         &tracker,
                         &claim_tracker,
                         lighting.ambient(),
+                        lighting.lamp_plugs(),
                     ).await;
                 }
                 run_curve_tick(
@@ -5717,6 +5739,7 @@ async fn run_morning_routine_tick(
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
     ambient: &HashSet<DeviceId>,
+    lamp_plugs: &HashSet<DeviceId>,
 ) {
     // Deliberately not gated on `lighting.enabled`: that switch governs
     // the curve, and the routine is opted into separately by having a
@@ -5739,9 +5762,9 @@ async fn run_morning_routine_tick(
         registry
             .list_all()
             .into_iter()
-            // Non-ambient lights (ramped) + on/off outlets/plugs (switched
-            // on at the end-minute, since they can't ramp).
-            .filter(|d| d.is_switchable() && !ambient.contains(&d.id))
+            // Non-ambient lights (ramped) + lamps on plugs (switched on
+            // at the end-minute, since they can't ramp).
+            .filter(|d| d.is_lamp(lamp_plugs) && !ambient.contains(&d.id))
             .map(|d| d.id)
             .collect()
     } else {
@@ -5992,11 +6015,15 @@ fn spawn_timer_driver(timers: Arc<TimerStore>, bus: EventBus) -> tokio::task::Jo
 /// button.
 const ALL_ROOMS: &str = "all";
 
-/// Devices a switch press should act on: switchable on/off devices —
-/// lights **and** outlets (smart plugs). A switch in the reserved `all`
-/// room targets the whole home; any other room targets just that room.
-/// The switch itself is always excluded.
-fn switch_targets(registry: &DeviceRegistry, switch_id: &DeviceId) -> Vec<Device> {
+/// Devices a switch press should act on: the lights — including a lamp
+/// on a plug, but not whatever else is on one. A switch in the reserved
+/// `all` room targets the whole home; any other room targets just that
+/// room. The switch itself is always excluded.
+fn switch_targets(
+    registry: &DeviceRegistry,
+    switch_id: &DeviceId,
+    lamp_plugs: &HashSet<DeviceId>,
+) -> Vec<Device> {
     let room = switch_id.room();
     let candidates = if room.as_str() == ALL_ROOMS {
         registry.list_all()
@@ -6005,7 +6032,7 @@ fn switch_targets(registry: &DeviceRegistry, switch_id: &DeviceId) -> Vec<Device
     };
     candidates
         .into_iter()
-        .filter(|d| d.is_switchable() && &d.id != switch_id)
+        .filter(|d| d.is_lamp(lamp_plugs) && &d.id != switch_id)
         .collect()
 }
 
@@ -6027,24 +6054,29 @@ mod switch_target_tests {
         reg.upsert(light("z2m:bedroom/lamp"));
         reg.upsert(light("z2m:kitchen/ceiling"));
         let sw = DeviceId::parse("z2m:bedroom/main_switch").unwrap();
-        let targets = switch_targets(&reg, &sw);
+        let targets = switch_targets(&reg, &sw, &HashSet::new());
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id.to_string(), "z2m:bedroom/lamp");
     }
 
+    fn lamp(id: &str) -> HashSet<DeviceId> {
+        HashSet::from([DeviceId::parse(id).unwrap()])
+    }
+
     #[test]
-    fn targets_include_outlets_not_sensors() {
+    fn targets_include_lamp_plugs_not_sensors() {
         let reg = DeviceRegistry::new();
         reg.upsert(light("z2m:living_room/ceiling"));
         reg.upsert(dev("z2m:living_room/corner_lamp", DeviceClass::Outlet)); // Hue plug
         reg.upsert(dev("z2m:living_room/thermometer", DeviceClass::Sensor));
         let sw = DeviceId::parse("z2m:living_room/main_switch").unwrap();
-        let mut names: Vec<String> = switch_targets(&reg, &sw)
+        let lamps = lamp("z2m:living_room/corner_lamp");
+        let mut names: Vec<String> = switch_targets(&reg, &sw, &lamps)
             .iter()
             .map(|d| d.id.to_string())
             .collect();
         names.sort();
-        // The plug is included; the sensor is not.
+        // The lamp's plug is included; the sensor is not.
         assert_eq!(
             names,
             ["z2m:living_room/ceiling", "z2m:living_room/corner_lamp"]
@@ -6052,13 +6084,25 @@ mod switch_target_tests {
     }
 
     #[test]
-    fn all_room_switch_targets_every_switchable() {
+    fn a_plug_nobody_called_a_lamp_is_left_alone() {
+        let reg = DeviceRegistry::new();
+        reg.upsert(light("z2m:kitchen/ceiling"));
+        reg.upsert(dev("z2m:kitchen/coffee_machine", DeviceClass::Outlet));
+        let sw = DeviceId::parse("z2m:kitchen/switch").unwrap();
+        let targets = switch_targets(&reg, &sw, &HashSet::new());
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id.to_string(), "z2m:kitchen/ceiling");
+    }
+
+    #[test]
+    fn all_room_switch_targets_every_lamp() {
         let reg = DeviceRegistry::new();
         reg.upsert(light("z2m:bedroom/lamp"));
         reg.upsert(light("wled:living_room/ceiling"));
         reg.upsert(dev("z2m:living_room/corner_lamp", DeviceClass::Outlet));
         let sw = DeviceId::parse("z2m:all/bedroom_switch").unwrap();
-        let mut names: Vec<String> = switch_targets(&reg, &sw)
+        let lamps = lamp("z2m:living_room/corner_lamp");
+        let mut names: Vec<String> = switch_targets(&reg, &sw, &lamps)
             .iter()
             .map(|d| d.id.to_string())
             .collect();
@@ -6078,7 +6122,11 @@ mod switch_target_tests {
         let reg = DeviceRegistry::new();
         reg.upsert(light("z2m:all/lamp"));
         let sw = DeviceId::parse("z2m:all/lamp").unwrap(); // same id as a light
-        assert!(switch_targets(&reg, &sw).iter().all(|d| d.id != sw));
+        assert!(
+            switch_targets(&reg, &sw, &HashSet::new())
+                .iter()
+                .all(|d| d.id != sw)
+        );
     }
 }
 

@@ -164,6 +164,31 @@ mod tests {
         app_routing(registry, publisher, CommandRouter::z2m_only("zigbee2mqtt"))
     }
 
+    /// The usual app, with the living room's corner lamp listed as a
+    /// lamp on a plug — which is what makes "the lights" include it.
+    fn app_with_lamp_plug(
+        registry: Arc<DeviceRegistry>,
+        publisher: Arc<dyn DevicePublisher>,
+    ) -> Router {
+        let toml = format!(
+            "{}
+[lamp_plugs]
+devices = [\"living_room/corner_lamp\"]
+",
+            crate::config_tests::base_toml()
+        );
+        let store = Arc::new(niles_config::ConfigStore::from_str_in_memory(&toml).unwrap());
+        router(
+            AppState::new(
+                registry,
+                publisher,
+                Arc::new(CommandRouter::z2m_only("zigbee2mqtt")),
+                EventBus::default(),
+            )
+            .with_config_store(Some(store)),
+        )
+    }
+
     fn app_routing(
         registry: Arc<DeviceRegistry>,
         publisher: Arc<dyn DevicePublisher>,
@@ -905,7 +930,7 @@ mod tests {
         registry.upsert(make_light("living_room", "strip"));
         registry.upsert(make_dimmable("living_room", "bulb"));
         registry.upsert(make_outlet("living_room", "corner_lamp"));
-        let app = app_with(registry, mock.clone());
+        let app = app_with_lamp_plug(registry, mock.clone());
 
         let (status, body) = post(
             app,
@@ -957,7 +982,7 @@ mod tests {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_outlet("living_room", "corner_lamp"));
-        let app = app_with(registry, mock.clone());
+        let app = app_with_lamp_plug(registry, mock.clone());
 
         let (status, _body) = post(
             app,
@@ -990,12 +1015,30 @@ mod tests {
         registry.upsert(make_light("kitchen", "ceiling"));
         registry.upsert(make_light("office", "go"));
         registry.upsert(make_outlet("living_room", "corner_lamp"));
-        let app = app_with(registry, mock.clone());
+        let app = app_with_lamp_plug(registry, mock.clone());
 
         let (status, body) = post(app, "/lights", serde_json::json!({"on": false})).await;
         assert_eq!(status, StatusCode::ACCEPTED);
         assert_eq!(body["lights"], 3, "every room, not just one");
         assert_eq!(mock.calls().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_house_leaves_a_plug_alone_unless_it_is_a_lamp() {
+        // Could be the fridge. Only `[lamp_plugs]` says otherwise.
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("kitchen", "ceiling"));
+        registry.upsert(make_outlet("kitchen", "fridge"));
+        let app = app_with_lamp_plug(registry, mock.clone());
+
+        let (_, body) = post(app, "/lights", serde_json::json!({"on": false})).await;
+        assert_eq!(body["lights"], 1);
+        assert!(
+            mock.calls()
+                .iter()
+                .all(|(topic, _)| !topic.contains("fridge"))
+        );
     }
 
     #[tokio::test]
@@ -1020,7 +1063,7 @@ mod tests {
         let registry = Arc::new(DeviceRegistry::new());
         registry.upsert(make_light("living_room", "strip"));
         registry.upsert(make_outlet("living_room", "corner_lamp"));
-        let app = app_with(registry, mock.clone());
+        let app = app_with_lamp_plug(registry, mock.clone());
 
         let (status, _) = post(
             app,

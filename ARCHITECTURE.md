@@ -516,6 +516,8 @@ These same functions are exposed as LLM tools (for the query and cancellation fl
 
 Light scenes let users save a set of light states under a name and recall them later. The interaction model is "set the lights how you want, then save" — no config files, no YAML, no UI. The lights themselves are the editor.
 
+**What counts as a light.** A light, or a smart plug listed in `[lamp_plugs]` as having a lamp on it. A plug reports itself as an outlet and says nothing about what is plugged in, so Niles cannot tell a corner lamp from a fridge without being told. Listed plugs are lights everywhere lights are acted on as a group: scenes, "turn off the lights", a room's lights, wall switches and the morning routine. A plug in a scene records and restores only on/off. An unlisted plug is never part of any of those, and is switched only when asked for by name.
+
 This feature reuses the lighting model's *manual mode* mechanism — scenes don't introduce a new override concept, they just bulk-apply manual mode to a saved set of lights.
 
 ### Save behavior

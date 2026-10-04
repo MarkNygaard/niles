@@ -19,6 +19,7 @@ pub mod error;
 pub mod history;
 pub mod home;
 pub mod integrations;
+pub mod lamp_plugs;
 pub mod lighting;
 pub mod llm;
 pub mod memory;
@@ -54,6 +55,7 @@ pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
 pub use integrations::{IntegrationsConfig, LinearConfigDto};
+pub use lamp_plugs::LampPlugsConfig;
 pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config, ReasoningEffort};
 pub use memory::MemoryConfig;
@@ -186,6 +188,9 @@ pub fn section_reload(section: &str) -> Reload {
         // snapshot, and which lights sit it out from
         // `AmbientLightsConfig::ids`.
         "lighting" | "ambient_lights" => Reload::Hot,
+        // Read from the live snapshot by every command that asks which
+        // devices are the lights, and by the switch observer per press.
+        "lamp_plugs" => Reload::Hot,
         // The poll loop reads this every tick rather than at startup,
         // so switching presence on takes hold within half a minute.
         "presence" => Reload::Hot,
@@ -231,6 +236,7 @@ pub const SECTIONS: &[&str] = &[
     "satellites",
     "speakers",
     "ambient_lights",
+    "lamp_plugs",
     "history",
     "memory",
     "notifications",
@@ -283,6 +289,8 @@ pub struct Config {
     pub speakers: SpeakersConfig,
     #[serde(default)]
     pub ambient_lights: AmbientLightsConfig,
+    #[serde(default)]
+    pub lamp_plugs: LampPlugsConfig,
     #[serde(default)]
     pub history: HistoryConfig,
     #[serde(default)]
@@ -365,6 +373,7 @@ impl Config {
         self.satellites.validate()?;
         self.speakers.validate()?;
         self.ambient_lights.validate()?;
+        self.lamp_plugs.validate()?;
         self.history.validate()?;
         self.memory.validate()?;
         self.notifications.validate()?;

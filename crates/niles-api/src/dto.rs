@@ -29,10 +29,14 @@ pub struct DeviceDto {
     /// says otherwise — availability is optional in Z2M, and a house
     /// that never switched it on must not lose its dashboard.
     pub available: bool,
+    /// Whether it is one of the house's lights — a light, or a plug
+    /// listed in `[lamp_plugs]`. The dashboard shows these, and its room
+    /// and house switches act on exactly these.
+    pub lamp: bool,
 }
 
-impl From<&Device> for DeviceDto {
-    fn from(d: &Device) -> Self {
+impl DeviceDto {
+    pub fn new(d: &Device, lamp_plugs: &std::collections::HashSet<niles_core::DeviceId>) -> Self {
         Self {
             id: d.id.to_string(),
             source: d.id.source().to_string(),
@@ -43,6 +47,7 @@ impl From<&Device> for DeviceDto {
             supports_rgb: d.capabilities.rgb,
             supports_color_temp: d.capabilities.color_temp,
             available: d.available,
+            lamp: d.is_lamp(lamp_plugs),
         }
     }
 }

@@ -271,6 +271,18 @@ impl Device {
         matches!(self.class, DeviceClass::Light | DeviceClass::Outlet)
     }
 
+    /// True if this is one of the house's lights: a light, or a plug
+    /// somebody has said has a lamp on it.
+    ///
+    /// What "the lights" means wherever lights are acted on as a group —
+    /// a room, the house, a wall switch, a scene. [`Self::is_switchable`]
+    /// stays the test for whether one device *can* be switched, which
+    /// any plug can when asked for by name.
+    pub fn is_lamp(&self, lamp_plugs: &HashSet<DeviceId>) -> bool {
+        self.is_light()
+            || (matches!(self.class, DeviceClass::Outlet) && lamp_plugs.contains(&self.id))
+    }
+
     /// True if this device should be driven by the daily curve and the
     /// morning routine. Ambient lights — accent and decorative ones the
     /// user wants held steady — are excluded.
@@ -398,6 +410,23 @@ mod tests {
         let id = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
         let device = Device::new(id, DeviceState::default(), DeviceClass::Light);
         assert!(device.is_curve_driven(&HashSet::new()));
+    }
+
+    #[test]
+    fn a_plug_is_a_lamp_only_when_somebody_has_said_so() {
+        let id = DeviceId::parse("z2m:living_room/corner_lamp").unwrap();
+        let plug = Device::new(id.clone(), DeviceState::default(), DeviceClass::Outlet);
+        assert!(!plug.is_lamp(&HashSet::new()), "could be the fridge");
+        assert!(plug.is_lamp(&HashSet::from([id.clone()])));
+
+        let light = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
+        assert!(light.is_lamp(&HashSet::new()), "a light is always a light");
+
+        let switch = Device::new(id.clone(), DeviceState::default(), DeviceClass::Switch);
+        assert!(
+            !switch.is_lamp(&HashSet::from([id])),
+            "only a plug can be listed"
+        );
     }
 
     #[test]

@@ -7,14 +7,16 @@ export function humanize(raw: string): string {
 }
 
 /**
- * Whether this is something the dashboard can switch.
+ * Whether this is one of the lights the dashboard shows and switches.
  *
- * Outlets count. A lamp on a smart plug is a light to whoever owns it,
- * and leaving it off the dashboard because Z2M calls it an outlet would
- * make it the one lamp in the house the page can't reach.
+ * A plug counts when it has a lamp on it — a lamp on a smart plug is a
+ * light to whoever owns it. Any other plug is the fridge as far as the
+ * page knows, and a room toggle must not reach it. The server decides,
+ * from `[lamp_plugs]`; an older one that does not say meant every plug.
  */
 export function isControllable(device: Device): boolean {
-  return device.class === "light" || device.class === "outlet";
+  if (device.class === "light") return true;
+  return device.class === "outlet" && device.lamp !== false;
 }
 
 /** Whether it takes a level, as opposed to only on and off. */

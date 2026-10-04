@@ -6,6 +6,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use niles_core::{Device, DeviceId, DeviceState, RoomName};
+use std::collections::HashSet;
 
 type Failure = (StatusCode, String);
 
@@ -13,12 +14,22 @@ pub async fn healthz() -> &'static str {
     "ok"
 }
 
+/// The plugs that have a lamp on them, as the config has it now.
+fn lamp_plugs(state: &AppState) -> HashSet<DeviceId> {
+    state
+        .config
+        .as_ref()
+        .map(|c| c.current().lamp_plugs.ids().clone())
+        .unwrap_or_default()
+}
+
 pub async fn list_devices(State(state): State<AppState>) -> Json<Vec<DeviceDto>> {
+    let lamps = lamp_plugs(&state);
     let devices: Vec<DeviceDto> = state
         .registry
         .list_all()
         .iter()
-        .map(DeviceDto::from)
+        .map(|d| DeviceDto::new(d, &lamps))
         .collect();
     Json(devices)
 }
@@ -38,11 +49,12 @@ pub async fn devices_in_room(
     Path(room): Path<String>,
 ) -> Result<Json<Vec<DeviceDto>>, Failure> {
     let room_name = parse_room(&room)?;
+    let lamps = lamp_plugs(&state);
     let devices: Vec<DeviceDto> = state
         .registry
         .list_room(&room_name)
         .iter()
-        .map(DeviceDto::from)
+        .map(|d| DeviceDto::new(d, &lamps))
         .collect();
     Ok(Json(devices))
 }
@@ -107,11 +119,12 @@ pub async fn set_room(
     let room = parse_room(&room)?;
     let desired = desired_state(&body)?;
 
+    let lamps = lamp_plugs(&state);
     let lights: Vec<Device> = state
         .registry
         .list_room(&room)
         .into_iter()
-        .filter(Device::is_switchable)
+        .filter(|d| d.is_lamp(&lamps))
         .collect();
     if lights.is_empty() {
         return Err((StatusCode::NOT_FOUND, format!("no lights in room {room}")));
@@ -190,11 +203,12 @@ pub async fn set_all_lights(
     Json(body): Json<SetDeviceBody>,
 ) -> Result<(StatusCode, Json<RoomApplied>), Failure> {
     let desired = desired_state(&body)?;
+    let lamps = lamp_plugs(&state);
     let lights: Vec<Device> = state
         .registry
         .list_all()
         .into_iter()
-        .filter(Device::is_switchable)
+        .filter(|d| d.is_lamp(&lamps))
         .collect();
     if lights.is_empty() {
         return Err((
