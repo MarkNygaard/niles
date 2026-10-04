@@ -31,7 +31,10 @@ impl AmbientLightsConfig {
     /// re-derived it were how a WLED light ended up unable to be
     /// ambient at all.
     pub fn device_ids(&self) -> Result<Vec<niles_core::DeviceId>> {
-        self.devices.iter().map(|raw| parse_device(raw)).collect()
+        self.devices
+            .iter()
+            .map(|raw| parse_device("ambient_lights", raw))
+            .collect()
     }
 
     /// The configured devices as a set, parsed once per config snapshot.
@@ -48,7 +51,7 @@ impl AmbientLightsConfig {
         self.parsed.get_or_init(|| {
             self.devices
                 .iter()
-                .filter_map(|raw| parse_device(raw).ok())
+                .filter_map(|raw| parse_device("ambient_lights", raw).ok())
                 .collect()
         })
     }
@@ -63,14 +66,14 @@ impl AmbientLightsConfig {
 /// A bare `room/device` means Zigbee — every light was Zigbee when this
 /// section was added, and that spelling stays valid. A device from any
 /// other source names it: `wled:living_room/tv_light`.
-fn parse_device(raw: &str) -> Result<niles_core::DeviceId> {
+pub(crate) fn parse_device(section: &'static str, raw: &str) -> Result<niles_core::DeviceId> {
     let qualified = if raw.contains(':') {
         raw.to_string()
     } else {
         format!("z2m:{raw}")
     };
     niles_core::DeviceId::parse(&qualified).map_err(|e| Error::InvalidSection {
-        section: "ambient_lights",
+        section,
         reason: format!("device {raw:?} is not a valid device id: {e}"),
     })
 }

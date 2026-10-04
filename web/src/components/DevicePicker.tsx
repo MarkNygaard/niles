@@ -167,7 +167,8 @@ function unregistered(device: string): DeviceOption {
   };
 }
 
-/** Turn `GET /devices` into pickable options: lights, nicely named. */
+/** Turn `GET /devices` into pickable options, nicely named: the lights,
+    or with `"outlet"` the smart plugs. */
 export function deviceOptions(
   devices: Array<{
     id: string;
@@ -178,9 +179,10 @@ export function deviceOptions(
     supports_rgb?: boolean;
     supports_color_temp?: boolean;
   }>,
+  of: "light" | "outlet" = "light",
 ): DeviceOption[] {
   return devices
-    .filter((device) => device.class === "light")
+    .filter((device) => device.class === of)
     .map((device) => ({
       value: device.id,
       label: humanize(device.name),

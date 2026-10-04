@@ -125,6 +125,16 @@ describe("roomsOf", () => {
     expect(rooms[0].on).toBe(1);
   });
 
+  it("leaves out a plug that is not a lamp", () => {
+    // Could be the fridge: a room toggle must not reach it.
+    const rooms = roomsOf([
+      device("z2m:kitchen/ceiling"),
+      device("z2m:kitchen/fridge", { class: "outlet", lamp: false, state: { on: true } }),
+    ]);
+    expect(rooms[0].lights.map((d) => d.name)).toEqual(["ceiling"]);
+    expect(rooms[0].on).toBe(0);
+  });
+
   it("leaves out a room with nothing to control", () => {
     // A card you can't press is a card that only takes up room.
     const rooms = roomsOf([

@@ -22,6 +22,15 @@ const REGISTRY = [
     supports_color_temp: false,
   },
   {
+    id: "z2m:living_room/corner_lamp",
+    room: "living_room",
+    name: "corner_lamp",
+    source: "z2m",
+    class: "outlet",
+    supports_rgb: false,
+    supports_color_temp: false,
+  },
+  {
     id: "z2m:office/switch",
     room: "office",
     name: "switch",
@@ -39,6 +48,12 @@ describe("deviceOptions", () => {
       "wled:living_room/tv_light",
       "z2m:office/desk_lamp",
     ]);
+  });
+
+  it("offers the plugs when asked which have a lamp on them", () => {
+    const options = deviceOptions(REGISTRY, "outlet");
+    expect(options.map((o) => o.value)).toEqual(["z2m:living_room/corner_lamp"]);
+    expect(options[0].label).toBe("Corner lamp");
   });
 
   it("names devices the way a person would, and groups by room", () => {

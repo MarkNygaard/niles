@@ -25,6 +25,8 @@ export interface Setting {
   width?: string;
   /** `devices` only: what can be picked. Filled in by the page. */
   options?: DeviceOption[];
+  /** Which devices a `devices` setting picks from. Lights unless said. */
+  of?: "light" | "outlet";
   /** `devices` only: what to say when there is nothing to pick. */
   optionsEmpty?: string;
 }

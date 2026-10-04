@@ -4,7 +4,7 @@
 
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, RoomName};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -221,21 +221,36 @@ impl SceneStore {
     /// devices captured. Overwrites any existing scene with the same
     /// canonical name.
     ///
-    /// Non-light devices are dropped — per ARCHITECTURE.md:491,
-    /// scenes capture *lights*, not sensors, and `format_set_command`
-    /// would emit an empty `{}` payload for sensor entries on apply
-    /// anyway.
-    pub fn save(&self, name: &str, registry: &DeviceRegistry, room: Option<&RoomName>) -> usize {
+    /// Only the house's lights are kept — lights, and the plugs listed
+    /// in `lamp_plugs` (see [`niles_core::Device::is_lamp`]). A lamp on
+    /// a plug left out of a scene is a lamp the scene cannot turn off;
+    /// any other plug put in one would be a fridge a scene could.
+    pub fn save(
+        &self,
+        name: &str,
+        registry: &DeviceRegistry,
+        room: Option<&RoomName>,
+        lamp_plugs: &HashSet<DeviceId>,
+    ) -> usize {
         let key = canonicalize_name(name);
         let entries: Vec<SceneEntry> = match room {
             Some(r) => registry.list_room(r),
             None => registry.list_all(),
         }
         .into_iter()
-        .filter(|d| d.is_light())
+        .filter(|d| d.is_lamp(lamp_plugs))
         .map(|d| SceneEntry {
+            // A plug has one thing to be told; whatever else it reports
+            // (power draw, say) is not something to put back.
+            state: if d.is_light() {
+                d.state
+            } else {
+                DeviceState {
+                    on: d.state.on,
+                    ..Default::default()
+                }
+            },
             device_id: d.id,
-            state: d.state,
         })
         .collect();
         let n = entries.len();
@@ -320,7 +335,7 @@ mod tests {
     fn save_then_get_roundtrip() {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        let n = store.save("evening", &reg, None);
+        let n = store.save("evening", &reg, None, &HashSet::new());
         assert_eq!(n, 1);
         let entries = store.get("evening").unwrap();
         assert_eq!(entries.len(), 1);
@@ -336,7 +351,7 @@ mod tests {
             ("bedroom", "b", state(false, 40, 3000)),
         ]);
         let kitchen = RoomName::parse("kitchen").unwrap();
-        let n = store.save("evening", &reg, Some(&kitchen));
+        let n = store.save("evening", &reg, Some(&kitchen), &HashSet::new());
         assert_eq!(n, 1);
         let entries = store.get("evening").unwrap();
         assert_eq!(entries.len(), 1);
@@ -350,7 +365,7 @@ mod tests {
             ("kitchen", "a", state(true, 80, 2700)),
             ("bedroom", "b", state(false, 40, 3000)),
         ]);
-        let n = store.save("all", &reg, None);
+        let n = store.save("all", &reg, None, &HashSet::new());
         assert_eq!(n, 2);
         assert_eq!(store.get("all").unwrap().len(), 2);
     }
@@ -362,7 +377,7 @@ mod tests {
             ("kitchen", "a", state(true, 80, 2700)),
             ("kitchen", "b", state(true, 60, 2700)),
         ]);
-        assert_eq!(store.save("dup", &reg, None), 2);
+        assert_eq!(store.save("dup", &reg, None, &HashSet::new()), 2);
     }
 
     #[test]
@@ -373,8 +388,8 @@ mod tests {
             ("kitchen", "a", state(false, 20, 3000)),
             ("bedroom", "b", state(true, 100, 2700)),
         ]);
-        store.save("evening", &reg1, None);
-        let n = store.save("evening", &reg2, None);
+        store.save("evening", &reg1, None, &HashSet::new());
+        let n = store.save("evening", &reg2, None, &HashSet::new());
         assert_eq!(n, 2);
         let entries = store.get("evening").unwrap();
         assert_eq!(entries.len(), 2);
@@ -385,7 +400,7 @@ mod tests {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
         assert!(!store.exists("evening"));
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
         assert!(store.exists("evening"));
         assert!(!store.exists("morning"));
     }
@@ -394,7 +409,7 @@ mod tests {
     fn name_canonicalization_collisions() {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("Kitchen Evening", &reg, None);
+        store.save("Kitchen Evening", &reg, None, &HashSet::new());
         assert!(store.exists("kitchen evening"));
         assert!(store.exists("  KITCHEN  EVENING  "));
     }
@@ -403,9 +418,9 @@ mod tests {
     fn names_returns_sorted() {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("b", &reg, None);
-        store.save("a", &reg, None);
-        store.save("c", &reg, None);
+        store.save("b", &reg, None, &HashSet::new());
+        store.save("a", &reg, None, &HashSet::new());
+        store.save("c", &reg, None, &HashSet::new());
         assert_eq!(store.names(), vec!["a", "b", "c"]);
     }
 
@@ -415,8 +430,37 @@ mod tests {
         let store = Arc::new(SceneStore::new());
         let store2 = store.clone();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
         assert!(store2.exists("evening"));
+    }
+
+    #[test]
+    fn a_lamp_on_a_plug_is_in_the_scene_and_the_fridge_is_not() {
+        let store = SceneStore::new();
+        let reg = DeviceRegistry::new();
+        let lamp = dev_in("living_room", "corner_lamp");
+        reg.upsert(Device::new(
+            lamp.clone(),
+            DeviceState {
+                on: Some(false),
+                ..Default::default()
+            },
+            DeviceClass::Outlet,
+        ));
+        reg.upsert(Device::new(
+            dev_in("kitchen", "fridge"),
+            DeviceState {
+                on: Some(true),
+                ..Default::default()
+            },
+            DeviceClass::Outlet,
+        ));
+
+        let n = store.save("movie", &reg, None, &HashSet::from([lamp.clone()]));
+        assert_eq!(n, 1);
+        let entries = store.get("movie").unwrap();
+        assert_eq!(entries[0].device_id, lamp);
+        assert_eq!(entries[0].state.on, Some(false), "off is a state, and kept");
     }
 
     #[test]
@@ -440,7 +484,7 @@ mod tests {
             DeviceClass::Sensor,
         ));
 
-        let n = store.save("evening", &reg, None);
+        let n = store.save("evening", &reg, None, &HashSet::new());
         assert_eq!(n, 1, "sensor should not be captured");
 
         let entries = store.get("evening").unwrap();
@@ -452,7 +496,7 @@ mod tests {
     fn get_includes_all_three_state_fields() {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
         let entries = store.get("evening").unwrap();
         assert_eq!(entries[0].state.on, Some(true));
         assert_eq!(entries[0].state.brightness, Some(80));
@@ -472,7 +516,7 @@ mod tests {
             },
             DeviceClass::Light,
         ));
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
         let entries = store.get("evening").unwrap();
         assert_eq!(entries[0].state.rgb, Some([255, 128, 0]));
     }
@@ -483,7 +527,7 @@ mod tests {
         // one, and the scenes still come back.
         let registry = registry_with(&[("living_room", "bulb_1", state(true, 60, 2700))]);
         let store = SceneStore::new();
-        store.save("cosy", &registry, None);
+        store.save("cosy", &registry, None, &HashSet::new());
 
         let reloaded = SceneStore::from_json(&store.to_json()).expect("parses");
         assert_eq!(reloaded.names(), vec!["cosy"]);
@@ -507,7 +551,7 @@ mod tests {
         let registry = registry_with(&[("living_room", "bulb_1", state(true, 60, 2700))]);
         let store = SceneStore::new().with_sink(spy.clone());
 
-        store.save("cosy", &registry, None);
+        store.save("cosy", &registry, None, &HashSet::new());
         store.delete("cosy");
 
         let seen = spy.0.lock().unwrap();
@@ -531,7 +575,7 @@ mod tests {
             },
             DeviceClass::Light,
         ));
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
 
         let loaded = SceneStore::load_from_file(&path).unwrap();
         let entries = loaded.get("evening").unwrap();
@@ -543,7 +587,7 @@ mod tests {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
         assert!(!store.delete("evening"));
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
         assert!(store.delete("evening"));
         assert!(!store.delete("evening"));
     }
@@ -552,7 +596,7 @@ mod tests {
     fn delete_removes_from_get_and_exists() {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
         assert!(store.exists("evening"));
         assert!(store.get("evening").is_some());
         store.delete("evening");
@@ -566,7 +610,7 @@ mod tests {
         // contract as save/get/exists. (See name_canonicalization_collisions.)
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("Kitchen Evening", &reg, None);
+        store.save("Kitchen Evening", &reg, None, &HashSet::new());
         assert!(store.delete("kitchen evening"));
         assert!(!store.exists("Kitchen Evening"));
     }
@@ -575,9 +619,9 @@ mod tests {
     fn delete_preserves_other_scenes() {
         let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("evening", &reg, None);
-        store.save("morning", &reg, None);
-        store.save("movie", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
+        store.save("morning", &reg, None, &HashSet::new());
+        store.save("movie", &reg, None, &HashSet::new());
         assert!(store.delete("morning"));
         assert_eq!(store.names(), vec!["evening", "movie"]);
     }
@@ -592,7 +636,7 @@ mod tests {
         let path = dir.path().join("scenes.json");
         let store = SceneStore::new().with_persistence(path.clone());
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
 
         let reloaded = SceneStore::load_from_file(&path)
             .unwrap()
@@ -611,7 +655,7 @@ mod tests {
         let path = dir.path().join("scenes.json");
         let store = SceneStore::new().with_persistence(path.clone());
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("Kitchen Evening", &reg, None);
+        store.save("Kitchen Evening", &reg, None, &HashSet::new());
 
         let reloaded = SceneStore::load_from_file(&path)
             .unwrap()
@@ -634,7 +678,7 @@ mod tests {
         let path = dir.path().join("scenes.json");
         let store = SceneStore::new().with_persistence(path.clone());
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
-        store.save("evening", &reg, None);
+        store.save("evening", &reg, None, &HashSet::new());
 
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -698,7 +742,7 @@ mod tests {
             },
             DeviceClass::Sensor,
         ));
-        store.save("sensors_only", &reg, None);
+        store.save("sensors_only", &reg, None, &HashSet::new());
         assert!(store.exists("sensors_only"));
         assert_eq!(store.get("sensors_only").unwrap().len(), 0);
 

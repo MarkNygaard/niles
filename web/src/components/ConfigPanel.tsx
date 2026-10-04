@@ -162,6 +162,24 @@ const AMBIENT_ROWS: Row[] = [
   },
 ];
 
+/** Plugs with a lamp on them, which then count as lights. */
+const LAMP_PLUG_ROWS: Row[] = [
+  {
+    label: "Lamps on plugs",
+    description:
+      "Plugs picked here are lamps: “the lights”, room switches and scenes include them. Any other plug is only switched when asked for by name.",
+    settings: [
+      {
+        path: "lamp_plugs.devices",
+        kind: "devices",
+        of: "outlet",
+        caption: "pick from the plugs Niles knows about",
+        width: "min-w-72 flex-1",
+      },
+    ],
+  },
+];
+
 type Entry = { path: string; value: unknown };
 
 function numberAt(root: unknown, path: string): number | undefined {
@@ -393,9 +411,13 @@ export function ConfigPanel() {
     false;
 
   const lights = deviceOptions(devices.data ?? []);
+  const plugs = deviceOptions(devices.data ?? [], "outlet");
   const noLights = devices.isLoading
     ? "Still asking Niles which lights it has…"
     : "Niles has no lights registered yet.";
+  const noPlugs = devices.isLoading
+    ? "Still asking Niles which plugs it has…"
+    : "Niles has no smart plugs registered.";
 
   // Only offer a control something can act on: a house of RGB strips
   // has no use for a colour temperature, and offering one would invite
@@ -410,9 +432,11 @@ export function ConfigPanel() {
     // separately — so they're attached here rather than in the static
     // row definitions above.
     const settings = declared.map((setting) =>
-      setting.kind === "devices"
-        ? { ...setting, options: lights, optionsEmpty: noLights }
-        : setting,
+      setting.kind !== "devices"
+        ? setting
+        : setting.of === "outlet"
+          ? { ...setting, options: plugs, optionsEmpty: noPlugs }
+          : { ...setting, options: lights, optionsEmpty: noLights },
     );
     const id = settings[0].path;
     // A section the config file never mentions has no entry here, so it
@@ -571,6 +595,20 @@ export function ConfigPanel() {
                   onChange={(path, value) => save.mutate({ row: path, entries: [{ path, value }] })}
                 />
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Lamps on plugs</CardTitle>
+              <CardDescription>
+                A smart plug does not say what is plugged into it. Mark the
+                ones with a lamp, so they turn off with the lights and the
+                fridge does not.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="divide-border divide-y">
+              {LAMP_PLUG_ROWS.map(row)}
             </CardContent>
           </Card>
 

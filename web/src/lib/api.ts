@@ -202,6 +202,11 @@ export interface Device {
    * server, which reads the same as reachable.
    */
   available?: boolean;
+  /**
+   * One of the house's lights: a light, or a plug listed as having a
+   * lamp on it. Absent on an older server, where every plug was one.
+   */
+  lamp?: boolean;
 }
 
 /** What a light can be told. Every field is optional; at least one is required. */
