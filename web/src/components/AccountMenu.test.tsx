@@ -24,9 +24,6 @@ describe("initials", () => {
 });
 
 describe("AccountMenu", () => {
-  // One open per test, and as few tests as say it: every Base UI popover
-  // opened under jsdom leaves work behind that slows each test after it,
-  // and three of them starved the worker into a timeout on CI.
   it("shuts itself on the way to settings", () => {
     // It used to stay open over the page it had just navigated to.
     const onOpenSettings = vi.fn();
@@ -46,9 +43,14 @@ describe("AccountMenu", () => {
         onOpenProfile={onOpenProfile}
       />,
     );
-    fireEvent.click(screen.getByLabelText(/Account/));
-    fireEvent.click(screen.getByText("My profile"));
+    fireEvent.click(screen.getByRole("button", { name: /Account/ }));
+    fireEvent.click(screen.getByRole("button", { name: "My profile" }));
     expect(onOpenProfile).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("My profile")).toBeNull();
+  });
+
+  it("has no profile to offer with sign-in off", () => {
+    render(<AccountMenu onOpenSettings={vi.fn()} onOpenProfile={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Account/ }));
+    expect(screen.queryByRole("button", { name: "My profile" })).toBeNull();
   });
 });

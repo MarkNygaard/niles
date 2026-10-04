@@ -30,3 +30,19 @@ if (typeof window !== "undefined" && !window.PointerEvent) {
     }
   } as unknown as typeof window.PointerEvent;
 }
+
+// nwsapi 2.2.27, jsdom's selector engine, answers `:modal` by asking
+// `:fullscreen`, and answers that by calling `matches(":fullscreen")`
+// on the same element — itself — until the stack overflows. floating-ui
+// asks `:modal` on every position it computes for a popover and catches
+// the overflow, so each popover cost seconds of CPU that went on after
+// its test ended: three in one file starved the worker into "Timeout
+// calling onTaskUpdate" on CI. jsdom has no top layer and no
+// fullscreen, so for exactly these two the answer is no.
+if (typeof Element !== "undefined") {
+  const matches = Element.prototype.matches;
+  const never = new Set([":modal", ":fullscreen"]);
+  Element.prototype.matches = function (this: Element, selector: string) {
+    return never.has(selector) ? false : matches.call(this, selector);
+  };
+}
