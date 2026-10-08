@@ -31,6 +31,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -70,6 +71,15 @@ static const char* TAG = "niles-ww";
 static constexpr int SAMPLE_RATE = kAudioSampleFrequency;                 // 16000
 static constexpr int WINDOW_SAMPLES = kFeatureDurationMs * SAMPLE_RATE / 1000; // 480 (30 ms)
 static constexpr int STRIDE_SAMPLES = 10 * SAMPLE_RATE / 1000;            // 160 (10 ms)
+
+// The I2S bus runs at 48 kHz, clocked by the XVF3800 (its "i2s_master_48k"
+// firmware): playback at 48 kHz keeps the treble 16 kHz cut off, and both
+// directions still share one clock, so the satellite can listen while it
+// talks. The microphone is brought down to the 16 kHz everything else here
+// expects by decimate_slice().
+static constexpr int BUS_RATE = 48000;
+static constexpr int DECIM = BUS_RATE / SAMPLE_RATE;                     // 3
+static constexpr int BUS_FRAMES = STRIDE_SAMPLES * DECIM;                // 480 per 10 ms
 
 // XVF3800 I2S pins (match the proven VAD wiring): BCLK 8, WS 7, DIN 43,
 // DOUT 44 (playback — the XVF3800 plays I2S-TX audio on its speaker).
@@ -137,7 +147,28 @@ static constexpr int WINDOW_AVG = 5;
 // Back to 0.55 while the real distribution is collected -- which is what the
 // wake_avg reported below is for. A threshold argued from four minutes at a
 // desk is how this went wrong twice.
-static constexpr float AVG_CUTOFF = 0.55f;
+// 2026-09-24: a new model, retrained on this house. 13,700 synthetic "nyles"
+// plus 36 real ones from Mark and Majse, against the usual negative sets
+// plus 79 recordings of what actually woke this satellite. On clips
+// neither model was trained on, scored the way this loop scores them:
+//
+//                        real "Niles" (10)     false wakes (25)
+//   old model            0.47 .. 1.00          up to 0.99, 9 over 0.55
+//   new model            0.80 .. 1.00          23 under 0.12, max 0.71
+//
+// 0.75 sits in the gap between the loudest false wake and the weakest
+// real one. Ten and twenty-five clips is a small sample; tune from use.
+// 2026-10-02, round 2: the satellite moved to the living room, beside the
+// television, and woke 87 times in three days. Retrained with those added
+// (146 false wakes in all, 41 real "Niles"). Held-out clips, both rooms:
+//
+//                        living-room false   office false   real "Niles"
+//   round 1 at 0.75      6 / 20              0 / 25         12 / 12
+//   round 2 at 0.75      2 / 20              0 / 25         11 / 12
+//
+// The one real wake round 2 lost was already round 1's weakest (0.80).
+// Round 1's model is kept at wake-data/models/nyles_home_v1.tflite.
+static constexpr float AVG_CUTOFF = 0.75f;
 
 // ~1 s of audio kept before the wake word, in PSRAM.
 //
@@ -162,7 +193,7 @@ static constexpr int STREAM_GAIN = 6;
 static constexpr int MIC_GAIN = 4;
 
 static i2s_chan_handle_t rx_chan = nullptr;
-static int32_t i2s_buf[STRIDE_SAMPLES * 2]; // XVF3800 = 2ch / 32-bit
+static int32_t i2s_buf[BUS_FRAMES * 2]; // XVF3800 = 2ch / 32-bit, 48 kHz
 static int16_t window[WINDOW_SAMPLES];      // 30 ms sliding window of mono int16
 // Raw mono, pre-gain: the stream applies its own STREAM_GAIN, and storing
 // the detector's MIC_GAIN copy would amplify it twice. Allocated from PSRAM
@@ -193,12 +224,13 @@ static constexpr int kNumResourceVars = 20; // streaming state vars
 static constexpr uint8_t XMOS_I2C_ADDR = 0x2C;
 static constexpr uint8_t XMOS_RES_GPO = 20;
 static constexpr uint8_t XMOS_CMD_LED_EFFECT = 12;
-static constexpr uint8_t XMOS_CMD_LED_BRIGHTNESS = 13;
 static constexpr uint8_t XMOS_CMD_LED_COLOR = 16;
 
 static constexpr uint8_t LED_EFFECT_OFF = 0;
-static constexpr uint8_t LED_EFFECT_BREATHING = 1;
 static constexpr uint8_t LED_EFFECT_SOLID = 3;
+static constexpr uint8_t LED_EFFECT_RING = 5;
+static constexpr uint8_t XMOS_CMD_LED_RING_COLOR = 19;
+static constexpr int kRingLeds = 12;
 
 // XIAO ESP32-S3's I2C pins, which is where the XVF3800's control
 // interface lands on this carrier.
@@ -212,7 +244,7 @@ static SemaphoreHandle_t led_lock = nullptr;
 
 static void xmos_write(uint8_t res, uint8_t cmd, const uint8_t* data, uint8_t n) {
   if (!xmos_dev) return;
-  uint8_t buf[8];
+  uint8_t buf[3 + 48];  // up to LED_RING_COLOR: twelve uint32s
   if (n > sizeof(buf) - 3) return;
   buf[0] = res;
   buf[1] = cmd;
@@ -245,6 +277,22 @@ static void led_color(uint8_t r, uint8_t g, uint8_t b) {
   xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_COLOR, bytes, sizeof(bytes));
 }
 
+static std::atomic<Leds> led_state{Leds::Idle};
+
+// One frame of the thinking comet, with its head at `step`.
+static void ring_frame(int step) {
+  // Head, then a tail that fades out; the rest dark.
+  static constexpr uint8_t kTail[] = {200, 110, 55, 25, 8};
+  uint8_t bytes[kRingLeds * 4] = {};
+  for (int i = 0; i < (int)sizeof(kTail); i++) {
+    const int led = ((step - i) % kRingLeds + kRingLeds) % kRingLeds;
+    const uint8_t v = kTail[i];
+    const uint32_t packed = (uint32_t)v << 16 | (uint32_t)v << 8 | (uint32_t)v;  // white
+    for (int b = 0; b < 4; b++) bytes[led * 4 + b] = (uint8_t)(packed >> (8 * b) & 0xFF);
+  }
+  xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_RING_COLOR, bytes, sizeof(bytes));
+}
+
 static void leds_show(Leds state) {
   uint8_t rgb[3];
   uint8_t effect;
@@ -253,9 +301,9 @@ static void leds_show(Leds state) {
       effect = LED_EFFECT_SOLID;
       rgb[0] = 255; rgb[1] = 255; rgb[2] = 255;
       break;
-    case Leds::Thinking:  // waiting on niles — breathing, so the wait reads as work
-      effect = LED_EFFECT_BREATHING;
-      rgb[0] = 0; rgb[1] = 120; rgb[2] = 255;
+    case Leds::Thinking:  // waiting on niles — a light running round the ring
+      effect = LED_EFFECT_RING;
+      rgb[0] = 0; rgb[1] = 0; rgb[2] = 0;
       break;
     case Leds::Speaking:  // replying — steady, and a different colour from listening
       effect = LED_EFFECT_SOLID;
@@ -270,9 +318,154 @@ static void leds_show(Leds state) {
   // Colour first: setting the effect last means the ring never shows
   // the new effect in the old colour, however briefly.
   if (led_lock) xSemaphoreTake(led_lock, portMAX_DELAY);
-  led_color(rgb[0], rgb[1], rgb[2]);
+  led_state = state;
+  if (state == Leds::Thinking) {
+    ring_frame(0);
+  } else {
+    led_color(rgb[0], rgb[1], rgb[2]);
+  }
   xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_EFFECT, &effect, 1);
   if (led_lock) xSemaphoreGive(led_lock);
+}
+
+// While thinking, a white comet runs round the ring: one lit LED and a tail
+// that fades behind it, a lap every ~1.1 s. The XVF has no animation of its
+// own for this, so each frame is the twelve colours, written here.
+static void spinner_task(void*) {
+  int step = 0;
+  while (true) {
+    if (led_state == Leds::Thinking) {
+      if (led_lock) xSemaphoreTake(led_lock, portMAX_DELAY);
+      // Checked again under the lock: a state change between the two must
+      // not get a stale frame drawn over it.
+      if (led_state == Leds::Thinking) ring_frame(++step);
+      if (led_lock) xSemaphoreGive(led_lock);
+      vTaskDelay(pdMS_TO_TICKS(90));
+    } else {
+      step = 0;
+      vTaskDelay(pdMS_TO_TICKS(30));
+    }
+  }
+}
+
+// ---- XVF3800 echo cancellation, set at every boot ----
+//
+// The i2s_master_48k firmware's defaults do not cancel this satellite's own
+// speaker: on the first test a 10 s tone came back through the microphone at
+// full scale the whole way through. These are the values that worked for
+// pipecat-esp32-xvf3800 on the same board (src/media.cpp,
+// configure_xvf3800_dsp_profile; docs/AEC_GAIN_STAGING_POSTMORTEM.md), minus
+// their microphone and AGC gains, which this firmware tunes for itself. The
+// XVF forgets them on every power cycle, so they are written on every boot.
+static constexpr uint8_t XVF_READ_BIT = 0x80;
+static constexpr uint8_t XVF_RESID_PP = 17;
+static constexpr uint8_t XVF_RESID_AEC = 33;
+static constexpr uint8_t XVF_RESID_AUDIO_MGR = 35;
+
+static bool xvf_read(uint8_t res, uint8_t cmd, uint8_t* out, uint8_t n) {
+  if (!xmos_dev || n > 31) return false;
+  const uint8_t req[3] = {res, (uint8_t)(cmd | XVF_READ_BIT), (uint8_t)(n + 1)};
+  uint8_t resp[32] = {};
+  for (int attempt = 0; attempt < 8; attempt++) {
+    // Repeated start, no STOP between write and read: the XVF needs it.
+    if (i2c_master_transmit_receive(xmos_dev, req, sizeof(req), resp, n + 1, 100) != ESP_OK) return false;
+    if (resp[0] == 0x00) {  // done
+      memcpy(out, resp + 1, n);
+      return true;
+    }
+    if (resp[0] != 0x01 && resp[0] != 0x40) return false;  // not WAIT / RETRY
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return false;
+}
+
+static void xvf_write_i32(uint8_t res, uint8_t cmd, int32_t v) {
+  uint8_t b[4];
+  memcpy(b, &v, 4);  // little-endian on both sides
+  xmos_write(res, cmd, b, 4);
+}
+
+static void xvf_write_f32(uint8_t res, uint8_t cmd, float v) {
+  uint8_t b[4];
+  memcpy(b, &v, 4);
+  xmos_write(res, cmd, b, 4);
+}
+
+static void xvf_write_pair(uint8_t res, uint8_t cmd, uint8_t a, uint8_t b) {
+  const uint8_t d[2] = {a, b};
+  xmos_write(res, cmd, d, 2);
+}
+
+static void xvf_log_audio(const char* when) {
+  uint8_t b[4] = {};
+  float ref = NAN, mic = NAN;
+  int32_t delay = INT32_MIN;
+  uint8_t opl[2] = {0xff, 0xff}, opr[2] = {0xff, 0xff};
+  if (xvf_read(XVF_RESID_AUDIO_MGR, 1, b, 4)) memcpy(&ref, b, 4);
+  if (xvf_read(XVF_RESID_AUDIO_MGR, 0, b, 4)) memcpy(&mic, b, 4);
+  if (xvf_read(XVF_RESID_AUDIO_MGR, 26, b, 4)) memcpy(&delay, b, 4);
+  xvf_read(XVF_RESID_AUDIO_MGR, 15, opl, 2);
+  xvf_read(XVF_RESID_AUDIO_MGR, 19, opr, 2);
+  ESP_LOGI(TAG, "xvf %s: ref_gain=%.2f mic_gain=%.1f sys_delay=%ld op_l=[%u,%u] op_r=[%u,%u]", when,
+           (double)ref, (double)mic, (long)delay, opl[0], opl[1], opr[0], opr[1]);
+}
+
+// The board's DAC (TI AIC3104), on the same I2C bus. Its digital volume:
+// 0x00 is 0 dB, each step -0.5 dB.
+static i2c_master_bus_handle_t i2c_bus = nullptr;
+static constexpr uint8_t AIC3104_ADDR = 0x18;
+
+static void aic3104_attenuate(uint8_t steps) {
+  if (!i2c_bus) return;
+  i2c_device_config_t cfg = {};
+  cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  cfg.device_address = AIC3104_ADDR;
+  cfg.scl_speed_hz = 100000;
+  i2c_master_dev_handle_t dac = nullptr;
+  if (i2c_master_bus_add_device(i2c_bus, &cfg, &dac) != ESP_OK) return;
+  const uint8_t writes[3][2] = {{0x00, 0x00}, {0x2B, steps}, {0x2C, steps}};  // page 0; L, R DAC
+  bool ok = true;
+  for (auto& w : writes) ok &= i2c_master_transmit(dac, w, 2, 100) == ESP_OK;
+  ESP_LOGI(TAG, "dac attenuation %s: -%.1f dB", ok ? "set" : "FAILED", steps * 0.5);
+  i2c_master_bus_rm_device(dac);
+}
+
+static void xvf_configure() {
+  if (!xmos_dev) return;
+  xvf_log_audio("defaults");
+  // pipecat's microphone gain (factory 90) and speaker 6 dB down: the levels
+  // the delay below was measured at.
+  xvf_write_f32(XVF_RESID_AUDIO_MGR, 0, 60.0f);
+  aic3104_attenuate(0x0C);
+  // Clean ASR beam (category 7, auto-select) on both slots; category 6 is
+  // the conferencing path, whose noise suppression guts speech for STT.
+  xvf_write_pair(XVF_RESID_AUDIO_MGR, 15, 7, 3);
+  xvf_write_pair(XVF_RESID_AUDIO_MGR, 19, 7, 3);
+  // Reference gain 1.0: the vendor 8.0 (+18 dB) overdrives the output and
+  // AEC then models a clipped, nonlinear echo it cannot cancel.
+  xvf_write_f32(XVF_RESID_AUDIO_MGR, 1, 1.0f);
+  // Where the echo lands relative to the reference, in 16 kHz samples.
+  // The factory 12 suits the 16 kHz firmware; at 48 kHz the reference path
+  // is slower, and AEC cancelled nothing at all from 0 up to +300. Measured
+  // 2026-10-03 against the raw microphone (category 11) with AGC off: asking
+  // for anything from -170 to -75 converged within ~1 s and took the
+  // satellite's own speaker down ~30 dB, to the room's level -- and every one
+  // of those reads back as -64, the firmware's floor. So -64 is the setting.
+  xvf_write_i32(XVF_RESID_AUDIO_MGR, 26, -64);
+  xvf_write_i32(XVF_RESID_AEC, 35, 1);     // ASR-mode output
+  xvf_write_i32(XVF_RESID_AEC, 37, 0);     // adaptive, not fixed, beams
+  // The speaker plays ~15 dB louder than the reference shows (measured: echo
+  // ~5.5x the reference). pipecat's 12 dB; the delay above was measured with
+  // it, but it was not tested on its own.
+  xvf_write_f32(XVF_RESID_AEC, 5, 12.0f);  // FAR_EXTGAIN, dB
+  xvf_write_i32(XVF_RESID_AEC, 1, 2);      // high-pass filter
+  xvf_write_i32(XVF_RESID_PP, 23, 1);      // echo suppression
+  xvf_write_i32(XVF_RESID_PP, 27, 1);      // non-linear echo attenuation
+  xvf_write_i32(XVF_RESID_PP, 31, 30);     // double-talk sensitivity (default 10)
+  // AGC on, explicitly: the XVF keeps settings across an ESP32 reset, and a
+  // test that switched it off would otherwise outlive the test.
+  xvf_write_i32(XVF_RESID_PP, 10, 1);
+  xvf_log_audio("set");
 }
 
 static void leds_init() {
@@ -285,8 +478,8 @@ static void leds_init() {
   bus_cfg.glitch_ignore_cnt = 7;
   bus_cfg.flags.enable_internal_pullup = true;
 
-  i2c_master_bus_handle_t bus = nullptr;
-  esp_err_t err = i2c_new_master_bus(&bus_cfg, &bus);
+  esp_err_t err = i2c_new_master_bus(&bus_cfg, &i2c_bus);
+  i2c_master_bus_handle_t bus = i2c_bus;
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "I2C bus init failed (%s) — ring stays as it is", esp_err_to_name(err));
     return;
@@ -303,8 +496,6 @@ static void leds_init() {
     return;
   }
 
-  uint8_t brightness = 40;  // full is glaring in a dark room
-  xmos_write(XMOS_RES_GPO, XMOS_CMD_LED_BRIGHTNESS, &brightness, 1);
   leds_show(Leds::Idle);
   ESP_LOGI(TAG, "LED ring under our control (direction-of-arrival off)");
 }
@@ -325,13 +516,19 @@ static void leds_init() {
 static i2s_chan_handle_t tx_chan = nullptr;
 
 static void i2s_init_duplex() {
-  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  // Slave: the XVF3800 drives BCLK and WS. Two masters on one bus fight
+  // over the clock -- pipecat-esp32-xvf3800 measured silence at RMS ~13,600
+  // that way, against ~14 as slave.
+  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
+  // ~80 ms of DMA: at 48 kHz the default ~30 ms runs dry on a busy frame.
+  chan_cfg.dma_desc_num = 8;
+  chan_cfg.dma_frame_num = 480;
   // With nothing to play the port must send silence, not repeat the last
   // buffer it was given -- the tail of every reply, looping forever.
   chan_cfg.auto_clear_after_cb = true;
   ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_chan, &rx_chan));
   i2s_std_config_t std_cfg = {
-      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(BUS_RATE),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg = {
@@ -401,17 +598,62 @@ static void model_init() {
            (int)output->params.zero_point);
 }
 
-// Append one 10 ms slice to the sliding window (shift left, fill tail).
-// Mono = XVF3800 left channel, top 16 bits.
-static void push_slice() {
+// ---- 48 kHz -> 16 kHz ----
+//
+// A 31-tap Hamming-windowed sinc low-pass at 7 kHz, then every third sample.
+// Anything between 8 and 24 kHz would otherwise fold down into the band the
+// wake word and Whisper listen to. pipecat-esp32-xvf3800 found that a
+// pick-the-loudest decimator garbled STT; a plain average of three leaks a
+// lot. ~5k multiply-adds per 10 ms -- nothing to an S3 with an FPU.
+static constexpr int kTaps = 31;
+static float fir[kTaps];
+static float mic_hist[kTaps - 1 + BUS_FRAMES];
+
+static void decimator_init() {
+  const float fc = 7000.0f / BUS_RATE;  // cycles per sample
+  const int mid = kTaps / 2;
+  float sum = 0.0f;
+  for (int k = 0; k < kTaps; k++) {
+    const int n = k - mid;
+    const float sinc = n == 0 ? 2.0f * fc : sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
+    const float hamming = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * k / (kTaps - 1));
+    fir[k] = sinc * hamming;
+    sum += fir[k];
+  }
+  for (int k = 0; k < kTaps; k++) fir[k] /= sum;  // unity gain at DC
+  memset(mic_hist, 0, sizeof(mic_hist));
+}
+
+// One 10 ms slice of the processed microphone: XVF3800 left channel (its
+// ASR beam), top 16 bits, at 16 kHz. Raw -- callers apply their own gain.
+static void read_mic_slice(int16_t* out) {
   size_t got = 0;
   i2s_channel_read(rx_chan, i2s_buf, sizeof(i2s_buf), &got, portMAX_DELAY);
   int frames = got / (sizeof(int32_t) * 2);
-  if (frames > STRIDE_SAMPLES) frames = STRIDE_SAMPLES;
+  if (frames > BUS_FRAMES) frames = BUS_FRAMES;
+  // Carry the last kTaps-1 inputs over, so slices join seamlessly.
+  memmove(mic_hist, mic_hist + BUS_FRAMES, (kTaps - 1) * sizeof(float));
+  float* in = mic_hist + (kTaps - 1);
+  for (int f = 0; f < BUS_FRAMES; f++) in[f] = f < frames ? (float)(i2s_buf[f * 2] >> 16) : 0.0f;
+  for (int n = 0; n < STRIDE_SAMPLES; n++) {
+    const float* x = mic_hist + n * DECIM;
+    float acc = 0.0f;
+    for (int k = 0; k < kTaps; k++) acc += fir[k] * x[k];
+    if (acc > 32767.0f) acc = 32767.0f;
+    else if (acc < -32768.0f) acc = -32768.0f;
+    out[n] = (int16_t)lrintf(acc);
+  }
+}
+
+// Append one 10 ms slice to the sliding window (shift left, fill tail).
+static void push_slice() {
+  static int16_t mono[STRIDE_SAMPLES];
+  read_mic_slice(mono);
+  const int frames = STRIDE_SAMPLES;
   memmove(window, window + STRIDE_SAMPLES, (WINDOW_SAMPLES - STRIDE_SAMPLES) * sizeof(int16_t));
   int16_t* tail = window + (WINDOW_SAMPLES - STRIDE_SAMPLES);
   for (int f = 0; f < frames; f++) {
-    int32_t raw = (int32_t)(i2s_buf[f * 2] >> 16);
+    int32_t raw = mono[f];
     if (preroll) {
       preroll[preroll_pos] = (int16_t)raw;
       if (++preroll_pos >= PREROLL_SAMPLES) {
@@ -496,6 +738,11 @@ static std::atomic<bool> playing_now{false};
 
 static bool superseded(const PlayJob& job) { return job.gen != play_gen.load(); }
 
+// Set by the speaker task when a reply it has just finished playing was a
+// question: niles asks for it on the reply's audio-stop ({"listen":true}).
+// The wake loop then listens once more without waiting for its name.
+static std::atomic<bool> listen_for_answer{false};
+
 // recv() that gives up when the job is superseded, rather than holding the
 // speaker for the whole of niles's thinking time after somebody has already
 // asked something else. Short socket timeouts, and an overall idle limit.
@@ -535,7 +782,9 @@ static bool job_read_full(const PlayJob& job, uint8_t* buf, int n) {
   return true;
 }
 
-// Mono 16-bit in at any rate; stereo 32-bit out at SAMPLE_RATE, L=R.
+// Mono 16-bit in at any rate; stereo 32-bit out at BUS_RATE, L=R. Niles
+// sends speech at 48 kHz, which passes straight through (step 1.0); the
+// alarm chime still comes at 16 kHz and is stretched, which a bell survives.
 // Linear interpolation, carried across chunks so the joins are seamless.
 struct Resampler {
   float step = 1.0f;  // input samples per output sample
@@ -574,7 +823,8 @@ static void resample_into_tx(Resampler& rs, const int16_t* in, int n) {
 
 // Play one Wyoming audio stream (audio-start{rate} / audio-chunk+PCM /
 // audio-stop) from the job's socket. Returns false if it was cut off.
-static bool play_stream(const PlayJob& job) {
+// `listen` is set when the audio-stop asks for the answer to be heard.
+static bool play_stream(const PlayJob& job, bool* listen) {
   struct timeval tv = {.tv_sec = 0, .tv_usec = 100 * 1000};
   setsockopt(job.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
@@ -593,7 +843,7 @@ static bool play_stream(const PlayJob& job) {
       long rate = json_int_after(line, "\"rate\":");
       if (rate <= 0) rate = 22050;
       rs = Resampler{};
-      rs.step = (float)rate / (float)SAMPLE_RATE;
+      rs.step = (float)rate / (float)BUS_RATE;
       ESP_LOGI(TAG, "playing, audio-start rate=%ld", rate);
       if (!superseded(job)) leds_show(Leds::Speaking);
       playing_now = true;
@@ -613,6 +863,7 @@ static bool play_stream(const PlayJob& job) {
         rem -= want;
       }
     } else if (strstr(line, "audio-stop")) {
+      if (listen && strstr(line, "\"listen\":true")) *listen = true;
       break;
     }
   }
@@ -695,16 +946,29 @@ static void speaker_task(void*) {
       fcntl(client, F_SETFL, 0);
       job = PlayJob{client, play_gen.load(), false};
     }
-    const bool finished = play_stream(job);
+    bool listen = false;
+    const bool finished = play_stream(job, &listen);
     close(job.sock);
-    // Cut off means somebody is talking to it now, and the wake loop owns
-    // the ring until they have finished.
-    if (finished) leds_show(Leds::Idle);
+    if (finished && job.reply && listen) {
+      // A question, played to the end: the wake loop listens for the
+      // answer and takes the ring from here. Only a reply -- something
+      // niles dialled in to say never opens the microphone.
+      listen_for_answer = true;
+    } else if (finished) {
+      // Cut off means somebody is talking to it now, and the wake loop
+      // owns the ring until they have finished.
+      leds_show(Leds::Idle);
+    }
   }
 }
 
 // Returns true if the socket went to the speaker task to await a reply.
-static bool stream_utterance(float wake_avg, uint32_t gen) {
+//
+// `follow_up` is an answer to niles's question rather than a wake: there
+// is no wake word to send before it, the person gets longer to begin,
+// and the quiet before they do is not sent -- only a moment of it, so the
+// first word is not clipped.
+static bool stream_utterance(float wake_avg, uint32_t gen, bool follow_up) {
   struct sockaddr_in dest = {};
   dest.sin_family = AF_INET;
   dest.sin_port = htons(NILES_PORT);
@@ -729,18 +993,23 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
   // niles logs it beside the transcript; a week of the real room then
   // says where the bar belongs.
   char start[192];
-  int sn = snprintf(start, sizeof(start),
-                    "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,"
-                    "\"channels\":1,\"wake_avg\":%.3f}}\n",
-                    (double)wake_avg);
+  int sn = follow_up
+               ? snprintf(start, sizeof(start),
+                          "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,"
+                          "\"channels\":1,\"follow_up\":true}}\n")
+               : snprintf(start, sizeof(start),
+                          "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,"
+                          "\"channels\":1,\"wake_avg\":%.3f}}\n",
+                          (double)wake_avg);
   if (!send_all(sock, start, sn)) {
     close(sock);
     return false;
   }
 
   // Everything heard just before the wake word, before anything live:
-  // the sound that triggered this is the one worth having.
-  if (!send_preroll(sock)) {
+  // the sound that triggered this is the one worth having. An answer has
+  // no wake word, and what came before it is niles's own question.
+  if (!follow_up && !send_preroll(sock)) {
     close(sock);
     return false;
   }
@@ -776,6 +1045,15 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
   // below normal speech); if the user never speaks, abort without a real clip.
   static const int ONSET_RMS = 120;
   static const int ONSET_TIMEOUT_FRAMES = 250; // ~2.5 s to start talking
+  // An answer gets longer to begin: the question has only just ended.
+  static const int ANSWER_ONSET_FRAMES = 600;  // ~6 s
+  // Before an answer begins, the last ~300 ms are held back rather than
+  // sent, and go out once speech starts: the start of the first word,
+  // without seconds of a quiet room ahead of it.
+  static const int ANSWER_LEAD_FRAMES = 30;
+  static int16_t answer_lead[ANSWER_LEAD_FRAMES][STRIDE_SAMPLES];
+  int lead_kept = 0, lead_next = 0;
+  const int onset_timeout = follow_up ? ANSWER_ONSET_FRAMES : ONSET_TIMEOUT_FRAMES;
 
   // The XVF3800 downmix is low-level: raw command speech peaks only ~700-4600
   // (~2-14% of full scale). Whisper HALLUCINATES on near-silent audio (it
@@ -793,14 +1071,14 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
   // counts as silence afterwards.
   long speech_peak = 0;
   int stop_rms = STOP_RMS_MIN;
-  while (total < MAX_FRAMES) {
-    size_t got = 0;
-    i2s_channel_read(rx_chan, i2s_buf, sizeof(i2s_buf), &got, portMAX_DELAY);
-    int frames = got / (sizeof(int32_t) * 2);
-    if (frames > STRIDE_SAMPLES) frames = STRIDE_SAMPLES;
+  int sent = 0;
+  while (sent < MAX_FRAMES) {
+    static int16_t mono[STRIDE_SAMPLES];
+    read_mic_slice(mono);
+    const int frames = STRIDE_SAMPLES;
     long sum = 0;
     for (int f = 0; f < frames; f++) {
-      int32_t raw = (int32_t)(i2s_buf[f * 2] >> 16); // raw mono
+      int32_t raw = mono[f];                         // raw mono
       sum += raw < 0 ? -raw : raw;                   // VAD measures raw level
       int32_t g = raw * STREAM_GAIN;                 // amplify for STT
       if (g > 32767) g = 32767;
@@ -815,14 +1093,36 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
     // Stream from the start so we keep a little pre-roll (no clipped first
     // word), but only the post-onset silence counts toward the endpoint.
     int pb = STRIDE_SAMPLES * (int)sizeof(int16_t);
+    total++;
+    if (follow_up && !started && energy < ONSET_RMS) {
+      memcpy(answer_lead[lead_next], slice, pb);
+      lead_next = (lead_next + 1) % ANSWER_LEAD_FRAMES;
+      if (lead_kept < ANSWER_LEAD_FRAMES) lead_kept++;
+      if (++lead >= onset_timeout) {
+        ESP_LOGI(TAG, "no answer — closing the microphone");
+        break;
+      }
+      continue;
+    }
+    if (follow_up && !started) {
+      // Speech: the held-back moment first, oldest frame first.
+      bool ok = true;
+      for (int k = 0; k < lead_kept && ok; k++) {
+        const int at = (lead_next - lead_kept + k + ANSWER_LEAD_FRAMES) % ANSWER_LEAD_FRAMES;
+        int hn = snprintf(hdr, sizeof(hdr), "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
+        ok = send_all(sock, hdr, hn) && send_all(sock, answer_lead[at], pb);
+        sent++;
+      }
+      if (!ok) break;
+    }
     int n = snprintf(hdr, sizeof(hdr), "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
     if (!send_all(sock, hdr, n) || !send_all(sock, slice, pb)) break;
-    total++;
+    sent++;
 
     if (!started) {
       if (energy >= ONSET_RMS) {
         started = true;
-      } else if (++lead >= ONSET_TIMEOUT_FRAMES) {
+      } else if (++lead >= onset_timeout) {
         ESP_LOGW(TAG, "no speech after wake — aborting capture");
         break;
       }
@@ -847,13 +1147,19 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
 
   const char* stop = "{\"type\":\"audio-stop\"}\n";
   send_all(sock, stop, strlen(stop));
+  if (follow_up && !started) {
+    // Nobody answered. niles gets an empty session, which it drops, and
+    // there is no reply to wait for.
+    close(sock);
+    return false;
+  }
   // Nothing more to say; from here the wait is niles's.
   leds_show(Leds::Thinking);
   ESP_LOGI(TAG,
            "utterance streamed (%d frames, ~%d ms, %s%s) energy[min=%ld max=%ld] "
            "speech_peak=%ld stop_rms=%d",
            total, total * 10, started ? "spoke" : "no-speech",
-           total >= MAX_FRAMES ? ", HIT CAP" : "", emin, emax, speech_peak, stop_rms);
+           sent >= MAX_FRAMES ? ", HIT CAP" : "", emin, emax, speech_peak, stop_rms);
 
   // The reply comes back on this socket. The speaker task plays it, so the
   // wake loop is listening again while niles thinks and while it talks.
@@ -925,8 +1231,11 @@ extern "C" void app_main(void) {
   if (!preroll) {
     ESP_LOGW(TAG, "no PSRAM for the pre-roll; wakes will be sent without it");
   }
+  decimator_init();
   i2s_init_duplex();
   leds_init();
+  xTaskCreate(spinner_task, "spinner", 3072, nullptr, 3, nullptr);
+  xvf_configure();
   push_listener_init();
   play_q = xQueueCreate(2, sizeof(PlayJob));
   // The other core: the wake loop keeps this one busy, and playback must
@@ -956,6 +1265,18 @@ extern "C" void app_main(void) {
   while (true) {
     push_slice();
     if (warmup > 0) { warmup--; continue; }
+
+    // niles asked a question and has finished saying it: listen for the
+    // answer as if the wake word had been said, once.
+    if (listen_for_answer.exchange(false)) {
+      ESP_LOGI(TAG, ">>> listening for an answer <<<");
+      const uint32_t gen = ++play_gen;
+      leds_show(Leds::Listening);
+      if (!stream_utterance(0.0f, gen, true)) leds_show(Leds::Idle);
+      // What the averaging remembers is from before the question.
+      for (int i = 0; i < WINDOW_AVG; i++) ring[i] = 0.0f;
+      continue;
+    }
 
     // Audio level of the current window (peak |sample|) — confirms the mic
     // is actually capturing.
@@ -1017,7 +1338,7 @@ extern "C" void app_main(void) {
           // talked over.
           const uint32_t gen = ++play_gen;
           leds_show(Leds::Listening);
-          if (!stream_utterance(avg, gen)) leds_show(Leds::Idle);
+          if (!stream_utterance(avg, gen, false)) leds_show(Leds::Idle);
           // Reset wake state so stale slices don't immediately re-fire.
           // The ring included: the average that just fired would otherwise
           // still be most of the way to firing again.

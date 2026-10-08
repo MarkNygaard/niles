@@ -263,6 +263,8 @@ pub async fn speak_back(
     text: &str,
     speakers: &SpeakerRegistry,
     satellites: &SatelliteRegistry,
+    // A question: ask the satellite to listen for the answer afterwards.
+    listen: bool,
 ) -> Result<()> {
     let duck_handle = try_duck(speakers, satellites, peer).await;
     let result: Result<()> = async {
@@ -270,7 +272,9 @@ pub async fn speak_back(
         let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
         let (pcm, format) = for_satellite(pcm, format);
         let quieted = at_volume(&pcm, format.bits_per_sample, satellites.volume_for(peer));
-        sender.send_audio(peer, &quieted, format).await?;
+        sender
+            .send_audio_then(peer, &quieted, format, listen)
+            .await?;
         Ok(())
     }
     .await;

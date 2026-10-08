@@ -192,6 +192,21 @@ impl WyomingSender {
         pcm: &[u8],
         format: AudioFormat,
     ) -> std::result::Result<(), SendError> {
+        self.send_audio_then(peer, pcm, format, false).await
+    }
+
+    /// [`Self::send_audio`], and when `listen` is set, ask the satellite to
+    /// open its microphone once it has finished playing — the reply was a
+    /// question, and the answer should not need the wake word. Carried on
+    /// the `audio-stop` (`{"listen": true}`), so it arrives exactly when
+    /// the speech it follows has.
+    pub async fn send_audio_then(
+        &self,
+        peer: SocketAddr,
+        pcm: &[u8],
+        format: AudioFormat,
+        listen: bool,
+    ) -> std::result::Result<(), SendError> {
         let frame_size = (format.bits_per_sample / 8) as usize * format.channels as usize;
         let chunk_size = match AUDIO_CHUNK_BYTES.checked_div(frame_size) {
             None => AUDIO_CHUNK_BYTES, // frame_size == 0
@@ -252,7 +267,11 @@ impl WyomingSender {
                 peer,
                 Event {
                     kind: EventKind::AudioStop,
-                    data: json!({}),
+                    data: if listen {
+                        json!({ "listen": true })
+                    } else {
+                        json!({})
+                    },
                     payload: Vec::new(),
                     version: None,
                 },
