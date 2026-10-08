@@ -95,7 +95,10 @@ export function ChatView({
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    // The screen under the title, at least, so the conversation can sit
+    // at its bottom: page padding (see App) is 0.25rem on a phone and
+    // 1.5rem from `sm`, the header 2.25rem, the gap under it 1rem.
+    <div className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3.5rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]">
       {exchanges.length === 0 && !busy ? (
         <div className="flex flex-col gap-3 px-1">
           <p className="text-muted-foreground text-sm">
@@ -126,7 +129,10 @@ export function ChatView({
         </div>
       )}
 
-      <ol className="flex flex-col gap-3" aria-label="Conversation">
+      {/* At the bottom, just above the field, the way a messages app
+          has it. At the top, a short conversation was what iOS slid off
+          the screen when it lifted the field above the keyboard. */}
+      <ol className="mt-auto flex flex-col gap-3" aria-label="Conversation">
         {exchanges.map((exchange, i) => (
           <li key={i} className="flex flex-col gap-3">
             <Bubble from="you">{exchange.said}</Bubble>
@@ -177,7 +183,13 @@ export function ChatView({
         <Textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onFocus={() => (document.documentElement.dataset.typing = "")}
+          onFocus={() => {
+            document.documentElement.dataset.typing = "";
+            // Start from the newest message, so the end of the
+            // conversation is what the keyboard's lift keeps in view.
+            const root = document.getElementById("root");
+            root?.scrollTo?.({ top: root.scrollHeight });
+          }}
           onBlur={() => delete document.documentElement.dataset.typing}
           onKeyDown={(e) => {
             // Enter sends, as in every chat; Shift+Enter is a new line.
