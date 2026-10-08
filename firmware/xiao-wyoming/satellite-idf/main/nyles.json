@@ -1,15 +1,15 @@
 {
   "type": "micro",
   "wake_word": "nyles",
-  "author": "microwakeword.com",
-  "website": "https://microwakeword.com",
+  "author": "niles (retrained 2026-10-02, round 2: office + living room)",
+  "website": "https://github.com/OHF-Voice/micro-wake-word",
   "model": "./nyles.tflite",
   "trained_languages": [
     "en"
   ],
   "version": 2,
   "micro": {
-    "probability_cutoff": 0.98,
+    "probability_cutoff": 0.75,
     "sliding_window_size": 5,
     "feature_step_size": 10,
     "tensor_arena_size": 32000,
