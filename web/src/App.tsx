@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
+import { ChatPage } from "@/components/ChatPage";
 import { ConfigPanel } from "@/components/ConfigPanel";
 import { GroceriesPage } from "@/components/GroceriesPage";
 import { MePage } from "@/components/MePage";
@@ -121,6 +122,8 @@ function screenFor(
   switch (route) {
     case "/groceries":
       return { at: route, title: "Groceries", body: <GroceriesPage /> };
+    case "/chat":
+      return { at: route, title: "Chat", body: <ChatPage /> };
     case "/me":
       return {
         at: route,

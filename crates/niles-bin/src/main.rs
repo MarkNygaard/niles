@@ -2984,6 +2984,110 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Where typed words "come from", for the code that asks which
+/// satellite said something. No satellite has this address, so no room
+/// is assumed and nothing is spoken back.
+const APP_PEER: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
+    std::net::Ipv4Addr::UNSPECIFIED,
+    0,
+));
+
+/// Added to the prompt for a typed conversation. The persona is written
+/// for a voice; on a screen a list can be a list.
+const TYPED_IN_THE_APP: &str = "\n\n# This conversation\n\nThe person is typing to you in the \
+Niles app, and your reply is shown as text rather than spoken. Keep the butler's manner and \
+brevity, but a short list or a few lines is fine where it reads better than one sentence.\n";
+
+/// The app's chat, answered by the same dispatch as a spoken command.
+///
+/// Built before the dispatch context exists, because the API starts
+/// first, and handed it once it does.
+struct AppChat {
+    ctx: Arc<std::sync::OnceLock<DispatchCtx>>,
+    /// The satellites' speech-to-text, so dictation hears Danish words
+    /// the way a spoken command does.
+    stt: Arc<LiveStt>,
+}
+
+#[async_trait::async_trait]
+impl niles_api::chat::Chat for AppChat {
+    async fn reply(&self, who: &str, speaker: Option<&str>, text: &str) -> Result<String, String> {
+        let ctx = self
+            .ctx
+            .get()
+            .ok_or_else(|| "Niles is still starting; try again in a moment".to_string())?;
+        let thread = conversation::Thread::Chat(who.to_string());
+        let known = typed_speaker(ctx, speaker);
+        // The profile tools write to whoever is signed in, as they write
+        // to whoever is speaking.
+        let slug = match &known {
+            SpeakerContext::Identified { known, .. } => known.slug.clone(),
+            _ => None,
+        };
+        let reply = profile::SPEAKER
+            .scope(
+                slug,
+                dispatch_text(ctx, APP_PEER, text, &thread, &known, None),
+            )
+            .await
+            // Nothing to say is how a spoken turn ends when the action was
+            // the answer. On a screen that looks like being ignored.
+            .unwrap_or_else(|| "Done.".to_string());
+        ctx.conversation.record(&thread, text, &reply);
+        Ok(reply)
+    }
+
+    fn history(&self, who: &str) -> Vec<niles_api::chat::Exchange> {
+        let Some(ctx) = self.ctx.get() else {
+            return Vec::new();
+        };
+        ctx.conversation
+            .turns(&conversation::Thread::Chat(who.to_string()))
+            .into_iter()
+            .map(|(said, reply)| niles_api::chat::Exchange { said, reply })
+            .collect()
+    }
+
+    async fn transcribe(&self, audio: Vec<u8>, filename: &str) -> Result<String, String> {
+        self.stt
+            .current()
+            .transcribe(audio, filename)
+            .await
+            .map(|t| t.text.trim().to_string())
+            .map_err(|e| format!("could not transcribe that: {e}"))
+    }
+
+    fn forget(&self, who: &str) {
+        if let Some(ctx) = self.ctx.get() {
+            ctx.conversation
+                .forget(&conversation::Thread::Chat(who.to_string()));
+        }
+    }
+}
+
+/// Who is typing, as the prompt would know them by voice.
+///
+/// Only a voice the recogniser still has: a link to one since forgotten
+/// is nobody in particular.
+fn typed_speaker(ctx: &DispatchCtx, speaker: Option<&str>) -> SpeakerContext {
+    let (Some(slug), Some(id)) = (speaker, ctx.identifier.as_ref()) else {
+        return SpeakerContext::Disabled;
+    };
+    let Some(name) = id.how_to_say(slug) else {
+        return SpeakerContext::Disabled;
+    };
+    let (notes, birthday) = id.profile(slug);
+    SpeakerContext::Identified {
+        name,
+        known: profile::Known {
+            slug: Some(slug.to_string()),
+            address: id.address_as(slug),
+            notes,
+            birthday,
+        },
+    }
+}
+
 /// Shared by every spawned dispatch task. Cheaply cloneable —
 /// `MqttPublisher`, `Arc`, `bool` all clone in constant time.
 #[derive(Clone)]
@@ -3157,8 +3261,8 @@ async fn handle_transcript(
         }
     }
     if let Some(reply) = &response {
-        ctx.conversation
-            .record(ctx.satellites.room_for(peer), text, reply);
+        let thread = conversation::Thread::Room(ctx.satellites.room_for(peer).cloned());
+        ctx.conversation.record(&thread, text, reply);
     }
     response
 }
@@ -3173,6 +3277,7 @@ async fn dispatch_tier1(
     peer: SocketAddr,
     text: &str,
     origin_room: Option<&RoomName>,
+    thread: &conversation::Thread,
     speaker: &SpeakerContext,
 ) -> Option<String> {
     tracing::info!("[{peer}] dispatching to Tier 1 LLM: {text:?}");
@@ -3213,11 +3318,15 @@ async fn dispatch_tier1(
         skill_summaries.as_deref(),
         speaker,
     );
+    let mut system_prompt = system_prompt;
+    if matches!(thread, conversation::Thread::Chat(_)) {
+        system_prompt.push_str(TYPED_IN_THE_APP);
+    }
     let mut messages = Vec::new();
     messages.push(Message::System {
         content: system_prompt,
     });
-    messages.extend(ctx.conversation.recent_messages(origin_room));
+    messages.extend(ctx.conversation.recent_messages(thread));
     messages.push(Message::User {
         content: text.to_string(),
     });
@@ -3622,6 +3731,24 @@ async fn dispatch_transcript(
         );
     }
 
+    let thread = conversation::Thread::Room(ctx.satellites.room_for(peer).cloned());
+    dispatch_text(ctx, peer, text, &thread, speaker, voice).await
+}
+
+/// Act on words somebody meant for Niles, however they arrived.
+///
+/// Everything before this decides whether a sound in a room was a
+/// command — the noise gate, the name, the known-voices lock. Typed
+/// words from the app have already answered all of that by being typed
+/// by somebody signed in, so they start here.
+async fn dispatch_text(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    text: &str,
+    thread: &conversation::Thread,
+    speaker: &SpeakerContext,
+    voice: Option<&[f32]>,
+) -> Option<String> {
     let origin_room = ctx.satellites.room_for(peer);
 
     // IntentRouter is a zero-sized unit struct; the regexes are
@@ -3651,7 +3778,7 @@ async fn dispatch_transcript(
             tracing::info!("[{peer}] not acting on {text:?}: too little to be an instruction");
             return Some(response::didnt_catch_that());
         }
-        None => return dispatch_tier1(ctx, peer, text, origin_room, speaker).await,
+        None => return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await,
     };
 
     println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
@@ -3691,7 +3818,7 @@ async fn dispatch_transcript(
                         // Tier 0 matched a light intent but found no target
                         // (e.g. "living room ceiling light" parsed as room
                         // "living room ceiling"). Let the LLM resolve it
-                        return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+                        return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
                     }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
@@ -3708,7 +3835,7 @@ async fn dispatch_transcript(
             let Some((spoken, targets)) = ctx.last_target.resolve(origin_room) else {
                 // Nothing recent to point at. The LLM has the
                 // conversation history and may do better than we can.
-                return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+                return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
             };
             let desired = DeviceState {
                 on: Some(on),
@@ -3781,7 +3908,7 @@ async fn dispatch_transcript(
                         // (e.g. "living room ceiling light" parsed as room
                         // "living room ceiling"). Let the LLM resolve it
                         // rather than dead-ending. See dispatch_tier1.
-                        return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+                        return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
                     }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
@@ -3810,7 +3937,7 @@ async fn dispatch_transcript(
                         // (e.g. "living room ceiling light" parsed as room
                         // "living room ceiling"). Let the LLM resolve it
                         // rather than dead-ending. See dispatch_tier1.
-                        return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+                        return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
                     }
                     RoomResolve::WarmingUp => return Some(response::room_warming_up()),
                 };
@@ -3838,7 +3965,7 @@ async fn dispatch_transcript(
             }) {
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
-                    return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+                    return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
                 }
                 RoomResolve::WarmingUp => return Some(response::room_warming_up()),
             };
@@ -3867,7 +3994,7 @@ async fn dispatch_transcript(
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
                     // No Tier 0 target — escalate to the LLM (see dispatch_tier1).
-                    return dispatch_tier1(ctx, peer, text, origin_room, speaker).await;
+                    return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
                 }
                 RoomResolve::WarmingUp => return Some(response::room_warming_up()),
             };
@@ -5299,6 +5426,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     // HTTP API
+    let chat_ctx = Arc::new(std::sync::OnceLock::new());
     let api_state = AppState::new(
         registry.clone(),
         Arc::new(publisher.clone()) as Arc<dyn DevicePublisher>,
@@ -5310,6 +5438,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
+    .with_chat(Some(Arc::new(AppChat {
+        ctx: chat_ctx.clone(),
+        stt: whisper.clone(),
+    })))
     .with_tado(tado.clone())
     .with_voices(voices.clone())
     .with_captures(captures.clone())
@@ -5406,6 +5538,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tado: tado.clone(),
         courtesy: Arc::new(courtesy::Courtesy::default()),
     };
+    // The API is already up; from here on the chat has something to
+    // answer with.
+    let _ = chat_ctx.set(ctx.clone());
 
     // Curve loop: driven inline with select! so we share Ctrl-C handling.
     let mut config_changes = store.subscribe();

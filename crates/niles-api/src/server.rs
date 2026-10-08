@@ -37,6 +37,18 @@ pub fn router(state: AppState) -> Router {
             post(crate::scenes::apply_scene).delete(crate::scenes::delete_scene),
         )
         .route(
+            "/chat",
+            get(crate::chat::history)
+                .post(crate::chat::send)
+                .delete(crate::chat::forget),
+        )
+        .route(
+            "/chat/dictation",
+            post(crate::chat::dictation).layer(axum::extract::DefaultBodyLimit::max(
+                crate::chat::MAX_DICTATION_BYTES,
+            )),
+        )
+        .route(
             "/groceries",
             get(crate::groceries::list).post(crate::groceries::add),
         )

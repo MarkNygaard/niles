@@ -1,4 +1,4 @@
-import { House, ShoppingBasket, UserRound } from "lucide-react";
+import { House, MessageCircle, ShoppingBasket, UserRound } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +38,12 @@ export function TabBar({ route, email, avatarUrl }: TabBarProps) {
       owns: (r) => r === "/groceries",
     },
     {
+      href: "#/chat",
+      label: "Chat",
+      icon: <MessageCircle />,
+      owns: (r) => r === "/chat",
+    },
+    {
       href: "#/me",
       label: "Me",
       // A face rather than a silhouette once there is one: it is how a
@@ -58,6 +64,9 @@ export function TabBar({ route, email, avatarUrl }: TabBarProps) {
         "border-border bg-background/90 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur",
         "pb-[env(safe-area-inset-bottom)]",
         "sm:static sm:z-auto sm:border-0 sm:bg-transparent sm:pb-0 sm:backdrop-blur-none",
+        // Out of the way while somebody types in the chat: on a phone
+        // the keyboard already takes half the screen.
+        "max-sm:in-data-typing:hidden",
       )}
     >
       <ul className="mx-auto flex max-w-md sm:max-w-none sm:gap-1">
