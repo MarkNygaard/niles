@@ -78,11 +78,15 @@ describe("NemligOrder", () => {
   });
 
   it("says how long a reserved time is held", () => {
+    const until = new Date(2026, 9, 8, 19, 42);
     open({
       sent: { ...SENT, basket: { ...SENT.basket, delivery: "Fredag 10. oktober kl. 7-15", slot_id: 3 } },
-      heldUntil: new Date(2026, 9, 8, 19, 42),
+      heldUntil: until,
     });
-    expect(screen.getByText(/Held until .*19.42/)).toBeInTheDocument();
+    // In whatever form the reader's locale writes the time: "19.42"
+    // here, "07:42 PM" on the CI runner.
+    const time = until.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    expect(screen.getByText(new RegExp(`Held until ${time}`))).toBeInTheDocument();
   });
 
   it("sends payment to nemlig.com rather than doing it here", () => {
