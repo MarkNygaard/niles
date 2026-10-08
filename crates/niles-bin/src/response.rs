@@ -427,6 +427,12 @@ pub fn didnt_catch_that() -> String {
     "Sorry?".to_string()
 }
 
+/// Said to somebody who called Niles by name in a voice it did not know,
+/// while only known voices are answered.
+pub fn voice_not_recognised() -> String {
+    "Sorry, I didn't recognise your voice.".to_string()
+}
+
 // ---- the clock ------------------------------------------------------
 
 /// "It's 15:20." / "It's Saturday the 12th of September."

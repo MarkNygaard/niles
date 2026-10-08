@@ -64,6 +64,46 @@ pub(crate) trait SpeakerIdentifier: Send + Sync {
     fn knows_anybody(&self) -> bool;
 }
 
+/// How much of a recording is the person who woke the satellite.
+///
+/// A spoken command is about this long — "Niles, turn off the floor
+/// lamp" is under three seconds — and the recordings that run longer do
+/// so because the room kept talking after them, not because they did.
+const VOICE_WINDOW_SECONDS: usize = 3;
+
+/// Who spoke, and the voice print that said so.
+///
+/// Up to [`VOICE_WINDOW_SECONDS`] the whole recording is the voice, as
+/// it always was. Past it, the opening seconds are judged as well and
+/// the better match is kept: a television that carries on under the
+/// end of a command no longer drowns the voice that gave it, and a
+/// genuinely long sentence from one person still has all of itself to
+/// be matched on. Both are held to the same threshold.
+pub(crate) fn identify(
+    id: &dyn SpeakerIdentifier,
+    pcm: &[i16],
+    sample_rate_hz: u32,
+) -> (Option<(String, f32)>, Option<Vec<f32>>) {
+    let whole = id.embed(pcm, sample_rate_hz);
+    let window = sample_rate_hz as usize * VOICE_WINDOW_SECONDS;
+    if pcm.len() <= window {
+        let identity = whole.as_deref().and_then(|v| id.classify(v));
+        return (identity, whole);
+    }
+    let opening = id.embed(&pcm[..window], sample_rate_hz);
+    let judged = [opening.clone(), whole]
+        .into_iter()
+        .flatten()
+        .filter_map(|voice| id.classify(&voice).map(|who| (who, voice)))
+        .max_by(|(a, _), (b, _)| a.1.total_cmp(&b.1));
+    match judged {
+        Some((who, voice)) => (Some(who), Some(voice)),
+        // Nobody recognised: the opening is still the better print of
+        // whoever it was, should they go on to say "I am Mark".
+        None => (None, opening),
+    }
+}
+
 #[async_trait::async_trait]
 impl niles_recognition::VoiceRoster for EcapaIdentifier {
     async fn voices(&self) -> niles_recognition::Result<Vec<niles_recognition::EnrolledSpeaker>> {
@@ -490,5 +530,136 @@ mod tests {
             Ok(_) => panic!("expected an error"),
         };
         assert!(err.to_string().contains("nowhere to keep"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod identify_tests {
+    use super::*;
+
+    /// Knows a voice by how much of it there is: the opening three
+    /// seconds of the test recording are Mark, the rest a television.
+    struct ByLength {
+        rate: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl SpeakerIdentifier for ByLength {
+        fn embed(&self, pcm: &[i16], _sample_rate_hz: u32) -> Option<Vec<f32>> {
+            Some(vec![pcm.len() as f32])
+        }
+
+        fn classify(&self, embedding: &[f32]) -> Option<(String, f32)> {
+            let seconds = embedding[0] as usize / self.rate;
+            match seconds {
+                0..=3 => Some(("Mark".into(), 0.55)),
+                // A long clean sentence still matches, a little better.
+                6.. => Some(("Mark".into(), 0.6)),
+                // Command plus television: below the threshold.
+                _ => None,
+            }
+        }
+
+        async fn enroll(&self, _name: &str, _embedding: &[f32]) -> anyhow::Result<usize> {
+            Ok(1)
+        }
+
+        async fn is_someone_else(&self, _name: &str, _embedding: &[f32]) -> bool {
+            false
+        }
+
+        fn whose_voice(&self, _embedding: &[f32]) -> Option<String> {
+            None
+        }
+
+        fn how_to_say(&self, _speaker: &str) -> Option<String> {
+            None
+        }
+
+        fn address_as(&self, _speaker: &str) -> Option<String> {
+            None
+        }
+
+        fn profile(&self, _speaker: &str) -> (Option<String>, Option<String>) {
+            (None, None)
+        }
+
+        fn knows_anybody(&self) -> bool {
+            true
+        }
+    }
+
+    const RATE: u32 = 100;
+
+    fn seconds(n: usize) -> Vec<i16> {
+        vec![0; RATE as usize * n]
+    }
+
+    #[test]
+    fn a_short_command_is_judged_whole() {
+        let id = ByLength {
+            rate: RATE as usize,
+        };
+        let (who, voice) = identify(&id, &seconds(2), RATE);
+        assert_eq!(who.map(|w| w.0).as_deref(), Some("Mark"));
+        assert_eq!(voice, Some(vec![200.0]));
+    }
+
+    #[test]
+    fn a_command_with_the_television_after_it_is_judged_by_its_start() {
+        let id = ByLength {
+            rate: RATE as usize,
+        };
+        let (who, voice) = identify(&id, &seconds(4), RATE);
+        assert_eq!(who.map(|w| w.0).as_deref(), Some("Mark"));
+        assert_eq!(voice, Some(vec![300.0]), "the opening three seconds");
+    }
+
+    #[test]
+    fn a_long_clean_sentence_keeps_the_better_match() {
+        let id = ByLength {
+            rate: RATE as usize,
+        };
+        let (who, voice) = identify(&id, &seconds(7), RATE);
+        assert_eq!(who.map(|w| w.1), Some(0.6));
+        assert_eq!(voice, Some(vec![700.0]));
+    }
+
+    #[test]
+    fn nobody_recognised_still_gives_the_opening_print() {
+        struct Nobody;
+        #[async_trait::async_trait]
+        impl SpeakerIdentifier for Nobody {
+            fn embed(&self, pcm: &[i16], _r: u32) -> Option<Vec<f32>> {
+                Some(vec![pcm.len() as f32])
+            }
+            fn classify(&self, _e: &[f32]) -> Option<(String, f32)> {
+                None
+            }
+            async fn enroll(&self, _n: &str, _e: &[f32]) -> anyhow::Result<usize> {
+                Ok(1)
+            }
+            async fn is_someone_else(&self, _n: &str, _e: &[f32]) -> bool {
+                false
+            }
+            fn whose_voice(&self, _e: &[f32]) -> Option<String> {
+                None
+            }
+            fn how_to_say(&self, _s: &str) -> Option<String> {
+                None
+            }
+            fn address_as(&self, _s: &str) -> Option<String> {
+                None
+            }
+            fn profile(&self, _s: &str) -> (Option<String>, Option<String>) {
+                (None, None)
+            }
+            fn knows_anybody(&self) -> bool {
+                true
+            }
+        }
+        let (who, voice) = identify(&Nobody, &seconds(5), RATE);
+        assert!(who.is_none());
+        assert_eq!(voice, Some(vec![300.0]));
     }
 }
