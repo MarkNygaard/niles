@@ -9,8 +9,9 @@
 use crate::state::AppState;
 use async_trait::async_trait;
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -32,6 +33,10 @@ pub trait Chat: Send + Sync {
 
     /// Start over.
     fn forget(&self, who: &str);
+
+    /// Words from a recording, by the same speech-to-text the satellites
+    /// use. `filename` carries the format: `dictation.webm`, `.mp4`.
+    async fn transcribe(&self, audio: Vec<u8>, filename: &str) -> Result<String, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -49,6 +54,15 @@ pub struct Message {
 pub struct Reply {
     pub reply: String,
 }
+
+#[derive(Serialize)]
+pub struct Dictated {
+    pub text: String,
+}
+
+/// A minute of compressed speech is well under a megabyte; this leaves
+/// room for a phone that records at a generous bitrate.
+pub const MAX_DICTATION_BYTES: usize = 8 * 1024 * 1024;
 
 /// JSON, so the app can show why.
 type Failure = (StatusCode, Json<serde_json::Value>);
@@ -99,6 +113,46 @@ pub async fn forget(
     let (who, _) = caller(&state, &headers);
     chat.forget(&who);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /chat/dictation` — a recording in, its words out.
+///
+/// Only the words come back, not an answer: they go in the message field
+/// to be read over before sending, because a misheard word is easier to
+/// fix there than after Niles has acted on it.
+pub async fn dictation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    audio: Bytes,
+) -> Result<Json<Dictated>, Failure> {
+    let chat = chat(&state)?;
+    if audio.is_empty() {
+        return Err(failed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "the recording was empty".into(),
+        ));
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    chat.transcribe(audio.to_vec(), filename_for(content_type))
+        .await
+        .map(|text| Json(Dictated { text }))
+        .map_err(|e| failed(StatusCode::BAD_GATEWAY, e))
+}
+
+/// The name a recording is sent to speech-to-text under, which is how
+/// the provider learns its format. Chrome records WebM, Safari MP4.
+fn filename_for(content_type: &str) -> &'static str {
+    let essence = content_type.split(';').next().unwrap_or_default().trim();
+    match essence {
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" => "dictation.mp4",
+        "audio/ogg" => "dictation.ogg",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "dictation.wav",
+        "audio/mpeg" => "dictation.mp3",
+        _ => "dictation.webm",
+    }
 }
 
 fn chat(state: &AppState) -> Result<&Arc<dyn Chat>, Failure> {
@@ -196,6 +250,10 @@ mod tests {
         fn forget(&self, who: &str) {
             self.said.lock().unwrap().retain(|(w, _)| w != who);
         }
+
+        async fn transcribe(&self, audio: Vec<u8>, filename: &str) -> Result<String, String> {
+            Ok(format!("{} bytes of {filename}", audio.len()))
+        }
     }
 
     fn app(chat: Option<Arc<dyn Chat>>) -> axum::Router {
@@ -258,6 +316,52 @@ mod tests {
         let app = app(Some(Arc::new(Echo::default())));
         let long = "word ".repeat(1_000);
         let (status, _) = send(&app, "POST", Some(json!({ "text": long }))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    async fn dictate(
+        app: &axum::Router,
+        content_type: &str,
+        audio: Vec<u8>,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/chat/dictation")
+            .header("content-type", content_type)
+            .body(Body::from(audio))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn dictation_names_the_format_it_was_recorded_in() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let (status, body) = dictate(&app, "audio/mp4", vec![0; 10]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["text"], "10 bytes of dictation.mp4");
+        let (_, body) = dictate(&app, "audio/webm;codecs=opus", vec![0; 3]).await;
+        assert_eq!(body["text"], "3 bytes of dictation.webm");
+    }
+
+    #[tokio::test]
+    async fn dictation_takes_more_than_the_default_body_limit() {
+        // axum refuses bodies over 2 MB unless told otherwise, and a
+        // phone recording at a high bitrate gets there in a minute.
+        let app = app(Some(Arc::new(Echo::default())));
+        let (status, _) = dictate(&app, "audio/mp4", vec![0; 3 * 1024 * 1024]).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_empty_recording_is_refused() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let (status, _) = dictate(&app, "audio/webm", Vec::new()).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 

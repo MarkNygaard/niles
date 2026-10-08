@@ -413,6 +413,12 @@ export const api = {
       body: JSON.stringify({ text }),
     }),
   forgetChat: () => request<void>("/chat", { method: "DELETE" }),
+  dictate: (audio: Blob) =>
+    request<{ text: string }>("/chat/dictation", {
+      method: "POST",
+      headers: { "content-type": audio.type || "audio/webm" },
+      body: audio,
+    }),
   groceries: () => request<GroceryList>("/groceries"),
   addGrocery: (name: string) =>
     request<{ item: GroceryItem; already: boolean }>("/groceries", {

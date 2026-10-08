@@ -43,6 +43,12 @@ pub fn router(state: AppState) -> Router {
                 .delete(crate::chat::forget),
         )
         .route(
+            "/chat/dictation",
+            post(crate::chat::dictation).layer(axum::extract::DefaultBodyLimit::max(
+                crate::chat::MAX_DICTATION_BYTES,
+            )),
+        )
+        .route(
             "/groceries",
             get(crate::groceries::list).post(crate::groceries::add),
         )

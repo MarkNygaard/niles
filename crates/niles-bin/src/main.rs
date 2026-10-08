@@ -3004,6 +3004,9 @@ brevity, but a short list or a few lines is fine where it reads better than one 
 /// first, and handed it once it does.
 struct AppChat {
     ctx: Arc<std::sync::OnceLock<DispatchCtx>>,
+    /// The satellites' speech-to-text, so dictation hears Danish words
+    /// the way a spoken command does.
+    stt: Arc<LiveStt>,
 }
 
 #[async_trait::async_trait]
@@ -3043,6 +3046,15 @@ impl niles_api::chat::Chat for AppChat {
             .into_iter()
             .map(|(said, reply)| niles_api::chat::Exchange { said, reply })
             .collect()
+    }
+
+    async fn transcribe(&self, audio: Vec<u8>, filename: &str) -> Result<String, String> {
+        self.stt
+            .current()
+            .transcribe(audio, filename)
+            .await
+            .map(|t| t.text.trim().to_string())
+            .map_err(|e| format!("could not transcribe that: {e}"))
     }
 
     fn forget(&self, who: &str) {
@@ -5428,6 +5440,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_groceries(groceries.clone())
     .with_chat(Some(Arc::new(AppChat {
         ctx: chat_ctx.clone(),
+        stt: whisper.clone(),
     })))
     .with_tado(tado.clone())
     .with_voices(voices.clone())

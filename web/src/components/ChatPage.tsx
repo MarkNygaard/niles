@@ -54,6 +54,7 @@ export function ChatPage() {
       error={send.error?.message ?? forget.error?.message}
       onSend={(text) => send.mutate(text)}
       onForget={() => forget.mutate()}
+      onDictate={async (audio) => (await api.dictate(audio)).text}
     />
   );
 }

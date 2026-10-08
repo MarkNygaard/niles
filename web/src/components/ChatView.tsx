@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, RotateCcw } from "lucide-react";
+import { ArrowUp, LoaderCircle, Mic, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { dictationSupported, useDictation } from "@/hooks/useDictation";
 import type { Exchange } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -12,6 +13,8 @@ export interface ChatViewProps {
   error?: string;
   onSend: (text: string) => void;
   onForget: () => void;
+  /** Words from a recording. Without it there is no microphone. */
+  onDictate?: (audio: Blob) => Promise<string>;
 }
 
 /** Things worth asking that show what typing to Niles is for. */
@@ -24,8 +27,33 @@ export const SUGGESTIONS = [
 /**
  * A conversation with Niles, typed.
  */
-export function ChatView({ exchanges, pending, error, onSend, onForget }: ChatViewProps) {
+export function ChatView({
+  exchanges,
+  pending,
+  error,
+  onSend,
+  onForget,
+  onDictate,
+}: ChatViewProps) {
   const [draft, setDraft] = useState("");
+  const [transcribing, setTranscribing] = useState(false);
+  const [dictationError, setDictationError] = useState<string>();
+  const dictation = useDictation(async (audio) => {
+    if (!onDictate) return;
+    setTranscribing(true);
+    setDictationError(undefined);
+    try {
+      const text = await onDictate(audio);
+      // Into the field, not sent: a misheard word is easier to fix
+      // before Niles has acted on it.
+      if (text) setDraft((d) => (d.trim() ? `${d.trimEnd()} ${text}` : text));
+    } catch (e) {
+      setDictationError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTranscribing(false);
+    }
+  });
+  const canDictate = Boolean(onDictate) && dictationSupported();
   const end = useRef<HTMLDivElement>(null);
   const busy = pending !== undefined;
 
@@ -103,7 +131,11 @@ export function ChatView({ exchanges, pending, error, onSend, onForget }: ChatVi
         )}
       </ol>
 
-      {error && <p className="text-destructive text-sm">{error}</p>}
+      {(error ?? dictation.error ?? dictationError) && (
+        <p className="text-destructive text-sm">
+          {error ?? dictation.error ?? dictationError}
+        </p>
+      )}
 
       {/* Held at the bottom of the screen, above the tab bar on a phone
           and on top of the keyboard once the tab bar steps aside. */}
@@ -130,19 +162,48 @@ export function ChatView({ exchanges, pending, error, onSend, onForget }: ChatVi
             }
           }}
           rows={1}
-          placeholder="Message Niles"
+          placeholder={
+            dictation.recording ? "Listening…" : transcribing ? "Writing it down…" : "Message Niles"
+          }
           aria-label="Message Niles"
           className="max-h-40 min-h-10 resize-none"
         />
-        <Button
-          type="submit"
-          size="icon-lg"
-          aria-label="Send"
-          disabled={!draft.trim() || busy}
-          className="rounded-full"
-        >
-          <ArrowUp />
-        </Button>
+        {/* The microphone where Send would be while there is nothing to
+            send, the way a phone's messages app does it. */}
+        {canDictate && dictation.recording ? (
+          <Button
+            type="button"
+            size="icon-lg"
+            variant="destructive"
+            aria-label="Stop dictating"
+            onClick={dictation.stop}
+            className="rounded-full"
+          >
+            <Square className="fill-current" />
+          </Button>
+        ) : canDictate && (transcribing || !draft.trim()) ? (
+          <Button
+            type="button"
+            size="icon-lg"
+            variant="secondary"
+            aria-label="Dictate"
+            onClick={dictation.start}
+            disabled={transcribing}
+            className="rounded-full"
+          >
+            {transcribing ? <LoaderCircle className="animate-spin" /> : <Mic />}
+          </Button>
+        ) : (
+          <Button
+            type="submit"
+            size="icon-lg"
+            aria-label="Send"
+            disabled={!draft.trim() || busy}
+            className="rounded-full"
+          >
+            <ArrowUp />
+          </Button>
+        )}
       </form>
       <div ref={end} />
     </div>
