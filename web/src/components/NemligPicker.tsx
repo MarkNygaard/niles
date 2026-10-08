@@ -50,7 +50,9 @@ export function NemligPicker({ item, search, onChoose, onClose }: NemligPickerPr
         initialFocus={(openType) => openType === "keyboard"}
         // A fixed height, not a maximum: sized to its contents it opened
         // short and jumped taller when the results came in.
-        className="flex h-[85dvh] flex-col p-0 sm:h-[min(80vh,44rem)]"
+        // Wide on a desktop, where the pictures are the point and the
+        // dialogs' usual 28rem left them postage stamps.
+        className="flex h-[85dvh] flex-col p-0 sm:h-[min(88vh,52rem)] sm:w-[min(92vw,56rem)]"
       >
         {item && (
           <Picker
@@ -132,9 +134,12 @@ function Picker({
         )}
         {/* Two to a row with the picture large, the way a shop shows
             them: telling frozen rolls from fresh is a matter of looking. */}
-        <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-busy={results.isPending}>
+        <ul
+          className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-4"
+          aria-busy={results.isPending}
+        >
           {results.isPending
-            ? Array.from({ length: 6 }, (_, i) => <CardSkeleton key={i} />)
+            ? Array.from({ length: 8 }, (_, i) => <CardSkeleton key={i} />)
             : results.data?.map((product) => (
                 <li key={product.id}>
                   <Card
