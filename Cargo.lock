@@ -1858,6 +1858,8 @@ dependencies = [
 name = "niles-nemlig"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "chrono-tz",
  "reqwest",
  "serde",
  "serde_json",
@@ -1988,6 +1990,7 @@ dependencies = [
  "niles-llm",
  "niles-memory",
  "niles-mqtt",
+ "niles-nemlig",
  "niles-notifications",
  "niles-presence",
  "niles-scheduler",

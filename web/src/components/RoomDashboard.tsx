@@ -8,6 +8,7 @@ import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api, roomOrder } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
 import { BoostButton } from "@/components/BoostButton";
+import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
 import { HouseBar } from "@/components/HouseBar";
 import { PairPhoneCard } from "@/components/PairPhoneCard";
 import { SceneBar } from "@/components/SceneBar";
@@ -92,6 +93,14 @@ export function RoomDashboard() {
   });
 
   const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });
+  // Answers an error when nemlig.com is not switched on, and then there
+  // is simply no card. Orders do not move often.
+  const delivery = useQuery({
+    queryKey: ["nemlig-next"],
+    queryFn: api.nemligNext,
+    retry: false,
+    staleTime: 15 * 60_000,
+  });
   // Each call reaches tado, so this is polled slowly. Heating moves in
   // tens of minutes; a radiator is not a light switch.
   const climate = useQuery({
@@ -224,6 +233,11 @@ export function RoomDashboard() {
           />
         </div>
       </div>
+      <GroceryDeliveryCard
+        order={delivery.data}
+        // Local today: the order's times are Danish, and so is the house.
+        today={new Date().toLocaleDateString("sv-SE")}
+      />
       <PairPhoneCard
         device={phone.data}
         pairing={pair.isPending}

@@ -15,6 +15,7 @@ pub mod groceries;
 pub mod linear;
 pub mod list_recent_notifications;
 pub mod mcp;
+pub mod nemlig;
 pub mod presence;
 pub mod registry;
 pub mod relevance;
@@ -41,6 +42,7 @@ pub use groceries::{
 pub use list_recent_notifications::{
     ListRecentNotificationsTool, register_list_recent_notifications_tool,
 };
+pub use nemlig::register_nemlig_tools;
 pub use presence::{GetPresenceTool, SetPresenceTool, register_presence_tools};
 
 /// Register both notification tools (announce + list_recent) on a registry.

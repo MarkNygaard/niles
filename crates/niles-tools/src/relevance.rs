@@ -170,6 +170,30 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        keywords: &[
+            "nemlig",
+            "delivery",
+            "deliver",
+            "delivered",
+            "deliveries",
+            "basket",
+            "offer",
+            "offers",
+            "on sale",
+            "groceries",
+            "levering",
+            "kurv",
+            "kurven",
+            "tilbud",
+        ],
+        tools: &[
+            "nemlig_basket",
+            "nemlig_delivery_times",
+            "nemlig_next_delivery",
+            "nemlig_offers",
+        ],
+    },
+    Group {
         keywords: &["effect", "effects", "rainbow", "fireplace", "party"],
         tools: &["set_light_effect"],
     },
@@ -277,6 +301,19 @@ mod tests {
         ] {
             let names = relevant_tool_names(sentence).expect(sentence);
             assert!(names.contains(&"add_to_grocery_list"), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn nemlig_is_reached_by_what_people_ask() {
+        for sentence in [
+            "when are my groceries coming",
+            "is coffee on offer at nemlig",
+            "what's in the basket",
+            "what delivery times are there on saturday",
+        ] {
+            let names = relevant_tool_names(sentence).expect(sentence);
+            assert!(names.iter().any(|n| n.starts_with("nemlig_")), "{sentence}");
         }
     }
 
