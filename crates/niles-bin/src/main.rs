@@ -7363,6 +7363,7 @@ mod system_prompt_tests {
             country: None,
             units: None,
             default_language: None,
+            address: None,
         }
     }
 

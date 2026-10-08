@@ -2,20 +2,18 @@
 //!
 //! Latitude and longitude are the two settings nobody knows off the
 //! top of their head, and typing them wrong is silent — the weather is
-//! simply somebody else's. So Niles looks them up from a place name
-//! instead.
+//! simply somebody else's. So Niles looks them up instead.
 //!
-//! It searches places rather than street addresses. What reads these is
-//! the weather, which is a regional thing; a house number would change
-//! the fourth decimal and nothing else. The real reason for this
-//! particular service, though, is the third field it returns: the
-//! timezone. That is the other setting a first start gets wrong, it is
-//! the one that puts the whole lighting curve an hour out, and asking
-//! the same question twice would be two chances to disagree.
+//! OpenStreetMap's Nominatim does the finding, because it knows streets
+//! as well as towns: a house is somewhere, and something that delivers
+//! to it will one day need to know where. It does not know timezones,
+//! which are the other setting a first start gets wrong — the one that
+//! puts the whole lighting curve an hour out — so each place found is
+//! asked of Open-Meteo for its zone, by its coordinates.
 
 use axum::Json;
 use axum::extract::Query;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 
 type Failure = (StatusCode, String);
 
@@ -29,8 +27,12 @@ pub struct Place {
     pub label: String,
     pub latitude: f64,
     pub longitude: f64,
-    /// IANA zone, e.g. `Europe/Copenhagen`.
-    pub timezone: String,
+    /// IANA zone, e.g. `Europe/Copenhagen`. Absent when the zone could
+    /// not be looked up, which leaves the one already set alone.
+    pub timezone: Option<String>,
+    /// "Vestergade 12, 8000 Aarhus" — only for a street address, not
+    /// for a town.
+    pub address: Option<String>,
     /// ISO-3166-1 alpha-2, which is what decides metric or imperial.
     pub country_code: Option<String>,
 }
@@ -40,36 +42,91 @@ pub struct Search {
     pub q: String,
 }
 
-/// `GET /places?q=` — places matching a name.
+/// `GET /places?q=` — places and street addresses matching what was
+/// typed, each with its timezone.
 ///
 /// An empty list is a normal answer, not an error: somebody is still
-/// typing, or their village is not in the index and they will have to
-/// enter the numbers themselves.
-pub async fn search(Query(query): Query<Search>) -> Result<Json<Vec<Place>>, Failure> {
+/// typing, or the address is not in the map and they will have to drop
+/// the pin themselves.
+pub async fn search(
+    Query(query): Query<Search>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<Place>>, Failure> {
     let q = query.q.trim();
     if q.is_empty() {
         return Ok(Json(Vec::new()));
     }
-    let url = format!(
-        "https://geocoding-api.open-meteo.com/v1/search?count=8&format=json&name={}",
-        urlencoding(q)
-    );
-    let response = reqwest::Client::new()
-        .get(&url)
+    let client = reqwest::Client::new();
+    // Nominatim's terms: say who is asking. And in the asker's language,
+    // so a Danish house reads "Aarhus" and not "Århus" or the reverse.
+    let language = headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("en");
+    let response = client
+        .get(format!(
+            "https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&q={}",
+            urlencoding(q)
+        ))
+        .header(header::USER_AGENT, USER_AGENT)
+        .header(header::ACCEPT_LANGUAGE, language)
         .send()
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not reach it: {e}")))?;
     if !response.status().is_success() {
         return Err((
             StatusCode::BAD_GATEWAY,
-            format!("the place index answered {}", response.status()),
+            format!("the map answered {}", response.status()),
         ));
     }
-    let body: GeocodeResponse = response
+    let found: Vec<Found> = response
         .json()
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("unreadable answer: {e}")))?;
-    Ok(Json(body.results.into_iter().map(Place::from).collect()))
+
+    let mut places: Vec<Place> = Vec::new();
+    for place in found.into_iter().filter_map(Found::into_place) {
+        // The same street from two map objects — the road and a building
+        // on it — is one choice, not two.
+        if !places.iter().any(|p| p.label == place.label) {
+            places.push(place);
+        }
+    }
+    let zones = futures_util::future::join_all(
+        places
+            .iter()
+            .map(|p| timezone_at(&client, p.latitude, p.longitude)),
+    )
+    .await;
+    for (place, zone) in places.iter_mut().zip(zones) {
+        place.timezone = zone;
+    }
+    Ok(Json(places))
+}
+
+const USER_AGENT: &str = concat!(
+    "Niles/",
+    env!("CARGO_PKG_VERSION"),
+    " (home automation; https://github.com/MarkNygaard/niles)"
+);
+
+/// The IANA zone at a point, or `None` when it cannot be had — which
+/// costs the convenience, not the place.
+async fn timezone_at(client: &reqwest::Client, latitude: f64, longitude: f64) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Zone {
+        timezone: String,
+    }
+    let url = format!(
+        "https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&timezone=auto&forecast_days=1"
+    );
+    let zone: Zone = client.get(url).send().await.ok()?.json().await.ok()?;
+    // Only a zone Niles can be set to: one that does not parse is
+    // refused at startup.
+    zone.timezone
+        .parse::<chrono_tz::Tz>()
+        .ok()
+        .map(|tz| tz.name().to_string())
 }
 
 /// `GET /timezones` — every IANA zone Niles can be set to.
@@ -82,42 +139,84 @@ pub async fn timezones() -> Json<Vec<&'static str>> {
     Json(chrono_tz::TZ_VARIANTS.iter().map(|tz| tz.name()).collect())
 }
 
-#[derive(serde::Deserialize, Default)]
-struct GeocodeResponse {
-    /// Absent entirely when nothing matched, rather than empty.
+/// One thing Nominatim found.
+#[derive(serde::Deserialize)]
+struct Found {
+    /// Strings, in Nominatim's JSON.
+    lat: String,
+    lon: String,
     #[serde(default)]
-    results: Vec<GeocodeResult>,
+    name: Option<String>,
+    #[serde(default)]
+    address: FoundAddress,
 }
 
-#[derive(serde::Deserialize)]
-struct GeocodeResult {
-    name: String,
-    latitude: f64,
-    longitude: f64,
-    timezone: String,
+#[derive(serde::Deserialize, Default)]
+struct FoundAddress {
+    road: Option<String>,
+    house_number: Option<String>,
+    postcode: Option<String>,
+    city: Option<String>,
+    town: Option<String>,
+    village: Option<String>,
+    hamlet: Option<String>,
+    municipality: Option<String>,
+    state: Option<String>,
     country: Option<String>,
     country_code: Option<String>,
-    /// The region within the country — a state, a county. Often
-    /// missing, and the only thing separating two towns of one name.
-    admin1: Option<String>,
 }
 
-impl From<GeocodeResult> for Place {
-    fn from(r: GeocodeResult) -> Self {
-        let label = [Some(r.name), r.admin1, r.country]
-            .into_iter()
-            .flatten()
-            .filter(|part| !part.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join(", ");
-        Self {
-            label,
-            latitude: r.latitude,
-            longitude: r.longitude,
-            timezone: r.timezone,
-            country_code: r.country_code,
+impl Found {
+    fn into_place(self) -> Option<Place> {
+        let latitude = self.lat.parse().ok()?;
+        let longitude = self.lon.parse().ok()?;
+        let a = self.address;
+        let town = a
+            .city
+            .or(a.town)
+            .or(a.village)
+            .or(a.hamlet)
+            .or(a.municipality);
+        // Street before number, postcode before town: the way most of
+        // Europe writes it, and the way this house's country does.
+        let street = a.road.map(|road| join(&[Some(road), a.house_number], " "));
+        let locality = join(&[a.postcode, town.clone()], " ");
+        let (label, address) = match street {
+            Some(street) => {
+                let address = join(&[Some(street), nonempty(locality)], ", ");
+                (
+                    join(&[Some(address.clone()), a.country], ", "),
+                    Some(address),
+                )
+            }
+            None => (join(&[self.name.or(town), a.state, a.country], ", "), None),
+        };
+        if label.is_empty() {
+            return None;
         }
+        Some(Place {
+            label,
+            latitude,
+            longitude,
+            timezone: None,
+            address,
+            country_code: a.country_code.map(|c| c.to_uppercase()),
+        })
     }
+}
+
+fn nonempty(s: String) -> Option<String> {
+    (!s.trim().is_empty()).then_some(s)
+}
+
+fn join(parts: &[Option<String>], separator: &str) -> String {
+    parts
+        .iter()
+        .flatten()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 /// Percent-encode a query. Narrow on purpose: this escapes everything
@@ -140,44 +239,51 @@ fn urlencoding(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn result(name: &str, admin1: Option<&str>, country: Option<&str>) -> GeocodeResult {
-        GeocodeResult {
-            name: name.into(),
-            latitude: 56.1572,
-            longitude: 10.2107,
-            timezone: "Europe/Copenhagen".into(),
-            country: country.map(Into::into),
-            country_code: Some("DK".into()),
-            admin1: admin1.map(Into::into),
-        }
+    fn found(json: &str) -> Option<Place> {
+        serde_json::from_str::<Found>(json)
+            .expect("parses")
+            .into_place()
     }
 
     #[test]
-    fn a_place_is_named_specifically_enough_to_choose_between_two() {
+    fn a_street_address_reads_the_way_it_is_written_here() {
+        let place = found(
+            r#"{"lat":"56.1567","lon":"10.2039","name":"",
+                "address":{"road":"Vestergade","house_number":"12","postcode":"8000",
+                           "city":"Aarhus","state":"Central Denmark Region",
+                           "country":"Denmark","country_code":"dk"}}"#,
+        )
+        .unwrap();
+        assert_eq!(place.address.as_deref(), Some("Vestergade 12, 8000 Aarhus"));
+        assert_eq!(place.label, "Vestergade 12, 8000 Aarhus, Denmark");
+        assert_eq!(place.country_code.as_deref(), Some("DK"));
+        assert!((place.latitude - 56.1567).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_town_is_named_specifically_enough_to_choose_between_two() {
         // Two Springfields is the whole reason the region is in there.
-        let place = Place::from(result(
-            "Aarhus",
-            Some("Central Denmark Region"),
-            Some("Denmark"),
-        ));
+        let place = found(
+            r#"{"lat":"56.15","lon":"10.21","name":"Aarhus",
+                "address":{"city":"Aarhus","state":"Central Denmark Region",
+                           "country":"Denmark","country_code":"dk"}}"#,
+        )
+        .unwrap();
         assert_eq!(place.label, "Aarhus, Central Denmark Region, Denmark");
+        assert_eq!(place.address, None);
     }
 
     #[test]
     fn missing_parts_do_not_leave_stray_commas() {
-        let place = Place::from(result("Somewhere", None, Some("Denmark")));
-        assert_eq!(place.label, "Somewhere, Denmark");
+        let place =
+            found(r#"{"lat":"1","lon":"2","address":{"road":"Bygaden","village":"Lille By"}}"#)
+                .unwrap();
+        assert_eq!(place.label, "Bygaden, Lille By");
     }
 
     #[test]
-    fn nothing_found_parses_as_nothing_found() {
-        // The service omits `results` rather than sending an empty one,
-        // and a missing key must not read as a failed request — the
-        // difference between "no such village" and "the internet is
-        // down" is the difference between two very different messages.
-        let body: GeocodeResponse =
-            serde_json::from_str(r#"{"generationtime_ms":0.4}"#).expect("parses");
-        assert!(body.results.is_empty());
+    fn a_result_without_coordinates_is_dropped() {
+        assert!(found(r#"{"lat":"","lon":"2","name":"Nowhere"}"#).is_none());
     }
 
     #[test]
