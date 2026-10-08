@@ -285,6 +285,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Exchange {
   said: string;
   reply: string;
+  /** What wrote the reply, when it was not Niles's own models. */
+  via?: "claude";
+  /** Why Claude Code did not answer, when it was meant to. Only on a
+      reply just sent, not on one read back from history. */
+  fallback?: string;
 }
 
 /** One thing on the shopping list. */
@@ -408,7 +413,7 @@ export const api = {
     }),
   chat: () => request<Exchange[]>("/chat"),
   sendChat: (text: string) =>
-    request<{ reply: string }>("/chat", {
+    request<{ reply: string; via?: "claude"; fallback?: string }>("/chat", {
       method: "POST",
       body: JSON.stringify({ text }),
     }),

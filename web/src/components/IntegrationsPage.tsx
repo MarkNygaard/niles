@@ -52,6 +52,8 @@ export interface IntegrationsPageProps {
   error?: string;
   /** Config writes, batched as one revision per action. */
   onChange: (row: string, entries: { path: string; value: unknown }[]) => void;
+  /** Drop overrides, returning those paths to what the config file says. */
+  onReset: (row: string, paths: string[]) => void;
   onSecretsChanged: () => void;
   onTadoChanged: () => void;
 }
@@ -84,6 +86,7 @@ export function IntegrationsPage({
   saving,
   error,
   onChange,
+  onReset,
   onSecretsChanged,
   onTadoChanged,
 }: IntegrationsPageProps) {
@@ -108,6 +111,11 @@ export function IntegrationsPage({
   function ready(integration: Integration): boolean {
     if (integration.id === "tado") return Boolean(tado?.authorised);
     if (integration.id === "linear") return Boolean(linear?.team?.trim());
+    if (integration.id === "claude_code")
+      return (
+        claudeCode?.enabled !== false &&
+        secretFor(integration.secret_key)?.source !== "unset"
+      );
     if (integration.id === "unifi")
       return (
         Boolean(unifiHost?.trim()) &&
@@ -164,12 +172,10 @@ export function IntegrationsPage({
         return onChange("presence.unifi", [
           { path: "presence.unifi.host", value: "" },
         ]);
-      // Switched off rather than deleted, so the model chosen and the
-      // stored token are still there if it comes back.
+      // Gone, not switched off — the card's own switch is for that. The
+      // stored token stays in Credentials until somebody clears it.
       case "claude_code":
-        return onChange("integrations.claude_code", [
-          { path: "integrations.claude_code.enabled", value: false },
-        ]);
+        return onReset("integrations.claude_code", ["integrations.claude_code"]);
       default:
         return onChange("providers", [
           {
@@ -326,10 +332,16 @@ export function IntegrationsPage({
 
                 {current.id === "claude_code" && (
                   <ClaudeCodePanel
+                    enabled={claudeCode?.enabled !== false}
                     model={claudeCode?.model ?? "sonnet"}
                     secret={secretFor(current.secret_key)}
                     writable={secrets?.writable ?? false}
                     saving={saving}
+                    onEnabled={(enabled) =>
+                      onChange("integrations.claude_code", [
+                        { path: "integrations.claude_code.enabled", value: enabled },
+                      ])
+                    }
                     onModel={(model) =>
                       onChange("integrations.claude_code", [
                         { path: "integrations.claude_code.model", value: model },

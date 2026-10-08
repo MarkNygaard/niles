@@ -82,9 +82,8 @@ impl ClaudeCode {
         speaker: Option<String>,
     ) -> anyhow::Result<String> {
         let turn = TurnToken::issue(&self.turns, speaker);
-        let state = state_dir();
+        let state = state_dir()?;
         let work = state.join("work");
-        std::fs::create_dir_all(&work).with_context(|| format!("creating {}", work.display()))?;
 
         let mut command = tokio::process::Command::new("claude");
         command
@@ -127,13 +126,31 @@ impl ClaudeCode {
     }
 }
 
-/// Where Claude Code keeps its state. Its own variable when the
-/// deployment sets one — a volume, if the temp directory is not
-/// writable — and the temp directory otherwise.
-fn state_dir() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
+/// Where Claude Code keeps its state: the first of these it can write.
+///
+/// Its own variable when the deployment sets one; then the data volume,
+/// which a pod with a read-only root still has; then the temp directory,
+/// which is where a development machine has room.
+fn state_dir() -> anyhow::Result<PathBuf> {
+    // The volume only where there is one: on a development machine
+    // "/data" would be a new folder at the root of the drive.
+    let volume = std::path::Path::new("/data")
+        .is_dir()
+        .then(|| PathBuf::from("/data/claude"));
+    let candidates: Vec<PathBuf> = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("niles-claude"))
+        .into_iter()
+        .chain(volume)
+        .chain([std::env::temp_dir().join("niles-claude")])
+        .collect();
+    let mut tried = Vec::new();
+    for dir in candidates {
+        match std::fs::create_dir_all(dir.join("work")) {
+            Ok(()) => return Ok(dir),
+            Err(e) => tried.push(format!("{} ({e})", dir.display())),
+        }
+    }
+    bail!("nowhere to keep its state: tried {}", tried.join(", "))
 }
 
 /// A token for one run, withdrawn when the run is over however it ends.

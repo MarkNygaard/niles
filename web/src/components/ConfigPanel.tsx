@@ -898,6 +898,7 @@ export function ConfigPanel() {
             saving={save.isPending}
             error={rowError ? rowError.message : undefined}
             onChange={(row, entries) => save.mutate({ row, entries })}
+            onReset={(row, paths) => reset.mutate({ row, paths })}
             onSecretsChanged={() => secrets.refetch()}
             onTadoChanged={() => tado.refetch()}
           />
