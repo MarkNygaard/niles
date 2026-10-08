@@ -1,26 +1,36 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
-import { AccountMenu } from "@/components/AccountMenu";
 import { ConfigPanel } from "@/components/ConfigPanel";
+import { MePage } from "@/components/MePage";
 import { MyProfile } from "@/components/MyProfile";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { SignIn } from "@/components/SignIn";
+import { TabBar } from "@/components/TabBar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { useRoute } from "@/lib/route";
+import { useTheme } from "@/lib/theme";
+import type { Theme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-type View = "home" | "settings" | "profile";
+interface Screen {
+  /** The route this screen is, which an unknown one is not. */
+  at: string;
+  title: string;
+  /** Where the back button goes, for a page inside a tab. */
+  parent?: string;
+  body: React.ReactNode;
+}
 
 /**
- * The house, with everything about *you* behind the avatar.
- *
- * No tab bar. The house is the page you came for; how it looks and who
- * you are are not a second destination of equal weight, and a phone app
- * would not give them half the top bar.
+ * The house, and the few other places the tab bar leads.
  */
 export function App() {
-  const [view, setView] = useState<View>("home");
+  const route = useRoute();
+  // Held here, not on the Me page that shows the switch: following the
+  // system theme as it changes has to keep happening on every page.
+  const [theme, setTheme] = useTheme();
   // Not refetched on focus like everything else: signing out in another
   // tab should not yank this one to a sign-in screen mid-press. The
   // 401s would say so anyway, and on the next load.
@@ -30,6 +40,12 @@ export function App() {
     refetchOnWindowFocus: false,
     staleTime: Infinity,
   });
+
+  // A new page starts at its top. `#root` is what scrolls, not the
+  // document — see globals.css.
+  useEffect(() => {
+    document.getElementById("root")?.scrollTo(0, 0);
+  }, [route]);
 
   // Nothing is worth drawing before we know whether it will be refused.
   if (auth.isLoading) {
@@ -48,23 +64,26 @@ export function App() {
     return <SignIn error={refusal ?? undefined} />;
   }
 
-  const away = view !== "home";
+  const email = auth.data?.signed_in_as ?? undefined;
+  const avatarUrl = auth.data?.avatar_url ?? undefined;
+  const screen = screenFor(route, email, avatarUrl, theme, setTheme);
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pt-[calc(env(safe-area-inset-top)+1rem)] pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:px-6 sm:pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
+    // The bottom padding on a phone is the tab bar's height, so the last
+    // card can scroll clear of it.
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pt-[calc(env(safe-area-inset-top)+1rem)] pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:px-6 sm:pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
       <header className="flex items-center gap-2">
-        {away && (
-          <button
-            type="button"
-            aria-label="Back to the house"
-            onClick={() => setView("home")}
+        {screen.parent && (
+          <a
+            href={screen.parent}
+            aria-label="Back"
             className={cn(
               "text-muted-foreground hover:text-foreground -ml-2 flex size-9 shrink-0 items-center justify-center rounded-full transition-colors",
               "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
             )}
           >
             <ChevronLeft className="size-5" />
-          </button>
+          </a>
         )}
         {/* Large and plain, the way a phone app titles a screen: it
             says where you are rather than offering somewhere to go.
@@ -74,30 +93,44 @@ export function App() {
             size a header bar can carry. "Settings" is a screen title,
             not the name, so it stays in the heading face: a serif there
             would be the brand claiming to be a destination. */}
-        {away ? (
-          <h1 className="font-heading flex-1 truncate text-2xl font-semibold tracking-tight">
-            {view === "settings" ? "Settings" : "My profile"}
-          </h1>
-        ) : (
+        {screen.at === "/" ? (
           <h1 className="font-wordmark flex-1 truncate text-2xl font-medium tracking-wide">
             Niles
           </h1>
+        ) : (
+          <h1 className="font-heading flex-1 truncate text-2xl font-semibold tracking-tight">
+            {screen.title}
+          </h1>
         )}
-        <AccountMenu
-          email={auth.data?.signed_in_as ?? undefined}
-          avatarUrl={auth.data?.avatar_url ?? undefined}
-          onOpenSettings={() => setView("settings")}
-          onOpenProfile={() => setView("profile")}
-        />
+        <TabBar route={screen.at} email={email} avatarUrl={avatarUrl} />
       </header>
 
-      {view === "settings" ? (
-        <ConfigPanel />
-      ) : view === "profile" ? (
-        <MyProfile />
-      ) : (
-        <RoomDashboard />
-      )}
+      {screen.body}
     </main>
   );
+}
+
+function screenFor(
+  route: string,
+  email: string | undefined,
+  avatarUrl: string | undefined,
+  theme: Theme,
+  setTheme: (theme: Theme) => void,
+): Screen {
+  switch (route) {
+    case "/me":
+      return {
+        at: route,
+        title: "Me",
+        body: <MePage email={email} avatarUrl={avatarUrl} theme={theme} onTheme={setTheme} />,
+      };
+    case "/me/profile":
+      return { at: route, title: "My profile", parent: "#/me", body: <MyProfile /> };
+    case "/me/settings":
+      return { at: route, title: "Settings", parent: "#/me", body: <ConfigPanel /> };
+    // Anything unknown is the house: an old bookmark or a mistyped hash
+    // should land somewhere useful rather than on a blank page.
+    default:
+      return { at: "/", title: "Niles", body: <RoomDashboard /> };
+  }
 }

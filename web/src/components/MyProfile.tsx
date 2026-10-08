@@ -3,7 +3,7 @@ import { MeCard } from "@/components/MeCard";
 import { api } from "@/lib/api";
 
 /**
- * Your own page, from the avatar rather than from Settings.
+ * Your own page, beside Settings on the Me tab rather than inside it.
  *
  * Settings is the house — lights, rooms, integrations — and most of the
  * household never needs it. Everyone has a birthday and a way they like
