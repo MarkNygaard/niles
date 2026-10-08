@@ -23,6 +23,8 @@ export interface NemligOrderProps {
   /** When the reserved time is let go unless the order is placed. */
   heldUntil?: Date;
   onReserve: (slotId: number) => void;
+  /** Open the picker for an item whose product would not go in. */
+  onChooseAnother?: (name: string) => void;
   onClose: () => void;
 }
 
@@ -33,6 +35,16 @@ function dayLabel(date: string): string {
     day: "numeric",
     month: "short",
   });
+}
+
+/** "by 14:00", or "by thu. 14:00" when that is not the delivery day. */
+function orderBy(deadline: string, deliveryDate: string): string {
+  const at = new Date(deadline);
+  if (Number.isNaN(at.getTime())) return "";
+  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (deadline.slice(0, 10) === deliveryDate) return `order by ${time}`;
+  const day = at.toLocaleDateString(undefined, { weekday: "short" });
+  return `order by ${day} ${time}`;
 }
 
 function hours(start: number, end: number): string {
@@ -56,6 +68,7 @@ export function NemligOrder({
   reserveError,
   heldUntil,
   onReserve,
+  onChooseAnother,
   onClose,
 }: NemligOrderProps) {
   const basket = sent?.basket;
@@ -95,6 +108,26 @@ export function NemligOrder({
             </div>
 
             <DialogBody className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+              {sent.unavailable.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <p className="text-destructive text-sm">
+                    Sold out at nemlig.com, so not in the basket:
+                  </p>
+                  <ul className="flex flex-wrap gap-1.5">
+                    {sent.unavailable.map((name) => (
+                      <li key={name}>
+                        <button
+                          type="button"
+                          onClick={() => onChooseAnother?.(name)}
+                          className="bg-muted hover:bg-muted/70 rounded-full px-3 py-1 text-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                        >
+                          {name} — choose another
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {sent.without.length > 0 && (
                 <p className="text-muted-foreground text-sm">
                   Not sent, with no product chosen: {sent.without.join(", ")}.
@@ -174,6 +207,11 @@ export function NemligOrder({
                             <span className="text-muted-foreground text-xs">
                               {kroner(slot.price)}
                             </span>
+                            {slot.available && slot.deadline && day && (
+                              <span className="text-muted-foreground text-[11px]">
+                                {orderBy(slot.deadline, day)}
+                              </span>
+                            )}
                           </button>
                         </li>
                       ))}

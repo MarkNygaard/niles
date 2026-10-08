@@ -62,6 +62,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::groceries::nemlig_send),
         )
         .route(
+            "/groceries/nemlig/check",
+            get(crate::groceries::nemlig_check),
+        )
+        .route(
             "/groceries/nemlig/delivery",
             get(crate::groceries::nemlig_delivery).post(crate::groceries::nemlig_reserve),
         )

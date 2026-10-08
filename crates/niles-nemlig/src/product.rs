@@ -15,6 +15,10 @@ pub struct Product {
     pub image: Option<String>,
     /// In stock and deliverable to this account's address.
     pub available: bool,
+    /// The deal when it is on offer: "12,95 kr", or "3 for 50 kr".
+    /// Absent on a choice saved before offers were read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<String>,
 }
 
 /// A product as the search gateway sends it.
@@ -31,6 +35,35 @@ pub(crate) struct Found {
     primary_image: Option<String>,
     #[serde(default)]
     availability: Option<Availability>,
+    /// An offer. Not `DiscountItem`: that marks nemlig's budget range,
+    /// which is cheap every week rather than on offer this one.
+    #[serde(default)]
+    campaign: Option<Campaign>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Campaign {
+    #[serde(default)]
+    campaign_price: Option<f64>,
+    #[serde(default)]
+    min_quantity: Option<u32>,
+}
+
+impl Campaign {
+    /// "12,95 kr", or "3 for 50 kr" for a multi-buy.
+    fn text(&self) -> Option<String> {
+        let price = self.campaign_price.filter(|p| *p > 0.0)?;
+        let price = if price.fract() == 0.0 {
+            format!("{price:.0} kr")
+        } else {
+            format!("{} kr", kroner(price))
+        };
+        Some(match self.min_quantity.unwrap_or(1) {
+            0 | 1 => price,
+            n => format!("{n} for {price}"),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -67,6 +100,7 @@ impl From<Found> for Product {
             available: f
                 .availability
                 .is_none_or(|a| a.is_delivery_available && a.is_available_in_stock),
+            offer: f.campaign.as_ref().and_then(Campaign::text),
         }
     }
 }
@@ -114,7 +148,8 @@ mod tests {
             {"Id": "102650", "Name": "Letmælk øko.", "Description": "0,50 l / Naturmælk",
              "Price": 11.65, "UnitPriceCalc": 23.3, "UnitPriceLabel": "kr/l",
              "PrimaryImage": null,
-             "Availability": {"IsDeliveryAvailable": true, "IsAvailableInStock": false}}
+             "Availability": {"IsDeliveryAvailable": true, "IsAvailableInStock": false},
+             "Campaign": {"CampaignPrice": 50.0, "MinQuantity": 3}}
         ]},
         "Ads": [], "Recipes": []
     }"#;
@@ -143,6 +178,17 @@ mod tests {
             Some("https://nemlig.com/scommerce/images/letmaelk-1-5-oeko.jpg?i=yZOaOThd/701012")
         );
         assert_eq!(products()[1].image, None);
+    }
+
+    #[test]
+    fn reads_an_offer() {
+        assert_eq!(products()[0].offer, None);
+        assert_eq!(products()[1].offer.as_deref(), Some("3 for 50 kr"));
+        let single = Campaign {
+            campaign_price: Some(12.95),
+            min_quantity: Some(1),
+        };
+        assert_eq!(single.text().as_deref(), Some("12,95 kr"));
     }
 
     #[test]

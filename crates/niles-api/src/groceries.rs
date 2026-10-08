@@ -155,6 +155,8 @@ pub struct Sent {
     pub sent: usize,
     /// Items still to buy with no nemlig.com product chosen, which did not.
     pub without: Vec<String>,
+    /// Items whose product would not go in — sold out since it was chosen.
+    pub unavailable: Vec<String>,
     /// Where to review the basket and pay.
     pub checkout: &'static str,
 }
@@ -193,12 +195,44 @@ pub async fn nemlig_send(State(state): State<AppState>) -> Result<Json<Sent>, Fa
         .fill_basket(&credentials, &wanted)
         .await
         .map_err(nemlig_failure)?;
+    // Asked for and not there: nemlig keeps a sold-out line at nothing.
+    let unavailable = to_buy
+        .iter()
+        .filter_map(|i| {
+            let product = i.nemlig.as_ref()?;
+            (basket.quantity_of(&product.id) == 0).then(|| i.name.clone())
+        })
+        .collect();
     Ok(Json(Sent {
         basket,
         sent: wanted.len(),
         without,
+        unavailable,
         checkout: niles_nemlig::CHECKOUT,
     }))
+}
+
+/// `GET /groceries/nemlig/check` — the products chosen for what is still
+/// to buy, as they are now: price, stock and offer. What was saved when
+/// each was chosen goes stale; offers change every week.
+pub async fn nemlig_check(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<NemligProduct>>, Failure> {
+    let store = store(&state)?;
+    let (client, credentials) = nemlig(&state)?;
+    let mut chosen: Vec<(String, String)> = Vec::new();
+    for item in store.list().into_iter().filter(|i| i.checked_at.is_none()) {
+        if let Some(product) = item.nemlig
+            && !chosen.iter().any(|(id, _)| *id == product.id)
+        {
+            chosen.push((product.id, product.name));
+        }
+    }
+    client
+        .check(&credentials, &chosen)
+        .await
+        .map(Json)
+        .map_err(nemlig_failure)
 }
 
 /// `GET /groceries/nemlig/delivery` — the coming week's delivery times.

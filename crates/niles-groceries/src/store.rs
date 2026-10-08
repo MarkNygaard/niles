@@ -765,6 +765,7 @@ mod tests {
             unit_price: Some("35,60 kr/kg".into()),
             image: Some("https://nemlig.com/scommerce/images/surdejsrundstykker.jpg".into()),
             available: true,
+            offer: None,
         }
     }
 

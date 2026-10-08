@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Check, Loader2, Plus, ShoppingCart, Trash2, X } from "lucide-react";
-import { Thumbnail } from "@/components/NemligPicker";
+import { Thumbnail, kroner } from "@/components/NemligPicker";
+import { NemligSuggestions } from "@/components/NemligSuggestions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { GroceryEdit, GroceryItem } from "@/lib/api";
+import type { GroceryEdit, GroceryItem, NemligProduct } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export interface GroceryListProps {
@@ -21,6 +22,20 @@ export interface GroceryListProps {
   /** Put the list in the nemlig.com basket. Absent like `onPick`. */
   onSend?: () => void;
   sending?: boolean;
+  /** The chosen products as they are now, by id: price, stock, offer.
+      What was saved when each was chosen is the fallback. */
+  current?: Map<string, NemligProduct>;
+  /** nemlig.com's products for what is being typed. Absent like `onPick`. */
+  suggest?: (query: string) => Promise<NemligProduct[]>;
+  /** Add what was typed with this product already chosen for it. */
+  onAddProduct?: (name: string, product: NemligProduct) => void;
+}
+
+/** How many the list asks for, the way the basket reads it: the number
+    the quantity starts with, one to twenty, or one. */
+export function howMany(quantity?: string): number {
+  const n = Number.parseInt((quantity ?? "").trim(), 10);
+  return Number.isInteger(n) && n >= 1 && n <= 20 ? n : 1;
 }
 
 /**
@@ -39,12 +54,24 @@ export function GroceryList({
   onPick,
   onSend,
   sending,
+  current,
+  suggest,
+  onAddProduct,
 }: GroceryListProps) {
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<number | null>(null);
   const toBuy = items.filter((i) => !i.checked_at);
   const basket = items.filter((i) => i.checked_at);
   const linked = toBuy.filter((i) => i.nemlig).length;
+  const now = (item: GroceryItem) =>
+    item.nemlig ? (current?.get(item.nemlig.id) ?? item.nemlig) : undefined;
+  // What the basket will roughly cost: the prices as nemlig has them now
+  // where they have been checked, and as they were when chosen if not.
+  // Sold out is left out: it will not go in the basket.
+  const estimate = toBuy.reduce((sum, item) => {
+    const product = now(item);
+    return product?.available ? sum + product.price * howMany(item.quantity) : sum;
+  }, 0);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -70,6 +97,17 @@ export function GroceryList({
           <Plus />
         </Button>
       </form>
+
+      {suggest && onAddProduct && (
+        <NemligSuggestions
+          query={draft}
+          search={suggest}
+          onChoose={(product) => {
+            onAddProduct(draft.trim(), product);
+            setDraft("");
+          }}
+        />
+      )}
 
       {error && <p className="text-destructive text-sm">{error}</p>}
 
@@ -124,6 +162,7 @@ export function GroceryList({
                 onToggle={() => onToggle(item)}
                 onOpen={() => setEditing(item.id)}
                 onPick={onPick && (() => onPick(item))}
+                product={onPick ? now(item) : undefined}
               />
             ),
           )}
@@ -131,10 +170,13 @@ export function GroceryList({
       )}
 
       {onSend && linked > 0 && (
-        <Button onClick={onSend} disabled={sending} className="self-start">
-          {sending ? <Loader2 className="animate-spin" /> : <ShoppingCart />}
-          Send {linked} to nemlig.com
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button onClick={onSend} disabled={sending}>
+            {sending ? <Loader2 className="animate-spin" /> : <ShoppingCart />}
+            Send {linked} to nemlig.com
+          </Button>
+          <span className="text-muted-foreground text-sm">≈ {kroner(estimate)}</span>
+        </div>
       )}
 
       {basket.length > 0 && (
@@ -169,12 +211,15 @@ function Row({
   onToggle,
   onOpen,
   onPick,
+  product,
 }: {
   item: GroceryItem;
   onToggle: () => void;
   /** Absent in the basket: what has been bought is not renamed. */
   onOpen?: () => void;
   onPick?: () => void;
+  /** Its nemlig.com product as it is now, when there is one. */
+  product?: NemligProduct;
 }) {
   const checked = Boolean(item.checked_at);
   const label = (
@@ -194,6 +239,12 @@ function Row({
         <span className="text-muted-foreground block truncate text-xs">
           asked for as “{item.said}”
         </span>
+      )}
+      {product && !checked && !product.available && (
+        <span className="text-destructive block text-xs">Sold out at nemlig.com</span>
+      )}
+      {product?.offer && !checked && product.available && (
+        <span className="text-primary block text-xs font-medium">On offer · {product.offer}</span>
       )}
     </span>
   );
