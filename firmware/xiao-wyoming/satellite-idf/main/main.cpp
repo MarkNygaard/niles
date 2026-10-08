@@ -738,6 +738,11 @@ static std::atomic<bool> playing_now{false};
 
 static bool superseded(const PlayJob& job) { return job.gen != play_gen.load(); }
 
+// Set by the speaker task when a reply it has just finished playing was a
+// question: niles asks for it on the reply's audio-stop ({"listen":true}).
+// The wake loop then listens once more without waiting for its name.
+static std::atomic<bool> listen_for_answer{false};
+
 // recv() that gives up when the job is superseded, rather than holding the
 // speaker for the whole of niles's thinking time after somebody has already
 // asked something else. Short socket timeouts, and an overall idle limit.
@@ -818,7 +823,8 @@ static void resample_into_tx(Resampler& rs, const int16_t* in, int n) {
 
 // Play one Wyoming audio stream (audio-start{rate} / audio-chunk+PCM /
 // audio-stop) from the job's socket. Returns false if it was cut off.
-static bool play_stream(const PlayJob& job) {
+// `listen` is set when the audio-stop asks for the answer to be heard.
+static bool play_stream(const PlayJob& job, bool* listen) {
   struct timeval tv = {.tv_sec = 0, .tv_usec = 100 * 1000};
   setsockopt(job.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
@@ -857,6 +863,7 @@ static bool play_stream(const PlayJob& job) {
         rem -= want;
       }
     } else if (strstr(line, "audio-stop")) {
+      if (listen && strstr(line, "\"listen\":true")) *listen = true;
       break;
     }
   }
@@ -939,16 +946,29 @@ static void speaker_task(void*) {
       fcntl(client, F_SETFL, 0);
       job = PlayJob{client, play_gen.load(), false};
     }
-    const bool finished = play_stream(job);
+    bool listen = false;
+    const bool finished = play_stream(job, &listen);
     close(job.sock);
-    // Cut off means somebody is talking to it now, and the wake loop owns
-    // the ring until they have finished.
-    if (finished) leds_show(Leds::Idle);
+    if (finished && job.reply && listen) {
+      // A question, played to the end: the wake loop listens for the
+      // answer and takes the ring from here. Only a reply -- something
+      // niles dialled in to say never opens the microphone.
+      listen_for_answer = true;
+    } else if (finished) {
+      // Cut off means somebody is talking to it now, and the wake loop
+      // owns the ring until they have finished.
+      leds_show(Leds::Idle);
+    }
   }
 }
 
 // Returns true if the socket went to the speaker task to await a reply.
-static bool stream_utterance(float wake_avg, uint32_t gen) {
+//
+// `follow_up` is an answer to niles's question rather than a wake: there
+// is no wake word to send before it, the person gets longer to begin,
+// and the quiet before they do is not sent -- only a moment of it, so the
+// first word is not clipped.
+static bool stream_utterance(float wake_avg, uint32_t gen, bool follow_up) {
   struct sockaddr_in dest = {};
   dest.sin_family = AF_INET;
   dest.sin_port = htons(NILES_PORT);
@@ -973,18 +993,23 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
   // niles logs it beside the transcript; a week of the real room then
   // says where the bar belongs.
   char start[192];
-  int sn = snprintf(start, sizeof(start),
-                    "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,"
-                    "\"channels\":1,\"wake_avg\":%.3f}}\n",
-                    (double)wake_avg);
+  int sn = follow_up
+               ? snprintf(start, sizeof(start),
+                          "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,"
+                          "\"channels\":1,\"follow_up\":true}}\n")
+               : snprintf(start, sizeof(start),
+                          "{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,"
+                          "\"channels\":1,\"wake_avg\":%.3f}}\n",
+                          (double)wake_avg);
   if (!send_all(sock, start, sn)) {
     close(sock);
     return false;
   }
 
   // Everything heard just before the wake word, before anything live:
-  // the sound that triggered this is the one worth having.
-  if (!send_preroll(sock)) {
+  // the sound that triggered this is the one worth having. An answer has
+  // no wake word, and what came before it is niles's own question.
+  if (!follow_up && !send_preroll(sock)) {
     close(sock);
     return false;
   }
@@ -1020,6 +1045,15 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
   // below normal speech); if the user never speaks, abort without a real clip.
   static const int ONSET_RMS = 120;
   static const int ONSET_TIMEOUT_FRAMES = 250; // ~2.5 s to start talking
+  // An answer gets longer to begin: the question has only just ended.
+  static const int ANSWER_ONSET_FRAMES = 600;  // ~6 s
+  // Before an answer begins, the last ~300 ms are held back rather than
+  // sent, and go out once speech starts: the start of the first word,
+  // without seconds of a quiet room ahead of it.
+  static const int ANSWER_LEAD_FRAMES = 30;
+  static int16_t answer_lead[ANSWER_LEAD_FRAMES][STRIDE_SAMPLES];
+  int lead_kept = 0, lead_next = 0;
+  const int onset_timeout = follow_up ? ANSWER_ONSET_FRAMES : ONSET_TIMEOUT_FRAMES;
 
   // The XVF3800 downmix is low-level: raw command speech peaks only ~700-4600
   // (~2-14% of full scale). Whisper HALLUCINATES on near-silent audio (it
@@ -1037,7 +1071,8 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
   // counts as silence afterwards.
   long speech_peak = 0;
   int stop_rms = STOP_RMS_MIN;
-  while (total < MAX_FRAMES) {
+  int sent = 0;
+  while (sent < MAX_FRAMES) {
     static int16_t mono[STRIDE_SAMPLES];
     read_mic_slice(mono);
     const int frames = STRIDE_SAMPLES;
@@ -1058,14 +1093,36 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
     // Stream from the start so we keep a little pre-roll (no clipped first
     // word), but only the post-onset silence counts toward the endpoint.
     int pb = STRIDE_SAMPLES * (int)sizeof(int16_t);
+    total++;
+    if (follow_up && !started && energy < ONSET_RMS) {
+      memcpy(answer_lead[lead_next], slice, pb);
+      lead_next = (lead_next + 1) % ANSWER_LEAD_FRAMES;
+      if (lead_kept < ANSWER_LEAD_FRAMES) lead_kept++;
+      if (++lead >= onset_timeout) {
+        ESP_LOGI(TAG, "no answer — closing the microphone");
+        break;
+      }
+      continue;
+    }
+    if (follow_up && !started) {
+      // Speech: the held-back moment first, oldest frame first.
+      bool ok = true;
+      for (int k = 0; k < lead_kept && ok; k++) {
+        const int at = (lead_next - lead_kept + k + ANSWER_LEAD_FRAMES) % ANSWER_LEAD_FRAMES;
+        int hn = snprintf(hdr, sizeof(hdr), "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
+        ok = send_all(sock, hdr, hn) && send_all(sock, answer_lead[at], pb);
+        sent++;
+      }
+      if (!ok) break;
+    }
     int n = snprintf(hdr, sizeof(hdr), "{\"type\":\"audio-chunk\",\"payload_length\":%d}\n", pb);
     if (!send_all(sock, hdr, n) || !send_all(sock, slice, pb)) break;
-    total++;
+    sent++;
 
     if (!started) {
       if (energy >= ONSET_RMS) {
         started = true;
-      } else if (++lead >= ONSET_TIMEOUT_FRAMES) {
+      } else if (++lead >= onset_timeout) {
         ESP_LOGW(TAG, "no speech after wake — aborting capture");
         break;
       }
@@ -1090,13 +1147,19 @@ static bool stream_utterance(float wake_avg, uint32_t gen) {
 
   const char* stop = "{\"type\":\"audio-stop\"}\n";
   send_all(sock, stop, strlen(stop));
+  if (follow_up && !started) {
+    // Nobody answered. niles gets an empty session, which it drops, and
+    // there is no reply to wait for.
+    close(sock);
+    return false;
+  }
   // Nothing more to say; from here the wait is niles's.
   leds_show(Leds::Thinking);
   ESP_LOGI(TAG,
            "utterance streamed (%d frames, ~%d ms, %s%s) energy[min=%ld max=%ld] "
            "speech_peak=%ld stop_rms=%d",
            total, total * 10, started ? "spoke" : "no-speech",
-           total >= MAX_FRAMES ? ", HIT CAP" : "", emin, emax, speech_peak, stop_rms);
+           sent >= MAX_FRAMES ? ", HIT CAP" : "", emin, emax, speech_peak, stop_rms);
 
   // The reply comes back on this socket. The speaker task plays it, so the
   // wake loop is listening again while niles thinks and while it talks.
@@ -1203,6 +1266,18 @@ extern "C" void app_main(void) {
     push_slice();
     if (warmup > 0) { warmup--; continue; }
 
+    // niles asked a question and has finished saying it: listen for the
+    // answer as if the wake word had been said, once.
+    if (listen_for_answer.exchange(false)) {
+      ESP_LOGI(TAG, ">>> listening for an answer <<<");
+      const uint32_t gen = ++play_gen;
+      leds_show(Leds::Listening);
+      if (!stream_utterance(0.0f, gen, true)) leds_show(Leds::Idle);
+      // What the averaging remembers is from before the question.
+      for (int i = 0; i < WINDOW_AVG; i++) ring[i] = 0.0f;
+      continue;
+    }
+
     // Audio level of the current window (peak |sample|) — confirms the mic
     // is actually capturing.
     int32_t peak = 0;
@@ -1263,7 +1338,7 @@ extern "C" void app_main(void) {
           // talked over.
           const uint32_t gen = ++play_gen;
           leds_show(Leds::Listening);
-          if (!stream_utterance(avg, gen)) leds_show(Leds::Idle);
+          if (!stream_utterance(avg, gen, false)) leds_show(Leds::Idle);
           // Reset wake state so stale slices don't immediately re-fire.
           // The ring included: the average that just fired would otherwise
           // still be most of the way to firing again.

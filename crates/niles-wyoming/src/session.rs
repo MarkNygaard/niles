@@ -69,6 +69,9 @@ pub struct AudioSession {
     /// is how it was set twice from four minutes of evidence and twice
     /// got it wrong. `None` from firmware that does not report it.
     pub wake_probability: Option<f32>,
+    /// An answer to a question Niles just asked: the satellite opened its
+    /// microphone because it was told to, not because it heard its name.
+    pub follow_up: bool,
 }
 
 #[derive(Debug)]
@@ -76,6 +79,7 @@ struct InFlight {
     format: AudioFormat,
     pcm: Vec<u8>,
     wake_probability: Option<f32>,
+    follow_up: bool,
     /// True once we've decided to discard this session (e.g.
     /// oversize, malformed). Subsequent chunks are ignored until
     /// `audio-stop` resets the slot.
@@ -107,6 +111,7 @@ impl SessionTracker {
                     warn!("{from}: audio-start while a session was already open — restarting");
                 }
                 let wake_probability = parse_wake_probability(&event);
+                let follow_up = parse_follow_up(&event);
                 match parse_audio_format(&event) {
                     Ok(format) => {
                         self.in_flight.insert(
@@ -115,6 +120,7 @@ impl SessionTracker {
                                 format,
                                 pcm: Vec::new(),
                                 wake_probability,
+                                follow_up,
                                 poisoned: false,
                             },
                         );
@@ -129,6 +135,7 @@ impl SessionTracker {
                                 format: AudioFormat::new(0, 0, 0),
                                 pcm: Vec::new(),
                                 wake_probability,
+                                follow_up,
                                 poisoned: true,
                             },
                         );
@@ -164,6 +171,7 @@ impl SessionTracker {
                     format: slot.format,
                     pcm: slot.pcm,
                     wake_probability: slot.wake_probability,
+                    follow_up: slot.follow_up,
                 })
             }
             // Voice-started / voice-stopped / ping etc. don't gate
@@ -202,6 +210,16 @@ fn parse_wake_probability(event: &Event) -> Option<f32> {
         .get("wake_avg")?
         .as_f64()
         .map(|v| v as f32)
+}
+
+/// Whether the satellite says this is an answer rather than a wake.
+/// Absent is a wake, which is everything older firmware sends.
+fn parse_follow_up(event: &Event) -> bool {
+    event
+        .data
+        .get("follow_up")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 fn parse_audio_format(event: &Event) -> std::result::Result<AudioFormat, String> {
@@ -257,6 +275,16 @@ mod tests {
         }));
         let got = parse_wake_probability(&event).expect("reported");
         assert!((got - 0.573).abs() < 1e-6, "{got}");
+    }
+
+    #[test]
+    fn an_answer_says_so_and_a_wake_does_not() {
+        let answer = start_with(serde_json::json!({
+            "rate": 16000, "width": 2, "channels": 1, "follow_up": true
+        }));
+        assert!(parse_follow_up(&answer));
+        let wake = start_with(serde_json::json!({ "rate": 16000, "width": 2, "channels": 1 }));
+        assert!(!parse_follow_up(&wake));
     }
 
     #[test]

@@ -57,6 +57,7 @@ mod claude_code;
 mod climate;
 mod conversation;
 mod courtesy;
+mod follow_up;
 mod last_target;
 mod manifest;
 mod profile;
@@ -1332,9 +1333,16 @@ impl niles_notifications::NotificationDelivery for WyomingDelivery {
         let text = text.to_string();
         tokio::spawn(async move {
             if let Some(peer) = peer {
-                if let Err(e) =
-                    crate::speak::speak_back(&piper, &sender, peer, &text, &speakers, &satellites)
-                        .await
+                if let Err(e) = crate::speak::speak_back(
+                    &piper,
+                    &sender,
+                    peer,
+                    &text,
+                    &speakers,
+                    &satellites,
+                    false,
+                )
+                .await
                 {
                     tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
                 }
@@ -2572,6 +2580,7 @@ fn spawn_dispatch_task(
     let piper = piper.clone();
     let sender = sender.clone();
     tokio::spawn(async move {
+        let follow_up = session.follow_up;
         let attempted = ctx.identifier.is_some() && supports_speaker_identification(session.format);
         let id_handle = attempted.then(|| {
             let id = ctx
@@ -2628,10 +2637,62 @@ fn spawn_dispatch_task(
                 _ => profile::Known::default(),
             };
             let speaker = speaker_context_from(attempted, ident, known);
+            let speaker_name = match &speaker {
+                SpeakerContext::Identified { name, .. } => Some(name.clone()),
+                _ => None,
+            };
+            // An answer to a question, heard without the wake word: taken
+            // only when a question is waiting, and from the voice asked.
+            let answering = if follow_up {
+                match follow_up::judge(
+                    ctx.follow_ups.take(peer),
+                    speaker_name.as_deref(),
+                    attempted,
+                ) {
+                    follow_up::Verdict::Answer { round } => Some(round),
+                    follow_up::Verdict::Unasked => {
+                        tracing::info!(
+                            "[{peer}] not acting on {text:?}: an answer, and no question is waiting"
+                        );
+                        None
+                    }
+                    follow_up::Verdict::OtherVoice => {
+                        tracing::info!(
+                            "[{peer}] not acting on {text:?}: answered by another voice than the one asked"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let dispatch_started = Instant::now();
-            let say =
-                handle_transcript(&ctx, peer, &text, confidence, &speaker, voice.as_deref()).await;
+            let say = if follow_up && answering.is_none() {
+                None
+            } else {
+                handle_transcript(
+                    &ctx,
+                    peer,
+                    &text,
+                    confidence,
+                    &speaker,
+                    voice.as_deref(),
+                    answering.is_some(),
+                )
+                .await
+            };
             timing.dispatch_ms = dispatch_started.elapsed().as_millis();
+            // A question gets the microphone back after it, for one more
+            // round — but only for somebody Niles knows, or when it is not
+            // trying to know anybody: a question asked of an unrecognised
+            // voice is as likely put to the television.
+            let round = answering.map_or(1, |r| r + 1);
+            let listen = say.as_deref().is_some_and(follow_up::asks)
+                && round <= follow_up::MAX_ROUNDS
+                && (speaker_name.is_some() || !attempted);
+            if listen {
+                ctx.follow_ups.expect(peer, speaker_name.clone(), round);
+            }
 
             // Kept before anything else looks at it, because what makes
             // this worth keeping is precisely the turns nothing else
@@ -2680,6 +2741,7 @@ fn spawn_dispatch_task(
                     &say,
                     &ctx.speakers,
                     &ctx.satellites,
+                    listen,
                 )
                 .await
                 {
@@ -2906,6 +2968,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         tado: tado.clone(),
         courtesy: Arc::new(courtesy::Courtesy::default()),
         claude: claude.clone(),
+        follow_ups: Arc::default(),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -3056,7 +3119,7 @@ impl niles_api::chat::Chat for AppChat {
                 let reply = profile::SPEAKER
                     .scope(
                         slug,
-                        dispatch_text(ctx, APP_PEER, text, &thread, &known, None),
+                        dispatch_text(ctx, APP_PEER, text, &thread, &known, None, true),
                     )
                     .await;
                 (reply, CHAT_NOTE.with(|note| note.take()))
@@ -3179,6 +3242,8 @@ struct DispatchCtx {
     /// Answers the app's chat when `[integrations.claude_code]` is on.
     /// Absent outside `serve`, and when its MCP port could not be bound.
     claude: Option<Arc<claude_code::ClaudeCode>>,
+    /// Questions Niles has asked through a satellite and is waiting on.
+    follow_ups: Arc<follow_up::FollowUps>,
     /// For the heating by voice. The same session the dashboard and
     /// presence use: tado rotates its refresh token on every use, so
     /// there can only be one.
@@ -3255,6 +3320,8 @@ async fn handle_transcript(
     confidence: Option<Confidence>,
     speaker: &SpeakerContext,
     voice: Option<&[f32]>,
+    // An answer to Niles's own question, heard without the wake word.
+    answering: bool,
 ) -> Option<String> {
     // The first thing somebody says to Niles in a morning is greeted, as
     // Alexa does. Decided before the reply is built, because a greeting
@@ -3295,7 +3362,7 @@ async fn handle_transcript(
     let mut response = profile::SPEAKER
         .scope(
             slug,
-            dispatch_transcript(ctx, peer, text, confidence, speaker, voice),
+            dispatch_transcript(ctx, peer, text, confidence, speaker, voice, answering),
         )
         .await;
     if let Some((name, whom, birthday)) = greeting {
@@ -3738,6 +3805,9 @@ async fn dispatch_transcript(
     // the sentence that said it. `None` when recognition is off or the
     // audio was unusable.
     voice: Option<&[f32]>,
+    // An answer to a question Niles asked: it has no name in front of it
+    // and may be a single word, and that is fine.
+    answering: bool,
 ) -> Option<String> {
     let called_by_name = heard_its_name(text);
     let text = strip_wake_word(text);
@@ -3813,7 +3883,7 @@ async fn dispatch_transcript(
     // room, not a person: a television, a conversation. Silent, like the
     // other gates — and "stop" to a ringing alarm still gets through.
     let require_name = settings.as_ref().is_some_and(|c| c.stt.require_name);
-    if require_name && !called_by_name && !stopping_an_alarm {
+    if require_name && !called_by_name && !stopping_an_alarm && !answering {
         tracing::info!("[{peer}] not acting on {text:?}: it did not start with Niles's name");
         return None;
     }
@@ -3840,7 +3910,7 @@ async fn dispatch_transcript(
     }
 
     let thread = conversation::Thread::Room(ctx.satellites.room_for(peer).cloned());
-    dispatch_text(ctx, peer, text, &thread, speaker, voice).await
+    dispatch_text(ctx, peer, text, &thread, speaker, voice, answering).await
 }
 
 /// Act on words somebody meant for Niles, however they arrived.
@@ -3856,6 +3926,9 @@ async fn dispatch_text(
     thread: &conversation::Thread,
     speaker: &SpeakerContext,
     voice: Option<&[f32]>,
+    // Known to be meant for Niles — typed in the app, or an answer to its
+    // question — so a lone word is a reply, not something overheard.
+    meant: bool,
 ) -> Option<String> {
     let origin_room = ctx.satellites.room_for(peer);
 
@@ -3882,7 +3955,7 @@ async fn dispatch_text(
         Some(i) => i,
         // Tier 0 miss — hand the raw transcript to the LLM, unless it
         // is too thin to be an instruction.
-        None if is_overheard(text) => {
+        None if !meant && is_overheard(text) => {
             tracing::info!("[{peer}] not acting on {text:?}: too little to be an instruction");
             return Some(response::didnt_catch_that());
         }
@@ -5663,6 +5736,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tado: tado.clone(),
         courtesy: Arc::new(courtesy::Courtesy::default()),
         claude: claude.clone(),
+        follow_ups: Arc::default(),
     };
     // The API is already up; from here on the chat has something to
     // answer with.
