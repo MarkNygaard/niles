@@ -1,5 +1,7 @@
 import { House, MessageCircle, ShoppingBasket, UserRound } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
+import { MOVABLE } from "@/lib/menu";
+import type { MenuItem } from "@/lib/menu";
 import { cn } from "@/lib/utils";
 
 export interface TabBarProps {
@@ -7,6 +9,8 @@ export interface TabBarProps {
   route: string;
   email?: string;
   avatarUrl?: string;
+  /** The entries between Home and Me, from `menuOf`. */
+  menu?: MenuItem[];
 }
 
 interface Tab {
@@ -23,7 +27,24 @@ interface Tab {
  * From `sm` the same links sit in the header instead: at the bottom of a
  * desktop window they would be a long way from everything else.
  */
-export function TabBar({ route, email, avatarUrl }: TabBarProps) {
+const MIDDLE: Record<MenuItem["id"], Tab> = {
+  groceries: {
+    href: "#/groceries",
+    label: "Groceries",
+    icon: <ShoppingBasket />,
+    owns: (r) => r === "/groceries",
+  },
+  chat: {
+    href: "#/chat",
+    label: "Chat",
+    icon: <MessageCircle />,
+    owns: (r) => r === "/chat",
+  },
+};
+
+const UNARRANGED: MenuItem[] = MOVABLE.map((id) => ({ id, hidden: false }));
+
+export function TabBar({ route, email, avatarUrl, menu = UNARRANGED }: TabBarProps) {
   const tabs: Tab[] = [
     {
       href: "#/",
@@ -31,18 +52,7 @@ export function TabBar({ route, email, avatarUrl }: TabBarProps) {
       icon: <House />,
       owns: (r) => r === "/",
     },
-    {
-      href: "#/groceries",
-      label: "Groceries",
-      icon: <ShoppingBasket />,
-      owns: (r) => r === "/groceries",
-    },
-    {
-      href: "#/chat",
-      label: "Chat",
-      icon: <MessageCircle />,
-      owns: (r) => r === "/chat",
-    },
+    ...menu.filter((item) => !item.hidden).map((item) => MIDDLE[item.id]),
     {
       href: "#/me",
       label: "Me",

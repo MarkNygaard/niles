@@ -23,6 +23,7 @@ pub mod lamp_plugs;
 pub mod lighting;
 pub mod llm;
 pub mod memory;
+pub mod menu;
 pub mod mqtt;
 pub mod notifications;
 pub mod persistence;
@@ -59,6 +60,7 @@ pub use lamp_plugs::LampPlugsConfig;
 pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config, ReasoningEffort};
 pub use memory::MemoryConfig;
+pub use menu::MenuConfig;
 pub use mqtt::MqttConfig;
 pub use notifications::NotificationsConfig;
 pub use persistence::PersistenceConfig;
@@ -205,6 +207,8 @@ pub fn section_reload(section: &str) -> Reload {
         // dragged a room up the list to restart Niles, which is not
         // true and is the one thing this flag exists to get right.
         "rooms" => Reload::Hot,
+        // The same as rooms: only the app reads it, with the config.
+        "menu" => Reload::Hot,
         // The speech-to-text client is checked against the live config
         // for every utterance and rebuilt when it differs; the noise
         // gate was already read per turn. Marked Boot, a switch to
@@ -243,6 +247,7 @@ pub const SECTIONS: &[&str] = &[
     "presence",
     "providers",
     "rooms",
+    "menu",
     "skills",
     "web_search",
     "wled",
@@ -301,6 +306,8 @@ pub struct Config {
     pub presence: PresenceConfig,
     #[serde(default)]
     pub rooms: RoomsConfig,
+    #[serde(default)]
+    pub menu: MenuConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
     #[serde(default)]
@@ -379,6 +386,7 @@ impl Config {
         self.notifications.validate()?;
         self.presence.validate()?;
         self.rooms.validate()?;
+        self.menu.validate()?;
         self.skills.validate()?;
         self.web_search.validate()?;
         self.wled.validate()?;

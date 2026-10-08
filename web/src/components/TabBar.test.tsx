@@ -27,4 +27,18 @@ describe("TabBar", () => {
     render(<TabBar route="/meals" />);
     expect(screen.getByRole("link", { name: "Me" })).not.toHaveAttribute("aria-current");
   });
+
+  it("puts the middle entries in the arranged order and leaves out the hidden", () => {
+    render(
+      <TabBar
+        route="/"
+        menu={[
+          { id: "chat", hidden: false },
+          { id: "groceries", hidden: true },
+        ]}
+      />,
+    );
+    const labels = screen.getAllByRole("link").map((a) => a.textContent);
+    expect(labels).toEqual(["Home", "Chat", "Me"]);
+  });
 });

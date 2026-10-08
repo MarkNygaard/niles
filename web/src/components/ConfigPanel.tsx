@@ -22,12 +22,13 @@ import { CaptureCard } from "@/components/CaptureCard";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
 import { RoleCard } from "@/components/RoleCard";
 import { SecretsCard } from "@/components/SecretsCard";
-import { SettingsNav } from "@/components/SettingsNav";
+import { SECTIONS, SettingsNav } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
 import { SetupBanner } from "@/components/SetupBanner";
 import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
+import { MenuCard } from "@/components/MenuCard";
 import { RoomOrderCard } from "@/components/RoomOrderCard";
 import { SatellitesCard } from "@/components/SatellitesCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
@@ -35,6 +36,7 @@ import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, roomOrder, valueAt } from "@/lib/api";
+import { menuOf } from "@/lib/menu";
 import { roomsOf } from "@/lib/rooms";
 import type { Applied, ConfigView, Revision, WledStrip } from "@/lib/api";
 import type { Satellite } from "@/components/SatellitesCard";
@@ -504,7 +506,7 @@ export function ConfigPanel() {
 
       {/* Driven by value alone: the nav beside it is the trigger, and a
           tab bar as well would be two controls for one thing. */}
-      <Tabs value={section ?? "lighting"} onValueChange={(v) => setSection(String(v))}>
+      <Tabs value={section ?? SECTIONS[0].items[0].id} onValueChange={(v) => setSection(String(v))}>
         <div className="flex flex-col gap-5 sm:flex-row sm:gap-6">
           {showNav && (
             <SettingsNav current={phone ? null : section} onPick={setSection} />
@@ -692,6 +694,22 @@ export function ConfigPanel() {
               save.mutate({
                 row: "rooms.order",
                 entries: [{ path: "rooms.order", value: order }],
+              })
+            }
+          />
+        </TabsContent>
+
+        <TabsContent value="menu">
+          <MenuCard
+            menu={menuOf(view.effective)}
+            disabled={save.isPending}
+            onChange={({ order, hidden }) =>
+              save.mutate({
+                row: "menu",
+                entries: [
+                  { path: "menu.order", value: order },
+                  { path: "menu.hidden", value: hidden },
+                ],
               })
             }
           />
