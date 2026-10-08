@@ -9,6 +9,7 @@ const UNPAIRED: DeviceView = {
   mac: "aa:bb:cc:dd:ee:ff",
   name: "Mark's iPhone",
   paired: false,
+  has_phone: false,
   signed_in: true,
 };
 
@@ -46,10 +47,14 @@ describe("shouldOffer", () => {
     expect(shouldOffer({ ...UNPAIRED, signed_in: false })).toBe(false);
   });
 
-  it("comes back for a new phone", () => {
-    // A new phone has a different address, so the old pairing no longer
-    // matches and the question is worth asking again.
-    expect(shouldOffer({ ...UNPAIRED, mac: "11:22:33:44:55:66" })).toBe(true);
+  it("is not offered to somebody who already has a phone", () => {
+    // From a laptop, or a new phone: one per person, and changing it is
+    // done from My profile by unpairing the old one first.
+    expect(shouldOffer({ ...UNPAIRED, has_phone: true })).toBe(false);
+  });
+
+  it("comes back once the phone is unpaired", () => {
+    expect(shouldOffer({ ...UNPAIRED, mac: "11:22:33:44:55:66", has_phone: false })).toBe(true);
   });
 });
 

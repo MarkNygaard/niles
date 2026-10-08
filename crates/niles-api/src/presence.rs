@@ -180,6 +180,13 @@ pub struct DeviceView {
     pub name: Option<String>,
     /// Whether that is already the phone on this person's entry.
     pub paired: bool,
+    /// Whether this person has a phone at all, this one or another.
+    ///
+    /// One phone per person, so the dashboard's offer is for somebody
+    /// with none: asked from a laptop, `paired` is false because the
+    /// laptop is not the phone, and offering to make it one is wrong.
+    /// Changing phones is done from My profile, by unpairing first.
+    pub has_phone: bool,
     /// Whether anybody is signed in to pair it to.
     pub signed_in: bool,
 }
@@ -232,6 +239,7 @@ pub async fn device_status(
             mac: None,
             name: None,
             paired: false,
+            has_phone: false,
             signed_in: false,
         });
     };
@@ -262,6 +270,7 @@ pub async fn device_status(
         available: true,
         on_home_network: ip.is_some(),
         paired: mac.is_some() && mac == theirs,
+        has_phone: theirs.is_some_and(|m| !m.is_empty()),
         name: seen.as_ref().and_then(|c| c.name.clone()),
         mac,
         signed_in: who.is_some(),
@@ -375,6 +384,7 @@ pub async fn pair_device(
         mac: Some(mac),
         name: client.name.clone(),
         paired: true,
+        has_phone: true,
         signed_in: true,
     }))
 }

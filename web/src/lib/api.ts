@@ -376,6 +376,8 @@ export interface DeviceView {
   /** What the console calls it — "Mark's iPhone". */
   name: string | null;
   paired: boolean;
+  /** Whether the signed-in person has a phone paired, this one or not. */
+  has_phone: boolean;
   signed_in: boolean;
 }
 
