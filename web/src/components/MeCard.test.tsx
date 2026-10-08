@@ -20,6 +20,7 @@ const UNPAIRED: DeviceView = {
   mac: "aa:bb:cc:dd:ee:ff",
   name: "Mark's iPhone",
   paired: false,
+  has_phone: false,
   signed_in: true,
 };
 

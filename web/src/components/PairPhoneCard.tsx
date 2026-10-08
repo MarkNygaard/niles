@@ -15,7 +15,9 @@ export interface PairPhoneCardProps {
  * checked rather than assumed. No console to ask; a request through the
  * tunnel, whose address belongs to Cloudflare and not to a phone; a
  * console that cannot see this device; nobody signed in to pair it to;
- * or a phone already paired.
+ * or a phone already paired — this one or any other, since a person has
+ * one. Asked from a laptop on the home network, everything else holds,
+ * and the dashboard used to offer to make the laptop somebody's phone.
  *
  * `undefined` — the answer has not arrived — is deliberately *not* a
  * reason to show it. A dashboard that offers this and then withdraws it
@@ -29,6 +31,7 @@ export function shouldOffer(device: DeviceView | undefined): boolean {
     device.on_home_network &&
     device.signed_in &&
     !device.paired &&
+    !device.has_phone &&
     device.mac !== null
   );
 }
