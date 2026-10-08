@@ -97,8 +97,9 @@ export function ChatView({
   return (
     // The screen under the title, at least, so the conversation can sit
     // at its bottom: page padding (see App) is 0.25rem on a phone and
-    // 1.5rem from `sm`, the header 2.25rem, the gap under it 1rem.
-    <div className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3.5rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]">
+    // 1.5rem from `sm`, the header 2.25rem, the gap under it 0.5rem on a
+    // phone and 1rem from `sm`.
+    <div className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]">
       {exchanges.length === 0 && !busy ? (
         <div className="flex flex-col gap-3 px-1">
           <p className="text-muted-foreground text-sm">
