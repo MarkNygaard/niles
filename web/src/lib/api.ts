@@ -281,6 +281,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** One thing on the shopping list. */
+export interface GroceryItem {
+  id: number;
+  /** What goes in the basket: "Letmælk". */
+  name: string;
+  /** The words it was asked for in — "milk" — when they are not its
+      name. Checking it off teaches Niles that they mean this. */
+  said?: string;
+  quantity?: string;
+  added_at: string;
+  /** Set once it is in the basket. */
+  checked_at?: string;
+}
+
+export interface GroceryList {
+  items: GroceryItem[];
+  /** Bought before and not on the list now, most bought first. */
+  usual: string[];
+}
+
+/** A change to one item. An empty quantity clears it. */
+export interface GroceryEdit {
+  name?: string;
+  quantity?: string;
+  checked?: boolean;
+}
+
 /** One voice Niles has been taught. */
 export interface Voice {
   speaker: string;
@@ -373,6 +400,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ zones }),
     }),
+  groceries: () => request<GroceryList>("/groceries"),
+  addGrocery: (name: string) =>
+    request<{ item: GroceryItem; already: boolean }>("/groceries", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  editGrocery: (id: number, edit: GroceryEdit) =>
+    request<GroceryItem>(`/groceries/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(edit),
+    }),
+  removeGrocery: (id: number) =>
+    request<void>(`/groceries/${id}`, { method: "DELETE" }),
+  clearGroceries: () =>
+    request<{ cleared: number }>("/groceries/clear", { method: "POST" }),
   scenes: () => request<string[]>("/scenes"),
   applyScene: (name: string) =>
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),

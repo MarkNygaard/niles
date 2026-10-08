@@ -65,6 +65,8 @@ pub struct AppState {
     pub manual_mode: Option<Arc<ManualModeTracker>>,
     /// The saved scenes, when this instance has a store for them.
     pub scenes: Option<Arc<niles_scheduler::SceneStore>>,
+    /// The shopping list, shared with the voice tools.
+    pub groceries: Option<Arc<niles_groceries::GroceryStore>>,
 }
 
 impl AppState {
@@ -87,6 +89,7 @@ impl AppState {
             api_token: None,
             manual_mode: None,
             scenes: None,
+            groceries: None,
             tado: None,
             voices: None,
             captures: None,
@@ -135,6 +138,11 @@ impl AppState {
     /// The saved scenes, so the dashboard can list and apply them.
     pub fn with_scenes(mut self, scenes: Option<Arc<niles_scheduler::SceneStore>>) -> Self {
         self.scenes = scenes;
+        self
+    }
+
+    pub fn with_groceries(mut self, groceries: Option<Arc<niles_groceries::GroceryStore>>) -> Self {
+        self.groceries = groceries;
         self
     }
 

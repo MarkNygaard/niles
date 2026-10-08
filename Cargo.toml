@@ -68,6 +68,7 @@ niles-db = { path = "crates/niles-db" }
 niles-mqtt = { path = "crates/niles-mqtt" }
 niles-api = { path = "crates/niles-api" }
 niles-scheduler = { path = "crates/niles-scheduler" }
+niles-groceries = { path = "crates/niles-groceries" }
 niles-speakers = { path = "crates/niles-speakers" }
 niles-wyoming = { path = "crates/niles-wyoming" }
 niles-stt = { path = "crates/niles-stt" }

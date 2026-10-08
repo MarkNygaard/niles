@@ -148,6 +148,28 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        // English with the Danish a household like this one slips into:
+        // "add letmælk to the indkøbsliste" is a real sentence.
+        keywords: &[
+            "grocery",
+            "groceries",
+            "shopping",
+            "list",
+            "buy",
+            "need",
+            "out of",
+            "basket",
+            "indkøb",
+            "indkøbsliste",
+            "indkøbslisten",
+        ],
+        tools: &[
+            "add_to_grocery_list",
+            "read_grocery_list",
+            "remove_from_grocery_list",
+        ],
+    },
+    Group {
         keywords: &["effect", "effects", "rainbow", "fireplace", "party"],
         tools: &["set_light_effect"],
     },
@@ -244,6 +266,18 @@ mod tests {
         let names = relevant_tool_names("why is the hall light on").expect("matched");
         assert!(names.contains(&"explain_device_state"));
         assert!(names.contains(&"query_device_state_history"));
+    }
+
+    #[test]
+    fn the_shopping_list_is_reached_in_either_language() {
+        for sentence in [
+            "add milk to the list",
+            "we're out of coffee",
+            "sæt letmælk på indkøbslisten",
+        ] {
+            let names = relevant_tool_names(sentence).expect(sentence);
+            assert!(names.contains(&"add_to_grocery_list"), "{sentence}");
+        }
     }
 
     #[test]

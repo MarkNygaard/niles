@@ -40,6 +40,7 @@ niles-tts.workspace = true
 niles-intent.workspace = true
 niles-llm.workspace = true
 niles-scheduler.workspace = true
+niles-groceries.workspace = true
 niles-speakers.workspace = true
 niles-tools.workspace = true
 niles-history.workspace = true

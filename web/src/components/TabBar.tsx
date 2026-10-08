@@ -1,4 +1,4 @@
-import { House, UserRound } from "lucide-react";
+import { House, ShoppingBasket, UserRound } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { cn } from "@/lib/utils";
 
@@ -30,6 +30,12 @@ export function TabBar({ route, email, avatarUrl }: TabBarProps) {
       label: "Home",
       icon: <House />,
       owns: (r) => r === "/",
+    },
+    {
+      href: "#/groceries",
+      label: "Groceries",
+      icon: <ShoppingBasket />,
+      owns: (r) => r === "/groceries",
     },
     {
       href: "#/me",
