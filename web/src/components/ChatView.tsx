@@ -169,7 +169,7 @@ export function ChatView({
         style={lifted ? { bottom: lifted } : undefined}
         className={cn(
           "bg-background fixed inset-x-0 z-30",
-          "bottom-[calc(env(safe-area-inset-bottom)+3.5rem)] in-data-typing:bottom-0",
+          "bottom-[calc(env(safe-area-inset-bottom)+3rem)] in-data-typing:bottom-0",
           "sm:bottom-0 sm:pb-[env(safe-area-inset-bottom)]",
         )}
       >
@@ -252,7 +252,7 @@ export function ChatView({
         ref={end}
         aria-hidden
         style={{ height: composerHeight + lifted }}
-        className="box-content pb-[calc(env(safe-area-inset-bottom)+3.5rem)] in-data-typing:pb-0 sm:pb-0"
+        className="box-content pb-[calc(env(safe-area-inset-bottom)+3rem)] in-data-typing:pb-0 sm:pb-0"
       />
     </div>
   );

@@ -78,9 +78,9 @@ export function App() {
     // card can scroll clear of it.
     <main
       className={cn(
-        "mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-6 sm:pt-[calc(env(safe-area-inset-top)+1.5rem)]",
+        "mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pt-[calc(env(safe-area-inset-top)+0.25rem)] sm:px-6 sm:pt-[calc(env(safe-area-inset-top)+1.5rem)]",
         !screen.ownsBottom &&
-          "pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1.5rem)]",
+          "pb-[calc(env(safe-area-inset-bottom)+4rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1.5rem)]",
       )}
     >
       <header className="flex items-center gap-2">
