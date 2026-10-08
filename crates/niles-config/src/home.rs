@@ -42,6 +42,11 @@ pub struct HomeConfig {
     /// Primary language override — two-letter ISO-639-1 code (e.g. `"en"`, `"da"`).
     #[serde(default)]
     pub default_language: Option<String>,
+    /// The street address, as found on the map: "Vestergade 12, 8000
+    /// Aarhus". Nothing in Niles needs it yet; it is kept for what will —
+    /// a shop that delivers, a route to somewhere.
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 fn default_locale() -> String {
@@ -72,6 +77,7 @@ impl Default for HomeConfig {
             units: None,
             country: None,
             default_language: None,
+            address: None,
         }
     }
 }
@@ -266,6 +272,7 @@ default_language = "da"
             units: Some(Units::Metric),
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Metric);
         cfg.locale = "da_DK".into();
@@ -283,6 +290,7 @@ default_language = "da"
             units: Some(Units::Imperial),
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Imperial);
         cfg.locale = "en_US".into();
@@ -300,6 +308,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Imperial);
     }
@@ -315,6 +324,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Imperial);
     }
@@ -331,6 +341,7 @@ default_language = "da"
                 units: None,
                 country: None,
                 default_language: None,
+                address: None,
             };
             assert_eq!(
                 cfg.resolved_units(),
@@ -351,6 +362,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Metric);
     }
@@ -366,6 +378,7 @@ default_language = "da"
             units: None,
             country: Some("us".into()),
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Imperial);
     }
@@ -381,6 +394,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Imperial);
     }
@@ -396,6 +410,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_units(), Units::Metric);
     }
@@ -411,6 +426,7 @@ default_language = "da"
             units: None,
             country: Some("DK".into()),
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_country(), Some("DK".into()));
     }
@@ -426,6 +442,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_country(), Some("DK".into()));
     }
@@ -441,6 +458,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_country(), Some("DK".into()));
     }
@@ -456,6 +474,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_country(), Some("US".into()));
     }
@@ -471,6 +490,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_country(), None);
     }
@@ -486,6 +506,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: Some("en".into()),
+            address: None,
         };
         assert_eq!(cfg.resolved_language(), "en");
     }
@@ -501,6 +522,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_language(), "da");
     }
@@ -516,6 +538,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_language(), "da");
     }
@@ -531,6 +554,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert_eq!(cfg.resolved_language(), "da");
     }
@@ -546,6 +570,7 @@ default_language = "da"
             units: None,
             country: Some("DK".into()),
             default_language: Some("da".into()),
+            address: None,
         };
         cfg.validate().unwrap();
     }
@@ -561,6 +586,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -576,6 +602,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -591,6 +618,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -606,6 +634,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: None,
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -621,6 +650,7 @@ default_language = "da"
             units: None,
             country: Some("DNK".into()),
             default_language: None,
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -636,6 +666,7 @@ default_language = "da"
             units: None,
             country: Some("D2".into()),
             default_language: None,
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -651,6 +682,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: Some("dan".into()),
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -666,6 +698,7 @@ default_language = "da"
             units: None,
             country: None,
             default_language: Some("d2".into()),
+            address: None,
         };
         assert!(cfg.validate().is_err());
     }

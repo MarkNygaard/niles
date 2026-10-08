@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Loader2, MapPin, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,8 +23,13 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { Place } from "@/lib/api";
 
+// Its own chunk: Leaflet is the size of everything else on this page
+// together, and only this card wants it.
+const HomeMap = lazy(() => import("@/components/HomeMap"));
+
 export interface HomeValues {
   name?: string;
+  address?: string;
   latitude?: number;
   longitude?: number;
   timezone?: string;
@@ -63,10 +68,10 @@ function isUnset(values: HomeValues): boolean {
  * and this is the page that closes them.
  *
  * The search is there because nobody knows their own latitude. It
- * finds places rather than street addresses, which is the right
- * precision for a regional forecast, and it comes back with the
- * timezone as well — asking two services the same question would be
- * two chances for them to disagree.
+ * finds a street address or a town, comes back with the timezone as
+ * well, and puts a pin on the map that can be dragged the last few
+ * metres. The address is kept for what will need it: something that
+ * delivers to the house.
  */
 export function HomeCard({
   values,
@@ -91,13 +96,20 @@ export function HomeCard({
     // One edit, not four. They describe a single place, and applying
     // them one at a time would leave the config briefly claiming a
     // latitude in Denmark and a timezone in UTC.
-    const entries = [
+    const entries: { path: string; value: unknown }[] = [
       { path: "home.latitude", value: place.latitude },
       { path: "home.longitude", value: place.longitude },
-      { path: "home.timezone", value: place.timezone },
     ];
+    // Only what came back: a zone that could not be looked up leaves the
+    // one set alone, and a town is not an address.
+    if (place.timezone) {
+      entries.push({ path: "home.timezone", value: place.timezone });
+    }
     if (place.country_code) {
       entries.push({ path: "home.country", value: place.country_code });
+    }
+    if (place.address) {
+      entries.push({ path: "home.address", value: place.address });
     }
     onChange(entries);
   }
@@ -108,9 +120,9 @@ export function HomeCard({
         <CardTitle>Where the house is</CardTitle>
         <CardDescription>
           The timezone runs the lighting curve, so a wrong one shifts the
-          whole day. The coordinates are only read by the weather. Search for
-          the nearest town and both are filled in — a house number would
-          change the fourth decimal and nothing else.
+          whole day. Search for the address — or just the town — and the
+          coordinates and timezone are filled in. Drag the pin if it is not
+          quite on the house.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -125,8 +137,8 @@ export function HomeCard({
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Aarhus"
-            aria-label="Town or city"
+            placeholder="Vestergade 12, Aarhus"
+            aria-label="Address or town"
             className="sm:flex-1"
           />
           <Button type="submit" variant="outline" disabled={saving}>
@@ -141,15 +153,15 @@ export function HomeCard({
 
         {places.isError && (
           <p className="text-destructive text-sm">
-            The place index could not be reached. The numbers below can be
-            typed in by hand.
+            The map could not be reached. Put the pin on the map, or type the
+            numbers in below.
           </p>
         )}
 
         {places.data && places.data.length === 0 && (
           <p className="text-muted-foreground text-sm">
-            Nothing matched “{submitted}”. Try the nearest larger town, or
-            type the numbers in below.
+            Nothing matched “{submitted}”. Try without the house number, or put
+            the pin on the map yourself.
           </p>
         )}
 
@@ -179,8 +191,8 @@ export function HomeCard({
                       {place.label}
                     </span>
                     <span className="text-muted-foreground block truncate font-mono text-xs">
-                      {place.latitude.toFixed(4)}, {place.longitude.toFixed(4)}{" "}
-                      · {place.timezone}
+                      {place.latitude.toFixed(4)}, {place.longitude.toFixed(4)}
+                      {place.timezone && ` · ${place.timezone}`}
                     </span>
                   </span>
                 </button>
@@ -188,6 +200,20 @@ export function HomeCard({
             ))}
           </ul>
         )}
+
+        <Suspense fallback={<div className="bg-muted h-64 w-full animate-pulse rounded-xl" />}>
+          <HomeMap
+            latitude={values.latitude}
+            longitude={values.longitude}
+            disabled={saving}
+            onMove={(latitude, longitude) =>
+              onChange([
+                { path: "home.latitude", value: latitude },
+                { path: "home.longitude", value: longitude },
+              ])
+            }
+          />
+        </Suspense>
 
         <div className="divide-border divide-y">
           <Field
@@ -201,6 +227,24 @@ export function HomeCard({
               disabled={saving}
               onCommit={(next) =>
                 onChange([{ path: "home.name", value: next }])
+              }
+            />
+          </Field>
+
+          <Field
+            label="Address"
+            hint="Found by the search, or typed. Kept for what will deliver here."
+          >
+            <TextValue
+              value={values.address ?? ""}
+              placeholder="Vestergade 12, 8000 Aarhus"
+              label="Address"
+              clearable
+              disabled={saving}
+              onCommit={(next) =>
+                next.trim()
+                  ? onChange([{ path: "home.address", value: next.trim() }])
+                  : onClear("home.address")
               }
             />
           </Field>
@@ -239,7 +283,7 @@ export function HomeCard({
             hint={
               isUnset(values)
                 ? "Unset, so weather answers are for the Gulf of Guinea."
-                : "Decimal degrees. The search above fills these in."
+                : "Decimal degrees. The search and the pin fill these in."
             }
           >
             <div className="flex flex-wrap gap-2">
@@ -339,6 +383,7 @@ function TextValue({
   placeholder,
   label,
   numeric,
+  clearable,
   disabled,
   onCommit,
 }: {
@@ -346,6 +391,8 @@ function TextValue({
   placeholder: string;
   label: string;
   numeric?: boolean;
+  /** Empty is an answer — "no address" — rather than a slip to undo. */
+  clearable?: boolean;
   disabled?: boolean;
   onCommit: (value: string) => void;
 }) {
@@ -356,7 +403,8 @@ function TextValue({
     setDraft(value);
   }
 
-  const usable = draft.trim() !== "" && (!numeric || !Number.isNaN(Number(draft)));
+  const usable =
+    (clearable || draft.trim() !== "") && (!numeric || !Number.isNaN(Number(draft)));
 
   return (
     <Input
