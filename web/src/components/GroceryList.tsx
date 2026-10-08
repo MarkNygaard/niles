@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Plus, ShoppingCart, Trash2, X } from "lucide-react";
+import { Check, Loader2, Plus, ShoppingCart, Trash2, X } from "lucide-react";
 import { Thumbnail } from "@/components/NemligPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,9 @@ export interface GroceryListProps {
   /** Choose the nemlig.com product for an item. Absent when nemlig.com
       is not switched on, and then there is no button for it. */
   onPick?: (item: GroceryItem) => void;
+  /** Put the list in the nemlig.com basket. Absent like `onPick`. */
+  onSend?: () => void;
+  sending?: boolean;
 }
 
 /**
@@ -34,11 +37,14 @@ export function GroceryList({
   onRemove,
   onClear,
   onPick,
+  onSend,
+  sending,
 }: GroceryListProps) {
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<number | null>(null);
   const toBuy = items.filter((i) => !i.checked_at);
   const basket = items.filter((i) => i.checked_at);
+  const linked = toBuy.filter((i) => i.nemlig).length;
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -122,6 +128,13 @@ export function GroceryList({
             ),
           )}
         </ul>
+      )}
+
+      {onSend && linked > 0 && (
+        <Button onClick={onSend} disabled={sending} className="self-start">
+          {sending ? <Loader2 className="animate-spin" /> : <ShoppingCart />}
+          Send {linked} to nemlig.com
+        </Button>
       )}
 
       {basket.length > 0 && (

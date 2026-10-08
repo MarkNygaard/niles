@@ -309,6 +309,45 @@ export interface NemligProduct {
   available: boolean;
 }
 
+/** The account's basket at nemlig.com. */
+export interface NemligBasket {
+  lines: { product_id: string; name: string; quantity: number; total: number }[];
+  /** Kroner, everything included. */
+  total: number;
+  delivery_price: number;
+  /** "Torsdag 9. oktober kl. 7-9", once a time is reserved. */
+  delivery: string | null;
+  slot_id: number | null;
+  minimum_total: number | null;
+  meets_minimum: boolean;
+}
+
+/** What sending the list to nemlig.com did. */
+export interface NemligSent {
+  basket: NemligBasket;
+  sent: number;
+  /** Items still to buy that had no product chosen. */
+  without: string[];
+  /** Where to review the basket and pay. */
+  checkout: string;
+}
+
+export interface DeliverySlot {
+  id: number;
+  start_hour: number;
+  end_hour: number;
+  price: number;
+  available: boolean;
+  selected: boolean;
+  deadline: string | null;
+}
+
+export interface DeliveryDay {
+  /** "2026-10-09". */
+  date: string;
+  slots: DeliverySlot[];
+}
+
 /** One thing on the shopping list. */
 export interface GroceryItem {
   id: number;
@@ -466,6 +505,13 @@ export const api = {
     request<GroceryItem>(`/groceries/${id}/nemlig`, {
       method: "PUT",
       body: JSON.stringify({ product }),
+    }),
+  nemligSend: () => request<NemligSent>("/groceries/nemlig/basket", { method: "POST" }),
+  nemligDelivery: () => request<DeliveryDay[]>("/groceries/nemlig/delivery"),
+  nemligReserve: (slot_id: number) =>
+    request<NemligBasket>("/groceries/nemlig/delivery", {
+      method: "POST",
+      body: JSON.stringify({ slot_id }),
     }),
   clearGroceries: () =>
     request<{ cleared: number }>("/groceries/clear", { method: "POST" }),

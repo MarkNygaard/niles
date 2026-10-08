@@ -1,3 +1,4 @@
+use crate::basket::{Basket, DeliveryDay, RawBasket, RawDays};
 use crate::error::{Error, Result};
 use crate::product::{Product, SearchAnswer};
 use reqwest::cookie::{CookieStore, Jar};
@@ -96,13 +97,11 @@ impl NemligClient {
         query: &str,
         take: u32,
     ) -> Result<Vec<Product>> {
-        match self.try_search(credentials, query, take).await {
-            Err(Error::Api { status: 401, .. }) => {
-                *self.session.lock().await = None;
-                self.try_search(credentials, query, take).await
-            }
-            other => other,
-        }
+        retried(
+            || self.try_search(credentials, query, take),
+            || self.forget(),
+        )
+        .await
     }
 
     async fn try_search(
@@ -129,6 +128,163 @@ impl NemligClient {
             .send()
             .await?;
         Ok(read::<SearchAnswer>(response).await?.into_products())
+    }
+
+    /// The basket as it stands.
+    pub async fn basket(&self, credentials: &Credentials) -> Result<Basket> {
+        retried(|| self.try_basket(credentials), || self.forget()).await
+    }
+
+    async fn try_basket(&self, credentials: &Credentials) -> Result<Basket> {
+        let mut guard = self.session.lock().await;
+        let session = self.signed_in(&mut guard, credentials).await?;
+        self.read_basket(session).await
+    }
+
+    /// Put these products in the basket, at least this many of each.
+    ///
+    /// "At least": what is in the basket already is kept, so sending the
+    /// list twice does not order twice, and something added by hand on
+    /// the website is not taken away.
+    pub async fn fill_basket(
+        &self,
+        credentials: &Credentials,
+        wanted: &[(String, u32)],
+    ) -> Result<Basket> {
+        retried(|| self.try_fill(credentials, wanted), || self.forget()).await
+    }
+
+    async fn try_fill(
+        &self,
+        credentials: &Credentials,
+        wanted: &[(String, u32)],
+    ) -> Result<Basket> {
+        let mut guard = self.session.lock().await;
+        let session = self.signed_in(&mut guard, credentials).await?;
+        let mut basket = self.read_basket(session).await?;
+        for (product_id, quantity) in wanted {
+            if basket.quantity_of(product_id) >= *quantity {
+                continue;
+            }
+            let response = self
+                .post(format!("{WWW}/webapi/basket/AddToBasket"))
+                .json(&json!({
+                    "ProductId": product_id,
+                    "quantity": quantity,
+                    "AffectPartialQuantity": false,
+                    "disableQuantityValidation": false,
+                }))
+                .send()
+                .await?;
+            let raw: RawBasket = read(response).await?;
+            note_context(session, &raw);
+            basket = raw.into();
+        }
+        Ok(basket)
+    }
+
+    /// The days nemlig.com delivers in the coming `days`, and when.
+    pub async fn delivery_days(
+        &self,
+        credentials: &Credentials,
+        days: u32,
+    ) -> Result<Vec<DeliveryDay>> {
+        retried(|| self.try_days(credentials, days), || self.forget()).await
+    }
+
+    async fn try_days(&self, credentials: &Credentials, days: u32) -> Result<Vec<DeliveryDay>> {
+        let mut guard = self.session.lock().await;
+        self.signed_in(&mut guard, credentials).await?;
+        let response = self
+            .http
+            .get(format!("{WWW}/webapi/v2/Delivery/GetDeliveryDays"))
+            .query(&[
+                ("startDate", "undefined"),
+                ("days", &days.to_string()),
+                ("showForSubscriptions", "false"),
+            ])
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await?;
+        Ok(read::<RawDays>(response).await?.into_days())
+    }
+
+    /// Reserve a delivery time for the basket.
+    ///
+    /// nemlig first only *tries*: when the new time changes the basket's
+    /// prices, or something cannot be delivered then, it reports that and
+    /// reserves nothing until asked again. Niles asks again — the person
+    /// chose this time, and sees the new total straight after.
+    pub async fn reserve(&self, credentials: &Credentials, slot_id: i64) -> Result<Basket> {
+        retried(|| self.try_reserve(credentials, slot_id), || self.forget()).await
+    }
+
+    async fn try_reserve(&self, credentials: &Credentials, slot_id: i64) -> Result<Basket> {
+        let mut guard = self.session.lock().await;
+        let session = self.signed_in(&mut guard, credentials).await?;
+        let slot = [("timeslotId", slot_id.to_string())];
+        let tried: serde_json::Value = read(
+            self.post(format!("{WWW}/webapi/Delivery/TryUpdateDeliveryTime"))
+                .query(&slot)
+                .send()
+                .await?,
+        )
+        .await
+        .unwrap_or_default();
+        if tried.get("IsReserved").and_then(|v| v.as_bool()) == Some(false) {
+            let confirmed = self
+                .post(format!("{WWW}/webapi/Delivery/UpdateDeliveryTime"))
+                .query(&slot)
+                .send()
+                .await?;
+            if !confirmed.status().is_success() {
+                return Err(api_error(confirmed).await);
+            }
+        }
+        let basket = self.read_basket(session).await?;
+        if basket.slot_id != Some(slot_id) {
+            let reason = tried
+                .get("Message")
+                .or_else(|| tried.get("ErrorMessage"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("nemlig.com did not keep that time — it may have just filled up")
+                .to_string();
+            return Err(Error::Api {
+                status: 409,
+                reason,
+            });
+        }
+        Ok(basket)
+    }
+
+    async fn read_basket(&self, session: &mut Session) -> Result<Basket> {
+        let response = self
+            .http
+            .get(format!("{WWW}/webapi/basket/GetBasket"))
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await?;
+        let raw: RawBasket = read(response).await?;
+        note_context(session, &raw);
+        Ok(raw.into())
+    }
+
+    /// A POST to the website's own API, carrying the anti-forgery token it
+    /// checks for.
+    fn post(&self, url: String) -> reqwest::RequestBuilder {
+        let mut request = self
+            .http
+            .post(url)
+            .header(header::ACCEPT, "application/json")
+            .header(header::REFERER, format!("{WWW}/"));
+        if let Some(xsrf) = self.cookie("XSRF-TOKEN") {
+            request = request.header("X-XSRF-TOKEN", xsrf);
+        }
+        request
+    }
+
+    async fn forget(&self) {
+        *self.session.lock().await = None;
     }
 
     /// The session for these credentials, logging in if there is none,
@@ -235,6 +391,34 @@ impl NemligClient {
     }
 }
 
+/// Run `attempt`, and once more after `reset` if the session was refused.
+async fn retried<T, A, AF, R, RF>(attempt: A, reset: R) -> Result<T>
+where
+    A: Fn() -> AF,
+    AF: std::future::Future<Output = Result<T>>,
+    R: FnOnce() -> RF,
+    RF: std::future::Future<Output = ()>,
+{
+    match attempt().await {
+        Err(Error::Api { status: 401, .. }) => {
+            reset().await;
+            attempt().await
+        }
+        other => other,
+    }
+}
+
+/// Search prices against the basket's zone and reserved time, so a new
+/// reservation moves what search is asked for.
+fn note_context(session: &mut Session, raw: &RawBasket) {
+    if let Some(timeslot) = raw.timeslot_utc.as_ref().filter(|t| !t.is_empty()) {
+        session.timeslot_utc = timeslot.clone();
+    }
+    if let Some(zone) = raw.delivery_zone_id {
+        session.zone_id = zone;
+    }
+}
+
 /// What a login answers with: where the account is, for pricing.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -332,5 +516,49 @@ mod tests {
         // The session is reused, not logged into again.
         let rolls = client.search(&credentials, "rundstykker", 5).await.unwrap();
         assert!(!rolls.is_empty());
+    }
+
+    /// The basket and delivery days on the real site, and one product in
+    /// and out of the basket again. Ignored, like the search above; it
+    /// leaves the basket as it found it. Reserving a time is not tried:
+    /// nothing releases a reservation once made.
+    #[tokio::test]
+    #[ignore]
+    async fn fills_the_real_basket_and_empties_it_again() {
+        let credentials = Credentials {
+            username: std::env::var("NEMLIG_USER").expect("NEMLIG_USER"),
+            password: std::env::var("NEMLIG_PASSWORD").expect("NEMLIG_PASSWORD"),
+        };
+        let client = NemligClient::new().unwrap();
+        let days = client.delivery_days(&credentials, 3).await.unwrap();
+        assert!(days.iter().any(|d| !d.slots.is_empty()), "{days:?}");
+
+        let milk = client.search(&credentials, "letmælk", 1).await.unwrap()[0].clone();
+        let before = client
+            .basket(&credentials)
+            .await
+            .unwrap()
+            .quantity_of(&milk.id);
+        let wanted = vec![(milk.id.clone(), before + 1)];
+        let filled = client.fill_basket(&credentials, &wanted).await.unwrap();
+        assert_eq!(filled.quantity_of(&milk.id), before + 1);
+        // Sending the same list again does not order twice.
+        let again = client.fill_basket(&credentials, &wanted).await.unwrap();
+        assert_eq!(again.quantity_of(&milk.id), before + 1);
+
+        let response = client
+            .post(format!("{WWW}/webapi/basket/AddToBasket"))
+            .json(&json!({
+                "ProductId": milk.id,
+                "quantity": before,
+                "AffectPartialQuantity": before == 0,
+                "disableQuantityValidation": false,
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let after = client.basket(&credentials).await.unwrap();
+        assert_eq!(after.quantity_of(&milk.id), before);
     }
 }

@@ -1,10 +1,17 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GroceryList } from "@/components/GroceryList";
+import { NemligOrder } from "@/components/NemligOrder";
 import { NemligPicker } from "@/components/NemligPicker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import type { GroceryEdit, GroceryItem, GroceryList as List, NemligProduct } from "@/lib/api";
+import type {
+  GroceryEdit,
+  GroceryItem,
+  GroceryList as List,
+  NemligProduct,
+  NemligSent,
+} from "@/lib/api";
 
 const KEY = ["groceries"];
 
@@ -53,6 +60,24 @@ export function GroceriesPage() {
     onSuccess: refresh,
   });
 
+  // The order sheet: open once the list has gone to the basket.
+  const [sent, setSent] = useState<NemligSent>();
+  const send = useMutation({ mutationFn: api.nemligSend, onSuccess: setSent });
+  const delivery = useQuery({
+    queryKey: ["nemlig-delivery"],
+    queryFn: api.nemligDelivery,
+    enabled: sent !== undefined,
+    retry: false,
+    staleTime: 60_000,
+  });
+  const reserve = useMutation({
+    mutationFn: api.nemligReserve,
+    onSuccess: (basket) => {
+      setSent((s) => s && { ...s, basket });
+      queryClient.invalidateQueries({ queryKey: ["nemlig-delivery"] });
+    },
+  });
+
   if (list.isLoading) {
     return <Skeleton className="h-64 w-full" />;
   }
@@ -77,7 +102,8 @@ export function GroceriesPage() {
         edit.error?.message ??
         remove.error?.message ??
         clear.error?.message ??
-        choose.error?.message
+        choose.error?.message ??
+        send.error?.message
       }
       onAdd={(name) => add.mutate(name)}
       onToggle={toggle}
@@ -85,6 +111,20 @@ export function GroceriesPage() {
       onRemove={(item) => remove.mutate(item.id)}
       onClear={() => clear.mutate()}
       onPick={list.data?.nemlig ? setPicking : undefined}
+      onSend={list.data?.nemlig ? () => send.mutate() : undefined}
+      sending={send.isPending}
+    />
+    <NemligOrder
+      sent={sent}
+      days={delivery.data}
+      daysError={delivery.error?.message}
+      reserving={reserve.isPending ? reserve.variables : undefined}
+      reserveError={reserve.error?.message}
+      onReserve={(slotId) => reserve.mutate(slotId)}
+      onClose={() => {
+        setSent(undefined);
+        reserve.reset();
+      }}
     />
     <NemligPicker
       item={picking}

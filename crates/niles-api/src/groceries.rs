@@ -147,6 +147,122 @@ pub async fn choose_nemlig(
         .map_err(failure)
 }
 
+/// What sending the list did.
+#[derive(Serialize)]
+pub struct Sent {
+    pub basket: niles_nemlig::Basket,
+    /// How many items went in.
+    pub sent: usize,
+    /// Items still to buy with no nemlig.com product chosen, which did not.
+    pub without: Vec<String>,
+    /// Where to review the basket and pay.
+    pub checkout: &'static str,
+}
+
+#[derive(Deserialize)]
+pub struct Reserve {
+    pub slot_id: i64,
+}
+
+/// `POST /groceries/nemlig/basket` — put everything still to buy that has
+/// a nemlig.com product into the basket there.
+///
+/// At least as many as the list says, never fewer than are there already:
+/// sending twice does not order twice.
+pub async fn nemlig_send(State(state): State<AppState>) -> Result<Json<Sent>, Failure> {
+    let store = store(&state)?;
+    let (client, credentials) = nemlig(&state)?;
+    let to_buy: Vec<Item> = store
+        .list()
+        .into_iter()
+        .filter(|i| i.checked_at.is_none())
+        .collect();
+    let wanted: Vec<(String, u32)> = to_buy
+        .iter()
+        .filter_map(|i| {
+            let product = i.nemlig.as_ref()?;
+            Some((product.id.clone(), how_many(i.quantity.as_deref())))
+        })
+        .collect();
+    let without = to_buy
+        .iter()
+        .filter(|i| i.nemlig.is_none())
+        .map(|i| i.name.clone())
+        .collect();
+    let basket = client
+        .fill_basket(&credentials, &wanted)
+        .await
+        .map_err(nemlig_failure)?;
+    Ok(Json(Sent {
+        basket,
+        sent: wanted.len(),
+        without,
+        checkout: niles_nemlig::CHECKOUT,
+    }))
+}
+
+/// `GET /groceries/nemlig/delivery` — the coming week's delivery times.
+pub async fn nemlig_delivery(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<niles_nemlig::DeliveryDay>>, Failure> {
+    let (client, credentials) = nemlig(&state)?;
+    client
+        .delivery_days(&credentials, 7)
+        .await
+        .map(Json)
+        .map_err(nemlig_failure)
+}
+
+/// `POST /groceries/nemlig/delivery {slot_id}` — reserve one.
+pub async fn nemlig_reserve(
+    State(state): State<AppState>,
+    Json(body): Json<Reserve>,
+) -> Result<Json<niles_nemlig::Basket>, Failure> {
+    let (client, credentials) = nemlig(&state)?;
+    client
+        .reserve(&credentials, body.slot_id)
+        .await
+        .map(Json)
+        .map_err(nemlig_failure)
+}
+
+/// How many of a product the list asks for: the number it starts with —
+/// "2", "2 poser" — or one. Capped, because "500 g" is a weight, not
+/// five hundred packets.
+fn how_many(quantity: Option<&str>) -> u32 {
+    let digits: String = quantity
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    match digits.parse::<u32>() {
+        Ok(n) if (1..=20).contains(&n) => n,
+        _ => 1,
+    }
+}
+
+fn nemlig(
+    state: &AppState,
+) -> Result<(Arc<niles_nemlig::NemligClient>, niles_nemlig::Credentials), Failure> {
+    let client = state.nemlig.clone().ok_or_else(|| {
+        failed(
+            StatusCode::NOT_IMPLEMENTED,
+            "this Niles instance cannot reach nemlig.com".into(),
+        )
+    })?;
+    Ok((client, nemlig_login(state)?))
+}
+
+fn nemlig_failure(e: niles_nemlig::Error) -> Failure {
+    tracing::warn!("[nemlig] {e}");
+    let status = match e {
+        niles_nemlig::Error::Api { status: 409, .. } => StatusCode::CONFLICT,
+        _ => StatusCode::BAD_GATEWAY,
+    };
+    failed(status, e.to_string())
+}
+
 /// How many products the picker is offered: a screenful, no more.
 const NEMLIG_RESULTS: u32 = 12;
 
@@ -316,6 +432,25 @@ mod tests {
         assert_eq!(list["nemlig"], false);
         let (status, _) = send(&app, "GET", "/groceries/nemlig/search?q=milk", None).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[test]
+    fn the_list_says_how_many_or_it_is_one() {
+        use super::how_many;
+        assert_eq!(how_many(None), 1);
+        assert_eq!(how_many(Some("2")), 2);
+        assert_eq!(how_many(Some("3 poser")), 3);
+        assert_eq!(how_many(Some("en pakke")), 1);
+        assert_eq!(how_many(Some("500 g")), 1);
+        assert_eq!(how_many(Some("0")), 1);
+    }
+
+    #[tokio::test]
+    async fn sending_needs_nemlig_to_be_on() {
+        let app = app(Some(Arc::new(GroceryStore::new())));
+        let (status, body) = send(&app, "POST", "/groceries/nemlig/basket", None).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert!(body["error"].is_string());
     }
 
     #[tokio::test]
