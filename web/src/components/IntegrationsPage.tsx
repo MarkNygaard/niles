@@ -20,6 +20,7 @@ import { BrandMark } from "@/components/BrandMark";
 import type { DeviceOption } from "@/components/DevicePicker";
 import { SecretField } from "@/components/SecretField";
 import { TadoPanel } from "@/components/TadoPanel";
+import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { LinearPanel } from "@/components/LinearPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,8 @@ export interface IntegrationsPageProps {
   lightOptions?: DeviceOption[];
   /** The Linear section as the config has it, if there is one. */
   linear?: { team?: string; trigger_label?: string };
+  /** The Claude Code section as the config has it, if there is one. */
+  claudeCode?: { enabled?: boolean; model?: string };
   /** The UniFi console's address, empty until one is typed in. */
   unifiHost?: string;
   saving?: boolean;
@@ -76,6 +79,7 @@ export function IntegrationsPage({
   presenceLights,
   lightOptions,
   linear,
+  claudeCode,
   unifiHost,
   saving,
   error,
@@ -128,6 +132,10 @@ export function IntegrationsPage({
         return onChange("integrations.linear", [
           { path: "integrations.linear", value: { team: "" } },
         ]);
+      case "claude_code":
+        return onChange("integrations.claude_code", [
+          { path: "integrations.claude_code.enabled", value: true },
+        ]);
       case "unifi":
         // Nothing to write yet: the address is what makes it added, and
         // that is the first thing the dialog asks for.
@@ -155,6 +163,12 @@ export function IntegrationsPage({
       case "unifi":
         return onChange("presence.unifi", [
           { path: "presence.unifi.host", value: "" },
+        ]);
+      // Switched off rather than deleted, so the model chosen and the
+      // stored token are still there if it comes back.
+      case "claude_code":
+        return onChange("integrations.claude_code", [
+          { path: "integrations.claude_code.enabled", value: false },
         ]);
       default:
         return onChange("providers", [
@@ -305,6 +319,21 @@ export function IntegrationsPage({
                     saving={saving}
                     onChange={(entries) =>
                       onChange("integrations.linear", entries)
+                    }
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "claude_code" && (
+                  <ClaudeCodePanel
+                    model={claudeCode?.model ?? "sonnet"}
+                    secret={secretFor(current.secret_key)}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onModel={(model) =>
+                      onChange("integrations.claude_code", [
+                        { path: "integrations.claude_code.model", value: model },
+                      ])
                     }
                     onSecretsChanged={onSecretsChanged}
                   />

@@ -15,12 +15,78 @@ fn default_todo_state() -> String {
     "Todo".into()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_claude_model() -> String {
+    "sonnet".into()
+}
+
+fn default_claude_timeout_seconds() -> u64 {
+    120
+}
+
 /// Top-level `[integrations]` section of the config file.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntegrationsConfig {
     #[serde(default)]
     pub linear: Option<LinearConfigDto>,
+    #[serde(default)]
+    pub claude_code: Option<ClaudeCodeConfig>,
+}
+
+/// `[integrations.claude_code]` — the app's chat answered by Claude Code,
+/// on the household's Claude subscription.
+///
+/// Only the chat: a spoken command still goes to `[llm]`, because a
+/// process that takes seconds to start has no place in a voice reply.
+/// When this is off, or Claude Code fails, the chat falls back to
+/// `[llm]` as well.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeCodeConfig {
+    /// Off keeps the section (and the model chosen) without using it.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// `sonnet`, `opus`, `haiku`, or a full model id.
+    #[serde(default = "default_claude_model")]
+    pub model: String,
+    /// The variable holding the token from `claude setup-token`, when it
+    /// comes from one rather than from Niles's own store.
+    #[serde(default)]
+    pub oauth_token_env: String,
+    /// How long one answer may take, tool calls included.
+    #[serde(default = "default_claude_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl ClaudeCodeConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.model.trim().is_empty() {
+            return Err(Error::InvalidSection {
+                section: "integrations.claude_code",
+                reason: "model must not be empty".into(),
+            });
+        }
+        if self.timeout_seconds < 10 || self.timeout_seconds > 600 {
+            return Err(Error::InvalidSection {
+                section: "integrations.claude_code",
+                reason: "timeout_seconds must be between 10 and 600".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The token from `claude setup-token`.
+    pub fn resolve_oauth_token(&self) -> Result<String> {
+        crate::env::require_secret(
+            "integrations.claude_code",
+            "integrations.claude_code.oauth_token",
+            &self.oauth_token_env,
+        )
+    }
 }
 
 /// `[integrations.linear]` section.
@@ -48,6 +114,9 @@ impl IntegrationsConfig {
     pub fn validate(&self) -> Result<()> {
         if let Some(linear) = &self.linear {
             linear.validate()?;
+        }
+        if let Some(claude) = &self.claude_code {
+            claude.validate()?;
         }
         Ok(())
     }

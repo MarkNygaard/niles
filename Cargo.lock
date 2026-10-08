@@ -1615,6 +1615,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "chrono",
  "chrono-tz",
  "clap",
@@ -1645,6 +1646,8 @@ dependencies = [
  "niles-weather",
  "niles-websearch",
  "niles-wyoming",
+ "rand 0.10.2",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

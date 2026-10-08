@@ -14,6 +14,7 @@ pub mod escalate;
 pub mod groceries;
 pub mod linear;
 pub mod list_recent_notifications;
+pub mod mcp;
 pub mod presence;
 pub mod registry;
 pub mod relevance;

@@ -59,6 +59,29 @@ const UNIFI_KEY: SecretsReport = {
   ],
 };
 
+const CLAUDE: Integration = {
+  id: "claude_code",
+  label: "Claude Code",
+  blurb: "Answers the chat with Claude, on your Claude subscription.",
+  kind: "service",
+  base_url: null,
+  serves: [],
+  added: false,
+  secret_key: "integrations.claude_code.oauth_token",
+};
+
+const CLAUDE_TOKEN: SecretsReport = {
+  writable: true,
+  secrets: [
+    {
+      key: "integrations.claude_code.oauth_token",
+      label: "Claude Code token, from `claude setup-token`",
+      hint: "claude.ai",
+      source: "unset",
+    },
+  ],
+};
+
 function setup(
   integrations: Integration[],
   secrets: SecretsReport = SECRETS,
@@ -214,6 +237,38 @@ describe("IntegrationsPage", () => {
 
     expect(onChange).toHaveBeenCalledWith("presence.unifi", [
       { path: "presence.unifi.host", value: "" },
+    ]);
+  });
+
+  it("switches Claude Code on and asks for its token", () => {
+    const { onChange } = setup([CLAUDE], CLAUDE_TOKEN);
+    openAddList();
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+
+    expect(onChange).toHaveBeenCalledWith("integrations.claude_code", [
+      { path: "integrations.claude_code.enabled", value: true },
+    ]);
+    expect(screen.getByText(/claude setup-token/, { selector: "div, span, label" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /Sonnet/ })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("picks Claude Code's model", () => {
+    const { onChange } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Opus/ }));
+
+    expect(onChange).toHaveBeenCalledWith("integrations.claude_code", [
+      { path: "integrations.claude_code.model", value: "opus" },
+    ]);
+  });
+
+  it("removing Claude Code switches it off and keeps the token", () => {
+    const { onChange } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove Claude Code/ }));
+
+    expect(onChange).toHaveBeenCalledWith("integrations.claude_code", [
+      { path: "integrations.claude_code.enabled", value: false },
     ]);
   });
 });

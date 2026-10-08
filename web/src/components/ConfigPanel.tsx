@@ -889,6 +889,11 @@ export function ConfigPanel() {
                 | { linear?: { team?: string; trigger_label?: string } }
                 | undefined)?.linear
             }
+            claudeCode={
+              (view.effective.integrations as
+                | { claude_code?: { enabled?: boolean; model?: string } }
+                | undefined)?.claude_code
+            }
             unifiHost={stringAt(view.effective, "presence.unifi.host")}
             saving={save.isPending}
             error={rowError ? rowError.message : undefined}
