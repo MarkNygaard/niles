@@ -245,7 +245,7 @@ impl NemligClient {
                 return Err(api_error(confirmed).await);
             }
         }
-        let basket = self.read_basket(session).await?;
+        let mut basket = self.read_basket(session).await?;
         if basket.slot_id != Some(slot_id) {
             let reason = tried
                 .get("Message")
@@ -258,6 +258,10 @@ impl NemligClient {
                 reason,
             });
         }
+        basket.held_minutes = tried
+            .get("MinutesReserved")
+            .and_then(|m| m.as_u64())
+            .and_then(|m| u32::try_from(m).ok());
         Ok(basket)
     }
 
@@ -590,5 +594,6 @@ mod tests {
         let basket = client.reserve(&credentials, slot).await.unwrap();
         assert_eq!(basket.slot_id, Some(slot));
         assert!(basket.delivery.is_some());
+        assert!(basket.held_minutes.is_some_and(|m| m > 0), "{basket:?}");
     }
 }

@@ -14,6 +14,11 @@ pub struct Basket {
     /// nemlig's smallest order, and whether this basket is there yet.
     pub minimum_total: Option<f64>,
     pub meets_minimum: bool,
+    /// How long nemlig holds a time just reserved, in minutes — 20 when
+    /// tried — after which it is let go unless the order is placed.
+    /// Only on the basket a reservation returns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held_minutes: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -126,6 +131,7 @@ impl From<RawBasket> for Basket {
                 .filter(|id| *id > 0),
             minimum_total: b.minimum_order_total.filter(|m| *m > 0.0),
             meets_minimum: b.is_min_total_valid,
+            held_minutes: None,
         }
     }
 }

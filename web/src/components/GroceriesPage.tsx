@@ -62,6 +62,7 @@ export function GroceriesPage() {
 
   // The order sheet: open once the list has gone to the basket.
   const [sent, setSent] = useState<NemligSent>();
+  const [heldUntil, setHeldUntil] = useState<Date>();
   const send = useMutation({ mutationFn: api.nemligSend, onSuccess: setSent });
   const delivery = useQuery({
     queryKey: ["nemlig-delivery"],
@@ -74,6 +75,9 @@ export function GroceriesPage() {
     mutationFn: api.nemligReserve,
     onSuccess: (basket) => {
       setSent((s) => s && { ...s, basket });
+      setHeldUntil(
+        basket.held_minutes ? new Date(Date.now() + basket.held_minutes * 60_000) : undefined,
+      );
       queryClient.invalidateQueries({ queryKey: ["nemlig-delivery"] });
     },
   });
@@ -120,9 +124,11 @@ export function GroceriesPage() {
       daysError={delivery.error?.message}
       reserving={reserve.isPending ? reserve.variables : undefined}
       reserveError={reserve.error?.message}
+      heldUntil={heldUntil}
       onReserve={(slotId) => reserve.mutate(slotId)}
       onClose={() => {
         setSent(undefined);
+        setHeldUntil(undefined);
         reserve.reset();
       }}
     />

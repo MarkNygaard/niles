@@ -320,6 +320,8 @@ export interface NemligBasket {
   slot_id: number | null;
   minimum_total: number | null;
   meets_minimum: boolean;
+  /** How long nemlig holds a time just reserved, in minutes. */
+  held_minutes?: number;
 }
 
 /** What sending the list to nemlig.com did. */
