@@ -46,7 +46,7 @@ describe("NemligPicker", () => {
 
   it("says what is not available rather than hiding it", async () => {
     open();
-    expect(await screen.findByText(/not available/)).toBeInTheDocument();
+    expect(await screen.findByText("Not available")).toBeInTheDocument();
   });
 
   it("marks the one chosen before, and can stop using nemlig.com for it", async () => {
@@ -62,6 +62,16 @@ describe("NemligPicker", () => {
     fireEvent.change(screen.getByLabelText("Search nemlig.com"), { target: { value: "boller" } });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     await vi.waitFor(() => expect(search).toHaveBeenCalledWith("boller"));
+  });
+
+  it("holds the cards' places while searching", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <NemligPicker item={ITEM} search={() => new Promise(() => {})} onChoose={vi.fn()} onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("list", { busy: true })).toBeInTheDocument();
   });
 
   it("writes kroner the Danish way", () => {
