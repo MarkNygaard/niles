@@ -36,6 +36,15 @@ pub fn router(state: AppState) -> Router {
             "/scenes/{name}",
             post(crate::scenes::apply_scene).delete(crate::scenes::delete_scene),
         )
+        .route(
+            "/groceries",
+            get(crate::groceries::list).post(crate::groceries::add),
+        )
+        .route("/groceries/clear", post(crate::groceries::clear))
+        .route(
+            "/groceries/{id}",
+            axum::routing::patch(crate::groceries::update).delete(crate::groceries::remove),
+        )
         .route("/integrations", get(crate::integrations::list))
         .route(
             "/captures",

@@ -15,6 +15,7 @@ export default defineConfig({
     proxy: {
       "/config": "http://localhost:8080",
       "/devices": "http://localhost:8080",
+      "/groceries": "http://localhost:8080",
       "/healthz": "http://localhost:8080",
       "/rooms": "http://localhost:8080",
       // Leave `changeOrigin` alone. The event stream refuses a

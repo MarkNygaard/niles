@@ -11,6 +11,7 @@ pub mod config;
 pub mod datetime;
 pub mod error;
 pub mod escalate;
+pub mod groceries;
 pub mod linear;
 pub mod list_recent_notifications;
 pub mod presence;
@@ -33,6 +34,9 @@ pub use config::{GetConfig, ResetConfig, UndoConfigChange, UpdateConfig, registe
 pub use datetime::{CurrentDatetimeTool, register_datetime_tool};
 pub use error::{Error, Result};
 pub use escalate::{EscalateToTier2Tool, register_escalate_tool};
+pub use groceries::{
+    AddToGroceryList, ReadGroceryList, RemoveFromGroceryList, register_grocery_tools,
+};
 pub use list_recent_notifications::{
     ListRecentNotificationsTool, register_list_recent_notifications_tool,
 };

@@ -4745,6 +4745,76 @@ async fn build_scene_store(cfg: &Config) -> Arc<SceneStore> {
     Arc::new(store.with_sink(Arc::new(QueuedScenes { tx })))
 }
 
+/// Hands each new grocery document to a task that writes it, the way
+/// [`QueuedScenes`] does for scenes: checking something off in the shop
+/// must not wait on the database.
+struct QueuedGroceries {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl niles_groceries::GroceryPersistence for QueuedGroceries {
+    fn store(&self, document: &str) {
+        if self.tx.send(document.to_string()).is_err() {
+            tracing::warn!(
+                "[groceries] nothing is writing the list any more; this change is in memory only"
+            );
+        }
+    }
+}
+
+/// The shopping list, kept in Postgres when there is one.
+///
+/// Without a database it lives as long as the process, and says so. A
+/// list that cannot be read is left out entirely rather than started
+/// empty: the first item added would otherwise overwrite the real one.
+async fn build_grocery_store(cfg: &Config) -> Option<Arc<niles_groceries::GroceryStore>> {
+    let in_memory = || {
+        tracing::warn!("[groceries] no database; the shopping list will not survive a restart");
+        Some(Arc::new(niles_groceries::GroceryStore::new()))
+    };
+    let Some(database) = &cfg.database else {
+        return in_memory();
+    };
+    let Ok(url) = database.resolve_url() else {
+        return in_memory();
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return in_memory();
+    };
+    let describe = backend.describe_target();
+    let groceries = Arc::new(niles_db::PostgresGroceries::new(backend.pool(), describe));
+
+    let store = match groceries.load().await {
+        Ok(Some(document)) => match niles_groceries::GroceryStore::from_json(&document) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!(
+                    "[groceries] the stored list would not parse ({e}); it is unavailable this run"
+                );
+                return None;
+            }
+        },
+        Ok(None) => niles_groceries::GroceryStore::new(),
+        Err(e) => {
+            tracing::error!(
+                "[groceries] could not be read ({e}); the list is unavailable this run"
+            );
+            return None;
+        }
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(document) = rx.recv().await {
+            if let Err(e) = groceries.store(&document).await {
+                tracing::error!("[groceries] save failed: {e}");
+            }
+        }
+    });
+    Some(Arc::new(store.with_sink(Arc::new(QueuedGroceries { tx }))))
+}
+
 fn build_tado_tokens(cfg: &Config) -> anyhow::Result<Option<Arc<dyn niles_presence::TokenStore>>> {
     let Some(database) = &cfg.database else {
         return Ok(None);
@@ -5057,6 +5127,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let llm = Arc::new(build_groq_client(&cfg)?);
     let timers = Arc::new(load_timer_store(cfg.persistence.directory.as_deref()));
     let scenes = build_scene_store(&cfg).await;
+    let groceries = build_grocery_store(&cfg).await;
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader
         .as_deref()
@@ -5106,6 +5177,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Lets the user retune the curve by voice: "make the evenings
     // brighter", "start the morning ramp half an hour later".
     niles_tools::register_config_tools(&mut tools, store.clone());
+    if let Some(groceries) = &groceries {
+        niles_tools::register_grocery_tools(
+            &mut tools,
+            groceries.clone(),
+            cfg.home.resolved_country(),
+        );
+    }
 
     let command_writer = match &cfg.history.directory {
         Some(dir) => {
@@ -5231,6 +5309,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_logs(LOG_BUFFER.get().cloned())
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
+    .with_groceries(groceries.clone())
     .with_tado(tado.clone())
     .with_voices(voices.clone())
     .with_captures(captures.clone())

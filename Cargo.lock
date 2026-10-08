@@ -1573,6 +1573,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-db",
+ "niles-groceries",
  "niles-integration-linear",
  "niles-mqtt",
  "niles-notifications",
@@ -1625,6 +1626,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-db",
+ "niles-groceries",
  "niles-history",
  "niles-integration-linear",
  "niles-intent",
@@ -1708,6 +1710,17 @@ dependencies = [
  "sqlx",
  "tokio",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "niles-groceries"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tracing",
 ]
 
@@ -1900,6 +1913,7 @@ dependencies = [
  "niles-capabilities",
  "niles-config",
  "niles-core",
+ "niles-groceries",
  "niles-history",
  "niles-integration-linear",
  "niles-llm",

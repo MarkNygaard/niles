@@ -15,6 +15,14 @@ describe("TabBar", () => {
     expect(screen.getByRole("link", { name: "Me" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("marks the list on the list", () => {
+    render(<TabBar route="/groceries" />);
+    expect(screen.getByRole("link", { name: "Groceries" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
   it("does not mistake a route that merely starts with the same letters", () => {
     render(<TabBar route="/meals" />);
     expect(screen.getByRole("link", { name: "Me" })).not.toHaveAttribute("aria-current");
