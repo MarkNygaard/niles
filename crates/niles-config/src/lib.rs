@@ -54,7 +54,7 @@ pub use database::DatabaseConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
-pub use integrations::{IntegrationsConfig, LinearConfigDto};
+pub use integrations::{ClaudeCodeConfig, IntegrationsConfig, LinearConfigDto};
 pub use lamp_plugs::LampPlugsConfig;
 pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config, ReasoningEffort};

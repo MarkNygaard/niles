@@ -34,6 +34,10 @@ const KNOWN: &[(&str, &str)] = &[
         "API token for callers that are not browsers",
     ),
     ("integrations.linear.api_key", "Linear API key"),
+    (
+        "integrations.claude_code.oauth_token",
+        "Claude Code token, from `claude setup-token`",
+    ),
     // Read on every poll, so saving it takes hold without a restart —
     // which is what makes the phone-pairing button appear at all.
     ("presence.unifi.api_key", "UniFi console API key"),

@@ -53,6 +53,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod claude_code;
 mod climate;
 mod conversation;
 mod courtesy;
@@ -2859,6 +2860,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     );
 
     let tools = Arc::new(tools);
+    // No app here, so no chat for Claude Code to answer.
+    let claude: Option<Arc<claude_code::ClaudeCode>> = None;
 
     let mode_note = if args.dry_run {
         " (dry-run: nothing will be published)"
@@ -2906,6 +2909,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         weather: weather_client.clone(),
         tado: tado.clone(),
         courtesy: Arc::new(courtesy::Courtesy::default()),
+        claude: claude.clone(),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -3135,6 +3139,9 @@ struct DispatchCtx {
     weather: Option<Arc<niles_weather::OpenMeteoClient>>,
     /// Who has been called "Sir" lately, and greeted this morning.
     courtesy: Arc<courtesy::Courtesy>,
+    /// Answers the app's chat when `[integrations.claude_code]` is on.
+    /// Absent outside `serve`, and when its MCP port could not be bound.
+    claude: Option<Arc<claude_code::ClaudeCode>>,
     /// For the heating by voice. The same session the dashboard and
     /// presence use: tado rotates its refresh token on every use, so
     /// there can only be one.
@@ -3321,6 +3328,10 @@ async fn dispatch_tier1(
     let mut system_prompt = system_prompt;
     if matches!(thread, conversation::Thread::Chat(_)) {
         system_prompt.push_str(TYPED_IN_THE_APP);
+        if let Some(reply) = ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
+        {
+            return Some(reply);
+        }
     }
     let mut messages = Vec::new();
     messages.push(Message::System {
@@ -3415,6 +3426,62 @@ async fn dispatch_tier1(
         }
     }
 }
+/// The chat's answer from Claude Code, when it is switched on and can
+/// give one.
+///
+/// `None` sends the turn on to `[llm]` as if Claude Code were not there:
+/// a subscription that has lapsed, a token that has expired or a run
+/// that timed out costs the quality of the answer, not the answer.
+async fn ask_claude_code(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    text: &str,
+    thread: &conversation::Thread,
+    speaker: &SpeakerContext,
+    system_prompt: &str,
+) -> Option<String> {
+    let claude = ctx.claude.as_ref()?;
+    // Read per turn: switching it on in the app takes hold with the next
+    // message, not the next restart.
+    let cfg = ctx
+        .settings
+        .as_ref()?
+        .current()
+        .integrations
+        .claude_code
+        .clone()
+        .filter(|c| c.enabled)?;
+    let token = match cfg.resolve_oauth_token() {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::warn!("[{peer}] Claude Code is on but has no token ({e}); using [llm]");
+            return None;
+        }
+    };
+    let slug = match speaker {
+        SpeakerContext::Identified { known, .. } => known.slug.clone(),
+        _ => None,
+    };
+    let history = ctx.conversation.recent_messages(thread);
+    let started = Instant::now();
+    match claude
+        .answer(&cfg, &token, system_prompt, &history, text, slug)
+        .await
+    {
+        Ok(reply) => {
+            println!(
+                "[{peer}] \"{text}\" -> (Claude Code, {}ms) {reply}",
+                started.elapsed().as_millis()
+            );
+            Some(reply)
+        }
+        Err(e) => {
+            tracing::warn!("[{peer}] Claude Code could not answer ({e:#}); using [llm]");
+            None
+        }
+    }
+}
+
 /// Teach Niles a voice from the sentence that introduced it.
 ///
 /// Refuses to add clips to a name that is already enrolled to a voice
@@ -5409,6 +5476,16 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
 
     let tools = Arc::new(tools);
+    // Started whether or not Claude Code is switched on: the switch is
+    // in the app and read per message, and a port bound only at startup
+    // would leave turning it on waiting for a restart.
+    let claude = match claude_code::ClaudeCode::start(tools.clone()).await {
+        Ok(claude) => Some(Arc::new(claude)),
+        Err(e) => {
+            tracing::warn!("[claude-code] unavailable: {e:#}");
+            None
+        }
+    };
 
     // Timer driver: shares the `timers` Arc registered with the LLM
     // tools (above) and threaded into `DispatchCtx` (below) so
@@ -5537,6 +5614,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         weather: weather_client.clone(),
         tado: tado.clone(),
         courtesy: Arc::new(courtesy::Courtesy::default()),
+        claude: claude.clone(),
     };
     // The API is already up; from here on the chat has something to
     // answer with.

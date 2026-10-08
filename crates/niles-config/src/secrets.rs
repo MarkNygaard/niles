@@ -91,6 +91,11 @@ impl crate::Config {
                 .linear
                 .as_ref()
                 .map(|l| l.api_key_env.clone()),
+            "integrations.claude_code.oauth_token" => self
+                .integrations
+                .claude_code
+                .as_ref()
+                .map(|c| c.oauth_token_env.clone()),
             "auth.session_secret" => self.auth.session_secret_env.clone(),
             "auth.github_client_secret" => self.auth.github_client_secret_env.clone(),
             "auth.api_token" => self.auth.api_token_env.clone(),
@@ -114,6 +119,7 @@ impl crate::Config {
             "stt.api_key" => host_of(&self.stt.base_url),
             "llm.api_key" => host_of(&self.llm.base_url),
             "integrations.linear.api_key" => Some("api.linear.app".into()),
+            "integrations.claude_code.oauth_token" => Some("claude.ai".into()),
             "auth.github_client_id" | "auth.github_client_secret" => Some("github.com".into()),
             // Niles's own, used against nothing.
             _ => None,

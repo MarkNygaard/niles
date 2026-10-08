@@ -70,6 +70,17 @@ RUN mkdir -p /out/share \
    && echo "${ECAPA_SHA256}  /out/share/ecapa.onnx" | sha256sum -c -; \
     fi
 
+# ---- claude code ------------------------------------------------------
+# The app's chat can be answered by Claude Code on the household's Claude
+# subscription (`[integrations.claude_code]`). The native build is one
+# self-contained executable, so the runtime image gets that file and no
+# Node. Pinned, because Niles relies on its print-mode flags and its
+# JSON output, and an unpinned CLI would change them under a deploy.
+FROM debian:bookworm-slim AS claude
+ARG CLAUDE_CODE_VERSION=2.1.267
+RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates curl bash  && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"  && install -D "$(readlink -f /root/.local/bin/claude)" /out/claude  && /out/claude --version
+
 # ---- runtime ----------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 # ca-certificates: TLS roots for outbound HTTPS (Groq, etc.).
@@ -80,6 +91,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --uid 10001 --user-group niles
 COPY --from=builder /usr/local/bin/niles /usr/local/bin/niles
+COPY --from=claude /out/claude /usr/local/bin/claude
 # Named explicitly rather than left to the loader: the file is installed
 # under its plain name, and ORT_DYLIB_PATH is the only thing `ort`
 # consults before falling back to a system search that would not find it.

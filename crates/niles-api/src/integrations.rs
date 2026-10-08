@@ -90,6 +90,11 @@ fn is_added(cfg: &Config, id: &str) -> bool {
     match id {
         "tado" => cfg.presence.tado.is_some(),
         "linear" => cfg.integrations.linear.is_some(),
+        "claude_code" => cfg
+            .integrations
+            .claude_code
+            .as_ref()
+            .is_some_and(|c| c.enabled),
         // A host is what makes it a console; the section itself always
         // exists, with defaults, so its presence says nothing.
         "unifi" => cfg.presence.unifi.is_configured(),
