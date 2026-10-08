@@ -3,6 +3,7 @@ import { ArrowUp, LoaderCircle, Mic, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { dictationSupported, useDictation } from "@/hooks/useDictation";
+import { useKeyboardInset } from "@/hooks/useKeyboardInset";
 import type { Exchange } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -55,13 +56,31 @@ export function ChatView({
   });
   const canDictate = Boolean(onDictate) && dictationSupported();
   const end = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLFormElement>(null);
   const busy = pending !== undefined;
+  const keyboard = useKeyboardInset();
+  const [typing, setTyping] = useState(false);
+  const lifted = typing ? keyboard : 0;
+  // What the pinned composer covers, so the last message can scroll
+  // clear of it. Measured, because the field grows with what is typed.
+  const [composerHeight, setComposerHeight] = useState(56);
 
-  // The newest message is the one worth seeing. `#root` scrolls, so
-  // scrolling the last element into view is what reaches it.
+  useEffect(() => {
+    const el = composer.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() =>
+      setComposerHeight(el.getBoundingClientRect().height),
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // The newest message is the one worth seeing — after an answer, and
+  // when the keyboard comes up over it. `#root` scrolls, so scrolling
+  // the last element into view is what reaches it.
   useEffect(() => {
     end.current?.scrollIntoView?.({ block: "end" });
-  }, [exchanges.length, pending]);
+  }, [exchanges.length, pending, lifted]);
 
   // The tab bar steps aside while the keyboard is up; see TabBar.
   useEffect(
@@ -79,9 +98,7 @@ export function ChatView({
   };
 
   return (
-    // At least the screen left under the header, so the field starts at
-    // the bottom where a thumb expects it, not under the last message.
-    <div className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-9.25rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-6.25rem)]">
+    <div className="flex flex-col gap-4">
       {exchanges.length === 0 && !busy ? (
         <div className="flex flex-col gap-3 px-1">
           <p className="text-muted-foreground text-sm">
@@ -138,23 +155,37 @@ export function ChatView({
         </p>
       )}
 
-      {/* Held at the bottom of the screen, above the tab bar on a phone
-          and on top of the keyboard once the tab bar steps aside. */}
+      {/* Pinned to the screen rather than to the end of the page, the
+          way a messages app does it: just above the tab bar, and on top
+          of the keyboard once that is up and the tab bar has stepped
+          aside. In the page's flow it sat on the page's bottom padding,
+          and iOS — which lays the keyboard over the page rather than
+          shrinking it — scrolled that padding up with it. */}
       <form
+        ref={composer}
         onSubmit={(e) => {
           e.preventDefault();
           send(draft);
         }}
+        style={lifted ? { bottom: lifted } : undefined}
         className={cn(
-          "bg-background sticky mt-auto flex items-end gap-2 py-2",
-          "bottom-[calc(env(safe-area-inset-bottom)+3.5rem)] in-data-typing:bottom-0 sm:bottom-0",
+          "bg-background fixed inset-x-0 z-30",
+          "bottom-[calc(env(safe-area-inset-bottom)+3rem)] in-data-typing:bottom-0",
+          "sm:bottom-0 sm:pb-[env(safe-area-inset-bottom)]",
         )}
       >
+        <div className="mx-auto flex w-full max-w-5xl items-end gap-2 px-4 py-2 sm:px-6">
         <Textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onFocus={() => (document.documentElement.dataset.typing = "")}
-          onBlur={() => delete document.documentElement.dataset.typing}
+          onFocus={() => {
+            document.documentElement.dataset.typing = "";
+            setTyping(true);
+          }}
+          onBlur={() => {
+            delete document.documentElement.dataset.typing;
+            setTyping(false);
+          }}
           onKeyDown={(e) => {
             // Enter sends, as in every chat; Shift+Enter is a new line.
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -178,6 +209,7 @@ export function ChatView({
             variant="destructive"
             aria-label="Stop dictating"
             onClick={dictation.stop}
+            onMouseDown={(e) => e.preventDefault()}
             className="rounded-full"
           >
             <Square className="fill-current" />
@@ -189,6 +221,7 @@ export function ChatView({
             variant="secondary"
             aria-label="Dictate"
             onClick={dictation.start}
+            onMouseDown={(e) => e.preventDefault()}
             disabled={transcribing}
             className="rounded-full"
           >
@@ -200,13 +233,28 @@ export function ChatView({
             size="icon-lg"
             aria-label="Send"
             disabled={!draft.trim() || busy}
+            // Sending keeps the keyboard up for the next message, and a
+            // tap that blurred the field first would drop the composer
+            // out from under the finger.
+            onMouseDown={(e) => e.preventDefault()}
             className="rounded-full"
           >
             <ArrowUp />
           </Button>
         )}
+        </div>
       </form>
-      <div ref={end} />
+      {/* Room at the end for what is pinned over it — the composer, and
+          below that the tab bar or, while typing, the keyboard — so the
+          last message scrolls clear of all of it. The page leaves its
+          own bottom padding off this screen (see App), so this is the
+          whole of it. */}
+      <div
+        ref={end}
+        aria-hidden
+        style={{ height: composerHeight + lifted }}
+        className="box-content pb-[calc(env(safe-area-inset-bottom)+3rem)] in-data-typing:pb-0 sm:pb-0"
+      />
     </div>
   );
 }

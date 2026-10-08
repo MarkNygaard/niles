@@ -78,7 +78,7 @@ export function TabBar({ route, email, avatarUrl }: TabBarProps) {
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "flex h-14 flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition-colors",
+                  "flex h-12 flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition-colors",
                   "sm:h-9 sm:flex-row sm:gap-2 sm:rounded-full sm:px-3 sm:text-sm",
                   "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
                   "[&_svg]:size-6 sm:[&_svg]:size-4",
