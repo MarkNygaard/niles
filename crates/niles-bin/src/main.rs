@@ -5559,6 +5559,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
+    .with_nemlig(match niles_nemlig::NemligClient::new() {
+        Ok(client) => Some(Arc::new(client)),
+        Err(e) => {
+            tracing::warn!("[nemlig] unavailable: {e}");
+            None
+        }
+    })
     .with_chat(Some(Arc::new(AppChat {
         ctx: chat_ctx.clone(),
         stt: whisper.clone(),

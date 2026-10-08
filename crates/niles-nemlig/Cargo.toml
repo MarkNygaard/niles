@@ -1,0 +1,23 @@
+[package]
+name = "niles-nemlig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The session is a cookie (`.ASPXAUTH`) plus the XSRF cookie it reads
+# back, so this crate wants the jar the rest of the workspace does not.
+reqwest = { workspace = true, features = ["cookies"] }
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+urlencoding.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

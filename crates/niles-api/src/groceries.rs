@@ -6,9 +6,9 @@
 
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use niles_groceries::{Added, Edit, Error, GroceryStore, Item};
+use niles_groceries::{Added, Edit, Error, GroceryStore, Item, NemligProduct};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -25,6 +25,20 @@ pub struct GroceryList {
     /// Products bought before and not on the list now, most bought
     /// first: one press to add again.
     pub usual: Vec<String>,
+    /// Whether nemlig.com is switched on and has a login, so the page
+    /// offers to pick products there.
+    pub nemlig: bool,
+}
+
+#[derive(Deserialize)]
+pub struct NemligChoice {
+    /// The product, or null to stop using nemlig.com for this item.
+    pub product: Option<NemligProduct>,
+}
+
+#[derive(Deserialize)]
+pub struct NemligQuery {
+    pub q: String,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +59,7 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<GroceryList>, Fa
     Ok(Json(GroceryList {
         items: store.list(),
         usual: store.usual(USUAL),
+        nemlig: state.nemlig.is_some() && nemlig_login(&state).is_ok(),
     }))
 }
 
@@ -89,6 +104,64 @@ pub async fn clear(State(state): State<AppState>) -> Result<Json<Cleared>, Failu
     Ok(Json(Cleared {
         cleared: store.clear_checked(),
     }))
+}
+
+/// `GET /groceries/nemlig/search?q=` — what nemlig.com sells by that
+/// name, priced for this account.
+pub async fn nemlig_search(
+    State(state): State<AppState>,
+    Query(query): Query<NemligQuery>,
+) -> Result<Json<Vec<NemligProduct>>, Failure> {
+    let client = state.nemlig.clone().ok_or_else(|| {
+        failed(
+            StatusCode::NOT_IMPLEMENTED,
+            "this Niles instance cannot reach nemlig.com".into(),
+        )
+    })?;
+    let credentials = nemlig_login(&state)?;
+    let q = query.q.trim();
+    if q.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+    client
+        .search(&credentials, q, NEMLIG_RESULTS)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::warn!("[nemlig] search for {q:?} failed: {e}");
+            failed(StatusCode::BAD_GATEWAY, e.to_string())
+        })
+}
+
+/// `PUT /groceries/{id}/nemlig` — choose the nemlig.com product for an
+/// item, or none. Remembered for the next item of that name.
+pub async fn choose_nemlig(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    Json(choice): Json<NemligChoice>,
+) -> Result<Json<Item>, Failure> {
+    let store = store(&state)?;
+    store
+        .choose_nemlig(id, choice.product)
+        .map(Json)
+        .map_err(failure)
+}
+
+/// How many products the picker is offered: a screenful, no more.
+const NEMLIG_RESULTS: u32 = 12;
+
+/// The nemlig.com login, when the integration is on and has one.
+fn nemlig_login(state: &AppState) -> Result<niles_nemlig::Credentials, Failure> {
+    let config = state.config.as_ref().map(|c| c.current());
+    let nemlig = config
+        .as_ref()
+        .and_then(|c| c.integrations.nemlig.clone())
+        .filter(|n| n.enabled)
+        .ok_or_else(|| failed(StatusCode::CONFLICT, "nemlig.com is not switched on".into()))?;
+    let (username, password) = nemlig
+        .resolve_credentials()
+        .map_err(|e| failed(StatusCode::CONFLICT, e.to_string()))?;
+    Ok(niles_nemlig::Credentials { username, password })
 }
 
 fn store(state: &AppState) -> Result<&Arc<GroceryStore>, Failure> {
@@ -197,6 +270,52 @@ mod tests {
         let (_, list) = send(&app, "GET", "/groceries", None).await;
         assert_eq!(list["items"].as_array().unwrap().len(), 1);
         assert_eq!(list["usual"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_nemlig_choice_is_kept_and_offered_again() {
+        let app = app(Some(Arc::new(GroceryStore::new())));
+        let (_, added) = send(
+            &app,
+            "POST",
+            "/groceries",
+            Some(json!({"name": "Rundstykker"})),
+        )
+        .await;
+        let id = added["item"]["id"].as_u64().unwrap();
+        let product = json!({
+            "id": "5060220", "name": "Surdejsrundstykker",
+            "description": "6 stk. / 420 g / frost / Hatting", "price": 14.95,
+            "unit_price": "35,60 kr/kg", "image": null, "available": true
+        });
+        let (status, item) = send(
+            &app,
+            "PUT",
+            &format!("/groceries/{id}/nemlig"),
+            Some(json!({ "product": product })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(item["nemlig"]["id"], "5060220");
+
+        send(&app, "DELETE", &format!("/groceries/{id}"), None).await;
+        let (_, again) = send(
+            &app,
+            "POST",
+            "/groceries",
+            Some(json!({"name": "rundstykker"})),
+        )
+        .await;
+        assert_eq!(again["item"]["nemlig"]["name"], "Surdejsrundstykker");
+    }
+
+    #[tokio::test]
+    async fn nemlig_is_off_without_a_client_or_a_login() {
+        let app = app(Some(Arc::new(GroceryStore::new())));
+        let (_, list) = send(&app, "GET", "/groceries", None).await;
+        assert_eq!(list["nemlig"], false);
+        let (status, _) = send(&app, "GET", "/groceries/nemlig/search?q=milk", None).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]

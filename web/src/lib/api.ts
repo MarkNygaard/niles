@@ -292,6 +292,20 @@ export interface Exchange {
   fallback?: string;
 }
 
+/** One thing nemlig.com sells. */
+export interface NemligProduct {
+  id: string;
+  name: string;
+  /** Size and brand: "1 l / Arla ØKO". */
+  description: string;
+  /** Kroner. */
+  price: number;
+  /** "13,95 kr/l". */
+  unit_price: string | null;
+  image: string | null;
+  available: boolean;
+}
+
 /** One thing on the shopping list. */
 export interface GroceryItem {
   id: number;
@@ -304,12 +318,16 @@ export interface GroceryItem {
   added_at: string;
   /** Set once it is in the basket. */
   checked_at?: string;
+  /** The nemlig.com product chosen for it, if any. */
+  nemlig?: NemligProduct;
 }
 
 export interface GroceryList {
   items: GroceryItem[];
   /** Bought before and not on the list now, most bought first. */
   usual: string[];
+  /** Whether nemlig.com is switched on and has a login. */
+  nemlig: boolean;
 }
 
 /** A change to one item. An empty quantity clears it. */
@@ -439,6 +457,13 @@ export const api = {
     }),
   removeGrocery: (id: number) =>
     request<void>(`/groceries/${id}`, { method: "DELETE" }),
+  nemligSearch: (q: string) =>
+    request<NemligProduct[]>(`/groceries/nemlig/search?q=${encodeURIComponent(q)}`),
+  chooseNemlig: (id: number, product: NemligProduct | null) =>
+    request<GroceryItem>(`/groceries/${id}/nemlig`, {
+      method: "PUT",
+      body: JSON.stringify({ product }),
+    }),
   clearGroceries: () =>
     request<{ cleared: number }>("/groceries/clear", { method: "POST" }),
   scenes: () => request<string[]>("/scenes"),

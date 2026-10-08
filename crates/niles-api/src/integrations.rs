@@ -93,6 +93,7 @@ fn is_added(cfg: &Config, id: &str) -> bool {
         // Switched off is still added: the card stays, with its switch,
         // its model and its token.
         "claude_code" => cfg.integrations.claude_code.is_some(),
+        "nemlig" => cfg.integrations.nemlig.is_some(),
         // A host is what makes it a console; the section itself always
         // exists, with defaults, so its presence says nothing.
         "unifi" => cfg.presence.unifi.is_configured(),

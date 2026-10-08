@@ -54,6 +54,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/groceries/clear", post(crate::groceries::clear))
         .route(
+            "/groceries/nemlig/search",
+            get(crate::groceries::nemlig_search),
+        )
+        .route(
+            "/groceries/{id}/nemlig",
+            put(crate::groceries::choose_nemlig),
+        )
+        .route(
             "/groceries/{id}",
             axum::routing::patch(crate::groceries::update).delete(crate::groceries::remove),
         )

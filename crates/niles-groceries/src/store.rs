@@ -1,7 +1,9 @@
 use crate::error::{Error, Result};
 use crate::matching::{close_enough, normalize};
 use chrono::{DateTime, Utc};
+use niles_nemlig::Product as NemligProduct;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Longer than any product name, short enough that a sentence the
@@ -23,6 +25,10 @@ pub struct Item {
     pub added_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<DateTime<Utc>>,
+    /// The nemlig.com product this is, when somebody chose one: what
+    /// goes in that basket, and the picture beside it on the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nemlig: Option<NemligProduct>,
 }
 
 /// Something this household has bought.
@@ -73,6 +79,12 @@ struct Book {
     items: Vec<Item>,
     #[serde(default)]
     products: Vec<Product>,
+    /// The nemlig.com product last chosen for each name, normalized —
+    /// so "rundstykker" added again comes with the ones picked before.
+    /// Kept apart from the catalog, which is what has been *bought*:
+    /// a choice is made before anything is.
+    #[serde(default)]
+    nemlig: BTreeMap<String, NemligProduct>,
 }
 
 /// The list and the catalog, in memory, written through to a sink.
@@ -200,6 +212,7 @@ impl GroceryStore {
                 quantity,
                 added_at: Utc::now(),
                 checked_at: None,
+                nemlig: book.nemlig.get(&key).cloned(),
             };
             book.items.push(item.clone());
             Ok(Added {
@@ -249,6 +262,7 @@ impl GroceryStore {
                         reason: "uncheck it before renaming it".into(),
                     });
                 }
+                let chosen = book.nemlig.get(&normalize(name.trim())).cloned();
                 let item = &mut book.items[index];
                 // What it was called is what it was asked for, if
                 // nothing else was: "Milk" renamed to Letmælk should
@@ -257,6 +271,9 @@ impl GroceryStore {
                     item.said = Some(item.name.clone());
                 }
                 item.name = name.trim().to_string();
+                // Another name is another product, with whatever was
+                // chosen for that one, if anything.
+                item.nemlig = chosen;
             }
             if let Some(quantity) = &edit.quantity {
                 book.items[index].quantity = cleaned(Some(quantity));
@@ -268,6 +285,29 @@ impl GroceryStore {
                 let item = book.items[index].clone();
                 book.record(&item.name, item.said.as_deref(), now);
             }
+            Ok(book.items[index].clone())
+        })
+    }
+
+    /// Choose the nemlig.com product for an item, or none, and remember
+    /// it for the next time something of that name is added.
+    pub fn choose_nemlig(&self, id: u64, product: Option<NemligProduct>) -> Result<Item> {
+        self.mutate(|book| {
+            let index = book
+                .items
+                .iter()
+                .position(|i| i.id == id)
+                .ok_or(Error::NotFound { id })?;
+            let key = normalize(&book.items[index].name);
+            match &product {
+                Some(product) => {
+                    book.nemlig.insert(key, product.clone());
+                }
+                None => {
+                    book.nemlig.remove(&key);
+                }
+            }
+            book.items[index].nemlig = product;
             Ok(book.items[index].clone())
         })
     }
@@ -714,6 +754,62 @@ mod tests {
     fn an_unknown_id_is_not_found() {
         let store = GroceryStore::new();
         assert!(matches!(store.remove(7), Err(Error::NotFound { id: 7 })));
+    }
+
+    fn rolls() -> NemligProduct {
+        NemligProduct {
+            id: "5060220".into(),
+            name: "Surdejsrundstykker".into(),
+            description: "6 stk. / 420 g / frost / Hatting".into(),
+            price: 14.95,
+            unit_price: Some("35,60 kr/kg".into()),
+            image: Some("https://nemlig.com/scommerce/images/surdejsrundstykker.jpg".into()),
+            available: true,
+        }
+    }
+
+    #[test]
+    fn a_nemlig_choice_comes_back_with_the_next_one() {
+        let store = GroceryStore::new();
+        let first = store.add("Rundstykker", None, None).unwrap().item;
+        assert_eq!(first.nemlig, None);
+        store.choose_nemlig(first.id, Some(rolls())).unwrap();
+        store.remove(first.id).unwrap();
+
+        let again = store.add("rundstykker", None, None).unwrap().item;
+        assert_eq!(again.nemlig, Some(rolls()));
+    }
+
+    #[test]
+    fn choosing_none_forgets_it() {
+        let store = GroceryStore::new();
+        let item = store.add("Rundstykker", None, None).unwrap().item;
+        store.choose_nemlig(item.id, Some(rolls())).unwrap();
+        let item = store.choose_nemlig(item.id, None).unwrap();
+        assert_eq!(item.nemlig, None);
+        store.remove(item.id).unwrap();
+        assert_eq!(
+            store.add("Rundstykker", None, None).unwrap().item.nemlig,
+            None
+        );
+    }
+
+    #[test]
+    fn a_renamed_item_takes_the_choice_for_its_new_name() {
+        let store = GroceryStore::new();
+        let rolls_item = store.add("Rundstykker", None, None).unwrap().item;
+        store.choose_nemlig(rolls_item.id, Some(rolls())).unwrap();
+        let milk = store.add("Mælk", None, None).unwrap().item;
+        let renamed = store
+            .update(
+                milk.id,
+                Edit {
+                    name: Some("Rundstykker".into()),
+                    ..Edit::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(renamed.nemlig, Some(rolls()));
     }
 
     #[test]

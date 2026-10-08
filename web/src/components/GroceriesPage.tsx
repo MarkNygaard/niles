@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GroceryList } from "@/components/GroceryList";
+import { NemligPicker } from "@/components/NemligPicker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import type { GroceryEdit, GroceryItem, GroceryList as List } from "@/lib/api";
+import type { GroceryEdit, GroceryItem, GroceryList as List, NemligProduct } from "@/lib/api";
 
 const KEY = ["groceries"];
 
@@ -44,6 +46,12 @@ export function GroceriesPage() {
   });
   const remove = useMutation({ mutationFn: api.removeGrocery, onSuccess: refresh });
   const clear = useMutation({ mutationFn: api.clearGroceries, onSuccess: refresh });
+  const [picking, setPicking] = useState<GroceryItem>();
+  const choose = useMutation({
+    mutationFn: ({ id, product }: { id: number; product: NemligProduct | null }) =>
+      api.chooseNemlig(id, product),
+    onSuccess: refresh,
+  });
 
   if (list.isLoading) {
     return <Skeleton className="h-64 w-full" />;
@@ -60,6 +68,7 @@ export function GroceriesPage() {
     edit.mutate({ id: item.id, change: { checked: !item.checked_at } });
 
   return (
+    <>
     <GroceryList
       items={list.data?.items ?? []}
       usual={list.data?.usual ?? []}
@@ -67,13 +76,25 @@ export function GroceriesPage() {
         add.error?.message ??
         edit.error?.message ??
         remove.error?.message ??
-        clear.error?.message
+        clear.error?.message ??
+        choose.error?.message
       }
       onAdd={(name) => add.mutate(name)}
       onToggle={toggle}
       onEdit={(item, change) => edit.mutate({ id: item.id, change })}
       onRemove={(item) => remove.mutate(item.id)}
       onClear={() => clear.mutate()}
+      onPick={list.data?.nemlig ? setPicking : undefined}
     />
+    <NemligPicker
+      item={picking}
+      search={api.nemligSearch}
+      onChoose={(item, product) => {
+        choose.mutate({ id: item.id, product });
+        setPicking(undefined);
+      }}
+      onClose={() => setPicking(undefined)}
+    />
+    </>
   );
 }

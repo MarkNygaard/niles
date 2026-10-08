@@ -21,6 +21,7 @@ import type { DeviceOption } from "@/components/DevicePicker";
 import { SecretField } from "@/components/SecretField";
 import { TadoPanel } from "@/components/TadoPanel";
 import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
+import { NemligPanel } from "@/components/NemligPanel";
 import { LinearPanel } from "@/components/LinearPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { cn } from "@/lib/utils";
@@ -46,6 +47,8 @@ export interface IntegrationsPageProps {
   linear?: { team?: string; trigger_label?: string };
   /** The Claude Code section as the config has it, if there is one. */
   claudeCode?: { enabled?: boolean; model?: string };
+  /** The nemlig.com section as the config has it, if there is one. */
+  nemlig?: { enabled?: boolean };
   /** The UniFi console's address, empty until one is typed in. */
   unifiHost?: string;
   saving?: boolean;
@@ -82,6 +85,7 @@ export function IntegrationsPage({
   lightOptions,
   linear,
   claudeCode,
+  nemlig,
   unifiHost,
   saving,
   error,
@@ -111,6 +115,12 @@ export function IntegrationsPage({
   function ready(integration: Integration): boolean {
     if (integration.id === "tado") return Boolean(tado?.authorised);
     if (integration.id === "linear") return Boolean(linear?.team?.trim());
+    if (integration.id === "nemlig")
+      return (
+        nemlig?.enabled !== false &&
+        secretFor("integrations.nemlig.username")?.source !== "unset" &&
+        secretFor("integrations.nemlig.password")?.source !== "unset"
+      );
     if (integration.id === "claude_code")
       return (
         claudeCode?.enabled !== false &&
@@ -144,6 +154,10 @@ export function IntegrationsPage({
         return onChange("integrations.claude_code", [
           { path: "integrations.claude_code.enabled", value: true },
         ]);
+      case "nemlig":
+        return onChange("integrations.nemlig", [
+          { path: "integrations.nemlig.enabled", value: true },
+        ]);
       case "unifi":
         // Nothing to write yet: the address is what makes it added, and
         // that is the first thing the dialog asks for.
@@ -176,6 +190,10 @@ export function IntegrationsPage({
       // stored token stays in Credentials until somebody clears it.
       case "claude_code":
         return onReset("integrations.claude_code", ["integrations.claude_code"]);
+      // Like Claude Code: gone from the config, while the stored login
+      // stays in Credentials until somebody clears it.
+      case "nemlig":
+        return onReset("integrations.nemlig", ["integrations.nemlig"]);
       default:
         return onChange("providers", [
           {
@@ -345,6 +363,22 @@ export function IntegrationsPage({
                     onModel={(model) =>
                       onChange("integrations.claude_code", [
                         { path: "integrations.claude_code.model", value: model },
+                      ])
+                    }
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "nemlig" && (
+                  <NemligPanel
+                    enabled={nemlig?.enabled !== false}
+                    username={secretFor("integrations.nemlig.username")}
+                    password={secretFor("integrations.nemlig.password")}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onEnabled={(enabled) =>
+                      onChange("integrations.nemlig", [
+                        { path: "integrations.nemlig.enabled", value: enabled },
                       ])
                     }
                     onSecretsChanged={onSecretsChanged}

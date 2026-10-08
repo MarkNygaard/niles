@@ -108,4 +108,40 @@ describe("GroceryList", () => {
     expect(screen.getByText(/add milk to the list/)).toBeInTheDocument();
     expect(screen.queryByText("In the basket")).toBeNull();
   });
+
+  it("offers nemlig.com only when it is switched on", () => {
+    renderList();
+    expect(screen.queryByRole("button", { name: /at nemlig.com/ })).toBeNull();
+  });
+
+  it("opens the nemlig.com picker for an item", () => {
+    const onPick = vi.fn();
+    renderList({ onPick });
+    fireEvent.click(screen.getByRole("button", { name: "Choose Rugbrød at nemlig.com" }));
+    expect(onPick).toHaveBeenCalledWith(bread);
+  });
+
+  it("shows the chosen product on the item", () => {
+    const linked = {
+      ...milk,
+      nemlig: {
+        id: "701012",
+        name: "Letmælk 1,5% øko.",
+        description: "1 l / Arla ØKO",
+        price: 13.95,
+        unit_price: "13,95 kr/l",
+        image: "https://nemlig.com/x.jpg",
+        available: true,
+      },
+    };
+    renderList({ items: [linked], onPick: vi.fn() });
+    expect(
+      screen.getByRole("button", { name: "Letmælk 1,5% øko. at nemlig.com — change" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not offer nemlig.com for what is already in the basket", () => {
+    renderList({ items: [eggs], onPick: vi.fn() });
+    expect(screen.queryByRole("button", { name: /at nemlig.com/ })).toBeNull();
+  });
 });
