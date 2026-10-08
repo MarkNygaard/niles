@@ -3,7 +3,6 @@ import { ArrowUp, LoaderCircle, Mic, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { dictationSupported, useDictation } from "@/hooks/useDictation";
-import { useKeyboardInset } from "@/hooks/useKeyboardInset";
 import type { Exchange } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -55,12 +54,8 @@ export function ChatView({
     }
   });
   const canDictate = Boolean(onDictate) && dictationSupported();
-  const end = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLFormElement>(null);
   const busy = pending !== undefined;
-  const keyboard = useKeyboardInset();
-  const [typing, setTyping] = useState(false);
-  const lifted = typing ? keyboard : 0;
   // What the pinned composer covers, so the last message can scroll
   // clear of it. Measured, because the field grows with what is typed.
   const [composerHeight, setComposerHeight] = useState(56);
@@ -75,12 +70,14 @@ export function ChatView({
     return () => observer.disconnect();
   }, []);
 
-  // The newest message is the one worth seeing — after an answer, and
-  // when the keyboard comes up over it. `#root` scrolls, so scrolling
-  // the last element into view is what reaches it.
+  // The newest message is the one worth seeing. `#root` is what scrolls,
+  // and only `#root` is moved: `scrollIntoView` also scrolls the window,
+  // which on iOS pans the screen under the keyboard and starts it and
+  // Safari correcting each other.
   useEffect(() => {
-    end.current?.scrollIntoView?.({ block: "end" });
-  }, [exchanges.length, pending, lifted]);
+    const root = document.getElementById("root");
+    root?.scrollTo?.({ top: root.scrollHeight });
+  }, [exchanges.length, pending]);
 
   // The tab bar steps aside while the keyboard is up; see TabBar.
   useEffect(
@@ -156,18 +153,20 @@ export function ChatView({
       )}
 
       {/* Pinned to the screen rather than to the end of the page, the
-          way a messages app does it: just above the tab bar, and on top
-          of the keyboard once that is up and the tab bar has stepped
-          aside. In the page's flow it sat on the page's bottom padding,
-          and iOS — which lays the keyboard over the page rather than
-          shrinking it — scrolled that padding up with it. */}
+          way a messages app does it: just above the tab bar, and at the
+          very bottom once the tab bar steps aside for the keyboard.
+          From there the keyboard is the browser's business: iOS pans
+          the screen up until the field is above the keys, Android
+          shrinks the page. Moving it ourselves as well — by the
+          keyboard's height, read from visualViewport — had the two of
+          us correcting each other, and on an iPhone it jumped to the
+          top and flickered. */}
       <form
         ref={composer}
         onSubmit={(e) => {
           e.preventDefault();
           send(draft);
         }}
-        style={lifted ? { bottom: lifted } : undefined}
         className={cn(
           "bg-background fixed inset-x-0 z-30",
           "bottom-[calc(env(safe-area-inset-bottom)+3rem)] in-data-typing:bottom-0",
@@ -178,14 +177,8 @@ export function ChatView({
         <Textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onFocus={() => {
-            document.documentElement.dataset.typing = "";
-            setTyping(true);
-          }}
-          onBlur={() => {
-            delete document.documentElement.dataset.typing;
-            setTyping(false);
-          }}
+          onFocus={() => (document.documentElement.dataset.typing = "")}
+          onBlur={() => delete document.documentElement.dataset.typing}
           onKeyDown={(e) => {
             // Enter sends, as in every chat; Shift+Enter is a new line.
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -245,14 +238,12 @@ export function ChatView({
         </div>
       </form>
       {/* Room at the end for what is pinned over it — the composer, and
-          below that the tab bar or, while typing, the keyboard — so the
-          last message scrolls clear of all of it. The page leaves its
-          own bottom padding off this screen (see App), so this is the
-          whole of it. */}
+          below that the tab bar — so the last message scrolls clear of
+          both. The page leaves its own bottom padding off this screen
+          (see App), so this is the whole of it. */}
       <div
-        ref={end}
         aria-hidden
-        style={{ height: composerHeight + lifted }}
+        style={{ height: composerHeight }}
         className="box-content pb-[calc(env(safe-area-inset-bottom)+3rem)] in-data-typing:pb-0 sm:pb-0"
       />
     </div>
