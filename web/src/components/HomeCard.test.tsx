@@ -5,11 +5,24 @@ import { HomeCard } from "@/components/HomeCard";
 import type { HomeValues } from "@/components/HomeCard";
 import { api } from "@/lib/api";
 
+// Leaflet draws into a box with a size, and jsdom's boxes have none.
+vi.mock("@/components/HomeMap", () => ({ default: () => null }));
+
 const AARHUS = {
   label: "Aarhus, Central Denmark Region, Denmark",
   latitude: 56.1572,
   longitude: 10.2107,
   timezone: "Europe/Copenhagen",
+  address: null,
+  country_code: "DK",
+};
+
+const STREET = {
+  label: "Vestergade 12, 8000 Aarhus, Denmark",
+  latitude: 56.1567,
+  longitude: 10.2039,
+  timezone: "Europe/Copenhagen",
+  address: "Vestergade 12, 8000 Aarhus",
   country_code: "DK",
 };
 
@@ -33,7 +46,7 @@ function setup(values: HomeValues = {}) {
 }
 
 async function search(term: string) {
-  fireEvent.change(screen.getByLabelText("Town or city"), {
+  fireEvent.change(screen.getByLabelText("Address or town"), {
     target: { value: term },
   });
   fireEvent.click(screen.getByRole("button", { name: /Find it/ }));
@@ -56,6 +69,37 @@ describe("HomeCard", () => {
     ]);
   });
 
+  it("keeps the address when the search found a street", async () => {
+    vi.spyOn(api, "places").mockResolvedValue([STREET]);
+    const { onChange } = setup();
+    await search("Vestergade 12, Aarhus");
+    fireEvent.click(await screen.findByText(STREET.label));
+    expect(onChange).toHaveBeenCalledWith([
+      { path: "home.latitude", value: 56.1567 },
+      { path: "home.longitude", value: 10.2039 },
+      { path: "home.timezone", value: "Europe/Copenhagen" },
+      { path: "home.country", value: "DK" },
+      { path: "home.address", value: "Vestergade 12, 8000 Aarhus" },
+    ]);
+  });
+
+  it("leaves the timezone alone when it could not be looked up", async () => {
+    vi.spyOn(api, "places").mockResolvedValue([{ ...STREET, timezone: null }]);
+    const { onChange } = setup();
+    await search("Vestergade 12, Aarhus");
+    fireEvent.click(await screen.findByText(STREET.label));
+    const paths = onChange.mock.calls[0][0].map((e: { path: string }) => e.path);
+    expect(paths).not.toContain("home.timezone");
+  });
+
+  it("clears the address rather than writing an empty one", () => {
+    const { onClear } = setup({ address: "Vestergade 12, 8000 Aarhus" });
+    const field = screen.getByLabelText("Address");
+    fireEvent.change(field, { target: { value: "  " } });
+    fireEvent.blur(field);
+    expect(onClear).toHaveBeenCalledWith("home.address");
+  });
+
   it("says nothing matched rather than looking broken", async () => {
     vi.spyOn(api, "places").mockResolvedValue([]);
     setup();
@@ -68,7 +112,7 @@ describe("HomeCard", () => {
     setup();
     await search("Aarhus");
     await waitFor(() =>
-      expect(screen.getByText(/typed in by hand/)).toBeInTheDocument(),
+      expect(screen.getByText(/type the numbers in below/)).toBeInTheDocument(),
     );
     expect(screen.getByLabelText("Latitude")).toBeInTheDocument();
   });

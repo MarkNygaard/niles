@@ -664,6 +664,7 @@ export function ConfigPanel() {
           <HomeCard
             values={{
               name: stringAt(view.effective, "home.name"),
+              address: stringAt(view.effective, "home.address"),
               latitude: numberAt(view.effective, "home.latitude"),
               longitude: numberAt(view.effective, "home.longitude"),
               timezone: stringAt(view.effective, "home.timezone"),

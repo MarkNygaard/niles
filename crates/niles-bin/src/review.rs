@@ -384,6 +384,7 @@ mod tests {
                 units: None,
                 country: None,
                 default_language: None,
+                address: None,
             }),
             1,
         );

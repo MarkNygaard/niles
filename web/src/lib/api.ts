@@ -124,7 +124,10 @@ export interface Place {
   label: string;
   latitude: number;
   longitude: number;
-  timezone: string;
+  /** Absent when it could not be looked up; the one set stays. */
+  timezone: string | null;
+  /** "Vestergade 12, 8000 Aarhus" — only for a street address. */
+  address: string | null;
   country_code: string | null;
 }
 
