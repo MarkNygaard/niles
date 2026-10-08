@@ -281,6 +281,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** One message to Niles in the app, and the answer. */
+export interface Exchange {
+  said: string;
+  reply: string;
+}
+
 /** One thing on the shopping list. */
 export interface GroceryItem {
   id: number;
@@ -400,6 +406,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ zones }),
     }),
+  chat: () => request<Exchange[]>("/chat"),
+  sendChat: (text: string) =>
+    request<{ reply: string }>("/chat", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+  forgetChat: () => request<void>("/chat", { method: "DELETE" }),
   groceries: () => request<GroceryList>("/groceries"),
   addGrocery: (name: string) =>
     request<{ item: GroceryItem; already: boolean }>("/groceries", {

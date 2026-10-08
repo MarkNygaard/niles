@@ -1,6 +1,7 @@
 //! Short-term conversation memory: a small rolling buffer of recent
-//! voice turns, kept per room, so the LLM can resolve follow-ups like
-//! "turn it off again" or "make it warmer" against what was just said.
+//! turns, kept per room for voice and per person for the app's chat, so
+//! the LLM can resolve follow-ups like "turn it off again" or "make it
+//! warmer" against what was just said.
 //!
 //! This is the in-context half of ARCHITECTURE.md Phase 12's
 //! "conversation memory (short-term in context, long-term in Postgres)".
@@ -20,6 +21,21 @@ use niles_llm::Message;
 const DEFAULT_MAX_TURNS: usize = 4;
 const DEFAULT_TTL: Duration = Duration::from_secs(180);
 
+/// A typed conversation is read back on screen and picked up again after
+/// a look at something else, so it is longer and outlives a pause that
+/// would end a spoken one.
+const CHAT_MAX_TURNS: usize = 12;
+const CHAT_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Whose conversation a turn belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Thread {
+    /// Spoken, in a room.
+    Room(Option<RoomName>),
+    /// Typed in the app, by one signed-in person, keyed by their address.
+    Chat(String),
+}
+
 /// One completed exchange: what the user said and how niles replied.
 #[derive(Clone)]
 struct Turn {
@@ -27,17 +43,17 @@ struct Turn {
     assistant: String,
 }
 
-struct RoomHistory {
+struct History {
     turns: VecDeque<Turn>,
     last_at: Instant,
 }
 
-/// Recent turns keyed by origin room. Satellites with no room mapping
-/// share a single bucket (the `None` key), which is fine for a
-/// single-room install and keeps unmapped devices from bleeding context
-/// into a named room.
+/// Recent turns keyed by thread. Satellites with no room mapping share
+/// a single bucket (`Room(None)`), which is fine for a single-room
+/// install and keeps unmapped devices from bleeding context into a named
+/// room. Chat never shares a bucket with a room.
 pub(crate) struct ConversationMemory {
-    by_room: Mutex<HashMap<Option<RoomName>, RoomHistory>>,
+    by_thread: Mutex<HashMap<Thread, History>>,
     max_turns: usize,
     ttl: Duration,
 }
@@ -51,63 +67,99 @@ impl Default for ConversationMemory {
 impl ConversationMemory {
     pub(crate) fn new(max_turns: usize, ttl: Duration) -> Self {
         Self {
-            by_room: Mutex::new(HashMap::new()),
+            by_thread: Mutex::new(HashMap::new()),
             max_turns,
             ttl,
         }
     }
 
-    /// Prior turns for `room` as alternating user/assistant messages,
+    /// Prior turns in `thread` as alternating user/assistant messages,
     /// oldest first — ready to splice between the system prompt and the
     /// current utterance. Empty when there's no live history (nothing
     /// recorded, or the last turn is older than the TTL).
-    pub(crate) fn recent_messages(&self, room: Option<&RoomName>) -> Vec<Message> {
-        self.recent_messages_at(room, Instant::now())
+    pub(crate) fn recent_messages(&self, thread: &Thread) -> Vec<Message> {
+        self.recent_messages_at(thread, Instant::now())
     }
 
-    /// Record a completed exchange so the next turn in the same room can
-    /// see it. A turn arriving after the TTL starts a fresh history.
-    pub(crate) fn record(&self, room: Option<&RoomName>, user: &str, assistant: &str) {
-        self.record_at(room, user, assistant, Instant::now());
+    /// The live turns in `thread` as (what was said, what Niles replied),
+    /// oldest first — what the app shows when the chat is reopened.
+    pub(crate) fn turns(&self, thread: &Thread) -> Vec<(String, String)> {
+        self.live(thread, Instant::now(), |turns| {
+            turns
+                .iter()
+                .map(|t| (t.user.clone(), t.assistant.clone()))
+                .collect()
+        })
     }
 
-    fn recent_messages_at(&self, room: Option<&RoomName>, now: Instant) -> Vec<Message> {
-        let map = self.by_room.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(history) = map.get(&room.cloned()) else {
-            return Vec::new();
+    /// Record a completed exchange so the next turn in the same thread
+    /// can see it. A turn arriving after the TTL starts a fresh history.
+    pub(crate) fn record(&self, thread: &Thread, user: &str, assistant: &str) {
+        self.record_at(thread, user, assistant, Instant::now());
+    }
+
+    /// Start `thread` over.
+    pub(crate) fn forget(&self, thread: &Thread) {
+        let mut map = self.by_thread.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(thread);
+    }
+
+    fn limits(&self, thread: &Thread) -> (usize, Duration) {
+        match thread {
+            Thread::Room(_) => (self.max_turns, self.ttl),
+            Thread::Chat(_) => (CHAT_MAX_TURNS, CHAT_TTL),
+        }
+    }
+
+    fn live<T: Default>(
+        &self,
+        thread: &Thread,
+        now: Instant,
+        read: impl FnOnce(&VecDeque<Turn>) -> T,
+    ) -> T {
+        let map = self.by_thread.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(history) = map.get(thread) else {
+            return T::default();
         };
-        if now.duration_since(history.last_at) > self.ttl {
-            return Vec::new();
+        if now.duration_since(history.last_at) > self.limits(thread).1 {
+            return T::default();
         }
-        let mut out = Vec::with_capacity(history.turns.len() * 2);
-        for turn in &history.turns {
-            out.push(Message::User {
-                content: turn.user.clone(),
-            });
-            out.push(Message::Assistant {
-                content: Some(turn.assistant.clone()),
-                tool_calls: None,
-            });
-        }
-        out
+        read(&history.turns)
     }
 
-    fn record_at(&self, room: Option<&RoomName>, user: &str, assistant: &str, now: Instant) {
-        let mut map = self.by_room.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = map.entry(room.cloned()).or_insert_with(|| RoomHistory {
+    fn recent_messages_at(&self, thread: &Thread, now: Instant) -> Vec<Message> {
+        self.live(thread, now, |turns| {
+            let mut out = Vec::with_capacity(turns.len() * 2);
+            for turn in turns {
+                out.push(Message::User {
+                    content: turn.user.clone(),
+                });
+                out.push(Message::Assistant {
+                    content: Some(turn.assistant.clone()),
+                    tool_calls: None,
+                });
+            }
+            out
+        })
+    }
+
+    fn record_at(&self, thread: &Thread, user: &str, assistant: &str, now: Instant) {
+        let (max_turns, ttl) = self.limits(thread);
+        let mut map = self.by_thread.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = map.entry(thread.clone()).or_insert_with(|| History {
             turns: VecDeque::new(),
             last_at: now,
         });
         // An idle gap past the TTL means this is a new conversation, not a
         // follow-up — drop the stale turns rather than splicing them in.
-        if now.duration_since(entry.last_at) > self.ttl {
+        if now.duration_since(entry.last_at) > ttl {
             entry.turns.clear();
         }
         entry.turns.push_back(Turn {
             user: user.to_string(),
             assistant: assistant.to_string(),
         });
-        while entry.turns.len() > self.max_turns {
+        while entry.turns.len() > max_turns {
             entry.turns.pop_front();
         }
         entry.last_at = now;
@@ -118,8 +170,8 @@ impl ConversationMemory {
 mod tests {
     use super::*;
 
-    fn room(name: &str) -> RoomName {
-        RoomName::parse(name).unwrap()
+    fn room(name: &str) -> Thread {
+        Thread::Room(Some(RoomName::parse(name).unwrap()))
     }
 
     fn texts(messages: &[Message]) -> Vec<&str> {
@@ -136,7 +188,7 @@ mod tests {
     #[test]
     fn empty_history_yields_no_messages() {
         let mem = ConversationMemory::default();
-        assert!(mem.recent_messages(Some(&room("office"))).is_empty());
+        assert!(mem.recent_messages(&room("office")).is_empty());
     }
 
     #[test]
@@ -144,11 +196,11 @@ mod tests {
         let mem = ConversationMemory::default();
         let office = room("office");
         mem.record(
-            Some(&office),
+            &office,
             "turn on the office light",
             "Turned on the office light.",
         );
-        let msgs = mem.recent_messages(Some(&office));
+        let msgs = mem.recent_messages(&office);
         assert_eq!(
             texts(&msgs),
             vec!["turn on the office light", "Turned on the office light."]
@@ -161,12 +213,12 @@ mod tests {
     fn caps_at_max_turns_dropping_oldest() {
         let mem = ConversationMemory::new(2, Duration::from_secs(180));
         let office = room("office");
-        mem.record(Some(&office), "u1", "a1");
-        mem.record(Some(&office), "u2", "a2");
-        mem.record(Some(&office), "u3", "a3");
+        mem.record(&office, "u1", "a1");
+        mem.record(&office, "u2", "a2");
+        mem.record(&office, "u3", "a3");
         // u1/a1 evicted; only the two most recent exchanges remain.
         assert_eq!(
-            texts(&mem.recent_messages(Some(&office))),
+            texts(&mem.recent_messages(&office)),
             vec!["u2", "a2", "u3", "a3"]
         );
     }
@@ -176,15 +228,15 @@ mod tests {
         let mem = ConversationMemory::new(4, Duration::from_secs(180));
         let office = room("office");
         let t0 = Instant::now();
-        mem.record_at(Some(&office), "u1", "a1", t0);
+        mem.record_at(&office, "u1", "a1", t0);
         // Just inside the window: still there.
         assert!(
-            !mem.recent_messages_at(Some(&office), t0 + Duration::from_secs(60))
+            !mem.recent_messages_at(&office, t0 + Duration::from_secs(60))
                 .is_empty()
         );
         // Past the TTL: a fresh conversation, nothing carried over.
         assert!(
-            mem.recent_messages_at(Some(&office), t0 + Duration::from_secs(300))
+            mem.recent_messages_at(&office, t0 + Duration::from_secs(300))
                 .is_empty()
         );
     }
@@ -194,12 +246,58 @@ mod tests {
         let mem = ConversationMemory::default();
         let office = room("office");
         let kitchen = room("kitchen");
-        mem.record(Some(&office), "u-office", "a-office");
-        assert!(mem.recent_messages(Some(&kitchen)).is_empty());
+        mem.record(&office, "u-office", "a-office");
+        assert!(mem.recent_messages(&kitchen).is_empty());
         assert_eq!(
-            texts(&mem.recent_messages(Some(&office))),
+            texts(&mem.recent_messages(&office)),
             vec!["u-office", "a-office"]
         );
+    }
+
+    #[test]
+    fn a_chat_is_its_own_thread() {
+        let mem = ConversationMemory::default();
+        let office = room("office");
+        let mark = Thread::Chat("mark@example.com".into());
+        mem.record(&office, "u-office", "a-office");
+        mem.record(&mark, "u-chat", "a-chat");
+        assert_eq!(texts(&mem.recent_messages(&mark)), vec!["u-chat", "a-chat"]);
+        assert!(
+            mem.recent_messages(&Thread::Chat("majse@example.com".into()))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_chat_outlasts_a_pause_that_ends_a_spoken_conversation() {
+        let mem = ConversationMemory::default();
+        let mark = Thread::Chat("mark@example.com".into());
+        let t0 = Instant::now();
+        mem.record_at(&mark, "u1", "a1", t0);
+        let later = t0 + Duration::from_secs(10 * 60);
+        assert_eq!(
+            texts(&mem.recent_messages_at(&mark, later)),
+            vec!["u1", "a1"]
+        );
+    }
+
+    #[test]
+    fn a_chat_keeps_more_turns() {
+        let mem = ConversationMemory::default();
+        let mark = Thread::Chat("mark@example.com".into());
+        for i in 0..10 {
+            mem.record(&mark, &format!("u{i}"), &format!("a{i}"));
+        }
+        assert_eq!(mem.turns(&mark).len(), 10);
+    }
+
+    #[test]
+    fn forgetting_starts_over() {
+        let mem = ConversationMemory::default();
+        let mark = Thread::Chat("mark@example.com".into());
+        mem.record(&mark, "u1", "a1");
+        mem.forget(&mark);
+        assert!(mem.turns(&mark).is_empty());
     }
 
     #[test]
@@ -207,12 +305,12 @@ mod tests {
         let mem = ConversationMemory::new(4, Duration::from_secs(180));
         let office = room("office");
         let t0 = Instant::now();
-        mem.record_at(Some(&office), "u1", "a1", t0);
+        mem.record_at(&office, "u1", "a1", t0);
         // Recording again after the TTL clears the stale turn first.
         let later = t0 + Duration::from_secs(300);
-        mem.record_at(Some(&office), "u2", "a2", later);
+        mem.record_at(&office, "u2", "a2", later);
         assert_eq!(
-            texts(&mem.recent_messages_at(Some(&office), later)),
+            texts(&mem.recent_messages_at(&office, later)),
             vec!["u2", "a2"]
         );
     }

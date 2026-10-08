@@ -67,6 +67,8 @@ pub struct AppState {
     pub scenes: Option<Arc<niles_scheduler::SceneStore>>,
     /// The shopping list, shared with the voice tools.
     pub groceries: Option<Arc<niles_groceries::GroceryStore>>,
+    /// What answers the app's chat, when the binary wired one up.
+    pub chat: Option<Arc<dyn crate::chat::Chat>>,
 }
 
 impl AppState {
@@ -90,6 +92,7 @@ impl AppState {
             manual_mode: None,
             scenes: None,
             groceries: None,
+            chat: None,
             tado: None,
             voices: None,
             captures: None,
@@ -143,6 +146,11 @@ impl AppState {
 
     pub fn with_groceries(mut self, groceries: Option<Arc<niles_groceries::GroceryStore>>) -> Self {
         self.groceries = groceries;
+        self
+    }
+
+    pub fn with_chat(mut self, chat: Option<Arc<dyn crate::chat::Chat>>) -> Self {
+        self.chat = chat;
         self
     }
 
