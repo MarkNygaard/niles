@@ -6,6 +6,7 @@ import {
   KeyRound,
   LayoutGrid,
   Lightbulb,
+  Menu,
   MessagesSquare,
   Mic,
   Plug,
@@ -31,18 +32,6 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
     group: "The house",
     items: [
       {
-        id: "lighting",
-        label: "Lighting",
-        hint: "The daily curve, and which lights sit it out",
-        icon: Lightbulb,
-      },
-      {
-        id: "people",
-        label: "People",
-        hint: "Who can sign in",
-        icon: Users,
-      },
-      {
         id: "home",
         label: "Home",
         hint: "Where the house is, and what clock it keeps",
@@ -53,6 +42,24 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
         label: "Rooms",
         hint: "The order they sit in on the front page",
         icon: LayoutGrid,
+      },
+      {
+        id: "menu",
+        label: "Menu",
+        hint: "Which pages the menu leads to, and in what order",
+        icon: Menu,
+      },
+      {
+        id: "lighting",
+        label: "Lighting",
+        hint: "The daily curve, and which lights sit it out",
+        icon: Lightbulb,
+      },
+      {
+        id: "people",
+        label: "People",
+        hint: "Who can sign in",
+        icon: Users,
       },
       {
         id: "satellites",

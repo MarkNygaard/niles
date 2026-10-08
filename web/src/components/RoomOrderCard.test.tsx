@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { RoomOrderCard, moved } from "./RoomOrderCard";
+import { moved } from "./OrderList";
+import { RoomOrderCard } from "./RoomOrderCard";
 
 const ROOMS = [
   { name: "bedroom", label: "Bedroom" },

@@ -11,6 +11,7 @@ import { SignIn } from "@/components/SignIn";
 import { TabBar } from "@/components/TabBar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { menuOf } from "@/lib/menu";
 import { useRoute } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import type { Theme } from "@/lib/theme";
@@ -45,6 +46,14 @@ export function App() {
     refetchOnWindowFocus: false,
     staleTime: Infinity,
   });
+  const refused = Boolean(auth.data?.enabled && !auth.data.signed_in_as);
+  // The menu's arrangement lives in the config, which the dashboard
+  // asks for anyway: one query, shared through its key.
+  const config = useQuery({
+    queryKey: ["config"],
+    queryFn: api.getConfig,
+    enabled: !auth.isLoading && !refused,
+  });
 
   // A new page starts at its top. `#root` is what scrolls, not the
   // document — see globals.css.
@@ -65,7 +74,7 @@ export function App() {
   // A refused sign-in comes back on the URL rather than in a body,
   // because the browser followed a redirect to get here.
   const refusal = new URLSearchParams(window.location.search).get("sign_in_error");
-  if (auth.data?.enabled && !auth.data.signed_in_as) {
+  if (refused) {
     return <SignIn error={refusal ?? undefined} />;
   }
 
@@ -113,7 +122,14 @@ export function App() {
             {screen.title}
           </h1>
         )}
-        <TabBar route={screen.at} email={email} avatarUrl={avatarUrl} />
+        <TabBar
+          route={screen.at}
+          email={email}
+          avatarUrl={avatarUrl}
+          // Nothing in the middle until the arrangement is known: an
+          // entry somebody hid should not flash up on every load.
+          menu={config.isPending ? [] : menuOf(config.data?.effective)}
+        />
       </header>
 
       {screen.body}

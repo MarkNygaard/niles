@@ -111,6 +111,13 @@ api_key_env = "GROQ_API_KEY"
 # [rooms]
 # order = ["living_room", "kitchen", "office"]
 
+# The app's menu: which entries sit between Home and Me, in what order,
+# and which are left out. Home and Me always stay first and last. A
+# hidden entry's page still works. Arranged under Settings → Menu.
+# [menu]
+# order = ["chat", "groceries"]
+# hidden = ["groceries"]
+
 # Lights that should sit out the adaptive curve — a TV backlight, a shelf
 # strip — and hold a fixed warm, dim setting instead. List them here; set
 # how they look with `ambient_brightness` / `ambient_kelvin` under
