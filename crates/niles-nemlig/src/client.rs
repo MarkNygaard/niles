@@ -1,5 +1,6 @@
 use crate::basket::{Basket, DeliveryDay, RawBasket, RawDays};
 use crate::error::{Error, Result};
+use crate::orders::{Order, RawOrders};
 use crate::product::{Product, SearchAnswer};
 use reqwest::cookie::{CookieStore, Jar};
 use reqwest::{StatusCode, Url, header};
@@ -208,6 +209,39 @@ impl NemligClient {
             basket = raw.into();
         }
         Ok(basket)
+    }
+
+    /// The account's latest orders, newest first.
+    pub async fn orders(&self, credentials: &Credentials) -> Result<Vec<Order>> {
+        retried(|| self.try_orders(credentials), || self.forget()).await
+    }
+
+    async fn try_orders(&self, credentials: &Credentials) -> Result<Vec<Order>> {
+        let mut guard = self.session.lock().await;
+        self.signed_in(&mut guard, credentials).await?;
+        let response = self
+            .http
+            .get(format!("{WWW}/webapi/order/GetBasicOrderHistory"))
+            .query(&[("skip", "0"), ("take", "10")])
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await?;
+        Ok(read::<RawOrders>(response).await?.into_orders())
+    }
+
+    /// The next order still to come — not delivered, its window not over.
+    /// `now` is Danish time, which is what nemlig's times are in.
+    pub async fn next_delivery(
+        &self,
+        credentials: &Credentials,
+        now: chrono::NaiveDateTime,
+    ) -> Result<Option<Order>> {
+        Ok(self
+            .orders(credentials)
+            .await?
+            .into_iter()
+            .filter(|o| o.is_coming(now))
+            .min_by_key(|o| o.delivery_start))
     }
 
     /// The days nemlig.com delivers in the coming `days`, and when.
@@ -580,6 +614,8 @@ mod tests {
         let client = NemligClient::new().unwrap();
         let days = client.delivery_days(&credentials, 3).await.unwrap();
         assert!(days.iter().any(|d| !d.slots.is_empty()), "{days:?}");
+        // Read, whether or not there are any yet.
+        client.orders(&credentials).await.unwrap();
 
         let milk = client.search(&credentials, "letmælk", 1).await.unwrap()[0].clone();
         let before = client

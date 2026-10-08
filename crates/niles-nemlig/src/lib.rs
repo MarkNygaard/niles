@@ -16,9 +16,11 @@ pub const CHECKOUT: &str = "https://www.nemlig.com/basket";
 mod basket;
 mod client;
 mod error;
+mod orders;
 mod product;
 
 pub use basket::{Basket, BasketLine, DeliveryDay, DeliverySlot};
 pub use client::{Credentials, NemligClient};
 pub use error::{Error, Result};
+pub use orders::{Order, danish_now};
 pub use product::Product;

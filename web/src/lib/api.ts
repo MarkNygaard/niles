@@ -311,6 +311,16 @@ export interface NemligProduct {
   offer?: string | null;
 }
 
+/** An order placed at nemlig.com. Times are Danish local time, written
+    without a zone: "2026-10-10T07:00:00". */
+export interface NemligOrder {
+  id: number;
+  status: number;
+  total: number | null;
+  delivery_start: string | null;
+  delivery_end: string | null;
+}
+
 /** The account's basket at nemlig.com. */
 export interface NemligBasket {
   lines: { product_id: string; name: string; quantity: number; total: number }[];
@@ -512,6 +522,7 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ product }),
     }),
+  nemligNext: () => request<NemligOrder | null>("/groceries/nemlig/next"),
   nemligCheck: () => request<NemligProduct[]>("/groceries/nemlig/check"),
   nemligSend: () => request<NemligSent>("/groceries/nemlig/basket", { method: "POST" }),
   nemligDelivery: () => request<DeliveryDay[]>("/groceries/nemlig/delivery"),

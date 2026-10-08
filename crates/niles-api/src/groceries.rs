@@ -235,6 +235,19 @@ pub async fn nemlig_check(
         .map_err(nemlig_failure)
 }
 
+/// `GET /groceries/nemlig/next` — the next order still to arrive, or
+/// null: what the dashboard shows on the day it comes.
+pub async fn nemlig_next(
+    State(state): State<AppState>,
+) -> Result<Json<Option<niles_nemlig::Order>>, Failure> {
+    let (client, credentials) = nemlig(&state)?;
+    client
+        .next_delivery(&credentials, niles_nemlig::danish_now())
+        .await
+        .map(Json)
+        .map_err(nemlig_failure)
+}
+
 /// `GET /groceries/nemlig/delivery` — the coming week's delivery times.
 pub async fn nemlig_delivery(
     State(state): State<AppState>,

@@ -58,6 +58,7 @@ mod climate;
 mod conversation;
 mod courtesy;
 mod follow_up;
+mod grocery_delivery;
 mod last_target;
 mod manifest;
 mod profile;
@@ -5492,6 +5493,18 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             cfg.home.resolved_country(),
         );
     }
+    // One session for the app, the tools and the delivery reminder:
+    // nemlig sees one login, not three.
+    let nemlig = match niles_nemlig::NemligClient::new() {
+        Ok(client) => Some(Arc::new(client)),
+        Err(e) => {
+            tracing::warn!("[nemlig] unavailable: {e}");
+            None
+        }
+    };
+    if let Some(client) = &nemlig {
+        niles_tools::register_nemlig_tools(&mut tools, client.clone(), store.clone());
+    }
 
     let command_writer = match &cfg.history.directory {
         Some(dir) => {
@@ -5615,6 +5628,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         peer_index.clone(),
         notifications.clone(),
     );
+    // Half an hour before a nemlig.com delivery, the satellites say so.
+    let _grocery_reminder = nemlig.clone().map(|client| {
+        grocery_delivery::spawn_reminder(client, store.clone(), notifications.clone())
+    });
 
     // HTTP API
     let chat_ctx = Arc::new(std::sync::OnceLock::new());
@@ -5629,13 +5646,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
-    .with_nemlig(match niles_nemlig::NemligClient::new() {
-        Ok(client) => Some(Arc::new(client)),
-        Err(e) => {
-            tracing::warn!("[nemlig] unavailable: {e}");
-            None
-        }
-    })
+    .with_nemlig(nemlig.clone())
     .with_chat(Some(Arc::new(AppChat {
         ctx: chat_ctx.clone(),
         stt: whisper.clone(),
