@@ -2580,13 +2580,9 @@ fn spawn_dispatch_task(
                 .expect("attempted implies identifier present");
             let pcm = pcm_bytes_to_i16(&session.pcm);
             let rate = session.format.sample_rate_hz;
-            // One embedding, two uses: recognising who spoke, and — if
-            // they were introducing themselves — enrolling them.
-            tokio::task::spawn_blocking(move || {
-                let voice = id.embed(&pcm, rate);
-                let identity = voice.as_deref().and_then(|v| id.classify(v));
-                (identity, voice)
-            })
+            // One print, two uses: recognising who spoke, and — if they
+            // were introducing themselves — enrolling them.
+            tokio::task::spawn_blocking(move || recognition::identify(id.as_ref(), &pcm, rate))
         });
         if let Some(heard) = transcribe_session(&whisper.current(), session).await {
             let Heard {
@@ -3829,13 +3825,14 @@ async fn dispatch_transcript(
         let anyone_known = ctx.identifier.as_ref().is_some_and(|i| i.knows_anybody());
         if anyone_known {
             tracing::info!("[{peer}] not acting on {text:?}: voice not recognised");
-            // Silent, for the same reason the noise gate is. A
-            // television set this off fifty-three times in one day; a
-            // house that answers each one with "I don't recognise your
-            // voice" has replaced a wrong answer with a longer wrong
-            // answer. Somebody who genuinely wants to know can ask
-            // "who am I", which still answers.
-            return None;
+            // Silent for the room, for the same reason the noise gate is:
+            // a television set this off fifty-three times in one day, and
+            // answering each one replaces a wrong answer with a longer
+            // one. But a sentence that began with Niles's name was said
+            // *to* Niles — the television almost never does that — and
+            // silence there read as a broken satellite to somebody who
+            // had asked for the floor lamp with the television on.
+            return called_by_name.then(response::voice_not_recognised);
         }
         tracing::warn!(
             "[{peer}] known_voices_only is on and nobody is enrolled; letting {text:?} through"
