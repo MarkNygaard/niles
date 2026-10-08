@@ -49,10 +49,10 @@ describe("NemligPicker", () => {
     expect(await screen.findByText("Not available")).toBeInTheDocument();
   });
 
-  it("marks the one chosen before, and can stop using nemlig.com for it", async () => {
+  it("marks the one chosen before, and can have it removed", async () => {
     const { onChoose } = open({ ...ITEM, nemlig: ROLLS });
     expect(await screen.findByRole("button", { name: /Surdejsrundstykker/, pressed: true })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Don't use nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove product" }));
     expect(onChoose).toHaveBeenCalledWith({ ...ITEM, nemlig: ROLLS }, null);
   });
 

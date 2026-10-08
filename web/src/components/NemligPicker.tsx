@@ -154,8 +154,10 @@ function Picker({
 
       {item.nemlig && (
         <div className="border-border border-t px-4 py-2">
+          {/* Says what pressing it does. "Don't use nemlig.com for this"
+              read as a notice about the item rather than a button. */}
           <Button variant="ghost" size="sm" onClick={() => onChoose(null)}>
-            Don't use nemlig.com for this
+            Remove product
           </Button>
         </div>
       )}
