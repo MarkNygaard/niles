@@ -307,6 +307,8 @@ export interface NemligProduct {
   unit_price: string | null;
   image: string | null;
   available: boolean;
+  /** The deal when it is on offer: "12,95 kr", "3 for 50 kr". */
+  offer?: string | null;
 }
 
 /** The account's basket at nemlig.com. */
@@ -330,6 +332,8 @@ export interface NemligSent {
   sent: number;
   /** Items still to buy that had no product chosen. */
   without: string[];
+  /** Items whose product would not go in: sold out since it was chosen. */
+  unavailable: string[];
   /** Where to review the basket and pay. */
   checkout: string;
 }
@@ -508,6 +512,7 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ product }),
     }),
+  nemligCheck: () => request<NemligProduct[]>("/groceries/nemlig/check"),
   nemligSend: () => request<NemligSent>("/groceries/nemlig/basket", { method: "POST" }),
   nemligDelivery: () => request<DeliveryDay[]>("/groceries/nemlig/delivery"),
   nemligReserve: (slot_id: number) =>

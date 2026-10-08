@@ -86,6 +86,33 @@ impl NemligClient {
         })
     }
 
+    /// These products as they are now — price, stock, offer — found again
+    /// by name. A product's id is not something the search can be asked
+    /// for, so each is searched by its name and picked out by id; one
+    /// that cannot be found is left out.
+    pub async fn check(
+        &self,
+        credentials: &Credentials,
+        products: &[(String, String)],
+    ) -> Result<Vec<Product>> {
+        retried(|| self.try_check(credentials, products), || self.forget()).await
+    }
+
+    async fn try_check(
+        &self,
+        credentials: &Credentials,
+        products: &[(String, String)],
+    ) -> Result<Vec<Product>> {
+        let mut found = Vec::new();
+        for (id, name) in products {
+            let results = self.try_search(credentials, name, 10).await?;
+            if let Some(product) = results.into_iter().find(|p| &p.id == id) {
+                found.push(product);
+            }
+        }
+        Ok(found)
+    }
+
     /// Products matching `query`, priced for this account.
     ///
     /// A refused session is retried once with a fresh login: nemlig ends
@@ -528,6 +555,15 @@ mod tests {
         // The session is reused, not logged into again.
         let rolls = client.search(&credentials, "rundstykker", 5).await.unwrap();
         assert!(!rolls.is_empty());
+        // And found again by id, as the list's check does.
+        let again = client
+            .check(
+                &credentials,
+                &[(rolls[0].id.clone(), rolls[0].name.clone())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.first().map(|p| &p.id), Some(&rolls[0].id));
     }
 
     /// The basket and delivery days on the real site, and one product in

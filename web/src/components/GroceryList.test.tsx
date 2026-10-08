@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { GroceryList } from "@/components/GroceryList";
+import { GroceryList, howMany } from "@/components/GroceryList";
 import type { GroceryListProps } from "@/components/GroceryList";
 import type { GroceryItem } from "@/lib/api";
 
@@ -156,5 +156,46 @@ describe("GroceryList", () => {
   it("offers no sending when nothing has a product chosen", () => {
     renderList({ onPick: vi.fn(), onSend: vi.fn() });
     expect(screen.queryByRole("button", { name: /Send .* to nemlig.com/ })).toBeNull();
+  });
+
+  const linkedBread = {
+    ...bread,
+    nemlig: {
+      id: "77",
+      name: "Rugbrød",
+      description: "1 stk.",
+      price: 20,
+      unit_price: null,
+      image: null,
+      available: true,
+    },
+  };
+
+  it("estimates what the basket will cost", () => {
+    // Two loaves at 20 kr.
+    renderList({ items: [linkedBread], onPick: vi.fn(), onSend: vi.fn() });
+    expect(screen.getByText("≈ 40,00 kr")).toBeInTheDocument();
+  });
+
+  it("prices from nemlig as it is now when that is known", () => {
+    const current = new Map([["77", { ...linkedBread.nemlig, price: 15, offer: "15 kr" }]]);
+    renderList({ items: [linkedBread], onPick: vi.fn(), onSend: vi.fn(), current });
+    expect(screen.getByText("≈ 30,00 kr")).toBeInTheDocument();
+    expect(screen.getByText("On offer · 15 kr")).toBeInTheDocument();
+  });
+
+  it("says when the chosen product is sold out", () => {
+    const current = new Map([["77", { ...linkedBread.nemlig, available: false }]]);
+    renderList({ items: [linkedBread], onPick: vi.fn(), onSend: vi.fn(), current });
+    expect(screen.getByText("Sold out at nemlig.com")).toBeInTheDocument();
+    // And not counted: it will not go in the basket.
+    expect(screen.getByText("≈ 0,00 kr")).toBeInTheDocument();
+  });
+
+  it("reads how many the way the basket does", () => {
+    expect(howMany("2")).toBe(2);
+    expect(howMany("3 poser")).toBe(3);
+    expect(howMany("500 g")).toBe(1);
+    expect(howMany(undefined)).toBe(1);
   });
 });

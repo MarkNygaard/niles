@@ -19,6 +19,7 @@ const SENT: NemligSent = {
   },
   sent: 2,
   without: ["Skyr"],
+  unavailable: [],
   checkout: "https://www.nemlig.com/basket",
 };
 
@@ -26,7 +27,7 @@ const DAYS: DeliveryDay[] = [
   {
     date: "2026-10-09",
     slots: [
-      { id: 1, start_hour: 7, end_hour: 9, price: 46, available: true, selected: false, deadline: null },
+      { id: 1, start_hour: 7, end_hour: 9, price: 46, available: true, selected: false, deadline: "2026-10-08T14:00:00" },
       { id: 2, start_hour: 17, end_hour: 19, price: 39, available: false, selected: false, deadline: null },
     ],
   },
@@ -94,5 +95,29 @@ describe("NemligOrder", () => {
     const link = screen.getByRole("link", { name: /Finish at nemlig.com/ });
     expect(link).toHaveAttribute("href", "https://www.nemlig.com/basket");
     expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("says when to order by for each time", () => {
+    open();
+    const deadline = new Date("2026-10-08T14:00:00").toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    expect(screen.getByText(new RegExp(`order by .*${deadline}`))).toBeInTheDocument();
+  });
+
+  it("offers another choice for what was sold out", () => {
+    const onChooseAnother = vi.fn();
+    render(
+      <NemligOrder
+        sent={{ ...SENT, unavailable: ["Rugbrød"] }}
+        days={DAYS}
+        onReserve={vi.fn()}
+        onChooseAnother={onChooseAnother}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Rugbrød — choose another/ }));
+    expect(onChooseAnother).toHaveBeenCalledWith("Rugbrød");
   });
 });

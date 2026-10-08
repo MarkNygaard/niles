@@ -64,6 +64,29 @@ export function GroceriesPage() {
   const [sent, setSent] = useState<NemligSent>();
   const [heldUntil, setHeldUntil] = useState<Date>();
   const send = useMutation({ mutationFn: api.nemligSend, onSuccess: setSent });
+  // The chosen products as nemlig has them now. Asked for again when what
+  // is chosen changes, and otherwise no more than every ten minutes:
+  // prices and offers do not move faster than that.
+  const chosen = (list.data?.items ?? [])
+    .filter((i) => !i.checked_at && i.nemlig)
+    .map((i) => i.nemlig!.id)
+    .sort()
+    .join(",");
+  const check = useQuery({
+    queryKey: ["nemlig-check", chosen],
+    queryFn: api.nemligCheck,
+    enabled: Boolean(list.data?.nemlig) && chosen.length > 0,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+  const current = new Map((check.data ?? []).map((p) => [p.id, p]));
+  const addProduct = useMutation({
+    mutationFn: async ({ name, product }: { name: string; product: NemligProduct }) => {
+      const added = await api.addGrocery(name);
+      return api.chooseNemlig(added.item.id, product);
+    },
+    onSuccess: refresh,
+  });
   const delivery = useQuery({
     queryKey: ["nemlig-delivery"],
     queryFn: api.nemligDelivery,
@@ -107,7 +130,8 @@ export function GroceriesPage() {
         remove.error?.message ??
         clear.error?.message ??
         choose.error?.message ??
-        send.error?.message
+        send.error?.message ??
+        addProduct.error?.message
       }
       onAdd={(name) => add.mutate(name)}
       onToggle={toggle}
@@ -117,6 +141,9 @@ export function GroceriesPage() {
       onPick={list.data?.nemlig ? setPicking : undefined}
       onSend={list.data?.nemlig ? () => send.mutate() : undefined}
       sending={send.isPending}
+      current={current}
+      suggest={list.data?.nemlig ? api.nemligSearch : undefined}
+      onAddProduct={(name, product) => addProduct.mutate({ name, product })}
     />
     <NemligOrder
       sent={sent}
@@ -126,6 +153,13 @@ export function GroceriesPage() {
       reserveError={reserve.error?.message}
       heldUntil={heldUntil}
       onReserve={(slotId) => reserve.mutate(slotId)}
+      onChooseAnother={(name) => {
+        const item = list.data?.items.find((i) => i.name === name && !i.checked_at);
+        setSent(undefined);
+        setHeldUntil(undefined);
+        reserve.reset();
+        if (item) setPicking(item);
+      }}
       onClose={() => {
         setSent(undefined);
         setHeldUntil(undefined);
