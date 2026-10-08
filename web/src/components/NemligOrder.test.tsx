@@ -77,6 +77,14 @@ describe("NemligOrder", () => {
     expect(screen.getByText("Fredag 10. oktober kl. 7-15")).toBeInTheDocument();
   });
 
+  it("says how long a reserved time is held", () => {
+    open({
+      sent: { ...SENT, basket: { ...SENT.basket, delivery: "Fredag 10. oktober kl. 7-15", slot_id: 3 } },
+      heldUntil: new Date(2026, 9, 8, 19, 42),
+    });
+    expect(screen.getByText(/Held until .*19.42/)).toBeInTheDocument();
+  });
+
   it("sends payment to nemlig.com rather than doing it here", () => {
     open();
     const link = screen.getByRole("link", { name: /Finish at nemlig.com/ });

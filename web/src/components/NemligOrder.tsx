@@ -20,6 +20,8 @@ export interface NemligOrderProps {
   daysError?: string;
   reserving?: number;
   reserveError?: string;
+  /** When the reserved time is let go unless the order is placed. */
+  heldUntil?: Date;
   onReserve: (slotId: number) => void;
   onClose: () => void;
 }
@@ -52,6 +54,7 @@ export function NemligOrder({
   daysError,
   reserving,
   reserveError,
+  heldUntil,
   onReserve,
   onClose,
 }: NemligOrderProps) {
@@ -109,6 +112,18 @@ export function NemligOrder({
                 {basket.delivery && (
                   <p className="text-sm">
                     Reserved: <span className="font-medium">{basket.delivery}</span>
+                  </p>
+                )}
+                {/* nemlig lets a reserved time go after twenty minutes;
+                    the clock time is easier to act on than a duration. */}
+                {basket.delivery && heldUntil && (
+                  <p className="text-muted-foreground text-sm">
+                    Held until{" "}
+                    {heldUntil.toLocaleTimeString(undefined, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}{" "}
+                    — finish at nemlig.com before then, or the time is let go.
                   </p>
                 )}
                 {daysError && <p className="text-destructive text-sm">{daysError}</p>}
