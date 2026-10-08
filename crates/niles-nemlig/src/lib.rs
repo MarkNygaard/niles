@@ -7,12 +7,18 @@
 //! that uses it has to degrade to "the shopping list still works".
 //!
 //! Deliberately not here: placing an order or anything about payment.
-//! Niles fills the basket; paying happens at nemlig.com, by a person.
+//! Niles fills the basket and reserves a delivery time; paying happens
+//! at nemlig.com, by a person — [`CHECKOUT`] is where.
 
+/// Where a person reviews the basket and pays.
+pub const CHECKOUT: &str = "https://www.nemlig.com/basket";
+
+mod basket;
 mod client;
 mod error;
 mod product;
 
+pub use basket::{Basket, BasketLine, DeliveryDay, DeliverySlot};
 pub use client::{Credentials, NemligClient};
 pub use error::{Error, Result};
 pub use product::Product;

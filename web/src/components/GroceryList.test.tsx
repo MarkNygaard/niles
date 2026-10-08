@@ -144,4 +144,17 @@ describe("GroceryList", () => {
     renderList({ items: [eggs], onPick: vi.fn() });
     expect(screen.queryByRole("button", { name: /at nemlig.com/ })).toBeNull();
   });
+
+  it("sends to nemlig.com only what has a product chosen", () => {
+    const onSend = vi.fn();
+    const linked = { ...bread, nemlig: { id: "1", name: "Rugbrød", description: "", price: 20, unit_price: null, image: null, available: true } };
+    renderList({ items: [milk, linked, eggs], onPick: vi.fn(), onSend });
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 to nemlig.com" }));
+    expect(onSend).toHaveBeenCalled();
+  });
+
+  it("offers no sending when nothing has a product chosen", () => {
+    renderList({ onPick: vi.fn(), onSend: vi.fn() });
+    expect(screen.queryByRole("button", { name: /Send .* to nemlig.com/ })).toBeNull();
+  });
 });
