@@ -223,18 +223,22 @@ impl NemligClient {
         let mut guard = self.session.lock().await;
         let session = self.signed_in(&mut guard, credentials).await?;
         let slot = [("timeslotId", slot_id.to_string())];
+        // A failure here is reported as itself. Swallowing it once turned
+        // a 411 into "that time may have just filled up", which sent
+        // everybody looking in the wrong place.
         let tried: serde_json::Value = read(
             self.post(format!("{WWW}/webapi/Delivery/TryUpdateDeliveryTime"))
                 .query(&slot)
+                .header(header::CONTENT_LENGTH, "0")
                 .send()
                 .await?,
         )
-        .await
-        .unwrap_or_default();
+        .await?;
         if tried.get("IsReserved").and_then(|v| v.as_bool()) == Some(false) {
             let confirmed = self
                 .post(format!("{WWW}/webapi/Delivery/UpdateDeliveryTime"))
                 .query(&slot)
+                .header(header::CONTENT_LENGTH, "0")
                 .send()
                 .await?;
             if !confirmed.status().is_success() {
@@ -271,6 +275,10 @@ impl NemligClient {
 
     /// A POST to the website's own API, carrying the anti-forgery token it
     /// checks for.
+    ///
+    /// One with nothing to send still needs `Content-Length: 0` said out
+    /// loud: with no body — even an empty one — none is sent, and nemlig's
+    /// server answers that with 411 Length Required.
     fn post(&self, url: String) -> reqwest::RequestBuilder {
         let mut request = self
             .http
@@ -560,5 +568,27 @@ mod tests {
         assert!(response.status().is_success());
         let after = client.basket(&credentials).await.unwrap();
         assert_eq!(after.quantity_of(&milk.id), before);
+    }
+
+    /// Reserving, on the real site: the time the basket already holds,
+    /// again, which changes nothing but goes the whole way through.
+    /// Ignored, and needs a time reserved already.
+    #[tokio::test]
+    #[ignore]
+    async fn reserves_the_real_basket_time_again() {
+        let credentials = Credentials {
+            username: std::env::var("NEMLIG_USER").expect("NEMLIG_USER"),
+            password: std::env::var("NEMLIG_PASSWORD").expect("NEMLIG_PASSWORD"),
+        };
+        let client = NemligClient::new().unwrap();
+        let slot = client
+            .basket(&credentials)
+            .await
+            .unwrap()
+            .slot_id
+            .expect("reserve a time in the app first");
+        let basket = client.reserve(&credentials, slot).await.unwrap();
+        assert_eq!(basket.slot_id, Some(slot));
+        assert!(basket.delivery.is_some());
     }
 }
