@@ -41,6 +41,8 @@ pub(crate) enum Thread {
 struct Turn {
     user: String,
     assistant: String,
+    /// What wrote the reply when it was not Niles's own models.
+    via: Option<&'static str>,
 }
 
 struct History {
@@ -81,13 +83,14 @@ impl ConversationMemory {
         self.recent_messages_at(thread, Instant::now())
     }
 
-    /// The live turns in `thread` as (what was said, what Niles replied),
-    /// oldest first — what the app shows when the chat is reopened.
-    pub(crate) fn turns(&self, thread: &Thread) -> Vec<(String, String)> {
+    /// The live turns in `thread` as (what was said, what Niles replied,
+    /// what wrote the reply), oldest first — what the app shows when the
+    /// chat is reopened.
+    pub(crate) fn turns(&self, thread: &Thread) -> Vec<(String, String, Option<&'static str>)> {
         self.live(thread, Instant::now(), |turns| {
             turns
                 .iter()
-                .map(|t| (t.user.clone(), t.assistant.clone()))
+                .map(|t| (t.user.clone(), t.assistant.clone(), t.via))
                 .collect()
         })
     }
@@ -95,7 +98,18 @@ impl ConversationMemory {
     /// Record a completed exchange so the next turn in the same thread
     /// can see it. A turn arriving after the TTL starts a fresh history.
     pub(crate) fn record(&self, thread: &Thread, user: &str, assistant: &str) {
-        self.record_at(thread, user, assistant, Instant::now());
+        self.record_at(thread, user, assistant, None, Instant::now());
+    }
+
+    /// [`Self::record`], saying what wrote the reply.
+    pub(crate) fn record_via(
+        &self,
+        thread: &Thread,
+        user: &str,
+        assistant: &str,
+        via: Option<&'static str>,
+    ) {
+        self.record_at(thread, user, assistant, via, Instant::now());
     }
 
     /// Start `thread` over.
@@ -143,7 +157,14 @@ impl ConversationMemory {
         })
     }
 
-    fn record_at(&self, thread: &Thread, user: &str, assistant: &str, now: Instant) {
+    fn record_at(
+        &self,
+        thread: &Thread,
+        user: &str,
+        assistant: &str,
+        via: Option<&'static str>,
+        now: Instant,
+    ) {
         let (max_turns, ttl) = self.limits(thread);
         let mut map = self.by_thread.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.entry(thread.clone()).or_insert_with(|| History {
@@ -158,6 +179,7 @@ impl ConversationMemory {
         entry.turns.push_back(Turn {
             user: user.to_string(),
             assistant: assistant.to_string(),
+            via,
         });
         while entry.turns.len() > max_turns {
             entry.turns.pop_front();
@@ -228,7 +250,7 @@ mod tests {
         let mem = ConversationMemory::new(4, Duration::from_secs(180));
         let office = room("office");
         let t0 = Instant::now();
-        mem.record_at(&office, "u1", "a1", t0);
+        mem.record_at(&office, "u1", "a1", None, t0);
         // Just inside the window: still there.
         assert!(
             !mem.recent_messages_at(&office, t0 + Duration::from_secs(60))
@@ -273,7 +295,7 @@ mod tests {
         let mem = ConversationMemory::default();
         let mark = Thread::Chat("mark@example.com".into());
         let t0 = Instant::now();
-        mem.record_at(&mark, "u1", "a1", t0);
+        mem.record_at(&mark, "u1", "a1", None, t0);
         let later = t0 + Duration::from_secs(10 * 60);
         assert_eq!(
             texts(&mem.recent_messages_at(&mark, later)),
@@ -292,6 +314,16 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_remembers_what_wrote_the_reply() {
+        let mem = ConversationMemory::default();
+        let mark = Thread::Chat("mark@example.com".into());
+        mem.record_via(&mark, "u1", "a1", Some("claude"));
+        mem.record(&mark, "u2", "a2");
+        let vias: Vec<_> = mem.turns(&mark).into_iter().map(|t| t.2).collect();
+        assert_eq!(vias, vec![Some("claude"), None]);
+    }
+
+    #[test]
     fn forgetting_starts_over() {
         let mem = ConversationMemory::default();
         let mark = Thread::Chat("mark@example.com".into());
@@ -305,10 +337,10 @@ mod tests {
         let mem = ConversationMemory::new(4, Duration::from_secs(180));
         let office = room("office");
         let t0 = Instant::now();
-        mem.record_at(&office, "u1", "a1", t0);
+        mem.record_at(&office, "u1", "a1", None, t0);
         // Recording again after the TTL clears the stale turn first.
         let later = t0 + Duration::from_secs(300);
-        mem.record_at(&office, "u2", "a2", later);
+        mem.record_at(&office, "u2", "a2", None, later);
         assert_eq!(
             texts(&mem.recent_messages_at(&office, later)),
             vec!["u2", "a2"]

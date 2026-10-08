@@ -3002,6 +3002,28 @@ const TYPED_IN_THE_APP: &str = "\n\n# This conversation\n\nThe person is typing 
 Niles app, and your reply is shown as text rather than spoken. Keep the butler's manner and \
 brevity, but a short list or a few lines is fine where it reads better than one sentence.\n";
 
+/// What a chat turn wants the app to know about how it was answered.
+#[derive(Default)]
+struct ChatNote {
+    /// What wrote the reply, when it was not Niles's own models.
+    via: Option<&'static str>,
+    /// Why Claude Code did not, when it was meant to. Shown under the
+    /// reply: falling back silently made a broken setup look like one
+    /// that worked and was merely fast.
+    fallback: Option<String>,
+}
+
+tokio::task_local! {
+    /// Scoped around one chat turn. A spoken turn has no scope, and
+    /// writing to it there does nothing.
+    static CHAT_NOTE: std::cell::RefCell<ChatNote>;
+}
+
+/// Note something about this chat turn, if it is one.
+fn note_chat(write: impl FnOnce(&mut ChatNote)) {
+    let _ = CHAT_NOTE.try_with(|note| write(&mut note.borrow_mut()));
+}
+
 /// The app's chat, answered by the same dispatch as a spoken command.
 ///
 /// Built before the dispatch context exists, because the API starts
@@ -3015,7 +3037,12 @@ struct AppChat {
 
 #[async_trait::async_trait]
 impl niles_api::chat::Chat for AppChat {
-    async fn reply(&self, who: &str, speaker: Option<&str>, text: &str) -> Result<String, String> {
+    async fn reply(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        text: &str,
+    ) -> Result<niles_api::chat::Reply, String> {
         let ctx = self
             .ctx
             .get()
@@ -3028,17 +3055,27 @@ impl niles_api::chat::Chat for AppChat {
             SpeakerContext::Identified { known, .. } => known.slug.clone(),
             _ => None,
         };
-        let reply = profile::SPEAKER
-            .scope(
-                slug,
-                dispatch_text(ctx, APP_PEER, text, &thread, &known, None),
-            )
-            .await
-            // Nothing to say is how a spoken turn ends when the action was
-            // the answer. On a screen that looks like being ignored.
-            .unwrap_or_else(|| "Done.".to_string());
-        ctx.conversation.record(&thread, text, &reply);
-        Ok(reply)
+        let (reply, note) = CHAT_NOTE
+            .scope(std::cell::RefCell::default(), async {
+                let reply = profile::SPEAKER
+                    .scope(
+                        slug,
+                        dispatch_text(ctx, APP_PEER, text, &thread, &known, None),
+                    )
+                    .await;
+                (reply, CHAT_NOTE.with(|note| note.take()))
+            })
+            .await;
+        let via = note.via;
+        // Nothing to say is how a spoken turn ends when the action was
+        // the answer. On a screen that looks like being ignored.
+        let reply = reply.unwrap_or_else(|| "Done.".to_string());
+        ctx.conversation.record_via(&thread, text, &reply, via);
+        Ok(niles_api::chat::Reply {
+            reply,
+            via: via.map(str::to_string),
+            fallback: note.fallback,
+        })
     }
 
     fn history(&self, who: &str) -> Vec<niles_api::chat::Exchange> {
@@ -3048,7 +3085,11 @@ impl niles_api::chat::Chat for AppChat {
         ctx.conversation
             .turns(&conversation::Thread::Chat(who.to_string()))
             .into_iter()
-            .map(|(said, reply)| niles_api::chat::Exchange { said, reply })
+            .map(|(said, reply, via)| niles_api::chat::Exchange {
+                said,
+                reply,
+                via: via.map(str::to_string),
+            })
             .collect()
     }
 
@@ -3455,6 +3496,7 @@ async fn ask_claude_code(
         Ok(token) => token,
         Err(e) => {
             tracing::warn!("[{peer}] Claude Code is on but has no token ({e}); using [llm]");
+            note_chat(|n| n.fallback = Some(format!("Claude Code has no token: {e}")));
             return None;
         }
     };
@@ -3473,10 +3515,12 @@ async fn ask_claude_code(
                 "[{peer}] \"{text}\" -> (Claude Code, {}ms) {reply}",
                 started.elapsed().as_millis()
             );
+            note_chat(|n| n.via = Some("claude"));
             Some(reply)
         }
         Err(e) => {
             tracing::warn!("[{peer}] Claude Code could not answer ({e:#}); using [llm]");
+            note_chat(|n| n.fallback = Some(format!("Claude Code could not answer: {e:#}")));
             None
         }
     }

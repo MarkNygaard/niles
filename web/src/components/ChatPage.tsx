@@ -26,8 +26,11 @@ export function ChatPage() {
   const send = useMutation({
     mutationFn: api.sendChat,
     onMutate: (text) => setPending(text),
-    onSuccess: ({ reply }, said) => {
-      queryClient.setQueryData<Exchange[]>(KEY, (old) => [...(old ?? []), { said, reply }]);
+    onSuccess: ({ reply, via, fallback }, said) => {
+      queryClient.setQueryData<Exchange[]>(KEY, (old) => [
+        ...(old ?? []),
+        { said, reply, via, fallback },
+      ]);
     },
     onSettled: () => setPending(undefined),
   });

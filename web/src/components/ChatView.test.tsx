@@ -49,6 +49,18 @@ describe("ChatView", () => {
     expect(onSend).toHaveBeenCalledWith(SUGGESTIONS[0]);
   });
 
+  it("says when Claude wrote a reply", () => {
+    renderChat({ exchanges: [{ said: "hi", reply: "Good evening.", via: "claude" }] });
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+  });
+
+  it("says why Claude did not answer", () => {
+    renderChat({
+      exchanges: [{ said: "hi", reply: "Good evening.", fallback: "Claude Code has no token" }],
+    });
+    expect(screen.getByText(/Answered without Claude — Claude Code has no token/)).toBeInTheDocument();
+  });
+
   it("starts over", () => {
     const { onForget } = renderChat({ exchanges: [{ said: "hi", reply: "Good evening." }] });
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));

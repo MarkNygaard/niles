@@ -26,7 +26,7 @@ pub trait Chat: Send + Sync {
     /// Answer one message. `who` keeps one person's conversation apart
     /// from another's; `speaker` is the voice they are linked to, so
     /// Niles knows them as it would if they had said it.
-    async fn reply(&self, who: &str, speaker: Option<&str>, text: &str) -> Result<String, String>;
+    async fn reply(&self, who: &str, speaker: Option<&str>, text: &str) -> Result<Reply, String>;
 
     /// The conversation so far, oldest first. Empty once it has lapsed.
     fn history(&self, who: &str) -> Vec<Exchange>;
@@ -43,6 +43,10 @@ pub trait Chat: Send + Sync {
 pub struct Exchange {
     pub said: String,
     pub reply: String,
+    /// What wrote the reply, when it was not Niles's own models:
+    /// `claude`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -50,9 +54,16 @@ pub struct Message {
     pub text: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Reply {
     pub reply: String,
+    /// As on [`Exchange`]: `claude` when Claude Code wrote it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// Why Claude Code did not answer, when it was switched on and the
+    /// reply came from Niles's own models instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -100,7 +111,7 @@ pub async fn send(
     let (who, speaker) = caller(&state, &headers);
     chat.reply(&who, speaker.as_deref(), text)
         .await
-        .map(|reply| Json(Reply { reply }))
+        .map(Json)
         .map_err(|e| failed(StatusCode::SERVICE_UNAVAILABLE, e))
 }
 
@@ -226,12 +237,16 @@ mod tests {
             who: &str,
             _speaker: Option<&str>,
             text: &str,
-        ) -> Result<String, String> {
+        ) -> Result<Reply, String> {
             self.said
                 .lock()
                 .unwrap()
                 .push((who.to_string(), text.to_string()));
-            Ok(format!("you said {text}"))
+            Ok(Reply {
+                reply: format!("you said {text}"),
+                via: None,
+                fallback: None,
+            })
         }
 
         fn history(&self, who: &str) -> Vec<Exchange> {
@@ -243,6 +258,7 @@ mod tests {
                 .map(|(_, text)| Exchange {
                     said: text.clone(),
                     reply: format!("you said {text}"),
+                    via: None,
                 })
                 .collect()
         }
