@@ -117,6 +117,7 @@ export function ChatView({
           <li key={i} className="flex flex-col gap-3">
             <Bubble from="you">{exchange.said}</Bubble>
             <Bubble from="niles">{exchange.reply}</Bubble>
+            {(exchange.via || exchange.fallback) && <Credit exchange={exchange} />}
           </li>
         ))}
         {busy && (
@@ -207,6 +208,23 @@ export function ChatView({
       </form>
       <div ref={end} />
     </div>
+  );
+}
+
+/**
+ * Who wrote a reply, when that is worth saying.
+ *
+ * Under the bubble rather than in it: it is about the reply, not part
+ * of it. A fallback says why, because Claude Code failing quietly looked
+ * exactly like Claude Code being fast.
+ */
+function Credit({ exchange }: { exchange: Exchange }) {
+  return (
+    <p className="text-muted-foreground -mt-2 self-start px-1 text-[11px]">
+      {exchange.via === "claude"
+        ? "Claude"
+        : `Answered without Claude — ${exchange.fallback}`}
+    </p>
   );
 }
 

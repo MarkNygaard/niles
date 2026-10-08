@@ -1,12 +1,15 @@
 import { SecretField } from "@/components/SecretField";
+import { Switch } from "@/components/ui/switch";
 import type { Secret } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export interface ClaudeCodePanelProps {
+  enabled: boolean;
   model: string;
   secret?: Secret;
   writable: boolean;
   saving?: boolean;
+  onEnabled: (enabled: boolean) => void;
   onModel: (model: string) => void;
   onSecretsChanged: () => void;
 }
@@ -27,10 +30,12 @@ export const MODELS = [
  * or if Claude Code fails, the chat falls back to that model too.
  */
 export function ClaudeCodePanel({
+  enabled,
   model,
   secret,
   writable,
   saving,
+  onEnabled,
   onModel,
   onSecretsChanged,
 }: ClaudeCodePanelProps) {
@@ -40,6 +45,18 @@ export function ClaudeCodePanel({
         Answers the chat with Claude, using Niles's own tools. Spoken commands
         keep the faster voice model.
       </p>
+
+      {/* Off and on without losing the token or the model: Remove is for
+          not wanting it at all. */}
+      <label className="flex items-center justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">Answer the chat with Claude</span>
+          <span className="text-muted-foreground block text-xs">
+            Off, the chat uses the voice model.
+          </span>
+        </span>
+        <Switch checked={enabled} disabled={saving} onCheckedChange={(next) => onEnabled(next)} />
+      </label>
 
       <div>
         <div className="text-muted-foreground mb-1.5 text-xs">Model</div>

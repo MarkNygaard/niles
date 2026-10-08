@@ -88,17 +88,19 @@ function setup(
   unifiHost?: string,
 ) {
   const onChange = vi.fn();
+  const onReset = vi.fn();
   render(
     <IntegrationsPage
       integrations={integrations}
       secrets={secrets}
       unifiHost={unifiHost}
       onChange={onChange}
+      onReset={onReset}
       onSecretsChanged={vi.fn()}
       onTadoChanged={vi.fn()}
     />,
   );
-  return { onChange };
+  return { onChange, onReset };
 }
 
 function openAddList() {
@@ -262,13 +264,24 @@ describe("IntegrationsPage", () => {
     ]);
   });
 
-  it("removing Claude Code switches it off and keeps the token", () => {
+  it("switches Claude Code off without removing it", () => {
     const { onChange } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Remove Claude Code/ }));
+    fireEvent.click(screen.getByRole("switch"));
 
     expect(onChange).toHaveBeenCalledWith("integrations.claude_code", [
       { path: "integrations.claude_code.enabled", value: false },
     ]);
+  });
+
+  it("removing Claude Code takes the section away", () => {
+    const { onChange, onReset } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove Claude Code/ }));
+
+    expect(onReset).toHaveBeenCalledWith("integrations.claude_code", [
+      "integrations.claude_code",
+    ]);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
