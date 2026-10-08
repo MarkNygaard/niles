@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { GroceryItem, NemligProduct } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -47,7 +48,9 @@ export function NemligPicker({ item, search, onChoose, onClose }: NemligPickerPr
         // Focus only when a keyboard opened it; a tap otherwise leaves a
         // ring round the close button. As the room sheets do.
         initialFocus={(openType) => openType === "keyboard"}
-        className="flex max-h-[85dvh] flex-col p-0"
+        // A fixed height, not a maximum: sized to its contents it opened
+        // short and jumped taller when the results came in.
+        className="flex h-[85dvh] flex-col p-0 sm:h-[min(80vh,44rem)]"
       >
         {item && (
           <Picker
@@ -118,7 +121,7 @@ function Picker({
         </Button>
       </form>
 
-      <DialogBody className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <DialogBody className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {results.isError && (
           <p className="text-destructive px-2 py-3 text-sm">{results.error.message}</p>
         )}
@@ -127,43 +130,20 @@ function Picker({
             nemlig.com has nothing called “{query}”. Try another word.
           </p>
         )}
-        <ul className="flex flex-col">
-          {results.data?.map((product) => {
-            const chosen = item.nemlig?.id === product.id;
-            return (
-              <li key={product.id}>
-                <button
-                  type="button"
-                  aria-pressed={chosen}
-                  onClick={() => onChoose(product)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors",
-                    "hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-                    chosen && "bg-muted/60",
-                    !product.available && "opacity-60",
-                  )}
-                >
-                  <Thumbnail product={product} className="size-14" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{product.name}</span>
-                    <span className="text-muted-foreground block truncate text-xs">
-                      {product.description}
-                    </span>
-                    <span className="block text-xs">
-                      <span className="font-medium">{kroner(product.price)}</span>
-                      {product.unit_price && (
-                        <span className="text-muted-foreground"> · {product.unit_price}</span>
-                      )}
-                      {!product.available && (
-                        <span className="text-destructive"> · not available</span>
-                      )}
-                    </span>
-                  </span>
-                  {chosen && <Check aria-hidden className="size-4 shrink-0" />}
-                </button>
-              </li>
-            );
-          })}
+        {/* Two to a row with the picture large, the way a shop shows
+            them: telling frozen rolls from fresh is a matter of looking. */}
+        <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-busy={results.isPending}>
+          {results.isPending
+            ? Array.from({ length: 6 }, (_, i) => <CardSkeleton key={i} />)
+            : results.data?.map((product) => (
+                <li key={product.id}>
+                  <Card
+                    product={product}
+                    chosen={item.nemlig?.id === product.id}
+                    onChoose={() => onChoose(product)}
+                  />
+                </li>
+              ))}
         </ul>
       </DialogBody>
 
@@ -175,6 +155,64 @@ function Picker({
         </div>
       )}
     </>
+  );
+}
+
+/** One product, as a square picture with what it is underneath. */
+function Card({
+  product,
+  chosen,
+  onChoose,
+}: {
+  product: NemligProduct;
+  chosen: boolean;
+  onChoose: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={chosen}
+      onClick={onChoose}
+      className={cn(
+        "bg-card flex h-full w-full flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
+        "hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+        chosen ? "border-primary ring-primary ring-1" : "border-border",
+        // Still choosable: sold out today can be what is usually bought.
+        !product.available && "opacity-60",
+      )}
+    >
+      <span className="relative block">
+        <Thumbnail product={product} className="aspect-square w-full p-1" />
+        {chosen && (
+          <span className="bg-primary text-primary-foreground absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-full">
+            <Check aria-hidden className="size-3.5" />
+          </span>
+        )}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 px-0.5">
+        <span className="line-clamp-2 text-sm leading-snug font-medium">{product.name}</span>
+        <span className="text-muted-foreground truncate text-xs">{product.description}</span>
+        <span className="mt-auto pt-1 text-sm">
+          <span className="font-semibold">{kroner(product.price)}</span>
+          {product.unit_price && (
+            <span className="text-muted-foreground text-xs"> · {product.unit_price}</span>
+          )}
+        </span>
+        {!product.available && <span className="text-destructive text-xs">Not available</span>}
+      </span>
+    </button>
+  );
+}
+
+/** A card's shape before there is a product to put in it. */
+function CardSkeleton() {
+  return (
+    <li aria-hidden className="flex flex-col gap-2 rounded-xl border p-2">
+      <Skeleton className="aspect-square w-full rounded-lg" />
+      <Skeleton className="h-4 w-4/5" />
+      <Skeleton className="h-3 w-3/5" />
+      <Skeleton className="h-4 w-2/5" />
+    </li>
   );
 }
 
