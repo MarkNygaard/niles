@@ -140,6 +140,16 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
+        id: "nemlig",
+        label: "nemlig.com",
+        blurb: "Groceries delivered: pick the product behind each item on the list.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
         id: "linear",
         label: "Linear",
         blurb: "Turns an issue into work Niles picks up.",
@@ -173,6 +183,9 @@ impl Known {
             Kind::Service if self.id == "claude_code" => {
                 Some("integrations.claude_code.oauth_token".into())
             }
+            // It takes two — the email as well — and its card asks for
+            // both; this is the one whose absence says "not finished".
+            Kind::Service if self.id == "nemlig" => Some("integrations.nemlig.password".into()),
             Kind::Service if self.id == "unifi" => Some("presence.unifi.api_key".into()),
             Kind::Service => None,
         }

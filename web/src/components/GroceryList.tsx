@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Check, Plus, Trash2, X } from "lucide-react";
+import { Check, Plus, ShoppingCart, Trash2, X } from "lucide-react";
+import { Thumbnail } from "@/components/NemligPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { GroceryEdit, GroceryItem } from "@/lib/api";
@@ -14,6 +15,9 @@ export interface GroceryListProps {
   onEdit: (item: GroceryItem, edit: GroceryEdit) => void;
   onRemove: (item: GroceryItem) => void;
   onClear: () => void;
+  /** Choose the nemlig.com product for an item. Absent when nemlig.com
+      is not switched on, and then there is no button for it. */
+  onPick?: (item: GroceryItem) => void;
 }
 
 /**
@@ -29,6 +33,7 @@ export function GroceryList({
   onEdit,
   onRemove,
   onClear,
+  onPick,
 }: GroceryListProps) {
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<number | null>(null);
@@ -112,6 +117,7 @@ export function GroceryList({
                 item={item}
                 onToggle={() => onToggle(item)}
                 onOpen={() => setEditing(item.id)}
+                onPick={onPick && (() => onPick(item))}
               />
             ),
           )}
@@ -149,11 +155,13 @@ function Row({
   item,
   onToggle,
   onOpen,
+  onPick,
 }: {
   item: GroceryItem;
   onToggle: () => void;
   /** Absent in the basket: what has been bought is not renamed. */
   onOpen?: () => void;
+  onPick?: () => void;
 }) {
   const checked = Boolean(item.checked_at);
   const label = (
@@ -212,6 +220,27 @@ function Row({
         </button>
       ) : (
         label
+      )}
+      {onPick && (
+        <button
+          type="button"
+          onClick={onPick}
+          aria-label={
+            item.nemlig
+              ? `${item.nemlig.name} at nemlig.com — change`
+              : `Choose ${item.name} at nemlig.com`
+          }
+          className={cn(
+            "-my-1 flex size-10 shrink-0 items-center justify-center rounded-lg transition-colors",
+            "hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+          )}
+        >
+          {item.nemlig ? (
+            <Thumbnail product={item.nemlig} className="size-9" />
+          ) : (
+            <ShoppingCart aria-hidden className="text-muted-foreground size-4" />
+          )}
+        </button>
       )}
     </li>
   );

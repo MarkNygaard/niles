@@ -23,6 +23,7 @@ niles-presence.workspace = true
 niles-recognition.workspace = true
 niles-scheduler.workspace = true
 niles-groceries.workspace = true
+niles-nemlig.workspace = true
 niles-integration-linear.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

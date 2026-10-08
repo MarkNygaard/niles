@@ -35,6 +35,42 @@ pub struct IntegrationsConfig {
     pub linear: Option<LinearConfigDto>,
     #[serde(default)]
     pub claude_code: Option<ClaudeCodeConfig>,
+    #[serde(default)]
+    pub nemlig: Option<NemligConfig>,
+}
+
+/// `[integrations.nemlig]` — the household's nemlig.com account, for
+/// picking the product behind each item on the shopping list and
+/// filling the basket. Paying stays at nemlig.com.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NemligConfig {
+    /// Off keeps the section and the stored login without using them.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The variables holding the login, when it comes from them rather
+    /// than from Niles's own store.
+    #[serde(default)]
+    pub username_env: String,
+    #[serde(default)]
+    pub password_env: String,
+}
+
+impl NemligConfig {
+    /// The login: (email, password).
+    pub fn resolve_credentials(&self) -> Result<(String, String)> {
+        let username = crate::env::require_secret(
+            "integrations.nemlig",
+            "integrations.nemlig.username",
+            &self.username_env,
+        )?;
+        let password = crate::env::require_secret(
+            "integrations.nemlig",
+            "integrations.nemlig.password",
+            &self.password_env,
+        )?;
+        Ok((username, password))
+    }
 }
 
 /// `[integrations.claude_code]` — the app's chat answered by Claude Code,

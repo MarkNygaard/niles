@@ -20,4 +20,5 @@ mod store;
 
 pub use error::{Error, Result};
 pub use matching::normalize;
+pub use niles_nemlig::Product as NemligProduct;
 pub use store::{Added, Edit, GroceryPersistence, GroceryStore, Item, Product};

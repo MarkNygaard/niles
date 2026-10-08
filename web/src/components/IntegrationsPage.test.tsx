@@ -82,6 +82,25 @@ const CLAUDE_TOKEN: SecretsReport = {
   ],
 };
 
+const NEMLIG: Integration = {
+  id: "nemlig",
+  label: "nemlig.com",
+  blurb: "Groceries delivered.",
+  kind: "service",
+  base_url: null,
+  serves: [],
+  added: false,
+  secret_key: "integrations.nemlig.password",
+};
+
+const NEMLIG_LOGIN: SecretsReport = {
+  writable: true,
+  secrets: [
+    { key: "integrations.nemlig.username", label: "nemlig.com email", hint: "nemlig.com", source: "unset" },
+    { key: "integrations.nemlig.password", label: "nemlig.com password", hint: "nemlig.com", source: "unset" },
+  ],
+};
+
 function setup(
   integrations: Integration[],
   secrets: SecretsReport = SECRETS,
@@ -283,5 +302,33 @@ describe("IntegrationsPage", () => {
       "integrations.claude_code",
     ]);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("switches nemlig.com on and asks for both halves of the login", () => {
+    const { onChange } = setup([NEMLIG], NEMLIG_LOGIN);
+    openAddList();
+    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    expect(onChange).toHaveBeenCalledWith("integrations.nemlig", [
+      { path: "integrations.nemlig.enabled", value: true },
+    ]);
+    expect(screen.getByText("nemlig.com email")).toBeTruthy();
+    expect(screen.getByText("nemlig.com password")).toBeTruthy();
+  });
+
+  it("switches nemlig.com off without forgetting the login", () => {
+    const { onChange, onReset } = setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
+    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("switch"));
+    expect(onChange).toHaveBeenCalledWith("integrations.nemlig", [
+      { path: "integrations.nemlig.enabled", value: false },
+    ]);
+    expect(onReset).not.toHaveBeenCalled();
+  });
+
+  it("removing nemlig.com takes the section away", () => {
+    const { onReset } = setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
+    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
+    expect(onReset).toHaveBeenCalledWith("integrations.nemlig", ["integrations.nemlig"]);
   });
 });

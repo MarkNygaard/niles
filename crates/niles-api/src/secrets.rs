@@ -38,6 +38,8 @@ const KNOWN: &[(&str, &str)] = &[
         "integrations.claude_code.oauth_token",
         "Claude Code token, from `claude setup-token`",
     ),
+    ("integrations.nemlig.username", "nemlig.com email"),
+    ("integrations.nemlig.password", "nemlig.com password"),
     // Read on every poll, so saving it takes hold without a restart —
     // which is what makes the phone-pairing button appear at all.
     ("presence.unifi.api_key", "UniFi console API key"),
