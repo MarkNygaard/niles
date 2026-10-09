@@ -69,6 +69,8 @@ pub struct AppState {
     pub groceries: Option<Arc<niles_groceries::GroceryStore>>,
     /// What answers the app's chat, when the binary wired one up.
     pub chat: Option<Arc<dyn crate::chat::Chat>>,
+    /// The rooms' music, for the room cards. Answered by the binary.
+    pub music: Option<Arc<dyn crate::music::Music>>,
     /// The nemlig.com session. Present whether or not the integration is
     /// switched on — that is read from the config per request.
     pub nemlig: Option<Arc<niles_nemlig::NemligClient>>,
@@ -97,6 +99,7 @@ impl AppState {
             groceries: None,
             chat: None,
             nemlig: None,
+            music: None,
             tado: None,
             voices: None,
             captures: None,
@@ -155,6 +158,11 @@ impl AppState {
 
     pub fn with_nemlig(mut self, nemlig: Option<Arc<niles_nemlig::NemligClient>>) -> Self {
         self.nemlig = nemlig;
+        self
+    }
+
+    pub fn with_music(mut self, music: Option<Arc<dyn crate::music::Music>>) -> Self {
+        self.music = music;
         self
     }
 

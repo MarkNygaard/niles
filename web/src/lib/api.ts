@@ -100,6 +100,22 @@ export interface SonosSpeaker {
   answering: boolean;
 }
 
+/** A room's Sonos, as `GET /music` reports it. */
+export interface RoomMusic {
+  room: string;
+  playing: boolean;
+  /** "Chariot by Gavin DeGraw", "DR P3". */
+  what: string | null;
+  kind: "music" | "radio" | "tv" | null;
+  /** Percent, from the room's first speaker. */
+  volume: number | null;
+}
+
+export type MusicControl =
+  | { action: "pause" }
+  | { action: "play" }
+  | { action: "volume"; percent: number };
+
 /** The LG TV, as `GET /tv` reports it. */
 export interface TvInfo {
   configured: boolean;
@@ -574,6 +590,12 @@ export const api = {
   integrations: () => request<Integration[]>("/integrations"),
   speakers: () => request<SpeakersReport>("/speakers"),
   tv: () => request<TvInfo>("/tv"),
+  music: () => request<RoomMusic[]>("/music"),
+  musicControl: (room: string, control: MusicControl) =>
+    request<void>(`/music/${encodeURIComponent(room)}`, {
+      method: "POST",
+      body: JSON.stringify(control),
+    }),
   /** Shows the prompt on the TV and waits up to a minute for it. */
   pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),
   tvPower: (on: boolean) =>

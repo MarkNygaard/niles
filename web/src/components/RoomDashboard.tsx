@@ -6,10 +6,10 @@ import type { SetZone } from "@/components/RoomCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api, roomOrder } from "@/lib/api";
+import type { MusicControl } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
 import { BoostButton } from "@/components/BoostButton";
 import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
-import { TvCard } from "@/components/TvCard";
 import { HouseBar } from "@/components/HouseBar";
 import { PairPhoneCard } from "@/components/PairPhoneCard";
 import { SceneBar } from "@/components/SceneBar";
@@ -114,6 +114,19 @@ export function RoomDashboard() {
     // A TV takes a few seconds to come on; ask again once it has.
     onSettled: () =>
       setTimeout(() => queryClient.invalidateQueries({ queryKey: ["tv"] }), 4_000),
+  });
+  // What each room's Sonos plays. Asks the speakers, so not every
+  // second; a press refreshes it at once.
+  const music = useQuery({
+    queryKey: ["music"],
+    queryFn: api.music,
+    retry: false,
+    refetchInterval: 15_000,
+  });
+  const musicControl = useMutation({
+    mutationFn: ({ room, control }: { room: string; control: MusicControl }) =>
+      api.musicControl(room, control),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["music"] }),
   });
   // Each call reaches tado, so this is polled slowly. Heating moves in
   // tens of minutes; a radiator is not a light switch.
@@ -252,7 +265,6 @@ export function RoomDashboard() {
         // Local today: the order's times are Danish, and so is the house.
         today={new Date().toLocaleDateString("sv-SE")}
       />
-      <TvCard tv={tv.data} busy={tvPower.isPending} onPower={(on) => tvPower.mutate(on)} />
       <PairPhoneCard
         device={phone.data}
         pairing={pair.isPending}
@@ -263,6 +275,28 @@ export function RoomDashboard() {
           <RoomCard
             key={room.name}
             room={room}
+            music={(() => {
+              const info = music.data?.find((m) => m.room === room.name);
+              if (!info) return undefined;
+              const control = (c: MusicControl) =>
+                musicControl.mutate({ room: room.name, control: c });
+              return {
+                info,
+                busy: musicControl.isPending,
+                onPause: () => control({ action: "pause" }),
+                onPlay: () => control({ action: "play" }),
+                onVolume: (percent: number) => control({ action: "volume", percent }),
+              };
+            })()}
+            tv={
+              tv.data?.paired && tv.data.room === room.name
+                ? {
+                    info: tv.data,
+                    busy: tvPower.isPending,
+                    onPower: (on) => tvPower.mutate(on),
+                  }
+                : undefined
+            }
             onSetRoom={(body) =>
               command.mutate({ target: { scope: "room", room: room.name }, body })
             }
