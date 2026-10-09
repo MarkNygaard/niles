@@ -31,6 +31,9 @@ export interface SatellitesCardProps {
   satellites: Satellite[];
   /** Canonical room names Niles knows about, from the devices it sees. */
   rooms: string[];
+  /** The Sonos playing in each room, by name, when Sonos is set up.
+      Shown, not set, here: the room is set under Speakers. */
+  music?: Record<string, string[]>;
   saving?: boolean;
   error?: string;
   onChange: (entries: { path: string; value: unknown }[]) => void;
@@ -58,6 +61,7 @@ const NAME = /^[a-z0-9_]+$/;
 export function SatellitesCard({
   satellites,
   rooms,
+  music,
   saving,
   error,
   onChange,
@@ -175,6 +179,13 @@ export function SatellitesCard({
                 </Select>
               </label>
             </div>
+            {music && (
+              <p className="text-muted-foreground text-xs">
+                {music[satellite.room]?.length
+                  ? `Music: ${music[satellite.room].join(", ")}`
+                  : "No speaker in this room"}
+              </p>
+            )}
             <VolumeField
               value={satellite.volume}
               label={`${satellite.name} volume`}

@@ -2761,6 +2761,12 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // the client to Z2mSource (which consumes it) so spawned
     // dispatch tasks can publish on the same connection.
     let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
+    // Read live by the speakers, which follow `[speakers]` as it is
+    // asked rather than as it was at startup. Nothing writes it here.
+    let (store, _) = ConfigStore::open_in_memory(&args.config)
+        .await
+        .context("opening the config for the speakers")?;
+    let store = Arc::new(store);
     let publisher = mqtt_client.publisher();
     let router = build_command_router(&cfg);
     let bind = cfg
@@ -2892,7 +2898,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
-    let speakers = Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers));
+    let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
 
     // Notification center
     let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
@@ -4312,39 +4318,61 @@ async fn dispatch_text(
         Intent::MediaPause { room } => media_result_to_response(
             peer,
             &room,
-            media_dispatch(ctx, &room, |c| async move { c.pause().await }).await,
+            media_dispatch(
+                ctx,
+                &room,
+                Reach::Leaders,
+                |c| async move { c.pause().await },
+            )
+            .await,
             response::media_pause(&room),
             "pause",
         ),
         Intent::MediaPlay { room } => media_result_to_response(
             peer,
             &room,
-            media_dispatch(ctx, &room, |c| async move { c.play().await }).await,
+            media_dispatch(
+                ctx,
+                &room,
+                Reach::Leaders,
+                |c| async move { c.play().await },
+            )
+            .await,
             response::media_play(&room),
             "play",
         ),
         Intent::MediaNext { room } => media_result_to_response(
             peer,
             &room,
-            media_dispatch(ctx, &room, |c| async move { c.next().await }).await,
+            media_dispatch(
+                ctx,
+                &room,
+                Reach::Leaders,
+                |c| async move { c.next().await },
+            )
+            .await,
             response::media_next(&room),
             "next",
         ),
         Intent::MediaPrevious { room } => media_result_to_response(
             peer,
             &room,
-            media_dispatch(ctx, &room, |c| async move { c.previous().await }).await,
+            media_dispatch(
+                ctx,
+                &room,
+                Reach::Leaders,
+                |c| async move { c.previous().await },
+            )
+            .await,
             response::media_previous(&room),
             "previous",
         ),
         Intent::MediaVolumeSet { room, percent } => media_result_to_response(
             peer,
             &room,
-            media_dispatch(
-                ctx,
-                &room,
-                move |c| async move { c.set_volume(percent).await },
-            )
+            media_dispatch(ctx, &room, Reach::Every, move |c| async move {
+                c.set_volume(percent).await
+            })
             .await,
             response::media_volume(&room, percent),
             "volume set",
@@ -4357,27 +4385,37 @@ async fn dispatch_text(
                     return Some(response::room_not_found(&room));
                 }
             };
-            let client = match ctx.speakers.get(&canonical) {
-                Some(c) => c,
-                None => {
-                    println!("[{peer}] no speaker in {canonical}");
-                    return Some(response::no_speaker_in_room(canonical.as_str()));
-                }
-            };
-            let current = match client.get_volume().await {
-                Ok(v) => v,
-                Err(e) => {
+            let players = ctx.speakers.in_room(&canonical).await;
+            if players.is_empty() {
+                println!("[{peer}] no speaker in {canonical}");
+                return Some(response::no_speaker_in_room(canonical.as_str()));
+            }
+            // Each by the same step from where it is: a speaker at the
+            // back set quieter than the front stays quieter.
+            let mut said = None;
+            for player in &players {
+                let current = match player.client.get_volume().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
+                        return Some(response::speaker_unreachable(canonical.as_str()));
+                    }
+                };
+                let new = (current as i16 + delta).clamp(0, 100) as u8;
+                if let Err(e) = player.client.set_volume(new).await {
                     tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
                     return Some(response::speaker_unreachable(canonical.as_str()));
                 }
-            };
-            let new = (current as i16 + delta).clamp(0, 100) as u8;
-            if let Err(e) = client.set_volume(new).await {
-                tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
-                return Some(response::speaker_unreachable(canonical.as_str()));
+                println!(
+                    "[{peer}] media volume step on {} in {canonical}: {current} -> {new}",
+                    player.sonos.name
+                );
+                said.get_or_insert(new);
             }
-            println!("[{peer}] media volume step in {canonical}: {current} -> {new}");
-            Some(response::media_volume(canonical.as_str(), new))
+            Some(response::media_volume(
+                canonical.as_str(),
+                said.unwrap_or_default(),
+            ))
         }
         Intent::TimerSet { duration, name } => {
             let id = ctx.timers.set(duration, name.clone(), peer, Utc::now());
@@ -4591,23 +4629,46 @@ enum MediaDispatchError {
     Unreachable(RoomName, String),
 }
 
+/// Which of a room's speakers an action goes to.
+#[derive(Clone, Copy)]
+enum Reach {
+    /// The leader of each group the room's speakers are in: play,
+    /// pause and skip act on a group, and a member refuses them.
+    Leaders,
+    /// Each of them: volume is per speaker.
+    Every,
+}
+
 async fn media_dispatch<F, Fut>(
     ctx: &DispatchCtx,
     room_raw: &str,
+    reach: Reach,
     op: F,
 ) -> std::result::Result<(), MediaDispatchError>
 where
-    F: FnOnce(Arc<SonosClient>) -> Fut,
+    F: Fn(Arc<SonosClient>) -> Fut,
     Fut: std::future::Future<Output = niles_speakers::Result<()>>,
 {
     let canonical = intent_room_to_canonical(room_raw).map_err(MediaDispatchError::BadRoom)?;
-    let client = ctx
-        .speakers
-        .get(&canonical)
-        .ok_or_else(|| MediaDispatchError::NoSpeaker(canonical.clone()))?;
-    op(client)
-        .await
-        .map_err(|e| MediaDispatchError::Unreachable(canonical, e.to_string()))
+    let targets: Vec<Arc<SonosClient>> = match reach {
+        Reach::Leaders => ctx.speakers.leaders(&canonical).await,
+        Reach::Every => ctx
+            .speakers
+            .in_room(&canonical)
+            .await
+            .into_iter()
+            .map(|player| player.client)
+            .collect(),
+    };
+    if targets.is_empty() {
+        return Err(MediaDispatchError::NoSpeaker(canonical));
+    }
+    for client in targets {
+        op(client)
+            .await
+            .map_err(|e| MediaDispatchError::Unreachable(canonical.clone(), e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Turns the result of a `media_dispatch` call into the spoken
@@ -5548,7 +5609,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
-    let speakers = Arc::new(speakers::SpeakerRegistry::from_config(&cfg.speakers));
+    let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
 
     // Notification center
     let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);

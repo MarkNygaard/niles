@@ -31,6 +31,7 @@ import { MorningCard } from "@/components/MorningCard";
 import { MenuCard } from "@/components/MenuCard";
 import { RoomOrderCard } from "@/components/RoomOrderCard";
 import { SatellitesCard } from "@/components/SatellitesCard";
+import { SpeakersCard } from "@/components/SpeakersCard";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
@@ -243,6 +244,27 @@ export function satellitesAt(root: unknown): Satellite[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Where each Sonos is placed, by its id, as `[speakers.sonos]` has it. */
+export function sonosAt(root: unknown): Record<string, { room: string; name: string }> {
+  const value = valueAt(root, "speakers.sonos");
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, { room?: string; name?: string }>)
+      .filter(([, entry]) => typeof entry?.room === "string")
+      .map(([id, entry]) => [id, { room: entry.room ?? "", name: entry.name ?? id }]),
+  );
+}
+
+/** The Sonos playing in each room, by name. */
+export function musicByRoom(root: unknown): Record<string, string[]> {
+  const music: Record<string, string[]> = {};
+  for (const { room, name } of Object.values(sonosAt(root))) {
+    (music[room] ??= []).push(name);
+  }
+  for (const names of Object.values(music)) names.sort();
+  return music;
+}
+
 function stripsAt(root: unknown): WledStrip[] {
   const value = valueAt(root, "wled.devices");
   return Array.isArray(value) ? (value as WledStrip[]) : [];
@@ -259,6 +281,15 @@ export function ConfigPanel() {
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
   const setup = useQuery({ queryKey: ["setup"], queryFn: api.setup });
+  // Keyed by the address so a new one is asked at once. Not fetched
+  // without one: there is nobody to ask.
+  const sonosHost = stringAt(config.data?.effective, "speakers.host")?.trim() ?? "";
+  const speakers = useQuery({
+    queryKey: ["speakers", sonosHost],
+    queryFn: api.speakers,
+    enabled: sonosHost !== "",
+    staleTime: 30_000,
+  });
   const integrations = useQuery({
     queryKey: ["integrations"],
     queryFn: api.integrations,
@@ -719,11 +750,36 @@ export function ConfigPanel() {
           <SatellitesCard
             satellites={satellitesAt(view.effective)}
             rooms={[...new Set((devices.data ?? []).map((d) => d.room))].sort()}
+            music={sonosHost ? musicByRoom(view.effective) : undefined}
             saving={save.isPending || reset.isPending}
             error={rowError?.row === "satellites" ? rowError.message : undefined}
             onChange={(entries) => save.mutate({ row: "satellites", entries })}
             onRemove={(name) =>
               reset.mutate({ row: "satellites", paths: [`satellites.${name}`] })
+            }
+          />
+        </TabsContent>
+
+        <TabsContent value="speakers">
+          <SpeakersCard
+            report={sonosHost ? speakers.data : { configured: false, error: null, sonos: [] }}
+            loading={speakers.isLoading}
+            placed={Object.fromEntries(
+              Object.entries(sonosAt(view.effective)).map(([id, s]) => [id, s.room]),
+            )}
+            rooms={[...new Set((devices.data ?? []).map((d) => d.room))].sort()}
+            saving={save.isPending || reset.isPending}
+            error={rowError?.row === "speakers" ? rowError.message : undefined}
+            onPlace={(speaker, room) =>
+              save.mutate({
+                row: "speakers",
+                entries: [
+                  { path: `speakers.sonos.${speaker.id}`, value: { room, name: speaker.name } },
+                ],
+              })
+            }
+            onUnplace={(speaker) =>
+              reset.mutate({ row: "speakers", paths: [`speakers.sonos.${speaker.id}`] })
             }
           />
         </TabsContent>
@@ -919,6 +975,11 @@ export function ConfigPanel() {
                 | undefined)?.nemlig
             }
             unifiHost={stringAt(view.effective, "presence.unifi.host")}
+            sonos={{
+              enabled: valueAt(view.effective, "speakers.enabled") !== false,
+              host: sonosHost,
+            }}
+            sonosFound={speakers.data}
             saving={save.isPending}
             error={rowError ? rowError.message : undefined}
             onChange={(row, entries) => save.mutate({ row, entries })}

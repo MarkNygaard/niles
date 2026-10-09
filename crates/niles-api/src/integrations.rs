@@ -97,6 +97,9 @@ fn is_added(cfg: &Config, id: &str) -> bool {
         // A host is what makes it a console; the section itself always
         // exists, with defaults, so its presence says nothing.
         "unifi" => cfg.presence.unifi.is_configured(),
+        // Likewise an address: `[speakers]` always exists. Switched off
+        // is still added, as with the others.
+        "sonos" => !cfg.speakers.host.trim().is_empty(),
         other => cfg.providers.iter().any(|p| p.name == other),
     }
 }

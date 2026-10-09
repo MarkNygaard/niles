@@ -73,7 +73,7 @@ pub use secrets::Source;
 use serde::Deserialize;
 pub use setup::{Gap, Severity};
 pub use skills::{SkillsConfig, SkillsCuratorConfig, SkillsReviewConfig};
-pub use speakers::{SpeakerConfig, SpeakersConfig};
+pub use speakers::{SonosSpeaker, SpeakersConfig};
 use std::path::Path;
 pub use store::{Applied, Change, ChangeSource, ConfigStore, LoadOutcome, Revision, SectionChange};
 pub use stt::{NoiseGate, SttConfig};
@@ -209,6 +209,9 @@ pub fn section_reload(section: &str) -> Reload {
         "rooms" => Reload::Hot,
         // The same as rooms: only the app reads it, with the config.
         "menu" => Reload::Hot,
+        // Read for each command, each duck and each page that lists
+        // them, so a speaker placed in a room plays there at once.
+        "speakers" => Reload::Hot,
         // The speech-to-text client is checked against the live config
         // for every utterance and rebuilt when it differs; the noise
         // gate was already read per turn. Marked Boot, a switch to

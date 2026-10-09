@@ -3,7 +3,7 @@ import { render } from "@testing-library/react";
 import { BrandMark } from "./BrandMark";
 
 describe("BrandMark", () => {
-  it.each(["groq", "cerebras", "elevenlabs", "tado", "unifi", "claude_code", "nemlig", "linear"])(
+  it.each(["groq", "cerebras", "elevenlabs", "tado", "unifi", "claude_code", "nemlig", "linear", "sonos"])(
     "draws %s's logo rather than a letter",
     (id) => {
       const { container } = render(<BrandMark id={id} label={id} />);
