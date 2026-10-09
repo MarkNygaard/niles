@@ -629,11 +629,30 @@ The implication: **"music services supported by Niles" = "music services support
 
 The same principle generalizes. Niles is the voice surface over existing systems, not a replacement for them.
 
+### Finding the speakers, and which room each is in
+
+Sonos is an integration like the others: switched on and off under Integrations, and configured by the address of **any one** speaker. Automatic discovery (SSDP) is a multicast on the local network, and it does not reach a service running in a cluster network. One speaker is enough, because every Sonos can describe the whole household: its rooms, the speakers in each, and their current addresses.
+
+- **A speaker is remembered by its Sonos identity, not its address.** Addresses come from DHCP and change. The household layout is read again from the speaker, so a new address is simply followed.
+- **One row per Sonos room.** A home-theatre set (soundbar, rear speakers, sub) or a stereo pair is one Sonos room and plays as one. Niles never addresses the speakers inside it separately.
+- **Rooms are set under Settings → Speakers**, the way satellites are: each Sonos room found is given a Niles room. A Sonos room without one is listed as not in a room, so a new speaker is noticed rather than lost. A portable speaker carried to another room is moved here. The satellites page shows each satellite's room speaker, read-only.
+- **Several Sonos rooms can belong to one Niles room**, for example a soundbar at the front of a living room and a speaker at the back. The Niles room is the unit, as everywhere else. Music asked for in it plays on all of them, grouped, and pause, skip, volume and ducking act on all of them.
+
+### The TV
+
+A soundbar playing the TV is a Sonos that is playing, and Niles treats it as one:
+
+- **While Niles speaks**, the TV is turned down like music, and turned back up afterwards.
+- **Volume and pause** act on the TV sound.
+- **Music asked for in the room replaces the TV sound.** "Play X" replaces whatever is playing (see below), and the TV is no exception. The music plays on the whole room, grouped.
+- **Niles never sends TV sound to another Sonos room.** The TV plays on the soundbar and its own home-theatre speakers, as Sonos does by itself.
+
 ### Music intents, not source-specific tools
 
 The LLM-facing tools think in terms of what the user wants, not which service. Each intent maps internally to source-specific Sonos actions, but users never need to know:
 
-- `play_radio(station?, room?)` — TuneIn radio. "Last station" if none specified, named station otherwise.
+- `play_radio(station?, room?)` — TuneIn radio. "Last station" if none specified, named station otherwise. Stations are found with TuneIn's open station search and played on Sonos by station id; no account is needed.
+- `play_favorite(name, room?)` — anything starred as a favourite in the Sonos app (a station, a playlist, an album), played by name. Local only, and it reaches content no public API exposes.
 - `play_music(query, source?, room?)` — search-based playback (Spotify, Apple Music, etc.)
 - `play_podcast(query?, room?)` — most recent unplayed episode if no query
 - `resume_in_room(room?)` — whatever was last playing, just resume
@@ -717,10 +736,17 @@ No new crate needed. Music extends:
 - `niles-tools` — adds the music intent tools
 - `niles-intent` — adds Tier 0 patterns for common music commands
 
+### Spotify
+
+Playing and finding are separate:
+
+- **Playing goes through Sonos.** Spotify is linked to the household in the Sonos app. Niles puts a Spotify track, album or playlist in the Sonos queue over the local API, and Sonos streams it.
+- **Finding uses Spotify's Web API.** Sonos's local API cannot search a linked music service, so "play the new Lukas Graham album" needs Spotify's own search. Since February 2026, a Web API app in development mode requires its owner to have Spotify Premium, allows five users and returns at most ten search results. That is enough for a household.
+- **Spotify's own playlists** (Discover Weekly, Daily Mix) cannot be read by new Web API apps. They are played as Sonos favourites (`play_favorite`).
+
 ### What this section does not specify
 
 - The exact mechanism for Sonos to expose its linked-account info to Niles (which accounts are available, default selection logic) — explored in implementation
-- Whether voice-driven Spotify search uses Sonos's search API or Spotify's Web API directly — implementation choice, start with Sonos's
 - Multi-room grouping nuances when speakers are different generations or have different capabilities — Sonos handles most of this; document caveats as they emerge
 
 ## Self-documentation and explainability
@@ -2297,6 +2323,7 @@ niles:
 
 ### Phase 5: Room speaker integration and music (1–2 weekends)
 - SOAP/UPnP client for local Sonos control
+- Sonos as an integration found from one speaker's address; Settings → Speakers gives each Sonos room a Niles room
 - Sonos as both an LLM tool AND a ducking target during voice responses
 - Multi-room awareness ("play music in living room")
 - Music intent tools: `play_radio`, `play_music`, `play_podcast`, `resume_in_room`, transport controls, grouping
