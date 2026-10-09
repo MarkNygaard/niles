@@ -344,26 +344,13 @@ impl Music {
                 }
             }
             let lines = groups.into_iter().map(|(leader, rooms)| async move {
-                if !matches!(
-                    leader.client.get_transport_state().await,
-                    Ok(TransportState::Playing)
-                ) {
-                    return None;
-                }
-                let media = leader.client.media().await.ok()?;
-                let what = if media.is_tv() {
-                    "the TV's sound".to_string()
-                } else if media.is_radio() {
-                    match title_in(&media.metadata) {
-                        Some(station) => format!("the radio, {station}"),
-                        None => "the radio".to_string(),
-                    }
-                } else {
-                    match leader.client.track().await.ok().flatten() {
-                        Some((title, Some(artist))) => format!("{title} by {artist}"),
-                        Some((title, None)) => title,
-                        None => "music".to_string(),
-                    }
+                let (kind, what) = playing(leader).await?;
+                let what = match (kind, what) {
+                    ("tv", _) => "the TV's sound".to_string(),
+                    ("radio", Some(station)) => format!("the radio, {station}"),
+                    ("radio", None) => "the radio".to_string(),
+                    (_, Some(what)) => what,
+                    (_, None) => "music".to_string(),
                 };
                 Some(format!("{}: playing {what}", rooms.join(" and ")))
             });
@@ -376,6 +363,45 @@ impl Music {
         tokio::time::timeout(std::time::Duration::from_millis(600), ask)
             .await
             .unwrap_or_default()
+    }
+
+    /// Each room with a Sonos: whether it plays, what, and how loud —
+    /// for the room cards. Asked of every room at once.
+    pub async fn rooms(&self) -> Vec<niles_api::music::RoomMusic> {
+        let cfg = self.config.current();
+        let mut rooms: Vec<String> = cfg
+            .speakers
+            .sonos
+            .values()
+            .map(|s| s.room.clone())
+            .collect();
+        rooms.sort();
+        rooms.dedup();
+        let asks = rooms.into_iter().map(|room| async move {
+            let name = RoomName::parse(&room).ok()?;
+            let players = self.speakers.in_room(&name).await;
+            let first = players.first()?;
+            let all = self.speakers.everywhere().await;
+            let leader = all
+                .iter()
+                .find(|p| p.sonos.id == first.sonos.coordinator)
+                .unwrap_or(first);
+            let now = playing(leader).await;
+            Some(niles_api::music::RoomMusic {
+                room,
+                playing: now.is_some(),
+                what: now.as_ref().and_then(|(_, what)| what.clone()),
+                kind: now.map(|(kind, _)| kind),
+                volume: first.client.get_volume().await.ok(),
+            })
+        });
+        let ask = futures_util::future::join_all(asks);
+        tokio::time::timeout(std::time::Duration::from_millis(1500), ask)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// The household's Sonos Favorites by title, for the words speech
@@ -796,6 +822,32 @@ fn shuffle_after_the_first(run: &mut [Item], keep_first: bool) {
     use rand::seq::SliceRandom;
     let start = usize::from(keep_first).min(run.len());
     run[start..].shuffle(&mut rand::rng());
+}
+
+/// What a group's leader is playing, if anything: its kind — `music`,
+/// `radio` or `tv` — and what it is, when the speaker can say.
+async fn playing(leader: &Player) -> Option<(&'static str, Option<String>)> {
+    if !matches!(
+        leader.client.get_transport_state().await,
+        Ok(TransportState::Playing)
+    ) {
+        return None;
+    }
+    let media = leader.client.media().await.ok()?;
+    if media.is_tv() {
+        return Some(("tv", None));
+    }
+    if media.is_radio() {
+        return Some(("radio", title_in(&media.metadata)));
+    }
+    let track = leader.client.track().await.ok().flatten();
+    Some((
+        "music",
+        track.map(|(title, artist)| match artist {
+            Some(artist) => format!("{title} by {artist}"),
+            None => title,
+        }),
+    ))
 }
 
 /// What Spotify had for a request.
@@ -1512,6 +1564,25 @@ room = "kitchen"
                 "living room: playing Chariot by Gavin DeGraw"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn each_room_says_what_plays_and_how_loud() {
+        let mut house = House::new();
+        house.leaders.insert("RINCON_BACK", "RINCON_BAR");
+        house.playing.push("10.0.0.2");
+        house
+            .loaded
+            .insert("10.0.0.2", "x-rincon-queue:RINCON_BAR#0");
+        let rooms = music(&house).await.rooms().await;
+        let living = rooms.iter().find(|r| r.room == "living_room").unwrap();
+        assert!(living.playing);
+        assert_eq!(living.kind, Some("music"));
+        assert_eq!(living.what.as_deref(), Some("Chariot by Gavin DeGraw"));
+        assert_eq!(living.volume, Some(30));
+        let kitchen = rooms.iter().find(|r| r.room == "kitchen").unwrap();
+        assert!(!kitchen.playing);
+        assert_eq!(kitchen.what, None);
     }
 
     #[tokio::test]

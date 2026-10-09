@@ -3184,6 +3184,42 @@ struct AppChat {
     stt: Arc<LiveStt>,
 }
 
+/// The rooms' music for the app, from the same [`music::Music`] voice
+/// uses — so a pause from the card leaves a group the way "pause the
+/// kitchen" does.
+struct AppMusic(Arc<music::Music>);
+
+#[async_trait::async_trait]
+impl niles_api::music::Music for AppMusic {
+    async fn rooms(&self) -> Vec<niles_api::music::RoomMusic> {
+        self.0.rooms().await
+    }
+
+    async fn pause(&self, room: &str) -> Result<(), String> {
+        settled(self.0.pause(&room_named(room)?).await)
+    }
+
+    async fn resume(&self, room: &str) -> Result<(), String> {
+        settled(self.0.resume(&room_named(room)?).await)
+    }
+
+    async fn volume(&self, room: &str, percent: u8) -> Result<(), String> {
+        settled(self.0.volume(&room_named(room)?, Some(percent), None).await)
+    }
+}
+
+fn room_named(room: &str) -> Result<RoomName, String> {
+    RoomName::parse(room).map_err(|e| format!("{room:?} is not a room: {e}"))
+}
+
+fn settled(outcome: music::Outcome) -> Result<(), String> {
+    match outcome {
+        music::Outcome::Paused | music::Outcome::Resumed | music::Outcome::Volume(_) => Ok(()),
+        music::Outcome::NoSpeaker => Err("there is no speaker in that room".into()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
 #[async_trait::async_trait]
 impl niles_api::chat::Chat for AppChat {
     async fn reply(
@@ -5933,6 +5969,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
     .with_nemlig(nemlig.clone())
+    .with_music(Some(Arc::new(AppMusic(music.clone()))))
     .with_chat(Some(Arc::new(AppChat {
         ctx: chat_ctx.clone(),
         stt: whisper.clone(),

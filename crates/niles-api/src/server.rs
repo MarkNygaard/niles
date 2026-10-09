@@ -80,6 +80,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/integrations", get(crate::integrations::list))
         .route("/speakers", get(crate::speakers::list))
+        .route("/music", get(crate::music::rooms))
+        .route("/music/{room}", post(crate::music::control))
         .route("/tv", get(crate::tv::get))
         .route("/tv/pair", post(crate::tv::pair))
         .route("/tv/power", post(crate::tv::power))
