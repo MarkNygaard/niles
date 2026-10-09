@@ -179,6 +179,30 @@ impl SonosClient {
         })
     }
 
+    /// The track playing from the queue: (title, artist). Nothing for a
+    /// station or the TV, which have no track.
+    pub async fn track(&self) -> Result<Option<(String, Option<String>)>> {
+        let body = self
+            .invoke(
+                av_endpoint(&self.ip),
+                AV_TRANSPORT_SERVICE,
+                "GetPositionInfo",
+                "<InstanceID>0</InstanceID>",
+            )
+            .await?;
+        let metadata = extract_tag(&body, "TrackMetaData")
+            .map(|m| crate::household::unescape(&m))
+            .unwrap_or_default();
+        let title = extract_tag(&metadata, "title").filter(|t| !t.is_empty());
+        let artist = extract_tag(&metadata, "creator").filter(|a| !a.is_empty());
+        Ok(title.map(|t| {
+            (
+                crate::household::unescape(&t),
+                artist.map(|a| crate::household::unescape(&a)),
+            )
+        }))
+    }
+
     /// Load something to play — a station by its URI and the metadata
     /// Sonos wants beside it. Loaded, not started: [`Self::play`] next.
     pub async fn load(&self, uri: &str, metadata: &str) -> Result<()> {

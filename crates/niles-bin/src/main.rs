@@ -72,6 +72,7 @@ mod satellites;
 mod speak;
 mod speakers;
 mod tv;
+mod vocabulary;
 
 use manifest::{GenerateManifestArgs, generate_manifest};
 use recognition::{SpeakerIdentifier, build_speaker_identifier, pcm_bytes_to_i16};
@@ -794,6 +795,9 @@ fn build_stt_client(cfg: &Config) -> anyhow::Result<SttClient> {
 struct LiveStt {
     store: Option<Arc<ConfigStore>>,
     built: Mutex<(SttSettings, Arc<SttClient>)>,
+    /// The house's own words, added to the configured keyterms; a new
+    /// list is a changed setting, and rebuilds the client like one.
+    vocabulary: Arc<vocabulary::Vocabulary>,
 }
 
 impl LiveStt {
@@ -803,7 +807,18 @@ impl LiveStt {
         Ok(Self {
             store,
             built: Mutex::new((settings, client)),
+            vocabulary: Arc::default(),
         })
+    }
+
+    fn vocabulary(&self) -> Arc<vocabulary::Vocabulary> {
+        self.vocabulary.clone()
+    }
+
+    fn settings(&self, cfg: &Config) -> anyhow::Result<SttSettings> {
+        let mut settings = stt_settings(cfg)?;
+        settings.keyterms = self.vocabulary.with(&settings.keyterms);
+        Ok(settings)
     }
 
     fn current(&self) -> Arc<SttClient> {
@@ -811,7 +826,7 @@ impl LiveStt {
         let Some(store) = self.store.as_ref() else {
             return built.1.clone();
         };
-        match stt_settings(&store.current()) {
+        match self.settings(&store.current()) {
             Ok(settings) if settings == built.0 => {}
             Ok(settings) => match build_stt(settings.clone()) {
                 Ok(client) => {
@@ -2597,6 +2612,8 @@ fn spawn_dispatch_task(
     let sender = sender.clone();
     tokio::spawn(async move {
         let follow_up = session.follow_up;
+        let from = session.from;
+        let mut asked = false;
         let attempted = ctx.identifier.is_some() && supports_speaker_identification(session.format);
         let id_handle = attempted.then(|| {
             let id = ctx
@@ -2709,6 +2726,7 @@ fn spawn_dispatch_task(
             if listen {
                 ctx.follow_ups.expect(peer, speaker_name.clone(), round);
             }
+            asked = listen;
 
             // Kept before anything else looks at it, because what makes
             // this worth keeping is precisely the turns nothing else
@@ -2767,6 +2785,20 @@ fn spawn_dispatch_task(
             }
             timing.log(peer, &text);
         }
+        ctx.hush.finish(from, asked).await;
+    });
+}
+
+/// At a satellite's wake word, quiet the room's speakers for what is
+/// about to be said — see [`speak::Hush`].
+fn hush_on_wake(ctx: &DispatchCtx, incoming: &niles_wyoming::server::IncomingEvent) {
+    if incoming.event.kind != niles_wyoming::EventKind::AudioStart {
+        return;
+    }
+    let ctx = ctx.clone();
+    let peer = incoming.from;
+    tokio::spawn(async move {
+        ctx.hush.begin(&ctx.speakers, &ctx.satellites, peer).await;
     });
 }
 
@@ -2976,6 +3008,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         speakers,
         music,
         tv,
+        hush: Arc::default(),
         llm,
         tier2,
         identifier,
@@ -3039,6 +3072,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
                     if let Some(room) = satellites.room_for(incoming.from) {
                         peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
                     }
+                    hush_on_wake(&ctx, &incoming);
                     if let Some(session) = tracker.feed(incoming) {
                         // Same unbounded fan-out as voice-tap — fine
                         // for a dev tool, replaced by a bounded
@@ -3090,6 +3124,32 @@ const APP_PEER: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
 const TYPED_IN_THE_APP: &str = "\n\n# This conversation\n\nThe person is typing to you in the \
 Niles app, and your reply is shown as text rather than spoken. Keep the butler's manner and \
 brevity, but a short list or a few lines is fine where it reads better than one sentence.\n";
+
+/// Added to the prompt for a spoken turn. The words arrive through
+/// speech recognition, which hears music as words: "stop the music"
+/// over a song came out as "stop the wishing", and the model, with no
+/// reason to think it misheard, turned the lights off.
+const HEARD_NOT_READ: &str = "\n\n# How you heard this\n\nThe request was spoken and \
+written down by speech recognition, which mishears words — especially over music or the TV. When \
+a word makes no sense, consider what sounds like it and what is happening right now, and act on \
+the meaning that fits; say briefly what you understood (\"Stopping the music in the living \
+room.\"). Never act on something the request did not mention — a request about the music does not \
+touch the lights. When you cannot tell, ask.\n";
+
+/// What is playing, for the model, so "stop it" and a misheard "stop
+/// the wishing" both have something to land on.
+fn now_playing_section(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut section = String::from("\n\n# Playing now\n\n");
+    for line in lines {
+        section.push_str("- ");
+        section.push_str(line);
+        section.push('\n');
+    }
+    section
+}
 
 /// What a chat turn wants the app to know about how it was answered.
 #[derive(Default)]
@@ -3236,6 +3296,7 @@ struct DispatchCtx {
     speakers: Arc<speakers::SpeakerRegistry>,
     music: Arc<music::Music>,
     tv: Arc<tv::TvControl>,
+    hush: Arc<speak::Hush>,
     llm: Arc<GroqClient>,
     tier2: Option<Arc<dyn ChatProvider>>,
     identifier: Option<Arc<dyn SpeakerIdentifier>>,
@@ -3462,6 +3523,10 @@ async fn dispatch_tier1(
         speaker,
     );
     let mut system_prompt = system_prompt;
+    system_prompt.push_str(&now_playing_section(&ctx.music.now_playing().await));
+    if !matches!(thread, conversation::Thread::Chat(_)) {
+        system_prompt.push_str(HEARD_NOT_READ);
+    }
     if matches!(thread, conversation::Thread::Chat(_)) {
         system_prompt.push_str(TYPED_IN_THE_APP);
         if let Some(reply) = ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
@@ -5762,6 +5827,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     music::register(&mut tools, music.clone());
     let tv = Arc::new(tv::TvControl::new(store.clone()));
     tv::register(&mut tools, tv.clone());
+    let _vocabulary = vocabulary::spawn_refresh(
+        whisper.vocabulary(),
+        registry.clone(),
+        store.clone(),
+        scenes.clone(),
+        music.clone(),
+    );
 
     // Notification center
     let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
@@ -5941,6 +6013,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         speakers,
         music,
         tv,
+        hush: Arc::default(),
         llm,
         tier2,
         identifier,
@@ -5982,6 +6055,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     if let Some(room) = satellites.room_for(incoming.from) {
                         peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
                     }
+                    hush_on_wake(&ctx, &incoming);
                     if let Some(session) = session_tracker.feed(incoming) {
                         spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session);
                     }
@@ -6862,6 +6936,21 @@ fn format_intent(intent: &Intent) -> String {
 #[cfg(test)]
 mod noise_transcript_tests {
     use super::*;
+
+    #[test]
+    fn what_plays_is_listed_and_silence_adds_nothing() {
+        assert_eq!(now_playing_section(&[]), "");
+        let section = now_playing_section(&["living room: playing Chariot by Gavin DeGraw".into()]);
+        assert!(section.contains("# Playing now"));
+        assert!(section.contains("- living room: playing Chariot by Gavin DeGraw"));
+    }
+
+    #[test]
+    fn a_spoken_turn_is_told_it_may_have_been_misheard() {
+        assert!(HEARD_NOT_READ.contains("mishears"));
+        assert!(HEARD_NOT_READ.contains("does not"));
+        assert!(!HEARD_NOT_READ.contains("  "), "a line continuation lost");
+    }
 
     #[test]
     fn the_name_in_front_of_a_command_is_not_part_of_it() {
