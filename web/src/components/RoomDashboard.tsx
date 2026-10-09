@@ -9,7 +9,6 @@ import { ApiError, api, roomOrder } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
 import { BoostButton } from "@/components/BoostButton";
 import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
-import { TvCard } from "@/components/TvCard";
 import { HouseBar } from "@/components/HouseBar";
 import { PairPhoneCard } from "@/components/PairPhoneCard";
 import { SceneBar } from "@/components/SceneBar";
@@ -252,7 +251,6 @@ export function RoomDashboard() {
         // Local today: the order's times are Danish, and so is the house.
         today={new Date().toLocaleDateString("sv-SE")}
       />
-      <TvCard tv={tv.data} busy={tvPower.isPending} onPower={(on) => tvPower.mutate(on)} />
       <PairPhoneCard
         device={phone.data}
         pairing={pair.isPending}
@@ -263,6 +261,15 @@ export function RoomDashboard() {
           <RoomCard
             key={room.name}
             room={room}
+            tv={
+              tv.data?.paired && tv.data.room === room.name
+                ? {
+                    info: tv.data,
+                    busy: tvPower.isPending,
+                    onPower: (on) => tvPower.mutate(on),
+                  }
+                : undefined
+            }
             onSetRoom={(body) =>
               command.mutate({ target: { scope: "room", room: room.name }, body })
             }

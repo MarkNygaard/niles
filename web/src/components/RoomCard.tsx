@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Droplet, Power, X } from "lucide-react";
+import { Droplet, Power, Tv, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -19,13 +19,14 @@ import { FlameGlyph } from "@/components/FlameGlyph";
 import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
+import { TvRow, tvLine, tvOn } from "@/components/TvRow";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useThemeColor } from "@/hooks/useThemeColor";
 import { ClimatePanel } from "@/components/ClimatePanel";
 import { HEAT_INK, heatSheet, heatTop } from "@/lib/heat";
 import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
-import type { Device, SetLight } from "@/lib/api";
+import type { Device, SetLight, TvInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export interface RoomCardProps {
@@ -35,6 +36,8 @@ export interface RoomCardProps {
   onSetLight: (light: Device, body: SetLight) => void;
   /** Absent when this instance has no tado connection. */
   onSetZone?: (body: SetZone) => void;
+  /** The TV, in the room it stands in. */
+  tv?: { info: TvInfo; busy?: boolean; onPower: (on: boolean) => void };
 }
 
 /**
@@ -120,6 +123,7 @@ export function RoomCard({
   onSetRoom,
   onSetLight,
   onSetZone,
+  tv,
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
@@ -189,6 +193,7 @@ export function RoomCard({
         </div>
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
+        {tv && <TvRow tv={tv.info} busy={tv.busy} onPower={tv.onPower} />}
         {room.lights.map((light) => (
           <LightRow
             key={light.id}
@@ -381,6 +386,13 @@ export function RoomCard({
                 readings below: at a glance it is the one thing on the
                 card you might act on. */}
             <span className="ml-auto flex items-center gap-1.5">
+              {/* The TV, while it is on: the other thing in a room you
+                  would walk in and turn off. */}
+              {tv && tvOn(tv.info) && (
+                <span title={`TV: ${tvLine(tv.info)}`}>
+                  <Tv aria-label={`TV on: ${tvLine(tv.info)}`} className="size-4" />
+                </span>
+              )}
               {room.openings.map((opening) => (
                 <span key={opening.kind} title={openingLabel(opening)}>
                   <OpeningGlyph kind={opening.kind} />

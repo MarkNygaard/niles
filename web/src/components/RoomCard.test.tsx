@@ -107,6 +107,37 @@ describe("RoomCard", () => {
     expect(onSetRoom).not.toHaveBeenCalled();
   });
 
+  it("marks a TV that is on, and puts it in the room's view", () => {
+    const onPower = vi.fn();
+    const [room] = roomsOf([light("ceiling", true)]);
+    render(
+      <RoomCard
+        room={room}
+        onSetRoom={vi.fn()}
+        onSetLight={vi.fn()}
+        tv={{
+          info: {
+            configured: true,
+            paired: true,
+            mac: null,
+            room: "kitchen",
+            status: { on: true, app: "Netflix" },
+            error: null,
+          },
+          onPower,
+        }}
+      />,
+    );
+    expect(screen.getByLabelText("TV on: Netflix")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    expect(screen.getByText("Netflix")).toBeInTheDocument();
+  });
+
+  it("has no TV mark where there is no TV", () => {
+    setup([light("ceiling", true)]);
+    expect(screen.queryByLabelText(/^TV on/)).toBeNull();
+  });
+
   it("closes with a button on a desktop", () => {
     setup([light("ceiling", true), light("counter", true)]);
 
