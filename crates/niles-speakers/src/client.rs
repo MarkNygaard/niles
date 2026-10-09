@@ -242,24 +242,6 @@ impl SonosClient {
         self.load(&format!("x-rincon-queue:{own_id}#0"), "").await
     }
 
-    /// The music services the household has an account on, by Sonos's
-    /// service type (a service's number times 256, plus 7).
-    pub async fn linked_services(&self) -> Result<Vec<u32>> {
-        let body = self
-            .invoke(
-                format!("http://{}:1400/MusicServices/Control", self.ip),
-                MUSIC_SERVICES_SERVICE,
-                "ListAvailableServices",
-                "",
-            )
-            .await?;
-        Ok(extract_tag(&body, "AvailableServiceTypeList")
-            .unwrap_or_default()
-            .split(',')
-            .filter_map(|t| t.trim().parse().ok())
-            .collect())
-    }
-
     /// The household's Sonos Favorites. Shared by every speaker, so any
     /// one can be asked.
     pub async fn favorites(&self) -> Result<Vec<crate::Favorite>> {
@@ -337,7 +319,6 @@ fn escape(s: &str) -> String {
 
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 const CONTENT_DIRECTORY_SERVICE: &str = "urn:schemas-upnp-org:service:ContentDirectory:1";
-const MUSIC_SERVICES_SERVICE: &str = "urn:schemas-upnp-org:service:MusicServices:1";
 const RENDERING_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 
 fn av_endpoint(ip: &str) -> String {

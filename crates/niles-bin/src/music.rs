@@ -182,7 +182,7 @@ impl Music {
             .spotify_run(&credentials, market.as_deref(), &item)
             .await
         {
-            Ok(items) => self.play_spotify(room, &players, items, name).await,
+            Ok(items) => self.play_spotify(&players, items, name).await,
             Err(e) => Outcome::Failed(e),
         }
     }
@@ -341,7 +341,7 @@ impl Music {
                 .await
             {
                 Ok(Pick::Play { title, items }) => {
-                    return self.play_spotify(room, players, items, &title).await;
+                    return self.play_spotify(players, items, &title).await;
                 }
                 Ok(Pick::Candidates(found)) => spotify = found,
                 Err(e) => tracing::warn!("[music] Spotify search for {query:?} failed: {e}"),
@@ -398,22 +398,46 @@ impl Music {
             let items = self.spotify_run(credentials, market, &track).await?;
             return Ok(Pick::Play { title, items });
         }
+        let (kind, query) = kind_named(query);
         let found = self
             .spotify
             .search(credentials, query, market)
             .await
             .map_err(|e| e.to_string())?;
-        let pick =
-            exact_pick(&found, query).or_else(|| sure.then(|| best_pick(&found, query)).flatten());
-        if let Some(item) = pick {
+        let exact = exact_matches(&found, query, kind);
+        // One thing called that — or one artist, who comes before a song
+        // named after them — a kind named ("the album Continuum"), or
+        // "from Spotify": play it. Several called that and nothing to tell
+        // them apart (four bands are called Continuum): the model chooses,
+        // the exact ones first.
+        let artists = exact
+            .iter()
+            .filter(|i| i.kind == SpotifyKind::Artist)
+            .count();
+        let clear = exact.len() == 1 || artists == 1 || kind.is_some() || sure;
+        let mut picks: Vec<&Item> = if clear { exact.clone() } else { Vec::new() };
+        if sure && picks.is_empty() {
+            picks.extend(best_pick(&found, query));
+        }
+        for item in picks {
             let title = match (&item.kind, &item.by) {
                 (SpotifyKind::Artist | SpotifyKind::Playlist, _) | (_, None) => item.name.clone(),
                 (_, Some(by)) => format!("{} by {by}", item.name),
             };
-            let items = self.spotify_run(credentials, market, item).await?;
-            return Ok(Pick::Play { title, items });
+            match self.spotify_run(credentials, market, item).await {
+                Ok(items) => return Ok(Pick::Play { title, items }),
+                // An artist called that with no songs of their own: try
+                // the next thing called that.
+                Err(e) => tracing::debug!("[music] {e}"),
+            }
         }
-        Ok(Pick::Candidates(candidates(found)))
+        let mut offered: Vec<Item> = exact.into_iter().take(6).cloned().collect();
+        for item in candidates(found) {
+            if !offered.iter().any(|o| o.uri == item.uri) {
+                offered.push(item);
+            }
+        }
+        Ok(Pick::Candidates(offered))
     }
 
     /// What plays for one Spotify item: an artist as tracks found by
@@ -453,40 +477,37 @@ impl Music {
         Ok(run)
     }
 
-    async fn play_spotify(
-        &self,
-        room: &RoomName,
-        players: &[Player],
-        items: Vec<Item>,
-        title: &str,
-    ) -> Outcome {
-        let Some(service) = self.spotify_service(players).await else {
-            return Outcome::Failed("Spotify is not linked in the Sonos app".into());
-        };
-        let queue = items
-            .iter()
-            .filter_map(|item| spotify::enqueue(item, service))
-            .collect();
-        self.start(room, players, Content::Queue(queue), title)
-            .await
-    }
-
-    /// Sonos's number for the household's Spotify, read once.
-    async fn spotify_service(&self, players: &[Player]) -> Option<u32> {
-        if let Some(known) = *self.service_lock() {
-            return Some(known);
+    async fn play_spotify(&self, players: &[Player], items: Vec<Item>, title: &str) -> Outcome {
+        // Which Spotify the household's account is on cannot be asked
+        // beforehand, so each is tried until Sonos takes the queue — the
+        // one that worked last time first.
+        let known = *self.service_lock();
+        let services = known.into_iter().chain(
+            spotify::SPOTIFY_SERVICES
+                .into_iter()
+                .filter(|s| Some(*s) != known),
+        );
+        let mut refused = None;
+        for service in services {
+            let queue = items
+                .iter()
+                .filter_map(|item| spotify::enqueue(item, service))
+                .collect();
+            match self.load_and_play(players, &Content::Queue(queue)).await {
+                Ok(()) => {
+                    *self.service_lock() = Some(service);
+                    return Outcome::Playing(title.to_string());
+                }
+                Err(e) if is_refused(&e) => {
+                    refused = Some(e);
+                }
+                Err(e) => return Outcome::Failed(e.to_string()),
+            }
         }
-        let linked = leader_of(players)
-            .client
-            .linked_services()
-            .await
-            .map_err(|e| tracing::warn!("[music] could not read the linked services: {e}"))
-            .ok()?;
-        let service = spotify::SPOTIFY_SERVICES
-            .into_iter()
-            .find(|s| linked.contains(s))?;
-        *self.service_lock() = Some(service);
-        Some(service)
+        Outcome::Failed(format!(
+            "Sonos refused Spotify ({}): is Spotify linked in the Sonos app?",
+            refused.map(|e| e.to_string()).unwrap_or_default()
+        ))
     }
 
     fn service_lock(&self) -> std::sync::MutexGuard<'_, Option<u32>> {
@@ -538,26 +559,7 @@ impl Music {
         content: Content,
         title: &str,
     ) -> Outcome {
-        let leader = leader_of(players);
-        let result: niles_speakers::Result<()> = async {
-            if leader.sonos.coordinator != leader.sonos.id {
-                leader.client.go_solo().await?;
-            }
-            for player in players {
-                if player.sonos.id != leader.sonos.id && player.sonos.coordinator != leader.sonos.id
-                {
-                    player.client.join(&leader.sonos.id).await?;
-                }
-            }
-            match &content {
-                Content::Queue(items) => leader.client.load_queue(&leader.sonos.id, items).await?,
-                Content::Stream { uri, metadata } => leader.client.load(uri, metadata).await?,
-            }
-            leader.client.play().await
-        }
-        .await;
-        self.speakers.forget().await;
-        if let Err(e) = result {
+        if let Err(e) = self.load_and_play(players, &content).await {
             return Outcome::Failed(e.to_string());
         }
         if let Content::Stream { uri, metadata } = content
@@ -573,6 +575,33 @@ impl Music {
             );
         }
         Outcome::Playing(title.to_string())
+    }
+
+    async fn load_and_play(
+        &self,
+        players: &[Player],
+        content: &Content,
+    ) -> niles_speakers::Result<()> {
+        let leader = leader_of(players);
+        let result = async {
+            if leader.sonos.coordinator != leader.sonos.id {
+                leader.client.go_solo().await?;
+            }
+            for player in players {
+                if player.sonos.id != leader.sonos.id && player.sonos.coordinator != leader.sonos.id
+                {
+                    player.client.join(&leader.sonos.id).await?;
+                }
+            }
+            match content {
+                Content::Queue(items) => leader.client.load_queue(&leader.sonos.id, items).await?,
+                Content::Stream { uri, metadata } => leader.client.load(uri, metadata).await?,
+            }
+            leader.client.play().await
+        }
+        .await;
+        self.speakers.forget().await;
+        result
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Remembered>> {
@@ -605,15 +634,25 @@ impl Music {
     }
 }
 
+/// Sonos's answer when a queue names a Spotify the household has no
+/// account on.
+fn is_refused(e: &niles_speakers::Error) -> bool {
+    matches!(e, niles_speakers::Error::SoapFault { code, .. } if code == "800")
+}
+
 /// What Spotify had for a request.
 enum Pick {
     Play { title: String, items: Vec<Item> },
     Candidates(Vec<Item>),
 }
 
-/// The thing whose name is exactly what was said, artists first: "John
+/// Everything whose name is exactly what was said, artists first: "John
 /// Mayer" is the man before it is a song somebody named after him.
-fn exact_pick<'a>(found: &'a spotify::Found, query: &str) -> Option<&'a Item> {
+fn exact_matches<'a>(
+    found: &'a spotify::Found,
+    query: &str,
+    kind: Option<SpotifyKind>,
+) -> Vec<&'a Item> {
     let wanted = words(query);
     [
         &found.artists,
@@ -623,7 +662,28 @@ fn exact_pick<'a>(found: &'a spotify::Found, query: &str) -> Option<&'a Item> {
     ]
     .into_iter()
     .flat_map(|items| items.iter())
-    .find(|item| words(&item.name) == wanted)
+    .filter(|item| kind.is_none_or(|k| item.kind == k))
+    .filter(|item| words(&item.name) == wanted)
+    .collect()
+}
+
+/// "the album Continuum" is an album called Continuum.
+fn kind_named(query: &str) -> (Option<SpotifyKind>, &str) {
+    let bare = query.strip_prefix("the ").unwrap_or(query);
+    for (prefix, kind) in [
+        ("album ", SpotifyKind::Album),
+        ("record ", SpotifyKind::Album),
+        ("song ", SpotifyKind::Track),
+        ("track ", SpotifyKind::Track),
+        ("playlist ", SpotifyKind::Playlist),
+        ("artist ", SpotifyKind::Artist),
+        ("band ", SpotifyKind::Artist),
+    ] {
+        if let Some(rest) = bare.strip_prefix(prefix) {
+            return (Some(kind), rest.trim());
+        }
+    }
+    (None, query)
 }
 
 /// Spotify's best guess, for "from Spotify": an artist whose name holds
@@ -1223,18 +1283,35 @@ room = "kitchen"
     }
 
     #[test]
-    fn an_exact_name_plays_and_the_artist_comes_first() {
+    fn an_exact_name_is_found_and_the_artist_comes_first() {
         let found = found();
-        let pick = exact_pick(&found, "john mayer").unwrap();
+        let exact = exact_matches(&found, "john mayer", None);
         assert_eq!(
-            (pick.kind, pick.name.as_str()),
-            (SpotifyKind::Artist, "John Mayer")
+            exact.iter().map(|i| i.kind).collect::<Vec<_>>(),
+            [SpotifyKind::Artist, SpotifyKind::Track]
         );
         assert_eq!(
-            exact_pick(&found, "continuum").unwrap().kind,
+            exact_matches(&found, "continuum", None)[0].kind,
             SpotifyKind::Album
         );
-        assert!(exact_pick(&found, "mayer").is_none());
+        assert!(exact_matches(&found, "mayer", None).is_empty());
+    }
+
+    #[test]
+    fn a_kind_named_narrows_the_search() {
+        assert_eq!(
+            kind_named("the album continuum"),
+            (Some(SpotifyKind::Album), "continuum")
+        );
+        assert_eq!(
+            kind_named("song gravity"),
+            (Some(SpotifyKind::Track), "gravity")
+        );
+        assert_eq!(kind_named("john mayer"), (None, "john mayer"));
+        let found = found();
+        let exact = exact_matches(&found, "john mayer", Some(SpotifyKind::Track));
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].kind, SpotifyKind::Track);
     }
 
     #[test]

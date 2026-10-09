@@ -262,10 +262,12 @@ fn own_songs(tracks: Vec<Item>, artist: &str) -> Vec<Item> {
         .collect()
 }
 
-/// What Sonos calls Spotify. It differs by region (2311 in most of the
-/// world, 3079 for accounts made in the US), so it is read from the
-/// services the household has linked: see [`crate::SonosClient::linked_services`].
-pub const SPOTIFY_SERVICES: [u32; 2] = [3079, 2311];
+/// What Sonos calls Spotify: 2311 in most of the world, 3079 for
+/// accounts made in the US. A speaker's list of services is what Sonos
+/// offers, not what the household linked — it names 3079 in a Danish
+/// house whose account is on 2311 — so the caller tries them in turn,
+/// and Sonos refuses the wrong one (UPnP error 800).
+pub const SPOTIFY_SERVICES: [u32; 2] = [2311, 3079];
 
 /// The URI and metadata that put `item` in a Sonos queue through
 /// Spotify service `service`. An artist is not one of them: it plays as
