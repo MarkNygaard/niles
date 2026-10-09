@@ -45,6 +45,7 @@ niles-scheduler.workspace = true
 niles-groceries.workspace = true
 niles-nemlig.workspace = true
 niles-speakers.workspace = true
+niles-webos.workspace = true
 niles-tools.workspace = true
 niles-history.workspace = true
 niles-memory.workspace = true

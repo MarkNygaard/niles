@@ -101,6 +101,8 @@ fn is_added(cfg: &Config, id: &str) -> bool {
         // Likewise an address: `[speakers]` always exists. Switched off
         // is still added, as with the others.
         "sonos" => !cfg.speakers.host.trim().is_empty(),
+        // An address, as with UniFi and Sonos: `[tv]` always exists.
+        "lg_tv" => !cfg.tv.host.trim().is_empty(),
         other => cfg.providers.iter().any(|p| p.name == other),
     }
 }

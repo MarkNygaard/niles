@@ -1632,6 +1632,7 @@ dependencies = [
  "niles-recognition",
  "niles-scheduler",
  "niles-speakers",
+ "niles-webos",
  "rand 0.10.2",
  "reqwest",
  "rust-embed",
@@ -1697,6 +1698,7 @@ dependencies = [
  "niles-tools",
  "niles-tts",
  "niles-weather",
+ "niles-webos",
  "niles-websearch",
  "niles-wyoming",
  "rand 0.10.2",
@@ -2035,6 +2037,20 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
+]
+
+[[package]]
+name = "niles-webos"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
 ]
 
 [[package]]
@@ -3673,8 +3689,12 @@ checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite 0.30.0",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -3881,6 +3901,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.10.2",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror",
 ]

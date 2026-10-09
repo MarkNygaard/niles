@@ -25,6 +25,7 @@ import { NemligPanel } from "@/components/NemligPanel";
 import { LinearPanel } from "@/components/LinearPanel";
 import { SonosPanel } from "@/components/SonosPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
+import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { cn } from "@/lib/utils";
 import type {
@@ -33,6 +34,7 @@ import type {
   SecretsReport,
   SpeakersReport,
   TadoStatus,
+  TvInfo,
   Zone,
 } from "@/lib/api";
 
@@ -60,6 +62,10 @@ export interface IntegrationsPageProps {
   sonos?: { enabled?: boolean; host?: string };
   /** What the speaker at that address described. */
   sonosFound?: SpeakersReport;
+  /** `[tv]` as the config has it. */
+  tvConfig?: { host?: string; room?: string; show_announcements?: boolean };
+  tv?: TvInfo;
+  onTvChanged?: () => void;
   saving?: boolean;
   error?: string;
   /** Config writes, batched as one revision per action. */
@@ -99,6 +105,9 @@ export function IntegrationsPage({
   unifiHost,
   sonos,
   sonosFound,
+  tvConfig,
+  tv,
+  onTvChanged,
   saving,
   error,
   onChange,
@@ -144,6 +153,7 @@ export function IntegrationsPage({
         secretFor("integrations.spotify.client_id")?.source !== "unset" &&
         secretFor("integrations.spotify.client_secret")?.source !== "unset"
       );
+    if (integration.id === "lg_tv") return Boolean(tv?.paired);
     if (integration.id === "sonos")
       return sonos?.enabled !== false && Boolean(sonos?.host?.trim());
     if (integration.id === "unifi")
@@ -184,6 +194,7 @@ export function IntegrationsPage({
         ]);
       case "unifi":
       case "sonos":
+      case "lg_tv":
         // Nothing to write yet: the address is what makes it added, and
         // that is the first thing the dialog asks for.
         return;
@@ -211,6 +222,9 @@ export function IntegrationsPage({
         return onChange("presence.unifi", [
           { path: "presence.unifi.host", value: "" },
         ]);
+      // The pairing stays in Credentials, for an address put back.
+      case "lg_tv":
+        return onChange("tv", [{ path: "tv.host", value: "" }]);
       // The rooms each Sonos is placed in stay, for when it comes back.
       case "sonos":
         return onChange("speakers", [{ path: "speakers.host", value: "" }]);
@@ -429,6 +443,22 @@ export function IntegrationsPage({
                       ])
                     }
                     onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "lg_tv" && (
+                  <TvPanel
+                    host={tvConfig?.host ?? ""}
+                    room={tvConfig?.room ?? ""}
+                    showAnnouncements={tvConfig?.show_announcements !== false}
+                    tv={tv}
+                    rooms={rooms ?? []}
+                    saving={saving}
+                    onChange={(entries) => onChange("tv", entries)}
+                    onPaired={() => {
+                      onSecretsChanged();
+                      onTvChanged?.();
+                    }}
                   />
                 )}
 

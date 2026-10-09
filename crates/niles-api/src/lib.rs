@@ -39,6 +39,7 @@ pub mod secrets;
 pub mod server;
 pub mod speakers;
 pub mod state;
+pub mod tv;
 pub mod voices;
 #[cfg(feature = "ui")]
 pub mod web;
