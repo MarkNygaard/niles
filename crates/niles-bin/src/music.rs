@@ -317,6 +317,81 @@ impl Music {
         }
     }
 
+    /// What is playing, room by room, for the model's picture of the
+    /// house: "living room: Chariot by Gavin DeGraw". Rooms playing
+    /// nothing are left out. Asked of each group once, all at the same
+    /// time, and given up on rather than let a slow speaker hold up an
+    /// answer.
+    pub async fn now_playing(&self) -> Vec<String> {
+        let ask = async {
+            let all = self.speakers.everywhere().await;
+            let cfg = self.config.current();
+            let room_of = |id: &str| cfg.speakers.sonos.get(id).map(|s| s.room.replace('_', " "));
+            let mut groups: Vec<(&Player, Vec<String>)> = Vec::new();
+            for player in &all {
+                let Some(leader) = all.iter().find(|p| p.sonos.id == player.sonos.coordinator)
+                else {
+                    continue;
+                };
+                let room = room_of(&player.sonos.id).unwrap_or_else(|| player.sonos.name.clone());
+                match groups
+                    .iter_mut()
+                    .find(|(l, _)| l.sonos.id == leader.sonos.id)
+                {
+                    Some((_, rooms)) if !rooms.contains(&room) => rooms.push(room),
+                    Some(_) => {}
+                    None => groups.push((leader, vec![room])),
+                }
+            }
+            let lines = groups.into_iter().map(|(leader, rooms)| async move {
+                if !matches!(
+                    leader.client.get_transport_state().await,
+                    Ok(TransportState::Playing)
+                ) {
+                    return None;
+                }
+                let media = leader.client.media().await.ok()?;
+                let what = if media.is_tv() {
+                    "the TV's sound".to_string()
+                } else if media.is_radio() {
+                    match title_in(&media.metadata) {
+                        Some(station) => format!("the radio, {station}"),
+                        None => "the radio".to_string(),
+                    }
+                } else {
+                    match leader.client.track().await.ok().flatten() {
+                        Some((title, Some(artist))) => format!("{title} by {artist}"),
+                        Some((title, None)) => title,
+                        None => "music".to_string(),
+                    }
+                };
+                Some(format!("{}: playing {what}", rooms.join(" and ")))
+            });
+            futures_util::future::join_all(lines)
+                .await
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        };
+        tokio::time::timeout(std::time::Duration::from_millis(600), ask)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// The household's Sonos Favorites by title, for the words speech
+    /// recognition should expect. Nothing when no Sonos answers.
+    pub async fn favorite_titles(&self) -> Vec<String> {
+        let all = self.speakers.everywhere().await;
+        if all.is_empty() {
+            return Vec::new();
+        }
+        self.favorites(&all)
+            .await
+            .into_iter()
+            .map(|f| f.title)
+            .collect()
+    }
+
     /// "Resume the music": play on, through each group's leader.
     pub async fn resume(&self, room: &RoomName) -> Outcome {
         self.each_leader(room, Outcome::Resumed, |c| async move { c.play().await })
@@ -1250,6 +1325,12 @@ mod tests {
                     escaped(self.loaded.get(ip).copied().unwrap_or(""))
                 ),
                 "GetVolume" => "<CurrentVolume>30</CurrentVolume>".to_string(),
+                "GetPositionInfo" => format!(
+                    "<TrackMetaData>{}</TrackMetaData>",
+                    escaped(
+                        "<DIDL-Lite><item><dc:title>Chariot</dc:title><dc:creator>Gavin DeGraw</dc:creator></item></DIDL-Lite>"
+                    )
+                ),
                 "GetTransportInfo" => format!(
                     "<CurrentTransportState>{}</CurrentTransportState>",
                     if self.playing.contains(&ip) {
@@ -1408,6 +1489,48 @@ room = "kitchen"
         house.refuse.push(("10.0.0.4", "Pause"));
         let outcome = music(&house).await.pause(&room("kitchen")).await;
         assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn says_what_plays_room_by_room() {
+        let mut house = House::new();
+        house.leaders.insert("RINCON_BACK", "RINCON_BAR");
+        house.playing.extend(["10.0.0.2", "10.0.0.4"]);
+        house
+            .loaded
+            .insert("10.0.0.2", "x-rincon-queue:RINCON_BAR#0");
+        house.loaded.insert(
+            "10.0.0.4",
+            "x-sonosapi-stream:s24861?sid=333&flags=8224&sn=14",
+        );
+        let mut lines = music(&house).await.now_playing().await;
+        lines.sort();
+        assert_eq!(
+            lines,
+            [
+                "kitchen: playing the radio",
+                "living room: playing Chariot by Gavin DeGraw"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_tv_is_said_as_the_tv() {
+        let mut house = House::new();
+        house.playing.push("10.0.0.2");
+        house
+            .loaded
+            .insert("10.0.0.2", "x-sonos-htastream:RINCON_BAR:spdif");
+        assert_eq!(
+            music(&house).await.now_playing().await,
+            ["living room: playing the TV's sound"]
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_playing_says_nothing() {
+        let house = House::new();
+        assert!(music(&house).await.now_playing().await.is_empty());
     }
 
     #[tokio::test]

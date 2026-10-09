@@ -6,8 +6,10 @@ use niles_speakers::{SonosClient, TransportState};
 use niles_tts::PiperClient;
 use niles_wyoming::{AudioFormat, WyomingSender};
 use std::borrow::Cow;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::satellites::SatelliteRegistry;
 use crate::speakers::SpeakerRegistry;
@@ -135,6 +137,111 @@ async fn duck_one(sonos: &SonosClient) -> Option<u8> {
     }
     tracing::debug!("[duck] {current} -> {DUCK_VOLUME}");
     Some(current)
+}
+
+/// The speakers turned down while somebody talks to a satellite.
+///
+/// Music at full volume in the room is music in the microphone: "stop
+/// the music" over Gavin DeGraw came out as "stop the wishing". The
+/// satellite cancels its own echo, not the Sonos's. So the room goes
+/// quiet at the wake word — before the sentence, not only under the
+/// answer — and comes back once Niles has replied.
+///
+/// A question keeps it quiet a little longer, for the answer that does
+/// not need the wake word; a turn that never finishes is let go by a
+/// timer. Only a speaker still at the level Niles left it is turned
+/// back up: "set the volume to 50" said meanwhile is not undone.
+#[derive(Default)]
+pub(crate) struct Hush {
+    held: Mutex<HashMap<IpAddr, Held>>,
+}
+
+#[derive(Default)]
+struct Held {
+    ducked: Vec<(Arc<SonosClient>, u8)>,
+    /// Which wake this is, so a timer set for an earlier one does not
+    /// end a later one.
+    turn: u64,
+}
+
+/// How long a turn may hold the room quiet at most.
+const HUSH_AT_MOST: Duration = Duration::from_secs(30);
+/// How long after a question, for its answer to start.
+const HUSH_FOR_ANSWER: Duration = Duration::from_secs(12);
+
+impl Hush {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<IpAddr, Held>> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// At the wake word: quiet every Sonos playing in the satellite's
+    /// room. Speakers already quiet from this turn's wake stay as they
+    /// are; their level from before is what comes back.
+    pub(crate) async fn begin(
+        self: &Arc<Self>,
+        speakers: &SpeakerRegistry,
+        satellites: &SatelliteRegistry,
+        peer: SocketAddr,
+    ) {
+        let ducked = try_duck(speakers, satellites, peer).await;
+        let turn = {
+            let mut held = self.lock();
+            let entry = held.entry(peer.ip()).or_default();
+            entry.ducked.extend(ducked);
+            entry.turn += 1;
+            entry.turn
+        };
+        self.let_go_after(peer.ip(), turn, HUSH_AT_MOST);
+    }
+
+    /// The turn is answered. With a question, the room stays quiet a
+    /// little longer for the answer, which begins a turn of its own.
+    pub(crate) async fn finish(self: &Arc<Self>, peer: SocketAddr, asked: bool) {
+        if asked {
+            let turn = self.lock().get(&peer.ip()).map(|h| h.turn);
+            if let Some(turn) = turn {
+                self.let_go_after(peer.ip(), turn, HUSH_FOR_ANSWER);
+            }
+        } else {
+            self.restore(peer.ip(), None).await;
+        }
+    }
+
+    fn let_go_after(self: &Arc<Self>, ip: IpAddr, turn: u64, after: Duration) {
+        let hush = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            hush.restore(ip, Some(turn)).await;
+        });
+    }
+
+    /// Turn back up what this satellite's turn turned down — only for
+    /// `turn`, when given, so a later wake keeps its quiet.
+    async fn restore(&self, ip: IpAddr, turn: Option<u64>) {
+        let ducked = {
+            let mut held = self.lock();
+            match held.get(&ip) {
+                Some(h) if turn.is_none_or(|t| t == h.turn) => {
+                    held.remove(&ip).map(|h| h.ducked).unwrap_or_default()
+                }
+                _ => return,
+            }
+        };
+        for (sonos, original) in ducked {
+            match sonos.get_volume().await {
+                // Changed meanwhile — by a command, or a hand on the app.
+                Ok(now) if now != DUCK_VOLUME => continue,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("[hush] volume read failed: {e:#}");
+                    continue;
+                }
+            }
+            if let Err(e) = sonos.set_volume(original).await {
+                tracing::warn!("[hush] restore failed: {e:#}");
+            }
+        }
+    }
 }
 
 /// Synthesize `text` via Piper, decode the returned WAV, and send
@@ -907,5 +1014,93 @@ room = "living_room"
 
         assert!(try_duck(&speakers, &satellites, peer).await.is_empty());
         assert_eq!(mock.calls().len(), 0);
+    }
+
+    fn one_speaker_playing() -> Vec<Result<String, SonosError>> {
+        // The household, then the soundbar playing at 60 and the speaker
+        // at the back paused.
+        vec![
+            Ok(xml_household()),
+            Ok(xml_transport_info("PLAYING")),
+            Ok(xml_volume(60)),
+            Ok(String::new()),
+            Ok(xml_transport_info("PAUSED_PLAYBACK")),
+        ]
+    }
+
+    #[tokio::test]
+    async fn the_room_goes_quiet_at_the_wake_and_comes_back_after() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mut responses = one_speaker_playing();
+        responses.extend([Ok(xml_volume(20)), Ok(String::new())]);
+        let mock = RecordingTransport::with_responses(responses);
+        let speakers = registry(PLACED, mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+        let hush = Arc::new(Hush::default());
+
+        hush.begin(&speakers, &satellites, peer).await;
+        assert!(
+            mock.calls()[3]
+                .2
+                .contains("<DesiredVolume>20</DesiredVolume>")
+        );
+        hush.finish(peer, false).await;
+        let calls = mock.calls();
+        let last = calls.last().unwrap();
+        assert!(
+            last.1.contains("SetVolume") && last.2.contains("<DesiredVolume>60</DesiredVolume>")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_volume_set_meanwhile_is_not_undone() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mut responses = one_speaker_playing();
+        // "Set the volume to 50" happened during the turn.
+        responses.push(Ok(xml_volume(50)));
+        let mock = RecordingTransport::with_responses(responses);
+        let speakers = registry(PLACED, mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+        let hush = Arc::new(Hush::default());
+
+        hush.begin(&speakers, &satellites, peer).await;
+        hush.finish(peer, false).await;
+        let sets = mock
+            .calls()
+            .iter()
+            .filter(|c| c.1.contains("SetVolume"))
+            .count();
+        assert_eq!(sets, 1, "only the duck, no restore");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_question_keeps_the_room_quiet_for_the_answer() {
+        let peer = test_peer();
+        let room = RoomName::parse("living_room").unwrap();
+        let mut responses = one_speaker_playing();
+        responses.extend([Ok(xml_volume(20)), Ok(String::new())]);
+        let mock = RecordingTransport::with_responses(responses);
+        let speakers = registry(PLACED, mock.clone());
+        let satellites = make_satellite_registry(peer.ip(), room);
+        let hush = Arc::new(Hush::default());
+
+        hush.begin(&speakers, &satellites, peer).await;
+        let before = mock.calls().len();
+        hush.finish(peer, true).await;
+        assert_eq!(mock.calls().len(), before, "still quiet");
+        // No answer came: let go after the grace period.
+        tokio::time::sleep(HUSH_FOR_ANSWER + Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        let calls = mock.calls();
+        assert!(
+            calls
+                .last()
+                .unwrap()
+                .2
+                .contains("<DesiredVolume>60</DesiredVolume>"),
+            "{calls:?}"
+        );
     }
 }

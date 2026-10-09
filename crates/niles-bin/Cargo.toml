@@ -61,6 +61,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 hound.workspace = true
 reqwest.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

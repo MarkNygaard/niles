@@ -83,14 +83,24 @@ impl FollowUps {
 /// Whether an answer is the one Niles is waiting for.
 ///
 /// `speaker` is who the answer sounds like, and `recognising` whether
-/// voices are being recognised at all. With recognition on, the answer
-/// must come in the voice that was asked; a question asked of somebody
+/// voices are being recognised at all. With recognition on, an answer
+/// in somebody else's voice is not taken; a question asked of somebody
 /// Niles did not know is not opened to the room in the first place.
+///
+/// A voice nobody is recognised in is taken. Over music it is the usual
+/// case, not the odd one: Mark asked, then answered with Gavin DeGraw
+/// playing, scored 0.29 against his own voice, and the answer he gave
+/// was thrown away as somebody else's. The window is seconds long and
+/// opens only after a question, which is all the guard the television
+/// needs.
 pub(crate) fn judge(asked: Option<Asked>, speaker: Option<&str>, recognising: bool) -> Verdict {
     let Some(asked) = asked else {
         return Verdict::Unasked;
     };
-    if recognising && asked.asker.as_deref() != speaker {
+    if recognising
+        && let Some(speaker) = speaker
+        && asked.asker.as_deref() != Some(speaker)
+    {
         return Verdict::OtherVoice;
     }
     Verdict::Answer { round: asked.round }
@@ -149,8 +159,15 @@ mod tests {
             judge(asked(Some("Mark")), Some("Majse"), true),
             Verdict::OtherVoice
         );
-        // Nobody recognised: the television, as like as not.
-        assert_eq!(judge(asked(Some("Mark")), None, true), Verdict::OtherVoice);
+    }
+
+    #[test]
+    fn a_voice_drowned_by_music_may() {
+        // Nobody recognised: over music, that is the person who was asked.
+        assert_eq!(
+            judge(asked(Some("Mark")), None, true),
+            Verdict::Answer { round: 1 }
+        );
     }
 
     #[test]
