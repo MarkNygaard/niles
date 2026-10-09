@@ -440,7 +440,11 @@ impl Music {
                 .tracks_by(credentials, artist, market)
                 .await
                 .map_err(|e| e.to_string())?;
-            run.extend(more.into_iter().filter(|t| t.uri != item.uri));
+            // Not the song just asked for again, in another version.
+            run.extend(
+                more.into_iter()
+                    .filter(|t| t.uri != item.uri && !t.name.eq_ignore_ascii_case(&item.name)),
+            );
         }
         run.truncate(10);
         if run.is_empty() {

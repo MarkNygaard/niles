@@ -89,21 +89,17 @@ impl SpotifyClient {
 
     /// Tracks by `artist`, most relevant first — what "play John Mayer"
     /// plays, now that Spotify keeps an artist's top tracks to itself.
+    ///
+    /// A plain search for the name, kept to their own songs: the
+    /// `artist:` filter answers with half as many.
     pub async fn tracks_by(
         &self,
         credentials: &Credentials,
         artist: &str,
         market: Option<&str>,
     ) -> Result<Vec<Item>> {
-        let found = self
-            .get(
-                credentials,
-                &format!("artist:\"{artist}\""),
-                "track",
-                market,
-            )
-            .await?;
-        Ok(found.tracks)
+        let found = self.get(credentials, artist, "track", market).await?;
+        Ok(own_songs(found.tracks, artist))
     }
 
     /// One song by one artist: "Gravity by John Mayer".
@@ -247,6 +243,25 @@ fn parse(body: &str) -> Result<Found> {
     })
 }
 
+/// The songs by `artist`, each once: the same song is often there twice,
+/// from an album and from a single.
+fn own_songs(tracks: Vec<Item>, artist: &str) -> Vec<Item> {
+    let mut seen: Vec<String> = Vec::new();
+    tracks
+        .into_iter()
+        .filter(|t| {
+            t.by.as_deref()
+                .is_some_and(|by| by.eq_ignore_ascii_case(artist))
+        })
+        .filter(|t| {
+            let name = t.name.to_lowercase();
+            let first = !seen.contains(&name);
+            seen.push(name);
+            first
+        })
+        .collect()
+}
+
 /// What Sonos calls Spotify. It differs by region (2311 in most of the
 /// world, 3079 for accounts made in the US), so it is read from the
 /// services the household has linked: see [`crate::SonosClient::linked_services`].
@@ -319,6 +334,30 @@ mod tests {
     #[test]
     fn an_artist_plays_as_its_tracks_not_as_itself() {
         assert!(enqueue(&item(Kind::Artist, "spotify:artist:a"), 3079).is_none());
+    }
+
+    fn song(name: &str, by: &str) -> Item {
+        Item {
+            kind: Kind::Track,
+            uri: format!("spotify:track:{name}"),
+            name: name.into(),
+            by: Some(by.into()),
+        }
+    }
+
+    #[test]
+    fn an_artist_plays_their_own_songs_once_each() {
+        let tracks = vec![
+            song("New Light", "John Mayer"),
+            song("Gravity", "John Mayer"),
+            song("All of Me", "John Legend"),
+            song("Gravity", "John Mayer"),
+        ];
+        let names: Vec<_> = own_songs(tracks, "john mayer")
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["New Light", "Gravity"]);
     }
 
     #[test]
