@@ -280,10 +280,12 @@ mod tests {
             Input {
                 id: "HDMI_1".into(),
                 label: "PlayStation".into(),
+                app_id: None,
             },
             Input {
                 id: "HDMI_2".into(),
                 label: "HDMI 2".into(),
+                app_id: None,
             },
         ];
         assert_eq!(best_input(&inputs, "hdmi 2").unwrap().id, "HDMI_2");
