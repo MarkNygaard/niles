@@ -171,6 +171,27 @@ pub enum Intent {
         room: String,
     },
 
+    /// "play the radio" / "play P4 on the radio in the kitchen". No
+    /// station: the one this room last had. No room: where it was said.
+    PlayRadio {
+        station: Option<String>,
+        room: Option<String>,
+    },
+
+    /// "play John Mayer in the kitchen" — something to find and play.
+    /// Plain "play X" arrives as [`Intent::MediaPlay`], because only the
+    /// dispatcher knows whether X is a room.
+    PlayMusic {
+        query: String,
+        room: Option<String>,
+    },
+
+    /// "play it in the kitchen too" / "play it everywhere": what plays
+    /// here, spread to another room, or (`None`) to every room.
+    PlayElsewhere {
+        room: Option<String>,
+    },
+
     /// "set the kitchen volume to 30%" / "living room volume to 40 percent"
     MediaVolumeSet {
         room: String,

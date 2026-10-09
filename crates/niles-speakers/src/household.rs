@@ -100,7 +100,7 @@ fn parse(state: &str) -> Vec<SonosRoom> {
 }
 
 /// The document arrives as text inside a text element, so once escaped.
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
@@ -184,8 +184,23 @@ mod tests {
             .await
             .unwrap();
         for room in &rooms {
-            println!("{room:?}");
+            let media = crate::SonosClient::new(room.ip.clone())
+                .media()
+                .await
+                .unwrap();
+            println!(
+                "{room:?}
+    loaded: {}",
+                media.uri
+            );
         }
         assert!(!rooms.is_empty());
+        let favorites = crate::SonosClient::new(host).favorites().await.unwrap();
+        for favorite in &favorites {
+            println!(
+                "favorite {:?} station={} {}",
+                favorite.title, favorite.station, favorite.uri
+            );
+        }
     }
 }

@@ -63,6 +63,11 @@ impl IntentRouter {
             // shape of "turn the kitchen speaker back on".
             .or_else(|| crate::climate::match_weather(&t))
             .or_else(|| crate::climate::match_heating(&t))
+            // Before "play X", which would take "the radio" and "it in
+            // the kitchen too" for rooms.
+            .or_else(|| match_play_radio(&t))
+            .or_else(|| match_play_elsewhere(&t))
+            .or_else(|| match_play_music_in(&t))
             .or_else(|| match_media_play(&t))
             .or_else(|| match_media_pause(&t))
             .or_else(|| match_media_next(&t))
@@ -1026,6 +1031,94 @@ fn match_media_pause(t: &str) -> Option<Intent> {
     }
     Some(Intent::MediaPause {
         room: room.to_string(),
+    })
+}
+
+// ---- Play radio ------------------------------------------------------------
+
+fn play_radio_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              play\s+
+              (?:
+                (?:the\s+)?(?:radio|tunein)
+              |
+                (?P<station>.+?)\s+on\s+(?:the\s+)?(?:radio|tunein)
+              )
+              (?:\s+in\s+(?:the\s+)?(?P<room>.+?))?
+              $",
+        )
+        .expect("play_radio regex compiles")
+    })
+}
+
+fn match_play_radio(t: &str) -> Option<Intent> {
+    let caps = play_radio_regex().captures(t)?;
+    Some(Intent::PlayRadio {
+        station: caps.name("station").map(|m| m.as_str().to_string()),
+        room: caps.name("room").map(|m| m.as_str().to_string()),
+    })
+}
+
+// ---- Play elsewhere --------------------------------------------------------
+
+fn play_elsewhere_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              (?:also\s+)?(?:play|put)\s+
+              (?:it|this|that|the\s+music|the\s+radio)\s+
+              (?:
+                (?P<everywhere>
+                  everywhere
+                | in\s+(?:all|every)(?:\s+the)?\s+rooms?
+                | all\s+over(?:\s+the\s+house)?
+                | (?:in|throughout)\s+the\s+(?:whole\s+)?house
+                )
+              |
+                in\s+(?:the\s+)?(?P<room>.+?)(?:\s+(?:too|as\s+well))?
+              )
+              $",
+        )
+        .expect("play_elsewhere regex compiles")
+    })
+}
+
+fn match_play_elsewhere(t: &str) -> Option<Intent> {
+    let caps = play_elsewhere_regex().captures(t)?;
+    if caps.name("everywhere").is_some() {
+        return Some(Intent::PlayElsewhere { room: None });
+    }
+    Some(Intent::PlayElsewhere {
+        room: Some(caps.name("room")?.as_str().to_string()),
+    })
+}
+
+// ---- Play music in a room --------------------------------------------------
+
+fn play_music_in_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^play\s+(?P<query>.+?)\s+in\s+(?:the\s+)?(?P<room>.+)$")
+            .expect("play_music_in regex compiles")
+    })
+}
+
+fn match_play_music_in(t: &str) -> Option<Intent> {
+    let caps = play_music_in_regex().captures(t)?;
+    let query = caps.name("query")?.as_str();
+    // "play music in the kitchen" is resuming it, not finding "music".
+    if query == "music" || query == "the music" {
+        return None;
+    }
+    Some(Intent::PlayMusic {
+        query: query.to_string(),
+        room: Some(caps.name("room")?.as_str().to_string()),
     })
 }
 
@@ -2483,6 +2576,89 @@ mod tests {
             parse("play music in the living room"),
             Some(Intent::MediaPlay {
                 room: "living room".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn play_the_radio_where_it_was_said() {
+        assert_eq!(
+            parse("play the radio"),
+            Some(Intent::PlayRadio {
+                station: None,
+                room: None
+            })
+        );
+        assert_eq!(
+            parse("play radio in the living room"),
+            Some(Intent::PlayRadio {
+                station: None,
+                room: Some("living room".into())
+            })
+        );
+    }
+
+    #[test]
+    fn play_a_station_on_the_radio() {
+        assert_eq!(
+            parse("play p4 on the radio in the kitchen"),
+            Some(Intent::PlayRadio {
+                station: Some("p4".into()),
+                room: Some("kitchen".into())
+            })
+        );
+    }
+
+    #[test]
+    fn play_it_everywhere() {
+        for said in [
+            "play it everywhere",
+            "play it in all rooms",
+            "play the music in every room",
+            "play it all over the house",
+        ] {
+            assert_eq!(
+                parse(said),
+                Some(Intent::PlayElsewhere { room: None }),
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn play_it_in_another_room_too() {
+        assert_eq!(
+            parse("play it in the kitchen too"),
+            Some(Intent::PlayElsewhere {
+                room: Some("kitchen".into())
+            })
+        );
+        assert_eq!(
+            parse("also play this in the walk in closet"),
+            Some(Intent::PlayElsewhere {
+                room: Some("walk in closet".into())
+            })
+        );
+    }
+
+    #[test]
+    fn play_something_in_a_room() {
+        assert_eq!(
+            parse("play john mayer in the kitchen"),
+            Some(Intent::PlayMusic {
+                query: "john mayer".into(),
+                room: Some("kitchen".into())
+            })
+        );
+    }
+
+    #[test]
+    fn plain_play_is_left_for_the_dispatcher_to_read() {
+        // A room or something to find: only the dispatcher knows.
+        assert_eq!(
+            parse("play john mayer"),
+            Some(Intent::MediaPlay {
+                room: "john mayer".into(),
             })
         );
     }

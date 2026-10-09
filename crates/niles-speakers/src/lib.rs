@@ -2,10 +2,13 @@
 
 pub mod client;
 pub mod error;
+pub mod favorites;
 pub mod household;
 pub mod transport;
+pub mod tunein;
 
-pub use client::{SonosClient, TransportState};
+pub use client::{Media, SonosClient, TransportState, is_radio};
 pub use error::{Error, Result};
+pub use favorites::Favorite;
 pub use household::{SonosRoom, household};
 pub use transport::{HttpTransport, SonosTransport};

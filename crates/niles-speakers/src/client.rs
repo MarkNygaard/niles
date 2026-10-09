@@ -158,6 +158,106 @@ impl SonosClient {
         Ok(())
     }
 
+    /// What it is playing, or last had loaded: a station, a queue, the
+    /// TV, or another speaker it follows (`x-rincon:`).
+    pub async fn media(&self) -> Result<Media> {
+        let body = self
+            .invoke(
+                av_endpoint(&self.ip),
+                AV_TRANSPORT_SERVICE,
+                "GetMediaInfo",
+                "<InstanceID>0</InstanceID>",
+            )
+            .await?;
+        Ok(Media {
+            uri: extract_tag(&body, "CurrentURI")
+                .map(|u| crate::household::unescape(&u))
+                .unwrap_or_default(),
+            metadata: extract_tag(&body, "CurrentURIMetaData")
+                .map(|m| crate::household::unescape(&m))
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Load something to play — a station by its URI and the metadata
+    /// Sonos wants beside it. Loaded, not started: [`Self::play`] next.
+    pub async fn load(&self, uri: &str, metadata: &str) -> Result<()> {
+        self.invoke(
+            av_endpoint(&self.ip),
+            AV_TRANSPORT_SERVICE,
+            "SetAVTransportURI",
+            &format!(
+                "<InstanceID>0</InstanceID><CurrentURI>{}</CurrentURI><CurrentURIMetaData>{}</CurrentURIMetaData>",
+                escape(uri),
+                escape(metadata)
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Play whatever `leader` plays, in step with it. Leaves any group
+    /// it was in first, which Sonos does by itself.
+    pub async fn join(&self, leader: &str) -> Result<()> {
+        self.load(&format!("x-rincon:{leader}"), "").await
+    }
+
+    /// Leave the group it is in and play on its own, so it can lead.
+    pub async fn go_solo(&self) -> Result<()> {
+        self.invoke(
+            av_endpoint(&self.ip),
+            AV_TRANSPORT_SERVICE,
+            "BecomeCoordinatorOfStandaloneGroup",
+            "<InstanceID>0</InstanceID>",
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Replace its queue with one thing — a playlist, an album — and
+    /// load the queue. `own_id` is this speaker's `RINCON_…`, which the
+    /// queue is named after.
+    pub async fn load_queue(&self, own_id: &str, uri: &str, metadata: &str) -> Result<()> {
+        self.invoke(
+            av_endpoint(&self.ip),
+            AV_TRANSPORT_SERVICE,
+            "RemoveAllTracksFromQueue",
+            "<InstanceID>0</InstanceID>",
+        )
+        .await?;
+        self.invoke(
+            av_endpoint(&self.ip),
+            AV_TRANSPORT_SERVICE,
+            "AddURIToQueue",
+            &format!(
+                "<InstanceID>0</InstanceID><EnqueuedURI>{}</EnqueuedURI><EnqueuedURIMetaData>{}</EnqueuedURIMetaData><DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>",
+                escape(uri),
+                escape(metadata)
+            ),
+        )
+        .await?;
+        self.load(&format!("x-rincon-queue:{own_id}#0"), "").await
+    }
+
+    /// The household's Sonos Favorites. Shared by every speaker, so any
+    /// one can be asked.
+    pub async fn favorites(&self) -> Result<Vec<crate::Favorite>> {
+        let body = self
+            .invoke(
+                format!("http://{}:1400/MediaServer/ContentDirectory/Control", self.ip),
+                CONTENT_DIRECTORY_SERVICE,
+                "Browse",
+                "<ObjectID>FV:2</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>200</RequestedCount><SortCriteria></SortCriteria>",
+            )
+            .await?;
+        let result = extract_tag(&body, "Result").ok_or_else(|| Error::ParseResponse {
+            reason: "missing <Result>".into(),
+        })?;
+        Ok(crate::favorites::parse(&crate::household::unescape(
+            &result,
+        )))
+    }
+
     async fn invoke(
         &self,
         endpoint: String,
@@ -173,7 +273,49 @@ impl SonosClient {
     }
 }
 
+/// What a speaker has loaded, as [`SonosClient::media`] reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Media {
+    pub uri: String,
+    pub metadata: String,
+}
+
+impl Media {
+    /// The TV, through a soundbar's HDMI or optical input.
+    pub fn is_tv(&self) -> bool {
+        self.uri.starts_with("x-sonos-htastream:")
+    }
+
+    /// A radio station: TuneIn, Sonos Radio, or a plain stream.
+    pub fn is_radio(&self) -> bool {
+        is_radio(&self.uri)
+    }
+}
+
+/// Whether a URI is a radio station rather than a queue or a group.
+pub fn is_radio(uri: &str) -> bool {
+    [
+        "x-sonosapi-stream:",
+        "x-sonosapi-radio:",
+        "x-rincon-mp3radio:",
+        "x-sonosapi-hls:",
+        "aac:",
+        "hls-radio:",
+    ]
+    .iter()
+    .any(|scheme| uri.starts_with(scheme))
+}
+
+/// Text placed inside a SOAP element.
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
+const CONTENT_DIRECTORY_SERVICE: &str = "urn:schemas-upnp-org:service:ContentDirectory:1";
 const RENDERING_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 
 fn av_endpoint(ip: &str) -> String {
