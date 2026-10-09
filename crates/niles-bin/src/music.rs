@@ -442,7 +442,8 @@ impl Music {
 
     /// What plays for one Spotify item: an artist as tracks found by
     /// them, a song followed by more of its artist, an album or a
-    /// playlist as itself.
+    /// playlist as itself. An artist's songs come shuffled, so "play
+    /// John Mayer" does not start with the same song every time.
     async fn spotify_run(
         &self,
         credentials: &Credentials,
@@ -471,6 +472,7 @@ impl Music {
             );
         }
         run.truncate(10);
+        shuffle_after_the_first(&mut run, item.kind == SpotifyKind::Track);
         if run.is_empty() {
             return Err(format!("Spotify has no tracks for {:?}", item.name));
         }
@@ -638,6 +640,14 @@ impl Music {
 /// account on.
 fn is_refused(e: &niles_speakers::Error) -> bool {
     matches!(e, niles_speakers::Error::SoapFault { code, .. } if code == "800")
+}
+
+/// Shuffle a run of an artist's songs; `keep_first` when the first is
+/// the song that was asked for, which plays first all the same.
+fn shuffle_after_the_first(run: &mut [Item], keep_first: bool) {
+    use rand::seq::SliceRandom;
+    let start = usize::from(keep_first).min(run.len());
+    run[start..].shuffle(&mut rand::rng());
 }
 
 /// What Spotify had for a request.
@@ -1295,6 +1305,34 @@ room = "kitchen"
             SpotifyKind::Album
         );
         assert!(exact_matches(&found, "mayer", None).is_empty());
+    }
+
+    #[test]
+    fn the_song_asked_for_still_plays_first() {
+        let mut run: Vec<Item> = (0..10)
+            .map(|n| spotify_item(SpotifyKind::Track, &format!("song {n}")))
+            .collect();
+        for _ in 0..20 {
+            shuffle_after_the_first(&mut run, true);
+            assert_eq!(run[0].name, "song 0");
+        }
+    }
+
+    #[test]
+    fn an_artist_does_not_start_with_the_same_song_every_time() {
+        let original: Vec<Item> = (0..10)
+            .map(|n| spotify_item(SpotifyKind::Track, &format!("song {n}")))
+            .collect();
+        let firsts: std::collections::HashSet<String> = (0..50)
+            .map(|_| {
+                let mut run = original.clone();
+                shuffle_after_the_first(&mut run, false);
+                run[0].name.clone()
+            })
+            .collect();
+        // Fifty shuffles of ten songs starting the same way would be a
+        // one-in-10^49 coincidence.
+        assert!(firsts.len() > 1);
     }
 
     #[test]
