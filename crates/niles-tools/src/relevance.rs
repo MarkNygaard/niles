@@ -42,6 +42,28 @@ struct Group {
 const GROUPS: &[Group] = &[
     Group {
         keywords: &[
+            "play",
+            "playing",
+            "music",
+            "radio",
+            "station",
+            "stations",
+            "song",
+            "songs",
+            "album",
+            "playlist",
+            "artist",
+            "spotify",
+            "tunein",
+            "favorite",
+            "favourite",
+            "everywhere",
+            "listen",
+        ],
+        tools: &["play_radio", "play_music", "play_elsewhere"],
+    },
+    Group {
+        keywords: &[
             "timer",
             "timers",
             "alarm",

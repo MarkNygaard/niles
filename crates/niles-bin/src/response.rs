@@ -273,6 +273,52 @@ pub fn media_play(room: &str) -> String {
     format!("Playing in the {}.", spoken_room(room))
 }
 
+/// "Playing DR P3 in the kitchen."
+pub fn playing(what: &str, room: &str) -> String {
+    format!("Playing {what} in the {}.", spoken_room(room))
+}
+
+/// "Playing it everywhere."
+pub fn playing_everywhere() -> String {
+    "Playing it everywhere.".into()
+}
+
+/// "Playing it in the kitchen too."
+pub fn playing_too(room: &str) -> String {
+    format!("Playing it in the {} too.", spoken_room(room))
+}
+
+/// "Play the radio" in a room that has never had a station.
+pub fn which_station() -> String {
+    "Which station should I play?".into()
+}
+
+/// A music command with no room named, from somewhere with no room —
+/// the chat.
+pub fn which_room_to_play() -> String {
+    "Which room should it play in?".into()
+}
+
+/// "I couldn't find John Mayer."
+pub fn music_not_found(what: &str) -> String {
+    format!("I couldn't find {what}.")
+}
+
+/// "Play it everywhere" with nothing playing.
+pub fn nothing_to_share() -> String {
+    "Nothing is playing to share.".into()
+}
+
+/// "Play it everywhere" while the soundbar plays the TV.
+pub fn tv_stays_put() -> String {
+    "That's the TV, and the TV only plays in its own room.".into()
+}
+
+/// "I couldn't start the music in the kitchen."
+pub fn music_failed(room: &str) -> String {
+    format!("I couldn't start the music in the {}.", spoken_room(room))
+}
+
 /// "Paused in the kitchen."
 pub fn media_pause(room: &str) -> String {
     format!("Paused in the {}.", spoken_room(room))

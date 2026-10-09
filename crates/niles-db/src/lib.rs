@@ -30,12 +30,14 @@
 mod captures;
 mod enrollments;
 mod groceries;
+mod room_music;
 mod scenes;
 mod secrets;
 mod tado_tokens;
 pub use captures::{Capture, PostgresCaptures};
 pub use enrollments::PostgresEnrollments;
 pub use groceries::PostgresGroceries;
+pub use room_music::PostgresRoomMusic;
 pub use scenes::PostgresScenes;
 pub use secrets::{PostgresSecrets, Sealer};
 pub use tado_tokens::PostgresTadoTokens;

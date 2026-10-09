@@ -32,6 +32,7 @@ struct Household {
 }
 
 /// A Sonos room in a Niles room, ready to be played to.
+#[derive(Clone)]
 pub struct Player {
     pub sonos: SonosRoom,
     pub client: Arc<SonosClient>,
@@ -54,11 +55,29 @@ impl SpeakerRegistry {
     /// Empty when Sonos is off, nothing is placed there, or no speaker
     /// answers — which to the caller are all "no speaker in this room".
     pub async fn in_room(&self, room: &RoomName) -> Vec<Player> {
+        self.placed(Some(room)).await
+    }
+
+    /// Every Sonos placed in any room — "play it everywhere".
+    pub async fn everywhere(&self) -> Vec<Player> {
+        self.placed(None).await
+    }
+
+    /// The household changes when Niles groups speakers itself; the
+    /// next call should read it again rather than trust the old one.
+    pub async fn forget(&self) {
+        self.household.lock().await.read_at = None;
+    }
+
+    async fn placed(&self, room: Option<&RoomName>) -> Vec<Player> {
         let cfg = self.config.current();
         if !cfg.speakers.is_configured() {
             return Vec::new();
         }
-        let placed: Vec<&str> = cfg.speakers.in_room(room.as_str()).collect();
+        let placed: Vec<&str> = match room {
+            Some(room) => cfg.speakers.in_room(room.as_str()).collect(),
+            None => cfg.speakers.sonos.keys().map(String::as_str).collect(),
+        };
         if placed.is_empty() {
             return Vec::new();
         }

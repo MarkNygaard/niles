@@ -61,6 +61,7 @@ mod follow_up;
 mod grocery_delivery;
 mod last_target;
 mod manifest;
+mod music;
 mod profile;
 mod push;
 mod recognition;
@@ -2899,6 +2900,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
+    let music = Arc::new(music::Music::new(speakers.clone(), build_room_music(&cfg)).await);
+    music::register(&mut tools, music.clone());
 
     // Notification center
     let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
@@ -2953,6 +2956,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         scenes: Arc::new(SceneStore::new()),
         timers,
         speakers,
+        music,
         llm,
         tier2,
         identifier,
@@ -3211,6 +3215,7 @@ struct DispatchCtx {
     scenes: Arc<SceneStore>,
     timers: Arc<TimerStore>,
     speakers: Arc<speakers::SpeakerRegistry>,
+    music: Arc<music::Music>,
     llm: Arc<GroqClient>,
     tier2: Option<Arc<dyn ChatProvider>>,
     identifier: Option<Arc<dyn SpeakerIdentifier>>,
@@ -4315,32 +4320,106 @@ async fn dispatch_text(
                 Some(response::cleared_manual(Some(&name)))
             }
         },
-        Intent::MediaPause { room } => media_result_to_response(
-            peer,
-            &room,
-            media_dispatch(
-                ctx,
-                &room,
-                Reach::Leaders,
-                |c| async move { c.pause().await },
-            )
-            .await,
-            response::media_pause(&room),
-            "pause",
-        ),
-        Intent::MediaPlay { room } => media_result_to_response(
-            peer,
-            &room,
-            media_dispatch(
-                ctx,
-                &room,
-                Reach::Leaders,
-                |c| async move { c.play().await },
-            )
-            .await,
-            response::media_play(&room),
-            "play",
-        ),
+        Intent::MediaPause { room } => {
+            let canonical = match intent_room_to_canonical(&room) {
+                Ok(r) => r,
+                Err(reason) => {
+                    tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
+                    return Some(response::room_not_found(&room));
+                }
+            };
+            Some(match ctx.music.pause(&canonical).await {
+                music::Outcome::Paused => response::media_pause(&room),
+                music::Outcome::NoSpeaker => response::no_speaker_in_room(canonical.as_str()),
+                other => {
+                    tracing::warn!("[{peer}] pausing {canonical}: {other:?}");
+                    response::speaker_unreachable(canonical.as_str())
+                }
+            })
+        }
+        // "Play the kitchen" resumes it; "play P4" and "play John Mayer"
+        // are things to find. Only a room Niles knows tells them apart.
+        Intent::MediaPlay { room } => {
+            let known = match intent_room_to_canonical(&room) {
+                Ok(r) => {
+                    !ctx.speakers.in_room(&r).await.is_empty()
+                        || !ctx.registry.list_room(&r).is_empty()
+                }
+                Err(_) => false,
+            };
+            if known {
+                media_result_to_response(
+                    peer,
+                    &room,
+                    media_dispatch(
+                        ctx,
+                        &room,
+                        Reach::Leaders,
+                        |c| async move { c.play().await },
+                    )
+                    .await,
+                    response::media_play(&room),
+                    "play",
+                )
+            } else {
+                let target = match music_room(None, origin_room) {
+                    Ok(r) => r,
+                    Err(say) => return Some(say),
+                };
+                match music_reply(ctx.music.play(&target, &room).await, &target) {
+                    Some(say) => Some(say),
+                    None => {
+                        return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
+                    }
+                }
+            }
+        }
+        Intent::PlayRadio { station, room } => {
+            let target = match music_room(room.as_deref(), origin_room) {
+                Ok(r) => r,
+                Err(say) => return Some(say),
+            };
+            match music_reply(ctx.music.radio(&target, station.as_deref()).await, &target) {
+                Some(say) => Some(say),
+                None => return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await,
+            }
+        }
+        Intent::PlayMusic { query, room } => {
+            let target = match music_room(room.as_deref(), origin_room) {
+                Ok(r) => r,
+                Err(say) => return Some(say),
+            };
+            match music_reply(ctx.music.play(&target, &query).await, &target) {
+                Some(say) => Some(say),
+                None => return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await,
+            }
+        }
+        Intent::PlayElsewhere { room } => {
+            let to = match room.as_deref().map(intent_room_to_canonical) {
+                Some(Ok(r)) => Some(r),
+                Some(Err(_)) => {
+                    return Some(response::room_not_found(
+                        room.as_deref().unwrap_or_default(),
+                    ));
+                }
+                None => None,
+            };
+            Some(match ctx.music.spread(origin_room, to.as_ref()).await {
+                music::Outcome::Spread => match &to {
+                    Some(r) => response::playing_too(r.as_str()),
+                    None => response::playing_everywhere(),
+                },
+                music::Outcome::NothingPlaying => response::nothing_to_share(),
+                music::Outcome::TvStaysPut => response::tv_stays_put(),
+                music::Outcome::NoSpeaker => {
+                    response::no_speaker_in_room(to.as_ref().map_or("house", |r| r.as_str()))
+                }
+                other => {
+                    tracing::warn!("[{peer}] spreading the music: {other:?}");
+                    response::music_failed(to.as_ref().map_or("house", |r| r.as_str()))
+                }
+            })
+        }
         Intent::MediaNext { room } => media_result_to_response(
             peer,
             &room,
@@ -4620,6 +4699,33 @@ async fn publish_single(
 fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
     let normalized = s.trim().to_ascii_lowercase().replace([' ', '\t'], "_");
     RoomName::parse(&normalized).map_err(|e| format!("{e}"))
+}
+
+/// The room a music command is for: the one named, or where it was said.
+fn music_room(
+    named: Option<&str>,
+    origin: Option<&RoomName>,
+) -> std::result::Result<RoomName, String> {
+    match named {
+        Some(raw) => intent_room_to_canonical(raw).map_err(|_| response::room_not_found(raw)),
+        None => origin.cloned().ok_or_else(response::which_room_to_play),
+    }
+}
+
+/// What to say once music was asked for. `None` when several stations
+/// could be meant: the model sees them and picks, or asks.
+fn music_reply(outcome: music::Outcome, room: &RoomName) -> Option<String> {
+    Some(match outcome {
+        music::Outcome::Playing(what) => response::playing(&what, room.as_str()),
+        music::Outcome::Choose(_) => return None,
+        music::Outcome::NotFound(what) => response::music_not_found(&what),
+        music::Outcome::WhichStation => response::which_station(),
+        music::Outcome::NoSpeaker => response::no_speaker_in_room(room.as_str()),
+        other => {
+            tracing::warn!("[music] in {room}: {other:?}");
+            response::music_failed(room.as_str())
+        }
+    })
 }
 
 #[derive(Debug)]
@@ -5067,6 +5173,19 @@ impl niles_scheduler::ScenePersistence for QueuedScenes {
             );
         }
     }
+}
+
+/// Where each room's last station is kept: the database, when there is
+/// one. Without it, rooms remember their stations until a restart.
+fn build_room_music(cfg: &Config) -> Option<Arc<niles_db::PostgresRoomMusic>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    let describe = backend.describe_target();
+    Some(Arc::new(niles_db::PostgresRoomMusic::new(
+        backend.pool(),
+        describe,
+    )))
 }
 
 /// The scene store, kept wherever this install can keep it.
@@ -5610,6 +5729,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
+    let music = Arc::new(music::Music::new(speakers.clone(), build_room_music(&cfg)).await);
+    music::register(&mut tools, music.clone());
 
     // Notification center
     let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
@@ -5786,6 +5907,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         scenes,
         timers,
         speakers,
+        music,
         llm,
         tier2,
         identifier,
