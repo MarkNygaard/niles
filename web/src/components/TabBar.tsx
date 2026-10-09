@@ -1,4 +1,4 @@
-import { House, MessageCircle, ShoppingBasket, UserRound } from "lucide-react";
+import { House, MessageCircle, Music, ShoppingBasket, UserRound } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { MOVABLE } from "@/lib/menu";
 import type { MenuItem } from "@/lib/menu";
@@ -39,6 +39,12 @@ const MIDDLE: Record<MenuItem["id"], Tab> = {
     label: "Chat",
     icon: <MessageCircle />,
     owns: (r) => r === "/chat",
+  },
+  media: {
+    href: "#/media",
+    label: "Media",
+    icon: <Music />,
+    owns: (r) => r === "/media",
   },
 };
 

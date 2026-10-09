@@ -1,7 +1,14 @@
 import { Lock } from "lucide-react";
 import { OrderList } from "@/components/OrderList";
 import { Switch } from "@/components/ui/switch";
-import type { MenuEntry, MenuItem } from "@/lib/menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { MediaShown, MenuEntry, MenuItem } from "@/lib/menu";
 
 export interface MenuCardProps {
   /** The entries between Home and Me, from `menuOf`. */
@@ -9,11 +16,22 @@ export interface MenuCardProps {
   disabled?: boolean;
   /** The whole arrangement, once anything in it has changed. */
   onChange: (next: { order: MenuEntry[]; hidden: MenuEntry[] }) => void;
+  /** When Media shows: it has three answers where the others have two. */
+  mediaShown: MediaShown;
+  onMediaShown: (shown: MediaShown) => void;
 }
+
+/** What the Media row offers, in the order it offers them. */
+export const MEDIA_SHOWN: { value: MediaShown; label: string }[] = [
+  { value: "playing", label: "When something plays" },
+  { value: "always", label: "Always" },
+  { value: "never", label: "Never" },
+];
 
 const LABELS: Record<MenuEntry, string> = {
   groceries: "Groceries",
   chat: "Chat",
+  media: "Media",
 };
 
 /** Home and Me, drawn as rows so the list reads as the whole menu,
@@ -35,7 +53,13 @@ function Fixed({ label }: { label: string }) {
  * the way back here to undo a hidden entry. Hiding takes an entry out of
  * the menu only — its page, and what voice does with it, carry on.
  */
-export function MenuCard({ menu, disabled, onChange }: MenuCardProps) {
+export function MenuCard({
+  menu,
+  disabled,
+  onChange,
+  mediaShown,
+  onMediaShown,
+}: MenuCardProps) {
   const hidden = new Set(menu.filter((item) => item.hidden).map((item) => item.id));
   const order = menu.map((item) => item.id);
 
@@ -49,6 +73,29 @@ export function MenuCard({ menu, disabled, onChange }: MenuCardProps) {
         onChange={(next) => onChange({ order: next as MenuEntry[], hidden: [...hidden] })}
         trailing={(name) => {
           const id = name as MenuEntry;
+          if (id === "media") {
+            return (
+              <Select
+                items={MEDIA_SHOWN}
+                value={mediaShown}
+                disabled={disabled}
+                onValueChange={(next: MediaShown | null) => {
+                  if (next) onMediaShown(next);
+                }}
+              >
+                <SelectTrigger aria-label="Show Media" className="h-8 w-48">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MEDIA_SHOWN.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            );
+          }
           return (
             <Switch
               aria-label={`Show ${LABELS[id]}`}

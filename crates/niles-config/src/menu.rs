@@ -7,7 +7,19 @@ use std::collections::HashSet;
 /// The menu entries that can be moved and hidden. Home and Me are not
 /// among them: Home is where the app opens and Me is the way to the
 /// settings, so hiding either would leave no way back to this one.
-pub const MOVABLE: &[&str] = &["groceries", "chat"];
+pub const MOVABLE: &[&str] = &["groceries", "chat", "media"];
+
+/// When the Media entry is in the menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaShown {
+    /// While something plays, or the TV is on: a page for the volume is
+    /// only worth a place in the menu while there is a volume to set.
+    #[default]
+    Playing,
+    Always,
+    Never,
+}
 
 /// `[menu]` section of the config file.
 ///
@@ -24,6 +36,9 @@ pub struct MenuConfig {
     /// The movable entries left out of the menu. Their pages still work.
     #[serde(default)]
     pub hidden: Vec<String>,
+    /// When the Media entry shows.
+    #[serde(default)]
+    pub media: MediaShown,
 }
 
 impl MenuConfig {
@@ -68,6 +83,7 @@ mod tests {
         MenuConfig {
             order: order.iter().map(|s| s.to_string()).collect(),
             hidden: hidden.iter().map(|s| s.to_string()).collect(),
+            media: MediaShown::Playing,
         }
     }
 
@@ -101,6 +117,15 @@ hidden = [\"groceries\"]",
         .unwrap();
         assert_eq!(menu.order, ["chat", "groceries"]);
         assert_eq!(menu.hidden, ["groceries"]);
+    }
+
+    #[test]
+    fn media_shows_while_something_plays_unless_told_otherwise() {
+        let menu: MenuConfig = toml::from_str("").unwrap();
+        assert_eq!(menu.media, MediaShown::Playing);
+        let menu: MenuConfig = toml::from_str("media = \"always\"").unwrap();
+        assert_eq!(menu.media, MediaShown::Always);
+        assert!(toml::from_str::<MenuConfig>("media = \"sometimes\"").is_err());
     }
 
     #[test]

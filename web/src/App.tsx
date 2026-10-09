@@ -4,6 +4,7 @@ import { ChevronLeft } from "lucide-react";
 import { ChatPage } from "@/components/ChatPage";
 import { ConfigPanel } from "@/components/ConfigPanel";
 import { GroceriesPage } from "@/components/GroceriesPage";
+import { MediaPage, somethingPlays } from "@/components/MediaPage";
 import { MePage } from "@/components/MePage";
 import { MyProfile } from "@/components/MyProfile";
 import { RoomDashboard } from "@/components/RoomDashboard";
@@ -53,6 +54,22 @@ export function App() {
     queryKey: ["config"],
     queryFn: api.getConfig,
     enabled: !auth.isLoading && !refused,
+  });
+  // What plays, for whether the Media entry is in the menu. The same
+  // queries the dashboard and the Media page use, so one fetch serves.
+  const music = useQuery({
+    queryKey: ["music"],
+    queryFn: api.music,
+    enabled: !auth.isLoading && !refused,
+    retry: false,
+    refetchInterval: 15_000,
+  });
+  const tv = useQuery({
+    queryKey: ["tv"],
+    queryFn: api.tv,
+    enabled: !auth.isLoading && !refused,
+    retry: false,
+    refetchInterval: 60_000,
   });
 
   // A new page starts at its top. `#root` is what scrolls, not the
@@ -128,7 +145,14 @@ export function App() {
           avatarUrl={avatarUrl}
           // Nothing in the middle until the arrangement is known: an
           // entry somebody hid should not flash up on every load.
-          menu={config.isPending ? [] : menuOf(config.data?.effective)}
+          menu={
+            config.isPending
+              ? []
+              : menuOf(
+                  config.data?.effective,
+                  somethingPlays(music.data, tv.data?.status?.on),
+                )
+          }
         />
       </header>
 
@@ -147,6 +171,8 @@ function screenFor(
   switch (route) {
     case "/groceries":
       return { at: route, title: "Groceries", body: <GroceriesPage /> };
+    case "/media":
+      return { at: route, title: "Media", body: <MediaPage /> };
     case "/chat":
       return { at: route, title: "Chat", ownsBottom: true, body: <ChatPage /> };
     case "/me":
