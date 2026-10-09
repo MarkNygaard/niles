@@ -65,6 +65,8 @@ impl IntentRouter {
             .or_else(|| crate::climate::match_heating(&t))
             // Before "play X", which would take "the radio" and "it in
             // the kitchen too" for rooms.
+            // "Stop" is also the timer's word: these name the music.
+            .or_else(|| match_stop_music_in(&t))
             .or_else(|| match_play_radio(&t))
             .or_else(|| match_play_elsewhere(&t))
             .or_else(|| match_play_from_spotify(&t))
@@ -103,6 +105,7 @@ impl IntentRouter {
             .or_else(|| match_light_set_implicit_room(&t, &ctx))
             .or_else(|| match_device_dim(&t, &ctx))
             .or_else(|| match_device_set(&t, &ctx))
+            .or_else(|| match_stop_music_here(&t, &ctx))
             .or_else(|| match_media_next_implicit_room(&t, &ctx))
             .or_else(|| match_media_previous_implicit_room(&t, &ctx))
             // Last, so a real device or room always wins the sentence.
@@ -1032,6 +1035,43 @@ fn match_media_pause(t: &str) -> Option<Intent> {
     }
     Some(Intent::MediaPause {
         room: room.to_string(),
+    })
+}
+
+// ---- Stop the music ----------------------------------------------------------
+
+/// What is being stopped: the music, the radio, the song, or "playing"
+/// with whatever was being played after it.
+const STOP_WHAT: &str =
+    r"(?:stop|pause)\s+(?:the\s+)?(?:music|radio|song|sonos|speakers?|playing(?:\s+.+?)?)";
+
+fn stop_music_in_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(r"^{STOP_WHAT}\s+in\s+(?:the\s+)?(?P<room>.+)$"))
+            .expect("stop_music_in regex compiles")
+    })
+}
+
+fn match_stop_music_in(t: &str) -> Option<Intent> {
+    let caps = stop_music_in_regex().captures(t)?;
+    Some(Intent::MediaPause {
+        room: caps.name("room")?.as_str().to_string(),
+    })
+}
+
+fn stop_music_here_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(r"^{STOP_WHAT}(?:\s+in\s+here)?$"))
+            .expect("stop_music_here regex compiles")
+    })
+}
+
+fn match_stop_music_here(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
+    stop_music_here_regex().captures(t)?;
+    Some(Intent::MediaPause {
+        room: ctx.origin_room?.as_str().to_owned(),
     })
 }
 
@@ -3498,6 +3538,55 @@ mod context_tests {
 
     fn parse_with(transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
         IntentRouter::new().parse_with_context(transcript, ctx)
+    }
+
+    #[test]
+    fn stopping_the_music_in_a_room_pauses_it() {
+        for said in [
+            "stop the music in the living room",
+            "pause the music in the living room",
+            "stop playing gavin degraw in the living room",
+            "stop the radio in the living room",
+        ] {
+            assert_eq!(
+                IntentRouter::new().parse(said),
+                Some(Intent::MediaPause {
+                    room: "living room".into()
+                }),
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn stopping_the_music_without_a_room_means_this_one() {
+        let idx = fixture_unique();
+        let kitchen = RoomName::parse("kitchen").expect("valid");
+        for said in [
+            "stop the music",
+            "pause the music",
+            "stop playing gavin degraw",
+        ] {
+            assert_eq!(
+                parse_with(said, ctx_with(&idx, Some(&kitchen))),
+                Some(Intent::MediaPause {
+                    room: "kitchen".into()
+                }),
+                "{said}"
+            );
+        }
+        // From the app there is no "this room": the model asks.
+        assert_eq!(parse_with("stop the music", ctx_with(&idx, None)), None);
+    }
+
+    #[test]
+    fn a_bare_stop_is_still_the_timer() {
+        let idx = fixture_unique();
+        let kitchen = RoomName::parse("kitchen").expect("valid");
+        assert_eq!(
+            parse_with("stop", ctx_with(&idx, Some(&kitchen))),
+            Some(Intent::Stop)
+        );
     }
 
     #[test]
