@@ -22,6 +22,9 @@ pub struct Input {
     pub id: String,
     /// What the TV shows for it: "HDMI 2", or a name somebody gave it.
     pub label: String,
+    /// The app the TV says is on screen while it shows this input:
+    /// "com.webos.app.hdmi2".
+    pub app_id: Option<String>,
 }
 
 /// Whether the TV is on, and what is on screen.
@@ -126,6 +129,7 @@ impl Tv {
                 Some(Input {
                     id: d["id"].as_str()?.to_string(),
                     label: d["label"].as_str()?.to_string(),
+                    app_id: d["appId"].as_str().map(str::to_string),
                 })
             })
             .collect())
@@ -166,19 +170,24 @@ impl Tv {
         if !on {
             return Ok(Status { on, app: None });
         }
-        let app = self.foreground_app().await.ok().flatten();
-        let title = match &app {
-            Some(id) => self
-                .apps()
+        let Some(app) = self.foreground_app().await.ok().flatten() else {
+            return Ok(Status { on, app: None });
+        };
+        // An input is on screen as an "app" the app list does not have:
+        // its name is in the input list, as the TV shows it.
+        let name = if app.starts_with("com.webos.app.hdmi") || app.contains("livetv") {
+            let inputs = self.inputs().await.unwrap_or_default();
+            input_name(&inputs, &app)
+        } else {
+            self.apps()
                 .await
                 .ok()
-                .and_then(|apps| apps.into_iter().find(|a| &a.id == id))
-                .map(|a| a.title),
-            None => None,
+                .and_then(|apps| apps.into_iter().find(|a| a.id == app))
+                .map(|a| a.title)
         };
         Ok(Status {
             on,
-            app: title.or(app),
+            app: Some(name.unwrap_or_else(|| readable(&app))),
         })
     }
 
@@ -189,6 +198,26 @@ impl Tv {
             .await?;
         Ok(mac_in(&answer))
     }
+}
+
+/// The name of the input whose app is `app_id`.
+fn input_name(inputs: &[Input], app_id: &str) -> Option<String> {
+    inputs
+        .iter()
+        .find(|i| i.app_id.as_deref() == Some(app_id))
+        .map(|i| i.label.clone())
+}
+
+/// Something a person can read for an app id nothing named:
+/// "com.webos.app.hdmi2" is HDMI 2, "com.webos.app.livetv" is Live TV.
+fn readable(app_id: &str) -> String {
+    if let Some(n) = app_id.strip_prefix("com.webos.app.hdmi") {
+        return format!("HDMI {n}");
+    }
+    if app_id.contains("livetv") {
+        return "Live TV".into();
+    }
+    app_id.to_string()
 }
 
 fn screen_on(answer: &Value) -> bool {
@@ -211,6 +240,38 @@ fn mac_in(answer: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_input_on_screen_is_called_what_the_tv_calls_it() {
+        let inputs = [
+            Input {
+                id: "HDMI_1".into(),
+                label: "PlayStation".into(),
+                app_id: Some("com.webos.app.hdmi1".into()),
+            },
+            Input {
+                id: "HDMI_2".into(),
+                label: "HDMI 2".into(),
+                app_id: Some("com.webos.app.hdmi2".into()),
+            },
+        ];
+        assert_eq!(
+            input_name(&inputs, "com.webos.app.hdmi1").as_deref(),
+            Some("PlayStation")
+        );
+        assert_eq!(
+            input_name(&inputs, "com.webos.app.hdmi2").as_deref(),
+            Some("HDMI 2")
+        );
+        assert_eq!(input_name(&inputs, "netflix"), None);
+    }
+
+    #[test]
+    fn an_id_nothing_named_is_still_readable() {
+        assert_eq!(readable("com.webos.app.hdmi2"), "HDMI 2");
+        assert_eq!(readable("com.webos.app.livetv"), "Live TV");
+        assert_eq!(readable("some.other.app"), "some.other.app");
+    }
 
     #[test]
     fn standby_is_not_on() {
