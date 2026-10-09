@@ -90,8 +90,10 @@ export function TvPanel({
           }}
         >
           <SelectTrigger aria-label="TV room" className="h-9 w-full sm:w-52">
+            {/* Called with null before a room is chosen, which is the
+                state every new TV starts in. */}
             <SelectValue placeholder="Pick a room">
-              {(value: string) => humanize(value)}
+              {(value: string | null) => (value ? humanize(value) : "Pick a room")}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
