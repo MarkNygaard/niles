@@ -37,7 +37,7 @@ import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, roomOrder, valueAt } from "@/lib/api";
-import { menuOf } from "@/lib/menu";
+import { mediaShownOf, menuOf } from "@/lib/menu";
 import { roomsOf } from "@/lib/rooms";
 import type { Applied, ConfigView, Revision, WledStrip } from "@/lib/api";
 import type { Satellite } from "@/components/SatellitesCard";
@@ -739,6 +739,10 @@ export function ConfigPanel() {
         <TabsContent value="menu">
           <MenuCard
             menu={menuOf(view.effective)}
+            mediaShown={mediaShownOf(view.effective)}
+            onMediaShown={(shown) =>
+              save.mutate({ row: "menu", entries: [{ path: "menu.media", value: shown }] })
+            }
             disabled={save.isPending}
             onChange={({ order, hidden }) =>
               save.mutate({

@@ -6,6 +6,8 @@ import type { RoomMusic } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export interface MusicRowProps {
+  /** What the row is called: the room, on the Media page. */
+  title?: string;
   music: RoomMusic;
   busy?: boolean;
   onPause: () => void;
@@ -32,7 +34,14 @@ export function musicPlaying(music?: RoomMusic): boolean {
  * play, and how loud. Every speaker in the room moves together, the way
  * "louder in the living room" moves them.
  */
-export function MusicRow({ music, busy, onPause, onPlay, onVolume }: MusicRowProps) {
+export function MusicRow({
+  title = "Music",
+  music,
+  busy,
+  onPause,
+  onPlay,
+  onVolume,
+}: MusicRowProps) {
   const [draft, setDraft] = useState(music.volume ?? 0);
   useEffect(() => setDraft(music.volume ?? 0), [music.volume]);
 
@@ -47,13 +56,13 @@ export function MusicRow({ music, busy, onPause, onPlay, onVolume }: MusicRowPro
           )}
         />
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">Music</div>
+          <div className="text-sm font-medium">{title}</div>
           <div className="text-muted-foreground truncate text-xs">{musicLine(music)}</div>
         </div>
         <Button
           variant="outline"
           size="icon"
-          aria-label={music.playing ? "Pause the music" : "Play the music"}
+          aria-label={`${music.playing ? "Pause" : "Play"} ${title === "Music" ? "the music" : title}`}
           disabled={busy}
           onClick={music.playing ? onPause : onPlay}
         >
@@ -66,7 +75,7 @@ export function MusicRow({ music, busy, onPause, onPlay, onVolume }: MusicRowPro
           min={0}
           max={100}
           step={1}
-          thumbLabel="Music volume"
+          thumbLabel={`${title} volume`}
           thumbValueText={`${draft}%`}
           disabled={busy}
           onValueChange={(next, details) => {

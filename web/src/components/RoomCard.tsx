@@ -20,7 +20,7 @@ import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { PowerButton } from "@/components/PowerButton";
 import { TvRow, tvLine, tvOn } from "@/components/TvRow";
-import { MusicRow, musicLine, musicPlaying } from "@/components/MusicRow";
+import { musicLine, musicPlaying } from "@/components/MusicRow";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useThemeColor } from "@/hooks/useThemeColor";
 import { ClimatePanel } from "@/components/ClimatePanel";
@@ -39,14 +39,9 @@ export interface RoomCardProps {
   onSetZone?: (body: SetZone) => void;
   /** The TV, in the room it stands in. */
   tv?: { info: TvInfo; busy?: boolean; onPower: (on: boolean) => void };
-  /** The room's Sonos, when it has one. */
-  music?: {
-    info: RoomMusic;
-    busy?: boolean;
-    onPause: () => void;
-    onPlay: () => void;
-    onVolume: (percent: number) => void;
-  };
+  /** The room's Sonos, when it has one: marked on the card while it
+      plays. Its controls are on the Media page. */
+  music?: RoomMusic;
 }
 
 /**
@@ -204,15 +199,6 @@ export function RoomCard({
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
         {tv && <TvRow tv={tv.info} busy={tv.busy} onPower={tv.onPower} />}
-        {music && (
-          <MusicRow
-            music={music.info}
-            busy={music.busy}
-            onPause={music.onPause}
-            onPlay={music.onPlay}
-            onVolume={music.onVolume}
-          />
-        )}
         {room.lights.map((light) => (
           <LightRow
             key={light.id}
@@ -407,9 +393,9 @@ export function RoomCard({
             <span className="ml-auto flex items-center gap-1.5">
               {/* The TV, while it is on: the other thing in a room you
                   would walk in and turn off. */}
-              {music && musicPlaying(music.info) && (
-                <span title={musicLine(music.info)}>
-                  <Music aria-label={`Playing: ${musicLine(music.info)}`} className="size-4" />
+              {music && musicPlaying(music) && (
+                <span title={musicLine(music)}>
+                  <Music aria-label={`Playing: ${musicLine(music)}`} className="size-4" />
                 </span>
               )}
               {tv && tvOn(tv.info) && (
