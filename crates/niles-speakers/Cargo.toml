@@ -12,6 +12,8 @@ workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
+regex.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

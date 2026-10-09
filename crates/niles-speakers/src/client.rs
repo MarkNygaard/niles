@@ -184,7 +184,7 @@ fn rc_endpoint(ip: &str) -> String {
     format!("http://{ip}:1400/MediaRenderer/RenderingControl/Control")
 }
 
-fn soap_envelope(service: &str, action: &str, inner: &str) -> String {
+pub(crate) fn soap_envelope(service: &str, action: &str, inner: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
          <s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" \

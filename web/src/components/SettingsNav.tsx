@@ -10,6 +10,7 @@ import {
   MessagesSquare,
   Mic,
   Plug,
+  Speaker,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -66,6 +67,12 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
         label: "Satellites",
         hint: "The microphones, and which room each is in",
         icon: Mic,
+      },
+      {
+        id: "speakers",
+        label: "Speakers",
+        hint: "The Sonos, and which room each plays in",
+        icon: Speaker,
       },
     ],
   },

@@ -1631,6 +1631,7 @@ dependencies = [
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
+ "niles-speakers",
  "rand 0.10.2",
  "reqwest",
  "rust-embed",
@@ -1957,7 +1958,9 @@ name = "niles-speakers"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "regex",
  "reqwest",
+ "serde",
  "thiserror",
  "tokio",
 ]

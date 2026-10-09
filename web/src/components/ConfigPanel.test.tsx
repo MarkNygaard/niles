@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ConfigPanel, satellitesAt } from "@/components/ConfigPanel";
+import { ConfigPanel, musicByRoom, satellitesAt, sonosAt } from "@/components/ConfigPanel";
 import { api } from "@/lib/api";
 
 /**
@@ -128,5 +128,46 @@ describe("satellitesAt", () => {
   it("survives a config with no satellites at all", () => {
     expect(satellitesAt({})).toEqual([]);
     expect(satellitesAt(null)).toEqual([]);
+  });
+});
+
+describe("sonosAt", () => {
+  it("reads where each Sonos is placed", () => {
+    const effective = {
+      speakers: {
+        host: "10.0.0.2",
+        sonos: {
+          RINCON_BAR: { room: "living_room", name: "Living Room" },
+          RINCON_MOVE: { room: "kitchen" },
+        },
+      },
+    };
+    expect(sonosAt(effective)).toEqual({
+      RINCON_BAR: { room: "living_room", name: "Living Room" },
+      // Placed by hand without a name: the id is better than nothing.
+      RINCON_MOVE: { room: "kitchen", name: "RINCON_MOVE" },
+    });
+  });
+
+  it("reads nothing placed as nothing", () => {
+    expect(sonosAt({})).toEqual({});
+  });
+});
+
+describe("musicByRoom", () => {
+  it("gathers a room's Sonos, so a satellite can say what plays there", () => {
+    const effective = {
+      speakers: {
+        sonos: {
+          RINCON_BACK: { room: "living_room", name: "Living Room Back" },
+          RINCON_BAR: { room: "living_room", name: "Living Room" },
+          RINCON_MOVE: { room: "kitchen", name: "Sonos Move" },
+        },
+      },
+    };
+    expect(musicByRoom(effective)).toEqual({
+      living_room: ["Living Room", "Living Room Back"],
+      kitchen: ["Sonos Move"],
+    });
   });
 });

@@ -23,12 +23,14 @@ import { TadoPanel } from "@/components/TadoPanel";
 import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { NemligPanel } from "@/components/NemligPanel";
 import { LinearPanel } from "@/components/LinearPanel";
+import { SonosPanel } from "@/components/SonosPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { cn } from "@/lib/utils";
 import type {
   Integration,
   Secret,
   SecretsReport,
+  SpeakersReport,
   TadoStatus,
   Zone,
 } from "@/lib/api";
@@ -51,6 +53,10 @@ export interface IntegrationsPageProps {
   nemlig?: { enabled?: boolean };
   /** The UniFi console's address, empty until one is typed in. */
   unifiHost?: string;
+  /** `[speakers]` as the config has it: Sonos's switch and address. */
+  sonos?: { enabled?: boolean; host?: string };
+  /** What the speaker at that address described. */
+  sonosFound?: SpeakersReport;
   saving?: boolean;
   error?: string;
   /** Config writes, batched as one revision per action. */
@@ -87,6 +93,8 @@ export function IntegrationsPage({
   claudeCode,
   nemlig,
   unifiHost,
+  sonos,
+  sonosFound,
   saving,
   error,
   onChange,
@@ -126,6 +134,8 @@ export function IntegrationsPage({
         claudeCode?.enabled !== false &&
         secretFor(integration.secret_key)?.source !== "unset"
       );
+    if (integration.id === "sonos")
+      return sonos?.enabled !== false && Boolean(sonos?.host?.trim());
     if (integration.id === "unifi")
       return (
         Boolean(unifiHost?.trim()) &&
@@ -159,6 +169,7 @@ export function IntegrationsPage({
           { path: "integrations.nemlig.enabled", value: true },
         ]);
       case "unifi":
+      case "sonos":
         // Nothing to write yet: the address is what makes it added, and
         // that is the first thing the dialog asks for.
         return;
@@ -186,6 +197,9 @@ export function IntegrationsPage({
         return onChange("presence.unifi", [
           { path: "presence.unifi.host", value: "" },
         ]);
+      // The rooms each Sonos is placed in stay, for when it comes back.
+      case "sonos":
+        return onChange("speakers", [{ path: "speakers.host", value: "" }]);
       // Gone, not switched off — the card's own switch is for that. The
       // stored token stays in Credentials until somebody clears it.
       case "claude_code":
@@ -382,6 +396,21 @@ export function IntegrationsPage({
                       ])
                     }
                     onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "sonos" && (
+                  <SonosPanel
+                    enabled={sonos?.enabled !== false}
+                    host={sonos?.host ?? ""}
+                    found={sonosFound}
+                    saving={saving}
+                    onEnabled={(enabled) =>
+                      onChange("speakers", [{ path: "speakers.enabled", value: enabled }])
+                    }
+                    onHost={(host) =>
+                      onChange("speakers", [{ path: "speakers.host", value: host }])
+                    }
                   />
                 )}
 

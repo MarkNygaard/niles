@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(crate::groceries::update).delete(crate::groceries::remove),
         )
         .route("/integrations", get(crate::integrations::list))
+        .route("/speakers", get(crate::speakers::list))
         .route(
             "/captures",
             get(crate::captures::list).delete(crate::captures::clear),

@@ -111,6 +111,17 @@ api_key_env = "GROQ_API_KEY"
 # [rooms]
 # order = ["living_room", "kitchen", "office"]
 
+# Sonos. One speaker's address is enough: each of them describes the
+# whole household. Rooms are placed by Sonos's own id, which stays with
+# the speaker when its address changes; Settings → Speakers lists them
+# and writes these for you. Several Sonos rooms can share a Niles room,
+# and then play together.
+# [speakers]
+# host = "192.168.10.174"
+# [speakers.sonos.RINCON_5CAAFD1FD8C601400]
+# room = "living_room"
+# name = "Living Room"
+
 # The app's menu: which entries sit between Home and Me, in what order,
 # and which are left out. Home and Me always stay first and last. A
 # hidden entry's page still works. Arranged under Settings → Menu.

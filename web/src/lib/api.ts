@@ -84,6 +84,30 @@ export interface Integration {
   secret_key: string | null;
 }
 
+/** One Sonos room: a speaker, a stereo pair, or a soundbar with the
+    speakers around it — always played as one. */
+export interface SonosSpeaker {
+  /** Sonos's own id (`RINCON_…`), which stays when the address moves. */
+  id: string;
+  /** What the Sonos app calls it. */
+  name: string;
+  ip: string | null;
+  /** A soundbar with speakers around it: the one a TV plays through. */
+  home_theater: boolean;
+  /** The Niles room it is placed in, if any. */
+  room: string | null;
+  /** False for one that is placed but did not answer just now. */
+  answering: boolean;
+}
+
+/** The Sonos household as a speaker described it just now. */
+export interface SpeakersReport {
+  /** Whether Niles has an address to ask. */
+  configured: boolean;
+  error: string | null;
+  sonos: SonosSpeaker[];
+}
+
 /**
  * One tado heating zone, as `/climate` returns it.
  *
@@ -537,6 +561,7 @@ export const api = {
   applyScene: (name: string) =>
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
+  speakers: () => request<SpeakersReport>("/speakers"),
   voices: () => request<Voice[]>("/voices"),
   me: () => request<Me>("/me"),
   updateMe: (update: MeUpdate) =>

@@ -37,6 +37,7 @@ pub mod publish;
 pub mod scenes;
 pub mod secrets;
 pub mod server;
+pub mod speakers;
 pub mod state;
 pub mod voices;
 #[cfg(feature = "ui")]
