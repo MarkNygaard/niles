@@ -71,6 +71,7 @@ mod ringer;
 mod satellites;
 mod speak;
 mod speakers;
+mod tv;
 
 use manifest::{GenerateManifestArgs, generate_manifest};
 use recognition::{SpeakerIdentifier, build_speaker_identifier, pcm_bytes_to_i16};
@@ -1294,6 +1295,7 @@ struct WyomingDelivery {
     speakers: Arc<speakers::SpeakerRegistry>,
     satellites: Arc<SatelliteRegistry>,
     peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>>,
+    tv: Arc<tv::TvControl>,
 }
 
 impl niles_notifications::NotificationDelivery for WyomingDelivery {
@@ -1303,6 +1305,18 @@ impl niles_notifications::NotificationDelivery for WyomingDelivery {
         room: Option<&str>,
         _priority: niles_notifications::Priority,
     ) -> bool {
+        // On the screen as well, for whoever is watching rather than
+        // listening. Extra to the spoken one, so a TV that is off or
+        // does not answer changes nothing.
+        if self.tv.shows_announcements() {
+            let tv = self.tv.clone();
+            let message = text.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = tv.show(&message).await {
+                    tracing::debug!("[tv] announcement not shown: {e}");
+                }
+            });
+        }
         let Some(room_str) = room else {
             return false;
         };
@@ -2903,6 +2917,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
     music::register(&mut tools, music.clone());
+    let tv = Arc::new(tv::TvControl::new(store.clone()));
+    tv::register(&mut tools, tv.clone());
 
     // Notification center
     let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
@@ -2914,6 +2930,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         speakers: speakers.clone(),
         satellites: satellites.clone(),
         peer_index: peer_index.clone(),
+        tv: tv.clone(),
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);
@@ -2958,6 +2975,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         timers,
         speakers,
         music,
+        tv,
         llm,
         tier2,
         identifier,
@@ -3217,6 +3235,7 @@ struct DispatchCtx {
     timers: Arc<TimerStore>,
     speakers: Arc<speakers::SpeakerRegistry>,
     music: Arc<music::Music>,
+    tv: Arc<tv::TvControl>,
     llm: Arc<GroqClient>,
     tier2: Option<Arc<dyn ChatProvider>>,
     identifier: Option<Arc<dyn SpeakerIdentifier>>,
@@ -4375,6 +4394,10 @@ async fn dispatch_text(
                 }
             }
         }
+        Intent::TvPower { on } => Some(ctx.tv.power(on).await.unwrap_or_else(|e| e)),
+        Intent::TvOpen { app } => Some(ctx.tv.open(&app).await.unwrap_or_else(|e| e)),
+        Intent::TvInput { input } => Some(ctx.tv.input(&input).await.unwrap_or_else(|e| e)),
+        Intent::TvPlayback { play } => Some(ctx.tv.playback(play).await.unwrap_or_else(|e| e)),
         Intent::PlayRadio { station, room } => {
             let target = match music_room(room.as_deref(), origin_room) {
                 Ok(r) => r,
@@ -5737,6 +5760,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
     music::register(&mut tools, music.clone());
+    let tv = Arc::new(tv::TvControl::new(store.clone()));
+    tv::register(&mut tools, tv.clone());
 
     // Notification center
     let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
@@ -5748,6 +5773,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         speakers: speakers.clone(),
         satellites: satellites.clone(),
         peer_index: peer_index.clone(),
+        tv: tv.clone(),
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);
@@ -5914,6 +5940,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         timers,
         speakers,
         music,
+        tv,
         llm,
         tier2,
         identifier,

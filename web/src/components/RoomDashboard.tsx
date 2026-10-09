@@ -9,6 +9,7 @@ import { ApiError, api, roomOrder } from "@/lib/api";
 import type { Device, SetLight } from "@/lib/api";
 import { BoostButton } from "@/components/BoostButton";
 import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
+import { TvCard } from "@/components/TvCard";
 import { HouseBar } from "@/components/HouseBar";
 import { PairPhoneCard } from "@/components/PairPhoneCard";
 import { SceneBar } from "@/components/SceneBar";
@@ -100,6 +101,19 @@ export function RoomDashboard() {
     queryFn: api.nemligNext,
     retry: false,
     staleTime: 15 * 60_000,
+  });
+  // Asks the TV itself, so not often; a press refreshes it at once.
+  const tv = useQuery({
+    queryKey: ["tv"],
+    queryFn: api.tv,
+    retry: false,
+    refetchInterval: 60_000,
+  });
+  const tvPower = useMutation({
+    mutationFn: api.tvPower,
+    // A TV takes a few seconds to come on; ask again once it has.
+    onSettled: () =>
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["tv"] }), 4_000),
   });
   // Each call reaches tado, so this is polled slowly. Heating moves in
   // tens of minutes; a radiator is not a light switch.
@@ -238,6 +252,7 @@ export function RoomDashboard() {
         // Local today: the order's times are Danish, and so is the house.
         today={new Date().toLocaleDateString("sv-SE")}
       />
+      <TvCard tv={tv.data} busy={tvPower.isPending} onPower={(on) => tvPower.mutate(on)} />
       <PairPhoneCard
         device={phone.data}
         pairing={pair.isPending}

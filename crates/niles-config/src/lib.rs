@@ -39,6 +39,7 @@ pub mod speakers;
 pub mod store;
 pub mod stt;
 pub mod tts;
+pub mod tv;
 pub mod unifi;
 pub mod web_search;
 pub mod wled;
@@ -78,6 +79,7 @@ use std::path::Path;
 pub use store::{Applied, Change, ChangeSource, ConfigStore, LoadOutcome, Revision, SectionChange};
 pub use stt::{NoiseGate, SttConfig};
 pub use tts::TtsConfig;
+pub use tv::TvConfig;
 pub use unifi::UnifiConfig;
 pub use web_search::WebSearchConfig;
 pub use wled::{WledConfig, WledDeviceConfig};
@@ -212,6 +214,8 @@ pub fn section_reload(section: &str) -> Reload {
         // Read for each command, each duck and each page that lists
         // them, so a speaker placed in a room plays there at once.
         "speakers" => Reload::Hot,
+        // Read for every command, like the speakers.
+        "tv" => Reload::Hot,
         // The speech-to-text client is checked against the live config
         // for every utterance and rebuilt when it differs; the noise
         // gate was already read per turn. Marked Boot, a switch to
@@ -242,6 +246,7 @@ pub const SECTIONS: &[&str] = &[
     "recognition",
     "satellites",
     "speakers",
+    "tv",
     "ambient_lights",
     "lamp_plugs",
     "history",
@@ -295,6 +300,8 @@ pub struct Config {
     pub satellites: SatellitesConfig,
     #[serde(default)]
     pub speakers: SpeakersConfig,
+    #[serde(default)]
+    pub tv: TvConfig,
     #[serde(default)]
     pub ambient_lights: AmbientLightsConfig,
     #[serde(default)]
@@ -390,6 +397,7 @@ impl Config {
         self.presence.validate()?;
         self.rooms.validate()?;
         self.menu.validate()?;
+        self.tv.validate()?;
         self.skills.validate()?;
         self.web_search.validate()?;
         self.wled.validate()?;

@@ -150,6 +150,16 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
+        id: "lg_tv",
+        label: "LG TV",
+        blurb: "On and off, apps and inputs by voice, and Niles's news on the screen.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
         id: "claude_code",
         label: "Claude Code",
         blurb: "Answers the chat with Claude, on your Claude subscription.",

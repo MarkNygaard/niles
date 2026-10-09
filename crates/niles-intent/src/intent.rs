@@ -171,6 +171,26 @@ pub enum Intent {
         room: String,
     },
 
+    /// "turn off the TV" / "turn the television on".
+    TvPower {
+        on: bool,
+    },
+
+    /// "put on Netflix on the TV" — an app by the name said.
+    TvOpen {
+        app: String,
+    },
+
+    /// "switch the TV to HDMI 2" — an input by the name said.
+    TvInput {
+        input: String,
+    },
+
+    /// "pause the TV" / "play the TV": what an app on it is playing.
+    TvPlayback {
+        play: bool,
+    },
+
     /// "play the radio" / "play P4 on the radio in the kitchen". No
     /// station: the one this room last had. No room: where it was said.
     PlayRadio {

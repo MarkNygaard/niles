@@ -284,6 +284,12 @@ export function ConfigPanel() {
   // Keyed by the address so a new one is asked at once. Not fetched
   // without one: there is nobody to ask.
   const sonosHost = stringAt(config.data?.effective, "speakers.host")?.trim() ?? "";
+  const tvHost = stringAt(config.data?.effective, "tv.host")?.trim() ?? "";
+  const tv = useQuery({
+    queryKey: ["tv", tvHost],
+    queryFn: api.tv,
+    enabled: tvHost !== "",
+  });
   const speakers = useQuery({
     queryKey: ["speakers", sonosHost],
     queryFn: api.speakers,
@@ -985,6 +991,16 @@ export function ConfigPanel() {
               host: sonosHost,
             }}
             sonosFound={speakers.data}
+            tvConfig={
+              valueAt(view.effective, "tv") as
+                | { host?: string; room?: string; show_announcements?: boolean }
+                | undefined
+            }
+            tv={tv.data}
+            onTvChanged={() => {
+              queryClient.invalidateQueries({ queryKey: ["tv"] });
+              queryClient.invalidateQueries({ queryKey: ["config"] });
+            }}
             saving={save.isPending}
             error={rowError ? rowError.message : undefined}
             onChange={(row, entries) => save.mutate({ row, entries })}

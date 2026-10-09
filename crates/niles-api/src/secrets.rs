@@ -45,6 +45,9 @@ const KNOWN: &[(&str, &str)] = &[
         "integrations.spotify.client_secret",
         "Spotify app Client secret",
     ),
+    // Issued by the TV when it was paired; written by the pairing, and
+    // listed so it can be cleared to pair again.
+    ("tv.client_key", "LG TV pairing key"),
     // Read on every poll, so saving it takes hold without a restart —
     // which is what makes the phone-pairing button appear at all.
     ("presence.unifi.api_key", "UniFi console API key"),
@@ -197,7 +200,7 @@ fn known(state: &AppState, key: &str) -> Result<String, Failure> {
     ))
 }
 
-fn writable(state: &AppState) -> Result<&niles_db::PostgresSecrets, Failure> {
+pub(crate) fn writable(state: &AppState) -> Result<&niles_db::PostgresSecrets, Failure> {
     state.secrets.as_deref().ok_or((
         StatusCode::NOT_IMPLEMENTED,
         "secrets cannot be saved without a database and an encryption key".into(),
@@ -210,7 +213,7 @@ fn writable(state: &AppState) -> Result<&niles_db::PostgresSecrets, Failure> {
 /// Whole reload rather than patching the one key: it is a handful of
 /// short strings, and the alternative is two ways for the map to be
 /// wrong.
-async fn reload(state: &AppState) {
+pub(crate) async fn reload(state: &AppState) {
     let Some(store) = state.secrets.as_ref() else {
         return;
     };

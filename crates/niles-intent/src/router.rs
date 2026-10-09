@@ -65,6 +65,8 @@ impl IntentRouter {
             .or_else(|| crate::climate::match_heating(&t))
             // Before "play X", which would take "the radio" and "it in
             // the kitchen too" for rooms.
+            // Before the music: "pause the TV" is not a room called TV.
+            .or_else(|| match_tv(&t))
             // "Stop" is also the timer's word: these name the music.
             .or_else(|| match_stop_music_in(&t))
             .or_else(|| match_play_radio(&t))
@@ -1036,6 +1038,71 @@ fn match_media_pause(t: &str) -> Option<Intent> {
     Some(Intent::MediaPause {
         room: room.to_string(),
     })
+}
+
+// ---- The TV ------------------------------------------------------------------
+
+/// "the TV", "the television", "the telly".
+const TV: &str = r"(?:the\s+)?(?:tv|television|telly)";
+
+/// Builds the intent from a rule's captures.
+type MakeIntent = fn(&regex::Captures<'_>) -> Option<Intent>;
+type TvRule = (Regex, MakeIntent);
+
+fn tv_power(caps: &regex::Captures<'_>) -> Option<Intent> {
+    Some(Intent::TvPower {
+        on: caps.name("state")?.as_str() == "on",
+    })
+}
+
+fn tv_open(caps: &regex::Captures<'_>) -> Option<Intent> {
+    Some(Intent::TvOpen {
+        app: caps.name("app")?.as_str().to_string(),
+    })
+}
+
+fn tv_input(caps: &regex::Captures<'_>) -> Option<Intent> {
+    Some(Intent::TvInput {
+        input: caps.name("input")?.as_str().to_string(),
+    })
+}
+
+fn tv_playback(caps: &regex::Captures<'_>) -> Option<Intent> {
+    Some(Intent::TvPlayback {
+        play: matches!(caps.name("verb")?.as_str(), "play" | "resume" | "unpause"),
+    })
+}
+
+fn tv_rules() -> &'static [TvRule] {
+    static RE: OnceLock<Vec<TvRule>> = OnceLock::new();
+    RE.get_or_init(|| {
+        let rules: [(String, MakeIntent); 6] = [
+            (format!(r"^(?:turn|switch)\s+(?P<state>on|off)\s+{TV}$"), tv_power),
+            (format!(r"^(?:turn|switch)\s+{TV}\s+(?P<state>on|off)$"), tv_power),
+            (format!(r"^{TV}\s+(?P<state>on|off)$"), tv_power),
+            (
+                format!(r"^(?:switch|change|set|put)\s+{TV}\s+(?:to|on)\s+(?P<input>.+?)$"),
+                tv_input,
+            ),
+            (format!(r"^(?P<verb>pause|play|resume|unpause)\s+{TV}$"), tv_playback),
+            (
+                format!(
+                    r"^(?:open|start|launch|put\s+on|go\s+to|switch\s+to|play)\s+(?P<app>.+?)\s+on\s+{TV}$"
+                ),
+                tv_open,
+            ),
+        ];
+        rules
+            .into_iter()
+            .map(|(pattern, make)| (Regex::new(&pattern).expect("tv regex compiles"), make))
+            .collect()
+    })
+}
+
+fn match_tv(t: &str) -> Option<Intent> {
+    tv_rules()
+        .iter()
+        .find_map(|(re, make)| re.captures(t).and_then(|caps| make(&caps)))
 }
 
 // ---- Stop the music ----------------------------------------------------------
@@ -3538,6 +3605,59 @@ mod context_tests {
 
     fn parse_with(transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
         IntentRouter::new().parse_with_context(transcript, ctx)
+    }
+
+    #[test]
+    fn the_tv_turns_on_and_off() {
+        let router = IntentRouter::new();
+        for (said, on) in [
+            ("turn off the tv", false),
+            ("turn the tv on", true),
+            ("switch on the television", true),
+            ("tv off", false),
+        ] {
+            assert_eq!(router.parse(said), Some(Intent::TvPower { on }), "{said}");
+        }
+    }
+
+    #[test]
+    fn the_tv_light_is_still_a_light() {
+        // A WLED strip behind the TV is called the TV light.
+        assert!(!matches!(
+            IntentRouter::new().parse("turn off the tv light"),
+            Some(Intent::TvPower { .. })
+        ));
+    }
+
+    #[test]
+    fn apps_inputs_and_playback_on_the_tv() {
+        let router = IntentRouter::new();
+        assert_eq!(
+            router.parse("put on netflix on the tv"),
+            Some(Intent::TvOpen {
+                app: "netflix".into()
+            })
+        );
+        assert_eq!(
+            router.parse("open dr tv on the tv"),
+            Some(Intent::TvOpen {
+                app: "dr tv".into()
+            })
+        );
+        assert_eq!(
+            router.parse("switch the tv to hdmi 2"),
+            Some(Intent::TvInput {
+                input: "hdmi 2".into()
+            })
+        );
+        assert_eq!(
+            router.parse("pause the tv"),
+            Some(Intent::TvPlayback { play: false })
+        );
+        assert_eq!(
+            router.parse("resume the tv"),
+            Some(Intent::TvPlayback { play: true })
+        );
     }
 
     #[test]

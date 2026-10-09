@@ -100,6 +100,17 @@ export interface SonosSpeaker {
   answering: boolean;
 }
 
+/** The LG TV, as `GET /tv` reports it. */
+export interface TvInfo {
+  configured: boolean;
+  paired: boolean;
+  mac: string | null;
+  room: string | null;
+  /** Absent before pairing, or when the TV could not be asked. */
+  status: { on: boolean; app: string | null } | null;
+  error: string | null;
+}
+
 /** The Sonos household as a speaker described it just now. */
 export interface SpeakersReport {
   /** Whether Niles has an address to ask. */
@@ -562,6 +573,11 @@ export const api = {
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   speakers: () => request<SpeakersReport>("/speakers"),
+  tv: () => request<TvInfo>("/tv"),
+  /** Shows the prompt on the TV and waits up to a minute for it. */
+  pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),
+  tvPower: (on: boolean) =>
+    request<void>("/tv/power", { method: "POST", body: JSON.stringify({ on }) }),
   voices: () => request<Voice[]>("/voices"),
   me: () => request<Me>("/me"),
   updateMe: (update: MeUpdate) =>

@@ -122,6 +122,14 @@ api_key_env = "GROQ_API_KEY"
 # room = "living_room"
 # name = "Living Room"
 
+# An LG webOS TV. Paired from Settings → Integrations → LG TV, which
+# shows a prompt on the screen to accept with the remote and fills in
+# the MAC address for waking it. Turning it on needs "Turn on via Wi-Fi"
+# on the TV, and a router that lets the wake packet reach its network.
+# [tv]
+# host = "192.168.69.10"
+# room = "living_room"
+
 # The app's menu: which entries sit between Home and Me, in what order,
 # and which are left out. Home and Me always stay first and last. A
 # hidden entry's page still works. Arranged under Settings → Menu.

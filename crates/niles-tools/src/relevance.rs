@@ -42,6 +42,31 @@ struct Group {
 const GROUPS: &[Group] = &[
     Group {
         keywords: &[
+            "tv",
+            "television",
+            "telly",
+            "netflix",
+            "youtube",
+            "hdmi",
+            "screen",
+            "app",
+            "drtv",
+            "disney",
+            "hbo",
+            "prime",
+            "channel",
+        ],
+        tools: &[
+            "tv_power",
+            "tv_open_app",
+            "tv_input",
+            "tv_playback",
+            "tv_message",
+            "tv_status",
+        ],
+    },
+    Group {
+        keywords: &[
             "play",
             "playing",
             "music",
