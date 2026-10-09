@@ -214,10 +214,11 @@ impl SonosClient {
         Ok(())
     }
 
-    /// Replace its queue with one thing — a playlist, an album — and
-    /// load the queue. `own_id` is this speaker's `RINCON_…`, which the
-    /// queue is named after.
-    pub async fn load_queue(&self, own_id: &str, uri: &str, metadata: &str) -> Result<()> {
+    /// Replace its queue — with a playlist, an album, or a run of
+    /// tracks, each a URI and its metadata — and load the queue.
+    /// `own_id` is this speaker's `RINCON_…`, which the queue is named
+    /// after.
+    pub async fn load_queue(&self, own_id: &str, items: &[(String, String)]) -> Result<()> {
         self.invoke(
             av_endpoint(&self.ip),
             AV_TRANSPORT_SERVICE,
@@ -225,18 +226,38 @@ impl SonosClient {
             "<InstanceID>0</InstanceID>",
         )
         .await?;
-        self.invoke(
-            av_endpoint(&self.ip),
-            AV_TRANSPORT_SERVICE,
-            "AddURIToQueue",
-            &format!(
-                "<InstanceID>0</InstanceID><EnqueuedURI>{}</EnqueuedURI><EnqueuedURIMetaData>{}</EnqueuedURIMetaData><DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>",
-                escape(uri),
-                escape(metadata)
-            ),
-        )
-        .await?;
+        for (uri, metadata) in items {
+            self.invoke(
+                av_endpoint(&self.ip),
+                AV_TRANSPORT_SERVICE,
+                "AddURIToQueue",
+                &format!(
+                    "<InstanceID>0</InstanceID><EnqueuedURI>{}</EnqueuedURI><EnqueuedURIMetaData>{}</EnqueuedURIMetaData><DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>",
+                    escape(uri),
+                    escape(metadata)
+                ),
+            )
+            .await?;
+        }
         self.load(&format!("x-rincon-queue:{own_id}#0"), "").await
+    }
+
+    /// The music services the household has an account on, by Sonos's
+    /// service type (a service's number times 256, plus 7).
+    pub async fn linked_services(&self) -> Result<Vec<u32>> {
+        let body = self
+            .invoke(
+                format!("http://{}:1400/MusicServices/Control", self.ip),
+                MUSIC_SERVICES_SERVICE,
+                "ListAvailableServices",
+                "",
+            )
+            .await?;
+        Ok(extract_tag(&body, "AvailableServiceTypeList")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|t| t.trim().parse().ok())
+            .collect())
     }
 
     /// The household's Sonos Favorites. Shared by every speaker, so any
@@ -316,6 +337,7 @@ fn escape(s: &str) -> String {
 
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 const CONTENT_DIRECTORY_SERVICE: &str = "urn:schemas-upnp-org:service:ContentDirectory:1";
+const MUSIC_SERVICES_SERVICE: &str = "urn:schemas-upnp-org:service:MusicServices:1";
 const RENDERING_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 
 fn av_endpoint(ip: &str) -> String {

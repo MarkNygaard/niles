@@ -106,6 +106,16 @@ impl crate::Config {
                 .nemlig
                 .as_ref()
                 .map(|n| n.password_env.clone()),
+            "integrations.spotify.client_id" => self
+                .integrations
+                .spotify
+                .as_ref()
+                .map(|s| s.client_id_env.clone()),
+            "integrations.spotify.client_secret" => self
+                .integrations
+                .spotify
+                .as_ref()
+                .map(|s| s.client_secret_env.clone()),
             "auth.session_secret" => self.auth.session_secret_env.clone(),
             "auth.github_client_secret" => self.auth.github_client_secret_env.clone(),
             "auth.api_token" => self.auth.api_token_env.clone(),
@@ -132,6 +142,9 @@ impl crate::Config {
             "integrations.claude_code.oauth_token" => Some("claude.ai".into()),
             "integrations.nemlig.username" | "integrations.nemlig.password" => {
                 Some("nemlig.com".into())
+            }
+            "integrations.spotify.client_id" | "integrations.spotify.client_secret" => {
+                Some("api.spotify.com".into())
             }
             "auth.github_client_id" | "auth.github_client_secret" => Some("github.com".into()),
             // Niles's own, used against nothing.

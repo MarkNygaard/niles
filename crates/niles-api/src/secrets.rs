@@ -40,6 +40,11 @@ const KNOWN: &[(&str, &str)] = &[
     ),
     ("integrations.nemlig.username", "nemlig.com email"),
     ("integrations.nemlig.password", "nemlig.com password"),
+    ("integrations.spotify.client_id", "Spotify app Client ID"),
+    (
+        "integrations.spotify.client_secret",
+        "Spotify app Client secret",
+    ),
     // Read on every poll, so saving it takes hold without a restart —
     // which is what makes the phone-pairing button appear at all.
     ("presence.unifi.api_key", "UniFi console API key"),

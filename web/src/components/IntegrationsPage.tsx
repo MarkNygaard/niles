@@ -24,6 +24,7 @@ import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { NemligPanel } from "@/components/NemligPanel";
 import { LinearPanel } from "@/components/LinearPanel";
 import { SonosPanel } from "@/components/SonosPanel";
+import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { cn } from "@/lib/utils";
 import type {
@@ -51,6 +52,8 @@ export interface IntegrationsPageProps {
   claudeCode?: { enabled?: boolean; model?: string };
   /** The nemlig.com section as the config has it, if there is one. */
   nemlig?: { enabled?: boolean };
+  /** The Spotify section as the config has it, if there is one. */
+  spotify?: { enabled?: boolean };
   /** The UniFi console's address, empty until one is typed in. */
   unifiHost?: string;
   /** `[speakers]` as the config has it: Sonos's switch and address. */
@@ -92,6 +95,7 @@ export function IntegrationsPage({
   linear,
   claudeCode,
   nemlig,
+  spotify,
   unifiHost,
   sonos,
   sonosFound,
@@ -134,6 +138,12 @@ export function IntegrationsPage({
         claudeCode?.enabled !== false &&
         secretFor(integration.secret_key)?.source !== "unset"
       );
+    if (integration.id === "spotify")
+      return (
+        spotify?.enabled !== false &&
+        secretFor("integrations.spotify.client_id")?.source !== "unset" &&
+        secretFor("integrations.spotify.client_secret")?.source !== "unset"
+      );
     if (integration.id === "sonos")
       return sonos?.enabled !== false && Boolean(sonos?.host?.trim());
     if (integration.id === "unifi")
@@ -167,6 +177,10 @@ export function IntegrationsPage({
       case "nemlig":
         return onChange("integrations.nemlig", [
           { path: "integrations.nemlig.enabled", value: true },
+        ]);
+      case "spotify":
+        return onChange("integrations.spotify", [
+          { path: "integrations.spotify.enabled", value: true },
         ]);
       case "unifi":
       case "sonos":
@@ -208,6 +222,9 @@ export function IntegrationsPage({
       // stays in Credentials until somebody clears it.
       case "nemlig":
         return onReset("integrations.nemlig", ["integrations.nemlig"]);
+      // The stored keys stay in Credentials, as with nemlig.
+      case "spotify":
+        return onReset("integrations.spotify", ["integrations.spotify"]);
       default:
         return onChange("providers", [
           {
@@ -393,6 +410,22 @@ export function IntegrationsPage({
                     onEnabled={(enabled) =>
                       onChange("integrations.nemlig", [
                         { path: "integrations.nemlig.enabled", value: enabled },
+                      ])
+                    }
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "spotify" && (
+                  <SpotifyPanel
+                    enabled={spotify?.enabled !== false}
+                    clientId={secretFor("integrations.spotify.client_id")}
+                    clientSecret={secretFor("integrations.spotify.client_secret")}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onEnabled={(enabled) =>
+                      onChange("integrations.spotify", [
+                        { path: "integrations.spotify.enabled", value: enabled },
                       ])
                     }
                     onSecretsChanged={onSecretsChanged}

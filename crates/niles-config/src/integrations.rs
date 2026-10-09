@@ -37,6 +37,42 @@ pub struct IntegrationsConfig {
     pub claude_code: Option<ClaudeCodeConfig>,
     #[serde(default)]
     pub nemlig: Option<NemligConfig>,
+    #[serde(default)]
+    pub spotify: Option<SpotifyConfig>,
+}
+
+/// `[integrations.spotify]` — a Spotify developer app, for finding what
+/// to play. Sonos plays it, through the Spotify account linked in the
+/// Sonos app; this only searches the catalogue, which needs no login.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotifyConfig {
+    /// Off keeps the section and the stored keys without using them.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The variables holding the app's keys, when they come from them
+    /// rather than from Niles's own store.
+    #[serde(default)]
+    pub client_id_env: String,
+    #[serde(default)]
+    pub client_secret_env: String,
+}
+
+impl SpotifyConfig {
+    /// The app's keys: (client id, client secret).
+    pub fn resolve_credentials(&self) -> Result<(String, String)> {
+        let id = crate::env::require_secret(
+            "integrations.spotify",
+            "integrations.spotify.client_id",
+            &self.client_id_env,
+        )?;
+        let secret = crate::env::require_secret(
+            "integrations.spotify",
+            "integrations.spotify.client_secret",
+            &self.client_secret_env,
+        )?;
+        Ok((id, secret))
+    }
 }
 
 /// `[integrations.nemlig]` — the household's nemlig.com account, for

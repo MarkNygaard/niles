@@ -180,10 +180,12 @@ pub enum Intent {
 
     /// "play John Mayer in the kitchen" — something to find and play.
     /// Plain "play X" arrives as [`Intent::MediaPlay`], because only the
-    /// dispatcher knows whether X is a room.
+    /// dispatcher knows whether X is a room. `spotify` when that was
+    /// said: Spotify only, its best match.
     PlayMusic {
         query: String,
         room: Option<String>,
+        spotify: bool,
     },
 
     /// "play it in the kitchen too" / "play it everywhere": what plays

@@ -8,13 +8,20 @@
 //! stations in three countries and only the model knows which house it
 //! is standing in.
 //!
+//! After the stations comes Spotify, when an app's keys are set up: an
+//! artist, song, album or playlist whose name is what was said, or
+//! "Gravity by John Mayer". "From Spotify" skips the favorites and the
+//! stations and takes Spotify's best match.
+//!
 //! A room plays as one: every Sonos placed in it is grouped behind one
 //! of them before anything starts, the soundbar when there is one. That
 //! is also what takes the TV off: music asked for in a room replaces
 //! whatever its soundbar was playing.
 
 use crate::speakers::{Player, SpeakerRegistry};
+use niles_config::ConfigStore;
 use niles_core::RoomName;
+use niles_speakers::spotify::{self, Credentials, Item, Kind as SpotifyKind, SpotifyClient};
 use niles_speakers::tunein::{self, Account, Station};
 use niles_speakers::{Favorite, TransportState, is_radio};
 use serde::{Deserialize, Serialize};
@@ -36,8 +43,11 @@ pub enum Outcome {
     /// Spread to more rooms.
     Spread,
     Paused,
-    /// Several stations could be meant.
-    Choose(Vec<Station>),
+    /// Several things could be meant.
+    Choose {
+        stations: Vec<Station>,
+        spotify: Vec<Item>,
+    },
     NotFound(String),
     /// "Play the radio" in a room that has never had a station.
     WhichStation,
@@ -49,8 +59,20 @@ pub enum Outcome {
     Failed(String),
 }
 
+/// What to put on the speaker.
+enum Content {
+    /// A station, loaded as it is.
+    Stream { uri: String, metadata: String },
+    /// A playlist, an album, or a run of tracks, through the queue.
+    Queue(Vec<(String, String)>),
+}
+
 pub struct Music {
     speakers: Arc<SpeakerRegistry>,
+    config: Arc<ConfigStore>,
+    spotify: SpotifyClient,
+    /// Sonos's number for the household's Spotify, once read.
+    spotify_service: Mutex<Option<u32>>,
     http: reqwest::Client,
     last: Mutex<HashMap<String, Remembered>>,
     store: Option<Arc<niles_db::PostgresRoomMusic>>,
@@ -62,6 +84,7 @@ impl Music {
     /// "the last station" costs one "which station?".
     pub async fn new(
         speakers: Arc<SpeakerRegistry>,
+        config: Arc<ConfigStore>,
         store: Option<Arc<niles_db::PostgresRoomMusic>>,
     ) -> Self {
         let mut last = HashMap::new();
@@ -77,6 +100,9 @@ impl Music {
         }
         Self {
             speakers,
+            config,
+            spotify: SpotifyClient::new(),
+            spotify_service: Mutex::new(None),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(8))
                 .build()
@@ -93,19 +119,14 @@ impl Music {
             return Outcome::NoSpeaker;
         }
         if let Some(station) = station {
-            return self.find(room, &players, station).await;
+            return self.find(room, &players, station, false).await;
         }
         if let Some(last) = self.remembered(room) {
-            return self
-                .start(
-                    room,
-                    &players,
-                    &last.uri,
-                    &last.metadata,
-                    false,
-                    &last.title,
-                )
-                .await;
+            let content = Content::Stream {
+                uri: last.uri,
+                metadata: last.metadata,
+            };
+            return self.start(room, &players, content, &last.title).await;
         }
         // Started from the Sonos app, so Niles never saw it — but the
         // speaker still has it loaded.
@@ -114,21 +135,56 @@ impl Music {
                 && media.is_radio()
             {
                 let title = title_in(&media.metadata).unwrap_or_else(|| "the radio".into());
-                return self
-                    .start(room, &players, &media.uri, &media.metadata, false, &title)
-                    .await;
+                let content = Content::Stream {
+                    uri: media.uri,
+                    metadata: media.metadata,
+                };
+                return self.start(room, &players, content, &title).await;
             }
         }
         Outcome::WhichStation
     }
 
-    /// "Play X" — a favorite, or a station.
-    pub async fn play(&self, room: &RoomName, query: &str) -> Outcome {
+    /// "Play X" — a favorite, a station, or Spotify. `from_spotify`
+    /// when that was said: Spotify only, and its best match.
+    pub async fn play(&self, room: &RoomName, query: &str, from_spotify: bool) -> Outcome {
         let players = self.speakers.in_room(room).await;
         if players.is_empty() {
             return Outcome::NoSpeaker;
         }
-        self.find(room, &players, query).await
+        self.find(room, &players, query, from_spotify).await
+    }
+
+    /// Something picked from a [`Outcome::Choose`] by its Spotify URI.
+    /// `name` is needed for an artist, which plays as tracks found by it.
+    pub async fn spotify_uri(&self, room: &RoomName, uri: &str, name: &str) -> Outcome {
+        let players = self.speakers.in_room(room).await;
+        if players.is_empty() {
+            return Outcome::NoSpeaker;
+        }
+        let kind = match uri.split(':').nth(1) {
+            Some("artist") => SpotifyKind::Artist,
+            Some("track") => SpotifyKind::Track,
+            Some("album") => SpotifyKind::Album,
+            Some("playlist") => SpotifyKind::Playlist,
+            _ => return Outcome::Failed(format!("{uri:?} is not something Spotify plays")),
+        };
+        let item = Item {
+            kind,
+            uri: uri.to_string(),
+            name: name.to_string(),
+            by: None,
+        };
+        let Some((credentials, market)) = self.spotify_keys() else {
+            return Outcome::Failed("Spotify is not set up in Niles".into());
+        };
+        match self
+            .spotify_run(&credentials, market.as_deref(), &item)
+            .await
+        {
+            Ok(items) => self.play_spotify(room, &players, items, name).await,
+            Err(e) => Outcome::Failed(e),
+        }
     }
 
     /// A station picked from a [`Outcome::Choose`] by its TuneIn id.
@@ -247,31 +303,192 @@ impl Music {
         }
     }
 
-    async fn find(&self, room: &RoomName, players: &[Player], query: &str) -> Outcome {
-        let favorites = self.favorites(players).await;
-        if let Some(favorite) = best_favorite(&favorites, query) {
-            return self
-                .start(
-                    room,
-                    players,
-                    &favorite.uri,
-                    &favorite.metadata,
-                    !favorite.station,
-                    &favorite.title,
-                )
-                .await;
+    async fn find(
+        &self,
+        room: &RoomName,
+        players: &[Player],
+        query: &str,
+        from_spotify: bool,
+    ) -> Outcome {
+        let mut stations = Vec::new();
+        if !from_spotify {
+            let favorites = self.favorites(players).await;
+            if let Some(favorite) = best_favorite(&favorites, query) {
+                let content = if favorite.station {
+                    Content::Stream {
+                        uri: favorite.uri.clone(),
+                        metadata: favorite.metadata.clone(),
+                    }
+                } else {
+                    Content::Queue(vec![(favorite.uri.clone(), favorite.metadata.clone())])
+                };
+                return self.start(room, players, content, &favorite.title).await;
+            }
+            // Not the end of the search when TuneIn is down: Spotify may
+            // still have it.
+            stations = tunein::search(&self.http, query).await.unwrap_or_else(|e| {
+                tracing::warn!("[music] TuneIn did not answer: {e}");
+                Vec::new()
+            });
+            if let Some(station) = stations.iter().find(|s| words(&s.name) == words(query)) {
+                return self.play_station(room, players, &favorites, station).await;
+            }
         }
-        let stations = match tunein::search(&self.http, query).await {
-            Ok(stations) => stations,
-            Err(e) => return Outcome::Failed(format!("TuneIn did not answer: {e}")),
-        };
-        if let Some(station) = stations.iter().find(|s| words(&s.name) == words(query)) {
-            return self.play_station(room, players, &favorites, station).await;
+        let mut spotify = Vec::new();
+        if let Some((credentials, market)) = self.spotify_keys() {
+            match self
+                .spotify_pick(&credentials, market.as_deref(), query, from_spotify)
+                .await
+            {
+                Ok(Pick::Play { title, items }) => {
+                    return self.play_spotify(room, players, items, &title).await;
+                }
+                Ok(Pick::Candidates(found)) => spotify = found,
+                Err(e) => tracing::warn!("[music] Spotify search for {query:?} failed: {e}"),
+            }
         }
-        if stations.is_empty() {
+        if stations.is_empty() && spotify.is_empty() {
             return Outcome::NotFound(query.to_string());
         }
-        Outcome::Choose(stations.into_iter().take(6).collect())
+        stations.truncate(6);
+        Outcome::Choose { stations, spotify }
+    }
+
+    /// The Spotify app's keys and the market to search, when Spotify is
+    /// set up and switched on.
+    fn spotify_keys(&self) -> Option<(Credentials, Option<String>)> {
+        let cfg = self.config.current();
+        let spotify = cfg.integrations.spotify.as_ref().filter(|s| s.enabled)?;
+        let (client_id, client_secret) = spotify
+            .resolve_credentials()
+            .map_err(|e| tracing::warn!("[music] Spotify keys: {e}"))
+            .ok()?;
+        Some((
+            Credentials {
+                client_id,
+                client_secret,
+            },
+            cfg.home.resolved_country(),
+        ))
+    }
+
+    /// What Spotify has for `query`: one thing to play when it is clear,
+    /// or the candidates for the model to choose among.
+    async fn spotify_pick(
+        &self,
+        credentials: &Credentials,
+        market: Option<&str>,
+        query: &str,
+        sure: bool,
+    ) -> Result<Pick, String> {
+        let query = query.trim();
+        let query = query.strip_prefix("some ").unwrap_or(query);
+        if let Some((title, artist)) = query.rsplit_once(" by ")
+            && let Some(track) = self
+                .spotify
+                .track(credentials, title, artist, market)
+                .await
+                .map_err(|e| e.to_string())?
+        {
+            let title = format!(
+                "{} by {}",
+                track.name,
+                track.by.as_deref().unwrap_or(artist)
+            );
+            let items = self.spotify_run(credentials, market, &track).await?;
+            return Ok(Pick::Play { title, items });
+        }
+        let found = self
+            .spotify
+            .search(credentials, query, market)
+            .await
+            .map_err(|e| e.to_string())?;
+        let pick =
+            exact_pick(&found, query).or_else(|| sure.then(|| best_pick(&found, query)).flatten());
+        if let Some(item) = pick {
+            let title = match (&item.kind, &item.by) {
+                (SpotifyKind::Artist | SpotifyKind::Playlist, _) | (_, None) => item.name.clone(),
+                (_, Some(by)) => format!("{} by {by}", item.name),
+            };
+            let items = self.spotify_run(credentials, market, item).await?;
+            return Ok(Pick::Play { title, items });
+        }
+        Ok(Pick::Candidates(candidates(found)))
+    }
+
+    /// What plays for one Spotify item: an artist as tracks found by
+    /// them, a song followed by more of its artist, an album or a
+    /// playlist as itself.
+    async fn spotify_run(
+        &self,
+        credentials: &Credentials,
+        market: Option<&str>,
+        item: &Item,
+    ) -> Result<Vec<Item>, String> {
+        let artist = match item.kind {
+            SpotifyKind::Artist => Some(item.name.as_str()),
+            SpotifyKind::Track => item.by.as_deref(),
+            SpotifyKind::Album | SpotifyKind::Playlist => return Ok(vec![item.clone()]),
+        };
+        let mut run = Vec::new();
+        if item.kind == SpotifyKind::Track {
+            run.push(item.clone());
+        }
+        if let Some(artist) = artist {
+            let more = self
+                .spotify
+                .tracks_by(credentials, artist, market)
+                .await
+                .map_err(|e| e.to_string())?;
+            run.extend(more.into_iter().filter(|t| t.uri != item.uri));
+        }
+        run.truncate(10);
+        if run.is_empty() {
+            return Err(format!("Spotify has no tracks for {:?}", item.name));
+        }
+        Ok(run)
+    }
+
+    async fn play_spotify(
+        &self,
+        room: &RoomName,
+        players: &[Player],
+        items: Vec<Item>,
+        title: &str,
+    ) -> Outcome {
+        let Some(service) = self.spotify_service(players).await else {
+            return Outcome::Failed("Spotify is not linked in the Sonos app".into());
+        };
+        let queue = items
+            .iter()
+            .filter_map(|item| spotify::enqueue(item, service))
+            .collect();
+        self.start(room, players, Content::Queue(queue), title)
+            .await
+    }
+
+    /// Sonos's number for the household's Spotify, read once.
+    async fn spotify_service(&self, players: &[Player]) -> Option<u32> {
+        if let Some(known) = *self.service_lock() {
+            return Some(known);
+        }
+        let linked = leader_of(players)
+            .client
+            .linked_services()
+            .await
+            .map_err(|e| tracing::warn!("[music] could not read the linked services: {e}"))
+            .ok()?;
+        let service = spotify::SPOTIFY_SERVICES
+            .into_iter()
+            .find(|s| linked.contains(s))?;
+        *self.service_lock() = Some(service);
+        Some(service)
+    }
+
+    fn service_lock(&self) -> std::sync::MutexGuard<'_, Option<u32>> {
+        self.spotify_service
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     async fn favorites(&self, players: &[Player]) -> Vec<Favorite> {
@@ -300,8 +517,13 @@ impl Music {
             .find_map(Account::of)
             .unwrap_or(Account::OPEN);
         let (uri, metadata) = account.play(station);
-        self.start(room, players, &uri, &metadata, false, &station.name)
-            .await
+        self.start(
+            room,
+            players,
+            Content::Stream { uri, metadata },
+            &station.name,
+        )
+        .await
     }
 
     /// Group the room behind its leader, load, play.
@@ -309,9 +531,7 @@ impl Music {
         &self,
         room: &RoomName,
         players: &[Player],
-        uri: &str,
-        metadata: &str,
-        queue: bool,
+        content: Content,
         title: &str,
     ) -> Outcome {
         let leader = leader_of(players);
@@ -325,13 +545,9 @@ impl Music {
                     player.client.join(&leader.sonos.id).await?;
                 }
             }
-            if queue {
-                leader
-                    .client
-                    .load_queue(&leader.sonos.id, uri, metadata)
-                    .await?;
-            } else {
-                leader.client.load(uri, metadata).await?;
+            match &content {
+                Content::Queue(items) => leader.client.load_queue(&leader.sonos.id, items).await?,
+                Content::Stream { uri, metadata } => leader.client.load(uri, metadata).await?,
             }
             leader.client.play().await
         }
@@ -340,13 +556,15 @@ impl Music {
         if let Err(e) = result {
             return Outcome::Failed(e.to_string());
         }
-        if is_radio(uri) {
+        if let Content::Stream { uri, metadata } = content
+            && is_radio(&uri)
+        {
             self.remember(
                 room,
                 Remembered {
                     title: title.to_string(),
-                    uri: uri.to_string(),
-                    metadata: metadata.to_string(),
+                    uri,
+                    metadata,
                 },
             );
         }
@@ -381,6 +599,53 @@ impl Music {
             }
         });
     }
+}
+
+/// What Spotify had for a request.
+enum Pick {
+    Play { title: String, items: Vec<Item> },
+    Candidates(Vec<Item>),
+}
+
+/// The thing whose name is exactly what was said, artists first: "John
+/// Mayer" is the man before it is a song somebody named after him.
+fn exact_pick<'a>(found: &'a spotify::Found, query: &str) -> Option<&'a Item> {
+    let wanted = words(query);
+    [
+        &found.artists,
+        &found.albums,
+        &found.tracks,
+        &found.playlists,
+    ]
+    .into_iter()
+    .flat_map(|items| items.iter())
+    .find(|item| words(&item.name) == wanted)
+}
+
+/// Spotify's best guess, for "from Spotify": an artist whose name holds
+/// every word said, else its most relevant song.
+fn best_pick<'a>(found: &'a spotify::Found, query: &str) -> Option<&'a Item> {
+    let wanted = words(query);
+    found
+        .artists
+        .iter()
+        .find(|a| {
+            let name = words(&a.name);
+            wanted.iter().all(|w| name.contains(w))
+        })
+        .or_else(|| found.tracks.first())
+}
+
+/// A few of each kind, for the model to choose among.
+fn candidates(found: spotify::Found) -> Vec<Item> {
+    found
+        .artists
+        .into_iter()
+        .take(2)
+        .chain(found.tracks.into_iter().take(3))
+        .chain(found.albums.into_iter().take(2))
+        .chain(found.playlists.into_iter().take(2))
+        .collect()
 }
 
 /// The Sonos a room's group is built around: the soundbar, which has to
@@ -465,11 +730,16 @@ fn reported(outcome: Outcome, room: Option<&RoomName>) -> Value {
             json!({ "spread": true, "to": room.unwrap_or_else(|| "every room".into()) })
         }
         Outcome::Paused => json!({ "paused": room }),
-        Outcome::Choose(stations) => json!({
-            "choose_from": stations.iter().map(|s| json!({
+        Outcome::Choose { stations, spotify } => json!({
+            "stations": stations.iter().map(|s| json!({
                 "station_id": s.id, "name": s.name, "about": s.about,
             })).collect::<Vec<_>>(),
-            "next": "Call play_radio again with the station_id of the one meant — prefer a station from the household's own country — or ask which.",
+            "spotify": spotify.iter().map(|i| json!({
+                "spotify_uri": i.uri, "kind": i.kind, "name": i.name, "by": i.by,
+            })).collect::<Vec<_>>(),
+            "next": "Pick the one meant and play it: a station with play_radio and its station_id \
+                (prefer the household's own country), Spotify with play_music and its spotify_uri \
+                and name. Ask which when it is not clear.",
         }),
         Outcome::NotFound(what) => json!({ "error": format!("found nothing called {what:?}") }),
         Outcome::WhichStation => {
@@ -493,8 +763,12 @@ impl Tool for PlayRadio {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "play_radio".into(),
-            description: "Play a radio station on the Sonos in a room, grouping every speaker in it.                 No station: the one that room played last. A station by name is looked for in                 the household's Sonos favorites, then on TuneIn; when several could be meant,                 the result lists them, and you call again with the station_id."
-                .into(),
+            description:
+                "Play a radio station on the Sonos in a room, grouping every speaker in it. \
+                No station: the one that room played last. A station by name is looked for in \
+                the household's Sonos favorites, then on TuneIn; when several could be meant, \
+                the result lists them, and you call again with the station_id."
+                    .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -526,15 +800,22 @@ impl Tool for PlayMusic {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "play_music".into(),
-            description: "Play something by name on the Sonos in a room — a playlist, album or                 station the household saved as a Sonos favorite, or a radio station. Every                 speaker in the room plays it together, and it replaces what was playing,                 the TV included."
+            description: "Play something by name on the Sonos in a room: a Sonos favorite, a \
+                radio station, or an artist, song (\"Gravity by John Mayer\"), album or playlist \
+                on Spotify. Every speaker in the room plays it together, and it replaces what \
+                was playing, the TV included. When several things could be meant, the result \
+                lists them; call again with the spotify_uri and name of the one meant."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "room": { "type": "string" },
-                    "query": { "type": "string", "description": "What was asked for, as said." }
+                    "query": { "type": "string", "description": "What was asked for, as said." },
+                    "from_spotify": { "type": "boolean", "description": "True when the person said Spotify: skip favorites and radio." },
+                    "spotify_uri": { "type": "string", "description": "A spotify_uri from an earlier result." },
+                    "name": { "type": "string", "description": "The name that went with that spotify_uri." }
                 },
-                "required": ["room", "query"],
+                "required": ["room"],
                 "additionalProperties": false
             }),
         }
@@ -542,6 +823,13 @@ impl Tool for PlayMusic {
 
     async fn execute(&self, args: Value) -> ToolResult<Value> {
         let room = required_room("play_music", &args)?;
+        let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+        if let Some(uri) = args.get("spotify_uri").and_then(Value::as_str) {
+            return Ok(reported(
+                self.0.spotify_uri(&room, uri, name).await,
+                Some(&room),
+            ));
+        }
         let query = args
             .get("query")
             .and_then(Value::as_str)
@@ -550,7 +838,14 @@ impl Tool for PlayMusic {
         if query.is_empty() {
             return Ok(json!({ "error": "what should I play?" }));
         }
-        Ok(reported(self.0.play(&room, query).await, Some(&room)))
+        let from_spotify = args
+            .get("from_spotify")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok(reported(
+            self.0.play(&room, query, from_spotify).await,
+            Some(&room),
+        ))
     }
 }
 
@@ -561,7 +856,10 @@ impl Tool for PlayElsewhere {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "play_elsewhere".into(),
-            description: "Spread what is playing to another room, or to every room:                 \"play it in the kitchen too\", \"play it everywhere\". The music comes from                 from_room, or from whatever is playing when that room plays nothing.                 TV sound is never spread."
+            description: "Spread what is playing to another room, or to every room: \
+                \"play it in the kitchen too\", \"play it everywhere\". The music comes from \
+                from_room, or from whatever is playing when that room plays nothing. \
+                TV sound is never spread."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -738,10 +1036,10 @@ room = "kitchen"
     async fn music(house: &House) -> Music {
         let config = Arc::new(ConfigStore::from_str_in_memory(PLACED).unwrap());
         let speakers = Arc::new(SpeakerRegistry::with_transport(
-            config,
+            config.clone(),
             Arc::new(house.clone()),
         ));
-        Music::new(speakers, None).await
+        Music::new(speakers, config, None).await
     }
 
     fn room(name: &str) -> RoomName {
@@ -894,6 +1192,54 @@ room = "kitchen"
     fn a_station_name_said_back_matches_exactly() {
         assert_eq!(words("DR P1"), words("dr p1"));
         assert_ne!(words("DR P1"), words("p1"));
+    }
+
+    fn spotify_item(kind: SpotifyKind, name: &str) -> Item {
+        Item {
+            kind,
+            uri: format!("spotify:x:{name}"),
+            name: name.into(),
+            by: None,
+        }
+    }
+
+    fn found() -> spotify::Found {
+        spotify::Found {
+            artists: vec![
+                spotify_item(SpotifyKind::Artist, "John Mayer Trio"),
+                spotify_item(SpotifyKind::Artist, "John Mayer"),
+            ],
+            tracks: vec![
+                spotify_item(SpotifyKind::Track, "Gravity"),
+                spotify_item(SpotifyKind::Track, "John Mayer"),
+            ],
+            albums: vec![spotify_item(SpotifyKind::Album, "Continuum")],
+            playlists: vec![],
+        }
+    }
+
+    #[test]
+    fn an_exact_name_plays_and_the_artist_comes_first() {
+        let found = found();
+        let pick = exact_pick(&found, "john mayer").unwrap();
+        assert_eq!(
+            (pick.kind, pick.name.as_str()),
+            (SpotifyKind::Artist, "John Mayer")
+        );
+        assert_eq!(
+            exact_pick(&found, "continuum").unwrap().kind,
+            SpotifyKind::Album
+        );
+        assert!(exact_pick(&found, "mayer").is_none());
+    }
+
+    #[test]
+    fn from_spotify_takes_the_best_guess() {
+        let found = found();
+        // Every word said is in the trio's name.
+        assert_eq!(best_pick(&found, "mayer").unwrap().name, "John Mayer Trio");
+        // No artist fits: the most relevant song.
+        assert_eq!(best_pick(&found, "something else").unwrap().name, "Gravity");
     }
 
     #[test]

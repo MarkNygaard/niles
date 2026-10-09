@@ -4,6 +4,7 @@ pub mod client;
 pub mod error;
 pub mod favorites;
 pub mod household;
+pub mod spotify;
 pub mod transport;
 pub mod tunein;
 
