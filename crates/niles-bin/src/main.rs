@@ -2900,7 +2900,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
-    let music = Arc::new(music::Music::new(speakers.clone(), build_room_music(&cfg)).await);
+    let music =
+        Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
     music::register(&mut tools, music.clone());
 
     // Notification center
@@ -4366,7 +4367,7 @@ async fn dispatch_text(
                     Ok(r) => r,
                     Err(say) => return Some(say),
                 };
-                match music_reply(ctx.music.play(&target, &room).await, &target) {
+                match music_reply(ctx.music.play(&target, &room, false).await, &target) {
                     Some(say) => Some(say),
                     None => {
                         return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
@@ -4384,12 +4385,16 @@ async fn dispatch_text(
                 None => return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await,
             }
         }
-        Intent::PlayMusic { query, room } => {
+        Intent::PlayMusic {
+            query,
+            room,
+            spotify,
+        } => {
             let target = match music_room(room.as_deref(), origin_room) {
                 Ok(r) => r,
                 Err(say) => return Some(say),
             };
-            match music_reply(ctx.music.play(&target, &query).await, &target) {
+            match music_reply(ctx.music.play(&target, &query, spotify).await, &target) {
                 Some(say) => Some(say),
                 None => return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await,
             }
@@ -4717,7 +4722,7 @@ fn music_room(
 fn music_reply(outcome: music::Outcome, room: &RoomName) -> Option<String> {
     Some(match outcome {
         music::Outcome::Playing(what) => response::playing(&what, room.as_str()),
-        music::Outcome::Choose(_) => return None,
+        music::Outcome::Choose { .. } => return None,
         music::Outcome::NotFound(what) => response::music_not_found(&what),
         music::Outcome::WhichStation => response::which_station(),
         music::Outcome::NoSpeaker => response::no_speaker_in_room(room.as_str()),
@@ -5729,7 +5734,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
-    let music = Arc::new(music::Music::new(speakers.clone(), build_room_music(&cfg)).await);
+    let music =
+        Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
     music::register(&mut tools, music.clone());
 
     // Notification center

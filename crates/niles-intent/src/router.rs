@@ -67,6 +67,7 @@ impl IntentRouter {
             // the kitchen too" for rooms.
             .or_else(|| match_play_radio(&t))
             .or_else(|| match_play_elsewhere(&t))
+            .or_else(|| match_play_from_spotify(&t))
             .or_else(|| match_play_music_in(&t))
             .or_else(|| match_media_play(&t))
             .or_else(|| match_media_pause(&t))
@@ -1099,6 +1100,31 @@ fn match_play_elsewhere(t: &str) -> Option<Intent> {
     })
 }
 
+// ---- Play from Spotify -----------------------------------------------------
+
+fn play_from_spotify_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+              ^
+              play\s+(?P<query>.+?)\s+(?:from|on|via)\s+spotify
+              (?:\s+in\s+(?:the\s+)?(?P<room>.+?))?
+              $",
+        )
+        .expect("play_from_spotify regex compiles")
+    })
+}
+
+fn match_play_from_spotify(t: &str) -> Option<Intent> {
+    let caps = play_from_spotify_regex().captures(t)?;
+    Some(Intent::PlayMusic {
+        query: caps.name("query")?.as_str().to_string(),
+        room: caps.name("room").map(|m| m.as_str().to_string()),
+        spotify: true,
+    })
+}
+
 // ---- Play music in a room --------------------------------------------------
 
 fn play_music_in_regex() -> &'static Regex {
@@ -1119,6 +1145,7 @@ fn match_play_music_in(t: &str) -> Option<Intent> {
     Some(Intent::PlayMusic {
         query: query.to_string(),
         room: Some(caps.name("room")?.as_str().to_string()),
+        spotify: false,
     })
 }
 
@@ -2647,7 +2674,28 @@ mod tests {
             parse("play john mayer in the kitchen"),
             Some(Intent::PlayMusic {
                 query: "john mayer".into(),
-                room: Some("kitchen".into())
+                room: Some("kitchen".into()),
+                spotify: false,
+            })
+        );
+    }
+
+    #[test]
+    fn play_something_from_spotify() {
+        assert_eq!(
+            parse("play john mayer from spotify"),
+            Some(Intent::PlayMusic {
+                query: "john mayer".into(),
+                room: None,
+                spotify: true,
+            })
+        );
+        assert_eq!(
+            parse("play continuum on spotify in the living room"),
+            Some(Intent::PlayMusic {
+                query: "continuum".into(),
+                room: Some("living room".into()),
+                spotify: true,
             })
         );
     }

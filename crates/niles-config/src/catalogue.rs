@@ -140,6 +140,16 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
+        id: "spotify",
+        label: "Spotify",
+        blurb: "Play any artist, song or album on Sonos, by name.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
         id: "claude_code",
         label: "Claude Code",
         blurb: "Answers the chat with Claude, on your Claude subscription.",
@@ -197,6 +207,10 @@ impl Known {
             // both; this is the one whose absence says "not finished".
             Kind::Service if self.id == "nemlig" => Some("integrations.nemlig.password".into()),
             Kind::Service if self.id == "unifi" => Some("presence.unifi.api_key".into()),
+            // Two again, like nemlig; the secret is the one that says.
+            Kind::Service if self.id == "spotify" => {
+                Some("integrations.spotify.client_secret".into())
+            }
             Kind::Service => None,
         }
     }

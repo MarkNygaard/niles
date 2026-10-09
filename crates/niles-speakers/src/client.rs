@@ -214,10 +214,11 @@ impl SonosClient {
         Ok(())
     }
 
-    /// Replace its queue with one thing — a playlist, an album — and
-    /// load the queue. `own_id` is this speaker's `RINCON_…`, which the
-    /// queue is named after.
-    pub async fn load_queue(&self, own_id: &str, uri: &str, metadata: &str) -> Result<()> {
+    /// Replace its queue — with a playlist, an album, or a run of
+    /// tracks, each a URI and its metadata — and load the queue.
+    /// `own_id` is this speaker's `RINCON_…`, which the queue is named
+    /// after.
+    pub async fn load_queue(&self, own_id: &str, items: &[(String, String)]) -> Result<()> {
         self.invoke(
             av_endpoint(&self.ip),
             AV_TRANSPORT_SERVICE,
@@ -225,17 +226,19 @@ impl SonosClient {
             "<InstanceID>0</InstanceID>",
         )
         .await?;
-        self.invoke(
-            av_endpoint(&self.ip),
-            AV_TRANSPORT_SERVICE,
-            "AddURIToQueue",
-            &format!(
-                "<InstanceID>0</InstanceID><EnqueuedURI>{}</EnqueuedURI><EnqueuedURIMetaData>{}</EnqueuedURIMetaData><DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>",
-                escape(uri),
-                escape(metadata)
-            ),
-        )
-        .await?;
+        for (uri, metadata) in items {
+            self.invoke(
+                av_endpoint(&self.ip),
+                AV_TRANSPORT_SERVICE,
+                "AddURIToQueue",
+                &format!(
+                    "<InstanceID>0</InstanceID><EnqueuedURI>{}</EnqueuedURI><EnqueuedURIMetaData>{}</EnqueuedURIMetaData><DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>",
+                    escape(uri),
+                    escape(metadata)
+                ),
+            )
+            .await?;
+        }
         self.load(&format!("x-rincon-queue:{own_id}#0"), "").await
     }
 
