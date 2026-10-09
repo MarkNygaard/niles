@@ -43,6 +43,10 @@ pub enum Outcome {
     /// Spread to more rooms.
     Spread,
     Paused,
+    Resumed,
+    Skipped,
+    /// The room's volume now, as a percent.
+    Volume(u8),
     /// Several things could be meant.
     Choose {
         stations: Vec<Station>,
@@ -270,6 +274,11 @@ impl Music {
     /// "Pause the kitchen". A room following another room's music
     /// leaves the group, and the rest play on; a room leading a group
     /// pauses it, all of it, as the button on a Sonos does.
+    ///
+    /// Done when anything paused. A room is often two groups at once —
+    /// the soundbar gone to the TV when it came on, and the music carried
+    /// on by the speaker left behind — and the TV's sound may refuse a
+    /// pause that the music takes.
     pub async fn pause(&self, room: &RoomName) -> Outcome {
         let players = self.speakers.in_room(room).await;
         if players.is_empty() {
@@ -277,7 +286,8 @@ impl Music {
         }
         let here: Vec<&str> = players.iter().map(|p| p.sonos.id.as_str()).collect();
         let mut paused: Vec<&str> = Vec::new();
-        let mut result = Ok(());
+        let mut done = 0;
+        let mut refused = None;
         for player in &players {
             let leader = player.sonos.coordinator.as_str();
             let step = if here.contains(&leader) {
@@ -292,15 +302,78 @@ impl Music {
             } else {
                 player.client.go_solo().await
             };
-            if let Err(e) = step {
-                result = Err(e);
+            match step {
+                Ok(()) => done += 1,
+                Err(e) => {
+                    tracing::debug!("[music] {} would not pause: {e}", player.sonos.name);
+                    refused = Some(e);
+                }
             }
         }
         self.speakers.forget().await;
-        match result {
-            Ok(()) => Outcome::Paused,
-            Err(e) => Outcome::Failed(e.to_string()),
+        match refused {
+            Some(e) if done == 0 => Outcome::Failed(e.to_string()),
+            _ => Outcome::Paused,
         }
+    }
+
+    /// "Resume the music": play on, through each group's leader.
+    pub async fn resume(&self, room: &RoomName) -> Outcome {
+        self.each_leader(room, Outcome::Resumed, |c| async move { c.play().await })
+            .await
+    }
+
+    /// "Next song" / "previous song".
+    pub async fn skip(&self, room: &RoomName, back: bool) -> Outcome {
+        self.each_leader(room, Outcome::Skipped, move |c| async move {
+            if back {
+                c.previous().await
+            } else {
+                c.next().await
+            }
+        })
+        .await
+    }
+
+    /// Set every speaker in the room to `level`, or move each by `step`.
+    pub async fn volume(&self, room: &RoomName, level: Option<u8>, step: Option<i16>) -> Outcome {
+        let players = self.speakers.in_room(room).await;
+        if players.is_empty() {
+            return Outcome::NoSpeaker;
+        }
+        let mut now = None;
+        for player in &players {
+            let target = match (level, step) {
+                (Some(level), _) => level.min(100),
+                (None, Some(step)) => match player.client.get_volume().await {
+                    Ok(current) => (i16::from(current) + step).clamp(0, 100) as u8,
+                    Err(e) => return Outcome::Failed(e.to_string()),
+                },
+                (None, None) => return Outcome::Failed("no volume given".into()),
+            };
+            if let Err(e) = player.client.set_volume(target).await {
+                return Outcome::Failed(e.to_string());
+            }
+            now.get_or_insert(target);
+        }
+        Outcome::Volume(now.unwrap_or_default())
+    }
+
+    async fn each_leader<F, Fut>(&self, room: &RoomName, done: Outcome, op: F) -> Outcome
+    where
+        F: Fn(Arc<niles_speakers::SonosClient>) -> Fut,
+        Fut: std::future::Future<Output = niles_speakers::Result<()>>,
+    {
+        let leaders = self.speakers.leaders(room).await;
+        if leaders.is_empty() {
+            return Outcome::NoSpeaker;
+        }
+        for leader in leaders {
+            if let Err(e) = op(leader).await {
+                return Outcome::Failed(e.to_string());
+            }
+        }
+        done
     }
 
     async fn find(
@@ -804,6 +877,9 @@ fn reported(outcome: Outcome, room: Option<&RoomName>) -> Value {
             json!({ "spread": true, "to": room.unwrap_or_else(|| "every room".into()) })
         }
         Outcome::Paused => json!({ "paused": room }),
+        Outcome::Resumed => json!({ "resumed": room }),
+        Outcome::Skipped => json!({ "skipped": room }),
+        Outcome::Volume(percent) => json!({ "room": room, "volume_percent": percent }),
         Outcome::Choose { stations, spotify } => json!({
             "stations": stations.iter().map(|s| json!({
                 "station_id": s.id, "name": s.name, "about": s.about,
@@ -956,10 +1032,98 @@ impl Tool for PlayElsewhere {
     }
 }
 
+/// One of the plain controls: pause, resume, skip, volume.
+struct Control {
+    music: Arc<Music>,
+    name: &'static str,
+    description: &'static str,
+    extra: Value,
+}
+
+#[async_trait::async_trait]
+impl Tool for Control {
+    fn descriptor(&self) -> ToolDescriptor {
+        let mut properties = json!({ "room": { "type": "string" } });
+        if let (Some(all), Some(extra)) = (properties.as_object_mut(), self.extra.as_object()) {
+            all.extend(extra.clone());
+        }
+        ToolDescriptor {
+            name: self.name.into(),
+            description: self.description.into(),
+            parameters: json!({
+                "type": "object",
+                "properties": properties,
+                "required": ["room"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> ToolResult<Value> {
+        let room = required_room(self.name, &args)?;
+        let outcome = match self.name {
+            "pause_music" => self.music.pause(&room).await,
+            "resume_music" => self.music.resume(&room).await,
+            "skip_track" => {
+                let back = args.get("back").and_then(Value::as_bool).unwrap_or(false);
+                self.music.skip(&room, back).await
+            }
+            _ => {
+                let level = args
+                    .get("level")
+                    .and_then(Value::as_u64)
+                    .map(|l| l.min(100) as u8);
+                let step = args
+                    .get("change")
+                    .and_then(Value::as_i64)
+                    .map(|c| c.clamp(-100, 100) as i16);
+                self.music.volume(&room, level, step).await
+            }
+        };
+        Ok(reported(outcome, Some(&room)))
+    }
+}
+
 pub fn register(reg: &mut ToolRegistry, music: Arc<Music>) {
     reg.register(Box::new(PlayRadio(music.clone())));
     reg.register(Box::new(PlayMusic(music.clone())));
-    reg.register(Box::new(PlayElsewhere(music)));
+    reg.register(Box::new(PlayElsewhere(music.clone())));
+    let controls = [
+        (
+            "pause_music",
+            "Stop or pause what the Sonos in a room is playing: music, radio or the TV's sound. \
+             \"Stop the music\" is this, not the lights. A room following another room's music \
+             leaves the group and the rest play on.",
+            json!({}),
+        ),
+        (
+            "resume_music",
+            "Carry on playing what the Sonos in a room was playing before it was paused.",
+            json!({}),
+        ),
+        (
+            "skip_track",
+            "Next song on the Sonos in a room, or the previous one with back.",
+            json!({ "back": { "type": "boolean" } }),
+        ),
+        (
+            "music_volume",
+            "The Sonos volume in a room: set a level (0-100), or change it by a step \
+             (+10 louder, -10 quieter). Every speaker in the room moves together.",
+            json!({
+                "level": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "change": { "type": "integer", "minimum": -100, "maximum": 100 }
+            }),
+        ),
+    ];
+    for (name, description, extra) in controls {
+        reg.register(Box::new(Control {
+            music: music.clone(),
+            name,
+            description,
+            extra,
+        }));
+    }
 }
 
 #[cfg(test)]
@@ -979,6 +1143,8 @@ mod tests {
         /// What each address has loaded.
         loaded: Map<&'static str, &'static str>,
         playing: Vec<&'static str>,
+        /// (address, action) pairs answered with a UPnP fault.
+        refuse: Vec<(&'static str, &'static str)>,
         calls: Arc<Mutex<Vec<(String, String, String)>>>,
     }
 
@@ -1068,7 +1234,14 @@ mod tests {
                 .map(|(_, _, ip, _)| *ip)
                 .find(|ip| endpoint.contains(ip))
                 .unwrap_or("");
-            Ok(match action.rsplit('#').next().unwrap() {
+            let name = action.rsplit('#').next().unwrap();
+            if self.refuse.contains(&(ip, name)) {
+                return Err(niles_speakers::Error::SoapFault {
+                    code: "701".into(),
+                    reason: "Transition not available".into(),
+                });
+            }
+            Ok(match name {
                 "GetZoneGroupState" => {
                     format!("<ZoneGroupState>{}</ZoneGroupState>", self.state())
                 }
@@ -1076,6 +1249,7 @@ mod tests {
                     "<CurrentURI>{}</CurrentURI>",
                     escaped(self.loaded.get(ip).copied().unwrap_or(""))
                 ),
+                "GetVolume" => "<CurrentVolume>30</CurrentVolume>".to_string(),
                 "GetTransportInfo" => format!(
                     "<CurrentTransportState>{}</CurrentTransportState>",
                     if self.playing.contains(&ip) {
@@ -1215,6 +1389,57 @@ room = "kitchen"
         assert!(house.did("10.0.0.4", "BecomeCoordinatorOfStandaloneGroup", ""));
         // The living room plays on.
         assert!(!house.did("10.0.0.2", "Pause", ""));
+    }
+
+    #[tokio::test]
+    async fn the_music_left_behind_by_the_tv_is_paused() {
+        // The soundbar went to the TV and refuses a pause; the speaker at
+        // the back carries the music on its own, and takes it.
+        let mut house = House::new();
+        house.refuse.push(("10.0.0.2", "Pause"));
+        let outcome = music(&house).await.pause(&room("living_room")).await;
+        assert_eq!(outcome, Outcome::Paused);
+        assert!(house.did("10.0.0.6", "Pause", ""));
+    }
+
+    #[tokio::test]
+    async fn nothing_pausing_is_said() {
+        let mut house = House::new();
+        house.refuse.push(("10.0.0.4", "Pause"));
+        let outcome = music(&house).await.pause(&room("kitchen")).await;
+        assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn resuming_goes_to_the_leader_once() {
+        let mut house = House::new();
+        house.leaders.insert("RINCON_BACK", "RINCON_BAR");
+        assert_eq!(
+            music(&house).await.resume(&room("living_room")).await,
+            Outcome::Resumed
+        );
+        assert_eq!(
+            house
+                .asked("10.0.0.2")
+                .iter()
+                .filter(|(a, _)| a == "Play")
+                .count(),
+            1
+        );
+        assert!(!house.did("10.0.0.6", "Play", ""));
+    }
+
+    #[tokio::test]
+    async fn a_volume_step_moves_every_speaker_in_the_room() {
+        let house = House::new();
+        let outcome = music(&house)
+            .await
+            .volume(&room("living_room"), None, Some(-10))
+            .await;
+        assert!(matches!(outcome, Outcome::Volume(_)), "{outcome:?}");
+        for ip in ["10.0.0.2", "10.0.0.6"] {
+            assert!(house.did(ip, "SetVolume", "DesiredVolume"), "{ip}");
+        }
     }
 
     #[tokio::test]
