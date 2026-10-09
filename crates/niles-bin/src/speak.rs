@@ -14,7 +14,14 @@ use std::time::Duration;
 use crate::satellites::SatelliteRegistry;
 use crate::speakers::SpeakerRegistry;
 
-const DUCK_VOLUME: u8 = 20;
+/// How quiet a playing speaker goes while Niles listens or speaks: a
+/// quarter of where it was. A fixed level did nothing in a house that
+/// listens below it — the living room at 20 was "turned down" to 20,
+/// and at 13 it would have been turned up, so both were left alone and
+/// "stop the music" was heard through Gavin DeGraw.
+fn ducked(volume: u8) -> u8 {
+    volume / 4
+}
 
 /// Parse a minimal RIFF/WAVE file and return its PCM payload +
 /// format metadata.
@@ -123,7 +130,8 @@ async fn duck_one(sonos: &SonosClient) -> Option<u8> {
     }
 
     let current = match sonos.get_volume().await {
-        Ok(v) if v > DUCK_VOLUME => v,
+        // Nearly silent already: nothing to gain.
+        Ok(v) if v > 2 => v,
         Ok(_) => return None,
         Err(e) => {
             tracing::warn!("[duck] volume read failed: {e:#}");
@@ -131,11 +139,11 @@ async fn duck_one(sonos: &SonosClient) -> Option<u8> {
         }
     };
 
-    if let Err(e) = sonos.set_volume(DUCK_VOLUME).await {
+    if let Err(e) = sonos.set_volume(ducked(current)).await {
         tracing::warn!("[duck] set ducked volume failed: {e:#}");
         return None;
     }
-    tracing::debug!("[duck] {current} -> {DUCK_VOLUME}");
+    tracing::debug!("[duck] {current} -> {}", ducked(current));
     Some(current)
 }
 
@@ -218,7 +226,7 @@ impl Hush {
     /// Turn back up what this satellite's turn turned down — only for
     /// `turn`, when given, so a later wake keeps its quiet.
     async fn restore(&self, ip: IpAddr, turn: Option<u64>) {
-        let ducked = {
+        let turned_down = {
             let mut held = self.lock();
             match held.get(&ip) {
                 Some(h) if turn.is_none_or(|t| t == h.turn) => {
@@ -227,10 +235,10 @@ impl Hush {
                 _ => return,
             }
         };
-        for (sonos, original) in ducked {
+        for (sonos, original) in turned_down {
             match sonos.get_volume().await {
                 // Changed meanwhile — by a command, or a hand on the app.
-                Ok(now) if now != DUCK_VOLUME => continue,
+                Ok(now) if now != ducked(original) => continue,
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!("[hush] volume read failed: {e:#}");
@@ -862,7 +870,7 @@ room = "living_room"
         assert!(calls[0].1.contains("GetTransportInfo"));
         assert!(calls[1].1.contains("GetVolume"));
         assert!(calls[2].1.contains("SetVolume"));
-        assert!(calls[2].2.contains("<DesiredVolume>20</DesiredVolume>"));
+        assert!(calls[2].2.contains("<DesiredVolume>15</DesiredVolume>"));
     }
 
     #[tokio::test]
@@ -903,11 +911,19 @@ room = "living_room"
         assert_eq!(mock.calls().len(), 1);
     }
 
+    #[test]
+    fn a_quiet_room_still_goes_quieter() {
+        // The living room listened at 20, then 13; a fixed 20 left both.
+        assert_eq!(ducked(20), 5);
+        assert_eq!(ducked(13), 3);
+        assert_eq!(ducked(60), 15);
+    }
+
     #[tokio::test]
-    async fn duck_volume_equal_to_threshold_returns_none() {
+    async fn duck_a_speaker_nearly_silent_returns_none() {
         let mock = RecordingTransport::with_responses(vec![
             Ok(xml_transport_info("PLAYING")),
-            Ok(xml_volume(20)),
+            Ok(xml_volume(2)),
         ]);
 
         let result = duck_one(&on(mock.clone())).await;
@@ -916,10 +932,10 @@ room = "living_room"
     }
 
     #[tokio::test]
-    async fn duck_volume_below_threshold_returns_none() {
+    async fn duck_a_silent_speaker_returns_none() {
         let mock = RecordingTransport::with_responses(vec![
             Ok(xml_transport_info("PLAYING")),
-            Ok(xml_volume(15)),
+            Ok(xml_volume(0)),
         ]);
 
         let result = duck_one(&on(mock.clone())).await;
@@ -1033,7 +1049,7 @@ room = "living_room"
         let peer = test_peer();
         let room = RoomName::parse("living_room").unwrap();
         let mut responses = one_speaker_playing();
-        responses.extend([Ok(xml_volume(20)), Ok(String::new())]);
+        responses.extend([Ok(xml_volume(15)), Ok(String::new())]);
         let mock = RecordingTransport::with_responses(responses);
         let speakers = registry(PLACED, mock.clone());
         let satellites = make_satellite_registry(peer.ip(), room);
@@ -1043,7 +1059,7 @@ room = "living_room"
         assert!(
             mock.calls()[3]
                 .2
-                .contains("<DesiredVolume>20</DesiredVolume>")
+                .contains("<DesiredVolume>15</DesiredVolume>")
         );
         hush.finish(peer, false).await;
         let calls = mock.calls();
@@ -1080,7 +1096,7 @@ room = "living_room"
         let peer = test_peer();
         let room = RoomName::parse("living_room").unwrap();
         let mut responses = one_speaker_playing();
-        responses.extend([Ok(xml_volume(20)), Ok(String::new())]);
+        responses.extend([Ok(xml_volume(15)), Ok(String::new())]);
         let mock = RecordingTransport::with_responses(responses);
         let speakers = registry(PLACED, mock.clone());
         let satellites = make_satellite_registry(peer.ip(), room);
