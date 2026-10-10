@@ -1869,6 +1869,35 @@ room = "kitchen"
     }
 
     #[tokio::test]
+    async fn the_tv_leaves_the_group_the_soundbar_led_playing() {
+        // The soundbar leads the music for the whole house when the TV
+        // goes on: the others carry on without it.
+        let mut house = House::new();
+        house.leaders.insert("RINCON_BACK", "RINCON_BAR");
+        house.leaders.insert("RINCON_MOVE", "RINCON_BAR");
+        house.playing.push("10.0.0.2");
+        let music = music(&house).await;
+        music.tv_sound().await.unwrap();
+        let handed = house
+            .asked("10.0.0.2")
+            .into_iter()
+            .find(|(action, _)| action == "DelegateGroupCoordinationTo")
+            .expect("the lead is handed over")
+            .1;
+        assert!(handed.contains("<RejoinGroup>0</RejoinGroup>"));
+        assert!(handed.contains("RINCON_BACK") || handed.contains("RINCON_MOVE"));
+        assert!(house.did(
+            "10.0.0.2",
+            "SetAVTransportURI",
+            "x-sonos-htastream:RINCON_BAR:spdif"
+        ));
+        for ip in ["10.0.0.4", "10.0.0.6"] {
+            assert!(!house.did(ip, "Pause", ""));
+            assert!(!house.did(ip, "SetAVTransportURI", ""));
+        }
+    }
+
+    #[tokio::test]
     async fn carrying_on_plays_from_the_speaker_with_the_queue() {
         let house = House::new();
         let music = music(&house).await;

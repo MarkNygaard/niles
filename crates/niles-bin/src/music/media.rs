@@ -351,7 +351,9 @@ impl Music {
     }
 
     /// The soundbar to the TV's sound, out of whatever group it is in —
-    /// the rest of that group plays on without it.
+    /// the rest of that group plays on without it. Leading the group,
+    /// it hands the lead to another speaker first: the TV's sound
+    /// loaded on a leader is the TV's sound on the whole group.
     pub async fn tv_sound(&self) -> Result<(), String> {
         let all = self.speakers.everywhere().await;
         let cfg = self.config.current();
@@ -369,7 +371,16 @@ impl Music {
             })
             .or_else(|| all.iter().find(|p| p.sonos.home_theater))
             .ok_or_else(|| "no soundbar is placed in a room".to_string())?;
-        if soundbar.sonos.coordinator != soundbar.sonos.id {
+        let follower = all
+            .iter()
+            .find(|p| p.sonos.coordinator == soundbar.sonos.id && p.sonos.id != soundbar.sonos.id);
+        if let Some(follower) = follower {
+            soundbar
+                .client
+                .hand_over(&follower.sonos.id)
+                .await
+                .map_err(|e| e.to_string())?;
+        } else if soundbar.sonos.coordinator != soundbar.sonos.id {
             let _ = soundbar.client.go_solo().await;
         }
         soundbar
