@@ -6,13 +6,7 @@ describe("TabBar", () => {
   it("marks the house as where you are on the front page", () => {
     render(<TabBar route="/" />);
     expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "Me" })).not.toHaveAttribute("aria-current");
-  });
-
-  it("keeps Me marked on the pages inside it", () => {
-    // Settings is reached from Me, so the tab that leads back to it is Me.
-    render(<TabBar route="/me/settings" />);
-    expect(screen.getByRole("link", { name: "Me" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Groceries" })).not.toHaveAttribute("aria-current");
   });
 
   it("marks the list on the list", () => {
@@ -23,12 +17,17 @@ describe("TabBar", () => {
     );
   });
 
-  it("does not mistake a route that merely starts with the same letters", () => {
-    render(<TabBar route="/meals" />);
-    expect(screen.getByRole("link", { name: "Me" })).not.toHaveAttribute("aria-current");
+  it("marks Settings when Settings was put here", () => {
+    render(<TabBar route="/me/settings" menu={[{ id: "settings", hidden: false }]} />);
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("aria-current", "page");
   });
 
-  it("puts the middle entries in the arranged order and leaves out the hidden", () => {
+  it("has no Me: that is the avatar's", () => {
+    render(<TabBar route="/" />);
+    expect(screen.queryByRole("link", { name: "Me" })).toBeNull();
+  });
+
+  it("puts the entries in the arranged order and leaves out the hidden", () => {
     render(
       <TabBar
         route="/"
@@ -39,6 +38,6 @@ describe("TabBar", () => {
       />,
     );
     const labels = screen.getAllByRole("link").map((a) => a.textContent);
-    expect(labels).toEqual(["Home", "Chat", "Me"]);
+    expect(labels).toEqual(["Home", "Chat"]);
   });
 });
