@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GripVertical, Lock } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DESTINATIONS, HOME, PROFILE } from "@/lib/destinations";
+import { edgeScroll } from "@/lib/drag";
 import type { MediaShown, MenuEntry, MenuLayout } from "@/lib/menu";
 import { cn } from "@/lib/utils";
 
@@ -36,17 +37,30 @@ export function place(lists: Lists, id: MenuEntry, spot: Spot): Lists {
 }
 
 /**
- * Which spot a row of the page stands for. The rows are, in order: the
- * avatar menu's heading, My profile, its entries, the main navigation's
- * heading, Home, its entries. Above an entry is that entry's place;
- * a heading or a locked row is the nearest place beside it.
+ * Which spot a gap between the page's rows stands for, gap `n` being
+ * the one above row `n`. The rows are, in order: the avatar menu's
+ * heading, My profile, its entries, the main navigation's heading,
+ * Home, its entries. Above a locked row or a heading is the nearest
+ * place beside it; past the main navigation's heading is in it.
  */
-export function spotAt(row: number, avatarLength: number): Spot {
-  if (row <= 1) return { list: "avatar", at: 0 };
-  if (row < 2 + avatarLength) return { list: "avatar", at: row - 2 };
-  if (row === 2 + avatarLength) return { list: "avatar", at: avatarLength };
-  if (row === 3 + avatarLength) return { list: "main", at: 0 };
-  return { list: "main", at: row - (4 + avatarLength) };
+export function spotAt(gap: number, avatarLength: number): Spot {
+  if (gap <= 2) return { list: "avatar", at: 0 };
+  if (gap <= 2 + avatarLength) return { list: "avatar", at: gap - 2 };
+  if (gap <= 4 + avatarLength) return { list: "main", at: 0 };
+  return { list: "main", at: gap - (4 + avatarLength) };
+}
+
+/** The gap a spot is drawn at: where the line goes while dragging. */
+export function gapOf(spot: Spot, avatarLength: number): number {
+  return spot.list === "avatar" ? 2 + spot.at : 4 + avatarLength + spot.at;
+}
+
+/** Put `id` down at `spot`, a place counted with `id` still where it
+    was — which is how the page shows it while it is held. */
+export function drop(lists: Lists, id: MenuEntry, spot: Spot): Lists {
+  const from = lists[spot.list].indexOf(id);
+  const at = from !== -1 && from < spot.at ? spot.at - 1 : spot.at;
+  return place(lists, id, { list: spot.list, at });
 }
 
 /** One step up or down for the arrow keys: past the top of the main
@@ -92,14 +106,26 @@ type Row =
  * in theirs.
  *
  * One list with the headings in it rather than two lists, so the one
- * drag that reorders is also the drag that moves between them.
+ * drag that reorders is also the drag that moves between them. The row
+ * follows the pointer and a line shows where it will go; nothing moves
+ * until it is let go. (Moving rows under the pointer moved the held row
+ * in the page too, and a browser lets go of a pointer whose element
+ * moves: every drag stopped after one step.)
  */
 export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown }: MenuCardProps) {
-  const [draft, setDraft] = useState<Lists | null>(null);
-  const [held, setHeld] = useState<MenuEntry | null>(null);
+  const [held, setHeld] = useState<{
+    id: MenuEntry;
+    /** Where the press began, in the page rather than the window, so
+        the row stays under the pointer while the page scrolls. */
+    from: number;
+    y: number;
+    scroll: number;
+  } | null>(null);
+  const [gap, setGap] = useState<number | null>(null);
   const list = useRef<HTMLUListElement | null>(null);
+  const pointer = useRef(0);
 
-  const lists: Lists = draft ?? {
+  const lists: Lists = {
     avatar: layout.avatar.map((i) => i.id),
     main: layout.main.map((i) => i.id),
   };
@@ -121,16 +147,57 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
     onChange({ ...next, hidden: [...nextHidden] });
   }
 
-  /** Which row a pointer at `clientY` is over. Every row is one height. */
-  function rowAt(clientY: number): number {
+  /** The gap nearest a pointer at `clientY`. Every row is one height. */
+  function gapAt(clientY: number): number {
     const box = list.current?.getBoundingClientRect();
-    if (!box || rows.length === 0) return 0;
-    const index = Math.floor((clientY - box.top) / (box.height / rows.length));
-    return Math.min(Math.max(index, 0), rows.length - 1);
+    if (!box || box.height === 0 || rows.length === 0) return 0;
+    const index = Math.round((clientY - box.top) / (box.height / rows.length));
+    return Math.min(Math.max(index, 0), rows.length);
+  }
+
+  // Where the held row would go, and whether that is anywhere new.
+  const target = held && gap !== null ? spotAt(gap, lists.avatar.length) : null;
+  const next = held && target ? drop(lists, held.id, target) : null;
+  const moves = next !== null && JSON.stringify(next) !== JSON.stringify(lists);
+
+  // The page moves under a drag only at the screen's edges.
+  const dragging = held !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    // Not for a drag begun at the edge: only once it has been away.
+    let armed = false;
+    let frame = requestAnimationFrame(function tick() {
+      const y = pointer.current;
+      const by = edgeScroll(y, window.innerHeight);
+      if (by === 0) armed = true;
+      if (by !== 0 && armed) {
+        window.scrollBy(0, by);
+        const scroll = window.scrollY;
+        setHeld((now) => now && { ...now, scroll });
+        setGap(gapAt(y));
+      }
+      frame = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(frame);
+    // gapAt reads the list as it is drawn at the time, so the loop
+    // needs no restart when the rows change.
+  }, [dragging]);
+
+  function letGo(keep: boolean) {
+    if (keep && moves && next) save(next);
+    setHeld(null);
+    setGap(null);
   }
 
   return (
-    <ul ref={list} className="flex flex-col">
+    <ul ref={list} className="relative flex flex-col">
+      {held && target && moves && (
+        <li
+          aria-hidden
+          className="bg-foreground pointer-events-none absolute inset-x-1 z-20 h-0.5 -translate-y-1/2 rounded-full"
+          style={{ top: `${(gapOf(target, lists.avatar.length) / rows.length) * 100}%` }}
+        />
+      )}
       {rows.map((row) => {
         if (row.kind === "heading") {
           return (
@@ -155,12 +222,21 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
         }
         const { id } = row;
         const destination = DESTINATIONS[id];
+        const lifted = held?.id === id;
         return (
-          <li key={id} className="flex h-12 items-center py-0.5">
+          <li
+            key={id}
+            className={cn("flex h-12 items-center py-0.5", lifted && "relative z-10")}
+            style={
+              lifted
+                ? { transform: `translateY(${held.y + held.scroll - held.from}px)` }
+                : undefined
+            }
+          >
             <div
               className={cn(
                 "bg-card flex h-full w-full items-center gap-3 rounded-lg border px-3",
-                held === id && "border-ring shadow-sm",
+                lifted && "border-foreground/30 shadow-lg",
               )}
             >
               <button
@@ -173,21 +249,27 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
                   "disabled:cursor-not-allowed disabled:opacity-50",
                 )}
                 onPointerDown={(e) => {
+                  // No text selection, which would scroll the page with
+                  // the mouse.
+                  e.preventDefault();
                   e.currentTarget.setPointerCapture(e.pointerId);
-                  setHeld(id);
+                  pointer.current = e.clientY;
+                  setHeld({
+                    id,
+                    from: e.clientY + window.scrollY,
+                    y: e.clientY,
+                    scroll: window.scrollY,
+                  });
                 }}
                 onPointerMove={(e) => {
-                  if (held !== id) return;
-                  const spot = spotAt(rowAt(e.clientY), lists.avatar.length);
-                  const next = place(lists, id, spot);
-                  if (JSON.stringify(next) !== JSON.stringify(lists)) setDraft(next);
+                  if (held?.id !== id) return;
+                  const y = e.clientY;
+                  pointer.current = y;
+                  setHeld({ ...held, y, scroll: window.scrollY });
+                  setGap(gapAt(y));
                 }}
-                onPointerUp={() => {
-                  setHeld(null);
-                  // Nothing to save for a row picked up and put back.
-                  if (draft) save(draft);
-                  setDraft(null);
-                }}
+                onPointerUp={() => letGo(true)}
+                onPointerCancel={() => letGo(false)}
                 onKeyDown={(e) => {
                   const by = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
                   if (by === 0) return;
