@@ -16,7 +16,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { api } from "@/lib/api";
-import { edgeScroll } from "@/lib/drag";
+import { edgeScroll, useGripsHoldStill } from "@/lib/drag";
 import type { MediaGroup, MediaSpeaker, MediaView, RoomMusic } from "@/lib/api";
 import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
@@ -123,6 +123,7 @@ function dropUnder(x: number, y: number): string | null {
  */
 export function MediaPage() {
   const queryClient = useQueryClient();
+  useGripsHoldStill();
   const [held, setHeld] = useState<{ id: string; name: string } | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
@@ -252,6 +253,12 @@ export function MediaPage() {
           setOver(null);
           setAt(null);
           apply(speaker, dropAt(dropUnder(x, y)));
+        }}
+        onCancel={() => {
+          pointer.current = null;
+          setHeld(null);
+          setOver(null);
+          setAt(null);
         }}
         onMenu={() => setMoving(speaker)}
         onVolume={(percent) => volume.mutate({ id: speaker.id, percent })}
@@ -490,6 +497,7 @@ function SpeakerRow({
   onHold,
   onDrag,
   onDrop,
+  onCancel,
   onMenu,
   onVolume,
 }: {
@@ -499,6 +507,7 @@ function SpeakerRow({
   onHold: () => void;
   onDrag: (x: number, y: number) => void;
   onDrop: (x: number, y: number) => void;
+  onCancel: () => void;
   onMenu: () => void;
   onVolume: (percent: number) => void;
 }) {
@@ -517,8 +526,9 @@ function SpeakerRow({
           type="button"
           disabled={disabled}
           aria-label={`Move ${speaker.name}`}
+          data-grip
           className={cn(
-            "text-muted-foreground hover:text-foreground -m-1 cursor-grab touch-none rounded p-1",
+            "text-muted-foreground hover:text-foreground -m-1 cursor-grab touch-none rounded p-1 select-none [-webkit-touch-callout:none]",
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
@@ -543,6 +553,11 @@ function SpeakerRow({
           onPointerUp={(e) => {
             start.current = null;
             if (dragged.current) onDrop(e.clientX, e.clientY);
+          }}
+          onPointerCancel={() => {
+            start.current = null;
+            if (dragged.current) onCancel();
+            dragged.current = false;
           }}
           onClick={() => {
             if (dragged.current) {
