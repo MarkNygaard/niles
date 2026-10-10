@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DESTINATIONS, HOME, PROFILE } from "@/lib/destinations";
-import { edgeScroll } from "@/lib/drag";
+import { edgeScroll, useGripsHoldStill } from "@/lib/drag";
 import type { MediaShown, MenuEntry, MenuLayout } from "@/lib/menu";
 import { cn } from "@/lib/utils";
 
@@ -124,6 +124,7 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
   const [gap, setGap] = useState<number | null>(null);
   const list = useRef<HTMLUListElement | null>(null);
   const pointer = useRef(0);
+  useGripsHoldStill();
 
   const lists: Lists = {
     avatar: layout.avatar.map((i) => i.id),
@@ -243,8 +244,9 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
                 type="button"
                 disabled={disabled}
                 aria-label={`Move ${destination.label}`}
+                data-grip
                 className={cn(
-                  "text-muted-foreground hover:text-foreground -m-1 cursor-grab touch-none p-1",
+                  "text-muted-foreground hover:text-foreground -m-1 cursor-grab touch-none p-1 select-none [-webkit-touch-callout:none]",
                   "focus-visible:ring-3 focus-visible:ring-ring/50 rounded focus-visible:outline-none",
                   "disabled:cursor-not-allowed disabled:opacity-50",
                 )}
