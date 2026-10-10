@@ -1822,6 +1822,13 @@ room = "kitchen"
         music.leave_group("RINCON_MOVE").await.unwrap();
         assert!(house.did("10.0.0.4", "BecomeCoordinatorOfStandaloneGroup", ""));
         assert!(house.did("10.0.0.4", "Pause", ""));
+        // Not back to whatever it played before it joined.
+        assert!(house.did("10.0.0.4", "RemoveAllTracksFromQueue", ""));
+        assert!(house.did(
+            "10.0.0.4",
+            "SetAVTransportURI",
+            "x-rincon-queue:RINCON_MOVE#0"
+        ));
     }
 
     #[tokio::test]

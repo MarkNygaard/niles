@@ -98,14 +98,18 @@ impl Music {
         Ok(())
     }
 
-    /// `speaker` leaves its group and stops; the rest play on.
+    /// `speaker` leaves its group and stops, with nothing loaded; the
+    /// rest play on. Emptied, not just paused: out of a group, Sonos
+    /// hands a speaker back its own old queue, and the page would put it
+    /// under whatever that was.
     pub async fn leave_group(&self, speaker: &str) -> Result<(), String> {
         let player = self.player(speaker).await?;
         // Alone already is fine: there is nothing to leave.
         let _ = player.client.go_solo().await;
         let _ = player.client.pause().await;
+        let emptied = player.client.load_queue(&player.sonos.id, &[]).await;
         self.speakers.forget().await;
-        Ok(())
+        emptied.map_err(|e| e.to_string())
     }
 
     pub async fn play_group(&self, leader: &str, play: bool) -> Result<(), String> {
