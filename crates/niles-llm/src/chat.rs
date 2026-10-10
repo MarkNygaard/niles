@@ -220,6 +220,11 @@ pub(crate) struct RawChoice {
 pub(crate) struct RawMessage {
     #[serde(default)]
     pub(crate) content: Option<String>,
+    /// What a reasoning model thought before answering, where the
+    /// provider hands it back (Cerebras and Groq, for gpt-oss). Never
+    /// spoken; logged, so a strange answer can be traced to its cause.
+    #[serde(default)]
+    pub(crate) reasoning: Option<String>,
     #[serde(default)]
     pub(crate) tool_calls: Vec<RawToolCall>,
 }
@@ -317,6 +322,17 @@ pub(crate) async fn post_chat_completions(
         })
         .collect();
     let tool_calls = tool_calls?;
+    if let Some(reasoning) = choice.message.reasoning.as_deref().map(str::trim)
+        && !reasoning.is_empty()
+    {
+        let shown: String = reasoning.chars().take(500).collect();
+        let more = if reasoning.chars().count() > 500 {
+            " …"
+        } else {
+            ""
+        };
+        tracing::info!("[llm] reasoning: {shown}{more}");
+    }
     let content = choice.message.content;
     if content.is_none() && tool_calls.is_empty() {
         return Err(Error::InvalidResponse {
@@ -542,5 +558,20 @@ mod tests {
             }
             _ => panic!("expected Error::Provider"),
         }
+    }
+
+    #[test]
+    fn a_reasoning_model_s_thoughts_are_read_but_not_answered() {
+        let raw: RawChatResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"content":"Eggs are on the list.",
+                "reasoning":"The user wants eggs added."},"finish_reason":"stop"}]}"#,
+        )
+        .unwrap();
+        let message = &raw.choices[0].message;
+        assert_eq!(message.content.as_deref(), Some("Eggs are on the list."));
+        assert_eq!(
+            message.reasoning.as_deref(),
+            Some("The user wants eggs added.")
+        );
     }
 }

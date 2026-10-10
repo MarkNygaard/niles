@@ -334,7 +334,7 @@ async fn main() -> anyhow::Result<()> {
             // `niles::` — an earlier `niles_bin=` directive matched nothing
             // and silently swallowed every log line from this file.
             EnvFilter::new(
-                "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_mqtt=info,niles_presence=info,niles_scheduler=info,niles_stt=info,niles_tools=info",
+                "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_llm=info,niles_mqtt=info,niles_nemlig=info,niles_presence=info,niles_scheduler=info,niles_speakers=info,niles_stt=info,niles_tools=info,niles_webos=info",
             )
         });
     // The same events go to stdout and to a small in-memory ring the
@@ -2766,7 +2766,7 @@ fn spawn_dispatch_task(
                 tracing::warn!("history append failed: {e:#}");
             }
             if let Some(say) = say {
-                println!("[{peer}] say: {say}");
+                tracing::info!("[{peer}] say: {say}");
                 let speak_started = Instant::now();
                 if let Err(e) = crate::speak::speak_back(
                     &piper,
@@ -3588,7 +3588,7 @@ async fn dispatch_tier1(
     .await
     {
         Ok((LoopOutcome::Done(response), tool_trace)) => {
-            println!("[{peer}] \"{text}\" -> (Tier 1) {response}");
+            tracing::info!("[{peer}] \"{text}\" -> (Tier 1) {response}");
             let memory_for_review = ctx.memory.is_enabled().then(|| ctx.memory.clone());
             let snapshot = review::ReviewSnapshot {
                 transcript: text.to_string(),
@@ -3617,7 +3617,7 @@ async fn dispatch_tier1(
             tracing::info!("[{peer}] Tier 1 requested escalation: {reason}");
             match &ctx.tier2 {
                 Some(tier2) => {
-                    println!("[{peer}] \"{text}\" -> escalating to Tier 2 ({reason})");
+                    tracing::info!("[{peer}] \"{text}\" -> escalating to Tier 2 ({reason})");
                     match run_tool_calling_chat_with_messages(
                         tier2.as_ref(),
                         ctx.tools.as_ref(),
@@ -3628,7 +3628,7 @@ async fn dispatch_tier1(
                     .await
                     {
                         Ok((LoopOutcome::Done(response), _)) => {
-                            println!("[{peer}] \"{text}\" -> (Tier 2) {response}");
+                            tracing::info!("[{peer}] \"{text}\" -> (Tier 2) {response}");
                             Some(response)
                         }
                         Ok((LoopOutcome::EscalateRequested { .. }, _)) => {
@@ -3639,7 +3639,7 @@ async fn dispatch_tier1(
                             Some("Sorry, I'm not able to handle that request.".into())
                         }
                         Err(e) => {
-                            println!("[{peer}] \"{text}\" -> (Tier 2) error: {e:#}");
+                            tracing::info!("[{peer}] \"{text}\" -> (Tier 2) error: {e:#}");
                             tracing::warn!("[{peer}] Tier 2 dispatch failed: {e:#}");
                             Some("Sorry, something went wrong.".into())
                         }
@@ -3657,7 +3657,7 @@ async fn dispatch_tier1(
         Err(e) => {
             // Mirror the success-path stdout line so a Tier 1 failure is
             // visible without enabling tracing.
-            println!("[{peer}] \"{text}\" -> (Tier 1) error: {e:#}");
+            tracing::info!("[{peer}] \"{text}\" -> (Tier 1) error: {e:#}");
             tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e:#}");
             Some("Sorry, something went wrong.".into())
         }
@@ -4095,7 +4095,7 @@ async fn dispatch_text(
         None => return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await,
     };
 
-    println!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
+    tracing::info!("[{peer}] \"{text}\" -> {}", format_intent(&intent));
     // "Lights off, Sir." — but not on the replies that are about who
     // somebody is, which have to be the name.
     let address = match speaker {
@@ -4203,7 +4203,7 @@ async fn dispatch_text(
                     );
                     return Some(response::room_warming_up());
                 }
-                println!("[{peer}] no lights in registry — nothing to dispatch");
+                tracing::info!("[{peer}] no lights in registry — nothing to dispatch");
                 return Some(response::no_lights());
             }
             let desired = DeviceState {
@@ -4366,18 +4366,20 @@ async fn dispatch_text(
                 .scenes
                 .save(&name, &ctx.registry, canonical.as_ref(), &ctx.lamp_plugs());
             match &canonical {
-                Some(r) => println!("[{peer}] saved scene {name:?} with {n} devices in {r}"),
-                None => println!("[{peer}] saved scene {name:?} with {n} devices (whole home)"),
+                Some(r) => tracing::info!("[{peer}] saved scene {name:?} with {n} devices in {r}"),
+                None => {
+                    tracing::info!("[{peer}] saved scene {name:?} with {n} devices (whole home)")
+                }
             }
             Some(response::scene_saved(&name))
         }
         Intent::SceneApply { name } => {
             let Some(entries) = ctx.scenes.get(&name) else {
-                println!("[{peer}] no scene named {name:?}");
+                tracing::info!("[{peer}] no scene named {name:?}");
                 return Some(response::scene_not_found(&name));
             };
             if entries.is_empty() {
-                println!("[{peer}] scene {name:?} is empty — nothing to apply");
+                tracing::info!("[{peer}] scene {name:?} is empty — nothing to apply");
                 return Some(response::scene_empty(&name));
             }
             for entry in entries {
@@ -4386,10 +4388,10 @@ async fn dispatch_text(
                     continue;
                 };
                 if ctx.dry_run {
-                    println!("[{peer}] [dry-run] {topic}  {payload}");
+                    tracing::info!("[{peer}] [dry-run] {topic}  {payload}");
                 } else {
                     match ctx.publisher.publish(&topic, payload.clone()).await {
-                        Ok(()) => println!("[{peer}] published {topic}  {payload}"),
+                        Ok(()) => tracing::info!("[{peer}] published {topic}  {payload}"),
                         Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
                     }
                 }
@@ -4397,31 +4399,31 @@ async fn dispatch_text(
                 // manual mode until the user explicitly clears them.
                 ctx.tracker.flag(&entry.device_id);
             }
-            println!("[{peer}] applied scene {name:?}");
+            tracing::info!("[{peer}] applied scene {name:?}");
             Some(response::scene_applied(&name))
         }
         Intent::SceneList => {
             let names = ctx.scenes.names();
             if names.is_empty() {
-                println!("[{peer}] no scenes saved yet");
+                tracing::info!("[{peer}] no scenes saved yet");
             } else {
-                println!("[{peer}] {} scenes: {}", names.len(), names.join(", "));
+                tracing::info!("[{peer}] {} scenes: {}", names.len(), names.join(", "));
             }
             Some(response::scene_list(&names))
         }
         Intent::SceneDelete { name } => {
             if ctx.scenes.delete(&name) {
-                println!("[{peer}] deleted scene {name:?}");
+                tracing::info!("[{peer}] deleted scene {name:?}");
                 Some(response::scene_deleted(&name))
             } else {
-                println!("[{peer}] no scene named {name:?}");
+                tracing::info!("[{peer}] no scene named {name:?}");
                 Some(response::scene_not_found(&name))
             }
         }
         Intent::ClearManualMode { room } => match room {
             None => {
                 let n = ctx.tracker.clear_all();
-                println!("[{peer}] back to normal -> cleared manual flag on {n} devices");
+                tracing::info!("[{peer}] back to normal -> cleared manual flag on {n} devices");
                 Some(response::cleared_manual(None))
             }
             Some(name) => {
@@ -4595,7 +4597,7 @@ async fn dispatch_text(
             };
             let players = ctx.speakers.in_room(&canonical).await;
             if players.is_empty() {
-                println!("[{peer}] no speaker in {canonical}");
+                tracing::info!("[{peer}] no speaker in {canonical}");
                 return Some(response::no_speaker_in_room(canonical.as_str()));
             }
             // Each by the same step from where it is: a speaker at the
@@ -4628,7 +4630,7 @@ async fn dispatch_text(
         Intent::TimerSet { duration, name } => {
             let id = ctx.timers.set(duration, name.clone(), peer, Utc::now());
             let label = timer_label_for(name.as_deref(), duration);
-            println!("[{peer}] {label} started (id={})", id.0);
+            tracing::info!("[{peer}] {label} started (id={})", id.0);
             Some(response::timer_started(duration, name.as_deref()))
         }
         Intent::Stop | Intent::Cancel => {
@@ -4636,36 +4638,36 @@ async fn dispatch_text(
             // counting-down timer, so "stop the timer" works before it fires
             // (previously this only stopped a *ringing* timer).
             if let Some(entry) = ctx.timers.stop_most_recent_ringing() {
-                println!("[{peer}] stopped {}", timer_label(&entry));
+                tracing::info!("[{peer}] stopped {}", timer_label(&entry));
                 Some(response::timer_stopped(
                     entry.name.as_deref(),
                     entry.duration,
                 ))
             } else if let Some(entry) = ctx.timers.cancel_soonest_pending() {
-                println!("[{peer}] cancelled pending {}", timer_label(&entry));
+                tracing::info!("[{peer}] cancelled pending {}", timer_label(&entry));
                 Some(response::stop_outcome(
                     response::StopOutcome::CancelledPending,
                 ))
             } else {
-                println!("[{peer}] nothing to stop");
+                tracing::info!("[{peer}] nothing to stop");
                 Some(response::stop_outcome(response::StopOutcome::Nothing))
             }
         }
         Intent::TimerCancel { name } => {
             let n = ctx.timers.cancel_by_name(&name);
             if n == 0 {
-                println!("[{peer}] no timer named {name:?}");
+                tracing::info!("[{peer}] no timer named {name:?}");
             } else {
-                println!("[{peer}] cancelled {n} timer(s) named {name:?}");
+                tracing::info!("[{peer}] cancelled {n} timer(s) named {name:?}");
             }
             Some(response::timer_cancelled(&name, n))
         }
         Intent::TimerList => {
             let entries = ctx.timers.list();
             if entries.is_empty() {
-                println!("[{peer}] no active timers");
+                tracing::info!("[{peer}] no active timers");
             } else {
-                println!("[{peer}] {} active timer(s):", entries.len());
+                tracing::info!("[{peer}] {} active timer(s):", entries.len());
                 for e in &entries {
                     println!(
                         "  - id={} {} (state={:?}, expires_at={})",
@@ -4683,13 +4685,13 @@ async fn dispatch_text(
             let entries = ctx.timers.list(); // sorted soonest-first
             let seconds_left = if let Some(e) = entries.iter().find(|e| e.is_pending()) {
                 let secs = (e.expires_at - now).num_seconds().max(0) as u64;
-                println!("[{peer}] {} has {secs}s left", timer_label(e));
+                tracing::info!("[{peer}] {} has {secs}s left", timer_label(e));
                 Some(secs)
             } else if entries.iter().any(|e| e.is_ringing()) {
-                println!("[{peer}] timer is ringing (0s left)");
+                tracing::info!("[{peer}] timer is ringing (0s left)");
                 Some(0)
             } else {
-                println!("[{peer}] no timer for remaining query");
+                tracing::info!("[{peer}] no timer for remaining query");
                 None
             };
             Some(response::timer_remaining(seconds_left))
@@ -4785,11 +4787,11 @@ async fn dispatch_to_targets(
             continue;
         };
         if ctx.dry_run {
-            println!("[{peer}] [dry-run] {topic}  {payload}");
+            tracing::info!("[{peer}] [dry-run] {topic}  {payload}");
             continue;
         }
         match ctx.publisher.publish(&topic, payload.clone()).await {
-            Ok(()) => println!("[{peer}] published {topic}  {payload}"),
+            Ok(()) => tracing::info!("[{peer}] published {topic}  {payload}"),
             Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
         }
     }
@@ -4811,10 +4813,10 @@ async fn publish_single(
         return;
     };
     if ctx.dry_run {
-        println!("[{peer}] [dry-run] {topic}  {payload}");
+        tracing::info!("[{peer}] [dry-run] {topic}  {payload}");
     } else {
         match ctx.publisher.publish(&topic, payload.clone()).await {
-            Ok(()) => println!("[{peer}] published {topic}  {payload}"),
+            Ok(()) => tracing::info!("[{peer}] published {topic}  {payload}"),
             Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
         }
     }
@@ -4917,7 +4919,7 @@ fn media_result_to_response(
 ) -> Option<String> {
     match result {
         Ok(()) => {
-            println!("[{peer}] media {action} in {room}");
+            tracing::info!("[{peer}] media {action} in {room}");
             Some(ok_msg)
         }
         Err(MediaDispatchError::BadRoom(reason)) => {
@@ -4925,7 +4927,7 @@ fn media_result_to_response(
             Some(response::room_not_found(room))
         }
         Err(MediaDispatchError::NoSpeaker(r)) => {
-            println!("[{peer}] no speaker in {r}");
+            tracing::info!("[{peer}] no speaker in {r}");
             Some(response::no_speaker_in_room(r.as_str()))
         }
         Err(MediaDispatchError::Unreachable(r, e)) => {
