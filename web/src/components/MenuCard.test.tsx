@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { MEDIA_SHOWN, MenuCard, place, spotAt, step } from "./MenuCard";
+import { MEDIA_SHOWN, MenuCard, drop, gapOf, place, spotAt, step } from "./MenuCard";
 import type { MenuLayout } from "@/lib/menu";
 
 const LAYOUT: MenuLayout = {
@@ -28,15 +28,49 @@ describe("place", () => {
 
 describe("spotAt", () => {
   // Rows: 0 avatar heading, 1 My profile, 2 settings, 3 main heading,
-  // 4 Home, 5 groceries, 6 chat.
-  it("reads each row as a place", () => {
+  // 4 Home, 5 groceries, 6 chat. Gap n is above row n.
+  it("reads each gap as a place", () => {
     expect(spotAt(1, 1)).toEqual({ list: "avatar", at: 0 });
     expect(spotAt(2, 1)).toEqual({ list: "avatar", at: 0 });
-    // The main navigation's heading is the end of the avatar menu.
+    // Above the main navigation's heading is the end of the avatar menu.
     expect(spotAt(3, 1)).toEqual({ list: "avatar", at: 1 });
-    // Home is the start of the main navigation.
+    // Past the heading is in the main navigation, after Home.
     expect(spotAt(4, 1)).toEqual({ list: "main", at: 0 });
-    expect(spotAt(6, 1)).toEqual({ list: "main", at: 1 });
+    expect(spotAt(5, 1)).toEqual({ list: "main", at: 0 });
+    expect(spotAt(7, 1)).toEqual({ list: "main", at: 2 });
+  });
+
+  it("draws each place at its own gap", () => {
+    expect(gapOf({ list: "avatar", at: 1 }, 1)).toBe(3);
+    expect(gapOf({ list: "main", at: 0 }, 1)).toBe(5);
+    for (const gap of [2, 3, 5, 6, 7]) expect(gapOf(spotAt(gap, 1), 1)).toBe(gap);
+  });
+});
+
+describe("drop", () => {
+  const lists = {
+    avatar: ["settings" as const],
+    main: ["groceries" as const, "chat" as const, "media" as const],
+  };
+
+  it("moves an entry several places down in one drag", () => {
+    // Below media: gap 8, counted with groceries still in its place.
+    expect(drop(lists, "groceries", spotAt(8, 1))).toEqual({
+      avatar: ["settings"],
+      main: ["chat", "media", "groceries"],
+    });
+  });
+
+  it("leaves an entry put down beside itself where it was", () => {
+    expect(drop(lists, "chat", spotAt(6, 1))).toEqual(lists);
+    expect(drop(lists, "chat", spotAt(7, 1))).toEqual(lists);
+  });
+
+  it("moves an entry between the menus", () => {
+    expect(drop(lists, "media", spotAt(3, 1))).toEqual({
+      avatar: ["settings", "media"],
+      main: ["groceries", "chat"],
+    });
   });
 });
 

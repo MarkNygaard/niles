@@ -16,6 +16,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { api } from "@/lib/api";
+import { edgeScroll } from "@/lib/drag";
 import type { MediaGroup, MediaSpeaker, MediaView, RoomMusic } from "@/lib/api";
 import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
@@ -102,15 +103,6 @@ export function destinations(view: MediaView, speaker: string): { label: string;
     out.push({ label: "Not playing", drop: { to: "idle" } });
   }
   return out;
-}
-
-/** How far the page scrolls each frame for a drag held `y` from the
-    top of a `height`-tall window: nothing in the middle, faster the
-    deeper into the top or bottom edge. */
-export function edgeScroll(y: number, height: number, edge = 96): number {
-  if (y < edge) return -Math.ceil(((edge - y) / edge) * 16);
-  if (y > height - edge) return Math.ceil(((y - (height - edge)) / edge) * 16);
-  return 0;
 }
 
 /** The drop target under a point, read off the page's `data-drop`. */
