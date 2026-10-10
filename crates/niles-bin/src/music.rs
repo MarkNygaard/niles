@@ -418,6 +418,62 @@ impl Music {
             .collect()
     }
 
+    /// "Stop the music", no room named. The music playing where it was
+    /// said, and every room grouped with it — playing everywhere, it
+    /// stops everywhere. Nothing playing there, the music playing
+    /// anywhere else: Majse in the living room, the radio on in the
+    /// kitchen. The TV's sound is not the music, and is left alone.
+    ///
+    /// The rooms it stopped in, or none when no music played.
+    pub async fn stop_music(&self, here: Option<&RoomName>) -> Result<Vec<String>, String> {
+        let all = self.speakers.everywhere().await;
+        let cfg = self.config.current();
+        let room_of = |id: &str| cfg.speakers.sonos.get(id).map(|s| s.room.clone());
+        // Each group, by its leader, with the rooms in it.
+        let mut groups: Vec<(&Player, Vec<String>)> = Vec::new();
+        for player in &all {
+            let Some(leader) = all.iter().find(|p| p.sonos.id == player.sonos.coordinator) else {
+                continue;
+            };
+            let room = room_of(&player.sonos.id).unwrap_or_default();
+            match groups
+                .iter_mut()
+                .find(|(l, _)| l.sonos.id == leader.sonos.id)
+            {
+                Some((_, rooms)) if !rooms.contains(&room) => rooms.push(room),
+                Some(_) => {}
+                None => groups.push((leader, vec![room])),
+            }
+        }
+        let mut music = Vec::new();
+        for (leader, rooms) in groups {
+            if matches!(playing(leader).await, Some((kind, _)) if kind != "tv") {
+                music.push((leader, rooms));
+            }
+        }
+        let here = here.map(|r| r.as_str().to_string());
+        let mine: Vec<_> = music
+            .iter()
+            .filter(|(_, rooms)| here.as_ref().is_some_and(|h| rooms.contains(h)))
+            .collect();
+        let targets = if mine.is_empty() {
+            music.iter().collect::<Vec<_>>()
+        } else {
+            mine
+        };
+        let mut stopped = Vec::new();
+        for (leader, rooms) in targets {
+            leader.client.pause().await.map_err(|e| e.to_string())?;
+            for room in rooms {
+                if !stopped.contains(room) {
+                    stopped.push(room.clone());
+                }
+            }
+        }
+        self.speakers.forget().await;
+        Ok(stopped)
+    }
+
     /// "Resume the music": play on, through each group's leader.
     pub async fn resume(&self, room: &RoomName) -> Outcome {
         self.each_leader(room, Outcome::Resumed, |c| async move { c.play().await })
@@ -1174,19 +1230,37 @@ impl Tool for Control {
         if let (Some(all), Some(extra)) = (properties.as_object_mut(), self.extra.as_object()) {
             all.extend(extra.clone());
         }
+        // Pausing may leave the room out: "stop the music" is about the
+        // music, wherever it plays.
+        let required: &[&str] = if self.name == "pause_music" {
+            &[]
+        } else {
+            &["room"]
+        };
         ToolDescriptor {
             name: self.name.into(),
             description: self.description.into(),
             parameters: json!({
                 "type": "object",
                 "properties": properties,
-                "required": ["room"],
+                "required": required,
                 "additionalProperties": false
             }),
         }
     }
 
     async fn execute(&self, args: Value) -> ToolResult<Value> {
+        // Pausing with no room named is "stop the music": whatever
+        // music plays, wherever it is.
+        if self.name == "pause_music" && room_arg(self.name, &args, "room")?.is_none() {
+            return Ok(match self.music.stop_music(None).await {
+                Ok(rooms) if rooms.is_empty() => {
+                    json!({ "stopped": [], "note": "no music was playing" })
+                }
+                Ok(rooms) => json!({ "stopped": rooms }),
+                Err(e) => json!({ "error": e }),
+            });
+        }
         let room = required_room(self.name, &args)?;
         let outcome = match self.name {
             "pause_music" => self.music.pause(&room).await,
@@ -1218,9 +1292,10 @@ pub fn register(reg: &mut ToolRegistry, music: Arc<Music>) {
     let controls = [
         (
             "pause_music",
-            "Stop or pause what the Sonos in a room is playing: music, radio or the TV's sound. \
-             \"Stop the music\" is this, not the lights. A room following another room's music \
-             leaves the group and the rest play on.",
+            "Stop or pause music on the Sonos. Name a room only when the person named one; \
+             left out, the music playing anywhere is stopped — \"stop the music\" in a quiet \
+             room means the music somewhere else. The TV's sound is not the music. A room \
+             following another room's music leaves the group and the rest play on.",
             json!({}),
         ),
         (
@@ -1602,6 +1677,83 @@ room = "kitchen"
     async fn nothing_playing_says_nothing() {
         let house = House::new();
         assert!(music(&house).await.now_playing().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_in_a_quiet_room_stops_the_music_elsewhere() {
+        // Majse in the living room, the radio on in the kitchen.
+        let mut house = House::new();
+        house.playing.push("10.0.0.4");
+        house.loaded.insert(
+            "10.0.0.4",
+            "x-sonosapi-stream:s24861?sid=333&flags=8224&sn=14",
+        );
+        let stopped = music(&house)
+            .await
+            .stop_music(Some(&room("living_room")))
+            .await
+            .unwrap();
+        assert_eq!(stopped, ["kitchen"]);
+        assert!(house.did("10.0.0.4", "Pause", ""));
+        assert!(!house.did("10.0.0.2", "Pause", ""));
+    }
+
+    #[tokio::test]
+    async fn music_everywhere_stops_everywhere() {
+        let mut house = House::new();
+        house.leaders.insert("RINCON_BACK", "RINCON_BAR");
+        house.leaders.insert("RINCON_MOVE", "RINCON_BAR");
+        house.playing.push("10.0.0.2");
+        house
+            .loaded
+            .insert("10.0.0.2", "x-rincon-queue:RINCON_BAR#0");
+        let mut stopped = music(&house)
+            .await
+            .stop_music(Some(&room("kitchen")))
+            .await
+            .unwrap();
+        stopped.sort();
+        assert_eq!(stopped, ["kitchen", "living_room"]);
+        // One pause, to the group's leader.
+        let pauses = house
+            .asked("10.0.0.2")
+            .into_iter()
+            .filter(|(a, _)| a == "Pause")
+            .count();
+        assert_eq!(pauses, 1);
+        assert!(!house.did("10.0.0.4", "BecomeCoordinatorOfStandaloneGroup", ""));
+    }
+
+    #[tokio::test]
+    async fn the_tv_is_not_the_music() {
+        let mut house = House::new();
+        house.playing.extend(["10.0.0.2", "10.0.0.4"]);
+        house
+            .loaded
+            .insert("10.0.0.2", "x-sonos-htastream:RINCON_BAR:spdif");
+        house
+            .loaded
+            .insert("10.0.0.4", "x-rincon-queue:RINCON_MOVE#0");
+        let stopped = music(&house)
+            .await
+            .stop_music(Some(&room("living_room")))
+            .await
+            .unwrap();
+        assert_eq!(stopped, ["kitchen"]);
+        assert!(!house.did("10.0.0.2", "Pause", ""));
+    }
+
+    #[tokio::test]
+    async fn nothing_playing_stops_nothing() {
+        let house = House::new();
+        assert!(
+            music(&house)
+                .await
+                .stop_music(None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

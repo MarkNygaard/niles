@@ -4633,7 +4633,9 @@ async fn dispatch_text(
             tracing::info!("[{peer}] {label} started (id={})", id.0);
             Some(response::timer_started(duration, name.as_deref()))
         }
+        Intent::StopMusic => Some(stopped_music(ctx, peer, origin_room).await),
         Intent::Stop | Intent::Cancel => {
+            let stop = matches!(intent, Intent::Stop);
             // Prefer stopping a ringing alarm; otherwise cancel the soonest
             // counting-down timer, so "stop the timer" works before it fires
             // (previously this only stopped a *ringing* timer).
@@ -4648,6 +4650,10 @@ async fn dispatch_text(
                 Some(response::stop_outcome(
                     response::StopOutcome::CancelledPending,
                 ))
+            } else if stop {
+                // No timer to stop: "stop" means the music, as it would
+                // to anybody standing in the room with it.
+                Some(stopped_music(ctx, peer, origin_room).await)
             } else {
                 tracing::info!("[{peer}] nothing to stop");
                 Some(response::stop_outcome(response::StopOutcome::Nothing))
@@ -4830,6 +4836,25 @@ async fn publish_single(
 fn intent_room_to_canonical(s: &str) -> std::result::Result<RoomName, String> {
     let normalized = s.trim().to_ascii_lowercase().replace([' ', '\t'], "_");
     RoomName::parse(&normalized).map_err(|e| format!("{e}"))
+}
+
+/// "Stop the music", or a bare "stop" with no timer to stop: the music
+/// here, or wherever it plays.
+async fn stopped_music(ctx: &DispatchCtx, peer: SocketAddr, here: Option<&RoomName>) -> String {
+    match ctx.music.stop_music(here).await {
+        Ok(rooms) if rooms.is_empty() => {
+            tracing::info!("[{peer}] no music to stop");
+            response::no_music_playing()
+        }
+        Ok(rooms) => {
+            tracing::info!("[{peer}] stopped the music in {}", rooms.join(", "));
+            response::music_stopped(&rooms)
+        }
+        Err(e) => {
+            tracing::warn!("[{peer}] stopping the music: {e}");
+            response::music_failed(here.map_or("house", |r| r.as_str()))
+        }
+    }
 }
 
 /// The room a music command is for: the one named, or where it was said.
