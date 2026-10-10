@@ -179,9 +179,10 @@ impl SonosClient {
         })
     }
 
-    /// The track playing from the queue: (title, artist). Nothing for a
-    /// station or the TV, which have no track.
-    pub async fn track(&self) -> Result<Option<(String, Option<String>)>> {
+    /// The track the queue is at, playing or paused. Its URI says where
+    /// it comes from — Spotify's carry `spotify` — and is empty when the
+    /// queue is.
+    pub async fn track(&self) -> Result<Track> {
         let body = self
             .invoke(
                 av_endpoint(&self.ip),
@@ -193,14 +194,18 @@ impl SonosClient {
         let metadata = extract_tag(&body, "TrackMetaData")
             .map(|m| crate::household::unescape(&m))
             .unwrap_or_default();
-        let title = extract_tag(&metadata, "title").filter(|t| !t.is_empty());
-        let artist = extract_tag(&metadata, "creator").filter(|a| !a.is_empty());
-        Ok(title.map(|t| {
-            (
-                crate::household::unescape(&t),
-                artist.map(|a| crate::household::unescape(&a)),
-            )
-        }))
+        let text = |tag: &str| {
+            extract_tag(&metadata, tag)
+                .filter(|t| !t.is_empty())
+                .map(|t| crate::household::unescape(&t))
+        };
+        Ok(Track {
+            uri: extract_tag(&body, "TrackURI")
+                .map(|u| crate::household::unescape(&u))
+                .unwrap_or_default(),
+            title: text("title"),
+            artist: text("creator"),
+        })
     }
 
     /// Load something to play — a station by its URI and the metadata
@@ -297,6 +302,21 @@ impl SonosClient {
         self.transport
             .send_action(&endpoint, &soap_action, &body)
             .await
+    }
+}
+
+/// The track a queue is at, as [`SonosClient::track`] reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Track {
+    pub uri: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+}
+
+impl Track {
+    /// From Spotify, through the Sonos's linked account.
+    pub fn is_spotify(&self) -> bool {
+        self.uri.contains("spotify")
     }
 }
 

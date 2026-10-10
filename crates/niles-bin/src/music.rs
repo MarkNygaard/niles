@@ -18,6 +18,8 @@
 //! is also what takes the TV off: music asked for in a room replaces
 //! whatever its soundbar was playing.
 
+mod media;
+
 use crate::speakers::{Player, SpeakerRegistry};
 use niles_config::ConfigStore;
 use niles_core::RoomName;
@@ -896,14 +898,17 @@ async fn playing(leader: &Player) -> Option<(&'static str, Option<String>)> {
     if media.is_radio() {
         return Some(("radio", title_in(&media.metadata)));
     }
-    let track = leader.client.track().await.ok().flatten();
-    Some((
-        "music",
-        track.map(|(title, artist)| match artist {
-            Some(artist) => format!("{title} by {artist}"),
-            None => title,
-        }),
-    ))
+    let track = leader.client.track().await.ok().unwrap_or_default();
+    Some(("music", track_line(&track)))
+}
+
+/// "Chariot by Gavin DeGraw", or the title alone.
+fn track_line(track: &niles_speakers::Track) -> Option<String> {
+    let title = track.title.clone()?;
+    Some(match &track.artist {
+        Some(artist) => format!("{title} by {artist}"),
+        None => title,
+    })
 }
 
 /// What Spotify had for a request.
@@ -1453,7 +1458,8 @@ mod tests {
                 ),
                 "GetVolume" => "<CurrentVolume>30</CurrentVolume>".to_string(),
                 "GetPositionInfo" => format!(
-                    "<TrackMetaData>{}</TrackMetaData>",
+                    "<TrackURI>{}</TrackURI><TrackMetaData>{}</TrackMetaData>",
+                    escaped("x-sonos-spotify:spotify%3atrack%3achariot?sid=9&flags=8224&sn=3"),
                     escaped(
                         "<DIDL-Lite><item><dc:title>Chariot</dc:title><dc:creator>Gavin DeGraw</dc:creator></item></DIDL-Lite>"
                     )
@@ -1754,6 +1760,100 @@ room = "kitchen"
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn the_page_groups_by_what_is_loaded() {
+        // This morning's house: the living room's two paused together
+        // with Spotify queued, the radio on in the kitchen.
+        let mut house = House::new();
+        house.leaders.insert("RINCON_BACK", "RINCON_BAR");
+        house
+            .loaded
+            .insert("10.0.0.2", "x-rincon-queue:RINCON_BAR#0");
+        house.playing.push("10.0.0.4");
+        house.loaded.insert(
+            "10.0.0.4",
+            "x-sonosapi-stream:s24861?sid=333&flags=8224&sn=14",
+        );
+        let view = music(&house).await.view().await;
+        let spotify = view.groups.iter().find(|g| g.kind == "spotify").unwrap();
+        assert!(!spotify.playing);
+        assert_eq!(spotify.leader, "RINCON_BAR");
+        assert_eq!(
+            spotify
+                .speakers
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Living Room", "Living Room Back"]
+        );
+        assert!(spotify.speakers[0].soundbar);
+        let radio = view.groups.iter().find(|g| g.kind == "radio").unwrap();
+        assert!(radio.playing);
+        assert!(view.idle.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_speaker_with_nothing_loaded_is_not_playing() {
+        let house = House::new();
+        let view = music(&house).await.view().await;
+        assert!(view.groups.is_empty());
+        assert_eq!(view.idle.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn nothing_joins_the_tv() {
+        let mut house = House::new();
+        house
+            .loaded
+            .insert("10.0.0.2", "x-sonos-htastream:RINCON_BAR:spdif");
+        let music = music(&house).await;
+        assert!(music.join_group("RINCON_MOVE", "RINCON_BAR").await.is_err());
+        assert!(!house.did("10.0.0.4", "SetAVTransportURI", ""));
+    }
+
+    #[tokio::test]
+    async fn a_speaker_joins_a_group_and_leaves_it() {
+        let house = House::new();
+        let music = music(&house).await;
+        music.join_group("RINCON_MOVE", "RINCON_BAR").await.unwrap();
+        assert!(house.did("10.0.0.4", "SetAVTransportURI", "x-rincon:RINCON_BAR"));
+        music.leave_group("RINCON_MOVE").await.unwrap();
+        assert!(house.did("10.0.0.4", "BecomeCoordinatorOfStandaloneGroup", ""));
+        assert!(house.did("10.0.0.4", "Pause", ""));
+    }
+
+    #[tokio::test]
+    async fn the_tv_takes_its_soundbar_back() {
+        let mut house = House::new();
+        house.leaders.insert("RINCON_BAR", "RINCON_MOVE");
+        let music = music(&house).await;
+        music.tv_sound().await.unwrap();
+        assert!(house.did("10.0.0.2", "BecomeCoordinatorOfStandaloneGroup", ""));
+        assert!(house.did(
+            "10.0.0.2",
+            "SetAVTransportURI",
+            "x-sonos-htastream:RINCON_BAR:spdif"
+        ));
+        assert!(house.did("10.0.0.2", "Play", ""));
+    }
+
+    #[tokio::test]
+    async fn carrying_on_plays_from_the_speaker_with_the_queue() {
+        let house = House::new();
+        let music = music(&house).await;
+        let choice = niles_api::music::Choice {
+            kind: "queue".into(),
+            id: "RINCON_BAR".into(),
+            label: "Carry on".into(),
+        };
+        music
+            .start_on(&["RINCON_BAR".into(), "RINCON_MOVE".into()], &choice)
+            .await
+            .unwrap();
+        assert!(house.did("10.0.0.4", "SetAVTransportURI", "x-rincon:RINCON_BAR"));
+        assert!(house.did("10.0.0.2", "Play", ""));
     }
 
     #[tokio::test]
