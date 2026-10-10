@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { GripVertical, Music, Pause, Play, Radio, Speaker, Tv } from "lucide-react";
+import { ChevronRight, GripVertical, Music, Pause, Play, Radio, Speaker, Tv } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { PowerButton } from "@/components/PowerButton";
 import { StartDialog } from "@/components/StartDialog";
@@ -104,6 +104,15 @@ export function destinations(view: MediaView, speaker: string): { label: string;
   return out;
 }
 
+/** How far the page scrolls each frame for a drag held `y` from the
+    top of a `height`-tall window: nothing in the middle, faster the
+    deeper into the top or bottom edge. */
+export function edgeScroll(y: number, height: number, edge = 96): number {
+  if (y < edge) return -Math.ceil(((edge - y) / edge) * 16);
+  if (y > height - edge) return Math.ceil(((y - (height - edge)) / edge) * 16);
+  return 0;
+}
+
 /** The drop target under a point, read off the page's `data-drop`. */
 function dropUnder(x: number, y: number): string | null {
   const el = document.elementFromPoint(x, y);
@@ -127,6 +136,24 @@ export function MediaPage() {
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const [moving, setMoving] = useState<MediaSpeaker | null>(null);
   const [starting, setStarting] = useState<{ source: Startable; preset: string[] } | null>(null);
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+
+  // The page moves under a drag only at the screen's edges, and then by
+  // itself, so a speaker can be carried to a card out of sight.
+  const dragging = held !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    let frame = requestAnimationFrame(function tick() {
+      const at = pointer.current;
+      const by = at ? edgeScroll(at.y, window.innerHeight) : 0;
+      if (at && by !== 0) {
+        window.scrollBy(0, by);
+        setOver(dropUnder(at.x, at.y));
+      }
+      frame = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [dragging]);
 
   const media = useQuery({
     queryKey: ["media"],
@@ -220,10 +247,12 @@ export function MediaPage() {
         disabled={busy}
         onHold={() => setHeld({ id: speaker.id, name: speaker.name })}
         onDrag={(x, y) => {
+          pointer.current = { x, y };
           setAt({ x, y });
           setOver(dropUnder(x, y));
         }}
         onDrop={(x, y) => {
+          pointer.current = null;
           setHeld(null);
           setOver(null);
           setAt(null);
@@ -244,12 +273,43 @@ export function MediaPage() {
       )}
     >
       <div className="flex items-center gap-3 pt-3 pb-1">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">
-            {g.what ?? (g.kind === "tv" ? "The TV's sound" : KIND_TITLES[g.kind])}
+        {g.kind === "radio" || g.kind === "spotify" ? (
+          // Something else on these speakers: what plays is where to
+          // change it, rather than a second play button on the card.
+          <button
+            type="button"
+            aria-label={`Play something else on ${names(g)}`}
+            className={cn(
+              "group -mx-1 flex min-w-0 flex-1 items-center gap-1 rounded px-1 text-left",
+              "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+            )}
+            onClick={() =>
+              setStarting({
+                source: g.kind as Startable,
+                preset: g.speakers.map((s) => s.id),
+              })
+            }
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium group-hover:underline">
+                {g.what ?? KIND_TITLES[g.kind]}
+              </span>
+              <span className="text-muted-foreground block text-xs">
+                {g.playing ? "Playing" : "Paused"}
+              </span>
+            </span>
+            <ChevronRight aria-hidden className="text-muted-foreground size-4 shrink-0" />
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">
+              {g.what ?? (g.kind === "tv" ? "The TV's sound" : KIND_TITLES[g.kind])}
+            </div>
+            <div className="text-muted-foreground text-xs">
+              {g.playing ? "Playing" : "Paused"}
+            </div>
           </div>
-          <div className="text-muted-foreground text-xs">{g.playing ? "Playing" : "Paused"}</div>
-        </div>
+        )}
         {g.kind !== "tv" && (
           <Button
             variant="outline"
@@ -275,13 +335,17 @@ export function MediaPage() {
         drop={`start:${source}`}
         lit={Boolean(held) && over === `start:${source}`}
         action={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setStarting({ source, preset: [] })}
-          >
-            <Play aria-hidden /> Play
-          </Button>
+          // One play button at a time: once something is loaded, its
+          // group's own.
+          groups.length === 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setStarting({ source, preset: [] })}
+            >
+              <Play aria-hidden /> Play
+            </Button>
+          )
         }
       >
         {groups.map(groupBlock)}
@@ -464,6 +528,9 @@ function SpeakerRow({
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
           onPointerDown={(e) => {
+            // No text selection, which would scroll the page along with
+            // the mouse: the page scrolls only at the screen's edges.
+            e.preventDefault();
             e.currentTarget.setPointerCapture(e.pointerId);
             start.current = { x: e.clientX, y: e.clientY };
             dragged.current = false;
