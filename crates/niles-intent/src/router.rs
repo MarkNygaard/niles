@@ -1122,8 +1122,13 @@ fn stop_music_in_regex() -> &'static Regex {
 
 fn match_stop_music_in(t: &str) -> Option<Intent> {
     let caps = stop_music_in_regex().captures(t)?;
+    let room = caps.name("room")?.as_str();
+    // "In here" names no room: that is "stop the music", below.
+    if matches!(room, "here" | "this room") {
+        return None;
+    }
     Some(Intent::MediaPause {
-        room: caps.name("room")?.as_str().to_string(),
+        room: room.to_string(),
     })
 }
 
