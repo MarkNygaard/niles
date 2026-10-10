@@ -40,12 +40,12 @@ impl Music {
                 members.into_iter().map(|player| speaker(player, cfg)),
             )
             .await;
-            let (kind, what) = loaded(leader).await;
+            let loaded = loaded(leader).await;
             let playing = matches!(
                 leader.client.get_transport_state().await,
                 Ok(TransportState::Playing)
             );
-            (leader.sonos.id.clone(), kind, what, playing, speakers)
+            (leader.sonos.id.clone(), loaded, playing, speakers)
         });
         let read = futures_util::future::join_all(read);
         let read = tokio::time::timeout(std::time::Duration::from_secs(3), read)
@@ -55,11 +55,12 @@ impl Music {
             groups: Vec::new(),
             idle: Vec::new(),
         };
-        for (leader, kind, what, playing, mut speakers) in read {
-            speakers.sort_by(|a, b| a.name.cmp(&b.name));
-            match kind {
-                "idle" => view.idle.extend(speakers),
-                kind => view.groups.push(Group {
+        let mut following = Vec::new();
+        for (leader, loaded, playing, speakers) in read {
+            match loaded {
+                Loaded::Nothing => view.idle.extend(speakers),
+                Loaded::Following(of) => following.push((of, speakers)),
+                Loaded::Kind(kind, what) => view.groups.push(Group {
                     leader,
                     kind,
                     what,
@@ -67,6 +68,19 @@ impl Music {
                     speakers,
                 }),
             }
+        }
+        // Just told to join a group, Sonos takes a moment to say it is
+        // in it, and until then the speaker leads a group of its own
+        // with nothing but "play along with" loaded. It belongs with
+        // the group it follows already.
+        for (of, speakers) in following {
+            match view.groups.iter_mut().find(|g| g.leader == of) {
+                Some(group) => group.speakers.extend(speakers),
+                None => view.idle.extend(speakers),
+            }
+        }
+        for group in &mut view.groups {
+            group.speakers.sort_by(|a, b| a.name.cmp(&b.name));
         }
         view.idle.sort_by(|a, b| a.name.cmp(&b.name));
         view
@@ -395,29 +409,39 @@ fn choice(kind: &str, id: &str, label: &str) -> Choice {
     }
 }
 
-/// What a group has loaded, playing or paused: `tv`, `radio`,
-/// `spotify`, `music`, or `idle` for nothing at all.
-async fn loaded(leader: &Player) -> (&'static str, Option<String>) {
+enum Loaded {
+    Nothing,
+    /// Told to play along with this leader, and not yet in its group.
+    Following(String),
+    /// `tv`, `radio`, `spotify` or `music`, and what it is.
+    Kind(&'static str, Option<String>),
+}
+
+/// What a group has loaded, playing or paused.
+async fn loaded(leader: &Player) -> Loaded {
     let Ok(media) = leader.client.media().await else {
-        return ("idle", None);
+        return Loaded::Nothing;
     };
+    if let Some(of) = media.uri.strip_prefix("x-rincon:") {
+        return Loaded::Following(of.to_string());
+    }
     if media.is_tv() {
-        return ("tv", None);
+        return Loaded::Kind("tv", None);
     }
     if media.is_radio() {
-        return ("radio", title_in(&media.metadata));
+        return Loaded::Kind("radio", title_in(&media.metadata));
     }
     if media.uri.is_empty() {
-        return ("idle", None);
+        return Loaded::Nothing;
     }
     let track = leader.client.track().await.unwrap_or_default();
     if track.uri.is_empty() {
-        return ("idle", None);
+        return Loaded::Nothing;
     }
     let kind = if track.is_spotify() {
         "spotify"
     } else {
         "music"
     };
-    (kind, track_line(&track))
+    Loaded::Kind(kind, track_line(&track))
 }
