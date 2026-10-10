@@ -164,10 +164,13 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
   const dragging = held !== null;
   useEffect(() => {
     if (!dragging) return;
+    // Not for a drag begun at the edge: only once it has been away.
+    let armed = false;
     let frame = requestAnimationFrame(function tick() {
       const y = pointer.current;
       const by = edgeScroll(y, window.innerHeight);
-      if (by !== 0) {
+      if (by === 0) armed = true;
+      if (by !== 0 && armed) {
         window.scrollBy(0, by);
         const scroll = window.scrollY;
         setHeld((now) => now && { ...now, scroll });

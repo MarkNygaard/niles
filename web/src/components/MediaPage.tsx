@@ -135,10 +135,13 @@ export function MediaPage() {
   const dragging = held !== null;
   useEffect(() => {
     if (!dragging) return;
+    // Not for a drag begun at the edge: only once it has been away.
+    let armed = false;
     let frame = requestAnimationFrame(function tick() {
       const at = pointer.current;
       const by = at ? edgeScroll(at.y, window.innerHeight) : 0;
-      if (at && by !== 0) {
+      if (by === 0) armed = true;
+      if (at && by !== 0 && armed) {
         window.scrollBy(0, by);
         setOver(dropUnder(at.x, at.y));
       }
