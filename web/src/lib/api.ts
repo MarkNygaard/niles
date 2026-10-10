@@ -116,6 +116,46 @@ export type MusicControl =
   | { action: "play" }
   | { action: "volume"; percent: number };
 
+/** One Sonos on the Media page: a speaker, a pair, a soundbar with
+    its rear speakers. */
+export interface MediaSpeaker {
+  /** `RINCON_…` */
+  id: string;
+  name: string;
+  room: string | null;
+  volume: number | null;
+  /** The one the TV plays through. */
+  soundbar: boolean;
+}
+
+/** Speakers playing one thing together, by what they have loaded —
+    playing or paused alike. */
+export interface MediaGroup {
+  leader: string;
+  kind: "tv" | "radio" | "spotify" | "music";
+  what: string | null;
+  playing: boolean;
+  speakers: MediaSpeaker[];
+}
+
+/** `GET /media`: the groups, and the speakers with nothing loaded. */
+export interface MediaView {
+  groups: MediaGroup[];
+  idle: MediaSpeaker[];
+}
+
+/** Something the Media page can start playing. */
+export interface MediaChoice {
+  kind: "favorite" | "station" | "remembered" | "spotify" | "queue";
+  id: string;
+  label: string;
+}
+
+export type SpeakerControl =
+  | { action: "join"; leader: string }
+  | { action: "leave" }
+  | { action: "volume"; percent: number };
+
 /** The LG TV, as `GET /tv` reports it. */
 export interface TvInfo {
   configured: boolean;
@@ -596,6 +636,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(control),
     }),
+  media: () => request<MediaView>("/media"),
+  speakerControl: (id: string, control: SpeakerControl) =>
+    request<void>(`/media/speakers/${encodeURIComponent(id)}`, {
+      method: "POST",
+      body: JSON.stringify(control),
+    }),
+  mediaGroup: (leader: string, play: boolean) =>
+    request<void>(`/media/groups/${encodeURIComponent(leader)}`, {
+      method: "POST",
+      body: JSON.stringify({ action: play ? "play" : "pause" }),
+    }),
+  mediaChoices: (kind: "radio" | "spotify", q?: string) =>
+    request<MediaChoice[]>(
+      `/media/choices?kind=${kind}${q ? `&q=${encodeURIComponent(q)}` : ""}`,
+    ),
+  mediaStart: (speakers: string[], choice: MediaChoice) =>
+    request<void>("/media/start", {
+      method: "POST",
+      body: JSON.stringify({ speakers, choice }),
+    }),
+  /** The soundbar to the TV's sound, out of any group. */
+  tvSound: () => request<void>("/media/tv", { method: "POST" }),
   /** Shows the prompt on the TV and waits up to a minute for it. */
   pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),
   tvPower: (on: boolean) =>

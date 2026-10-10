@@ -8,7 +8,7 @@ pub mod spotify;
 pub mod transport;
 pub mod tunein;
 
-pub use client::{Media, SonosClient, TransportState, is_radio};
+pub use client::{Media, SonosClient, Track, TransportState, is_radio};
 pub use error::{Error, Result};
 pub use favorites::Favorite;
 pub use household::{SonosRoom, household};

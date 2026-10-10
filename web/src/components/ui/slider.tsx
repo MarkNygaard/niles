@@ -12,7 +12,9 @@ import { cn } from "@/lib/utils"
  *   slider can paint the track with the whites it spans.
  *
  * The indicator is deliberately not `bg-primary`: the brand green on a
- * brightness fill says nothing about brightness.
+ * brightness fill says nothing about brightness. Nor is the thumb
+ * ringed in it: a plain white knob, as Spotify's, with an outline only
+ * for a keyboard's focus.
  */
 function Slider({
   className,
@@ -80,7 +82,7 @@ function Slider({
             key={index}
             aria-label={thumbLabel}
             aria-valuetext={thumbValueText}
-            className="relative block size-4 shrink-0 rounded-full border border-ring bg-background shadow ring-ring/50 transition-[color,box-shadow] select-none after:absolute after:-inset-2 hover:ring-3 focus-visible:ring-3 focus-visible:outline-hidden active:ring-3 disabled:pointer-events-none disabled:opacity-50"
+            className="relative block size-4 shrink-0 rounded-full bg-white shadow-md ring-1 ring-black/10 select-none after:absolute after:-inset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/50 disabled:pointer-events-none disabled:opacity-50"
           />
         ))}
       </SliderPrimitive.Control>

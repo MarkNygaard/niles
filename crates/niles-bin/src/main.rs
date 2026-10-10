@@ -3206,6 +3206,46 @@ impl niles_api::music::Music for AppMusic {
     async fn volume(&self, room: &str, percent: u8) -> Result<(), String> {
         settled(self.0.volume(&room_named(room)?, Some(percent), None).await)
     }
+
+    async fn media(&self) -> niles_api::music::MediaView {
+        self.0.view().await
+    }
+
+    async fn join(&self, speaker: &str, leader: &str) -> Result<(), String> {
+        self.0.join_group(speaker, leader).await
+    }
+
+    async fn leave(&self, speaker: &str) -> Result<(), String> {
+        self.0.leave_group(speaker).await
+    }
+
+    async fn group(&self, leader: &str, play: bool) -> Result<(), String> {
+        self.0.play_group(leader, play).await
+    }
+
+    async fn speaker_volume(&self, speaker: &str, percent: u8) -> Result<(), String> {
+        self.0.speaker_volume(speaker, percent).await
+    }
+
+    async fn choices(
+        &self,
+        kind: &str,
+        query: Option<&str>,
+    ) -> Result<Vec<niles_api::music::Choice>, String> {
+        self.0.choices(kind, query).await
+    }
+
+    async fn start(
+        &self,
+        speakers: &[String],
+        choice: &niles_api::music::Choice,
+    ) -> Result<(), String> {
+        self.0.start_on(speakers, choice).await
+    }
+
+    async fn tv(&self) -> Result<(), String> {
+        self.0.tv_sound().await
+    }
 }
 
 fn room_named(room: &str) -> Result<RoomName, String> {
