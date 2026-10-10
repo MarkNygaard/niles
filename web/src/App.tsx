@@ -5,17 +5,16 @@ import { ChatPage } from "@/components/ChatPage";
 import { ConfigPanel } from "@/components/ConfigPanel";
 import { GroceriesPage } from "@/components/GroceriesPage";
 import { MediaPage, somethingPlays } from "@/components/MediaPage";
-import { MePage } from "@/components/MePage";
+import { AvatarMenu } from "@/components/AvatarMenu";
 import { MyProfile } from "@/components/MyProfile";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { SignIn } from "@/components/SignIn";
 import { TabBar } from "@/components/TabBar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { menuOf } from "@/lib/menu";
+import { menuLayout } from "@/lib/menu";
 import { useRoute } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
-import type { Theme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 interface Screen {
@@ -97,7 +96,10 @@ export function App() {
 
   const email = auth.data?.signed_in_as ?? undefined;
   const avatarUrl = auth.data?.avatar_url ?? undefined;
-  const screen = screenFor(route, email, avatarUrl, theme, setTheme);
+  const screen = screenFor(route);
+  const layout = config.isPending
+    ? undefined
+    : menuLayout(config.data?.effective, somethingPlays(music.data, tv.data?.status?.on));
 
   return (
     // The bottom padding on a phone is the tab bar's height, so the last
@@ -139,20 +141,15 @@ export function App() {
             {screen.title}
           </h1>
         )}
-        <TabBar
-          route={screen.at}
+        {/* Nothing after Home until the arrangement is known: an entry
+            somebody hid should not flash up on every load. */}
+        <TabBar route={screen.at} menu={layout?.main ?? []} />
+        <AvatarMenu
           email={email}
           avatarUrl={avatarUrl}
-          // Nothing in the middle until the arrangement is known: an
-          // entry somebody hid should not flash up on every load.
-          menu={
-            config.isPending
-              ? []
-              : menuOf(
-                  config.data?.effective,
-                  somethingPlays(music.data, tv.data?.status?.on),
-                )
-          }
+          items={layout?.avatar ?? []}
+          theme={theme}
+          onTheme={setTheme}
         />
       </header>
 
@@ -161,13 +158,7 @@ export function App() {
   );
 }
 
-function screenFor(
-  route: string,
-  email: string | undefined,
-  avatarUrl: string | undefined,
-  theme: Theme,
-  setTheme: (theme: Theme) => void,
-): Screen {
+function screenFor(route: string): Screen {
   switch (route) {
     case "/groceries":
       return { at: route, title: "Groceries", body: <GroceriesPage /> };
@@ -175,16 +166,13 @@ function screenFor(
       return { at: route, title: "Media", body: <MediaPage /> };
     case "/chat":
       return { at: route, title: "Chat", ownsBottom: true, body: <ChatPage /> };
+    // "#/me" was the Me page before the avatar menu took its place; an
+    // old bookmark to it lands on the profile.
     case "/me":
-      return {
-        at: route,
-        title: "Me",
-        body: <MePage email={email} avatarUrl={avatarUrl} theme={theme} onTheme={setTheme} />,
-      };
     case "/me/profile":
-      return { at: route, title: "My profile", parent: "#/me", body: <MyProfile /> };
+      return { at: "/me/profile", title: "My profile", body: <MyProfile /> };
     case "/me/settings":
-      return { at: route, title: "Settings", parent: "#/me", body: <ConfigPanel /> };
+      return { at: route, title: "Settings", body: <ConfigPanel /> };
     // Anything unknown is the house: an old bookmark or a mistyped hash
     // should land somewhere useful rather than on a blank page.
     default:

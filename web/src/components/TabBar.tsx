@@ -1,5 +1,5 @@
-import { House, MessageCircle, Music, ShoppingBasket, UserRound } from "lucide-react";
-import { Avatar } from "@/components/Avatar";
+import { DESTINATIONS, HOME } from "@/lib/destinations";
+import type { Destination } from "@/lib/destinations";
 import { MOVABLE } from "@/lib/menu";
 import type { MenuItem } from "@/lib/menu";
 import { cn } from "@/lib/utils";
@@ -7,70 +7,27 @@ import { cn } from "@/lib/utils";
 export interface TabBarProps {
   /** The current route, from `useRoute`. */
   route: string;
-  email?: string;
-  avatarUrl?: string;
-  /** The entries between Home and Me, from `menuOf`. */
+  /** The main navigation after Home, from `menuLayout`. */
   menu?: MenuItem[];
 }
 
-interface Tab {
-  href: string;
-  label: string;
-  icon: React.ReactNode;
-  /** The routes this tab is the way back to, its own sub-pages included. */
-  owns: (route: string) => boolean;
-}
+const UNARRANGED: MenuItem[] = MOVABLE.filter((id) => id !== "settings").map((id) => ({
+  id,
+  hidden: false,
+}));
 
 /**
- * The app's few destinations, at the bottom of a phone where a thumb is.
+ * The main navigation, at the bottom of a phone where a thumb is.
  *
  * From `sm` the same links sit in the header instead: at the bottom of a
- * desktop window they would be a long way from everything else.
+ * desktop window they would be a long way from everything else. Home
+ * comes first; the rest is what Settings → Menu put here. You — your
+ * profile, the look of the app — are in the avatar menu in the corner.
  */
-const MIDDLE: Record<MenuItem["id"], Tab> = {
-  groceries: {
-    href: "#/groceries",
-    label: "Groceries",
-    icon: <ShoppingBasket />,
-    owns: (r) => r === "/groceries",
-  },
-  chat: {
-    href: "#/chat",
-    label: "Chat",
-    icon: <MessageCircle />,
-    owns: (r) => r === "/chat",
-  },
-  media: {
-    href: "#/media",
-    label: "Media",
-    icon: <Music />,
-    owns: (r) => r === "/media",
-  },
-};
-
-const UNARRANGED: MenuItem[] = MOVABLE.map((id) => ({ id, hidden: false }));
-
-export function TabBar({ route, email, avatarUrl, menu = UNARRANGED }: TabBarProps) {
-  const tabs: Tab[] = [
-    {
-      href: "#/",
-      label: "Home",
-      icon: <House />,
-      owns: (r) => r === "/",
-    },
-    ...menu.filter((item) => !item.hidden).map((item) => MIDDLE[item.id]),
-    {
-      href: "#/me",
-      label: "Me",
-      // A face rather than a silhouette once there is one: it is how a
-      // phone app says "this one is yours".
-      icon: email ? (
-        <Avatar email={email} avatarUrl={avatarUrl} className="size-6 text-[10px] sm:size-5" />
-      ) : (
-        <UserRound />
-      ),
-      owns: (r) => r === "/me" || r.startsWith("/me/"),
-    },
+export function TabBar({ route, menu = UNARRANGED }: TabBarProps) {
+  const tabs: Destination[] = [
+    HOME,
+    ...menu.filter((item) => !item.hidden).map((item) => DESTINATIONS[item.id]),
   ];
 
   return (

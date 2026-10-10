@@ -4,10 +4,11 @@ use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
 
-/// The menu entries that can be moved and hidden. Home and Me are not
-/// among them: Home is where the app opens and Me is the way to the
-/// settings, so hiding either would leave no way back to this one.
-pub const MOVABLE: &[&str] = &["groceries", "chat", "media"];
+/// The menu entries that can be moved. Home and My profile are not
+/// among them: Home is the main navigation's first entry and My profile
+/// the avatar menu's. Settings can move but not hide — it is the way
+/// back to this.
+pub const MOVABLE: &[&str] = &["groceries", "chat", "media", "settings"];
 
 /// When the Media entry is in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -23,16 +24,22 @@ pub enum MediaShown {
 
 /// `[menu]` section of the config file.
 ///
-/// Like `[rooms]`, presentation for the whole house: the same menu on a
-/// phone and a laptop. An entry `order` does not name is not hidden — a
-/// page added in a later version has to show up somewhere, and after the
-/// arranged ones is where it does not look lost. Only `hidden` hides.
-#[derive(Debug, Clone, Deserialize, Default)]
+/// Two menus: the avatar menu in the top corner, and the main
+/// navigation — the bar along the bottom of a phone, the links in a
+/// desktop's header. Like `[rooms]`, presentation for the whole house.
+/// An entry neither list names goes to the main navigation, after the
+/// arranged ones — a page added in a later version has to show up
+/// somewhere. Only `hidden` hides.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MenuConfig {
-    /// The movable entries, in the order they sit between Home and Me.
+    /// The main navigation after Home, in order.
     #[serde(default)]
     pub order: Vec<String>,
+    /// The avatar menu after My profile, in order. An entry here is not
+    /// in the main navigation, whatever `order` says.
+    #[serde(default = "default_avatar")]
+    pub avatar: Vec<String>,
     /// The movable entries left out of the menu. Their pages still work.
     #[serde(default)]
     pub hidden: Vec<String>,
@@ -41,17 +48,38 @@ pub struct MenuConfig {
     pub media: MediaShown,
 }
 
+fn default_avatar() -> Vec<String> {
+    vec!["settings".into()]
+}
+
+impl Default for MenuConfig {
+    fn default() -> Self {
+        Self {
+            order: Vec::new(),
+            avatar: default_avatar(),
+            hidden: Vec::new(),
+            media: MediaShown::default(),
+        }
+    }
+}
+
 impl MenuConfig {
     pub fn validate(&self) -> Result<()> {
-        let mut seen = HashSet::new();
-        for entry in &self.order {
-            known(entry)?;
-            if !seen.insert(entry) {
-                return Err(invalid(format!("{entry:?} is listed twice")));
+        for list in [&self.order, &self.avatar] {
+            let mut seen = HashSet::new();
+            for entry in list {
+                known(entry)?;
+                if !seen.insert(entry) {
+                    return Err(invalid(format!("{entry:?} is listed twice")));
+                }
             }
         }
         for entry in &self.hidden {
             known(entry)?;
+            // The way back to the menu's settings cannot be put away.
+            if entry == "settings" {
+                return Err(invalid("Settings cannot be hidden".into()));
+            }
         }
         Ok(())
     }
@@ -82,6 +110,7 @@ mod tests {
     fn menu(order: &[&str], hidden: &[&str]) -> MenuConfig {
         MenuConfig {
             order: order.iter().map(|s| s.to_string()).collect(),
+            avatar: default_avatar(),
             hidden: hidden.iter().map(|s| s.to_string()).collect(),
             media: MediaShown::Playing,
         }
@@ -126,6 +155,21 @@ hidden = [\"groceries\"]",
         let menu: MenuConfig = toml::from_str("media = \"always\"").unwrap();
         assert_eq!(menu.media, MediaShown::Always);
         assert!(toml::from_str::<MenuConfig>("media = \"sometimes\"").is_err());
+    }
+
+    #[test]
+    fn settings_start_in_the_avatar_menu() {
+        let menu: MenuConfig = toml::from_str("").unwrap();
+        assert_eq!(menu.avatar, ["settings"]);
+        // Moved to the main navigation, the avatar menu is written empty.
+        let menu: MenuConfig = toml::from_str("avatar = []").unwrap();
+        assert!(menu.avatar.is_empty());
+    }
+
+    #[test]
+    fn settings_cannot_be_hidden() {
+        let err = menu(&[], &["settings"]).validate().unwrap_err();
+        assert!(err.to_string().contains("Settings"), "{err}");
     }
 
     #[test]
