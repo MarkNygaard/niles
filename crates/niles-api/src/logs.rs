@@ -31,11 +31,11 @@ use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 
-/// How many lines to keep. A few hundred covers the last several
-/// minutes of a chatty run, which is the window anyone is asking
-/// about; keeping more would trade memory for a question nobody is
-/// asking of a process that has no retention policy anyway.
-const CAPACITY: usize = 500;
+/// How many lines to keep. The question asked of it turned out to be
+/// "what did Niles say this morning?" — hours back, not minutes — and
+/// with every turn's reply now logged, a few hundred lines was a night.
+/// Five thousand short lines is a few megabytes, and about a day.
+const CAPACITY: usize = 5_000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogLine {
