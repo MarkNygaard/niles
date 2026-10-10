@@ -1795,6 +1795,28 @@ room = "kitchen"
     }
 
     #[tokio::test]
+    async fn a_speaker_just_joined_is_in_the_group_it_follows() {
+        // Sonos has not yet said the Move is in the living room's group,
+        // but it has been told to play along with it.
+        let mut house = House::new();
+        house
+            .loaded
+            .insert("10.0.0.2", "x-rincon-queue:RINCON_BAR#0");
+        house.loaded.insert("10.0.0.4", "x-rincon:RINCON_BAR");
+        house.playing.extend(["10.0.0.2", "10.0.0.4"]);
+        let view = music(&house).await.view().await;
+        assert_eq!(view.groups.len(), 1);
+        assert_eq!(
+            view.groups[0]
+                .speakers
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Living Room", "Sonos Move"]
+        );
+    }
+
+    #[tokio::test]
     async fn a_speaker_with_nothing_loaded_is_not_playing() {
         let house = House::new();
         let view = music(&house).await.view().await;
@@ -1822,6 +1844,13 @@ room = "kitchen"
         music.leave_group("RINCON_MOVE").await.unwrap();
         assert!(house.did("10.0.0.4", "BecomeCoordinatorOfStandaloneGroup", ""));
         assert!(house.did("10.0.0.4", "Pause", ""));
+        // Not back to whatever it played before it joined.
+        assert!(house.did("10.0.0.4", "RemoveAllTracksFromQueue", ""));
+        assert!(house.did(
+            "10.0.0.4",
+            "SetAVTransportURI",
+            "x-rincon-queue:RINCON_MOVE#0"
+        ));
     }
 
     #[tokio::test]

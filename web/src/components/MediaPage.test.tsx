@@ -5,6 +5,7 @@ import {
   MediaPage,
   destinations,
   dropAt,
+  edgeScroll,
   everySpeaker,
   moveFor,
   somethingPlays,
@@ -89,6 +90,13 @@ describe("MediaPage", () => {
     ]);
   });
 
+  it("scrolls under a drag only at the screen's edges", () => {
+    expect(edgeScroll(400, 800)).toBe(0);
+    expect(edgeScroll(790, 800)).toBeGreaterThan(0);
+    expect(edgeScroll(10, 800)).toBeLessThan(0);
+    expect(edgeScroll(799, 800)).toBeGreaterThan(edgeScroll(720, 800));
+  });
+
   it("lists every speaker by name", () => {
     expect(everySpeaker(view).map((s) => s.name)).toEqual([
       "Kitchen",
@@ -110,8 +118,8 @@ describe("MediaPage", () => {
 describe("the Media page", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  function page() {
-    vi.spyOn(api, "media").mockResolvedValue(view);
+  function page(house: MediaView = view) {
+    vi.spyOn(api, "media").mockResolvedValue(house);
     vi.spyOn(api, "tv").mockResolvedValue({
       configured: false,
       paired: false,
@@ -148,7 +156,7 @@ describe("the Media page", () => {
   });
 
   it("asks which speakers before starting the radio", async () => {
-    page();
+    page({ groups: [view.groups[0]], idle: [back, move] });
     vi.spyOn(api, "mediaChoices").mockResolvedValue([
       { kind: "favorite", id: "DR P3", label: "DR P3" },
     ]);
@@ -165,6 +173,33 @@ describe("the Media page", () => {
         id: "DR P3",
         label: "DR P3",
       }),
+    );
+  });
+
+  it("has one play button for a card that plays", async () => {
+    page();
+    const spotify = await screen.findByRole("region", { name: "Spotify" });
+    expect(within(spotify).queryByRole("button", { name: /^Play$/ })).toBeNull();
+    expect(
+      within(spotify).getByRole("button", { name: "Play Living Room, Walk In Closet" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the picker on a group's speakers from what it plays", async () => {
+    page();
+    vi.spyOn(api, "mediaChoices").mockResolvedValue([]);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Play something else on Living Room, Walk In Closet",
+      }),
+    );
+    expect(await screen.findByRole("checkbox", { name: /Walk In Closet/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("checkbox", { name: /Living Room Back/ })).toHaveAttribute(
+      "aria-checked",
+      "false",
     );
   });
 });
