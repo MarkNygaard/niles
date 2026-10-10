@@ -278,6 +278,23 @@ pub fn playing(what: &str, room: &str) -> String {
     format!("Playing {what} in the {}.", spoken_room(room))
 }
 
+/// "Stopped the music in the kitchen." / "… in the living room and the
+/// kitchen." Every room, when it played in every room.
+pub fn music_stopped(rooms: &[String]) -> String {
+    let rooms: Vec<String> = rooms.iter().map(|r| spoken_room(r)).collect();
+    let said = match rooms.as_slice() {
+        [one] => format!("the {one}"),
+        [rest @ .., last] => format!("the {} and the {last}", rest.join(", the ")),
+        [] => "the house".into(),
+    };
+    format!("Stopped the music in {said}.")
+}
+
+/// "Stop the music" with none playing.
+pub fn no_music_playing() -> String {
+    "No music is playing.".into()
+}
+
 /// "Playing it everywhere."
 pub fn playing_everywhere() -> String {
     "Playing it everywhere.".into()
@@ -1375,6 +1392,22 @@ mod tests {
         assert_eq!(
             device_not_found(&id),
             "I couldn't find that device anymore."
+        );
+    }
+
+    #[test]
+    fn says_where_the_music_stopped() {
+        assert_eq!(
+            music_stopped(&["kitchen".into()]),
+            "Stopped the music in the kitchen."
+        );
+        assert_eq!(
+            music_stopped(&[
+                "living_room".into(),
+                "kitchen".into(),
+                "walk_in_closet".into()
+            ]),
+            "Stopped the music in the living room, the kitchen and the walk in closet."
         );
     }
 }

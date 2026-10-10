@@ -69,6 +69,7 @@ impl IntentRouter {
             .or_else(|| match_tv(&t))
             // "Stop" is also the timer's word: these name the music.
             .or_else(|| match_stop_music_in(&t))
+            .or_else(|| match_stop_music(&t))
             .or_else(|| match_play_radio(&t))
             .or_else(|| match_play_elsewhere(&t))
             .or_else(|| match_play_from_spotify(&t))
@@ -107,7 +108,6 @@ impl IntentRouter {
             .or_else(|| match_light_set_implicit_room(&t, &ctx))
             .or_else(|| match_device_dim(&t, &ctx))
             .or_else(|| match_device_set(&t, &ctx))
-            .or_else(|| match_stop_music_here(&t, &ctx))
             .or_else(|| match_media_next_implicit_room(&t, &ctx))
             .or_else(|| match_media_previous_implicit_room(&t, &ctx))
             // Last, so a real device or room always wins the sentence.
@@ -1127,19 +1127,18 @@ fn match_stop_music_in(t: &str) -> Option<Intent> {
     })
 }
 
-fn stop_music_here_regex() -> &'static Regex {
+fn stop_music_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(&format!(r"^{STOP_WHAT}(?:\s+in\s+here)?$"))
-            .expect("stop_music_here regex compiles")
+        Regex::new(&format!(r"^{STOP_WHAT}(?:\s+in\s+here)?$")).expect("stop_music regex compiles")
     })
 }
 
-fn match_stop_music_here(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
-    stop_music_here_regex().captures(t)?;
-    Some(Intent::MediaPause {
-        room: ctx.origin_room?.as_str().to_owned(),
-    })
+/// No room named: which music is the dispatcher's to work out, from
+/// what plays where — so this needs no context, and works from the app.
+fn match_stop_music(t: &str) -> Option<Intent> {
+    stop_music_regex().captures(t)?;
+    Some(Intent::StopMusic)
 }
 
 // ---- Play radio ------------------------------------------------------------
@@ -3679,24 +3678,20 @@ mod context_tests {
     }
 
     #[test]
-    fn stopping_the_music_without_a_room_means_this_one() {
-        let idx = fixture_unique();
-        let kitchen = RoomName::parse("kitchen").expect("valid");
+    fn stopping_the_music_without_a_room_is_left_to_what_plays() {
         for said in [
             "stop the music",
             "pause the music",
+            "stop the radio",
             "stop playing gavin degraw",
+            "stop the music in here",
         ] {
             assert_eq!(
-                parse_with(said, ctx_with(&idx, Some(&kitchen))),
-                Some(Intent::MediaPause {
-                    room: "kitchen".into()
-                }),
+                IntentRouter::new().parse(said),
+                Some(Intent::StopMusic),
                 "{said}"
             );
         }
-        // From the app there is no "this room": the model asks.
-        assert_eq!(parse_with("stop the music", ctx_with(&idx, None)), None);
     }
 
     #[test]

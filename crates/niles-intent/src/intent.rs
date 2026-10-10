@@ -191,6 +191,11 @@ pub enum Intent {
         play: bool,
     },
 
+    /// "stop the music" with no room: the music where it was said, the
+    /// whole group it plays in — or, nothing playing there, the music
+    /// playing anywhere else. The TV is not the music.
+    StopMusic,
+
     /// "play the radio" / "play P4 on the radio in the kitchen". No
     /// station: the one this room last had. No room: where it was said.
     PlayRadio {
