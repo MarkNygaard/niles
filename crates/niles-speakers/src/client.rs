@@ -243,6 +243,22 @@ impl SonosClient {
         Ok(())
     }
 
+    /// Hand the lead of its group, and what the group plays, to
+    /// `member`, and leave the group: the rest play on without it.
+    pub async fn hand_over(&self, member: &str) -> Result<()> {
+        self.invoke(
+            av_endpoint(&self.ip),
+            AV_TRANSPORT_SERVICE,
+            "DelegateGroupCoordinationTo",
+            &format!(
+                "<InstanceID>0</InstanceID><NewCoordinator>{}</NewCoordinator><RejoinGroup>0</RejoinGroup>",
+                escape(member)
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Replace its queue — with a playlist, an album, or a run of
     /// tracks, each a URI and its metadata — and load the queue.
     /// `own_id` is this speaker's `RINCON_…`, which the queue is named
