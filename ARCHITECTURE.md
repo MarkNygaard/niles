@@ -1401,89 +1401,86 @@ The manual override is useful when sources lag or fail. It's a soft override —
 
 ## Automations
 
-Several places in Niles benefit from "when X happens, do Y" logic: presence-triggered lights, sunset-triggered porch lamps, "if Majse opens the office door after 22:00 dim the lights." These are *automations* — a first-class concept in Niles, not bolted on later.
+Several places in Niles benefit from "when X happens, do Y" logic: presence-triggered lights, sunset-triggered porch lamps, "when the office door opens to the garden, turn off the office lights." These are *automations* — a first-class concept in Niles, not bolted on later.
 
 ### Two shapes
 
 Automations come in two forms:
 
-**Code automations** — complex, foundational behaviors implemented as Rust. Examples: the ambient lighting curve, the morning routine, timer escalation. These are too rich (state, hysteresis, interactions with other subsystems) for declarative config and are part of the core.
+**Code automations** — complex, foundational behaviors implemented as Rust. Examples: the ambient lighting curve, the morning routine, timer escalation. These are too rich (state, hysteresis, interactions with other subsystems) for a rule and are part of the core.
 
-**Config automations** — simple "when X, do Y" rules expressed as structured config. Examples: "when home becomes occupied and the sun is below the horizon, turn on the hallway lights." These cover the long tail of user-specific behaviors.
+**Rules** — simple "when X, do Y" automations, made by voice or on the Automations page and stored in Postgres. Examples: "when the office door opens, turn off the office lights"; "when home becomes occupied after sunset, turn on the hallway light." These cover the long tail of household-specific behaviors.
 
-The split keeps complex behavior testable in code while letting users define their own automations without writing Rust.
+The split keeps complex behavior testable in code while letting the household add its own automations without writing Rust.
 
-### Config automation shape
+### Rule shape
 
-```toml
-[[automations]]
-name = "hallway light on arrival"
-when = "presence.home_became_occupied"
-conditions = ["sun.is_dark"]
-do = [
-  { tool = "set_device", args = { device = "hallway/ceiling_light", state = "on" } }
-]
+A rule is one **trigger**, any number of **conditions** (all must hold when the trigger fires), and one or more **actions**, run in order:
 
-[[automations]]
-name = "porch on at sunset"
-when = "schedule.sunset"
-do = [
-  { tool = "set_device", args = { device = "outdoor/porch_light", state = "on" } }
-]
-
-[[automations]]
-name = "everyone gone, music off"
-when = "presence.home_became_unoccupied"
-do = [
-  { tool = "control_room_speaker", args = { room = "*", action = "stop" } }
-]
+```json
+{
+  "id": "4f1c…",
+  "name": "Office lights off when the garden door opens",
+  "enabled": true,
+  "trigger":    { "type": "contact", "device": "office/door", "open": true },
+  "conditions": [ { "kind": "time_of_day", "after": "07:00", "before": "23:00" } ],
+  "actions":    [ { "do": "set_room", "room": "office", "on": false } ]
+}
 ```
 
-The format is intentionally narrow: triggers are well-known event names, conditions are a small set of allowed predicates (sun state, time-of-day, user identity), actions are tool calls. No general scripting language — that would be a security and complexity disaster. The set of allowed conditions and triggers expands over time as new ones are needed.
+The vocabulary is deliberately narrow and grows only as new needs appear:
 
-### Voice-created automations
+| | v1 |
+|---|---|
+| **Triggers** | `device_state` (a device turns on / off), `contact` (a door or window sensor opens / closes), `device_action` (a button or dimmer press), `timer_fired`, `presence` (home becomes occupied / unoccupied) |
+| **Conditions** | `time_of_day` (a window, wrapping past midnight), `device_is` (a light is on / off), `contact_is` (a door or window is open / closed) |
+| **Actions** | `set_device` (power, brightness, colour temperature), `set_room` (every light in a room), `notify` (spoken in a room) |
 
-This is where AI-first shines. Users create automations by speaking them:
+No general scripting language — that would be a security and complexity disaster. Devices are named the way people and the LLM name them (`office/door`); the source prefix (`z2m:`) is filled in by Niles.
 
-> User: "Niles, when we get home and it's dark, turn on the hallway light."
+Rules are one straight line: one trigger, then conditions, then actions. Branches (if / else) and several triggers per rule are out of scope for v1; two rules express both.
 
-The LLM (admin-only, since automations affect everyone) extracts:
-- trigger: `presence.home_became_occupied`
-- condition: `sun.is_dark`
-- action: `set_device("hallway/ceiling_light", { state: "on" })`
+### Seeing and editing rules
 
-Stores it as a new automation, confirms back in natural language. The structured form exists because the runtime needs it; the user never edits it.
+The [web UI](#the-web-ui) has an **Automations** page, a menu entry like Groceries or Chat. On a wide screen each rule opens as a flow drawn with React Flow: the trigger at the top, its conditions below it, its actions at the bottom, joined in order. Nodes are added from a palette and edited in a side panel; the layout is automatic (dagre), so positions are not stored — the rule is the record, the flow is a picture of it. On a phone the page lists every rule as its sentence ("When the office door opens, turn off the office lights") with a switch to pause it; the flow can be viewed but is built on a wider screen.
 
-Voice-created automations are stored in Postgres, alongside config-defined ones. Both are evaluated identically at runtime.
+The page is a convenience, never a requirement (principle 8): every rule can also be made, listed, paused and removed by voice.
 
-### Automation lifecycle
+### Voice-created rules
 
-- **List:** "Niles, what automations do I have?" → reads them back as their natural-language descriptions
-- **Disable temporarily:** "Niles, disable the hallway automation for tonight" → marks it skipped until tomorrow
-- **Delete:** "Niles, remove the hallway light automation" → matches by description, confirms, deletes
+> User: "Niles, when the office door opens, turn off the office lights."
 
-Same lifecycle pattern as scenes, rules, and timers. Consistent across the system.
+The LLM extracts the trigger, conditions and actions and **reads the rule back before saving it**:
+
+> Niles: "When the office door opens, I'll turn off the office lights. Shall I?"
+
+Only a yes saves it. Removing a rule by voice is confirmed the same way. The rule then appears on the Automations page like any other, so a misheard one is visible and can be fixed or removed by hand.
+
+### Rule lifecycle
+
+- **List:** "Niles, what automations do I have?" → reads them back as their sentences
+- **Pause:** "Niles, pause the garden door automation" → disabled until switched back on (by voice or on the page)
+- **Remove:** "Niles, remove the garden door automation" → matches by name or sentence, confirms, deletes
 
 ### Conflicts and ordering
 
-Automations don't pre-empt manual control. If you've put a light into manual mode, an automation that would change it skips that light. This is the same rule as lighting curve manual mode — manual user intent always wins.
+A rule is the household's own explicit intent, so it acts even on a light in manual mode: manual mode holds off the *lighting curve*, not a rule someone made on purpose. (The curve then treats a light a rule turned off as off; it does not turn it back on.)
 
-When multiple automations fire on the same event, they execute in declaration order. Most automations don't conflict in practice (different rooms, different devices). If two genuinely conflict, the last-declared wins for that device — which the user can see and reason about by listing automations.
+When several rules fire on the same event they run in the order they were created. Most rules don't conflict in practice (different rooms, different devices). If two genuinely conflict, the later one wins for that device — which the household can see and reason about on the Automations page.
 
 ### Where this lives in the codebase
 
-A new crate, `niles-automations`:
+`niles-automations`:
 
-- Loads config-defined automations at startup
-- Loads voice-defined automations from Postgres at startup
-- Subscribes to the internal event bus
-- Evaluates conditions against current state
-- Dispatches actions through the tool system (which respects permissions, manual mode, etc.)
-- Provides LLM tools for the voice-creation lifecycle
+- The rule model and the engine: subscribes to the internal event bus, evaluates conditions against the device registry, dispatches actions through the same command router the LLM's device tools use
+- Rules are stored in Postgres, one row per rule, in an `automations` table owned by `niles-db`; the engine reloads when a rule is saved, paused or removed — no restart
+- `[[automation]]` tables in the TOML config, which predate the table, are still loaded, after the stored rules; the page shows them read-only, marked as coming from the config
+- HTTP: `GET/POST /automations`, `PUT/DELETE /automations/{id}`
+- LLM tools for the voice lifecycle: create (after confirmation), list, pause / resume, remove
 
 ### Permissions interaction
 
-Voice-created automations are admin-only (they affect everyone). Listing and disabling for a single day can be done by anyone. Deletion of a voice-created automation is admin-only. Config-defined automations (in the TOML) are deployed by whoever deployed Niles — out-of-band from runtime permissions.
+Anyone in the household may make, pause or remove a rule; the read-back confirmation and the page are the guard against a misheard one. When `niles-permissions` lands, creating and removing rules is the first candidate to become admin-only.
 
 ## Runtime configuration
 
@@ -1560,6 +1557,10 @@ rather than an exception to it.
 
 **Settings** is [Runtime configuration](#runtime-configuration): the
 curve, ambient behaviour, the revision history, and an undo.
+
+**Automations** is the household's [rules](#automations), each drawn
+as a flow from its trigger to its actions, and made or changed there as
+well as by voice.
 
 Who may open either is [Signing in](#signing-in).
 
@@ -2366,11 +2367,12 @@ niles:
 - First adapter: Tado (HTTP API client, geofence-derived per-user state)
 - Second adapter: manual ("Niles, I'm leaving") as supplement
 - Home-state aggregation with hysteresis; presence events published to event bus
-- `niles-automations` crate: config-defined automation loader, event subscription, condition evaluation, action dispatch
-- Voice-creatable automations: LLM extracts trigger/condition/action from natural language, stores in Postgres
-- Admin-only creation; anyone can list and temporarily disable
-- Concrete first automation: "when home becomes occupied and it's dark, turn on hallway lights"
-- Verify: arrival lights work reliably; voice-created automation persists and fires correctly
+- `niles-automations` crate: rule loader, event subscription, condition evaluation, action dispatch
+- Rules in Postgres, reloaded live; contact (door / window) triggers and conditions; a room-wide light action
+- Automations page: rules drawn and edited as a React Flow chain (trigger → conditions → actions), listed with a pause switch on a phone
+- Voice-creatable rules: LLM extracts trigger/conditions/actions, reads the rule back, saves on a yes; list, pause and remove by voice
+- Concrete first automation: "when the office door opens, turn off the office lights"
+- Verify: the door rule fires on the real sensor; a voice-created rule appears on the page, persists across a restart and fires
 
 ### Phase 10: First external integration — Linear (1–2 weekends)
 - `niles-integration-linear` crate (talks to Linear's GraphQL API)
@@ -2478,7 +2480,7 @@ These are intentionally left open for the project owner / community to decide:
 - **Personal reference** — a phrase like "my calendar" or "wake me up" that the LLM resolves to the speaker's specific external resource (their calendar account, their bedroom, etc.); distinct from per-user preferences, which Niles does not maintain for shared home state
 - **Presence source** — an adapter that reports whether a specific user is home (Tado, phone GPS, BLE beacons, manual voice command, etc.); multiple sources can be combined per user
 - **Home state** — Niles's aggregated occupancy status (`occupied` / `unoccupied` / `transitioning`), derived from per-user presence with hysteresis
-- **Automation** — a "when X, do Y" rule. Code automations are foundational behaviors implemented in Rust; config automations are simple rules in TOML or voice-created via the LLM, stored in Postgres
+- **Automation** — "when X, do Y". Code automations are foundational behaviors implemented in Rust; rules are one trigger, conditions and actions, made by voice or on the Automations page and stored in Postgres
 - **Capability manifest** — `MANIFEST.md`, the LLM-facing structured description of Niles's features, requirements, and setup decisions; generated from the canonical `features.toml`
 - **features.toml** — canonical feature catalog at the repo root; single source of truth for the runtime's feature awareness, the generated MANIFEST.md, the README's feature table, and the docs site
 - **Music intent** — high-level LLM tool (`play_radio`, `play_music`, etc.) that maps to source-specific Sonos actions internally; insulates the LLM from knowing which music service is being used
