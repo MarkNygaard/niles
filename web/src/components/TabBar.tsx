@@ -1,6 +1,6 @@
 import { DESTINATIONS, HOME } from "@/lib/destinations";
 import type { Destination } from "@/lib/destinations";
-import { MOVABLE } from "@/lib/menu";
+import { AVATAR_UNLESS_PLACED, MOVABLE } from "@/lib/menu";
 import type { MenuItem } from "@/lib/menu";
 import { cn } from "@/lib/utils";
 
@@ -11,7 +11,9 @@ export interface TabBarProps {
   menu?: MenuItem[];
 }
 
-const UNARRANGED: MenuItem[] = MOVABLE.filter((id) => id !== "settings").map((id) => ({
+const UNARRANGED: MenuItem[] = MOVABLE.filter(
+  (id) => id !== "settings" && !AVATAR_UNLESS_PLACED.includes(id),
+).map((id) => ({
   id,
   hidden: false,
 }));

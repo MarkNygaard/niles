@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 /**
  * Light, dark, or whatever the phone is doing.
@@ -47,6 +47,25 @@ export function applyTheme(theme: Theme): void {
   document
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute("content", dark ? THEME_COLOR.dark : THEME_COLOR.light);
+}
+
+function watchDark(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
+
+/**
+ * Whether the page is dark right now, as `applyTheme` left `<html>`.
+ *
+ * For what cannot read the CSS: a canvas library that takes the mode
+ * as a prop. Read off the class rather than the setting, so it agrees
+ * with the page whichever way "system" resolved.
+ */
+export function useDarkMode(): boolean {
+  return useSyncExternalStore(watchDark, () =>
+    document.documentElement.classList.contains("dark"),
+  );
 }
 
 export function useTheme(): [Theme, (next: Theme) => void] {

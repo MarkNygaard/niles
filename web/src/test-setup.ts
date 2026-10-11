@@ -31,6 +31,27 @@ if (typeof window !== "undefined" && !window.PointerEvent) {
   } as unknown as typeof window.PointerEvent;
 }
 
+// React Flow measures its pane and nodes with a ResizeObserver and
+// reads the zoom back off the viewport's transform as a matrix; jsdom
+// has neither. Nothing here lays anything out, so a canvas renders its
+// nodes at no size, which is all a test of what it shows needs.
+if (typeof window !== "undefined" && !window.ResizeObserver) {
+  window.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+if (typeof window !== "undefined" && !window.DOMMatrixReadOnly) {
+  window.DOMMatrixReadOnly = class DOMMatrixReadOnly {
+    m22: number;
+    constructor(transform?: string) {
+      const scale = transform?.match(/scale\(([\d.]+)\)/)?.[1];
+      this.m22 = scale === undefined ? 1 : Number(scale);
+    }
+  } as unknown as typeof window.DOMMatrixReadOnly;
+}
+
 // nwsapi 2.2.27, jsdom's selector engine, answers `:modal` by asking
 // `:fullscreen`, and answers that by calling `matches(":fullscreen")`
 // on the same element — itself — until the stack overflows. floating-ui

@@ -3,14 +3,20 @@ import { valueAt } from "@/lib/api";
 /** The menu entries that can be moved. Home and My profile are not:
     Home is the main navigation's first entry, My profile the avatar
     menu's. Settings moves but does not hide — it is the way back here. */
-export type MenuEntry = "groceries" | "chat" | "media" | "settings";
+export type MenuEntry = "groceries" | "chat" | "media" | "settings" | "automations";
 
 /** Every movable entry, in the order the main navigation shows them
     before anybody arranges it. */
-export const MOVABLE: MenuEntry[] = ["groceries", "chat", "media", "settings"];
+export const MOVABLE: MenuEntry[] = ["groceries", "chat", "media", "settings", "automations"];
 
 /** Where Settings sits before anybody moves it. */
 const AVATAR_AT_FIRST: MenuEntry[] = ["settings"];
+
+/** Entries that go to the end of the avatar menu, not the main
+    navigation, while neither list names them. Automations is opened
+    now and then, to look or to fix one: it has no claim on a tab, and
+    a menu arranged before it existed should not gain one. */
+export const AVATAR_UNLESS_PLACED: MenuEntry[] = ["automations"];
 
 /** When the Media entry is in the menu. */
 export type MediaShown = "playing" | "always" | "never";
@@ -47,7 +53,8 @@ function isEntry(value: string): value is MenuEntry {
  * Read by the menus that obey it and the settings page that writes it,
  * so they agree on what a missing or odd entry means. An entry neither
  * list names goes to the main navigation, after the arranged ones — a
- * page added in a later version shows up rather than not at all.
+ * page added in a later version shows up rather than not at all — or,
+ * for the few in `AVATAR_UNLESS_PLACED`, to the end of the avatar menu.
  *
  * `playing` is whether anything plays now, for Media's "when something
  * plays"; Settings leaves it out, and lists Media either way.
@@ -55,10 +62,14 @@ function isEntry(value: string): value is MenuEntry {
 export function menuLayout(effective: unknown, playing?: boolean): MenuLayout {
   const hidden = new Set(strings(valueAt(effective, "menu.hidden")));
   const written = valueAt(effective, "menu.avatar");
-  const avatarIds = [
+  const placed = [
     ...new Set(Array.isArray(written) ? strings(written).filter(isEntry) : AVATAR_AT_FIRST),
   ];
   const arranged = strings(valueAt(effective, "menu.order")).filter(isEntry);
+  const avatarIds = [
+    ...placed,
+    ...AVATAR_UNLESS_PLACED.filter((id) => !placed.includes(id) && !arranged.includes(id)),
+  ];
   const mainIds = [...new Set([...arranged, ...MOVABLE])].filter(
     (id) => !avatarIds.includes(id),
   );

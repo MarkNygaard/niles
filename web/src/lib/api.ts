@@ -364,15 +364,83 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    const message =
-      body && typeof body.error === "string"
-        ? body.error
-        : `request failed (${response.status})`;
-    throw new ApiError(message, response.status);
+    throw new ApiError(
+      errorMessage(text) ?? `request failed (${response.status})`,
+      response.status,
+    );
   }
-  return body as T;
+  return (text ? JSON.parse(text) : null) as T;
+}
+
+/** The reason in a refusal: `{error}`, or the body itself when it is
+    plain text, which is how the automations endpoints say why. */
+function errorMessage(text: string): string | undefined {
+  try {
+    const body = JSON.parse(text);
+    return body && typeof body.error === "string" ? body.error : undefined;
+  } catch {
+    const plain = text.trim();
+    // A proxy's error page is not a reason anybody can act on.
+    return plain && !plain.startsWith("<") ? plain : undefined;
+  }
+}
+
+/** What starts an automation. Devices are named `room/name`, without
+    the source prefix: the server fills that in. */
+export type Trigger =
+  /** A door or window: `open` true opens, false closes, absent either. */
+  | { type: "contact"; device: string; open?: boolean }
+  | { type: "device_state"; device?: string; room?: string; on?: boolean }
+  /** A button or dimmer press, e.g. `on_press`; absent is any press. */
+  | { type: "device_action"; device: string; action?: string }
+  | { type: "timer_fired"; name?: string }
+  | { type: "presence"; state?: "home" | "away" | "unknown" };
+
+/** What has to hold when the trigger fires for the actions to run. */
+export type Condition =
+  /** `HH:MM`; the window may wrap past midnight. */
+  | { kind: "time_of_day"; after?: string; before?: string }
+  | { kind: "device_is"; device: string; on: boolean }
+  | { kind: "contact_is"; device: string; open: boolean };
+
+export type Action =
+  | {
+      do: "set_device";
+      device: string;
+      on?: boolean;
+      /** Percent, `0..=100`. */
+      brightness?: number;
+      /** `2000..=6500`. */
+      kelvin?: number;
+    }
+  /** Every light in the room. */
+  | { do: "set_room"; room: string; on?: boolean; brightness?: number; kelvin?: number }
+  | {
+      do: "notify";
+      body: string;
+      room?: string;
+      priority?: "routine" | "important" | "urgent";
+    };
+
+export interface Rule {
+  id: string;
+  description: string;
+  enabled: boolean;
+  trigger: Trigger;
+  conditions: Condition[];
+  actions: Action[];
+}
+
+/** A rule as `GET /automations` lists it. */
+export interface AutomationView {
+  rule: Rule;
+  /** `config` rules come from the TOML file, and are read-only here. */
+  source: "stored" | "config";
+  /** The rule as a sentence, written by the server. */
+  sentence: string;
+  /** Why the rule is not running, when it is invalid. */
+  error: string | null;
 }
 
 /** One message to Niles in the app, and the answer. */
@@ -748,6 +816,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  automations: () => request<{ rules: AutomationView[] }>("/automations"),
+  createAutomation: (rule: Omit<Rule, "id">) =>
+    request<AutomationView>("/automations", { method: "POST", body: JSON.stringify(rule) }),
+  updateAutomation: (rule: Rule) =>
+    request<AutomationView>(`/automations/${encodeURIComponent(rule.id)}`, {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    }),
+  deleteAutomation: (id: string) =>
+    request<void>(`/automations/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   history: () => request<Revision[]>("/config/history"),
 
