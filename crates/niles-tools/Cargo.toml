@@ -22,6 +22,7 @@ niles-mqtt.workspace = true
 niles-llm.workspace = true
 niles-capabilities.workspace = true
 niles-scheduler.workspace = true
+niles-automations.workspace = true
 niles-groceries.workspace = true
 niles-nemlig.workspace = true
 niles-history.workspace = true

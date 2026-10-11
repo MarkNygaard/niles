@@ -1990,6 +1990,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "niles-automations",
  "niles-capabilities",
  "niles-config",
  "niles-core",

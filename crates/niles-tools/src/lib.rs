@@ -6,6 +6,7 @@
 //! built-ins this crate ships with.
 
 pub mod announce;
+pub mod automations;
 pub mod builtin;
 pub mod config;
 pub mod datetime;
@@ -25,6 +26,7 @@ pub mod weather;
 pub mod web_search;
 
 pub use announce::{AnnounceTool, register_announce_tool};
+pub use automations::register_automation_tools;
 pub use builtin::{
     CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState, GetTimerRemaining,
     ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
