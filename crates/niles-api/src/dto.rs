@@ -53,7 +53,7 @@ impl DeviceDto {
 }
 
 /// JSON shape for a device's class. Serialized as a lowercase string
-/// (`"light"`, `"switch"`, `"sensor"`, `"unknown"`) — clients should
+/// (`"light"`, `"switch"`, `"contact"`, `"sensor"`, `"unknown"`) — clients should
 /// treat unknown variants as forward-compatible additions.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -61,6 +61,11 @@ pub enum DeviceClassDto {
     Light,
     Outlet,
     Switch,
+    /// A door or window sensor. Left out of this mapping when the class
+    /// was added, so every door reached the app as `"unknown"` and the
+    /// automation editor could not tell one from a button until it had
+    /// reported open or shut.
+    Contact,
     Sensor,
     Unknown,
 }
@@ -71,6 +76,7 @@ impl From<&DeviceClass> for DeviceClassDto {
             DeviceClass::Light => Self::Light,
             DeviceClass::Outlet => Self::Outlet,
             DeviceClass::Switch => Self::Switch,
+            DeviceClass::Contact => Self::Contact,
             DeviceClass::Sensor => Self::Sensor,
             DeviceClass::Unknown => Self::Unknown,
             // `DeviceClass` is `#[non_exhaustive]`; new upstream
