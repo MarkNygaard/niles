@@ -150,6 +150,16 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
+        id: "microsoft",
+        label: "Microsoft calendars",
+        blurb: "Each person's Outlook and work calendars, read by voice for whoever asks.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
         id: "lg_tv",
         label: "LG TV",
         blurb: "On and off, apps and inputs by voice, and Niles's news on the screen.",
@@ -220,6 +230,9 @@ impl Known {
             // Two again, like nemlig; the secret is the one that says.
             Kind::Service if self.id == "spotify" => {
                 Some("integrations.spotify.client_secret".into())
+            }
+            Kind::Service if self.id == "microsoft" => {
+                Some("integrations.microsoft.client_secret".into())
             }
             Kind::Service => None,
         }

@@ -156,6 +156,26 @@ export type SpeakerControl =
   | { action: "leave" }
   | { action: "volume"; percent: number };
 
+export type CalendarAccess = "read" | "write";
+
+/** One calendar account a person connected. */
+export interface CalendarConnection {
+  id: string;
+  /** What they called it: "Private", "Work". */
+  name: string;
+  /** The account's address. */
+  account: string;
+  access: CalendarAccess;
+}
+
+/** `GET /calendars`: the signed-in person's own. */
+export interface CalendarsView {
+  available: boolean;
+  /** Why a calendar cannot be connected, when it cannot. */
+  reason: string | null;
+  connections: CalendarConnection[];
+}
+
 /** The LG TV, as `GET /tv` reports it. */
 export interface TvInfo {
   configured: boolean;
@@ -726,6 +746,9 @@ export const api = {
     }),
   /** The soundbar to the TV's sound, out of any group. */
   tvSound: () => request<void>("/media/tv", { method: "POST" }),
+  calendars: () => request<CalendarsView>("/calendars"),
+  removeCalendar: (id: string) =>
+    request<void>(`/calendars/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /** Shows the prompt on the TV and waits up to a minute for it. */
   pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),
   tvPower: (on: boolean) =>

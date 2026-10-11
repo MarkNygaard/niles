@@ -84,6 +84,7 @@ niles-memory = { path = "crates/niles-memory" }
 niles-skills = { path = "crates/niles-skills" }
 niles-recognition = { path = "crates/niles-recognition" }
 niles-weather = { path = "crates/niles-weather" }
+niles-calendar = { path = "crates/niles-calendar" }
 niles-websearch = { path = "crates/niles-websearch" }
 niles-notifications = { path = "crates/niles-notifications" }
 niles-presence = { path = "crates/niles-presence" }

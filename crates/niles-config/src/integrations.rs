@@ -39,6 +39,46 @@ pub struct IntegrationsConfig {
     pub nemlig: Option<NemligConfig>,
     #[serde(default)]
     pub spotify: Option<SpotifyConfig>,
+    #[serde(default)]
+    pub microsoft: Option<MicrosoftConfig>,
+}
+
+/// `[integrations.microsoft]` — the household's app registration in
+/// Microsoft Entra, through which each person connects their own
+/// calendars: an Outlook.com account and a work one alike.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MicrosoftConfig {
+    /// Off keeps the section, the stored keys and every person's
+    /// connections without using them.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id_env: String,
+    #[serde(default)]
+    pub client_secret_env: String,
+    /// The redirect URI registered on the app. Microsoft compares it
+    /// letter for letter, at sign-in and again at the token exchange;
+    /// left out, it is built from the address the browser used.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+}
+
+impl MicrosoftConfig {
+    /// The app's keys: (client id, client secret).
+    pub fn resolve_credentials(&self) -> Result<(String, String)> {
+        let id = crate::env::require_secret(
+            "integrations.microsoft",
+            "integrations.microsoft.client_id",
+            &self.client_id_env,
+        )?;
+        let secret = crate::env::require_secret(
+            "integrations.microsoft",
+            "integrations.microsoft.client_secret",
+            &self.client_secret_env,
+        )?;
+        Ok((id, secret))
+    }
 }
 
 /// `[integrations.spotify]` — a Spotify developer app, for finding what

@@ -56,6 +56,7 @@ niles-integration-linear.workspace = true
 niles-notifications.workspace = true
 niles-presence.workspace = true
 niles-automations.workspace = true
+niles-calendar.workspace = true
 niles-recognition.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true

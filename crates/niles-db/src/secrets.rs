@@ -90,7 +90,7 @@ impl Sealer {
         base64::engine::general_purpose::STANDARD.encode(raw)
     }
 
-    fn seal(&self, value: &str) -> Result<Vec<u8>> {
+    pub(crate) fn seal(&self, value: &str) -> Result<Vec<u8>> {
         let mut nonce = [0u8; NONCE_LEN];
         rand::rng().fill_bytes(&mut nonce);
         let ciphertext = self
@@ -105,7 +105,7 @@ impl Sealer {
         Ok(out)
     }
 
-    fn open(&self, sealed: &[u8]) -> Result<String> {
+    pub(crate) fn open(&self, sealed: &[u8]) -> Result<String> {
         if sealed.len() <= NONCE_LEN {
             return Err(bad_key("the stored value is too short to be sealed"));
         }

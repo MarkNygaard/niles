@@ -311,17 +311,20 @@ pub async fn sign_out(headers: HeaderMap) -> Response {
 /// session cookie is marked `Secure`. An ingress that does not set the
 /// header costs that flag — the cookie still works — rather than
 /// breaking sign-in, which is why the redirect URL is not built from it.
-fn is_secure(headers: &HeaderMap) -> bool {
+pub(crate) fn is_secure(headers: &HeaderMap) -> bool {
     header_str(headers, "x-forwarded-proto")
         .map(|proto| proto.split(',').next().unwrap_or("").trim() == "https")
         .unwrap_or(false)
 }
 
-fn header_str(headers: &HeaderMap, name: impl axum::http::header::AsHeaderName) -> Option<&str> {
+pub(crate) fn header_str(
+    headers: &HeaderMap,
+    name: impl axum::http::header::AsHeaderName,
+) -> Option<&str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     session::from_header(header_str(headers, header::COOKIE)?, name)
 }
 
