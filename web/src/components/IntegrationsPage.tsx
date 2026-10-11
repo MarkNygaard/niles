@@ -24,7 +24,7 @@ import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { NemligPanel } from "@/components/NemligPanel";
 import { LinearPanel } from "@/components/LinearPanel";
 import { SonosPanel } from "@/components/SonosPanel";
-import { MicrosoftPanel, redirectUri } from "@/components/MicrosoftPanel";
+import { CalendarAppPanel, redirectUri } from "@/components/CalendarAppPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
@@ -59,6 +59,8 @@ export interface IntegrationsPageProps {
   spotify?: { enabled?: boolean };
   /** The Microsoft section as the config has it, if there is one. */
   microsoft?: { enabled?: boolean };
+  /** The Google section as the config has it, if there is one. */
+  google?: { enabled?: boolean };
   /** The UniFi console's address, empty until one is typed in. */
   unifiHost?: string;
   /** `[speakers]` as the config has it: Sonos's switch and address. */
@@ -106,6 +108,7 @@ export function IntegrationsPage({
   nemlig,
   spotify,
   microsoft,
+  google,
   unifiHost,
   sonos,
   sonosFound,
@@ -163,6 +166,12 @@ export function IntegrationsPage({
         secretFor("integrations.microsoft.client_id")?.source !== "unset" &&
         secretFor("integrations.microsoft.client_secret")?.source !== "unset"
       );
+    if (integration.id === "google")
+      return (
+        google?.enabled !== false &&
+        secretFor("integrations.google.client_id")?.source !== "unset" &&
+        secretFor("integrations.google.client_secret")?.source !== "unset"
+      );
     if (integration.id === "lg_tv") return Boolean(tv?.paired);
     if (integration.id === "sonos")
       return sonos?.enabled !== false && Boolean(sonos?.host?.trim());
@@ -208,7 +217,12 @@ export function IntegrationsPage({
       case "microsoft":
         return onChange("integrations.microsoft", [
           { path: "integrations.microsoft.enabled", value: true },
-          { path: "integrations.microsoft.redirect_uri", value: redirectUri() },
+          { path: "integrations.microsoft.redirect_uri", value: redirectUri("microsoft") },
+        ]);
+      case "google":
+        return onChange("integrations.google", [
+          { path: "integrations.google.enabled", value: true },
+          { path: "integrations.google.redirect_uri", value: redirectUri("google") },
         ]);
       case "unifi":
       case "sonos":
@@ -261,6 +275,8 @@ export function IntegrationsPage({
       // in the database for when it comes back.
       case "microsoft":
         return onReset("integrations.microsoft", ["integrations.microsoft"]);
+      case "google":
+        return onReset("integrations.google", ["integrations.google"]);
       default:
         return onChange("providers", [
           {
@@ -469,7 +485,8 @@ export function IntegrationsPage({
                 )}
 
                 {current.id === "microsoft" && (
-                  <MicrosoftPanel
+                  <CalendarAppPanel
+                    provider="microsoft"
                     enabled={microsoft?.enabled !== false}
                     clientId={secretFor("integrations.microsoft.client_id")}
                     clientSecret={secretFor("integrations.microsoft.client_secret")}
@@ -478,6 +495,23 @@ export function IntegrationsPage({
                     onEnabled={(enabled) =>
                       onChange("integrations.microsoft", [
                         { path: "integrations.microsoft.enabled", value: enabled },
+                      ])
+                    }
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "google" && (
+                  <CalendarAppPanel
+                    provider="google"
+                    enabled={google?.enabled !== false}
+                    clientId={secretFor("integrations.google.client_id")}
+                    clientSecret={secretFor("integrations.google.client_secret")}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onEnabled={(enabled) =>
+                      onChange("integrations.google", [
+                        { path: "integrations.google.enabled", value: enabled },
                       ])
                     }
                     onSecretsChanged={onSecretsChanged}

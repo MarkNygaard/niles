@@ -4,9 +4,11 @@
 //! only ones looked at, and a reference to an event only means anything
 //! to the person whose list it came from.
 
+use crate::caldav::{self, Login};
 use crate::error::{Error, Result};
+use crate::google::{self, GoogleApp};
 use crate::graph::{self, MicrosoftApp, Tokens};
-use crate::model::{Access, Connection, Event, NewEvent};
+use crate::model::{Access, Connection, Event, NewEvent, Provider};
 use crate::store::ConnectionStore;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -14,63 +16,182 @@ use chrono_tz::Tz;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// What Microsoft is asked, behind a seam so the rules above it can be
-/// tested without a network.
+/// The household's app registrations, read from the config per use. A
+/// provider left out is switched off.
+#[derive(Debug, Clone, Default)]
+pub struct Apps {
+    pub microsoft: Option<MicrosoftApp>,
+    pub google: Option<GoogleApp>,
+}
+
+/// How one request is let in.
+pub enum Auth {
+    Bearer(String),
+    Login(Login),
+}
+
+/// What the providers are asked, behind a seam so the rules above it
+/// can be tested without a network.
 #[async_trait]
 pub trait Backend: Send + Sync {
-    async fn refresh(&self, app: &MicrosoftApp, connection: &Connection) -> Result<Tokens>;
+    async fn refresh(&self, apps: &Apps, connection: &Connection) -> Result<Tokens>;
+    async fn discover_icloud(&self, login: &Login) -> Result<String>;
     async fn events(
         &self,
-        token: &str,
+        connection: &Connection,
+        auth: &Auth,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
         tz: Tz,
     ) -> Result<Vec<Event>>;
-    async fn create(&self, token: &str, event: &NewEvent, tz: Tz) -> Result<Event>;
-    async fn update(&self, token: &str, id: &str, event: &NewEvent, tz: Tz) -> Result<Event>;
-    async fn delete(&self, token: &str, id: &str) -> Result<()>;
+    async fn create(
+        &self,
+        connection: &Connection,
+        auth: &Auth,
+        event: &NewEvent,
+        tz: Tz,
+    ) -> Result<Event>;
+    async fn update(
+        &self,
+        connection: &Connection,
+        auth: &Auth,
+        id: &str,
+        event: &NewEvent,
+        tz: Tz,
+    ) -> Result<Event>;
+    async fn delete(&self, connection: &Connection, auth: &Auth, event: &Event) -> Result<()>;
 }
 
-/// Microsoft Graph itself.
-pub struct Graph {
+/// The providers themselves.
+pub struct Network {
     http: reqwest::Client,
 }
 
-impl Graph {
+impl Network {
     pub fn new(http: reqwest::Client) -> Self {
         Self { http }
     }
 }
 
-#[async_trait]
-impl Backend for Graph {
-    async fn refresh(&self, app: &MicrosoftApp, connection: &Connection) -> Result<Tokens> {
-        app.refresh(
-            &self.http,
-            &connection.refresh_token,
-            connection.access,
-            &connection.name,
-        )
-        .await
+fn bearer(auth: &Auth) -> Result<&str> {
+    match auth {
+        Auth::Bearer(token) => Ok(token),
+        Auth::Login(_) => Err(Error::Invalid {
+            reason: "a token was expected".into(),
+        }),
     }
+}
+
+fn login(auth: &Auth) -> Result<&Login> {
+    match auth {
+        Auth::Login(login) => Ok(login),
+        Auth::Bearer(_) => Err(Error::Invalid {
+            reason: "a login was expected".into(),
+        }),
+    }
+}
+
+fn home(connection: &Connection) -> Result<&str> {
+    connection
+        .endpoint
+        .as_deref()
+        .ok_or_else(|| Error::Reconnect {
+            name: connection.name.clone(),
+        })
+}
+
+#[async_trait]
+impl Backend for Network {
+    async fn refresh(&self, apps: &Apps, connection: &Connection) -> Result<Tokens> {
+        match connection.provider {
+            Provider::Microsoft => {
+                switched_on(apps.microsoft.as_ref(), "Microsoft")?
+                    .refresh(
+                        &self.http,
+                        &connection.credential,
+                        connection.access,
+                        &connection.name,
+                    )
+                    .await
+            }
+            Provider::Google => {
+                switched_on(apps.google.as_ref(), "Google")?
+                    .refresh(&self.http, &connection.credential, &connection.name)
+                    .await
+            }
+            Provider::Icloud => Err(Error::Invalid {
+                reason: "iCloud has no tokens".into(),
+            }),
+        }
+    }
+
+    async fn discover_icloud(&self, login: &Login) -> Result<String> {
+        caldav::discover(&self.http, login).await
+    }
+
     async fn events(
         &self,
-        token: &str,
+        connection: &Connection,
+        auth: &Auth,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
         tz: Tz,
     ) -> Result<Vec<Event>> {
-        graph::events(&self.http, token, from, to, tz).await
+        match connection.provider {
+            Provider::Microsoft => graph::events(&self.http, bearer(auth)?, from, to, tz).await,
+            Provider::Google => google::events(&self.http, bearer(auth)?, from, to, tz).await,
+            Provider::Icloud => {
+                caldav::events(&self.http, login(auth)?, home(connection)?, from, to, tz).await
+            }
+        }
     }
-    async fn create(&self, token: &str, event: &NewEvent, tz: Tz) -> Result<Event> {
-        graph::create(&self.http, token, event, tz).await
+
+    async fn create(
+        &self,
+        connection: &Connection,
+        auth: &Auth,
+        event: &NewEvent,
+        tz: Tz,
+    ) -> Result<Event> {
+        match connection.provider {
+            Provider::Microsoft => graph::create(&self.http, bearer(auth)?, event, tz).await,
+            Provider::Google => google::create(&self.http, bearer(auth)?, event, tz).await,
+            Provider::Icloud => {
+                caldav::create(&self.http, login(auth)?, home(connection)?, event, tz).await
+            }
+        }
     }
-    async fn update(&self, token: &str, id: &str, event: &NewEvent, tz: Tz) -> Result<Event> {
-        graph::update(&self.http, token, id, event, tz).await
+
+    async fn update(
+        &self,
+        connection: &Connection,
+        auth: &Auth,
+        id: &str,
+        event: &NewEvent,
+        tz: Tz,
+    ) -> Result<Event> {
+        match connection.provider {
+            Provider::Microsoft => graph::update(&self.http, bearer(auth)?, id, event, tz).await,
+            Provider::Google => google::update(&self.http, bearer(auth)?, id, event, tz).await,
+            Provider::Icloud => caldav::update(&self.http, login(auth)?, id, event, tz).await,
+        }
     }
-    async fn delete(&self, token: &str, id: &str) -> Result<()> {
-        graph::delete(&self.http, token, id).await
+
+    async fn delete(&self, connection: &Connection, auth: &Auth, event: &Event) -> Result<()> {
+        match connection.provider {
+            Provider::Microsoft => graph::delete(&self.http, bearer(auth)?, &event.id).await,
+            Provider::Google => google::delete(&self.http, bearer(auth)?, &event.id).await,
+            Provider::Icloud => {
+                caldav::delete(&self.http, login(auth)?, &event.id, &event.subject).await
+            }
+        }
     }
+}
+
+fn switched_on<'a, T>(app: Option<&'a T>, provider: &str) -> Result<&'a T> {
+    app.ok_or_else(|| Error::Invalid {
+        reason: format!("{provider} calendars are switched off in Niles"),
+    })
 }
 
 /// An event as the tools hand it on: with the calendar it is in and a
@@ -91,6 +212,19 @@ pub struct Change {
     pub end: Option<NaiveDateTime>,
     pub all_day: Option<bool>,
     pub location: Option<String>,
+}
+
+/// A connection just made, before it is kept.
+pub struct Made {
+    pub provider: Provider,
+    pub name: String,
+    pub access: Access,
+    pub account: String,
+    pub credential: String,
+    pub endpoint: Option<String>,
+    /// The access token the sign-in brought, so the first question
+    /// does not refresh it again.
+    pub access_token: Option<(String, DateTime<Utc>)>,
 }
 
 struct Known {
@@ -130,10 +264,7 @@ impl Calendars {
     pub async fn connect(
         &self,
         person: &str,
-        name: &str,
-        access: Access,
-        account: &str,
-        tokens: Tokens,
+        made: Made,
         replace: Option<&str>,
     ) -> Result<Connection> {
         let existing = self.store.list(person).await?;
@@ -144,16 +275,75 @@ impl Calendars {
         let connection = Connection {
             id: id.clone(),
             person: person.to_string(),
-            name: name.trim().to_string(),
-            account: account.to_string(),
-            access,
-            refresh_token: tokens.refresh_token.clone(),
+            provider: made.provider,
+            name: made.name.trim().to_string(),
+            account: made.account,
+            access: made.access,
+            credential: made.credential,
+            endpoint: made.endpoint,
         };
         self.store.save(&connection).await?;
-        self.tokens
-            .lock()
-            .await
-            .insert(id, (tokens.access_token, tokens.expires_at));
+        let mut tokens = self.tokens.lock().await;
+        match made.access_token {
+            Some(token) => {
+                tokens.insert(id, token);
+            }
+            None => {
+                tokens.remove(&id);
+            }
+        }
+        Ok(connection)
+    }
+
+    /// An iCloud account, checked with Apple before it is kept: a wrong
+    /// password is said now, not at the first question.
+    pub async fn connect_icloud(
+        &self,
+        person: &str,
+        name: &str,
+        access: Access,
+        apple_id: &str,
+        password: &str,
+        replace: Option<&str>,
+    ) -> Result<Connection> {
+        let login = Login {
+            user: apple_id.trim().to_string(),
+            password: password.trim().replace(' ', ""),
+        };
+        let home = self.backend.discover_icloud(&login).await?;
+        self.connect(
+            person,
+            Made {
+                provider: Provider::Icloud,
+                name: name.to_string(),
+                access,
+                account: login.user,
+                credential: login.password,
+                endpoint: Some(home),
+                access_token: None,
+            },
+            replace,
+        )
+        .await
+    }
+
+    /// Change what a connection may do, where Niles is the one keeping
+    /// it. Microsoft and Google grant it, so for them it is a sign-in.
+    pub async fn set_access(&self, person: &str, id: &str, access: Access) -> Result<Connection> {
+        let mut connection = self
+            .store
+            .list(person)
+            .await?
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| Error::NoSuchConnection { name: id.into() })?;
+        if connection.provider.enforces_access() {
+            return Err(Error::Invalid {
+                reason: "this calendar's access is granted at sign-in; connect it again".into(),
+            });
+        }
+        connection.access = access;
+        self.store.save(&connection).await?;
         Ok(connection)
     }
 
@@ -167,7 +357,7 @@ impl Calendars {
     /// second list rather than hiding the others.
     pub async fn events(
         &self,
-        app: &MicrosoftApp,
+        apps: &Apps,
         person: &str,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
@@ -176,8 +366,8 @@ impl Calendars {
         let mut found: Vec<(Connection, Event)> = Vec::new();
         let mut problems = Vec::new();
         for connection in self.store.list(person).await? {
-            let events = match self.token(app, &connection).await {
-                Ok(token) => self.backend.events(&token, from, to, tz).await,
+            let events = match self.auth(apps, &connection).await {
+                Ok(auth) => self.backend.events(&connection, &auth, from, to, tz).await,
                 Err(e) => Err(e),
             };
             match events {
@@ -205,21 +395,21 @@ impl Calendars {
     /// can write to.
     pub async fn create(
         &self,
-        app: &MicrosoftApp,
+        apps: &Apps,
         person: &str,
         calendar: Option<&str>,
         event: &NewEvent,
         tz: Tz,
     ) -> Result<Listed> {
         let connection = self.writable(person, calendar).await?;
-        let token = self.token(app, &connection).await?;
-        let made = self.backend.create(&token, event, tz).await?;
+        let auth = self.auth(apps, &connection).await?;
+        let made = self.backend.create(&connection, &auth, event, tz).await?;
         Ok(self.remember(person, &connection, made))
     }
 
     pub async fn update(
         &self,
-        app: &MicrosoftApp,
+        apps: &Apps,
         person: &str,
         reference: &str,
         change: &Change,
@@ -227,10 +417,10 @@ impl Calendars {
     ) -> Result<Listed> {
         let (connection, before) = self.known_event(person, reference).await?;
         writable_or_refuse(&connection)?;
-        let token = self.token(app, &connection).await?;
+        let auth = self.auth(apps, &connection).await?;
         let changed = self
             .backend
-            .update(&token, &before.id, &apply(&before, change), tz)
+            .update(&connection, &auth, &before.id, &apply(&before, change), tz)
             .await?;
         let mut known = self.lock_known();
         if let Some(entry) = known
@@ -246,16 +436,11 @@ impl Calendars {
         })
     }
 
-    pub async fn delete(
-        &self,
-        app: &MicrosoftApp,
-        person: &str,
-        reference: &str,
-    ) -> Result<Listed> {
+    pub async fn delete(&self, apps: &Apps, person: &str, reference: &str) -> Result<Listed> {
         let (connection, event) = self.known_event(person, reference).await?;
         writable_or_refuse(&connection)?;
-        let token = self.token(app, &connection).await?;
-        self.backend.delete(&token, &event.id).await?;
+        let auth = self.auth(apps, &connection).await?;
+        self.backend.delete(&connection, &auth, &event).await?;
         if let Some(all) = self.lock_known().get_mut(person) {
             all.retain(|k| k.reference != reference);
         }
@@ -338,26 +523,35 @@ impl Calendars {
         out
     }
 
-    /// A live access token for the connection, refreshed when it has
-    /// less than a minute left. A rotated refresh token is kept.
-    async fn token(&self, app: &MicrosoftApp, connection: &Connection) -> Result<String> {
+    /// How to reach the connection: its login, or a live access token,
+    /// refreshed when it has less than a minute left. A rotated refresh
+    /// token is kept.
+    async fn auth(&self, apps: &Apps, connection: &Connection) -> Result<Auth> {
+        if connection.provider == Provider::Icloud {
+            return Ok(Auth::Login(Login {
+                user: connection.account.clone(),
+                password: connection.credential.clone(),
+            }));
+        }
         let mut tokens = self.tokens.lock().await;
         if let Some((token, until)) = tokens.get(&connection.id)
             && *until - chrono::Duration::seconds(60) > Utc::now()
         {
-            return Ok(token.clone());
+            return Ok(Auth::Bearer(token.clone()));
         }
-        let fresh = self.backend.refresh(app, connection).await?;
-        if fresh.refresh_token != connection.refresh_token {
+        let fresh = self.backend.refresh(apps, connection).await?;
+        if let Some(rotated) = &fresh.refresh_token
+            && *rotated != connection.credential
+        {
             self.store
-                .update_token(&connection.id, &fresh.refresh_token)
+                .update_credential(&connection.id, rotated)
                 .await?;
         }
         tokens.insert(
             connection.id.clone(),
             (fresh.access_token.clone(), fresh.expires_at),
         );
-        Ok(fresh.access_token)
+        Ok(Auth::Bearer(fresh.access_token))
     }
 
     fn lock_known(&self) -> std::sync::MutexGuard<'_, HashMap<String, Vec<Known>>> {
@@ -418,10 +612,17 @@ mod tests {
         writes: Mutex<Vec<String>>,
     }
 
+    fn who(auth: &Auth) -> String {
+        match auth {
+            Auth::Bearer(token) => token.clone(),
+            Auth::Login(login) => format!("login-{}", login.user),
+        }
+    }
+
     #[async_trait]
     impl Backend for Fake {
-        async fn refresh(&self, _app: &MicrosoftApp, connection: &Connection) -> Result<Tokens> {
-            if connection.refresh_token == "revoked" {
+        async fn refresh(&self, _apps: &Apps, connection: &Connection) -> Result<Tokens> {
+            if connection.credential == "revoked" {
                 return Err(Error::Reconnect {
                     name: connection.name.clone(),
                 });
@@ -429,29 +630,47 @@ mod tests {
             let n = self.refreshes.fetch_add(1, Ordering::SeqCst);
             Ok(Tokens {
                 access_token: format!("access-{}", connection.name),
-                refresh_token: format!("rotated-{n}"),
+                refresh_token: (connection.provider == Provider::Microsoft)
+                    .then(|| format!("rotated-{n}")),
                 expires_at: Utc::now() + chrono::Duration::hours(1),
             })
         }
+        async fn discover_icloud(&self, login: &Login) -> Result<String> {
+            if login.password != "abcdefghijklmnop" {
+                return Err(Error::Provider {
+                    provider: "iCloud",
+                    status: 401,
+                    reason: "Apple did not accept that".into(),
+                });
+            }
+            Ok("https://p1-caldav.icloud.com/1/calendars/".into())
+        }
         async fn events(
             &self,
-            token: &str,
+            connection: &Connection,
+            _auth: &Auth,
             _from: DateTime<Utc>,
             _to: DateTime<Utc>,
             _tz: Tz,
         ) -> Result<Vec<Event>> {
-            let (subject, hour) = if token.ends_with("Work") {
-                ("Standup", 9)
-            } else {
-                ("Dentist", 8)
+            let (subject, hour) = match connection.name.as_str() {
+                "Work" => ("Standup", 9),
+                "Phone" => ("Yoga", 7),
+                _ => ("Dentist", 8),
             };
             Ok(vec![event(subject, hour)])
         }
-        async fn create(&self, token: &str, event: &NewEvent, _tz: Tz) -> Result<Event> {
+        async fn create(
+            &self,
+            _connection: &Connection,
+            auth: &Auth,
+            event: &NewEvent,
+            _tz: Tz,
+        ) -> Result<Event> {
             self.writes
                 .lock()
                 .unwrap()
-                .push(format!("create {} via {token}", event.subject));
+                .push(format!("create {} via {}", event.subject, who(auth)));
             Ok(Event {
                 id: "new".into(),
                 subject: event.subject.clone(),
@@ -459,9 +678,17 @@ mod tests {
                 end: event.end,
                 all_day: event.all_day,
                 location: event.location.clone(),
+                recurring: false,
             })
         }
-        async fn update(&self, _token: &str, id: &str, event: &NewEvent, _tz: Tz) -> Result<Event> {
+        async fn update(
+            &self,
+            _connection: &Connection,
+            _auth: &Auth,
+            id: &str,
+            event: &NewEvent,
+            _tz: Tz,
+        ) -> Result<Event> {
             self.writes
                 .lock()
                 .unwrap()
@@ -473,10 +700,19 @@ mod tests {
                 end: event.end,
                 all_day: event.all_day,
                 location: event.location.clone(),
+                recurring: false,
             })
         }
-        async fn delete(&self, _token: &str, id: &str) -> Result<()> {
-            self.writes.lock().unwrap().push(format!("delete {id}"));
+        async fn delete(
+            &self,
+            _connection: &Connection,
+            _auth: &Auth,
+            event: &Event,
+        ) -> Result<()> {
+            self.writes
+                .lock()
+                .unwrap()
+                .push(format!("delete {}", event.id));
             Ok(())
         }
     }
@@ -484,46 +720,73 @@ mod tests {
     fn event(subject: &str, hour: u32) -> Event {
         let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
         Event {
-            id: format!("graph-{subject}"),
+            id: format!("id-{subject}"),
             subject: subject.into(),
             start: day.and_hms_opt(hour, 0, 0).unwrap(),
             end: day.and_hms_opt(hour + 1, 0, 0).unwrap(),
             all_day: false,
             location: None,
+            recurring: false,
         }
     }
 
-    fn app() -> MicrosoftApp {
-        MicrosoftApp {
-            client_id: "id".into(),
-            client_secret: "secret".into(),
-            redirect_uri: "https://x/cb".into(),
-        }
+    fn apps() -> Apps {
+        Apps::default()
     }
 
     fn tz() -> Tz {
         "Europe/Copenhagen".parse().unwrap()
     }
 
-    fn connection(id: &str, person: &str, name: &str, access: Access, token: &str) -> Connection {
+    fn connection(
+        id: &str,
+        person: &str,
+        provider: Provider,
+        name: &str,
+        access: Access,
+        credential: &str,
+    ) -> Connection {
         Connection {
             id: id.into(),
             person: person.into(),
+            provider,
             name: name.into(),
             account: format!("{name}@example.com"),
             access,
-            refresh_token: token.into(),
+            credential: credential.into(),
+            endpoint: (provider == Provider::Icloud).then(|| "https://p1/home/".to_string()),
         }
     }
 
     /// Mark: a private calendar he can write, a work one he can read.
-    /// Majse: one of her own.
+    /// Majse: her Gmail.
     async fn household() -> (Calendars, Arc<Fake>, Arc<MemoryConnections>) {
         let store = Arc::new(MemoryConnections::new());
         for c in [
-            connection("p", "mark", "Private", Access::Write, "rt-p"),
-            connection("w", "mark", "Work", Access::Read, "rt-w"),
-            connection("m", "majse", "Majse", Access::Write, "rt-m"),
+            connection(
+                "p",
+                "mark",
+                Provider::Microsoft,
+                "Private",
+                Access::Write,
+                "rt-p",
+            ),
+            connection(
+                "w",
+                "mark",
+                Provider::Microsoft,
+                "Work",
+                Access::Read,
+                "rt-w",
+            ),
+            connection(
+                "g",
+                "majse",
+                Provider::Google,
+                "Gmail",
+                Access::Write,
+                "rt-g",
+            ),
         ] {
             store.save(&c).await.unwrap();
         }
@@ -540,7 +803,7 @@ mod tests {
         let (calendars, _, _) = household().await;
         let (from, to) = window();
         let (listed, problems) = calendars
-            .events(&app(), "mark", from, to, tz())
+            .events(&apps(), "mark", from, to, tz())
             .await
             .unwrap();
         assert!(problems.is_empty());
@@ -560,7 +823,7 @@ mod tests {
         );
         // Majse's references are her own; Mark's mean nothing to her.
         assert!(matches!(
-            calendars.delete(&app(), "majse", "e2").await,
+            calendars.delete(&apps(), "majse", "e2").await,
             Err(Error::NoSuchEvent { .. })
         ));
     }
@@ -570,11 +833,11 @@ mod tests {
         let (calendars, fake, _) = household().await;
         let (from, to) = window();
         calendars
-            .events(&app(), "mark", from, to, tz())
+            .events(&apps(), "mark", from, to, tz())
             .await
             .unwrap();
         assert!(matches!(
-            calendars.delete(&app(), "mark", "e2").await,
+            calendars.delete(&apps(), "mark", "e2").await,
             Err(Error::ReadOnly { .. })
         ));
         let lunch = NewEvent {
@@ -583,7 +846,7 @@ mod tests {
         };
         assert!(matches!(
             calendars
-                .create(&app(), "mark", Some("work"), &lunch, tz())
+                .create(&apps(), "mark", Some("work"), &lunch, tz())
                 .await,
             Err(Error::ReadOnly { .. })
         ));
@@ -598,7 +861,7 @@ mod tests {
             ..apply(&event("x", 10), &Change::default())
         };
         let made = calendars
-            .create(&app(), "mark", None, &dentist, tz())
+            .create(&apps(), "mark", None, &dentist, tz())
             .await
             .unwrap();
         assert_eq!(made.calendar, "Private");
@@ -613,7 +876,7 @@ mod tests {
         let (calendars, fake, _) = household().await;
         let (from, to) = window();
         calendars
-            .events(&app(), "mark", from, to, tz())
+            .events(&apps(), "mark", from, to, tz())
             .await
             .unwrap();
         let eleven = chrono::NaiveDate::from_ymd_opt(2026, 10, 12)
@@ -622,7 +885,7 @@ mod tests {
             .unwrap();
         let moved = calendars
             .update(
-                &app(),
+                &apps(),
                 "mark",
                 "e1",
                 &Change {
@@ -636,20 +899,20 @@ mod tests {
         assert_eq!(moved.event.end, eleven + chrono::Duration::hours(1));
         assert_eq!(
             fake.writes.lock().unwrap().as_slice(),
-            ["update graph-Dentist to 2026-10-12 11:00:00"]
+            ["update id-Dentist to 2026-10-12 11:00:00"]
         );
     }
 
     #[tokio::test]
-    async fn keeps_the_rotated_token_and_reuses_the_access_token() {
+    async fn keeps_a_rotated_token_and_one_that_was_not() {
         let (calendars, fake, store) = household().await;
         let (from, to) = window();
         calendars
-            .events(&app(), "mark", from, to, tz())
+            .events(&apps(), "mark", from, to, tz())
             .await
             .unwrap();
         calendars
-            .events(&app(), "mark", from, to, tz())
+            .events(&apps(), "mark", from, to, tz())
             .await
             .unwrap();
         assert_eq!(
@@ -658,19 +921,32 @@ mod tests {
             "once per calendar"
         );
         let kept = store.list("mark").await.unwrap();
-        assert!(kept.iter().all(|c| c.refresh_token.starts_with("rotated-")));
+        assert!(kept.iter().all(|c| c.credential.starts_with("rotated-")));
+        // Google sends no new refresh token: the old one stays.
+        calendars
+            .events(&apps(), "majse", from, to, tz())
+            .await
+            .unwrap();
+        assert_eq!(store.list("majse").await.unwrap()[0].credential, "rt-g");
     }
 
     #[tokio::test]
     async fn a_revoked_calendar_is_said_without_hiding_the_other() {
         let (calendars, _, store) = household().await;
         store
-            .save(&connection("w", "mark", "Work", Access::Read, "revoked"))
+            .save(&connection(
+                "w",
+                "mark",
+                Provider::Microsoft,
+                "Work",
+                Access::Read,
+                "revoked",
+            ))
             .await
             .unwrap();
         let (from, to) = window();
         let (listed, problems) = calendars
-            .events(&app(), "mark", from, to, tz())
+            .events(&apps(), "mark", from, to, tz())
             .await
             .unwrap();
         assert_eq!(listed.len(), 1);
@@ -681,22 +957,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_icloud_calendar_is_checked_with_apple_before_it_is_kept() {
+        let (calendars, fake, store) = household().await;
+        assert!(
+            calendars
+                .connect_icloud(
+                    "majse",
+                    "Phone",
+                    Access::Read,
+                    "majse@icloud.com",
+                    "wrong",
+                    None
+                )
+                .await
+                .is_err()
+        );
+        let made = calendars
+            .connect_icloud(
+                "majse",
+                "Phone",
+                Access::Read,
+                " majse@icloud.com ",
+                "abcd-efgh-ijkl-mnop".replace('-', "").as_str(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(made.account, "majse@icloud.com");
+        assert_eq!(
+            made.endpoint.as_deref(),
+            Some("https://p1-caldav.icloud.com/1/calendars/")
+        );
+        assert_eq!(store.list("majse").await.unwrap().len(), 2);
+
+        // Read only, kept by Niles: switched here without a sign-in.
+        let (from, to) = window();
+        calendars
+            .events(&apps(), "majse", from, to, tz())
+            .await
+            .unwrap();
+        let yoga = NewEvent {
+            subject: "Yoga".into(),
+            ..apply(&event("x", 7), &Change::default())
+        };
+        assert!(matches!(
+            calendars
+                .create(&apps(), "majse", Some("Phone"), &yoga, tz())
+                .await,
+            Err(Error::ReadOnly { .. })
+        ));
+        calendars
+            .set_access("majse", &made.id, Access::Write)
+            .await
+            .unwrap();
+        calendars
+            .create(&apps(), "majse", Some("Phone"), &yoga, tz())
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.writes.lock().unwrap().as_slice(),
+            ["create Yoga via login-majse@icloud.com"]
+        );
+    }
+
+    #[tokio::test]
+    async fn access_a_provider_grants_is_not_switched_here() {
+        let (calendars, _, _) = household().await;
+        assert!(
+            calendars
+                .set_access("mark", "w", Access::Write)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn connecting_again_keeps_the_connection() {
         let (calendars, _, store) = household().await;
-        let tokens = Tokens {
-            access_token: "a".into(),
-            refresh_token: "r".into(),
-            expires_at: Utc::now() + chrono::Duration::hours(1),
-        };
         let again = calendars
-            .connect("mark", "Work", Access::Write, "w@x", tokens, Some("w"))
+            .connect(
+                "mark",
+                Made {
+                    provider: Provider::Microsoft,
+                    name: "Work".into(),
+                    access: Access::Write,
+                    account: "w@x".into(),
+                    credential: "r".into(),
+                    endpoint: None,
+                    access_token: None,
+                },
+                Some("w"),
+            )
             .await
             .unwrap();
         assert_eq!(again.id, "w");
         let mark = store.list("mark").await.unwrap();
         assert_eq!(mark.len(), 2);
         assert_eq!(mark[1].access, Access::Write);
-        // Majse's id is not Mark's to replace.
-        assert!(!calendars.disconnect("mark", "m").await.unwrap());
+        // Majse's id is not Mark's to remove.
+        assert!(!calendars.disconnect("mark", "g").await.unwrap());
     }
 }

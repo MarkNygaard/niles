@@ -1,27 +1,28 @@
 //! A person's calendar connections, from their profile.
 //!
-//! Connecting is Microsoft's own sign-in. What stands in for a
-//! signature on the way back is the same pair the GitHub sign-in uses
-//! (see `auth::flow`): a single-use `state`, and a cookie binding it to
-//! the browser that started — here scoped to `/calendars`. The person
-//! who comes back must also be the one who left.
+//! Microsoft and Google are connected through their own sign-in. What
+//! stands in for a signature on the way back is the same pair the
+//! GitHub sign-in uses (see `auth::flow`): a single-use `state`, and a
+//! cookie binding it to the browser that started — here scoped to
+//! `/calendars`. The person who comes back must also be the one who
+//! left. iCloud has no sign-in to send anyone through: its Apple ID and
+//! app-specific password are posted here, and checked with Apple before
+//! they are kept.
 
-use crate::auth::flow::Attempts;
 use crate::auth::github::{cookie, header_str, is_secure};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{AppendHeaders, IntoResponse, Response};
-use niles_calendar::{Access, Calendars, MicrosoftApp};
+use niles_calendar::{Access, Calendars, GoogleApp, Made, MicrosoftApp, Provider};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const BINDING_COOKIE: &str = "niles_calendar";
-/// As long as the GitHub sign-in's: enough to get through Microsoft's
-/// account picker and a consent screen.
+/// As long as the GitHub sign-in's: enough to get through an account
+/// picker and a consent screen.
 const TTL_SECS: u64 = 10 * 60;
-const CALLBACK: &str = "/calendars/microsoft/callback";
 /// Where the browser lands afterwards: the profile. The outcome goes in
 /// the query before the hash — the app's routes are the hash, and a
 /// query inside it would be read as part of the page's name.
@@ -32,18 +33,29 @@ type Failure = (StatusCode, Json<serde_json::Value>);
 #[derive(Debug, Serialize)]
 pub struct ConnectionDto {
     pub id: String,
+    /// `microsoft`, `google` or `icloud`.
+    pub provider: &'static str,
     pub name: String,
     pub account: String,
     /// `read` or `write`.
     pub access: &'static str,
+    /// Whether the provider holds the connection to its access, or
+    /// Niles does (iCloud).
+    pub enforced_by_provider: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderDto {
+    pub id: &'static str,
+    /// Whether a calendar of this kind can be connected here.
+    pub available: bool,
+    /// Why not, when not.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CalendarsDto {
-    /// Whether a calendar can be connected at all here.
-    pub available: bool,
-    /// Why not, when not.
-    pub reason: Option<String>,
+    pub providers: Vec<ProviderDto>,
     pub connections: Vec<ConnectionDto>,
 }
 
@@ -59,17 +71,24 @@ pub async fn list(
         .await
         .map_err(|e| failed(StatusCode::BAD_GATEWAY, e.to_string()))?
         .into_iter()
-        .map(|c| ConnectionDto {
-            id: c.id,
-            name: c.name,
-            account: c.account,
-            access: c.access.as_str(),
+        .map(dto)
+        .collect();
+    let providers = [Provider::Microsoft, Provider::Google, Provider::Icloud]
+        .into_iter()
+        .map(|provider| {
+            let reason = match provider {
+                Provider::Icloud => None,
+                oauth => keys(&state, oauth).err(),
+            };
+            ProviderDto {
+                id: provider.as_str(),
+                available: reason.is_none(),
+                reason,
+            }
         })
         .collect();
-    let reason = app_keys(&state).err();
     Ok(Json(CalendarsDto {
-        available: reason.is_none(),
-        reason,
+        providers,
         connections,
     }))
 }
@@ -84,9 +103,11 @@ pub struct StartQuery {
     pub replace: Option<String>,
 }
 
-/// What survives the round trip to Microsoft, kept beside the `state`.
+/// What survives the round trip to the provider, kept beside the
+/// `state`.
 #[derive(Debug, Serialize, Deserialize)]
 struct Pending {
+    provider: Provider,
     person: String,
     name: String,
     access: Access,
@@ -94,39 +115,49 @@ struct Pending {
     redirect_uri: String,
 }
 
-/// `GET /calendars/microsoft/start?name=Work&access=read` — a link the
-/// browser follows, not a call the page makes: it ends at Microsoft.
+/// `GET /calendars/{provider}/start?name=Work&access=read` — a link the
+/// browser follows, not a call the page makes: it ends at Microsoft or
+/// Google.
 pub async fn start(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Path(provider): Path<String>,
     Query(query): Query<StartQuery>,
 ) -> Response {
     let outcome = async {
+        let provider = oauth_provider(&provider)?;
         let person = person(&state, &headers).map_err(|(_, body)| reason_of(&body))?;
         calendars(&state).map_err(|(_, body)| reason_of(&body))?;
-        let name = query.name.trim();
-        if name.is_empty() || name.chars().count() > 40 {
-            return Err("give the calendar a short name, like Private or Work".to_string());
-        }
+        let name = valid_name(&query.name)?;
         let access =
             Access::parse(&query.access).ok_or_else(|| "access is read or write".to_string())?;
-        let (client_id, client_secret) = app_keys(&state)?;
-        let redirect_uri = redirect_uri(&state, &headers);
+        let (client_id, client_secret) = keys(&state, provider)?;
+        let redirect_uri = redirect_uri(&state, &headers, provider);
         let pending = Pending {
+            provider,
             person,
-            name: name.to_string(),
+            name,
             access,
             replace: query.replace.clone(),
             redirect_uri: redirect_uri.clone(),
         };
         let json = serde_json::to_string(&pending).map_err(|e| e.to_string())?;
-        let (flow_state, binding) = attempts(&state).begin(json);
-        let app = MicrosoftApp {
-            client_id,
-            client_secret,
-            redirect_uri,
+        let (flow_state, binding) = state.calendar_attempts.begin(json);
+        let to = match provider {
+            Provider::Google => GoogleApp {
+                client_id,
+                client_secret,
+                redirect_uri,
+            }
+            .authorize_url(&flow_state, access),
+            _ => MicrosoftApp {
+                client_id,
+                client_secret,
+                redirect_uri,
+            }
+            .authorize_url(&flow_state, access),
         };
-        Ok((app.authorize_url(&flow_state, access), binding))
+        Ok::<_, String>((to, binding))
     }
     .await;
     let secure = is_secure(&headers);
@@ -158,21 +189,23 @@ pub struct CallbackQuery {
     pub error_description: Option<String>,
 }
 
-/// `GET /calendars/microsoft/callback` — where Microsoft sends the
-/// browser back. Always ends on the profile, saying how it went.
+/// `GET /calendars/{provider}/callback` — where Microsoft or Google
+/// sends the browser back. Always ends on the profile, saying how it
+/// went.
 pub async fn callback(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
     let secure = is_secure(&headers);
-    match connect(&state, &headers, query).await {
+    match connect(&state, &headers, &provider, query).await {
         Ok(name) => back(
             &format!("calendar=connected&name={}", urlencoding::encode(&name)),
             secure,
         ),
         Err(reason) => {
-            tracing::warn!("[calendars] connecting failed: {reason}");
+            tracing::warn!("[calendars] connecting {provider} failed: {reason}");
             back(
                 &format!("calendar_error={}", urlencoding::encode(&reason)),
                 secure,
@@ -184,55 +217,92 @@ pub async fn callback(
 async fn connect(
     state: &AppState,
     headers: &HeaderMap,
+    provider: &str,
     query: CallbackQuery,
 ) -> Result<String, String> {
+    let provider = oauth_provider(provider)?;
     if let Some(error) = query.error {
         // A work account whose organisation does not let its people
         // consent to outside apps lands here, with AADSTS65001 or
-        // AADSTS90094 and a description saying so.
+        // AADSTS90094 and a description saying so; a Google account
+        // that said no, with `access_denied`.
         let said = query.error_description.unwrap_or(error);
         return Err(said.lines().next().unwrap_or("").trim().to_string());
     }
     let (Some(code), Some(flow_state)) = (query.code, query.state) else {
-        return Err("Microsoft sent nothing back".into());
+        return Err("nothing came back from the sign-in".into());
     };
-    let pending = attempts(state)
+    let pending = state
+        .calendar_attempts
         .finish(&flow_state, cookie(headers, BINDING_COOKIE).as_deref())
         .ok_or("that sign-in expired or was started elsewhere; try again")?;
     let pending: Pending =
         serde_json::from_str(&pending.next).map_err(|_| "that sign-in was not a calendar's")?;
+    if pending.provider != provider {
+        return Err("that sign-in was for another kind of calendar".into());
+    }
     let person = person(state, headers).map_err(|(_, body)| reason_of(&body))?;
     if person != pending.person {
         return Err("signed in as somebody else than when it started".into());
     }
     let calendars = calendars(state).map_err(|(_, body)| reason_of(&body))?;
-    let (client_id, client_secret) = app_keys(state)?;
-    let app = MicrosoftApp {
-        client_id,
-        client_secret,
-        redirect_uri: pending.redirect_uri,
-    };
+    let (client_id, client_secret) = keys(state, provider)?;
     let http = reqwest::Client::new();
-    let tokens = app
-        .exchange(&http, &code, pending.access)
-        .await
-        .map_err(|e| e.to_string())?;
-    let account = niles_calendar::graph::account(&http, &tokens.access_token)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (tokens, account) = match provider {
+        Provider::Google => {
+            let app = GoogleApp {
+                client_id,
+                client_secret,
+                redirect_uri: pending.redirect_uri,
+            };
+            let tokens = app
+                .exchange(&http, &code)
+                .await
+                .map_err(|e| e.to_string())?;
+            let account = niles_calendar::google::account(&http, &tokens.access_token)
+                .await
+                .map_err(|e| e.to_string())?;
+            (tokens, account)
+        }
+        _ => {
+            let app = MicrosoftApp {
+                client_id,
+                client_secret,
+                redirect_uri: pending.redirect_uri,
+            };
+            let tokens = app
+                .exchange(&http, &code, pending.access)
+                .await
+                .map_err(|e| e.to_string())?;
+            let account = niles_calendar::graph::account(&http, &tokens.access_token)
+                .await
+                .map_err(|e| e.to_string())?;
+            (tokens, account)
+        }
+    };
+    let credential = tokens
+        .refresh_token
+        .clone()
+        .ok_or("no refresh token came back, so Niles could not keep the connection")?;
     let made = calendars
         .connect(
             &person,
-            &pending.name,
-            pending.access,
-            &account,
-            tokens,
+            Made {
+                provider,
+                name: pending.name,
+                access: pending.access,
+                account,
+                credential,
+                endpoint: None,
+                access_token: Some((tokens.access_token, tokens.expires_at)),
+            },
             pending.replace.as_deref(),
         )
         .await
         .map_err(|e| e.to_string())?;
     tracing::info!(
-        "[calendars] {person} connected {} ({}) with {} access",
+        "[calendars] {person} connected {} {} ({}) with {} access",
+        provider.as_str(),
         made.name,
         made.account,
         made.access.as_str()
@@ -240,7 +310,86 @@ async fn connect(
     Ok(made.name)
 }
 
-/// `DELETE /calendars/{id}` — forget one of your own, and its token.
+#[derive(Debug, Deserialize)]
+pub struct IcloudConnect {
+    pub name: String,
+    pub access: String,
+    pub apple_id: String,
+    pub password: String,
+    #[serde(default)]
+    pub replace: Option<String>,
+}
+
+/// `POST /calendars/icloud` — an Apple ID and an app-specific password,
+/// kept only once Apple has accepted them.
+pub async fn connect_icloud(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<IcloudConnect>,
+) -> Result<Json<ConnectionDto>, Failure> {
+    let person = person(&state, &headers)?;
+    let calendars = calendars(&state)?;
+    let name = valid_name(&body.name).map_err(|e| failed(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let access = Access::parse(&body.access).ok_or_else(|| {
+        failed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "access is read or write".into(),
+        )
+    })?;
+    if body.apple_id.trim().is_empty() || body.password.trim().is_empty() {
+        return Err(failed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "the Apple ID and an app-specific password are both needed".into(),
+        ));
+    }
+    let made = calendars
+        .connect_icloud(
+            &person,
+            &name,
+            access,
+            &body.apple_id,
+            &body.password,
+            body.replace.as_deref(),
+        )
+        .await
+        .map_err(|e| failed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    tracing::info!(
+        "[calendars] {person} connected icloud {} with {} access",
+        made.name,
+        made.access.as_str()
+    );
+    Ok(Json(dto(made)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AccessChange {
+    pub access: String,
+}
+
+/// `PUT /calendars/{id}` — `{"access":"write"}`, for a connection whose
+/// access Niles keeps (iCloud). The others sign in again.
+pub async fn set_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AccessChange>,
+) -> Result<Json<ConnectionDto>, Failure> {
+    let person = person(&state, &headers)?;
+    let access = Access::parse(&body.access).ok_or_else(|| {
+        failed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "access is read or write".into(),
+        )
+    })?;
+    let changed = calendars(&state)?
+        .set_access(&person, &id, access)
+        .await
+        .map_err(|e| failed(StatusCode::CONFLICT, e.to_string()))?;
+    Ok(Json(dto(changed)))
+}
+
+/// `DELETE /calendars/{id}` — forget one of your own, and its
+/// credential.
 pub async fn remove(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -258,6 +407,32 @@ pub async fn remove(
             StatusCode::NOT_FOUND,
             "no such calendar of yours".into(),
         ))
+    }
+}
+
+fn dto(c: niles_calendar::Connection) -> ConnectionDto {
+    ConnectionDto {
+        enforced_by_provider: c.provider.enforces_access(),
+        id: c.id,
+        provider: c.provider.as_str(),
+        name: c.name,
+        account: c.account,
+        access: c.access.as_str(),
+    }
+}
+
+fn valid_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 40 {
+        return Err("give the calendar a short name, like Private or Work".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn oauth_provider(value: &str) -> Result<Provider, String> {
+    match Provider::parse(value) {
+        Some(p @ (Provider::Microsoft | Provider::Google)) => Ok(p),
+        _ => Err(format!("{value:?} is not a calendar Niles signs in to")),
     }
 }
 
@@ -302,35 +477,53 @@ fn calendars(state: &AppState) -> Result<&Arc<Calendars>, Failure> {
     })
 }
 
-fn attempts(state: &AppState) -> &Attempts {
-    &state.calendar_attempts
-}
-
-/// The app registration's keys, or why there are none.
-fn app_keys(state: &AppState) -> Result<(String, String), String> {
+/// A provider's app keys, or why there are none.
+fn keys(state: &AppState, provider: Provider) -> Result<(String, String), String> {
     let config = state.config.as_ref().ok_or("no config store")?.current();
-    let microsoft = config
-        .integrations
-        .microsoft
-        .as_ref()
-        .filter(|m| m.enabled)
-        .ok_or("Microsoft calendars are not switched on under Settings → Integrations")?;
-    microsoft.resolve_credentials().map_err(|_| {
-        "the Microsoft app's client ID and secret are missing under Settings → Integrations"
-            .to_string()
-    })
+    let integrations = &config.integrations;
+    match provider {
+        Provider::Microsoft => integrations
+            .microsoft
+            .as_ref()
+            .filter(|m| m.enabled)
+            .ok_or("Microsoft calendars are not switched on under Settings → Integrations")?
+            .resolve_credentials()
+            .map_err(|_| {
+                "the Microsoft app's client ID and secret are missing under Settings → Integrations"
+                    .to_string()
+            }),
+        Provider::Google => integrations
+            .google
+            .as_ref()
+            .filter(|g| g.enabled)
+            .ok_or("Google calendars are not switched on under Settings → Integrations")?
+            .resolve_credentials()
+            .map_err(|_| {
+                "the Google client ID and secret are missing under Settings → Integrations"
+                    .to_string()
+            }),
+        Provider::Icloud => Err("iCloud has no app keys".into()),
+    }
 }
 
 /// The redirect URI registered on the app: the one the config names,
 /// or this server's own address as the browser reached it.
-fn redirect_uri(state: &AppState, headers: &HeaderMap) -> String {
+fn redirect_uri(state: &AppState, headers: &HeaderMap, provider: Provider) -> String {
     let configured = state.config.as_ref().and_then(|c| {
-        c.current()
-            .integrations
-            .microsoft
-            .as_ref()
-            .and_then(|m| m.redirect_uri.clone())
-            .filter(|u| !u.trim().is_empty())
+        let cfg = c.current();
+        match provider {
+            Provider::Google => cfg
+                .integrations
+                .google
+                .as_ref()
+                .and_then(|g| g.redirect_uri.clone()),
+            _ => cfg
+                .integrations
+                .microsoft
+                .as_ref()
+                .and_then(|m| m.redirect_uri.clone()),
+        }
+        .filter(|u| !u.trim().is_empty())
     });
     if let Some(uri) = configured {
         return uri.trim().to_string();
@@ -341,7 +534,7 @@ fn redirect_uri(state: &AppState, headers: &HeaderMap) -> String {
         .unwrap_or("localhost")
         .trim();
     let scheme = if is_secure(headers) { "https" } else { "http" };
-    format!("{scheme}://{host}{CALLBACK}")
+    format!("{scheme}://{host}/calendars/{}/callback", provider.as_str())
 }
 
 fn binding_cookie(value: &str, secure: bool) -> String {
@@ -396,21 +589,35 @@ mod tests {
         }
     }
 
+    fn state() -> AppState {
+        AppState::new(
+            Arc::new(niles_core::DeviceRegistry::new()),
+            Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
+            Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
+            niles_core::EventBus::default(),
+        )
+    }
+
     #[test]
     fn the_redirect_is_the_address_the_browser_used() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, "niles.mnygaard.io".parse().unwrap());
         headers.insert("x-forwarded-proto", "https".parse().unwrap());
-        let state = AppState::new(
-            Arc::new(niles_core::DeviceRegistry::new()),
-            Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
-            Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
-            niles_core::EventBus::default(),
-        );
         assert_eq!(
-            redirect_uri(&state, &headers),
+            redirect_uri(&state(), &headers, Provider::Microsoft),
             "https://niles.mnygaard.io/calendars/microsoft/callback"
         );
+        assert_eq!(
+            redirect_uri(&state(), &headers, Provider::Google),
+            "https://niles.mnygaard.io/calendars/google/callback"
+        );
+    }
+
+    #[test]
+    fn icloud_is_not_signed_in_to() {
+        assert!(oauth_provider("icloud").is_err());
+        assert!(oauth_provider("yahoo").is_err());
+        assert_eq!(oauth_provider("google"), Ok(Provider::Google));
     }
 
     #[test]

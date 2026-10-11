@@ -96,6 +96,7 @@ fn is_added(cfg: &Config, id: &str) -> bool {
         "nemlig" => cfg.integrations.nemlig.is_some(),
         "spotify" => cfg.integrations.spotify.is_some(),
         "microsoft" => cfg.integrations.microsoft.is_some(),
+        "google" => cfg.integrations.google.is_some(),
         // A host is what makes it a console; the section itself always
         // exists, with defaults, so its presence says nothing.
         "unifi" => cfg.presence.unifi.is_configured(),

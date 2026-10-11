@@ -1,5 +1,5 @@
 //! Where the connections are kept. Postgres in the house, with the
-//! refresh token encrypted (niles-db); in memory for tests.
+//! credential encrypted (niles-db); in memory for tests.
 
 use crate::error::Result;
 use crate::model::Connection;
@@ -12,8 +12,8 @@ pub trait ConnectionStore: Send + Sync {
     async fn list(&self, person: &str) -> Result<Vec<Connection>>;
     /// Add, or replace the one with the same id.
     async fn save(&self, connection: &Connection) -> Result<()>;
-    /// Keep the refresh token Microsoft rotated in.
-    async fn update_token(&self, id: &str, refresh_token: &str) -> Result<()>;
+    /// Keep the refresh token a provider rotated in.
+    async fn update_credential(&self, id: &str, credential: &str) -> Result<()>;
     /// Remove one of `person`'s, and its token. False when they have no
     /// such connection — somebody else's id included.
     async fn delete(&self, person: &str, id: &str) -> Result<bool>;
@@ -54,9 +54,9 @@ impl ConnectionStore for MemoryConnections {
         Ok(())
     }
 
-    async fn update_token(&self, id: &str, refresh_token: &str) -> Result<()> {
+    async fn update_credential(&self, id: &str, credential: &str) -> Result<()> {
         if let Some(c) = self.lock().iter_mut().find(|c| c.id == id) {
-            c.refresh_token = refresh_token.to_string();
+            c.credential = credential.to_string();
         }
         Ok(())
     }

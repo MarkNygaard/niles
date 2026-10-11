@@ -1,18 +1,23 @@
-//! niles-calendar — each person's calendars, through Microsoft Graph.
+//! niles-calendar — each person's calendars: Microsoft (Graph), Google
+//! (the Calendar API) and iCloud (CalDAV).
 //!
-//! A person connects their own accounts (an Outlook.com one, a work one
-//! on Entra ID) from their profile; the voice tools read and write them
-//! only for that person, and only as far as each connection's access —
-//! which is the scope Microsoft granted, not a switch kept here.
+//! A person connects their own accounts from their profile; the voice
+//! tools read and write them only for that person, and only as far as
+//! each connection's access — which Microsoft and Google grant as a
+//! scope, and which for iCloud is a rule kept here.
 
+pub mod caldav;
 pub mod error;
+pub mod google;
 pub mod graph;
+pub mod ics;
 pub mod model;
 pub mod service;
 pub mod store;
 
 pub use error::{Error, Result};
+pub use google::GoogleApp;
 pub use graph::{MicrosoftApp, Tokens};
-pub use model::{Access, Connection, Event, NewEvent};
-pub use service::{Backend, Calendars, Change, Graph, Listed};
+pub use model::{Access, Connection, Event, NewEvent, Provider};
+pub use service::{Apps, Backend, Calendars, Change, Listed, Made, Network};
 pub use store::{ConnectionStore, MemoryConnections};

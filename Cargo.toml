@@ -59,6 +59,7 @@ parking_lot = "0.12"
 hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
+roxmltree = "0.20"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
