@@ -268,6 +268,32 @@ const GROUPS: &[Group] = &[
         ],
         tools: &["web_search"],
     },
+    Group {
+        // A rule is said as a condition. The yes that saves one needs
+        // no word here — a bare yes matches nothing, and nothing
+        // matched sends every tool — except "save", which also names
+        // the scenes and would otherwise leave this one behind.
+        keywords: &[
+            "when",
+            "whenever",
+            "every time",
+            "each time",
+            "as soon as",
+            "if",
+            "automation",
+            "automations",
+            "rule",
+            "rules",
+            "save",
+        ],
+        tools: &[
+            "propose_automation",
+            "create_automation",
+            "list_automations",
+            "pause_automation",
+            "remove_automation",
+        ],
+    },
 ];
 
 /// Whether this tool belongs to a subject at all.
@@ -355,6 +381,21 @@ mod tests {
         let names = relevant_tool_names("why is the hall light on").expect("matched");
         assert!(names.contains(&"explain_device_state"));
         assert!(names.contains(&"query_device_state_history"));
+    }
+
+    #[test]
+    fn an_automation_is_reached_when_made_and_when_said_yes_to() {
+        for sentence in [
+            "when the office door opens turn off the office lights",
+            "what automations do I have",
+            "yes, save it",
+            "pause the garden door rule",
+        ] {
+            let names = relevant_tool_names(sentence).expect(sentence);
+            assert!(names.contains(&"create_automation"), "{sentence}");
+        }
+        // A bare yes confirms all sorts; it still sends everything.
+        assert!(relevant_tool_names("yes").is_none());
     }
 
     #[test]

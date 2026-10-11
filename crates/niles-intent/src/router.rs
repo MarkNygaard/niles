@@ -42,6 +42,9 @@ impl IntentRouter {
     /// applies (caller escalates to Tier 1).
     pub fn parse(&self, transcript: &str) -> Option<Intent> {
         let t = normalize(transcript);
+        if is_conditional(&t) {
+            return None;
+        }
 
         // Order matters when patterns could conflict. `light_dim`
         // requires the trailing "... to N%" so it can't be confused
@@ -101,6 +104,9 @@ impl IntentRouter {
         }
 
         let t = normalize(transcript);
+        if is_conditional(&t) {
+            return None;
+        }
         match_light_step_implicit_room(&t, &ctx)
             .or_else(|| match_light_kelvin_step_implicit_room(&t, &ctx))
             .or_else(|| match_light_kelvin_set_implicit_room(&t, &ctx))
@@ -237,6 +243,19 @@ fn match_light_set_last(t: &str) -> Option<Intent> {
 ///
 /// Anchored, because "what day is bin day" is a question for the LLM
 /// and only the bare forms are safe to answer from a clock.
+/// "When the office door opens, turn off the office lights" is an
+/// automation to make, not the lights to turn off now — and "turn the
+/// office lights off" sits inside it, where the light patterns would
+/// find it. Anything said as a condition goes to the model.
+fn is_conditional(t: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^(?:if|once)\b|\b(?:when|whenever|every\s+time|each\s+time|as\s+soon\s+as)\b")
+            .expect("conditional regex")
+    })
+    .is_match(t)
+}
+
 fn datetime_query_regex() -> &'static OnceLock<Regex> {
     static RE: OnceLock<Regex> = OnceLock::new();
     &RE
@@ -1733,6 +1752,21 @@ mod tests {
     }
 
     // ---- Lights ----
+
+    #[test]
+    fn an_automation_is_not_a_command() {
+        // A light switched now would be the opposite of what was asked:
+        // these go to the model, which makes them automations.
+        for said in [
+            "when the office door opens turn off the office lights",
+            "when the office door opens, turn off the office lights",
+            "turn off the office lights when the office door opens",
+            "if the door opens turn off the office lights",
+            "every time the garden door opens turn the office lights off",
+        ] {
+            assert_eq!(parse(said), None, "{said:?}");
+        }
+    }
 
     #[test]
     fn turn_off_kitchen_light() {

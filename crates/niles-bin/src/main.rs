@@ -5925,6 +5925,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Lets the user retune the curve by voice: "make the evenings
     // brighter", "start the morning ramp half an hour later".
     niles_tools::register_config_tools(&mut tools, store.clone());
+    if let Some(automations) = &automations {
+        niles_tools::register_automation_tools(&mut tools, automations.clone(), registry.clone());
+    }
     if let Some(groceries) = &groceries {
         niles_tools::register_grocery_tools(
             &mut tools,
