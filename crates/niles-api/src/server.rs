@@ -461,6 +461,7 @@ devices = [\"living_room/corner_lamp\"]
             ("kitchen", "light", DeviceClass::Light),
             ("kitchen", "dimmer", DeviceClass::Switch),
             ("kitchen", "thermometer", DeviceClass::Sensor),
+            ("office", "door", DeviceClass::Contact),
             ("kitchen", "mystery", DeviceClass::Unknown),
         ] {
             let mut d = make_device(room, name);
@@ -480,6 +481,7 @@ devices = [\"living_room/corner_lamp\"]
         assert_eq!(by_name["light"], "light");
         assert_eq!(by_name["dimmer"], "switch");
         assert_eq!(by_name["thermometer"], "sensor");
+        assert_eq!(by_name["door"], "contact");
         assert_eq!(by_name["mystery"], "unknown");
     }
 
