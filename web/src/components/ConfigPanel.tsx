@@ -990,6 +990,11 @@ export function ConfigPanel() {
                 | { spotify?: { enabled?: boolean } }
                 | undefined)?.spotify
             }
+            microsoft={
+              (view.effective.integrations as
+                | { microsoft?: { enabled?: boolean } }
+                | undefined)?.microsoft
+            }
             unifiHost={stringAt(view.effective, "presence.unifi.host")}
             sonos={{
               enabled: valueAt(view.effective, "speakers.enabled") !== false,

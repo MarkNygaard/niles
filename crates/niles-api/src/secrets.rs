@@ -45,6 +45,14 @@ const KNOWN: &[(&str, &str)] = &[
         "integrations.spotify.client_secret",
         "Spotify app Client secret",
     ),
+    (
+        "integrations.microsoft.client_id",
+        "Microsoft app Application (client) ID",
+    ),
+    (
+        "integrations.microsoft.client_secret",
+        "Microsoft app Client secret",
+    ),
     // Issued by the TV when it was paired; written by the pairing, and
     // listed so it can be cleared to pair again.
     ("tv.client_key", "LG TV pairing key"),

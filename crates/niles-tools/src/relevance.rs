@@ -269,6 +269,33 @@ const GROUPS: &[Group] = &[
         tools: &["web_search"],
     },
     Group {
+        keywords: &[
+            "calendar",
+            "calendars",
+            "meeting",
+            "meetings",
+            "appointment",
+            "appointments",
+            "event",
+            "events",
+            "schedule",
+            "agenda",
+            "busy",
+            "free",
+            "booked",
+            "dentist",
+            "kalender",
+            "møde",
+            "aftale",
+        ],
+        tools: &[
+            "calendar_events",
+            "create_calendar_event",
+            "update_calendar_event",
+            "delete_calendar_event",
+        ],
+    },
+    Group {
         // A rule is said as a condition. The yes that saves one needs
         // no word here — a bare yes matches nothing, and nothing
         // matched sends every tool — except "save", which also names

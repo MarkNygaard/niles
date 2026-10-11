@@ -53,6 +53,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod calendar;
 mod claude_code;
 mod climate;
 mod conversation;
@@ -5389,6 +5390,31 @@ fn build_secret_store(cfg: &Config) -> Option<Arc<niles_db::PostgresSecrets>> {
     }
 }
 
+/// Each person's calendars, when there is a database and a secrets key
+/// to seal their sign-ins with. Without both there are none: a refresh
+/// token is a standing key to somebody's calendar, and is not kept in
+/// the clear.
+fn build_calendars(cfg: &Config) -> Option<Arc<niles_calendar::Calendars>> {
+    let database = cfg.database.as_ref()?;
+    let key = std::env::var(&database.secret_key_env).ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    let describe = backend.describe_target();
+    match niles_db::PostgresCalendars::new(backend.pool(), describe, &key) {
+        Ok(store) => Some(Arc::new(niles_calendar::Calendars::new(
+            Arc::new(store),
+            Arc::new(niles_calendar::Graph::new(reqwest::Client::new())),
+        ))),
+        Err(e) => {
+            tracing::error!("[calendars] unavailable: {e}");
+            None
+        }
+    }
+}
+
 /// Where kept wake audio goes, when there is a database.
 ///
 /// Built whether or not capture is switched on: the switch lives in
@@ -5876,6 +5902,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let scenes = build_scene_store(&cfg).await;
     let groceries = build_grocery_store(&cfg).await;
     let automations = build_automation_store(&cfg).await;
+    let calendars = build_calendars(&cfg);
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader
         .as_deref()
@@ -5927,6 +5954,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     niles_tools::register_config_tools(&mut tools, store.clone());
     if let Some(automations) = &automations {
         niles_tools::register_automation_tools(&mut tools, automations.clone(), registry.clone());
+    }
+    if let (Some(calendars), Ok(tz)) = (&calendars, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
+        calendar::register(&mut tools, calendars.clone(), store.clone(), tz);
     }
     if let Some(groceries) = &groceries {
         niles_tools::register_grocery_tools(
@@ -6114,6 +6144,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
     .with_automations(automations.clone())
+    .with_calendars(calendars.clone())
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
     .with_chat(Some(Arc::new(AppChat {

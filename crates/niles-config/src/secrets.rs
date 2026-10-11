@@ -116,6 +116,16 @@ impl crate::Config {
                 .spotify
                 .as_ref()
                 .map(|s| s.client_secret_env.clone()),
+            "integrations.microsoft.client_id" => self
+                .integrations
+                .microsoft
+                .as_ref()
+                .map(|m| m.client_id_env.clone()),
+            "integrations.microsoft.client_secret" => self
+                .integrations
+                .microsoft
+                .as_ref()
+                .map(|m| m.client_secret_env.clone()),
             "tv.client_key" => Some(self.tv.client_key_env.clone()),
             "auth.session_secret" => self.auth.session_secret_env.clone(),
             "auth.github_client_secret" => self.auth.github_client_secret_env.clone(),
@@ -146,6 +156,9 @@ impl crate::Config {
             }
             "integrations.spotify.client_id" | "integrations.spotify.client_secret" => {
                 Some("api.spotify.com".into())
+            }
+            "integrations.microsoft.client_id" | "integrations.microsoft.client_secret" => {
+                Some("entra.microsoft.com".into())
             }
             "tv.client_key" => (!self.tv.host.trim().is_empty()).then(|| self.tv.host.clone()),
             "auth.github_client_id" | "auth.github_client_secret" => Some("github.com".into()),

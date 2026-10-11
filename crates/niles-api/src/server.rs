@@ -48,6 +48,13 @@ pub fn router(state: AppState) -> Router {
                 crate::chat::MAX_DICTATION_BYTES,
             )),
         )
+        .route("/calendars", get(crate::calendars::list))
+        .route("/calendars/microsoft/start", get(crate::calendars::start))
+        .route(
+            "/calendars/microsoft/callback",
+            get(crate::calendars::callback),
+        )
+        .route("/calendars/{id}", delete(crate::calendars::remove))
         .route(
             "/automations",
             get(crate::automations::list).post(crate::automations::create),

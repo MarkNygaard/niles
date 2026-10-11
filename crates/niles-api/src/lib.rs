@@ -19,6 +19,7 @@
 
 pub mod auth;
 pub mod automations;
+pub mod calendars;
 pub mod captures;
 pub mod chat;
 pub mod climate;

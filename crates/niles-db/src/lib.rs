@@ -28,6 +28,7 @@
 //! anything twice.
 
 mod automations;
+mod calendars;
 mod captures;
 mod enrollments;
 mod groceries;
@@ -36,6 +37,7 @@ mod scenes;
 mod secrets;
 mod tado_tokens;
 pub use automations::PostgresAutomations;
+pub use calendars::PostgresCalendars;
 pub use captures::{Capture, PostgresCaptures};
 pub use enrollments::PostgresEnrollments;
 pub use groceries::PostgresGroceries;

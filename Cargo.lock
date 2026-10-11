@@ -1621,6 +1621,7 @@ dependencies = [
  "http-body-util",
  "mime_guess",
  "niles-automations",
+ "niles-calendar",
  "niles-config",
  "niles-core",
  "niles-db",
@@ -1646,6 +1647,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
 ]
 
 [[package]]
@@ -1679,6 +1681,7 @@ dependencies = [
  "hound",
  "niles-api",
  "niles-automations",
+ "niles-calendar",
  "niles-capabilities",
  "niles-config",
  "niles-core",
@@ -1713,6 +1716,23 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "niles-calendar"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "rand 0.10.2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "urlencoding",
 ]
 
 [[package]]
@@ -1763,6 +1783,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
+ "niles-calendar",
  "niles-config",
  "niles-presence",
  "niles-recognition",

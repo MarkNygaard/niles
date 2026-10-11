@@ -24,6 +24,7 @@ import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { NemligPanel } from "@/components/NemligPanel";
 import { LinearPanel } from "@/components/LinearPanel";
 import { SonosPanel } from "@/components/SonosPanel";
+import { MicrosoftPanel, redirectUri } from "@/components/MicrosoftPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
@@ -56,6 +57,8 @@ export interface IntegrationsPageProps {
   nemlig?: { enabled?: boolean };
   /** The Spotify section as the config has it, if there is one. */
   spotify?: { enabled?: boolean };
+  /** The Microsoft section as the config has it, if there is one. */
+  microsoft?: { enabled?: boolean };
   /** The UniFi console's address, empty until one is typed in. */
   unifiHost?: string;
   /** `[speakers]` as the config has it: Sonos's switch and address. */
@@ -102,6 +105,7 @@ export function IntegrationsPage({
   claudeCode,
   nemlig,
   spotify,
+  microsoft,
   unifiHost,
   sonos,
   sonosFound,
@@ -153,6 +157,12 @@ export function IntegrationsPage({
         secretFor("integrations.spotify.client_id")?.source !== "unset" &&
         secretFor("integrations.spotify.client_secret")?.source !== "unset"
       );
+    if (integration.id === "microsoft")
+      return (
+        microsoft?.enabled !== false &&
+        secretFor("integrations.microsoft.client_id")?.source !== "unset" &&
+        secretFor("integrations.microsoft.client_secret")?.source !== "unset"
+      );
     if (integration.id === "lg_tv") return Boolean(tv?.paired);
     if (integration.id === "sonos")
       return sonos?.enabled !== false && Boolean(sonos?.host?.trim());
@@ -191,6 +201,14 @@ export function IntegrationsPage({
       case "spotify":
         return onChange("integrations.spotify", [
           { path: "integrations.spotify.enabled", value: true },
+        ]);
+      // The redirect as this browser reaches Niles, written down rather
+      // than worked out from forwarded headers on every sign-in:
+      // Microsoft compares it letter for letter.
+      case "microsoft":
+        return onChange("integrations.microsoft", [
+          { path: "integrations.microsoft.enabled", value: true },
+          { path: "integrations.microsoft.redirect_uri", value: redirectUri() },
         ]);
       case "unifi":
       case "sonos":
@@ -239,6 +257,10 @@ export function IntegrationsPage({
       // The stored keys stay in Credentials, as with nemlig.
       case "spotify":
         return onReset("integrations.spotify", ["integrations.spotify"]);
+      // The keys stay in Credentials, and everyone's connections stay
+      // in the database for when it comes back.
+      case "microsoft":
+        return onReset("integrations.microsoft", ["integrations.microsoft"]);
       default:
         return onChange("providers", [
           {
@@ -440,6 +462,22 @@ export function IntegrationsPage({
                     onEnabled={(enabled) =>
                       onChange("integrations.spotify", [
                         { path: "integrations.spotify.enabled", value: enabled },
+                      ])
+                    }
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
+                {current.id === "microsoft" && (
+                  <MicrosoftPanel
+                    enabled={microsoft?.enabled !== false}
+                    clientId={secretFor("integrations.microsoft.client_id")}
+                    clientSecret={secretFor("integrations.microsoft.client_secret")}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onEnabled={(enabled) =>
+                      onChange("integrations.microsoft", [
+                        { path: "integrations.microsoft.enabled", value: enabled },
                       ])
                     }
                     onSecretsChanged={onSecretsChanged}

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CalendarsCard } from "@/components/CalendarsCard";
 import { MeCard } from "@/components/MeCard";
 import { api } from "@/lib/api";
 
@@ -37,14 +38,18 @@ export function MyProfile() {
   }
 
   return (
-    <MeCard
-      me={me.data}
-      device={phone.data}
-      saving={update.isPending || pair.isPending || unpair.isPending}
-      error={update.error?.message ?? unpair.error?.message ?? pair.error?.message}
-      onSave={(change) => update.mutate(change)}
-      onPair={() => pair.mutate()}
-      onUnpair={() => unpair.mutate()}
-    />
+    <div className="flex flex-col gap-4">
+      <MeCard
+        me={me.data}
+        device={phone.data}
+        saving={update.isPending || pair.isPending || unpair.isPending}
+        error={update.error?.message ?? unpair.error?.message ?? pair.error?.message}
+        onSave={(change) => update.mutate(change)}
+        onPair={() => pair.mutate()}
+        onUnpair={() => unpair.mutate()}
+      />
+      {/* Yours by your voice: without one there is nobody to read it for. */}
+      {me.data?.speaker && <CalendarsCard />}
+    </div>
   );
 }

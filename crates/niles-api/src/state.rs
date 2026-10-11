@@ -70,6 +70,11 @@ pub struct AppState {
     /// The household's automations, shared with the voice tools and
     /// the engine that runs them.
     pub automations: Option<Arc<niles_automations::AutomationStore>>,
+    /// Each person's calendars. Absent without a database and its
+    /// secrets key: a refresh token is not kept anywhere unsealed.
+    pub calendars: Option<Arc<niles_calendar::Calendars>>,
+    /// Calendar sign-ins in flight, apart from the GitHub ones.
+    pub calendar_attempts: Arc<crate::auth::flow::Attempts>,
     /// What answers the app's chat, when the binary wired one up.
     pub chat: Option<Arc<dyn crate::chat::Chat>>,
     /// The rooms' music, for the room cards. Answered by the binary.
@@ -101,6 +106,8 @@ impl AppState {
             scenes: None,
             groceries: None,
             automations: None,
+            calendars: None,
+            calendar_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             chat: None,
             nemlig: None,
             music: None,
@@ -152,6 +159,11 @@ impl AppState {
     /// The saved scenes, so the dashboard can list and apply them.
     pub fn with_scenes(mut self, scenes: Option<Arc<niles_scheduler::SceneStore>>) -> Self {
         self.scenes = scenes;
+        self
+    }
+
+    pub fn with_calendars(mut self, calendars: Option<Arc<niles_calendar::Calendars>>) -> Self {
+        self.calendars = calendars;
         self
     }
 
