@@ -283,16 +283,47 @@ async fn dav(
     let response = request.send().await.map_err(http_error)?;
     let status = response.status();
     let text = response.text().await.map_err(http_error)?;
+    // Apple answers an Apple ID it knows with a wrong password 401, and
+    // one it does not know at all 403: worth telling apart, since the
+    // fixes differ.
     if status.as_u16() == 401 {
         return Err(refused(
             401,
-            "Apple did not accept that Apple ID and app-specific password",
+            "Apple knows that Apple ID but not that password. It has to be an app-specific \
+             password, made at appleid.apple.com, not the Apple ID's own",
+        ));
+    }
+    if status.as_u16() == 403 && url == ICLOUD {
+        return Err(refused(
+            403,
+            "Apple does not know that Apple ID. Use the address you sign in to Apple with",
         ));
     }
     if !status.is_success() {
         return Err(refused(status.as_u16(), &text));
     }
     Ok(text)
+}
+
+/// An app-specific password as Apple writes it, `abcd-efgh-ijkl-mnop`,
+/// however it was typed: with spaces where a phone's autofill put them,
+/// without dashes, in capitals. Anything else is left as it came.
+pub fn app_password(typed: &str) -> String {
+    let letters: String = typed
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if letters.len() == 16 && letters.chars().all(|c| c.is_ascii_lowercase()) {
+        letters
+            .as_bytes()
+            .chunks(4)
+            .map(|c| std::str::from_utf8(c).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("-")
+    } else {
+        typed.trim().to_string()
+    }
 }
 
 /// The text of the `href` inside the first `<ns:local>`.
@@ -330,6 +361,19 @@ fn refused(status: u16, reason: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_an_app_password_as_apple_does() {
+        for typed in [
+            "abcd-efgh-ijkl-mnop",
+            "abcd efgh ijkl mnop",
+            "abcdefghijklmnop",
+            " ABCD-EFGH-IJKL-MNOP ",
+        ] {
+            assert_eq!(app_password(typed), "abcd-efgh-ijkl-mnop", "{typed:?}");
+        }
+        assert_eq!(app_password(" hunter2 "), "hunter2");
+    }
 
     #[test]
     fn makes_an_href_whole() {

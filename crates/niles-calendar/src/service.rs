@@ -308,7 +308,7 @@ impl Calendars {
     ) -> Result<Connection> {
         let login = Login {
             user: apple_id.trim().to_string(),
-            password: password.trim().replace(' ', ""),
+            password: caldav::app_password(password),
         };
         let home = self.backend.discover_icloud(&login).await?;
         self.connect(
@@ -636,7 +636,7 @@ mod tests {
             })
         }
         async fn discover_icloud(&self, login: &Login) -> Result<String> {
-            if login.password != "abcdefghijklmnop" {
+            if login.password != "abcd-efgh-ijkl-mnop" {
                 return Err(Error::Provider {
                     provider: "iCloud",
                     status: 401,
