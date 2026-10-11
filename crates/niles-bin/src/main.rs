@@ -5406,7 +5406,7 @@ fn build_calendars(cfg: &Config) -> Option<Arc<niles_calendar::Calendars>> {
     match niles_db::PostgresCalendars::new(backend.pool(), describe, &key) {
         Ok(store) => Some(Arc::new(niles_calendar::Calendars::new(
             Arc::new(store),
-            Arc::new(niles_calendar::Graph::new(reqwest::Client::new())),
+            Arc::new(niles_calendar::Network::new(reqwest::Client::new())),
         ))),
         Err(e) => {
             tracing::error!("[calendars] unavailable: {e}");

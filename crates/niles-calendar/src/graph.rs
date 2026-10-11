@@ -34,9 +34,20 @@ pub struct MicrosoftApp {
 #[derive(Debug, Clone)]
 pub struct Tokens {
     pub access_token: String,
-    /// Microsoft rotates it: the one that came back is the one to keep.
-    pub refresh_token: String,
+    /// Microsoft rotates it on every refresh, and the one that came
+    /// back is the one to keep; Google sends one only at sign-in.
+    pub refresh_token: Option<String>,
     pub expires_at: DateTime<Utc>,
+}
+
+/// What a connection asks Microsoft to grant. `offline_access` is
+/// what yields a refresh token; `User.Read` names the account.
+pub fn scopes(access: Access) -> String {
+    let calendars = match access {
+        Access::Read => "Calendars.Read",
+        Access::Write => "Calendars.ReadWrite",
+    };
+    format!("offline_access User.Read {calendars}")
 }
 
 #[derive(Deserialize)]
@@ -65,7 +76,7 @@ impl MicrosoftApp {
             "{AUTHORITY}/authorize?client_id={}&response_type=code&redirect_uri={}&response_mode=query&scope={}&state={}&prompt=select_account",
             urlencoding::encode(&self.client_id),
             urlencoding::encode(&self.redirect_uri),
-            urlencoding::encode(&access.scopes()),
+            urlencoding::encode(&scopes(access)),
             urlencoding::encode(state),
         )
     }
@@ -83,7 +94,7 @@ impl MicrosoftApp {
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("redirect_uri", &self.redirect_uri),
-                ("scope", &access.scopes()),
+                ("scope", &scopes(access)),
             ],
             None,
         )
@@ -104,7 +115,7 @@ impl MicrosoftApp {
             &[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token),
-                ("scope", &access.scopes()),
+                ("scope", &scopes(access)),
             ],
             Some(name),
         )
@@ -157,13 +168,9 @@ impl MicrosoftApp {
             status: status.as_u16(),
             reason: format!("an answer that would not read: {e}"),
         })?;
-        let refresh_token = tokens.refresh_token.ok_or_else(|| Error::Microsoft {
-            status: status.as_u16(),
-            reason: "no refresh token came back; is offline_access granted?".into(),
-        })?;
         Ok(Tokens {
             access_token: tokens.access_token,
-            refresh_token,
+            refresh_token: tokens.refresh_token,
             expires_at: Utc::now() + chrono::Duration::seconds(tokens.expires_in.unwrap_or(3600)),
         })
     }
@@ -195,7 +202,7 @@ pub async fn events(
     tz: Tz,
 ) -> Result<Vec<Event>> {
     let url = format!(
-        "{GRAPH}/me/calendarView?startDateTime={}&endDateTime={}&$select=id,subject,start,end,isAllDay,location,isCancelled,showAs&$orderby=start/dateTime&$top=100",
+        "{GRAPH}/me/calendarView?startDateTime={}&endDateTime={}&$select=id,subject,start,end,isAllDay,location,isCancelled,showAs,type&$orderby=start/dateTime&$top=100",
         urlencoding::encode(&from.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
         urlencoding::encode(&to.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
     );
@@ -303,19 +310,21 @@ fn midnight(day: NaiveDate) -> String {
     format!("{}T00:00:00", day.format("%Y-%m-%d"))
 }
 
-/// A local wall-clock time in the house as UTC. A time that does not
-/// exist (the hour the clocks skip) is taken as the moment after.
 fn utc(local: NaiveDateTime, tz: Tz) -> String {
-    let instant = tz
-        .from_local_datetime(&local)
+    instant(local, tz).format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
+/// A local wall-clock time in the house as an instant. A time that does
+/// not exist (the hour the clocks skip) is taken as the moment after.
+pub(crate) fn instant(local: NaiveDateTime, tz: Tz) -> DateTime<Utc> {
+    tz.from_local_datetime(&local)
         .earliest()
         .or_else(|| {
             tz.from_local_datetime(&(local + chrono::Duration::hours(1)))
                 .earliest()
         })
         .map(|t| t.with_timezone(&Utc))
-        .unwrap_or_else(|| Utc.from_utc_datetime(&local));
-    instant.format("%Y-%m-%dT%H:%M:%S").to_string()
+        .unwrap_or_else(|| Utc.from_utc_datetime(&local))
 }
 
 /// One event from Graph, in the house's time. All-day events are dates
@@ -356,6 +365,10 @@ pub fn read_event(value: &Value, tz: Tz) -> Option<Event> {
         end: when("end")?,
         all_day,
         location,
+        recurring: matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("occurrence" | "exception")
+        ),
     })
 }
 
@@ -401,14 +414,14 @@ async fn send(
     })
 }
 
-fn http_error(e: reqwest::Error) -> Error {
+pub(crate) fn http_error(e: reqwest::Error) -> Error {
     Error::Http {
         reason: e.to_string(),
     }
 }
 
 /// Microsoft's refusals run to several lines of trace ids.
-fn first_line(text: &str) -> String {
+pub(crate) fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").trim().to_string()
 }
 

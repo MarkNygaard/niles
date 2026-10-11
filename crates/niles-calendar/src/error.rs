@@ -4,12 +4,25 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum Error {
     /// The request never got an answer.
-    #[error("Microsoft did not answer: {reason}")]
+    #[error("the calendar did not answer: {reason}")]
     Http { reason: String },
 
     /// Microsoft answered, and said no.
     #[error("Microsoft refused ({status}): {reason}")]
     Microsoft { status: u16, reason: String },
+
+    /// Google or iCloud answered, and said no.
+    #[error("{provider} refused ({status}): {reason}")]
+    Provider {
+        provider: &'static str,
+        status: u16,
+        reason: String,
+    },
+
+    /// A repeating event's one occurrence, which this provider would
+    /// change or remove as the whole series.
+    #[error("{what} repeats, and only the whole series could be changed here; do it on the phone")]
+    Repeating { what: String },
 
     /// The sign-in behind a connection no longer works — revoked,
     /// expired, or the password changed. Only connecting again helps.

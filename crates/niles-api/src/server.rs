@@ -49,12 +49,16 @@ pub fn router(state: AppState) -> Router {
             )),
         )
         .route("/calendars", get(crate::calendars::list))
-        .route("/calendars/microsoft/start", get(crate::calendars::start))
+        .route("/calendars/icloud", post(crate::calendars::connect_icloud))
+        .route("/calendars/{provider}/start", get(crate::calendars::start))
         .route(
-            "/calendars/microsoft/callback",
+            "/calendars/{provider}/callback",
             get(crate::calendars::callback),
         )
-        .route("/calendars/{id}", delete(crate::calendars::remove))
+        .route(
+            "/calendars/{id}",
+            put(crate::calendars::set_access).delete(crate::calendars::remove),
+        )
         .route(
             "/automations",
             get(crate::automations::list).post(crate::automations::create),

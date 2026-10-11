@@ -158,22 +158,33 @@ export type SpeakerControl =
 
 export type CalendarAccess = "read" | "write";
 
+export type CalendarProvider = "microsoft" | "google" | "icloud";
+
 /** One calendar account a person connected. */
 export interface CalendarConnection {
   id: string;
+  provider: CalendarProvider;
   /** What they called it: "Private", "Work". */
   name: string;
   /** The account's address. */
   account: string;
   access: CalendarAccess;
+  /** False for iCloud, where read only is Niles's rule, not Apple's. */
+  enforced_by_provider: boolean;
 }
 
-/** `GET /calendars`: the signed-in person's own. */
+/** `GET /calendars`: the signed-in person's own, and what can be
+    connected. */
 export interface CalendarsView {
-  available: boolean;
-  /** Why a calendar cannot be connected, when it cannot. */
-  reason: string | null;
+  providers: { id: CalendarProvider; available: boolean; reason: string | null }[];
   connections: CalendarConnection[];
+}
+
+export interface IcloudConnect {
+  name: string;
+  access: CalendarAccess;
+  apple_id: string;
+  password: string;
 }
 
 /** The LG TV, as `GET /tv` reports it. */
@@ -749,6 +760,17 @@ export const api = {
   calendars: () => request<CalendarsView>("/calendars"),
   removeCalendar: (id: string) =>
     request<void>(`/calendars/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  connectIcloud: (body: IcloudConnect) =>
+    request<CalendarConnection>("/calendars/icloud", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  /** iCloud only: the others are granted their access at sign-in. */
+  setCalendarAccess: (id: string, access: CalendarAccess) =>
+    request<CalendarConnection>(`/calendars/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ access }),
+    }),
   /** Shows the prompt on the TV and waits up to a minute for it. */
   pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),
   tvPower: (on: boolean) =>

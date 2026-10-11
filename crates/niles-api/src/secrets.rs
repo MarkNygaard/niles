@@ -53,6 +53,11 @@ const KNOWN: &[(&str, &str)] = &[
         "integrations.microsoft.client_secret",
         "Microsoft app Client secret",
     ),
+    ("integrations.google.client_id", "Google OAuth Client ID"),
+    (
+        "integrations.google.client_secret",
+        "Google OAuth Client secret",
+    ),
     // Issued by the TV when it was paired; written by the pairing, and
     // listed so it can be cleared to pair again.
     ("tv.client_key", "LG TV pairing key"),

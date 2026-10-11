@@ -160,6 +160,16 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
+        id: "google",
+        label: "Google calendars",
+        blurb: "Each person's Gmail calendar, read by voice for whoever asks.",
+        kind: Kind::Service,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
         id: "lg_tv",
         label: "LG TV",
         blurb: "On and off, apps and inputs by voice, and Niles's news on the screen.",
@@ -233,6 +243,9 @@ impl Known {
             }
             Kind::Service if self.id == "microsoft" => {
                 Some("integrations.microsoft.client_secret".into())
+            }
+            Kind::Service if self.id == "google" => {
+                Some("integrations.google.client_secret".into())
             }
             Kind::Service => None,
         }

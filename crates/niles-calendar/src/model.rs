@@ -1,8 +1,46 @@
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-/// What a connection may do — and so what Microsoft is asked to grant.
-/// A read-only connection holds a token that cannot write at all.
+/// Where a calendar lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    /// Outlook.com and Entra ID, through Microsoft Graph.
+    Microsoft,
+    /// Gmail and Workspace, through the Google Calendar API.
+    Google,
+    /// The calendar on an iPhone, through CalDAV.
+    Icloud,
+}
+
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Microsoft => "microsoft",
+            Provider::Google => "google",
+            Provider::Icloud => "icloud",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "microsoft" => Some(Provider::Microsoft),
+            "google" => Some(Provider::Google),
+            "icloud" => Some(Provider::Icloud),
+            _ => None,
+        }
+    }
+
+    /// Whether the provider itself holds a connection to its access.
+    /// iCloud has no credential narrower than the whole account, so
+    /// there read only is a rule kept here.
+    pub fn enforces_access(self) -> bool {
+        !matches!(self, Provider::Icloud)
+    }
+}
+
+/// What a connection may do. For Microsoft and Google it is also what
+/// they are asked to grant, so a read-only token cannot write at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
@@ -11,16 +49,6 @@ pub enum Access {
 }
 
 impl Access {
-    /// The scopes asked for. `offline_access` is what yields a refresh
-    /// token; `User.Read` names the account.
-    pub fn scopes(self) -> String {
-        let calendars = match self {
-            Access::Read => "Calendars.Read",
-            Access::Write => "Calendars.ReadWrite",
-        };
-        format!("offline_access User.Read {calendars}")
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Access::Read => "read",
@@ -44,12 +72,17 @@ pub struct Connection {
     /// The speaker it belongs to, the slug voice and the profile share.
     /// Nothing reads it for anybody else.
     pub person: String,
+    pub provider: Provider,
     /// What the person called it: "Private", "Work".
     pub name: String,
-    /// The account's address, as Microsoft gave it.
+    /// The account's address, as the provider gave it.
     pub account: String,
     pub access: Access,
-    pub refresh_token: String,
+    /// A refresh token, or iCloud's app-specific password.
+    pub credential: String,
+    /// Where the provider keeps this account's calendars, when that is
+    /// not a fixed address: iCloud's calendar home.
+    pub endpoint: Option<String>,
 }
 
 /// An event, in the house's time zone.
@@ -64,6 +97,9 @@ pub struct Event {
     pub end: NaiveDateTime,
     pub all_day: bool,
     pub location: Option<String>,
+    /// One occurrence of a repeating event. Changed or removed as part
+    /// of its series by some providers, so the tools are told.
+    pub recurring: bool,
 }
 
 /// An event to make, or what an event is to become.

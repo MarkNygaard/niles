@@ -7,7 +7,7 @@
 
 use crate::profile;
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use niles_calendar::{Calendars, Change, Listed, MicrosoftApp, NewEvent};
+use niles_calendar::{Apps, Calendars, Change, GoogleApp, Listed, MicrosoftApp, NewEvent};
 use niles_config::ConfigStore;
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
 use serde_json::{Value, json};
@@ -34,24 +34,34 @@ impl Shared {
             })
     }
 
-    /// The app registration, read per call so keys typed into the app
-    /// take hold without a restart. A refresh needs no redirect.
-    fn app(&self, tool: &str) -> Result<MicrosoftApp> {
+    /// The app registrations that are switched on, read per call so
+    /// keys typed into the app take hold without a restart. A refresh
+    /// needs no redirect. iCloud needs none at all.
+    fn apps(&self) -> Apps {
         let cfg = self.config.current();
-        let microsoft = cfg
-            .integrations
-            .microsoft
-            .as_ref()
-            .filter(|m| m.enabled)
-            .ok_or_else(|| invalid(tool, "Microsoft calendars are switched off".into()))?;
-        let (client_id, client_secret) = microsoft
-            .resolve_credentials()
-            .map_err(|e| invalid(tool, e.to_string()))?;
-        Ok(MicrosoftApp {
-            client_id,
-            client_secret,
-            redirect_uri: String::new(),
-        })
+        let integrations = &cfg.integrations;
+        Apps {
+            microsoft: integrations
+                .microsoft
+                .as_ref()
+                .filter(|m| m.enabled)
+                .and_then(|m| m.resolve_credentials().ok())
+                .map(|(client_id, client_secret)| MicrosoftApp {
+                    client_id,
+                    client_secret,
+                    redirect_uri: String::new(),
+                }),
+            google: integrations
+                .google
+                .as_ref()
+                .filter(|g| g.enabled)
+                .and_then(|g| g.resolve_credentials().ok())
+                .map(|(client_id, client_secret)| GoogleApp {
+                    client_id,
+                    client_secret,
+                    redirect_uri: String::new(),
+                }),
+        }
     }
 
     fn listed(&self, listed: &Listed) -> Value {
@@ -74,6 +84,9 @@ impl Shared {
         }
         if let Some(place) = &e.location {
             out["location"] = json!(place);
+        }
+        if e.recurring {
+            out["repeats"] = json!(true);
         }
         out
     }
@@ -173,7 +186,7 @@ impl Tool for CalendarEvents {
                 "note": "This person has not connected a calendar. They do that in their profile in the Niles app."
             }));
         }
-        let app = s.app(TOOL)?;
+        let app = s.apps();
         let utc = |at: NaiveDateTime| {
             s.tz.from_local_datetime(&at)
                 .earliest()
@@ -252,7 +265,7 @@ impl Tool for CreateCalendarEvent {
             all_day,
             location: text(&args, "location"),
         };
-        let app = s.app(TOOL)?;
+        let app = s.apps();
         let made = s
             .calendars
             .create(
@@ -283,7 +296,8 @@ impl Tool for UpdateCalendarEvent {
             description: "Change one of the speaker's events, by the ref calendar_events gave \
                 it: a new time, title or place. Give only what changes; a new start alone keeps \
                 its length. Read the change back and ask first, and call this only after a yes. \
-                Only on a calendar connected with write access."
+                Only on a calendar connected with write access. An event marked repeats in an \
+                iCloud calendar can only be changed or deleted on the phone."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -312,7 +326,7 @@ impl Tool for UpdateCalendarEvent {
             all_day: None,
             location: text(&args, "location"),
         };
-        let app = s.app(TOOL)?;
+        let app = s.apps();
         let changed = s
             .calendars
             .update(&app, &person, &reference, &change, s.tz)
@@ -332,7 +346,8 @@ impl Tool for DeleteCalendarEvent {
             name: "delete_calendar_event".into(),
             description: "Delete one of the speaker's events, by the ref calendar_events gave \
                 it. Say which event and ask first — 'Delete the dentist on Thursday?' — and call \
-                this only after a yes. Only on a calendar connected with write access."
+                this only after a yes. Only on a calendar connected with write access. An event \
+                marked repeats in an iCloud calendar can only be changed or deleted on the phone."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -348,7 +363,7 @@ impl Tool for DeleteCalendarEvent {
         let s = &self.0;
         let person = s.person(TOOL)?;
         let reference = text(&args, "ref").ok_or_else(|| invalid(TOOL, "no ref".into()))?;
-        let app = s.app(TOOL)?;
+        let app = s.apps();
         let gone = s
             .calendars
             .delete(&app, &person, &reference)
@@ -383,7 +398,7 @@ mod tests {
 
     fn tools() -> Arc<Shared> {
         let store = Arc::new(MemoryConnections::new());
-        let graph = Arc::new(niles_calendar::Graph::new(reqwest::Client::new()));
+        let graph = Arc::new(niles_calendar::Network::new(reqwest::Client::new()));
         Arc::new(Shared {
             calendars: Arc::new(Calendars::new(store, graph)),
             config: Arc::new(ConfigStore::from_str_in_memory("").unwrap()),

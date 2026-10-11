@@ -126,6 +126,16 @@ impl crate::Config {
                 .microsoft
                 .as_ref()
                 .map(|m| m.client_secret_env.clone()),
+            "integrations.google.client_id" => self
+                .integrations
+                .google
+                .as_ref()
+                .map(|g| g.client_id_env.clone()),
+            "integrations.google.client_secret" => self
+                .integrations
+                .google
+                .as_ref()
+                .map(|g| g.client_secret_env.clone()),
             "tv.client_key" => Some(self.tv.client_key_env.clone()),
             "auth.session_secret" => self.auth.session_secret_env.clone(),
             "auth.github_client_secret" => self.auth.github_client_secret_env.clone(),
@@ -159,6 +169,9 @@ impl crate::Config {
             }
             "integrations.microsoft.client_id" | "integrations.microsoft.client_secret" => {
                 Some("entra.microsoft.com".into())
+            }
+            "integrations.google.client_id" | "integrations.google.client_secret" => {
+                Some("console.cloud.google.com".into())
             }
             "tv.client_key" => (!self.tv.host.trim().is_empty()).then(|| self.tv.host.clone()),
             "auth.github_client_id" | "auth.github_client_secret" => Some("github.com".into()),
