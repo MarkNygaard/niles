@@ -5,6 +5,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
+    #[error("there is no automation '{id}'")]
+    NotFound { id: String },
+
     #[error("invalid automation id '{id}': {reason}")]
     InvalidId { id: String, reason: String },
 

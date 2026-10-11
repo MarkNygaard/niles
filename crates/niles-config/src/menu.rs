@@ -8,7 +8,7 @@ use std::collections::HashSet;
 /// among them: Home is the main navigation's first entry and My profile
 /// the avatar menu's. Settings can move but not hide — it is the way
 /// back to this.
-pub const MOVABLE: &[&str] = &["groceries", "chat", "media", "settings"];
+pub const MOVABLE: &[&str] = &["groceries", "chat", "media", "settings", "automations"];
 
 /// When the Media entry is in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]

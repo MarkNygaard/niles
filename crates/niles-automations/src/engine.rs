@@ -1,13 +1,13 @@
 //! Automation engine: subscribes to `EventBus`, matches rules, and
 //! dispatches actions via injected `DeviceSink` + `Notifier` traits.
 
-use crate::rule::{Action, Priority, Rule};
+use crate::rule::{Action, Priority, Rule, Trigger};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 /// Async trait for sending device commands.
@@ -24,13 +24,18 @@ pub trait Notifier: Send + Sync {
 
 /// Rule engine that evaluates triggers and dispatches actions.
 pub struct AutomationEngine {
-    rules: Vec<Rule>,
+    /// Replaced whole when a rule is saved, paused or removed.
+    rules: RwLock<Vec<Rule>>,
     registry: Arc<DeviceRegistry>,
     tz: Tz,
     device_sink: Arc<dyn DeviceSink>,
     notifier: Option<Arc<dyn Notifier>>,
     dedup: Mutex<HashMap<DedupKey, DateTime<Utc>>>,
     dedup_window: chrono::Duration,
+    /// What each door and window sensor last said. A sensor repeats its
+    /// state in every report (battery, signal), and a door that is
+    /// still open has not opened again.
+    contacts: Mutex<HashMap<DeviceId, bool>>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -52,14 +57,45 @@ impl AutomationEngine {
         notifier: Option<Arc<dyn Notifier>>,
     ) -> Self {
         Self {
-            rules,
+            rules: RwLock::new(rules),
             registry,
             tz,
             device_sink,
             notifier,
             dedup: Mutex::new(HashMap::new()),
             dedup_window: chrono::Duration::milliseconds(2_000),
+            contacts: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Run `rules` from now on, in place of the ones before.
+    pub async fn replace(&self, rules: Vec<Rule>) {
+        *self.rules.write().await = rules;
+    }
+
+    /// Take the sensors' state as it stands, so the first report after
+    /// a start is compared with something: otherwise a door that is
+    /// open when Niles starts "opens" with its first battery report.
+    pub async fn seed_contacts(&self) {
+        let mut contacts = self.contacts.lock().await;
+        for device in self.registry.list_all() {
+            if let Some(open) = device.state.open {
+                contacts.insert(device.id.clone(), open);
+            }
+        }
+    }
+
+    /// Whether `event` is a door or window changing, as opposed to a
+    /// sensor repeating itself. Anything that is not a contact report
+    /// counts as a change.
+    async fn contact_changed(&self, event: &Event) -> bool {
+        let Event::DeviceStateChanged { id, state } = event else {
+            return true;
+        };
+        let Some(open) = state.open else {
+            return true;
+        };
+        self.contacts.lock().await.insert(id.clone(), open) != Some(open)
     }
 
     /// Build with a custom dedup window (useful in tests).
@@ -72,13 +108,19 @@ impl AutomationEngine {
 
     /// Evaluate all enabled rules against `event`.
     pub async fn handle_event(&self, event: &Event, now: DateTime<Utc>) {
-        for rule in &self.rules {
+        let contact_changed = self.contact_changed(event).await;
+        let rules = self.rules.read().await;
+        for rule in rules.iter() {
             if !rule.enabled {
                 tracing::debug!("automation '{}' disabled, skipping", rule.id);
                 continue;
             }
             if !rule.trigger.matches(event) {
                 tracing::debug!("automation '{}' trigger mismatch", rule.id);
+                continue;
+            }
+            if matches!(rule.trigger, Trigger::Contact { .. }) && !contact_changed {
+                tracing::debug!("automation '{}': the sensor only repeated itself", rule.id);
                 continue;
             }
             if !rule
@@ -100,40 +142,42 @@ impl AutomationEngine {
                         brightness,
                         kelvin,
                     } => {
-                        let key = DedupKey {
-                            rule_id: rule.id.clone(),
-                            device: device.clone(),
-                            on: *on,
-                            brightness: *brightness,
-                            kelvin: *kelvin,
-                        };
-                        let mut dedup = self.dedup.lock().await;
-                        if let Some(&last) = dedup.get(&key)
-                            && now >= last
-                            && now - last < self.dedup_window
-                        {
-                            tracing::debug!(
-                                "automation '{}': dedup skipped set for {}",
-                                rule.id,
-                                device
-                            );
-                            continue;
-                        }
-                        dedup.insert(key, now);
-                        // Opportunistic prune if map is getting large.
-                        if dedup.len() > 64 {
-                            let cutoff = now - self.dedup_window;
-                            dedup.retain(|_, v| *v > cutoff);
-                        }
-                        drop(dedup);
-
                         let desired = DeviceState {
                             on: *on,
                             brightness: *brightness,
                             color_temp_kelvin: *kelvin,
                             ..Default::default()
                         };
-                        self.device_sink.set(device, &desired).await;
+                        self.set(&rule.id, device, &desired, now).await;
+                    }
+                    Action::SetRoom {
+                        room,
+                        on,
+                        brightness,
+                        kelvin,
+                    } => {
+                        let desired = DeviceState {
+                            on: *on,
+                            brightness: *brightness,
+                            color_temp_kelvin: *kelvin,
+                            ..Default::default()
+                        };
+                        // The lights, as "the office lights" means: not
+                        // the plug that charges something, nor the door
+                        // sensor that may have started this.
+                        let lights: Vec<DeviceId> = self
+                            .registry
+                            .list_room(room)
+                            .into_iter()
+                            .filter(|d| d.is_light() && d.is_switchable())
+                            .map(|d| d.id)
+                            .collect();
+                        if lights.is_empty() {
+                            tracing::warn!("automation '{}': no lights in {room} to set", rule.id);
+                        }
+                        for light in &lights {
+                            self.set(&rule.id, light, &desired, now).await;
+                        }
                     }
                     Action::Notify {
                         body,
@@ -154,11 +198,46 @@ impl AutomationEngine {
         }
     }
 
+    /// Send `desired` to `device`, unless this rule sent the same a
+    /// moment ago — one change can arrive as several events.
+    async fn set(
+        &self,
+        rule_id: &str,
+        device: &DeviceId,
+        desired: &DeviceState,
+        now: DateTime<Utc>,
+    ) {
+        let key = DedupKey {
+            rule_id: rule_id.to_string(),
+            device: device.clone(),
+            on: desired.on,
+            brightness: desired.brightness,
+            kelvin: desired.color_temp_kelvin,
+        };
+        let mut dedup = self.dedup.lock().await;
+        if let Some(&last) = dedup.get(&key)
+            && now >= last
+            && now - last < self.dedup_window
+        {
+            tracing::debug!("automation '{rule_id}': dedup skipped set for {device}");
+            return;
+        }
+        dedup.insert(key, now);
+        // Opportunistic prune if map is getting large.
+        if dedup.len() > 64 {
+            let cutoff = now - self.dedup_window;
+            dedup.retain(|_, v| *v > cutoff);
+        }
+        drop(dedup);
+        self.device_sink.set(device, desired).await;
+    }
+
     /// Spawn a background task that subscribes to `bus` and drives
     /// `handle_event` for every incoming event.
     pub fn spawn(self: Arc<Self>, bus: EventBus) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut rx = bus.subscribe();
+            self.seed_contacts().await;
             loop {
                 match rx.recv().await {
                     Ok(ev) => self.handle_event(&ev, Utc::now()).await,
@@ -272,6 +351,135 @@ mod tests {
 
     fn fixed_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap()
+    }
+
+    // ---- doors and rooms ---------------------------------------------
+
+    fn contact(open: bool) -> DeviceState {
+        DeviceState {
+            open: Some(open),
+            ..Default::default()
+        }
+    }
+
+    /// The office: a door to the garden, two lights, and a plug.
+    fn office() -> (Arc<DeviceRegistry>, DeviceId) {
+        let registry = Arc::new(DeviceRegistry::new());
+        let door = device_id("office", "door");
+        registry.upsert(niles_core::Device::new(
+            door.clone(),
+            contact(false),
+            DeviceClass::Contact,
+        ));
+        registry.upsert(make_device(&device_id("office", "go"), true));
+        registry.upsert(make_device(&device_id("office", "lightstrip"), true));
+        registry.upsert(niles_core::Device::new(
+            device_id("office", "charger"),
+            state(true),
+            DeviceClass::Outlet,
+        ));
+        (registry, door)
+    }
+
+    fn garden_door(door: &DeviceId) -> Rule {
+        Rule {
+            id: "garden-door".into(),
+            description: String::new(),
+            enabled: true,
+            trigger: Trigger::Contact {
+                device: door.clone(),
+                open: Some(true),
+            },
+            conditions: vec![],
+            actions: vec![Action::SetRoom {
+                room: RoomName::parse("office").unwrap(),
+                on: Some(false),
+                brightness: None,
+                kelvin: None,
+            }],
+        }
+    }
+
+    fn opened(door: &DeviceId, open: bool) -> Event {
+        Event::DeviceStateChanged {
+            id: door.clone(),
+            state: contact(open),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_garden_door_turns_off_the_office_lights_only() {
+        let (registry, door) = office();
+        let (engine, sink, _) = engine_with_rules(vec![garden_door(&door)], registry);
+        engine.seed_contacts().await;
+        engine.handle_event(&opened(&door, true), fixed_now()).await;
+        let mut set: Vec<String> = sink
+            .calls()
+            .await
+            .into_iter()
+            .map(|(id, state)| {
+                assert_eq!(state.on, Some(false));
+                id.to_string()
+            })
+            .collect();
+        set.sort();
+        assert_eq!(set, ["z2m:office/go", "z2m:office/lightstrip"]);
+    }
+
+    #[tokio::test]
+    async fn a_door_still_open_does_not_open_again() {
+        let (registry, door) = office();
+        let (engine, sink, _) = engine_with_rules(vec![garden_door(&door)], registry);
+        engine.seed_contacts().await;
+        engine.handle_event(&opened(&door, true), fixed_now()).await;
+        // The sensor's next report, minutes later, still says open.
+        let later = fixed_now() + chrono::Duration::minutes(5);
+        engine.handle_event(&opened(&door, true), later).await;
+        assert_eq!(sink.calls().await.len(), 2, "one opening, two lights");
+        // Closed and opened again is a new opening.
+        engine.handle_event(&opened(&door, false), later).await;
+        engine
+            .handle_event(&opened(&door, true), later + chrono::Duration::minutes(1))
+            .await;
+        assert_eq!(sink.calls().await.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_door_open_when_niles_starts_has_not_just_opened() {
+        let (registry, door) = office();
+        registry.upsert(niles_core::Device::new(
+            door.clone(),
+            contact(true),
+            DeviceClass::Contact,
+        ));
+        let (engine, sink, _) = engine_with_rules(vec![garden_door(&door)], registry);
+        engine.seed_contacts().await;
+        engine.handle_event(&opened(&door, true), fixed_now()).await;
+        assert!(sink.calls().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_door_rule_waits_for_its_condition() {
+        let (registry, door) = office();
+        let mut rule = garden_door(&door);
+        rule.conditions.push(Condition::TimeOfDay {
+            after: NaiveTime::from_hms_opt(22, 0, 0),
+            before: NaiveTime::from_hms_opt(6, 0, 0),
+        });
+        let (engine, sink, _) = engine_with_rules(vec![rule], registry);
+        engine.seed_contacts().await;
+        engine.handle_event(&opened(&door, true), fixed_now()).await;
+        assert!(sink.calls().await.is_empty(), "noon is not night");
+    }
+
+    #[tokio::test]
+    async fn new_rules_run_in_place_of_the_old() {
+        let (registry, door) = office();
+        let (engine, sink, _) = engine_with_rules(vec![], registry);
+        engine.seed_contacts().await;
+        engine.replace(vec![garden_door(&door)]).await;
+        engine.handle_event(&opened(&door, true), fixed_now()).await;
+        assert_eq!(sink.calls().await.len(), 2);
     }
 
     // ---- dispatch tests --------------------------------------------

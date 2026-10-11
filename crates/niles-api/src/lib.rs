@@ -18,6 +18,7 @@
 //! ```
 
 pub mod auth;
+pub mod automations;
 pub mod captures;
 pub mod chat;
 pub mod climate;

@@ -5111,28 +5111,90 @@ impl Notifier for CenterNotifier {
     }
 }
 
-fn build_automation_engine(
+/// The rules to run: the household's own, in the order they were made,
+/// then the config file's. Any that do not parse are logged and left
+/// out.
+fn automation_rules(
+    stored: Option<&niles_automations::AutomationStore>,
     cfg: &niles_config::AutomationsConfig,
-    registry: Arc<DeviceRegistry>,
-    tz: chrono_tz::Tz,
-    sink: Arc<dyn DeviceSink>,
-    notifier: Option<Arc<dyn Notifier>>,
-) -> Option<Arc<AutomationEngine>> {
-    let mut rules = Vec::new();
+) -> Vec<Rule> {
+    let mut rules = stored.map(|s| s.runnable()).unwrap_or_default();
     for dto in &cfg.rules {
-        match Rule::from_dto(dto, "z2m") {
+        match Rule::from_dto(dto, niles_automations::store::DEFAULT_SOURCE) {
             Ok(rule) => rules.push(rule),
             Err(e) => tracing::warn!("skipping automation '{}': {e}", dto.id),
         }
     }
-    if rules.is_empty() {
-        tracing::info!("no valid automations loaded — automation engine disabled");
-        return None;
+    tracing::info!("automations: running {} rule(s)", rules.len());
+    rules
+}
+
+/// Hands each new automations document to a task that writes it, as
+/// [`QueuedGroceries`] does: saving a rule must not wait on the database.
+struct QueuedAutomations {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl niles_automations::AutomationPersistence for QueuedAutomations {
+    fn store(&self, document: &str) {
+        if self.tx.send(document.to_string()).is_err() {
+            tracing::warn!(
+                "[automations] nothing is writing them any more; this change is in memory only"
+            );
+        }
     }
-    tracing::info!("automation engine loaded with {} rule(s)", rules.len());
-    Some(Arc::new(AutomationEngine::new(
-        rules, registry, tz, sink, notifier,
-    )))
+}
+
+/// The household's automations, kept in Postgres when there is one.
+///
+/// Without a database they live as long as the process, and say so. A
+/// set that cannot be read is left out rather than started empty: the
+/// first rule made would otherwise overwrite the real ones.
+async fn build_automation_store(cfg: &Config) -> Option<Arc<niles_automations::AutomationStore>> {
+    let in_memory = || {
+        tracing::warn!("[automations] no database; rules made now will not survive a restart");
+        Some(Arc::new(niles_automations::AutomationStore::new()))
+    };
+    let Some(database) = &cfg.database else {
+        return in_memory();
+    };
+    let Ok(url) = database.resolve_url() else {
+        return in_memory();
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return in_memory();
+    };
+    let describe = backend.describe_target();
+    let table = Arc::new(niles_db::PostgresAutomations::new(backend.pool(), describe));
+    let store = match table.load().await {
+        Ok(Some(document)) => match niles_automations::AutomationStore::from_json(&document) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!(
+                    "[automations] the stored rules would not parse ({e}); they are unavailable this run"
+                );
+                return None;
+            }
+        },
+        Ok(None) => niles_automations::AutomationStore::new(),
+        Err(e) => {
+            tracing::error!("[automations] could not be read ({e}); they are unavailable this run");
+            return None;
+        }
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(document) = rx.recv().await {
+            if let Err(e) = table.store(&document).await {
+                tracing::error!("[automations] save failed: {e}");
+            }
+        }
+    });
+    Some(Arc::new(
+        store.with_sink(Arc::new(QueuedAutomations { tx })),
+    ))
 }
 
 /// The typed lighting config the curve loop runs on, plus the snapshot it
@@ -5813,6 +5875,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let timers = Arc::new(load_timer_store(cfg.persistence.directory.as_deref()));
     let scenes = build_scene_store(&cfg).await;
     let groceries = build_grocery_store(&cfg).await;
+    let automations = build_automation_store(&cfg).await;
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader
         .as_deref()
@@ -5978,16 +6041,28 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let automation_notifier = Arc::new(CenterNotifier {
         center: notifications.clone(),
     });
-    let automation_engine = build_automation_engine(
-        &cfg.automations,
+    // Always running, even with no rules: one made by voice or in the
+    // app starts working without a restart.
+    let automation_engine = Arc::new(AutomationEngine::new(
+        automation_rules(automations.as_deref(), &cfg.automations),
         registry.clone(),
         tz,
         automation_sink,
         Some(automation_notifier),
-    );
-    let _automation_handle = automation_engine
-        .as_ref()
-        .map(|engine| engine.clone().spawn(bus.clone()));
+    ));
+    let _automation_handle = automation_engine.clone().spawn(bus.clone());
+    if let Some(store) = automations.clone() {
+        let engine = automation_engine.clone();
+        let from_config = cfg.automations.clone();
+        let mut changes = store.subscribe();
+        tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                engine
+                    .replace(automation_rules(Some(&store), &from_config))
+                    .await;
+            }
+        });
+    }
 
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
 
@@ -6035,6 +6110,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
+    .with_automations(automations.clone())
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
     .with_chat(Some(Arc::new(AppChat {
