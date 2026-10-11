@@ -1045,11 +1045,38 @@ todo_state    = "Todo"         # column new tasks land in
 
 The LLM maps a casual spoken request to a clean issue title + brief — well within GPT-OSS 20B's range, no Tier 2 needed. It does not need to know workflow names or the harness at all; "make it AI-eligible in Todo" is the whole contract.
 
+### Calendars (Microsoft)
+
+"What's on my calendar tomorrow?", "when's my next meeting?", "put the dentist in on Thursday at ten." A calendar is the clearest case of a *personal reference*: "my calendar" means a different calendar for each person who says it, so this integration is built around the person, not the house.
+
+**Whose calendar.** Each person connects their own calendars, from their profile in the web UI. A calendar is only ever read or written for the person it belongs to: by voice, when [recognition](#user-recognition) has identified that person; in the app's chat, when they are signed in. An unrecognised voice gets no calendar at all ("I don't know who's asking"), and one person's calendar is never read out for another, whoever asks.
+
+**Microsoft first.** A personal Microsoft account (Outlook.com, Hotmail) and a work or school account (Microsoft Entra ID) are both reached through Microsoft Graph, with one app registration that accepts both kinds of account. Google Calendar would be a second backend behind the same tools; it is not part of v1.
+
+**Connecting.** "Connect a calendar" in the profile names the connection ("Private", "Work"), chooses its access, and sends the person through Microsoft's own sign-in (OAuth 2.0 authorization code; the redirect lands on `/calendars/microsoft/callback`). A person may connect several accounts; each is one connection.
+
+**Access is granted by Microsoft, not merely switched in Niles.** A connection is either **read only** or **read and write**, and that is what Niles asks Microsoft for: `Calendars.Read` or `Calendars.ReadWrite` (with `offline_access` and `User.Read`). A read-only connection holds a token that *cannot* write, so a work calendar connected read-only stays read-only even if Niles misbehaves. Changing a connection's access means signing in to it again to grant (or give up) the wider scope; the old token is discarded.
+
+**What is stored.** Per connection: the person, its name, the account's address, its access, and the refresh token — encrypted with the same key as the credentials typed into the app — in a `calendar_connections` table. Disconnecting deletes the row and its token. Access tokens are kept in memory only.
+
+**The app registration** is the household's, made once in the Microsoft Entra admin center ("accounts in any organizational directory and personal Microsoft accounts", the redirect URI above). Its client ID and secret are entered under Settings → Integrations like any other integration's credentials. A work tenant may still refuse a person's consent to an outside app; that is the employer's call, and the profile says so when Microsoft refuses.
+
+**By voice (LLM tools).**
+
+- `calendar_events(from, to)` — the speaker's events in a window, every connection merged and labelled with the connection's name. Times are the house's time zone.
+- `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` — only on a read-and-write connection. When the person has more than one, Niles asks which (by its name) unless they said. Every write is read back first and made only on a yes ("Dentist, Thursday at 10:00 in your private calendar — shall I?"), as [rules](#voice-created-rules) are.
+
+These tools exist only when the person asking has a connection; the LLM is told whose calendar it is looking at.
+
+**What leaves the house.** Answering a calendar question sends the events it needs — titles, times, places — to the LLM provider in the request that writes the answer, as any tool result is. Nothing is sent ahead of a question, and nothing is kept outside Niles's own database.
+
+**Not in v1:** reminders Niles speaks unprompted ("your meeting is in ten minutes"), which belong to [notifications](#notifications-niles-speaks-unprompted); inviting other people; recurring-series edits beyond a single occurrence; Google Calendar.
+
 ### Future integrations (not v1)
 
 The same pattern scales to:
 
-- **Calendar** (Microsoft 365 / Google Calendar) — read events, schedule things, get reminders
+- **Google Calendar** — a second backend for [calendars](#calendars-microsoft); spoken reminders of what is coming up
 - **Email** — summary digests, send drafts (with explicit confirmation)
 - **GitHub** directly — repository status, recent activity, code review requests
 - **Monitoring** — alerts from Grafana, Prometheus, Sentry surfaced as notifications
@@ -1140,7 +1167,7 @@ users
   id (uuid)
   name (display name)
   is_admin (boolean)
-  calendar_id (which calendar maps to this user, optional)
+  calendars (the connections they made, see Calendars)
   github_username (optional)
   linear_user (optional)
   bedroom (which room is this user's bedroom, for "wake me up" routing)
@@ -1149,7 +1176,7 @@ users
 
 The LLM uses these when a personal reference appears:
 
-- "What's on my calendar?" → looks up `speaker.calendar_id`, queries that calendar
+- "What's on my calendar?" → queries the speaker's own [calendar connections](#calendars-microsoft)
 - "Wake me up at 06:30 tomorrow" → looks up `speaker.bedroom`, creates a routine targeting that room
 - "Did my task get a PR yet?" → looks up `speaker.linear_user`, queries Linear scoped to that user
 
