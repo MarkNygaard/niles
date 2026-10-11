@@ -16,7 +16,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { api } from "@/lib/api";
-import { edgeScroll, useGripsHoldStill } from "@/lib/drag";
+import { edgeScroll, useGripsHoldStill, visibleBottom } from "@/lib/drag";
 import type { MediaGroup, MediaSpeaker, MediaView, RoomMusic } from "@/lib/api";
 import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
@@ -140,7 +140,7 @@ export function MediaPage() {
     let armed = false;
     let frame = requestAnimationFrame(function tick() {
       const at = pointer.current;
-      const by = at ? edgeScroll(at.y, window.innerHeight) : 0;
+      const by = at ? edgeScroll(at.y, visibleBottom()) : 0;
       if (by === 0) armed = true;
       if (at && by !== 0 && armed) {
         window.scrollBy(0, by);

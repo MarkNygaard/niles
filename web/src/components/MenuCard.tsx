@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DESTINATIONS, HOME, PROFILE } from "@/lib/destinations";
-import { edgeScroll, useGripsHoldStill } from "@/lib/drag";
+import { edgeScroll, useGripsHoldStill, visibleBottom } from "@/lib/drag";
 import type { MediaShown, MenuEntry, MenuLayout } from "@/lib/menu";
 import { cn } from "@/lib/utils";
 
@@ -169,7 +169,7 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
     let armed = false;
     let frame = requestAnimationFrame(function tick() {
       const y = pointer.current;
-      const by = edgeScroll(y, window.innerHeight);
+      const by = edgeScroll(y, visibleBottom());
       if (by === 0) armed = true;
       if (by !== 0 && armed) {
         window.scrollBy(0, by);
