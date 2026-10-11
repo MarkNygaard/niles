@@ -1045,21 +1045,37 @@ todo_state    = "Todo"         # column new tasks land in
 
 The LLM maps a casual spoken request to a clean issue title + brief — well within GPT-OSS 20B's range, no Tier 2 needed. It does not need to know workflow names or the harness at all; "make it AI-eligible in Todo" is the whole contract.
 
-### Calendars (Microsoft)
+### Calendars
 
 "What's on my calendar tomorrow?", "when's my next meeting?", "put the dentist in on Thursday at ten." A calendar is the clearest case of a *personal reference*: "my calendar" means a different calendar for each person who says it, so this integration is built around the person, not the house.
 
 **Whose calendar.** Each person connects their own calendars, from their profile in the web UI. A calendar is only ever read or written for the person it belongs to: by voice, when [recognition](#user-recognition) has identified that person; in the app's chat, when they are signed in. An unrecognised voice gets no calendar at all ("I don't know who's asking"), and one person's calendar is never read out for another, whoever asks.
 
-**Microsoft first.** A personal Microsoft account (Outlook.com, Hotmail) and a work or school account (Microsoft Entra ID) are both reached through Microsoft Graph, with one app registration that accepts both kinds of account. Google Calendar would be a second backend behind the same tools; it is not part of v1.
+**Three providers, one set of tools.** A household's calendars live where its people's phones and work put them:
 
-**Connecting.** "Connect a calendar" in the profile names the connection ("Private", "Work"), chooses its access, and sends the person through Microsoft's own sign-in (OAuth 2.0 authorization code; the redirect lands on `/calendars/microsoft/callback`). A person may connect several accounts; each is one connection.
+| | Reached through | Connected by |
+|---|---|---|
+| **Microsoft** — Outlook.com, Hotmail, and work or school accounts (Entra ID) | Microsoft Graph | Microsoft's sign-in (OAuth 2.0), redirect `/calendars/microsoft/callback` |
+| **Google** — Gmail and Google Workspace | Google Calendar API | Google's sign-in (OAuth 2.0), redirect `/calendars/google/callback` |
+| **iCloud** — the calendar on an iPhone | CalDAV, at `caldav.icloud.com` | the Apple ID and an **app-specific password** the person makes at appleid.apple.com |
 
-**Access is granted by Microsoft, not merely switched in Niles.** A connection is either **read only** or **read and write**, and that is what Niles asks Microsoft for: `Calendars.Read` or `Calendars.ReadWrite` (with `offline_access` and `User.Read`). A read-only connection holds a token that *cannot* write, so a work calendar connected read-only stays read-only even if Niles misbehaves. Changing a connection's access means signing in to it again to grant (or give up) the wider scope; the old token is discarded.
+A person may connect several, of any kind; each is one connection, with a name they choose ("Private", "Work"). The tools merge them.
 
-**What is stored.** Per connection: the person, its name, the account's address, its access, and the refresh token — encrypted with the same key as the credentials typed into the app — in a `calendar_connections` table. Disconnecting deletes the row and its token. Access tokens are kept in memory only.
+**Access.** A connection is either **read only** or **read and write**.
 
-**The app registration** is the household's, made once in the Microsoft Entra admin center ("accounts in any organizational directory and personal Microsoft accounts", the redirect URI above). Its client ID and secret are entered under Settings → Integrations like any other integration's credentials. A work tenant may still refuse a person's consent to an outside app; that is the employer's call, and the profile says so when Microsoft refuses.
+- **Microsoft and Google grant it.** That is what Niles asks them for — `Calendars.Read` or `Calendars.ReadWrite` (with `offline_access` and `User.Read`) from Microsoft; `calendar.readonly` or `calendar.events` from Google. A read-only connection holds a token that *cannot* write, so a work calendar connected read-only stays read-only even if Niles misbehaves. Changing a connection's access means signing in to it again; the old token is discarded.
+- **iCloud cannot.** Apple has no narrower credential than an app-specific password, and that password opens the whole account's calendars (and contacts and mail). For an iCloud connection "read only" is a rule Niles keeps, not one Apple enforces, and the profile says so where it is chosen. The password can be revoked at appleid.apple.com at any time, which ends the connection.
+
+**Which calendar.** Microsoft: the account's default calendar. Google: its primary calendar. iCloud: every calendar on the account that holds events, read together; new events go to the first of them, which on an iPhone is the default one ("Calendar" or "Home").
+
+**What is stored.** Per connection: the person, its provider, its name, the account's address, its access, and its credential — a refresh token, or iCloud's app-specific password — encrypted with the same key as the credentials typed into the app, in a `calendar_connections` table. Disconnecting deletes the row and its credential. Access tokens are kept in memory only.
+
+**The household's app registrations.** Microsoft and Google each need one, made once by whoever runs Niles, with its client ID and secret entered under Settings → Integrations:
+
+- *Microsoft:* the Entra admin center, "accounts in any organizational directory and personal Microsoft accounts", the redirect above. A work tenant may still refuse a person's consent to an outside app; that is the employer's call, and the profile says so when Microsoft refuses.
+- *Google:* a Google Cloud project with the Calendar API enabled and a web OAuth client with the redirect above. The app must be **published** rather than left in testing, where Google expires its sign-ins after seven days; unverified, it shows "Google hasn't verified this app" on the way in, which is expected for a household's own app.
+
+iCloud needs no registration.
 
 **By voice (LLM tools).**
 
@@ -1070,13 +1086,13 @@ These tools exist only when the person asking has a connection; the LLM is told 
 
 **What leaves the house.** Answering a calendar question sends the events it needs — titles, times, places — to the LLM provider in the request that writes the answer, as any tool result is. Nothing is sent ahead of a question, and nothing is kept outside Niles's own database.
 
-**Not in v1:** reminders Niles speaks unprompted ("your meeting is in ten minutes"), which belong to [notifications](#notifications-niles-speaks-unprompted); inviting other people; recurring-series edits beyond a single occurrence; Google Calendar.
+**Not in v1:** reminders Niles speaks unprompted ("your meeting is in ten minutes"), which belong to [notifications](#notifications-niles-speaks-unprompted); inviting other people; recurring-series edits beyond a single occurrence; choosing which of an account's calendars to read or write.
 
 ### Future integrations (not v1)
 
 The same pattern scales to:
 
-- **Google Calendar** — a second backend for [calendars](#calendars-microsoft); spoken reminders of what is coming up
+- **Calendar reminders** — spoken unprompted before what is coming up, from the [calendars](#calendars) already connected
 - **Email** — summary digests, send drafts (with explicit confirmation)
 - **GitHub** directly — repository status, recent activity, code review requests
 - **Monitoring** — alerts from Grafana, Prometheus, Sentry surfaced as notifications
@@ -1176,7 +1192,7 @@ users
 
 The LLM uses these when a personal reference appears:
 
-- "What's on my calendar?" → queries the speaker's own [calendar connections](#calendars-microsoft)
+- "What's on my calendar?" → queries the speaker's own [calendar connections](#calendars)
 - "Wake me up at 06:30 tomorrow" → looks up `speaker.bedroom`, creates a routine targeting that room
 - "Did my task get a PR yet?" → looks up `speaker.linear_user`, queries Linear scoped to that user
 
@@ -2428,7 +2444,7 @@ niles:
 
 ### Phase 13: Additional integrations and extensions
 - Additional presence sources (phone-based, BLE)
-- Calendar (Microsoft 365 / Google Calendar)
+- Calendar (Microsoft, Google, iCloud)
 - Email integration
 - GitHub direct integration
 - Monitoring/alerting bridge
