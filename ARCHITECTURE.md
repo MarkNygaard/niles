@@ -1419,8 +1419,8 @@ A rule is one **trigger**, any number of **conditions** (all must hold when the 
 
 ```json
 {
-  "id": "4f1c…",
-  "name": "Office lights off when the garden door opens",
+  "id": "office-lights-off-when-the-garden-door-opens",
+  "description": "Office lights off when the garden door opens",
   "enabled": true,
   "trigger":    { "type": "contact", "device": "office/door", "open": true },
   "conditions": [ { "kind": "time_of_day", "after": "07:00", "before": "23:00" } ],
@@ -1473,7 +1473,7 @@ When several rules fire on the same event they run in the order they were create
 `niles-automations`:
 
 - The rule model and the engine: subscribes to the internal event bus, evaluates conditions against the device registry, dispatches actions through the same command router the LLM's device tools use
-- Rules are stored in Postgres, one row per rule, in an `automations` table owned by `niles-db`; the engine reloads when a rule is saved, paused or removed — no restart
+- Rules are stored in Postgres, in an `automations` table owned by `niles-db` — one row holding the whole ordered set, as scenes and the shopping list are kept: there are a handful, they are read together, and the order is part of the record. The engine reloads when a rule is saved, paused or removed — no restart
 - `[[automation]]` tables in the TOML config, which predate the table, are still loaded, after the stored rules; the page shows them read-only, marked as coming from the config
 - HTTP: `GET/POST /automations`, `PUT/DELETE /automations/{id}`
 - LLM tools for the voice lifecycle: create (after confirmation), list, pause / resume, remove
