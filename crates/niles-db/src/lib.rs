@@ -27,6 +27,7 @@
 //! replacement, so a retry after a connection dies mid-write cannot apply
 //! anything twice.
 
+mod automations;
 mod captures;
 mod enrollments;
 mod groceries;
@@ -34,6 +35,7 @@ mod room_music;
 mod scenes;
 mod secrets;
 mod tado_tokens;
+pub use automations::PostgresAutomations;
 pub use captures::{Capture, PostgresCaptures};
 pub use enrollments::PostgresEnrollments;
 pub use groceries::PostgresGroceries;

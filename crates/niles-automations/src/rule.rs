@@ -25,6 +25,13 @@ pub enum Trigger {
         room: Option<RoomName>,
         on: Option<bool>,
     },
+    /// A door or window sensor changing: opening (`Some(true)`),
+    /// closing (`Some(false)`), or either. Only a change fires it — the
+    /// engine drops a sensor's periodic report of what it already said.
+    Contact {
+        device: DeviceId,
+        open: Option<bool>,
+    },
     DeviceAction {
         device: DeviceId,
         action: Option<String>,
@@ -49,6 +56,10 @@ pub enum Condition {
         device: DeviceId,
         on: bool,
     },
+    ContactIs {
+        device: DeviceId,
+        open: bool,
+    },
 }
 
 /// What to do when the rule fires.
@@ -57,6 +68,13 @@ pub enum Condition {
 pub enum Action {
     SetDevice {
         device: DeviceId,
+        on: Option<bool>,
+        brightness: Option<u8>,
+        kelvin: Option<u16>,
+    },
+    /// Every light in the room.
+    SetRoom {
+        room: RoomName,
         on: Option<bool>,
         brightness: Option<u8>,
         kelvin: Option<u16>,
@@ -132,6 +150,12 @@ impl Trigger {
                 }
                 _ => false,
             },
+            Trigger::Contact { device, open } => match ev {
+                Event::DeviceStateChanged { id, state } => {
+                    id == device && state.open.is_some() && (open.is_none() || state.open == *open)
+                }
+                _ => false,
+            },
             Trigger::DeviceAction { device, action } => match ev {
                 Event::DeviceAction {
                     id,
@@ -173,6 +197,10 @@ impl Condition {
                 .and_then(|d| d.state.on)
                 .map(|s| s == *on)
                 .unwrap_or(false),
+            Condition::ContactIs { device, open } => registry
+                .get(device)
+                .and_then(|d| d.state.open)
+                .is_some_and(|s| s == *open),
         }
     }
 }
@@ -226,6 +254,10 @@ fn parse_trigger(
             room: room.as_ref().map(|s| parse_room_name(id, s)).transpose()?,
             on: *on,
         }),
+        niles_config::TriggerDto::Contact { device, open } => Ok(Trigger::Contact {
+            device: parse_device_id(id, device, default_source)?,
+            open: *open,
+        }),
         niles_config::TriggerDto::DeviceAction { device, action } => Ok(Trigger::DeviceAction {
             device: parse_device_id(id, device, default_source)?,
             action: action.clone(),
@@ -253,6 +285,10 @@ fn parse_condition(
             device: parse_device_id(id, device, default_source)?,
             on: *on,
         }),
+        niles_config::ConditionDto::ContactIs { device, open } => Ok(Condition::ContactIs {
+            device: parse_device_id(id, device, default_source)?,
+            open: *open,
+        }),
     }
 }
 
@@ -264,24 +300,23 @@ fn parse_action(id: &str, dto: &niles_config::ActionDto, default_source: &str) -
             brightness,
             kelvin,
         } => {
-            if let Some(b) = brightness
-                && *b > 100
-            {
-                return Err(Error::InvalidBrightness {
-                    id: id.to_string(),
-                    value: *b,
-                });
-            }
-            if let Some(k) = kelvin
-                && !(2000..=6500).contains(k)
-            {
-                return Err(Error::InvalidKelvin {
-                    id: id.to_string(),
-                    value: *k,
-                });
-            }
+            check_light(id, *brightness, *kelvin)?;
             Ok(Action::SetDevice {
                 device: parse_device_id(id, device, default_source)?,
+                on: *on,
+                brightness: *brightness,
+                kelvin: *kelvin,
+            })
+        }
+        niles_config::ActionDto::SetRoom {
+            room,
+            on,
+            brightness,
+            kelvin,
+        } => {
+            check_light(id, *brightness, *kelvin)?;
+            Ok(Action::SetRoom {
+                room: parse_room_name(id, room)?,
                 on: *on,
                 brightness: *brightness,
                 kelvin: *kelvin,
@@ -297,6 +332,26 @@ fn parse_action(id: &str, dto: &niles_config::ActionDto, default_source: &str) -
             priority: parse_priority(id, priority.as_deref())?,
         }),
     }
+}
+
+fn check_light(id: &str, brightness: Option<u8>, kelvin: Option<u16>) -> Result<()> {
+    if let Some(b) = brightness
+        && b > 100
+    {
+        return Err(Error::InvalidBrightness {
+            id: id.to_string(),
+            value: b,
+        });
+    }
+    if let Some(k) = kelvin
+        && !(2000..=6500).contains(&k)
+    {
+        return Err(Error::InvalidKelvin {
+            id: id.to_string(),
+            value: k,
+        });
+    }
+    Ok(())
 }
 
 fn parse_device_id(id: &str, value: &str, default_source: &str) -> Result<DeviceId> {
