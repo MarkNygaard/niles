@@ -5,6 +5,7 @@ import {
   ShoppingBasket,
   SlidersHorizontal,
   UserRound,
+  Workflow,
 } from "lucide-react";
 import type { MenuEntry } from "@/lib/menu";
 
@@ -59,5 +60,11 @@ export const DESTINATIONS: Record<MenuEntry, Destination> = {
     label: "Settings",
     icon: <SlidersHorizontal />,
     owns: (r) => r === "/me/settings",
+  },
+  automations: {
+    href: "#/automations",
+    label: "Automations",
+    icon: <Workflow />,
+    owns: (r) => r === "/automations" || r.startsWith("/automations/"),
   },
 };

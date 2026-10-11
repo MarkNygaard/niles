@@ -14,6 +14,7 @@ export default defineConfig({
     // these routes, so there is nothing to proxy.
     proxy: {
       "/config": "http://localhost:8080",
+      "/automations": "http://localhost:8080",
       "/devices": "http://localhost:8080",
       "/groceries": "http://localhost:8080",
       "/chat": "http://localhost:8080",

@@ -1,0 +1,87 @@
+import { Handle, Position } from "@xyflow/react";
+import type { Node, NodeProps } from "@xyflow/react";
+import {
+  BellRing,
+  Clock,
+  DoorClosed,
+  DoorOpen,
+  House,
+  Lamp,
+  LampCeiling,
+  Lightbulb,
+  Power,
+  Timer,
+  ToggleLeft,
+  X,
+} from "lucide-react";
+import { KIND_LABEL, ROLE_LABEL, kindOf } from "@/lib/automations";
+import type { StepData, StepKind } from "@/lib/automations";
+import { cn } from "@/lib/utils";
+
+export const KIND_ICON: Record<StepKind, React.ReactNode> = {
+  contact: <DoorOpen />,
+  device_state: <Power />,
+  device_action: <ToggleLeft />,
+  timer_fired: <Timer />,
+  presence: <House />,
+  time_of_day: <Clock />,
+  device_is: <Lightbulb />,
+  contact_is: <DoorClosed />,
+  set_room: <LampCeiling />,
+  set_device: <Lamp />,
+  notify: <BellRing />,
+};
+
+/** A step as the canvas draws it: removable, unless it is the trigger
+    or the flow is only being looked at. */
+export type CanvasNode = Node<StepData & { onRemove?: () => void }, "step">;
+
+const HANDLE = "!h-2 !w-2 !border-0 !bg-border";
+
+export function StepNode({ data, selected }: NodeProps<CanvasNode>) {
+  const { step, summary, onRemove } = data;
+  const kind = kindOf(step);
+  return (
+    <div
+      className={cn(
+        "bg-card text-card-foreground flex h-full w-full items-center gap-3 rounded-xl border px-3 shadow-sm transition-colors",
+        selected ? "border-primary ring-primary/30 ring-2" : "border-border",
+      )}
+    >
+      {step.role !== "trigger" && (
+        <Handle type="target" position={Position.Top} isConnectable={false} className={HANDLE} />
+      )}
+      <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg [&>svg]:size-4">
+        {KIND_ICON[kind]}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-muted-foreground truncate text-[11px] font-medium tracking-wide uppercase">
+          {ROLE_LABEL[step.role]} · {KIND_LABEL[kind]}
+        </div>
+        <div className="truncate text-sm font-medium" title={summary}>
+          {summary}
+        </div>
+      </div>
+      {onRemove && (
+        <button
+          type="button"
+          aria-label={`Remove ${summary}`}
+          // `nodrag` keeps React Flow from reading the press as the
+          // start of a pan; stopping it keeps it from selecting.
+          className="nodrag text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 -mr-1 flex size-7 shrink-0 items-center justify-center rounded-md focus-visible:ring-3 focus-visible:outline-none"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+        >
+          <X className="size-4" />
+        </button>
+      )}
+      <Handle type="source" position={Position.Bottom} isConnectable={false} className={HANDLE} />
+    </div>
+  );
+}
+
+/** Module-level, so React Flow sees the same object every render and
+    does not warn or remount every node. */
+export const nodeTypes = { step: StepNode };

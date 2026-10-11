@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { applyTheme, isDark, storedTheme } from "./theme";
+import { act, renderHook } from "@testing-library/react";
+import { applyTheme, isDark, storedTheme, useDarkMode } from "./theme";
 
 function systemPrefers(dark: boolean) {
   vi.stubGlobal(
@@ -80,5 +81,17 @@ describe("applyTheme", () => {
     expect(
       document.querySelector('meta[name="theme-color"]')?.getAttribute("content"),
     ).toBe("#f7f7f8");
+  });
+});
+
+describe("useDarkMode", () => {
+  it("follows the page as the theme is applied", async () => {
+    systemPrefers(false);
+    applyTheme("light");
+    const { result } = renderHook(() => useDarkMode());
+    expect(result.current).toBe(false);
+    await act(async () => applyTheme("dark"));
+    expect(result.current).toBe(true);
+    applyTheme("light");
   });
 });

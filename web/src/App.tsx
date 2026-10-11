@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
+import { AutomationsPage } from "@/components/AutomationsPage";
 import { ChatPage } from "@/components/ChatPage";
 import { ConfigPanel } from "@/components/ConfigPanel";
 import { GroceriesPage } from "@/components/GroceriesPage";
@@ -16,6 +17,20 @@ import { menuLayout } from "@/lib/menu";
 import { useRoute } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+
+// Its own chunk: React Flow and dagre are a quarter of the app,
+// and only this one page draws with them.
+const AutomationEditor = lazy(() =>
+  import("@/components/AutomationEditor").then((m) => ({ default: m.AutomationEditor })),
+);
+
+function editor(id?: string) {
+  return (
+    <Suspense fallback={<Skeleton className="h-96 w-full" />}>
+      <AutomationEditor id={id} />
+    </Suspense>
+  );
+}
 
 interface Screen {
   /** The route this screen is, which an unknown one is not. */
@@ -173,9 +188,26 @@ function screenFor(route: string): Screen {
       return { at: "/me/profile", title: "My profile", body: <MyProfile /> };
     case "/me/settings":
       return { at: route, title: "Settings", body: <ConfigPanel /> };
-    // Anything unknown is the house: an old bookmark or a mistyped hash
-    // should land somewhere useful rather than on a blank page.
-    default:
-      return { at: "/", title: "Niles", body: <RoomDashboard /> };
+    case "/automations":
+      return { at: route, title: "Automations", body: <AutomationsPage /> };
+    case "/automations/new":
+      return {
+        at: route,
+        title: "New automation",
+        parent: "#/automations",
+        body: editor(),
+      };
   }
+  const rule = /^\/automations\/([^/]+)$/.exec(route);
+  if (rule) {
+    return {
+      at: route,
+      title: "Automation",
+      parent: "#/automations",
+      body: editor(decodeURIComponent(rule[1])),
+    };
+  }
+  // Anything unknown is the house: an old bookmark or a mistyped hash
+  // should land somewhere useful rather than on a blank page.
+  return { at: "/", title: "Niles", body: <RoomDashboard /> };
 }
