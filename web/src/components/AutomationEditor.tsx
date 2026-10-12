@@ -5,6 +5,7 @@ import { AUTOMATIONS, nameOf, useSetEnabled } from "@/components/AutomationsPage
 import { FlowCanvas } from "@/components/automations/FlowCanvas";
 import { Inspector } from "@/components/automations/Inspector";
 import { Palette } from "@/components/automations/Palette";
+import { RecentRuns } from "@/components/automations/RecentRuns";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -20,7 +21,18 @@ import { Switch } from "@/components/ui/switch";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { api } from "@/lib/api";
 import type { AutomationView, Device, Rule } from "@/lib/api";
-import { defaultAction, defaultCondition, newRule, problems, withoutStep } from "@/lib/automations";
+import {
+  addAction,
+  addCondition,
+  addTrigger,
+  defaultAction,
+  defaultCondition,
+  defaultTrigger,
+  newRule,
+  problems,
+  withTriggerIds,
+  withoutStep,
+} from "@/lib/automations";
 import type { Draft } from "@/lib/automations";
 import { cn } from "@/lib/utils";
 
@@ -104,6 +116,7 @@ function Viewer({ view }: { view?: AutomationView }) {
           ? "Open on a wider screen to edit."
           : "This one is written in the config file, and is changed there."}
       </p>
+      {stored && <RecentRuns id={view.rule.id} triggers={view.rule.triggers} />}
       {stored && (
         <div className="flex items-center gap-3">
           {/* Not a <label>: Base UI names a switch after the label it
@@ -132,8 +145,8 @@ function Builder({ view, devices }: { view?: AutomationView; devices: Device[] }
   const queryClient = useQueryClient();
   // Taken once: a refetch of the list while somebody edits must not
   // throw their edits away.
-  const [rule, setRule] = useState<Draft>(() => view?.rule ?? newRule(devices));
-  const [selected, setSelected] = useState<string | null>("trigger");
+  const [rule, setRule] = useState<Draft>(() => withTriggerIds(view?.rule ?? newRule(devices)));
+  const [selected, setSelected] = useState<string | null>("trigger-0");
   const [removing, setRemoving] = useState(false);
 
   const save = useMutation({
@@ -206,29 +219,32 @@ function Builder({ view, devices }: { view?: AutomationView; devices: Device[] }
           />
           <div className="absolute top-3 left-3 z-10">
             <Palette
-              onAddCondition={(kind) =>
-                change(
-                  {
-                    ...rule,
-                    conditions: [...rule.conditions, defaultCondition(kind, devices)],
-                  },
-                  `condition-${rule.conditions.length}`,
-                )
-              }
-              onAddAction={(kind) =>
-                change(
-                  {
-                    ...rule,
-                    actions: [...rule.actions, defaultAction(kind, devices)],
-                  },
-                  `action-${rule.actions.length}`,
-                )
-              }
+              onAddTrigger={(kind) => {
+                const added = addTrigger(rule, defaultTrigger(kind, devices));
+                change(added.rule, added.id);
+              }}
+              onAddCondition={(kind) => {
+                const added = addCondition(rule, defaultCondition(kind, devices, rule.triggers));
+                change(added.rule, added.id);
+              }}
+              onAddAction={(kind) => {
+                const added = addAction(rule, defaultAction(kind, devices, rule.triggers));
+                change(added.rule, added.id);
+              }}
             />
           </div>
         </div>
-        <div className="bg-card rounded-xl border p-4">
-          <Inspector rule={rule} selected={selected} devices={devices} onChange={change} />
+        <div className="flex flex-col gap-4">
+          <aside aria-label="Selected step" className="bg-card rounded-xl border p-4">
+            <Inspector rule={rule} selected={selected} devices={devices} onChange={change} />
+          </aside>
+          {/* The saved rule's triggers, not the draft's: those are the
+              ones its runs name. */}
+          {view && (
+            <div className="bg-card rounded-xl border p-4">
+              <RecentRuns id={view.rule.id} triggers={view.rule.triggers} />
+            </div>
+          )}
         </div>
       </div>
 

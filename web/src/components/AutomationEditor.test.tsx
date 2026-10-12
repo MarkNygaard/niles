@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AutomationEditor } from "./AutomationEditor";
 import { api } from "@/lib/api";
-import type { AutomationView, Device, DeviceState, Rule } from "@/lib/api";
+import type { AutomationView, Device, DeviceState, Rule, Run } from "@/lib/api";
 
 const quiet: DeviceState = {
   on: null,
@@ -40,7 +40,7 @@ const garden: Rule = {
   id: "4f1c",
   description: "Garden door",
   enabled: true,
-  trigger: { type: "contact", device: "office/door", open: true },
+  triggers: [{ id: "t1", type: "contact", device: "office/door", open: true }],
   conditions: [],
   actions: [
     { do: "set_room", room: "office", on: false },
@@ -55,8 +55,14 @@ const stored: AutomationView = {
   error: null,
 };
 
-function open(id: string | undefined, rules: AutomationView[] = [stored], devices = house) {
+function open(
+  id: string | undefined,
+  rules: AutomationView[] = [stored],
+  devices = house,
+  runs: Run[] = [],
+) {
   vi.spyOn(api, "automations").mockResolvedValue({ rules });
+  vi.spyOn(api, "automationRuns").mockResolvedValue({ runs });
   vi.spyOn(api, "devices").mockResolvedValue(devices);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -103,7 +109,7 @@ describe("AutomationEditor", () => {
       expect(create).toHaveBeenCalledWith({
         description: "Garden door",
         enabled: true,
-        trigger: { type: "contact", device: "office/door", open: true },
+        triggers: [{ id: "t1", type: "contact", device: "office/door", open: true }],
         conditions: [],
         actions: [{ do: "set_room", room: "office", on: false }],
       }),
@@ -125,7 +131,7 @@ describe("AutomationEditor", () => {
   it("will not save without a door to start from, and says so", async () => {
     open(undefined, [], [device("z2m:office/desk_lamp", "light")]);
     expect(await screen.findByRole("button", { name: "Save" })).toBeDisabled();
-    expect(screen.getByText("The trigger needs a device.")).toBeInTheDocument();
+    expect(screen.getByText("Trigger 1 needs a device.")).toBeInTheDocument();
   });
 
   it("adds a condition from the palette, between the trigger and the actions", async () => {
@@ -164,7 +170,7 @@ describe("AutomationEditor", () => {
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith({
         ...garden,
-        trigger: { type: "contact", device: "office/door", open: false },
+        triggers: [{ id: "t1", type: "contact", device: "office/door", open: false }],
       }),
     );
   });
@@ -214,5 +220,161 @@ describe("AutomationEditor", () => {
   it("says when the rule is gone", async () => {
     open("gone");
     expect(await screen.findByText(/no such automation/)).toBeInTheDocument();
+  });
+
+  it("adds a second trigger, named by its place, and saves both with ids", async () => {
+    open(undefined);
+    const create = vi.spyOn(api, "createAutomation").mockResolvedValue(stored);
+    fireEvent.click(await screen.findByRole("button", { name: "Add trigger" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Home or away" }));
+    expect(await screen.findByText("Trigger 2 · Home or away")).toBeInTheDocument();
+    // Selected as it is added: its own fields are the ones showing.
+    expect(
+      screen.getByRole("button", { name: "Somebody comes home", pressed: true }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          triggers: [
+            { id: "t1", type: "contact", device: "office/door", open: true },
+            { id: "t2", type: "presence", state: "home" },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("waits until a door has stayed open", async () => {
+    open(undefined);
+    // The trigger is selected to begin with.
+    fireEvent.change(await screen.findByRole("spinbutton", { name: "Minutes" }), {
+      target: { value: "10" },
+    });
+    expect(screen.getByText("Office door has been open for 10 minutes")).toBeInTheDocument();
+  });
+
+  it("picks weekdays with toggles", async () => {
+    open(undefined);
+    fireEvent.click(await screen.findByRole("button", { name: "Add trigger" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Time of day" }));
+    const days = within(await screen.findByRole("group", { name: "Days" }));
+    for (const day of ["Mon", "Tue", "Wed", "Thu", "Fri"]) {
+      fireEvent.click(days.getByRole("button", { name: day }));
+    }
+    expect(days.getByRole("button", { name: "Fri" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("At 07:00 on weekdays")).toBeInTheDocument();
+  });
+
+  it("adds a wait as a step of its own", async () => {
+    open(undefined);
+    fireEvent.click(await screen.findByRole("button", { name: "Add action" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Wait" }));
+    expect(await screen.findByText("Wait 5 minutes")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Minutes" }), {
+      target: { value: "" },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Seconds" }), {
+      target: { value: "30" },
+    });
+    expect(screen.getByText("Wait 30 seconds")).toBeInTheDocument();
+  });
+
+  it("branches on which trigger started it, and saves the branches nested", async () => {
+    open(undefined);
+    const create = vi.spyOn(api, "createAutomation").mockResolvedValue(stored);
+    fireEvent.click(await screen.findByRole("button", { name: "Add trigger" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Home or away" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add action" }));
+    fireEvent.click(await screen.findByRole("button", { name: "If, then, else" }));
+
+    // With two triggers, a new if starts out asking whether the first
+    // started it — shown by place and sentence, never by id.
+    const panel = within(screen.getByRole("complementary", { name: "Selected step" }));
+    expect(panel.getByRole("checkbox", { name: "Trigger 1 — Office door opens" })).toBeChecked();
+    expect(
+      panel.getByRole("checkbox", { name: "Trigger 2 — Somebody comes home" }),
+    ).not.toBeChecked();
+
+    fireEvent.click(panel.getByRole("button", { name: "Add to else" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Say something" }));
+    // The new step is the one selected, so its fields are showing.
+    fireEvent.change(await screen.findByRole("textbox", { name: "Say" }), {
+      target: { value: "Welcome home" },
+    });
+    expect(screen.getByText('Say "Welcome home"')).toBeInTheDocument();
+    expect(screen.getByText(/^Else ·/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actions: [
+            { do: "set_room", room: "office", on: false },
+            {
+              do: "if",
+              conditions: [{ kind: "triggered_by", triggers: ["t1"] }],
+              then: [],
+              else: [{ do: "notify", body: "Welcome home" }],
+            },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("will not save a which-trigger check whose trigger was removed", async () => {
+    open(undefined);
+    fireEvent.click(await screen.findByRole("button", { name: "Add trigger" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Home or away" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Which trigger started it" }));
+    expect(await screen.findByText("Only if started by Trigger 1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Office door opens" }));
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText("Condition 1 needs a trigger to have started it.")).toBeInTheDocument();
+  });
+
+  it("shows a stored rule's recent runs beside the flow", async () => {
+    const today = new Date();
+    today.setHours(14, 2, 0, 0);
+    open("4f1c", [stored], house, [
+      {
+        started_at: today.toISOString(),
+        trigger: "t1",
+        outcome: "done",
+        reason: null,
+        steps: ["turned off the office lights"],
+      },
+    ]);
+    const runs = within(await screen.findByRole("region", { name: "Recent runs" }));
+    expect(await runs.findByText("Today 14:02")).toBeInTheDocument();
+    expect(runs.getByText("Trigger 1")).toBeInTheDocument();
+    expect(runs.getByText("Done")).toBeInTheDocument();
+    expect(runs.getByText("turned off the office lights")).toBeInTheDocument();
+    expect(api.automationRuns).toHaveBeenCalledWith("4f1c");
+  });
+
+  it("says why a run stopped, on a phone too", async () => {
+    onAPhone();
+    open("4f1c", [stored], house, [
+      {
+        started_at: new Date().toISOString(),
+        trigger: "t1",
+        outcome: "stopped",
+        reason: "it was before 07:00",
+        steps: [],
+      },
+    ]);
+    expect(await screen.findByText("it was before 07:00")).toBeInTheDocument();
+    expect(screen.getByText("Stopped")).toBeInTheDocument();
+  });
+
+  it("asks for no runs of a rule not saved yet", async () => {
+    open(undefined);
+    expect(await screen.findByText("Office door opens")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Recent runs" })).toBeNull();
+    expect(api.automationRuns).not.toHaveBeenCalled();
   });
 });

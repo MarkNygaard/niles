@@ -11,11 +11,11 @@ import "@xyflow/react/dist/style.css";
 import { nodeTypes } from "@/components/automations/StepNode";
 import type { CanvasNode } from "@/components/automations/StepNode";
 import { toFlow } from "@/lib/automations";
-import type { Draft } from "@/lib/automations";
+import type { Parts } from "@/lib/automations";
 import { useDarkMode } from "@/lib/theme";
 
 export interface FlowCanvasProps {
-  rule: Pick<Draft, "trigger" | "conditions" | "actions">;
+  rule: Parts;
   selected?: string | null;
   /** Left out, the flow is only looked at: nothing selects, nothing
       is removed, and a finger on it scrolls the page. */
@@ -26,7 +26,7 @@ export interface FlowCanvasProps {
 const FIT = { padding: 0.2, maxZoom: 1 };
 
 /**
- * The rule drawn as a flow, trigger at the top.
+ * The rule drawn as a flow, triggers at the top.
  *
  * Nothing on it changes what the rule means: nodes cannot be dragged
  * or joined, because the order is the chain. Adding, removing and
@@ -43,18 +43,25 @@ export function FlowCanvas(props: FlowCanvasProps) {
 function Canvas({ rule, selected, onSelect, onRemove }: FlowCanvasProps) {
   const dark = useDarkMode();
   const { fitView } = useReactFlow();
-  const flow = useMemo(() => toFlow(rule), [rule.trigger, rule.conditions, rule.actions]);
+  const flow = useMemo(() => toFlow(rule), [rule.triggers, rule.conditions, rule.actions]);
+  // The last trigger stays: a rule always has one.
+  const lone = rule.triggers.length <= 1;
   const nodes = useMemo(
     () =>
-      flow.nodes.map((node): CanvasNode => ({
-        ...node,
-        selected: node.id === selected,
-        data: {
-          ...node.data,
-          onRemove: onRemove && node.id !== "trigger" ? () => onRemove(node.id) : undefined,
-        },
-      })),
-    [flow, selected, onRemove],
+      flow.nodes.map(
+        (node): CanvasNode => ({
+          ...node,
+          selected: node.id === selected,
+          data: {
+            ...node.data,
+            onRemove:
+              onRemove && !(lone && node.data.step.role === "trigger")
+                ? () => onRemove(node.id)
+                : undefined,
+          },
+        }),
+      ),
+    [flow, selected, onRemove, lone],
   );
 
   // `fitView` on the component fits once, on the first render. A step

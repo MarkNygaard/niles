@@ -1,20 +1,26 @@
 import { Handle, Position } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import {
+  AlarmClock,
   BellRing,
   Clock,
   DoorClosed,
   DoorOpen,
+  GitBranch,
+  Hourglass,
   House,
   Lamp,
   LampCeiling,
   Lightbulb,
+  ListFilter,
   Power,
+  Sunset,
+  Thermometer,
   Timer,
   ToggleLeft,
   X,
 } from "lucide-react";
-import { KIND_LABEL, ROLE_LABEL, kindOf } from "@/lib/automations";
+import { kindOf, labelOf } from "@/lib/automations";
 import type { StepData, StepKind } from "@/lib/automations";
 import { cn } from "@/lib/utils";
 
@@ -24,22 +30,29 @@ export const KIND_ICON: Record<StepKind, React.ReactNode> = {
   device_action: <ToggleLeft />,
   timer_fired: <Timer />,
   presence: <House />,
+  numeric: <Thermometer />,
+  time: <AlarmClock />,
+  sun: <Sunset />,
   time_of_day: <Clock />,
   device_is: <Lightbulb />,
   contact_is: <DoorClosed />,
+  presence_is: <House />,
+  triggered_by: <ListFilter />,
   set_room: <LampCeiling />,
   set_device: <Lamp />,
   notify: <BellRing />,
+  delay: <Hourglass />,
+  if: <GitBranch />,
 };
 
-/** A step as the canvas draws it: removable, unless it is the trigger
-    or the flow is only being looked at. */
+/** A step as the canvas draws it: removable, unless it is the only
+    trigger or the flow is only being looked at. */
 export type CanvasNode = Node<StepData & { onRemove?: () => void }, "step">;
 
 const HANDLE = "!h-2 !w-2 !border-0 !bg-border";
 
 export function StepNode({ data, selected }: NodeProps<CanvasNode>) {
-  const { step, summary, onRemove } = data;
+  const { step, heading, summary, onRemove } = data;
   const kind = kindOf(step);
   return (
     <div
@@ -56,7 +69,7 @@ export function StepNode({ data, selected }: NodeProps<CanvasNode>) {
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-muted-foreground truncate text-[11px] font-medium tracking-wide uppercase">
-          {ROLE_LABEL[step.role]} · {KIND_LABEL[kind]}
+          {heading} · {labelOf(step)}
         </div>
         <div className="truncate text-sm font-medium" title={summary}>
           {summary}

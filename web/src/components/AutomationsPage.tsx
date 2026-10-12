@@ -4,8 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { useRuns } from "@/components/automations/RecentRuns";
 import { api } from "@/lib/api";
 import type { AutomationView, Rule } from "@/lib/api";
+import { lastRunText } from "@/lib/automations";
 import { cn } from "@/lib/utils";
 
 export const AUTOMATIONS = ["automations"];
@@ -126,6 +128,7 @@ function AutomationCard({
         </div>
       )}
       {error && <p className="text-destructive mt-1 text-xs">{error}</p>}
+      {stored && <LastRun id={rule.id} />}
     </>
   );
 
@@ -154,4 +157,13 @@ function AutomationCard({
       )}
     </li>
   );
+}
+
+/** The newest run in one muted line, or nothing until there is one:
+    the card is about the rule, and this is only a hint that it ran. */
+function LastRun({ id }: { id: string }) {
+  const runs = useRuns(id);
+  const last = runs.data?.runs[0];
+  if (!last) return null;
+  return <p className="text-muted-foreground mt-1 truncate text-xs">{lastRunText(last)}</p>;
 }
