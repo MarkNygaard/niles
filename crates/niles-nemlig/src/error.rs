@@ -8,6 +8,11 @@ pub enum Error {
     /// The site answered, but not with what was asked for.
     #[error("nemlig.com answered {status}: {reason}")]
     Api { status: u16, reason: String },
+    /// A success that was not the JSON asked for — a web page where an
+    /// answer should be, which is what nemlig sends a session it has
+    /// ended without saying so. `seen` is its content type and title.
+    #[error("nemlig.com answered {status} with {seen}, not an answer Niles could read")]
+    Unreadable { status: u16, seen: String },
     #[error("could not reach nemlig.com: {0}")]
     Http(#[from] reqwest::Error),
 }
