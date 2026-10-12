@@ -1458,34 +1458,57 @@ The split keeps complex behavior testable in code while letting the household ad
 
 ### Rule shape
 
-A rule is one **trigger**, any number of **conditions** (all must hold when the trigger fires), and one or more **actions**, run in order:
+A rule is one or more **triggers**, any number of **conditions** (all must hold when a trigger fires), and one or more **actions**, run in order:
 
 ```json
 {
-  "id": "office-lights-off-when-the-garden-door-opens",
-  "description": "Office lights off when the garden door opens",
+  "id": "office-lights-and-the-garden-door",
+  "description": "Office lights and the garden door",
   "enabled": true,
-  "trigger":    { "type": "contact", "device": "office/door", "open": true },
-  "conditions": [ { "kind": "time_of_day", "after": "07:00", "before": "23:00" } ],
-  "actions":    [ { "do": "set_room", "room": "office", "on": false } ]
+  "triggers": [
+    { "id": "opened", "type": "contact", "device": "office/door", "open": true },
+    { "id": "left-open", "type": "contact", "device": "office/door", "open": true, "for": { "minutes": 10 } }
+  ],
+  "conditions": [ { "kind": "sun", "after": "sunset", "before": "sunrise" } ],
+  "actions": [
+    { "do": "if",
+      "conditions": [ { "kind": "triggered_by", "triggers": ["opened"] } ],
+      "then": [ { "do": "set_room", "room": "office", "on": false } ],
+      "else": [ { "do": "notify", "body": "The garden door has been open for ten minutes", "room": "living_room" } ] }
+  ]
 }
 ```
 
 The vocabulary is deliberately narrow and grows only as new needs appear:
 
-| | v1 |
+| | |
 |---|---|
-| **Triggers** | `device_state` (a device turns on / off), `contact` (a door or window sensor opens / closes), `device_action` (a button or dimmer press), `timer_fired`, `presence` (home becomes occupied / unoccupied) |
-| **Conditions** | `time_of_day` (a window, wrapping past midnight), `device_is` (a light is on / off), `contact_is` (a door or window is open / closed) |
-| **Actions** | `set_device` (power, brightness, colour temperature), `set_room` (every light in a room), `notify` (spoken in a room) |
+| **Triggers** | `contact` (a door or window opens / closes), `device_state` (a device turns on / off), `numeric` (a reading — temperature, humidity, battery, brightness — goes above or below a value), `device_action` (a button or dimmer press), `presence` (the house becomes occupied / unoccupied), `time` (a time of day, on chosen weekdays), `sun` (sunrise or sunset, with an offset), `timer_fired` |
+| **Conditions** | `time_of_day` (a window, wrapping past midnight, on chosen weekdays), `sun` (after / before sunrise or sunset, with offsets), `device_is`, `contact_is`, `numeric` (a reading above / below a value), `presence_is` (the house occupied / unoccupied), `triggered_by` (which of the rule's triggers started this run) |
+| **Actions** | `set_device`, `set_room` (every light in a room), `notify` (spoken in a room), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
 
 No general scripting language — that would be a security and complexity disaster. Devices are named the way people and the LLM name them (`office/door`); the source prefix (`z2m:`) is filled in by Niles.
 
-Rules are one straight line: one trigger, then conditions, then actions. Branches (if / else) and several triggers per rule are out of scope for v1; two rules express both.
+**Several triggers.** One rule can start several ways, so a pair of rules — "when the door opens…" and "when it closes…" — is one. Each trigger has an id, given by Niles (`t1`, `t2`…) when the person or the LLM gives none; `triggered_by` names the triggers it means by their ids, and the app shows them by their position and sentence, never asks for an id. A `triggered_by` naming a trigger since removed is refused when the rule is saved.
+
+**How long.** A `contact`, `device_state`, `numeric` or `presence` trigger can carry `for` (hours, minutes, seconds): it fires once its state has held that long — "the door has been open for ten minutes" — and not at all if the state changes before then.
+
+**Branches.** `if` takes the same conditions a rule does, and its `then` and `else` are action lists of their own, which may hold an `if` in turn, to a depth of three. That, with `triggered_by`, is how one rule does different things for different triggers.
+
+**Limits.** At most ten triggers; `for` and `delay` at most 24 hours. Sun triggers and conditions need the house's location (`[home] latitude` / `longitude`); a rule that uses the sun is refused while there is none.
+
+A rule saved before triggers were a list — `"trigger": {…}` — reads as a list of one, with the id `t1`; it is written back as a list the next time it is saved. TOML `[[automation]]` tables may use either.
+
+### When a rule runs
+
+- **One run at a time, the newest wins.** A rule that is still running — waiting out a `delay` — when one of its triggers fires again stops where it is and starts over. That is what "turn the lights off five minutes after the door closes" needs: if the door opens again in the meantime, the lights are left alone.
+- **The clock.** `time` and `sun` triggers fire on the minute. Sunrise and sunset are worked out each day for the house's location, in its time zone.
+- **What is pending is forgotten on a restart.** A `delay` under way, or a `for` not yet held long enough, does not survive Niles restarting; the next change starts it again.
+- **Every run is kept**, the last twenty per rule, for as long as Niles runs: when it started, which trigger, and how it ended — done (and what it did), stopped by a condition (and which one: "it was before 07:00"), replaced by a newer run, or failed. A trigger that matched but whose conditions did not hold is a run too, because "why didn't it turn off?" is exactly the question it answers. The Automations page shows them under each rule, and Niles answers it by voice.
 
 ### Seeing and editing rules
 
-The [web UI](#the-web-ui) has an **Automations** page, a menu entry like Groceries or Chat. On a wide screen each rule opens as a flow drawn with React Flow: the trigger at the top, its conditions below it, its actions at the bottom, joined in order. Nodes are added from a palette and edited in a side panel; the layout is automatic (dagre), so positions are not stored — the rule is the record, the flow is a picture of it. On a phone the page lists every rule as its sentence ("When the office door opens, turn off the office lights") with a switch to pause it; the flow can be viewed but is built on a wider screen.
+The [web UI](#the-web-ui) has an **Automations** page, a menu entry like Groceries or Chat. On a wide screen each rule opens as a flow drawn with React Flow: its triggers at the top, its conditions below them, its actions at the bottom, joined in order — an `if` splitting into its two branches, a `delay` a step of its own. Nodes are added from a palette and edited in a side panel; the layout is automatic (dagre), so positions are not stored — the rule is the record, the flow is a picture of it. On a phone the page lists every rule as its sentence ("When the office door opens, turn off the office lights") with a switch to pause it; the flow can be viewed but is built on a wider screen.
 
 The page is a convenience, never a requirement (principle 8): every rule can also be made, listed, paused and removed by voice.
 
@@ -1518,8 +1541,8 @@ When several rules fire on the same event they run in the order they were create
 - The rule model and the engine: subscribes to the internal event bus, evaluates conditions against the device registry, dispatches actions through the same command router the LLM's device tools use
 - Rules are stored in Postgres, in an `automations` table owned by `niles-db` — one row holding the whole ordered set, as scenes and the shopping list are kept: there are a handful, they are read together, and the order is part of the record. The engine reloads when a rule is saved, paused or removed — no restart
 - `[[automation]]` tables in the TOML config, which predate the table, are still loaded, after the stored rules; the page shows them read-only, marked as coming from the config
-- HTTP: `GET/POST /automations`, `PUT/DELETE /automations/{id}`
-- LLM tools for the voice lifecycle: create (after confirmation), list, pause / resume, remove
+- HTTP: `GET/POST /automations`, `PUT/DELETE /automations/{id}`, `GET /automations/{id}/runs`
+- LLM tools for the voice lifecycle: create (after confirmation), list, pause / resume, remove, and a rule's recent runs ("why didn't the office light turn off?")
 
 ### Permissions interaction
 
