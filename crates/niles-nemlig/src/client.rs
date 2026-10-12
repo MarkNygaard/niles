@@ -464,7 +464,8 @@ impl NemligClient {
     }
 }
 
-/// Run `attempt`, and once more after `reset` if the session was refused.
+/// Run `attempt`, and once more after `reset` if the session was refused
+/// — outright, or by a web page sent where the answer should be.
 async fn retried<T, A, AF, R, RF>(attempt: A, reset: R) -> Result<T>
 where
     A: Fn() -> AF,
@@ -473,7 +474,7 @@ where
     RF: std::future::Future<Output = ()>,
 {
     match attempt().await {
-        Err(Error::Api { status: 401, .. }) => {
+        Err(Error::Api { status: 401, .. } | Error::Unreadable { .. }) => {
             reset().await;
             attempt().await
         }
@@ -505,10 +506,35 @@ async fn read<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
         return Err(api_error(response).await);
     }
     let status = response.status().as_u16();
-    response.json().await.map_err(|e| Error::Api {
-        status,
-        reason: format!("an answer Niles could not read: {e}"),
+    let kind = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("no content type")
+        .to_string();
+    let body = response.text().await?;
+    serde_json::from_str(&body).map_err(|e| {
+        let seen = format!("{kind}, {}", glimpse(&body));
+        tracing::warn!("[nemlig] unreadable {status} answer ({e}): {seen}");
+        Error::Unreadable { status, seen }
     })
+}
+
+/// What a page that is not JSON was, for the log: its title, or the
+/// start of its text. Never the whole body — a page for a signed-in
+/// account can carry its name and address.
+fn glimpse(body: &str) -> String {
+    let lower = body.to_ascii_lowercase();
+    if let (Some(start), Some(end)) = (lower.find("<title>"), lower.find("</title>"))
+        && start + 7 <= end
+    {
+        return format!("a page titled {:?}", body[start + 7..end].trim());
+    }
+    let text: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return "an empty body".into();
+    }
+    format!("{:?}", text.chars().take(80).collect::<String>())
 }
 
 async fn api_error(response: reqwest::Response) -> Error {
@@ -535,6 +561,61 @@ fn cookie_value(header: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn a_page_where_an_answer_should_be_signs_in_again() {
+        let tries = AtomicUsize::new(0);
+        let resets = AtomicUsize::new(0);
+        let answer = retried(
+            || async {
+                if tries.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(Error::Unreadable {
+                        status: 200,
+                        seen: "text/html, a page titled \"Log ind\"".into(),
+                    })
+                } else {
+                    Ok("milk")
+                }
+            },
+            || async {
+                resets.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await;
+        assert_eq!(answer.unwrap(), "milk");
+        assert_eq!(resets.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn other_failures_are_not_retried() {
+        let tries = AtomicUsize::new(0);
+        let answer: Result<()> = retried(
+            || async {
+                tries.fetch_add(1, Ordering::SeqCst);
+                Err(Error::Api {
+                    status: 500,
+                    reason: "down".into(),
+                })
+            },
+            || async {},
+        )
+        .await;
+        assert!(answer.is_err());
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_page_is_named_by_its_title_not_its_body() {
+        assert_eq!(
+            glimpse(
+                "<html><head><TITLE> Log ind | nemlig.com </TITLE></head><body>Mark, Vej 1</body>"
+            ),
+            "a page titled \"Log ind | nemlig.com\""
+        );
+        assert_eq!(glimpse("  queue   ahead\n"), "\"queue ahead\"");
+        assert_eq!(glimpse(""), "an empty body");
+    }
 
     #[test]
     fn finds_one_cookie_among_several() {
