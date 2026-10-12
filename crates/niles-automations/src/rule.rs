@@ -1,9 +1,19 @@
-//! Typed automation rule model + trigger matching + condition evaluation.
+//! Typed automation rule model: validation, what triggers follow,
+//! condition evaluation, and how each part is said.
 
 use crate::error::{Error, Result};
-use chrono::{DateTime, NaiveTime, Utc};
+use crate::sun::{self, Location, SunEvent};
+use chrono::{DateTime, Datelike, NaiveDateTime, NaiveTime, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
-use niles_core::{DeviceId, DeviceRegistry, Event, RoomName};
+use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, DurationDto, TriggerKind};
+use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, PresenceState, RoomName};
+use std::time::Duration;
+
+/// The most triggers a rule may have, and the longest it may wait.
+pub const MAX_TRIGGERS: usize = 10;
+pub const MAX_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+/// How deep `if` may nest inside `if`.
+pub const MAX_DEPTH: usize = 3;
 
 /// A validated, ready-to-run automation rule.
 #[derive(Debug, Clone)]
@@ -11,12 +21,21 @@ pub struct Rule {
     pub id: String,
     pub description: String,
     pub enabled: bool,
-    pub trigger: Trigger,
+    pub triggers: Vec<RuleTrigger>,
     pub conditions: Vec<Condition>,
     pub actions: Vec<Action>,
 }
 
-/// What event starts the rule.
+/// One of a rule's triggers, with the id `triggered_by` knows it by
+/// and how long its state must hold first, if at all.
+#[derive(Debug, Clone)]
+pub struct RuleTrigger {
+    pub id: String,
+    pub trigger: Trigger,
+    pub hold: Option<Duration>,
+}
+
+/// What starts a rule.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Trigger {
@@ -25,12 +44,17 @@ pub enum Trigger {
         room: Option<RoomName>,
         on: Option<bool>,
     },
-    /// A door or window sensor changing: opening (`Some(true)`),
-    /// closing (`Some(false)`), or either. Only a change fires it — the
-    /// engine drops a sensor's periodic report of what it already said.
+    /// A door or window sensor opening, closing, or either.
     Contact {
         device: DeviceId,
         open: Option<bool>,
+    },
+    /// A reading coming to lie above and/or below a value.
+    Numeric {
+        device: DeviceId,
+        measure: Measure,
+        above: Option<f64>,
+        below: Option<f64>,
     },
     DeviceAction {
         device: DeviceId,
@@ -42,15 +66,71 @@ pub enum Trigger {
     Presence {
         state: Option<PresenceFilter>,
     },
+    Time {
+        at: NaiveTime,
+        days: Option<Vec<Weekday>>,
+    },
+    Sun {
+        event: SunEvent,
+        offset_minutes: i32,
+    },
 }
 
-/// Gate that must pass after the trigger fires.
+/// A reading a numeric trigger or condition looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Measure {
+    Temperature,
+    Humidity,
+    Battery,
+    Brightness,
+}
+
+impl Measure {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "temperature" => Some(Measure::Temperature),
+            "humidity" => Some(Measure::Humidity),
+            "battery" => Some(Measure::Battery),
+            "brightness" => Some(Measure::Brightness),
+            _ => None,
+        }
+    }
+
+    pub fn read(self, state: &DeviceState) -> Option<f64> {
+        match self {
+            Measure::Temperature => state.temperature_celsius.map(f64::from),
+            Measure::Humidity => state.humidity_percent.map(f64::from),
+            Measure::Battery => state.battery_percent.map(f64::from),
+            Measure::Brightness => state.brightness.map(f64::from),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Measure::Temperature => "temperature",
+            Measure::Humidity => "humidity",
+            Measure::Battery => "battery",
+            Measure::Brightness => "brightness",
+        }
+    }
+}
+
+fn in_range(value: f64, above: Option<f64>, below: Option<f64>) -> bool {
+    above.is_none_or(|a| value > a) && below.is_none_or(|b| value < b)
+}
+
+/// Gate that must pass after a trigger fires.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Condition {
     TimeOfDay {
         after: Option<NaiveTime>,
         before: Option<NaiveTime>,
+        days: Option<Vec<Weekday>>,
+    },
+    Sun {
+        after: Option<(SunEvent, i32)>,
+        before: Option<(SunEvent, i32)>,
     },
     DeviceIs {
         device: DeviceId,
@@ -60,6 +140,14 @@ pub enum Condition {
         device: DeviceId,
         open: bool,
     },
+    Numeric {
+        device: DeviceId,
+        measure: Measure,
+        above: Option<f64>,
+        below: Option<f64>,
+    },
+    PresenceIs(PresenceFilter),
+    TriggeredBy(Vec<String>),
 }
 
 /// What to do when the rule fires.
@@ -84,9 +172,15 @@ pub enum Action {
         room: Option<String>,
         priority: Priority,
     },
+    Delay(Duration),
+    If {
+        conditions: Vec<Condition>,
+        then: Vec<Action>,
+        otherwise: Vec<Action>,
+    },
 }
 
-/// Optional filter for the `Presence` trigger.
+/// Optional filter for the `Presence` trigger and condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PresenceFilter {
@@ -105,24 +199,83 @@ pub enum Priority {
     Urgent,
 }
 
+/// What a condition is evaluated against.
+pub struct Context<'a> {
+    pub registry: &'a DeviceRegistry,
+    pub now: DateTime<Utc>,
+    pub tz: Tz,
+    pub location: Option<Location>,
+    pub presence: Option<PresenceState>,
+    /// The id of the trigger that started this run.
+    pub trigger: Option<&'a str>,
+}
+
+/// Give every trigger an id: the one it has, or the first free of
+/// `t1`, `t2`… — what `triggered_by` refers to, and what is stored.
+pub fn assign_trigger_ids(dto: &mut AutomationRuleDto) {
+    for i in 0..dto.triggers.len() {
+        if dto.triggers[i]
+            .id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+        {
+            continue;
+        }
+        let taken = |candidate: &str| {
+            dto.triggers
+                .iter()
+                .any(|t| t.id.as_deref() == Some(candidate))
+        };
+        let id = (1..)
+            .map(|n| format!("t{n}"))
+            .find(|c| !taken(c))
+            .expect("an unbounded range always has a free name");
+        dto.triggers[i].id = Some(id);
+    }
+}
+
 impl Rule {
-    /// Convert a config DTO into a typed, validated `Rule`.
-    pub fn from_dto(dto: &niles_config::AutomationRuleDto, default_source: &str) -> Result<Self> {
+    /// Convert a DTO into a typed, validated `Rule`. Triggers without an
+    /// id are given one, as [`assign_trigger_ids`] would.
+    pub fn from_dto(dto: &AutomationRuleDto, default_source: &str) -> Result<Self> {
+        let mut dto = dto.clone();
+        assign_trigger_ids(&mut dto);
         let id = dto.id.clone();
         validate_id(&id)?;
+        let invalid = |reason: String| Error::Invalid {
+            id: id.clone(),
+            reason,
+        };
 
-        let trigger = parse_trigger(&id, &dto.trigger, default_source)?;
+        if dto.triggers.is_empty() {
+            return Err(invalid("a rule needs a trigger".into()));
+        }
+        if dto.triggers.len() > MAX_TRIGGERS {
+            return Err(invalid(format!("at most {MAX_TRIGGERS} triggers")));
+        }
+        let mut triggers = Vec::with_capacity(dto.triggers.len());
+        for t in &dto.triggers {
+            let trigger_id = t.id.clone().unwrap_or_default();
+            if triggers
+                .iter()
+                .any(|known: &RuleTrigger| known.id == trigger_id)
+            {
+                return Err(invalid(format!("two triggers are called {trigger_id:?}")));
+            }
+            let (trigger, hold) = parse_trigger(&id, &t.kind, default_source)?;
+            triggers.push(RuleTrigger {
+                id: trigger_id,
+                trigger,
+                hold,
+            });
+        }
+        let ids: Vec<&str> = triggers.iter().map(|t| t.id.as_str()).collect();
         let conditions = dto
             .conditions
             .iter()
-            .map(|c| parse_condition(&id, c, default_source))
+            .map(|c| parse_condition(&id, c, default_source, &ids))
             .collect::<Result<Vec<_>>>()?;
-        let actions = dto
-            .actions
-            .iter()
-            .map(|a| parse_action(&id, a, default_source))
-            .collect::<Result<Vec<_>>>()?;
-
+        let actions = parse_actions(&id, &dto.actions, default_source, &ids, 0)?;
         if actions.is_empty() {
             return Err(Error::NoActions { id });
         }
@@ -131,82 +284,316 @@ impl Rule {
             id,
             description: dto.description.clone(),
             enabled: dto.enabled,
-            trigger,
+            triggers,
             conditions,
             actions,
         })
     }
+
+    /// Whether anything in it needs to know where the sun is.
+    pub fn uses_sun(&self) -> bool {
+        fn in_conditions(c: &[Condition]) -> bool {
+            c.iter().any(|c| matches!(c, Condition::Sun { .. }))
+        }
+        fn in_actions(a: &[Action]) -> bool {
+            a.iter().any(|a| match a {
+                Action::If {
+                    conditions,
+                    then,
+                    otherwise,
+                } => in_conditions(conditions) || in_actions(then) || in_actions(otherwise),
+                _ => false,
+            })
+        }
+        self.triggers
+            .iter()
+            .any(|t| matches!(t.trigger, Trigger::Sun { .. }))
+            || in_conditions(&self.conditions)
+            || in_actions(&self.actions)
+    }
 }
 
 impl Trigger {
-    /// Returns `true` if this trigger matches the given event.
-    pub fn matches(&self, ev: &Event) -> bool {
+    /// Whether it follows a state — fires on the change into it, and
+    /// can be asked to have held for a while — rather than a moment.
+    pub fn follows_state(&self) -> bool {
+        matches!(
+            self,
+            Trigger::DeviceState { .. }
+                | Trigger::Contact { .. }
+                | Trigger::Numeric { .. }
+                | Trigger::Presence { .. }
+        )
+    }
+
+    /// For a trigger that follows a state: what `ev` says of it, as the
+    /// thing it concerns (a device, or the house) and whether the state
+    /// now holds. `None` when the event says nothing about it.
+    pub fn observe(&self, ev: &Event) -> Option<(String, bool)> {
+        match (self, ev) {
+            (
+                Trigger::DeviceState { device, room, on },
+                Event::DeviceStateChanged { id, state },
+            ) => {
+                if device.as_ref().is_some_and(|d| d != id)
+                    || room.as_ref().is_some_and(|r| r != id.room())
+                {
+                    return None;
+                }
+                let now = state.on?;
+                Some((id.to_string(), on.is_none_or(|want| want == now)))
+            }
+            (Trigger::Contact { device, open }, Event::DeviceStateChanged { id, state })
+                if id == device =>
+            {
+                let now = state.open?;
+                Some((id.to_string(), open.is_none_or(|want| want == now)))
+            }
+            (
+                Trigger::Numeric {
+                    device,
+                    measure,
+                    above,
+                    below,
+                },
+                Event::DeviceStateChanged { id, state },
+            ) if id == device => {
+                let value = measure.read(state)?;
+                Some((id.to_string(), in_range(value, *above, *below)))
+            }
+            (Trigger::Presence { state }, Event::PresenceChanged { state: now }) => Some((
+                "presence".into(),
+                state.is_none_or(|want| presence_filter_matches(want, *now)),
+            )),
+            _ => None,
+        }
+    }
+
+    /// For a trigger that follows a state: whether it holds now, by the
+    /// registry, for each thing it concerns — what a start compares the
+    /// first change with.
+    pub fn seed(&self, registry: &DeviceRegistry) -> Vec<(String, bool)> {
+        let event_of = |device: &niles_core::Device| Event::DeviceStateChanged {
+            id: device.id.clone(),
+            state: device.state.clone(),
+        };
         match self {
-            Trigger::DeviceState { device, room, on } => match ev {
-                Event::DeviceStateChanged { id, state } => {
-                    (device.is_none() || device.as_ref() == Some(id))
-                        && (room.is_none() || room.as_ref() == Some(id.room()))
-                        && (on.is_none() || state.on == *on)
-                }
-                _ => false,
-            },
-            Trigger::Contact { device, open } => match ev {
-                Event::DeviceStateChanged { id, state } => {
-                    id == device && state.open.is_some() && (open.is_none() || state.open == *open)
-                }
-                _ => false,
-            },
-            Trigger::DeviceAction { device, action } => match ev {
+            Trigger::Contact { device, .. } | Trigger::Numeric { device, .. } => registry
+                .get(device)
+                .and_then(|d| self.observe(&event_of(&d)))
+                .into_iter()
+                .collect(),
+            Trigger::DeviceState { .. } => registry
+                .list_all()
+                .iter()
+                .filter_map(|d| self.observe(&event_of(d)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// For a trigger that is a moment — a button, a timer — whether
+    /// `ev` is that moment.
+    pub fn fires(&self, ev: &Event) -> bool {
+        match (self, ev) {
+            (
+                Trigger::DeviceAction { device, action },
                 Event::DeviceAction {
                     id,
-                    action: ev_action,
-                } => {
-                    id == device
-                        && (action.is_none() || Some(ev_action.as_str()) == action.as_deref())
-                }
-                _ => false,
-            },
-            Trigger::TimerFired { name } => match ev {
-                Event::TimerFired { name: ev_name, .. } => {
-                    name.is_none() || name.as_ref() == ev_name.as_ref()
-                }
-                _ => false,
-            },
-            Trigger::Presence { state } => match ev {
-                Event::PresenceChanged { state: new_state } => match state {
-                    None => true,
-                    Some(want) => presence_filter_matches(*want, *new_state),
+                    action: pressed,
                 },
-                _ => false,
-            },
+            ) => id == device && action.as_deref().is_none_or(|a| a == pressed),
+            (Trigger::TimerFired { name }, Event::TimerFired { name: fired, .. }) => {
+                name.is_none() || name.as_ref() == fired.as_ref()
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `ev` matches it at all: a moment it is, or a state it
+    /// follows coming to hold.
+    pub fn matches(&self, ev: &Event) -> bool {
+        self.fires(ev) || self.observe(ev).is_some_and(|(_, holds)| holds)
+    }
+
+    /// For a clock trigger: the minute it falls on, on the local date of
+    /// `now`, as a local wall-clock time.
+    pub fn due_on(
+        &self,
+        now: DateTime<Utc>,
+        tz: Tz,
+        location: Option<Location>,
+    ) -> Option<NaiveDateTime> {
+        let local = now.with_timezone(&tz);
+        let day = local.date_naive();
+        match self {
+            Trigger::Time { at, days } => days
+                .as_ref()
+                .is_none_or(|d| d.contains(&local.weekday()))
+                .then(|| day.and_time(*at)),
+            Trigger::Sun {
+                event,
+                offset_minutes,
+            } => sun::at(*event, *offset_minutes, day, location?, tz)?
+                .naive_local()
+                .with_second(0)?
+                .with_nanosecond(0),
+            _ => None,
         }
     }
 }
 
 impl Condition {
-    /// Evaluate this condition against the current world state.
-    pub fn evaluate(&self, registry: &DeviceRegistry, now: DateTime<Utc>, tz: Tz) -> bool {
+    /// Evaluate this condition against the world as `ctx` has it.
+    pub fn evaluate(&self, ctx: &Context<'_>) -> bool {
         match self {
-            Condition::TimeOfDay { after, before } => {
-                let local = now.with_timezone(&tz);
-                let t = local.time();
-                covers(*after, *before, t)
+            Condition::TimeOfDay {
+                after,
+                before,
+                days,
+            } => {
+                let local = ctx.now.with_timezone(&ctx.tz);
+                days.as_ref().is_none_or(|d| d.contains(&local.weekday()))
+                    && covers(*after, *before, local.time())
             }
-            Condition::DeviceIs { device, on } => registry
+            Condition::Sun { after, before } => {
+                let Some(location) = ctx.location else {
+                    return false;
+                };
+                let local = ctx.now.with_timezone(&ctx.tz);
+                let day = local.date_naive();
+                let bound = |b: Option<(SunEvent, i32)>| -> Option<Option<NaiveTime>> {
+                    match b {
+                        None => Some(None),
+                        Some((event, offset)) => {
+                            sun::at(event, offset, day, location, ctx.tz).map(|t| Some(t.time()))
+                        }
+                    }
+                };
+                match (bound(*after), bound(*before)) {
+                    (Some(a), Some(b)) => covers(a, b, local.time()),
+                    _ => false,
+                }
+            }
+            Condition::DeviceIs { device, on } => ctx
+                .registry
                 .get(device)
                 .and_then(|d| d.state.on)
-                .map(|s| s == *on)
-                .unwrap_or(false),
-            Condition::ContactIs { device, open } => registry
+                .is_some_and(|s| s == *on),
+            Condition::ContactIs { device, open } => ctx
+                .registry
                 .get(device)
                 .and_then(|d| d.state.open)
                 .is_some_and(|s| s == *open),
+            Condition::Numeric {
+                device,
+                measure,
+                above,
+                below,
+            } => ctx
+                .registry
+                .get(device)
+                .and_then(|d| measure.read(&d.state))
+                .is_some_and(|v| in_range(v, *above, *below)),
+            Condition::PresenceIs(want) => ctx
+                .presence
+                .is_some_and(|now| presence_filter_matches(*want, now)),
+            Condition::TriggeredBy(ids) => {
+                ctx.trigger.is_some_and(|t| ids.iter().any(|id| id == t))
+            }
+        }
+    }
+
+    /// Why a run stopped here, in a few words.
+    pub fn unmet(&self) -> String {
+        match self {
+            Condition::TimeOfDay { after, before, .. } => match (after, before) {
+                (Some(a), Some(b)) => format!(
+                    "it was not between {} and {}",
+                    a.format("%H:%M"),
+                    b.format("%H:%M")
+                ),
+                (Some(a), None) => format!("it was before {}", a.format("%H:%M")),
+                (None, Some(b)) => format!("it was after {}", b.format("%H:%M")),
+                (None, None) => "it was not one of the days".into(),
+            },
+            Condition::Sun { .. } => "the sun was not where the rule wants it".into(),
+            Condition::DeviceIs { device, on } => {
+                format!("{device} was not {}", if *on { "on" } else { "off" })
+            }
+            Condition::ContactIs { device, open } => {
+                format!("{device} was not {}", if *open { "open" } else { "closed" })
+            }
+            Condition::Numeric {
+                device, measure, ..
+            } => format!("the {} of {device} was out of range", measure.name()),
+            Condition::PresenceIs(want) => format!("the house was not {want:?}").to_lowercase(),
+            Condition::TriggeredBy(_) => "another trigger started it".into(),
         }
     }
 }
 
+impl Action {
+    /// What a step did, for a run's history.
+    pub fn done(&self) -> String {
+        let how = |on: &Option<bool>, brightness: &Option<u8>, kelvin: &Option<u16>| {
+            let mut parts = Vec::new();
+            match on {
+                Some(true) => parts.push("on".to_string()),
+                Some(false) => parts.push("off".to_string()),
+                None => {}
+            }
+            if let Some(b) = brightness {
+                parts.push(format!("{b}%"));
+            }
+            if let Some(k) = kelvin {
+                parts.push(format!("{k} K"));
+            }
+            parts.join(", ")
+        };
+        match self {
+            Action::SetDevice {
+                device,
+                on,
+                brightness,
+                kelvin,
+            } => format!("set {device} {}", how(on, brightness, kelvin)),
+            Action::SetRoom {
+                room,
+                on,
+                brightness,
+                kelvin,
+            } => format!("set the {room} lights {}", how(on, brightness, kelvin)),
+            Action::Notify { body, room, .. } => match room {
+                Some(room) => format!("said \"{body}\" in {room}"),
+                None => format!("said \"{body}\""),
+            },
+            Action::Delay(wait) => format!("waited {}", say_duration(*wait)),
+            Action::If { .. } => "checked a condition".into(),
+        }
+    }
+}
+
+/// "5 minutes", "1 hour 30 minutes", "45 seconds".
+pub fn say_duration(wait: Duration) -> String {
+    let total = wait.as_secs();
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    let unit = |n: u64, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    let mut parts = Vec::new();
+    if h > 0 {
+        parts.push(unit(h, "hour"));
+    }
+    if m > 0 {
+        parts.push(unit(m, "minute"));
+    }
+    if s > 0 || parts.is_empty() {
+        parts.push(unit(s, "second"));
+    }
+    parts.join(" ")
+}
+
 // ------------------------------------------------------------------
-// Helpers
+// Parsing
 // ------------------------------------------------------------------
 
 fn validate_id(id: &str) -> Result<()> {
@@ -240,98 +627,329 @@ fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn wait_of(id: &str, what: &str, d: &DurationDto) -> Result<Duration> {
+    let wait = Duration::from_secs(d.total_seconds());
+    if wait.is_zero() || wait > MAX_WAIT {
+        return Err(Error::Invalid {
+            id: id.to_string(),
+            reason: format!("{what} must be more than nothing and at most 24 hours"),
+        });
+    }
+    Ok(wait)
+}
+
+fn range(id: &str, above: Option<f64>, below: Option<f64>) -> Result<()> {
+    match (above, below) {
+        (None, None) => Err(Error::Invalid {
+            id: id.to_string(),
+            reason: "a reading needs a value to be above or below".into(),
+        }),
+        (Some(a), Some(b)) if a >= b => Err(Error::Invalid {
+            id: id.to_string(),
+            reason: format!("above {a} and below {b} can never both hold"),
+        }),
+        _ => Ok(()),
+    }
+}
+
+fn parse_measure(id: &str, value: &str) -> Result<Measure> {
+    Measure::parse(value).ok_or_else(|| Error::Invalid {
+        id: id.to_string(),
+        reason: format!(
+            "{value:?} is not a reading; use temperature, humidity, battery or brightness"
+        ),
+    })
+}
+
+fn parse_sun(id: &str, value: &str) -> Result<SunEvent> {
+    SunEvent::parse(value).ok_or_else(|| Error::Invalid {
+        id: id.to_string(),
+        reason: format!("{value:?} is not sunrise or sunset"),
+    })
+}
+
+fn parse_days(id: &str, days: Option<&Vec<String>>) -> Result<Option<Vec<Weekday>>> {
+    let Some(days) = days else { return Ok(None) };
+    days.iter()
+        .map(|d| {
+            d.trim().parse::<Weekday>().map_err(|_| Error::Invalid {
+                id: id.to_string(),
+                reason: format!("{d:?} is not a weekday"),
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|d| (!d.is_empty()).then_some(d))
+}
+
 fn parse_trigger(
     id: &str,
-    dto: &niles_config::TriggerDto,
+    dto: &TriggerKind,
     default_source: &str,
-) -> Result<Trigger> {
-    match dto {
-        niles_config::TriggerDto::DeviceState { device, room, on } => Ok(Trigger::DeviceState {
-            device: device
-                .as_ref()
-                .map(|s| parse_device_id(id, s, default_source))
-                .transpose()?,
-            room: room.as_ref().map(|s| parse_room_name(id, s)).transpose()?,
-            on: *on,
-        }),
-        niles_config::TriggerDto::Contact { device, open } => Ok(Trigger::Contact {
-            device: parse_device_id(id, device, default_source)?,
-            open: *open,
-        }),
-        niles_config::TriggerDto::DeviceAction { device, action } => Ok(Trigger::DeviceAction {
-            device: parse_device_id(id, device, default_source)?,
-            action: action.clone(),
-        }),
-        niles_config::TriggerDto::TimerFired { name } => {
-            Ok(Trigger::TimerFired { name: name.clone() })
+) -> Result<(Trigger, Option<Duration>)> {
+    let hold = |h: &Option<DurationDto>| -> Result<Option<Duration>> {
+        h.as_ref().map(|d| wait_of(id, "for", d)).transpose()
+    };
+    Ok(match dto {
+        TriggerKind::DeviceState {
+            device,
+            room,
+            on,
+            hold: h,
+        } => (
+            Trigger::DeviceState {
+                device: device
+                    .as_ref()
+                    .map(|s| parse_device_id(id, s, default_source))
+                    .transpose()?,
+                room: room.as_ref().map(|s| parse_room_name(id, s)).transpose()?,
+                on: *on,
+            },
+            hold(h)?,
+        ),
+        TriggerKind::Contact {
+            device,
+            open,
+            hold: h,
+        } => (
+            Trigger::Contact {
+                device: parse_device_id(id, device, default_source)?,
+                open: *open,
+            },
+            hold(h)?,
+        ),
+        TriggerKind::Numeric {
+            device,
+            measure,
+            above,
+            below,
+            hold: h,
+        } => {
+            range(id, *above, *below)?;
+            (
+                Trigger::Numeric {
+                    device: parse_device_id(id, device, default_source)?,
+                    measure: parse_measure(id, measure)?,
+                    above: *above,
+                    below: *below,
+                },
+                hold(h)?,
+            )
         }
-        niles_config::TriggerDto::Presence { state } => Ok(Trigger::Presence {
-            state: parse_presence_filter(id, state.as_deref())?,
-        }),
-    }
+        TriggerKind::DeviceAction { device, action } => (
+            Trigger::DeviceAction {
+                device: parse_device_id(id, device, default_source)?,
+                action: action.clone(),
+            },
+            None,
+        ),
+        TriggerKind::TimerFired { name } => (Trigger::TimerFired { name: name.clone() }, None),
+        TriggerKind::Presence { state, hold: h } => (
+            Trigger::Presence {
+                state: parse_presence_filter(id, state.as_deref())?,
+            },
+            hold(h)?,
+        ),
+        TriggerKind::Time { at, days } => (
+            Trigger::Time {
+                at: parse_time(id, at)?,
+                days: parse_days(id, days.as_ref())?,
+            },
+            None,
+        ),
+        TriggerKind::Sun {
+            event,
+            offset_minutes,
+        } => (
+            Trigger::Sun {
+                event: parse_sun(id, event)?,
+                offset_minutes: offset_minutes.unwrap_or(0),
+            },
+            None,
+        ),
+    })
 }
 
 fn parse_condition(
     id: &str,
-    dto: &niles_config::ConditionDto,
+    dto: &ConditionDto,
     default_source: &str,
+    triggers: &[&str],
 ) -> Result<Condition> {
-    match dto {
-        niles_config::ConditionDto::TimeOfDay { after, before } => Ok(Condition::TimeOfDay {
+    Ok(match dto {
+        ConditionDto::TimeOfDay {
+            after,
+            before,
+            days,
+        } => Condition::TimeOfDay {
             after: after.as_ref().map(|s| parse_time(id, s)).transpose()?,
             before: before.as_ref().map(|s| parse_time(id, s)).transpose()?,
-        }),
-        niles_config::ConditionDto::DeviceIs { device, on } => Ok(Condition::DeviceIs {
+            days: parse_days(id, days.as_ref())?,
+        },
+        ConditionDto::Sun {
+            after,
+            before,
+            after_offset_minutes,
+            before_offset_minutes,
+        } => {
+            if after.is_none() && before.is_none() {
+                return Err(Error::Invalid {
+                    id: id.to_string(),
+                    reason: "a sun condition needs an after or a before".into(),
+                });
+            }
+            Condition::Sun {
+                after: after
+                    .as_ref()
+                    .map(|e| parse_sun(id, e).map(|e| (e, after_offset_minutes.unwrap_or(0))))
+                    .transpose()?,
+                before: before
+                    .as_ref()
+                    .map(|e| parse_sun(id, e).map(|e| (e, before_offset_minutes.unwrap_or(0))))
+                    .transpose()?,
+            }
+        }
+        ConditionDto::DeviceIs { device, on } => Condition::DeviceIs {
             device: parse_device_id(id, device, default_source)?,
             on: *on,
-        }),
-        niles_config::ConditionDto::ContactIs { device, open } => Ok(Condition::ContactIs {
+        },
+        ConditionDto::ContactIs { device, open } => Condition::ContactIs {
             device: parse_device_id(id, device, default_source)?,
             open: *open,
-        }),
-    }
+        },
+        ConditionDto::Numeric {
+            device,
+            measure,
+            above,
+            below,
+        } => {
+            range(id, *above, *below)?;
+            Condition::Numeric {
+                device: parse_device_id(id, device, default_source)?,
+                measure: parse_measure(id, measure)?,
+                above: *above,
+                below: *below,
+            }
+        }
+        ConditionDto::PresenceIs { state } => Condition::PresenceIs(
+            parse_presence_filter(id, Some(state))?.unwrap_or(PresenceFilter::Home),
+        ),
+        ConditionDto::TriggeredBy { triggers: named } => {
+            if named.is_empty() {
+                return Err(Error::Invalid {
+                    id: id.to_string(),
+                    reason: "\"triggered by\" names no trigger".into(),
+                });
+            }
+            if let Some(gone) = named.iter().find(|n| !triggers.contains(&n.as_str())) {
+                return Err(Error::Invalid {
+                    id: id.to_string(),
+                    reason: format!(
+                        "\"triggered by\" names {gone:?}, which the rule does not have"
+                    ),
+                });
+            }
+            Condition::TriggeredBy(named.clone())
+        }
+    })
 }
 
-fn parse_action(id: &str, dto: &niles_config::ActionDto, default_source: &str) -> Result<Action> {
-    match dto {
-        niles_config::ActionDto::SetDevice {
+fn parse_actions(
+    id: &str,
+    dtos: &[ActionDto],
+    default_source: &str,
+    triggers: &[&str],
+    depth: usize,
+) -> Result<Vec<Action>> {
+    dtos.iter()
+        .map(|a| parse_action(id, a, default_source, triggers, depth))
+        .collect()
+}
+
+fn parse_action(
+    id: &str,
+    dto: &ActionDto,
+    default_source: &str,
+    triggers: &[&str],
+    depth: usize,
+) -> Result<Action> {
+    Ok(match dto {
+        ActionDto::SetDevice {
             device,
             on,
             brightness,
             kelvin,
         } => {
             check_light(id, *brightness, *kelvin)?;
-            Ok(Action::SetDevice {
+            Action::SetDevice {
                 device: parse_device_id(id, device, default_source)?,
                 on: *on,
                 brightness: *brightness,
                 kelvin: *kelvin,
-            })
+            }
         }
-        niles_config::ActionDto::SetRoom {
+        ActionDto::SetRoom {
             room,
             on,
             brightness,
             kelvin,
         } => {
             check_light(id, *brightness, *kelvin)?;
-            Ok(Action::SetRoom {
+            Action::SetRoom {
                 room: parse_room_name(id, room)?,
                 on: *on,
                 brightness: *brightness,
                 kelvin: *kelvin,
-            })
+            }
         }
-        niles_config::ActionDto::Notify {
+        ActionDto::Notify {
             body,
             room,
             priority,
-        } => Ok(Action::Notify {
+        } => Action::Notify {
             body: body.clone(),
             room: room.clone(),
             priority: parse_priority(id, priority.as_deref())?,
-        }),
-    }
+        },
+        ActionDto::Delay {
+            hours,
+            minutes,
+            seconds,
+        } => Action::Delay(wait_of(
+            id,
+            "a delay",
+            &DurationDto {
+                hours: *hours,
+                minutes: *minutes,
+                seconds: *seconds,
+            },
+        )?),
+        ActionDto::If {
+            conditions,
+            then,
+            otherwise,
+        } => {
+            if depth + 1 > MAX_DEPTH {
+                return Err(Error::Invalid {
+                    id: id.to_string(),
+                    reason: format!("\"if\" may sit at most {MAX_DEPTH} deep"),
+                });
+            }
+            if then.is_empty() {
+                return Err(Error::Invalid {
+                    id: id.to_string(),
+                    reason: "an \"if\" needs something to do when it holds".into(),
+                });
+            }
+            Action::If {
+                conditions: conditions
+                    .iter()
+                    .map(|c| parse_condition(id, c, default_source, triggers))
+                    .collect::<Result<Vec<_>>>()?,
+                then: parse_actions(id, then, default_source, triggers, depth + 1)?,
+                otherwise: parse_actions(id, otherwise, default_source, triggers, depth + 1)?,
+            }
+        }
+    })
 }
 
 fn check_light(id: &str, brightness: Option<u8>, kelvin: Option<u16>) -> Result<()> {
@@ -408,12 +1026,12 @@ fn parse_presence_filter(id: &str, value: Option<&str>) -> Result<Option<Presenc
     }
 }
 
-fn presence_filter_matches(filter: PresenceFilter, state: niles_core::PresenceState) -> bool {
+fn presence_filter_matches(filter: PresenceFilter, state: PresenceState) -> bool {
     matches!(
         (filter, state),
-        (PresenceFilter::Home, niles_core::PresenceState::Home)
-            | (PresenceFilter::Away, niles_core::PresenceState::Away)
-            | (PresenceFilter::Unknown, niles_core::PresenceState::Unknown)
+        (PresenceFilter::Home, PresenceState::Home)
+            | (PresenceFilter::Away, PresenceState::Away)
+            | (PresenceFilter::Unknown, PresenceState::Unknown)
     )
 }
 
@@ -429,10 +1047,8 @@ pub(crate) fn covers(after: Option<NaiveTime>, before: Option<NaiveTime>, t: Nai
         (None, Some(end)) => t <= end,
         (Some(start), Some(end)) => {
             if start <= end {
-                // Non-wrapping: e.g. 10:00–14:00
                 t >= start && t <= end
             } else {
-                // Wrapping: e.g. 21:00–06:00
                 t >= start || t <= end
             }
         }
@@ -443,7 +1059,8 @@ pub(crate) fn covers(after: Option<NaiveTime>, before: Option<NaiveTime>, t: Nai
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use niles_core::{DeviceClass, DeviceName, DeviceState};
+    use niles_core::{Device, DeviceClass, DeviceName};
+    use serde_json::json;
 
     fn device_id(room: &str, name: &str) -> DeviceId {
         DeviceId::new(
@@ -454,748 +1071,436 @@ mod tests {
         .unwrap()
     }
 
-    fn rule_dto(
-        id: &str,
-        trigger: niles_config::TriggerDto,
-        actions: Vec<niles_config::ActionDto>,
-    ) -> niles_config::AutomationRuleDto {
-        niles_config::AutomationRuleDto {
-            id: id.to_string(),
-            description: String::new(),
-            enabled: true,
-            trigger,
-            conditions: Vec::new(),
-            actions,
+    fn rule(value: serde_json::Value) -> Result<Rule> {
+        let dto: AutomationRuleDto = serde_json::from_value(value).unwrap();
+        Rule::from_dto(&dto, "z2m")
+    }
+
+    fn lights_off() -> serde_json::Value {
+        json!({ "do": "set_room", "room": "office", "on": false })
+    }
+
+    fn door(open: bool) -> serde_json::Value {
+        json!({ "type": "contact", "device": "office/door", "open": open })
+    }
+
+    fn state_event(id: &DeviceId, state: DeviceState) -> Event {
+        Event::DeviceStateChanged {
+            id: id.clone(),
+            state,
+        }
+    }
+
+    fn ctx(registry: &DeviceRegistry, now: DateTime<Utc>) -> Context<'_> {
+        Context {
+            registry,
+            now,
+            tz: Tz::UTC,
+            location: None,
+            presence: None,
+            trigger: None,
         }
     }
 
     // ---- validation ------------------------------------------------
 
     #[test]
-    fn rejects_empty_id() {
-        let dto = rule_dto(
-            "",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
+    fn rejects_bad_ids() {
+        for bad in ["", "-bad", "bad-", "bad--id", "Bad"] {
+            let r = rule(json!({ "id": bad, "triggers": [door(true)], "actions": [lights_off()] }));
+            assert!(r.is_err(), "{bad:?}");
+        }
     }
 
     #[test]
-    fn rejects_leading_hyphen_id() {
-        let dto = rule_dto(
-            "-bad",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn rejects_double_hyphen_id() {
-        let dto = rule_dto(
-            "bad--id",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn rejects_no_actions() {
-        let dto = rule_dto(
-            "no-actions",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn rejects_brightness_over_100() {
-        let dto = rule_dto(
-            "bright",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![niles_config::ActionDto::SetDevice {
-                device: "z2m:kitchen/light".into(),
-                on: None,
-                brightness: Some(101),
-                kelvin: None,
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn rejects_kelvin_out_of_range() {
-        let dto = rule_dto(
-            "kelv",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![niles_config::ActionDto::SetDevice {
-                device: "z2m:kitchen/light".into(),
-                on: None,
-                brightness: None,
-                kelvin: Some(9000),
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn rejects_malformed_time() {
-        let dto = niles_config::AutomationRuleDto {
-            id: "time-bad".into(),
-            description: String::new(),
-            enabled: true,
-            trigger: niles_config::TriggerDto::TimerFired { name: None },
-            conditions: vec![niles_config::ConditionDto::TimeOfDay {
-                after: Some("25:99".into()),
-                before: None,
-            }],
-            actions: vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        };
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn rejects_unknown_priority() {
-        let dto = rule_dto(
-            "prio",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: Some("critical".into()),
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn rejects_bad_device_id() {
-        let dto = rule_dto(
-            "dev",
-            niles_config::TriggerDto::DeviceState {
-                device: Some("not_valid".into()),
-                room: None,
-                on: None,
-            },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    // ---- round-trip ------------------------------------------------
-
-    #[test]
-    fn round_trip_all_variants() {
-        let dto = niles_config::AutomationRuleDto {
-            id: "all-vars".into(),
-            description: "test".into(),
-            enabled: true,
-            trigger: niles_config::TriggerDto::DeviceState {
-                device: Some("z2m:kitchen/motion".into()),
-                room: Some("kitchen".into()),
-                on: Some(true),
-            },
-            conditions: vec![
-                niles_config::ConditionDto::TimeOfDay {
-                    after: Some("21:00".into()),
-                    before: Some("06:00".into()),
-                },
-                niles_config::ConditionDto::DeviceIs {
-                    device: "z2m:hallway/light".into(),
-                    on: true,
-                },
-            ],
-            actions: vec![
-                niles_config::ActionDto::SetDevice {
-                    device: "z2m:kitchen/ceiling".into(),
-                    on: Some(true),
-                    brightness: Some(30),
-                    kelvin: Some(2700),
-                },
-                niles_config::ActionDto::Notify {
-                    body: "motion detected".into(),
-                    room: Some("kitchen".into()),
-                    priority: Some("important".into()),
-                },
-            ],
-        };
-        let rule = Rule::from_dto(&dto, "z2m").unwrap();
-        assert_eq!(rule.id, "all-vars");
-        assert_eq!(rule.description, "test");
-        assert!(rule.enabled);
-        assert_eq!(rule.conditions.len(), 2);
-        assert_eq!(rule.actions.len(), 2);
-    }
-
-    // ---- trigger matching ------------------------------------------
-
-    #[test]
-    fn device_state_matches_no_filters() {
-        let trigger = Trigger::DeviceState {
-            device: None,
-            room: None,
-            on: None,
-        };
-        let ev = Event::DeviceStateChanged {
-            id: device_id("kitchen", "light"),
-            state: DeviceState {
-                on: Some(true),
-                ..Default::default()
-            },
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_state_matches_with_filters() {
-        let trigger = Trigger::DeviceState {
-            device: Some(device_id("kitchen", "light")),
-            room: Some(RoomName::parse("kitchen").unwrap()),
-            on: Some(true),
-        };
-        let ev = Event::DeviceStateChanged {
-            id: device_id("kitchen", "light"),
-            state: DeviceState {
-                on: Some(true),
-                ..Default::default()
-            },
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_state_no_match_wrong_device() {
-        let trigger = Trigger::DeviceState {
-            device: Some(device_id("kitchen", "light")),
-            room: None,
-            on: None,
-        };
-        let ev = Event::DeviceStateChanged {
-            id: device_id("hallway", "light"),
-            state: DeviceState::default(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_state_no_match_none_on() {
-        let trigger = Trigger::DeviceState {
-            device: None,
-            room: None,
-            on: Some(true),
-        };
-        let ev = Event::DeviceStateChanged {
-            id: device_id("kitchen", "light"),
-            state: DeviceState {
-                on: None,
-                ..Default::default()
-            },
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_state_no_match_wrong_room() {
-        let trigger = Trigger::DeviceState {
-            device: None,
-            room: Some(RoomName::parse("kitchen").unwrap()),
-            on: None,
-        };
-        let ev = Event::DeviceStateChanged {
-            id: device_id("hallway", "light"),
-            state: DeviceState::default(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_action_matches() {
-        let trigger = Trigger::DeviceAction {
-            device: device_id("kitchen", "switch"),
-            action: None,
-        };
-        let ev = Event::DeviceAction {
-            id: device_id("kitchen", "switch"),
-            action: "on_press".into(),
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_action_matches_filtered() {
-        let trigger = Trigger::DeviceAction {
-            device: device_id("kitchen", "switch"),
-            action: Some("on_press".into()),
-        };
-        let ev = Event::DeviceAction {
-            id: device_id("kitchen", "switch"),
-            action: "on_press".into(),
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_action_no_match_wrong_action() {
-        let trigger = Trigger::DeviceAction {
-            device: device_id("kitchen", "switch"),
-            action: Some("on_press".into()),
-        };
-        let ev = Event::DeviceAction {
-            id: device_id("kitchen", "switch"),
-            action: "off_press".into(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn timer_fired_matches_no_name() {
-        let trigger = Trigger::TimerFired { name: None };
-        let ev = Event::TimerFired {
-            id: 1,
-            name: Some("pasta".into()),
-            origin: "127.0.0.1:1".parse().unwrap(),
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn timer_fired_matches_named() {
-        let trigger = Trigger::TimerFired {
-            name: Some("pasta".into()),
-        };
-        let ev = Event::TimerFired {
-            id: 1,
-            name: Some("pasta".into()),
-            origin: "127.0.0.1:1".parse().unwrap(),
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn timer_fired_no_match_wrong_name() {
-        let trigger = Trigger::TimerFired {
-            name: Some("pasta".into()),
-        };
-        let ev = Event::TimerFired {
-            id: 1,
-            name: Some("rice".into()),
-            origin: "127.0.0.1:1".parse().unwrap(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    // ---- condition evaluation --------------------------------------
-
-    fn utc_dt(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
-            .unwrap()
-    }
-
-    #[test]
-    fn time_of_day_wrapping_window() {
-        let cond = Condition::TimeOfDay {
-            after: Some(NaiveTime::from_hms_opt(21, 0, 0).unwrap()),
-            before: Some(NaiveTime::from_hms_opt(6, 0, 0).unwrap()),
-        };
-        assert!(cond.evaluate(&DeviceRegistry::new(), utc_dt(2026, 1, 1, 23, 0), Tz::UTC));
-        assert!(!cond.evaluate(&DeviceRegistry::new(), utc_dt(2026, 1, 1, 12, 0), Tz::UTC));
-        assert!(cond.evaluate(&DeviceRegistry::new(), utc_dt(2026, 1, 1, 21, 0), Tz::UTC));
-        assert!(cond.evaluate(&DeviceRegistry::new(), utc_dt(2026, 1, 1, 6, 0), Tz::UTC));
-    }
-
-    #[test]
-    fn device_is_present_matches() {
-        let registry = DeviceRegistry::new();
-        let id = device_id("kitchen", "light");
-        registry.upsert(niles_core::Device::new(
-            id.clone(),
-            DeviceState {
-                on: Some(true),
-                ..Default::default()
-            },
-            DeviceClass::Light,
-        ));
-        let cond = Condition::DeviceIs {
-            device: id,
-            on: true,
-        };
-        assert!(cond.evaluate(&registry, Utc::now(), Tz::UTC));
-    }
-
-    #[test]
-    fn device_is_present_no_match() {
-        let registry = DeviceRegistry::new();
-        let id = device_id("kitchen", "light");
-        registry.upsert(niles_core::Device::new(
-            id.clone(),
-            DeviceState {
-                on: Some(false),
-                ..Default::default()
-            },
-            DeviceClass::Light,
-        ));
-        let cond = Condition::DeviceIs {
-            device: id,
-            on: true,
-        };
-        assert!(!cond.evaluate(&registry, Utc::now(), Tz::UTC));
-    }
-
-    #[test]
-    fn device_is_absent_fails_safe() {
-        let registry = DeviceRegistry::new();
-        let id = device_id("kitchen", "light");
-        let cond = Condition::DeviceIs {
-            device: id,
-            on: true,
-        };
-        assert!(!cond.evaluate(&registry, Utc::now(), Tz::UTC));
-    }
-
-    // ---- covers ----------------------------------------------------
-
-    #[test]
-    fn covers_none_none_is_true() {
-        assert!(covers(
-            None,
-            None,
-            NaiveTime::from_hms_opt(12, 0, 0).unwrap()
-        ));
-    }
-
-    #[test]
-    fn covers_after_only() {
-        let t = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
-        assert!(covers(
-            Some(t),
-            None,
-            NaiveTime::from_hms_opt(13, 0, 0).unwrap()
-        ));
-        assert!(!covers(
-            Some(t),
-            None,
-            NaiveTime::from_hms_opt(11, 0, 0).unwrap()
-        ));
-    }
-
-    #[test]
-    fn covers_before_only() {
-        let t = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
-        assert!(covers(
-            None,
-            Some(t),
-            NaiveTime::from_hms_opt(11, 0, 0).unwrap()
-        ));
-        assert!(!covers(
-            None,
-            Some(t),
-            NaiveTime::from_hms_opt(13, 0, 0).unwrap()
-        ));
-    }
-
-    #[test]
-    fn covers_non_wrapping_window() {
-        let start = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
-        let end = NaiveTime::from_hms_opt(14, 0, 0).unwrap();
-        assert!(covers(
-            Some(start),
-            Some(end),
-            NaiveTime::from_hms_opt(12, 0, 0).unwrap()
-        ));
-        assert!(covers(
-            Some(start),
-            Some(end),
-            NaiveTime::from_hms_opt(10, 0, 0).unwrap()
-        ));
-        assert!(covers(
-            Some(start),
-            Some(end),
-            NaiveTime::from_hms_opt(14, 0, 0).unwrap()
-        ));
-        assert!(!covers(
-            Some(start),
-            Some(end),
-            NaiveTime::from_hms_opt(9, 59, 0).unwrap()
-        ));
-        assert!(!covers(
-            Some(start),
-            Some(end),
-            NaiveTime::from_hms_opt(14, 1, 0).unwrap()
-        ));
-    }
-
-    #[test]
-    fn rejects_trailing_hyphen_id() {
-        let dto = rule_dto(
-            "bad-",
-            niles_config::TriggerDto::TimerFired { name: None },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        assert!(Rule::from_dto(&dto, "z2m").is_err());
-    }
-
-    #[test]
-    fn device_action_no_match_wrong_device() {
-        let trigger = Trigger::DeviceAction {
-            device: device_id("kitchen", "switch"),
-            action: None,
-        };
-        let ev = Event::DeviceAction {
-            id: device_id("hallway", "switch"),
-            action: "on_press".into(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn device_state_no_match_non_state_event() {
-        let trigger = Trigger::DeviceState {
-            device: None,
-            room: None,
-            on: None,
-        };
-        let ev = Event::DeviceAction {
-            id: device_id("kitchen", "switch"),
-            action: "on_press".into(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn timer_fired_matches_both_none() {
-        let trigger = Trigger::TimerFired { name: None };
-        let ev = Event::TimerFired {
-            id: 1,
-            name: None,
-            origin: "127.0.0.1:1".parse().unwrap(),
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn timer_fired_no_match_named_vs_none() {
-        let trigger = Trigger::TimerFired {
-            name: Some("pasta".into()),
-        };
-        let ev = Event::TimerFired {
-            id: 1,
-            name: None,
-            origin: "127.0.0.1:1".parse().unwrap(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn presence_trigger_no_filter_matches_any() {
-        let trigger = Trigger::Presence { state: None };
-        let ev_away = Event::PresenceChanged {
-            state: niles_core::PresenceState::Away,
-        };
-        let ev_home = Event::PresenceChanged {
-            state: niles_core::PresenceState::Home,
-        };
-        assert!(trigger.matches(&ev_away));
-        assert!(trigger.matches(&ev_home));
-    }
-
-    #[test]
-    fn presence_trigger_filter_matches_same() {
-        let trigger = Trigger::Presence {
-            state: Some(PresenceFilter::Away),
-        };
-        let ev = Event::PresenceChanged {
-            state: niles_core::PresenceState::Away,
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn presence_trigger_filter_mismatch() {
-        let trigger = Trigger::Presence {
-            state: Some(PresenceFilter::Away),
-        };
-        let ev = Event::PresenceChanged {
-            state: niles_core::PresenceState::Home,
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn presence_trigger_filter_matches_home() {
-        let trigger = Trigger::Presence {
-            state: Some(PresenceFilter::Home),
-        };
-        let ev = Event::PresenceChanged {
-            state: niles_core::PresenceState::Home,
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn presence_trigger_filter_matches_unknown() {
-        let trigger = Trigger::Presence {
-            state: Some(PresenceFilter::Unknown),
-        };
-        let ev = Event::PresenceChanged {
-            state: niles_core::PresenceState::Unknown,
-        };
-        assert!(trigger.matches(&ev));
-    }
-
-    #[test]
-    fn presence_trigger_no_match_non_presence_event() {
-        let trigger = Trigger::Presence { state: None };
-        let ev = Event::DeviceStateChanged {
-            id: device_id("kitchen", "switch"),
-            state: DeviceState::default(),
-        };
-        assert!(!trigger.matches(&ev));
-    }
-
-    #[test]
-    fn dto_presence_no_state_round_trips() {
-        let dto = rule_dto(
-            "presence-any",
-            niles_config::TriggerDto::Presence { state: None },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        let rule = Rule::from_dto(&dto, "z2m").unwrap();
-        assert!(matches!(rule.trigger, Trigger::Presence { state: None }));
-    }
-
-    #[test]
-    fn dto_presence_away_round_trips() {
-        let dto = rule_dto(
-            "presence-away",
-            niles_config::TriggerDto::Presence {
-                state: Some("away".into()),
-            },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        let rule = Rule::from_dto(&dto, "z2m").unwrap();
+    fn rejects_a_rule_without_a_trigger_or_an_action() {
+        assert!(rule(json!({ "id": "r", "triggers": [], "actions": [lights_off()] })).is_err());
         assert!(matches!(
-            rule.trigger,
-            Trigger::Presence {
-                state: Some(PresenceFilter::Away)
-            }
+            rule(json!({ "id": "r", "triggers": [door(true)], "actions": [] })),
+            Err(Error::NoActions { .. })
         ));
     }
 
     #[test]
-    fn dto_presence_home_round_trips() {
-        let dto = rule_dto(
-            "presence-home",
-            niles_config::TriggerDto::Presence {
-                state: Some("home".into()),
-            },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        let rule = Rule::from_dto(&dto, "z2m").unwrap();
-        assert!(matches!(
-            rule.trigger,
-            Trigger::Presence {
-                state: Some(PresenceFilter::Home)
-            }
-        ));
+    fn names_unnamed_triggers_in_order() {
+        let mut dto: AutomationRuleDto = serde_json::from_value(json!({
+            "id": "r",
+            "triggers": [door(true), { "id": "t1", "type": "contact", "device": "office/door" }, door(false)],
+            "actions": [lights_off()],
+        }))
+        .unwrap();
+        assign_trigger_ids(&mut dto);
+        let ids: Vec<_> = dto.triggers.iter().map(|t| t.id.clone().unwrap()).collect();
+        assert_eq!(ids, ["t2", "t1", "t3"]);
+        assert!(Rule::from_dto(&dto, "z2m").is_ok());
     }
 
     #[test]
-    fn dto_presence_unknown_round_trips() {
-        let dto = rule_dto(
-            "presence-unknown",
-            niles_config::TriggerDto::Presence {
-                state: Some("unknown".into()),
-            },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        let rule = Rule::from_dto(&dto, "z2m").unwrap();
-        assert!(matches!(
-            rule.trigger,
-            Trigger::Presence {
-                state: Some(PresenceFilter::Unknown)
-            }
-        ));
+    fn refuses_two_triggers_of_one_name_and_a_triggered_by_naming_none() {
+        let twice = rule(json!({
+            "id": "r",
+            "triggers": [{ "id": "a", "type": "contact", "device": "office/door" }, { "id": "a", "type": "timer_fired" }],
+            "actions": [lights_off()],
+        }));
+        assert!(twice.is_err());
+        let gone = rule(json!({
+            "id": "r",
+            "triggers": [door(true)],
+            "conditions": [{ "kind": "triggered_by", "triggers": ["t9"] }],
+            "actions": [lights_off()],
+        }));
+        assert!(gone.unwrap_err().to_string().contains("t9"));
     }
 
     #[test]
-    fn dto_presence_invalid_state_rejected() {
-        let dto = rule_dto(
-            "presence-bad",
-            niles_config::TriggerDto::Presence {
-                state: Some("nonsense".into()),
-            },
-            vec![niles_config::ActionDto::Notify {
-                body: "x".into(),
-                room: None,
-                priority: None,
-            }],
-        );
-        let err = Rule::from_dto(&dto, "z2m").unwrap_err();
+    fn refuses_waits_out_of_bounds_and_deep_branches() {
+        let long = rule(json!({
+            "id": "r", "triggers": [door(true)],
+            "actions": [{ "do": "delay", "hours": 25 }],
+        }));
+        assert!(long.is_err());
+        let none = rule(json!({
+            "id": "r",
+            "triggers": [{ "type": "contact", "device": "office/door", "for": {} }],
+            "actions": [lights_off()],
+        }));
+        assert!(none.is_err());
+        let nested = |depth: usize| {
+            let mut action = lights_off();
+            for _ in 0..depth {
+                action = json!({ "do": "if", "conditions": [], "then": [action] });
+            }
+            rule(json!({ "id": "r", "triggers": [door(true)], "actions": [action] }))
+        };
+        assert!(nested(3).is_ok());
+        assert!(nested(4).is_err());
+    }
+
+    #[test]
+    fn refuses_readings_that_can_never_hold() {
+        let r = |above: Option<f64>, below: Option<f64>| {
+            rule(json!({
+                "id": "r",
+                "triggers": [{ "type": "numeric", "device": "office/sensor", "measure": "temperature", "above": above, "below": below }],
+                "actions": [lights_off()],
+            }))
+        };
+        assert!(r(Some(24.0), None).is_ok());
+        assert!(r(None, None).is_err());
+        assert!(r(Some(25.0), Some(20.0)).is_err());
         assert!(
-            matches!(err, Error::InvalidPresenceState { .. }),
-            "expected InvalidPresenceState, got {err:?}"
+            rule(json!({
+                "id": "r",
+                "triggers": [{ "type": "numeric", "device": "office/sensor", "measure": "loudness", "above": 1 }],
+                "actions": [lights_off()],
+            }))
+            .is_err()
         );
     }
 
     #[test]
-    fn device_is_present_false_matches() {
+    fn reads_clock_and_sun_triggers() {
+        let r = rule(json!({
+            "id": "r",
+            "triggers": [
+                { "type": "time", "at": "22:00", "days": ["mon", "fri"] },
+                { "type": "sun", "event": "sunset", "offset_minutes": -30 }
+            ],
+            "actions": [lights_off()],
+        }))
+        .unwrap();
+        assert!(matches!(r.triggers[0].trigger, Trigger::Time { .. }));
+        assert!(r.uses_sun());
+        assert!(
+            rule(json!({
+                "id": "r", "triggers": [{ "type": "time", "at": "25:00" }], "actions": [lights_off()],
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn keeps_brightness_and_kelvin_in_range() {
+        let r = |action: serde_json::Value| {
+            rule(json!({ "id": "r", "triggers": [door(true)], "actions": [action] }))
+        };
+        assert!(r(json!({ "do": "set_room", "room": "office", "brightness": 101 })).is_err());
+        assert!(r(json!({ "do": "set_device", "device": "office/go", "kelvin": 1000 })).is_err());
+        assert!(r(json!({ "do": "notify", "body": "x", "priority": "loud" })).is_err());
+    }
+
+    // ---- what triggers follow --------------------------------------
+
+    #[test]
+    fn a_contact_trigger_follows_the_door() {
+        let door = device_id("office", "door");
+        let t = Trigger::Contact {
+            device: door.clone(),
+            open: Some(true),
+        };
+        let open = DeviceState {
+            open: Some(true),
+            ..Default::default()
+        };
+        let shut = DeviceState {
+            open: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            t.observe(&state_event(&door, open)),
+            Some(("z2m:office/door".into(), true))
+        );
+        assert_eq!(
+            t.observe(&state_event(&door, shut)),
+            Some(("z2m:office/door".into(), false))
+        );
+        // A battery report without the contact says nothing about it.
+        let battery = DeviceState {
+            battery_percent: Some(90),
+            ..Default::default()
+        };
+        assert_eq!(t.observe(&state_event(&door, battery)), None);
+        assert!(t.follows_state());
+    }
+
+    #[test]
+    fn a_numeric_trigger_holds_inside_its_range() {
+        let sensor = device_id("office", "sensor");
+        let t = Trigger::Numeric {
+            device: sensor.clone(),
+            measure: Measure::Temperature,
+            above: Some(24.0),
+            below: None,
+        };
+        let at = |c: f32| {
+            state_event(
+                &sensor,
+                DeviceState {
+                    temperature_celsius: Some(c),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(t.observe(&at(25.5)).map(|o| o.1), Some(true));
+        assert_eq!(t.observe(&at(24.0)).map(|o| o.1), Some(false));
+    }
+
+    #[test]
+    fn a_device_state_trigger_without_a_device_follows_every_one_in_the_room() {
+        let t = Trigger::DeviceState {
+            device: None,
+            room: Some(RoomName::parse("kitchen").unwrap()),
+            on: Some(true),
+        };
+        let on = DeviceState {
+            on: Some(true),
+            ..Default::default()
+        };
+        assert!(
+            t.observe(&state_event(&device_id("kitchen", "lamp"), on.clone()))
+                .is_some()
+        );
+        assert!(
+            t.observe(&state_event(&device_id("office", "lamp"), on))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn buttons_and_timers_are_moments() {
+        let dimmer = device_id("office", "switch");
+        let press = Trigger::DeviceAction {
+            device: dimmer.clone(),
+            action: Some("on_press".into()),
+        };
+        assert!(press.fires(&Event::DeviceAction {
+            id: dimmer.clone(),
+            action: "on_press".into()
+        }));
+        assert!(!press.fires(&Event::DeviceAction {
+            id: dimmer,
+            action: "off_press".into()
+        }));
+        assert!(!press.follows_state());
+    }
+
+    #[test]
+    fn a_weekday_time_falls_only_on_its_days() {
+        let t = Trigger::Time {
+            at: NaiveTime::from_hms_opt(22, 0, 0).unwrap(),
+            days: Some(vec![Weekday::Mon]),
+        };
+        let monday = Utc.with_ymd_and_hms(2026, 10, 12, 9, 0, 0).unwrap();
+        let tuesday = Utc.with_ymd_and_hms(2026, 10, 13, 9, 0, 0).unwrap();
+        assert_eq!(
+            t.due_on(monday, Tz::UTC, None).map(|d| d.time()),
+            NaiveTime::from_hms_opt(22, 0, 0)
+        );
+        assert_eq!(t.due_on(tuesday, Tz::UTC, None), None);
+    }
+
+    #[test]
+    fn a_sun_trigger_falls_on_a_whole_minute() {
+        let t = Trigger::Sun {
+            event: SunEvent::Sunset,
+            offset_minutes: -30,
+        };
+        let tz: Tz = "Europe/Copenhagen".parse().unwrap();
+        let day = Utc.with_ymd_and_hms(2026, 10, 12, 9, 0, 0).unwrap();
+        let due = t.due_on(day, tz, Location::of(56.1572, 10.2107)).unwrap();
+        assert_eq!(due.second(), 0);
+        assert!((17..=18).contains(&due.hour()), "{due}");
+        assert_eq!(t.due_on(day, tz, None), None);
+    }
+
+    // ---- conditions ------------------------------------------------
+
+    #[test]
+    fn time_of_day_wraps_past_midnight_and_knows_its_days() {
         let registry = DeviceRegistry::new();
-        let id = device_id("kitchen", "light");
-        registry.upsert(niles_core::Device::new(
-            id.clone(),
+        let window = Condition::TimeOfDay {
+            after: NaiveTime::from_hms_opt(22, 0, 0),
+            before: NaiveTime::from_hms_opt(6, 0, 0),
+            days: None,
+        };
+        let night = Utc.with_ymd_and_hms(2026, 10, 12, 23, 30, 0).unwrap();
+        let noon = Utc.with_ymd_and_hms(2026, 10, 12, 12, 0, 0).unwrap();
+        assert!(window.evaluate(&ctx(&registry, night)));
+        assert!(!window.evaluate(&ctx(&registry, noon)));
+        let weekends = Condition::TimeOfDay {
+            after: None,
+            before: None,
+            days: Some(vec![Weekday::Sat, Weekday::Sun]),
+        };
+        assert!(!weekends.evaluate(&ctx(&registry, noon)), "a Monday");
+    }
+
+    #[test]
+    fn the_sun_condition_knows_when_it_is_dark() {
+        let registry = DeviceRegistry::new();
+        let dark = Condition::Sun {
+            after: Some((SunEvent::Sunset, 0)),
+            before: Some((SunEvent::Sunrise, 0)),
+        };
+        let tz: Tz = "Europe/Copenhagen".parse().unwrap();
+        let at = |h: u32| Context {
+            registry: &registry,
+            now: tz
+                .with_ymd_and_hms(2026, 10, 12, h, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            tz,
+            location: Location::of(56.1572, 10.2107),
+            presence: None,
+            trigger: None,
+        };
+        assert!(dark.evaluate(&at(21)));
+        assert!(dark.evaluate(&at(5)));
+        assert!(!dark.evaluate(&at(13)));
+        // Nowhere to see the sun from: never.
+        let nowhere = Context {
+            location: None,
+            ..at(21)
+        };
+        assert!(!dark.evaluate(&nowhere));
+    }
+
+    #[test]
+    fn device_conditions_read_the_registry_and_fail_safe() {
+        let registry = DeviceRegistry::new();
+        let lamp = device_id("office", "go");
+        let sensor = device_id("office", "sensor");
+        registry.upsert(Device::new(
+            lamp.clone(),
             DeviceState {
-                on: Some(false),
+                on: Some(true),
                 ..Default::default()
             },
             DeviceClass::Light,
         ));
-        let cond = Condition::DeviceIs {
-            device: id,
-            on: false,
+        registry.upsert(Device::new(
+            sensor.clone(),
+            DeviceState {
+                temperature_celsius: Some(22.0),
+                ..Default::default()
+            },
+            DeviceClass::Sensor,
+        ));
+        let now = Utc::now();
+        assert!(
+            Condition::DeviceIs {
+                device: lamp,
+                on: true
+            }
+            .evaluate(&ctx(&registry, now))
+        );
+        assert!(
+            !Condition::DeviceIs {
+                device: device_id("office", "gone"),
+                on: false
+            }
+            .evaluate(&ctx(&registry, now))
+        );
+        assert!(
+            Condition::Numeric {
+                device: sensor,
+                measure: Measure::Temperature,
+                above: Some(20.0),
+                below: Some(23.0),
+            }
+            .evaluate(&ctx(&registry, now))
+        );
+    }
+
+    #[test]
+    fn triggered_by_names_the_trigger_that_started_it() {
+        let registry = DeviceRegistry::new();
+        let only_first = Condition::TriggeredBy(vec!["t1".into()]);
+        let started = |t: &'static str| Context {
+            trigger: Some(t),
+            ..ctx(&registry, Utc::now())
         };
-        assert!(cond.evaluate(&registry, Utc::now(), Tz::UTC));
+        assert!(only_first.evaluate(&started("t1")));
+        assert!(!only_first.evaluate(&started("t2")));
+        assert_eq!(only_first.unmet(), "another trigger started it");
+    }
+
+    #[test]
+    fn presence_is_needs_to_know() {
+        let registry = DeviceRegistry::new();
+        let home = Condition::PresenceIs(PresenceFilter::Home);
+        assert!(!home.evaluate(&ctx(&registry, Utc::now())));
+        let known = Context {
+            presence: Some(PresenceState::Home),
+            ..ctx(&registry, Utc::now())
+        };
+        assert!(home.evaluate(&known));
+    }
+
+    #[test]
+    fn says_what_was_done_and_for_how_long() {
+        assert_eq!(say_duration(Duration::from_secs(5 * 60)), "5 minutes");
+        assert_eq!(
+            say_duration(Duration::from_secs(3600 + 60)),
+            "1 hour 1 minute"
+        );
+        assert_eq!(
+            Action::SetRoom {
+                room: RoomName::parse("office").unwrap(),
+                on: Some(false),
+                brightness: None,
+                kelvin: None,
+            }
+            .done(),
+            "set the office lights off"
+        );
+    }
+
+    #[test]
+    fn the_old_single_trigger_still_reads() {
+        let r =
+            rule(json!({ "id": "r", "trigger": door(true), "actions": [lights_off()] })).unwrap();
+        assert_eq!(r.triggers.len(), 1);
+        assert_eq!(r.triggers[0].id, "t1");
     }
 }

@@ -48,7 +48,10 @@ pub mod wyoming;
 pub use ambient_lights::AmbientLightsConfig;
 pub use api::ApiConfig;
 pub use auth::{AllowedPerson, AuthConfig};
-pub use automations::{ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, TriggerDto};
+pub use automations::{
+    ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, DurationDto, TriggerDto,
+    TriggerKind,
+};
 pub use backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
 pub use capabilities::CapabilitiesConfig;
 pub use capture::CaptureConfig;
@@ -2313,7 +2316,10 @@ priority = "routine"
 
         let r1 = &cfg.automations.rules[0];
         assert_eq!(r1.id, "hallway-motion-night");
-        assert!(matches!(r1.trigger, TriggerDto::DeviceState { .. }));
+        assert!(matches!(
+            r1.triggers[0].kind,
+            TriggerKind::DeviceState { .. }
+        ));
         assert_eq!(r1.conditions.len(), 1);
         assert!(matches!(r1.conditions[0], ConditionDto::TimeOfDay { .. }));
         assert_eq!(r1.actions.len(), 1);
@@ -2321,7 +2327,10 @@ priority = "routine"
 
         let r2 = &cfg.automations.rules[1];
         assert_eq!(r2.id, "timer-greet");
-        assert!(matches!(r2.trigger, TriggerDto::TimerFired { .. }));
+        assert!(matches!(
+            r2.triggers[0].kind,
+            TriggerKind::TimerFired { .. }
+        ));
         assert!(matches!(r2.actions[0], ActionDto::Notify { .. }));
     }
 

@@ -1761,6 +1761,7 @@ dependencies = [
  "niles-scheduler",
  "niles-stt",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

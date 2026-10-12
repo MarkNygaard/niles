@@ -1,5 +1,6 @@
 //! Automation tools — `propose_automation`, `create_automation`,
-//! `list_automations`, `pause_automation` and `remove_automation`.
+//! `list_automations`, `pause_automation`, `remove_automation` and
+//! `automation_runs`.
 //!
 //! A rule made by voice is read back before it is saved: the model
 //! proposes it, says the sentence, and creates it only on a yes. A
@@ -11,8 +12,8 @@ use crate::registry::ToolRegistry;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use niles_automations::store::DEFAULT_SOURCE;
-use niles_automations::{AutomationStore, Rule, sentence};
-use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, TriggerDto};
+use niles_automations::{AutomationStore, Rule, RunLog, sentence};
+use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, TriggerDto, TriggerKind};
 use niles_core::{DeviceId, DeviceRegistry, RoomName};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,6 +24,60 @@ fn rule_schema() -> Value {
         "type": "string",
         "description": "A device as room/name, e.g. office/door, office/go."
     });
+    let duration = json!({
+        "type": "object",
+        "description": "How long, as hours/minutes/seconds.",
+        "properties": {
+            "hours": { "type": "integer", "minimum": 0 },
+            "minutes": { "type": "integer", "minimum": 0 },
+            "seconds": { "type": "integer", "minimum": 0 }
+        }
+    });
+    let days = json!({
+        "type": "array",
+        "items": { "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
+    });
+    let condition = json!({
+        "type": "object",
+        "description": "kind=time_of_day: after/before HH:MM (may wrap midnight), optional days. kind=sun: after and/or before sunrise|sunset, with after_offset_minutes/before_offset_minutes (after sunset + before sunrise = while it is dark). kind=device_is: a device on/off. kind=contact_is: a door open/closed. kind=numeric: a reading (measure temperature|humidity|battery|brightness) above and/or below a value. kind=presence_is: state home|away. kind=triggered_by: which of the rule's triggers (by id) started it — for a rule with several triggers doing different things.",
+        "properties": {
+            "kind": { "type": "string", "enum": ["time_of_day", "sun", "device_is", "contact_is", "numeric", "presence_is", "triggered_by"] },
+            "after": { "type": "string" },
+            "before": { "type": "string" },
+            "after_offset_minutes": { "type": "integer" },
+            "before_offset_minutes": { "type": "integer" },
+            "days": days,
+            "device": device,
+            "on": { "type": "boolean" },
+            "open": { "type": "boolean" },
+            "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness"] },
+            "above": { "type": "number" },
+            "below": { "type": "number" },
+            "state": { "type": "string", "enum": ["home", "away"] },
+            "triggers": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["kind"]
+    });
+    let action = json!({
+        "type": "object",
+        "description": "do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=notify: say body in a room (a room with a satellite). do=delay: wait hours/minutes/seconds, then go on. do=if: conditions, then (actions), else (actions) — at most 3 deep.",
+        "properties": {
+            "do": { "type": "string", "enum": ["set_room", "set_device", "notify", "delay", "if"] },
+            "room": { "type": "string" },
+            "device": device,
+            "on": { "type": "boolean" },
+            "brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "kelvin": { "type": "integer", "minimum": 2000, "maximum": 6500 },
+            "body": { "type": "string" },
+            "hours": { "type": "integer", "minimum": 0 },
+            "minutes": { "type": "integer", "minimum": 0 },
+            "seconds": { "type": "integer", "minimum": 0 },
+            "conditions": { "type": "array", "items": condition },
+            "then": { "type": "array", "items": { "type": "object" } },
+            "else": { "type": "array", "items": { "type": "object" } }
+        },
+        "required": ["do"]
+    });
     json!({
         "type": "object",
         "properties": {
@@ -30,57 +85,47 @@ fn rule_schema() -> Value {
                 "type": "string",
                 "description": "A short name for the rule, e.g. 'Office lights off when the garden door opens'."
             },
-            "trigger": {
-                "type": "object",
-                "description": "What starts it. type=contact: a door or window sensor opens (open=true) or closes (open=false). type=device_state: a device turns on or off. type=device_action: a button press (action e.g. on_press). type=presence: someone comes home (state=home) or everyone leaves (state=away). type=timer_fired.",
-                "properties": {
-                    "type": { "type": "string", "enum": ["contact", "device_state", "device_action", "presence", "timer_fired"] },
-                    "device": device,
-                    "room": { "type": "string" },
-                    "open": { "type": "boolean" },
-                    "on": { "type": "boolean" },
-                    "action": { "type": "string" },
-                    "state": { "type": "string", "enum": ["home", "away"] },
-                    "name": { "type": "string" }
-                },
-                "required": ["type"]
-            },
-            "conditions": {
+            "triggers": {
                 "type": "array",
-                "description": "Optional; all must hold. kind=time_of_day with after/before as HH:MM (may wrap midnight). kind=device_is: a device is on/off. kind=contact_is: a door is open/closed.",
+                "minItems": 1,
+                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. type=contact: a door or window opens (open=true) or closes (false). type=device_state: a device turns on/off. type=numeric: a reading goes above/below a value. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "kind": { "type": "string", "enum": ["time_of_day", "device_is", "contact_is"] },
-                        "after": { "type": "string" },
-                        "before": { "type": "string" },
+                        "id": { "type": "string" },
+                        "type": { "type": "string", "enum": ["contact", "device_state", "numeric", "device_action", "presence", "time", "sun", "timer_fired"] },
                         "device": device,
+                        "room": { "type": "string" },
+                        "open": { "type": "boolean" },
                         "on": { "type": "boolean" },
-                        "open": { "type": "boolean" }
+                        "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness"] },
+                        "above": { "type": "number" },
+                        "below": { "type": "number" },
+                        "action": { "type": "string" },
+                        "state": { "type": "string", "enum": ["home", "away"] },
+                        "at": { "type": "string", "description": "HH:MM" },
+                        "days": days,
+                        "event": { "type": "string", "enum": ["sunrise", "sunset"] },
+                        "offset_minutes": { "type": "integer" },
+                        "name": { "type": "string" },
+                        "for": duration
                     },
-                    "required": ["kind"]
+                    "required": ["type"]
                 }
+            },
+            "conditions": {
+                "type": "array",
+                "description": "Optional; all must hold for the actions to run.",
+                "items": condition
             },
             "actions": {
                 "type": "array",
                 "minItems": 1,
-                "description": "What it does, in order. do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=notify: say body in a room.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "do": { "type": "string", "enum": ["set_room", "set_device", "notify"] },
-                        "room": { "type": "string" },
-                        "device": device,
-                        "on": { "type": "boolean" },
-                        "brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
-                        "kelvin": { "type": "integer", "minimum": 2000, "maximum": 6500 },
-                        "body": { "type": "string" }
-                    },
-                    "required": ["do"]
-                }
+                "description": "What it does, in order.",
+                "items": action
             }
         },
-        "required": ["description", "trigger", "actions"]
+        "required": ["description", "triggers", "actions"]
     })
 }
 
@@ -103,31 +148,56 @@ fn read_rule(tool: &str, args: &Value) -> Result<AutomationRuleDto> {
 fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     let mut devices: Vec<&str> = Vec::new();
     let mut rooms: Vec<&str> = Vec::new();
-    match &rule.trigger {
-        TriggerDto::Contact { device, .. } | TriggerDto::DeviceAction { device, .. } => {
-            devices.push(device)
-        }
-        TriggerDto::DeviceState { device, room, .. } => {
-            devices.extend(device.as_deref());
-            rooms.extend(room.as_deref());
-        }
-        _ => {}
-    }
-    for condition in &rule.conditions {
-        match condition {
-            ConditionDto::DeviceIs { device, .. } | ConditionDto::ContactIs { device, .. } => {
-                devices.push(device)
+    for trigger in &rule.triggers {
+        match &trigger.kind {
+            TriggerKind::Contact { device, .. }
+            | TriggerKind::DeviceAction { device, .. }
+            | TriggerKind::Numeric { device, .. } => devices.push(device),
+            TriggerKind::DeviceState { device, room, .. } => {
+                devices.extend(device.as_deref());
+                rooms.extend(room.as_deref());
             }
-            ConditionDto::TimeOfDay { .. } => {}
+            _ => {}
         }
     }
-    for action in &rule.actions {
-        match action {
-            ActionDto::SetDevice { device, .. } => devices.push(device),
-            ActionDto::SetRoom { room, .. } => rooms.push(room),
-            ActionDto::Notify { .. } => {}
+    fn in_conditions<'a>(conditions: &'a [ConditionDto], devices: &mut Vec<&'a str>) {
+        for condition in conditions {
+            match condition {
+                ConditionDto::DeviceIs { device, .. }
+                | ConditionDto::ContactIs { device, .. }
+                | ConditionDto::Numeric { device, .. } => devices.push(device),
+                _ => {}
+            }
         }
     }
+    fn in_actions<'a>(
+        actions: &'a [ActionDto],
+        devices: &mut Vec<&'a str>,
+        lit: &mut Vec<&'a str>,
+    ) {
+        for action in actions {
+            match action {
+                ActionDto::SetDevice { device, .. } => devices.push(device),
+                ActionDto::SetRoom { room, .. } => lit.push(room),
+                ActionDto::If {
+                    conditions,
+                    then,
+                    otherwise,
+                } => {
+                    in_conditions(conditions, devices);
+                    in_actions(then, devices, lit);
+                    in_actions(otherwise, devices, lit);
+                }
+                _ => {}
+            }
+        }
+    }
+    in_conditions(&rule.conditions, &mut devices);
+    in_actions(&rule.actions, &mut devices, &mut rooms);
+    devices.sort_unstable();
+    devices.dedup();
+    rooms.sort_unstable();
+    rooms.dedup();
     let mut missing = Vec::new();
     for device in devices {
         let full = if device.contains(':') {
@@ -154,6 +224,12 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     missing
 }
 
+/// Whether two rules start on any of the same kind of trigger for the
+/// same thing — "you already have one for the garden door".
+fn overlaps(a: &[TriggerDto], b: &[TriggerDto]) -> bool {
+    a.iter().any(|x| b.iter().any(|y| x.kind == y.kind))
+}
+
 pub struct ProposeAutomation {
     store: Arc<AutomationStore>,
     registry: Arc<DeviceRegistry>,
@@ -165,11 +241,13 @@ impl Tool for ProposeAutomation {
         ToolDescriptor {
             name: "propose_automation".into(),
             description: "First step of making an automation — 'when the office door opens, \
-                turn off the office lights', 'turn on the hallway light when we come home'. \
-                Saves nothing. Returns the rule as a sentence: read it to the person and ask \
-                whether to save it ('When the office door opens, I'll turn off the office \
-                lights. Shall I?'). Call create_automation with the same rule only after they \
-                say yes. If it returns problems, say them instead and ask what they meant."
+                turn off the office lights', 'turn the lights off five minutes after the door \
+                closes', 'tell me if the garden door has been open for ten minutes', 'turn on the \
+                porch light at sunset'. Saves nothing. Returns the rule as a sentence: read it to \
+                the person and ask whether to save it ('When the office door opens, I'll turn \
+                off the office lights. Shall I?'). Call create_automation with the same rule \
+                only after they say yes. If it returns problems, say them instead and ask what \
+                they meant."
                 .into(),
             parameters: rule_schema(),
         }
@@ -191,7 +269,7 @@ impl Tool for ProposeAutomation {
             .store
             .list()
             .into_iter()
-            .filter(|r| r.trigger == rule.trigger)
+            .filter(|r| overlaps(&r.triggers, &rule.triggers))
             .map(|r| sentence(&r))
             .collect();
         Ok(json!({
@@ -245,8 +323,8 @@ impl Tool for ListAutomations {
         ToolDescriptor {
             name: "list_automations".into(),
             description: "The household's automations: 'what automations do I have?'. Also \
-                the way to find one's id before pausing or removing it. Say them as their \
-                sentences."
+                the way to find one's id before pausing, removing or asking about it. Say them \
+                as their sentences."
                 .into(),
             parameters: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         }
@@ -338,6 +416,64 @@ impl Tool for RemoveAutomation {
     }
 }
 
+pub struct AutomationRuns {
+    store: Arc<AutomationStore>,
+    log: Arc<RunLog>,
+}
+
+#[async_trait]
+impl Tool for AutomationRuns {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "automation_runs".into(),
+            description: "What an automation did lately: 'why didn't the office light turn \
+                off?', 'did the garden door rule run?'. Find its id with list_automations. Each \
+                run says when, which trigger, and how it ended — done (with what it did), \
+                stopped by a condition (and why), replaced by a newer run, or failed. Kept since \
+                Niles last started."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let id = required("automation_runs", &args, "id")?;
+        let rule = self
+            .store
+            .get(id)
+            .ok_or_else(|| invalid("automation_runs", format!("there is no automation '{id}'")))?;
+        let trigger = |run_trigger: &Option<String>| {
+            run_trigger.as_ref().and_then(|t| {
+                rule.triggers
+                    .iter()
+                    .position(|known| known.id.as_ref() == Some(t))
+                    .map(|i| format!("trigger {}", i + 1))
+            })
+        };
+        let runs: Vec<Value> = self
+            .log
+            .runs(id)
+            .into_iter()
+            .take(10)
+            .map(|run| {
+                json!({
+                    "at": run.started_at.to_rfc3339(),
+                    "trigger": trigger(&run.trigger),
+                    "outcome": run.outcome,
+                    "reason": run.reason,
+                    "steps": run.steps,
+                })
+            })
+            .collect();
+        Ok(json!({ "sentence": sentence(&rule), "runs": runs }))
+    }
+}
+
 fn required<'a>(tool: &str, args: &'a Value, key: &str) -> Result<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
@@ -352,11 +488,12 @@ fn invalid(tool: &str, reason: String) -> Error {
 }
 
 /// Register the automation tools over the store the app and the engine
-/// share.
+/// share, and the log the engine writes its runs to.
 pub fn register_automation_tools(
     reg: &mut ToolRegistry,
     store: Arc<AutomationStore>,
     registry: Arc<DeviceRegistry>,
+    log: Arc<RunLog>,
 ) {
     reg.register(Box::new(ProposeAutomation {
         store: store.clone(),
@@ -372,7 +509,10 @@ pub fn register_automation_tools(
     reg.register(Box::new(PauseAutomation {
         store: store.clone(),
     }));
-    reg.register(Box::new(RemoveAutomation { store }));
+    reg.register(Box::new(RemoveAutomation {
+        store: store.clone(),
+    }));
+    reg.register(Box::new(AutomationRuns { store, log }));
 }
 
 #[cfg(test)]
@@ -406,7 +546,7 @@ mod tests {
     fn garden_door(room: &str) -> Value {
         json!({
             "description": "Office lights off when the garden door opens",
-            "trigger": { "type": "contact", "device": "office/door", "open": true },
+            "triggers": [{ "type": "contact", "device": "office/door", "open": true }],
             "actions": [{ "do": "set_room", "room": room, "on": false }],
         })
     }
@@ -428,7 +568,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_misheard_room_is_a_problem_not_a_rule() {
+    async fn a_misheard_room_is_a_problem_not_a_rule_even_inside_a_branch() {
         let store = Arc::new(AutomationStore::new());
         let propose = ProposeAutomation {
             store: store.clone(),
@@ -439,6 +579,16 @@ mod tests {
             out["problems"],
             json!(["no lights in a room called offers"])
         );
+        let branched = json!({
+            "description": "x",
+            "triggers": [{ "type": "contact", "device": "office/door", "open": false }],
+            "actions": [{ "do": "if", "conditions": [], "then": [
+                { "do": "delay", "minutes": 5 },
+                { "do": "set_device", "device": "office/goo", "on": false }
+            ] }],
+        });
+        let out = propose.execute(branched).await.unwrap();
+        assert_eq!(out["problems"], json!(["no device called office/goo"]));
         let create = CreateAutomation {
             store: store.clone(),
             registry: house(),
@@ -494,5 +644,39 @@ mod tests {
         rule["id"] = json!("whatever-it-likes");
         let made = create.execute(rule).await.unwrap();
         assert_eq!(made["id"], "office-lights-off-when-the-garden-door-opens");
+    }
+
+    #[tokio::test]
+    async fn says_why_a_rule_did_not_run() {
+        let store = Arc::new(AutomationStore::new());
+        let log = Arc::new(RunLog::new());
+        let made = CreateAutomation {
+            store: store.clone(),
+            registry: house(),
+        }
+        .execute(garden_door("office"))
+        .await
+        .unwrap();
+        let id = made["id"].as_str().unwrap().to_string();
+        log.begin(
+            &id,
+            Some("t1"),
+            chrono::Utc::now(),
+            niles_automations::Outcome::Stopped,
+            Some("it was not between 22:00 and 06:00".into()),
+        );
+        let out = AutomationRuns {
+            store,
+            log: log.clone(),
+        }
+        .execute(json!({ "id": id }))
+        .await
+        .unwrap();
+        assert_eq!(out["runs"][0]["outcome"], "stopped");
+        assert_eq!(out["runs"][0]["trigger"], "trigger 1");
+        assert_eq!(
+            out["runs"][0]["reason"],
+            "it was not between 22:00 and 06:00"
+        );
     }
 }

@@ -36,7 +36,10 @@ pub struct Automations {
     pub rules: Vec<AutomationView>,
 }
 
-fn view(rule: AutomationRuleDto, source: &'static str) -> AutomationView {
+fn view(mut rule: AutomationRuleDto, source: &'static str) -> AutomationView {
+    // A rule saved before triggers had ids — or a config file's — still
+    // goes out with them: the page refers to triggers by id.
+    niles_automations::rule::assign_trigger_ids(&mut rule);
     AutomationView {
         error: Rule::from_dto(&rule, DEFAULT_SOURCE)
             .err()
@@ -86,6 +89,28 @@ pub async fn update(
     let rule = read(body)?;
     let saved = store.update(&id, rule).map_err(failure)?;
     Ok(Json(view(saved, "stored")))
+}
+
+#[derive(Debug, Serialize)]
+pub struct Runs {
+    /// Newest first, since Niles last started.
+    pub runs: Vec<niles_automations::Run>,
+}
+
+/// `GET /automations/{id}/runs`
+pub async fn runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Runs>, Failure> {
+    let log = state.automation_runs.as_ref().ok_or_else(|| {
+        failed(
+            StatusCode::NOT_IMPLEMENTED,
+            "this Niles instance runs no automations".into(),
+        )
+    })?;
+    Ok(Json(Runs {
+        runs: log.runs(&id),
+    }))
 }
 
 /// `DELETE /automations/{id}`
@@ -180,7 +205,8 @@ mod tests {
                 Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
                 EventBus::default(),
             )
-            .with_automations(Some(store)),
+            .with_automations(Some(store))
+            .with_automation_runs(Some(Arc::new(niles_automations::RunLog::new()))),
         )
     }
 
@@ -251,6 +277,55 @@ mod tests {
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, _) = send(&app, "DELETE", &format!("/automations/{id}"), None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn lists_a_rules_runs_newest_first() {
+        let log = Arc::new(niles_automations::RunLog::new());
+        let app = router(
+            AppState::new(
+                Arc::new(DeviceRegistry::new()),
+                Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
+                Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
+                EventBus::default(),
+            )
+            .with_automations(Some(Arc::new(AutomationStore::new())))
+            .with_automation_runs(Some(log.clone())),
+        );
+        let now = chrono::Utc::now();
+        log.begin(
+            "door",
+            Some("t1"),
+            now,
+            niles_automations::Outcome::Done,
+            None,
+        );
+        log.begin(
+            "door",
+            Some("t2"),
+            now,
+            niles_automations::Outcome::Stopped,
+            Some("it was not between 22:00 and 06:00".into()),
+        );
+        let (status, body) = send(&app, "GET", "/automations/door/runs", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["runs"][0]["outcome"], "stopped");
+        assert_eq!(body["runs"][0]["trigger"], "t2");
+        assert_eq!(body["runs"][1]["outcome"], "done");
+    }
+
+    #[tokio::test]
+    async fn a_rule_saved_with_one_trigger_goes_out_with_a_named_list() {
+        let store = Arc::new(
+            AutomationStore::from_json(
+                r#"[{"id":"door","trigger":{"type":"contact","device":"office/door","open":true},
+                    "actions":[{"do":"set_room","room":"office","on":false}]}]"#,
+            )
+            .unwrap(),
+        );
+        let (_, body) = send(&app(store), "GET", "/automations", None).await;
+        assert_eq!(body["rules"][0]["rule"]["triggers"][0]["id"], "t1");
+        assert!(body["rules"][0]["rule"].get("trigger").is_none());
     }
 
     #[tokio::test]

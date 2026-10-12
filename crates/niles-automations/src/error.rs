@@ -14,6 +14,10 @@ pub enum Error {
     #[error("automation '{id}' has no actions")]
     NoActions { id: String },
 
+    /// Anything else a rule cannot be, said plainly.
+    #[error("automation '{id}': {reason}")]
+    Invalid { id: String, reason: String },
+
     #[error("automation '{id}': invalid brightness {value} (must be 0–100)")]
     InvalidBrightness { id: String, value: u8 },
 

@@ -311,6 +311,8 @@ const GROUPS: &[Group] = &[
             "automations",
             "rule",
             "rules",
+            "why didn't",
+            "didn't turn",
             "save",
         ],
         tools: &[
@@ -319,6 +321,7 @@ const GROUPS: &[Group] = &[
             "list_automations",
             "pause_automation",
             "remove_automation",
+            "automation_runs",
         ],
     },
 ];

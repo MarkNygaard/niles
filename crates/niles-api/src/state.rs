@@ -70,6 +70,8 @@ pub struct AppState {
     /// The household's automations, shared with the voice tools and
     /// the engine that runs them.
     pub automations: Option<Arc<niles_automations::AutomationStore>>,
+    /// What each rule did lately, as the engine noted it.
+    pub automation_runs: Option<Arc<niles_automations::RunLog>>,
     /// Each person's calendars. Absent without a database and its
     /// secrets key: a refresh token is not kept anywhere unsealed.
     pub calendars: Option<Arc<niles_calendar::Calendars>>,
@@ -106,6 +108,7 @@ impl AppState {
             scenes: None,
             groceries: None,
             automations: None,
+            automation_runs: None,
             calendars: None,
             calendar_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             chat: None,
@@ -164,6 +167,11 @@ impl AppState {
 
     pub fn with_calendars(mut self, calendars: Option<Arc<niles_calendar::Calendars>>) -> Self {
         self.calendars = calendars;
+        self
+    }
+
+    pub fn with_automation_runs(mut self, runs: Option<Arc<niles_automations::RunLog>>) -> Self {
+        self.automation_runs = runs;
         self
     }
 
