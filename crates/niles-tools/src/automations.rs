@@ -16,7 +16,115 @@ use niles_automations::{AutomationStore, Rule, RunLog, sentence};
 use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, TriggerDto, TriggerKind};
 use niles_core::{DeviceId, DeviceRegistry, RoomName};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// The rule last read back and not yet answered. A yes to it is saved
+/// by the dispatcher itself, not left to the model: a model that
+/// proposed the rule again and then said "saved" left the household
+/// with nothing, and believing otherwise.
+#[derive(Default)]
+pub struct Proposals {
+    pending: Mutex<Option<(AutomationRuleDto, Instant)>>,
+}
+
+impl Proposals {
+    /// How long a read-back waits for its answer.
+    const FRESH: Duration = Duration::from_secs(3 * 60);
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn offer(&self, rule: AutomationRuleDto) {
+        *self.lock() = Some((rule, Instant::now()));
+    }
+
+    /// The rule waiting for an answer, if one still is.
+    pub fn pending(&self) -> bool {
+        self.lock()
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < Self::FRESH)
+    }
+
+    /// Take the rule waiting for an answer.
+    pub fn take(&self) -> Option<AutomationRuleDto> {
+        self.lock()
+            .take()
+            .filter(|(_, at)| at.elapsed() < Self::FRESH)
+            .map(|(rule, _)| rule)
+    }
+
+    pub fn clear(&self) {
+        self.lock().take();
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<(AutomationRuleDto, Instant)>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A plain yes or no to a question, and nothing else: `Some(true)` for
+/// "yes", "yes please", "go ahead, Niles"; `Some(false)` for "no",
+/// "cancel"; `None` for anything that says more than that.
+pub fn answer(said: &str) -> Option<bool> {
+    let words: Vec<String> = said
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.replace('’', "'"))
+        .filter(|w| {
+            !matches!(
+                w.as_str(),
+                "niles" | "nyles" | "please" | "thanks" | "thank" | "you"
+            )
+        })
+        .collect();
+    let said = words.join(" ");
+    const YES: &[&str] = &[
+        "yes",
+        "yeah",
+        "yep",
+        "yup",
+        "sure",
+        "ok",
+        "okay",
+        "do it",
+        "go ahead",
+        "save it",
+        "yes do it",
+        "yes save it",
+        "that's right",
+        "correct",
+        "sounds good",
+        "ja",
+        "ja tak",
+        "gem den",
+        "yes go ahead",
+        "absolutely",
+        "of course",
+    ];
+    const NO: &[&str] = &[
+        "no",
+        "nope",
+        "don't",
+        "cancel",
+        "never mind",
+        "nevermind",
+        "no don't",
+        "nej",
+        "no thanks",
+        "forget it",
+        "stop",
+    ];
+    if YES.contains(&said.as_str()) {
+        Some(true)
+    } else if NO.contains(&said.as_str()) {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 /// The rule as the model writes it — the same JSON the app sends.
 fn rule_schema() -> Value {
@@ -88,7 +196,7 @@ fn rule_schema() -> Value {
             "triggers": {
                 "type": "array",
                 "minItems": 1,
-                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. type=contact: a door or window opens (open=true) or closes (false). type=device_state: a device turns on/off. type=numeric: a reading goes above/below a value. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
+                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. A moment relative to the sun ('30 minutes after sunset') is ONE sun trigger with offset_minutes 30 — not a sunset trigger with a condition, which would never hold at sunset. type=contact: a door or window opens (open=true) or closes (false). type=device_state: a device turns on/off. type=numeric: a reading goes above/below a value. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -233,6 +341,8 @@ fn overlaps(a: &[TriggerDto], b: &[TriggerDto]) -> bool {
 pub struct ProposeAutomation {
     store: Arc<AutomationStore>,
     registry: Arc<DeviceRegistry>,
+    proposals: Arc<Proposals>,
+    tz: chrono_tz::Tz,
 }
 
 #[async_trait]
@@ -256,14 +366,37 @@ impl Tool for ProposeAutomation {
     async fn execute(&self, args: Value) -> Result<Value> {
         let rule = read_rule("propose_automation", &args)?;
         let mut problems = unknown(&rule, &self.registry);
-        if let Err(e) = Rule::from_dto(
+        match Rule::from_dto(
             &AutomationRuleDto {
                 id: "proposed".into(),
                 ..rule.clone()
             },
             DEFAULT_SOURCE,
         ) {
-            problems.push(e.to_string());
+            Err(e) => problems.push(e.to_string()),
+            Ok(parsed) => {
+                if parsed.uses_sun() && self.store.location().is_none() {
+                    problems.push("the sun needs the house's location, which is not set".into());
+                }
+                if parsed.never_runs(
+                    &self.registry,
+                    chrono::Utc::now(),
+                    self.tz,
+                    self.store.location(),
+                ) {
+                    problems.push(
+                        "it could never run: when its trigger fires, its time or sun conditions \
+                         do not hold yet. For a time after sunset, use a sun trigger with \
+                         offset_minutes instead of a condition"
+                            .into(),
+                    );
+                }
+            }
+        }
+        if problems.is_empty() {
+            self.proposals.offer(rule.clone());
+        } else {
+            self.proposals.clear();
         }
         let similar: Vec<String> = self
             .store
@@ -277,6 +410,11 @@ impl Tool for ProposeAutomation {
             "problems": problems,
             "existing_with_the_same_trigger": similar,
             "saved": false,
+            "next": if problems.is_empty() {
+                "NOT saved yet. Read the sentence back and ask whether to save it. Do not say it is saved."
+            } else {
+                "NOT saved. Say what is wrong and ask what they meant."
+            },
         }))
     }
 }
@@ -284,6 +422,7 @@ impl Tool for ProposeAutomation {
 pub struct CreateAutomation {
     store: Arc<AutomationStore>,
     registry: Arc<DeviceRegistry>,
+    proposals: Arc<Proposals>,
 }
 
 #[async_trait]
@@ -309,6 +448,7 @@ impl Tool for CreateAutomation {
             .store
             .create(rule)
             .map_err(|e| invalid("create_automation", e.to_string()))?;
+        self.proposals.clear();
         Ok(json!({ "saved": true, "id": made.id, "sentence": sentence(&made) }))
     }
 }
@@ -494,14 +634,19 @@ pub fn register_automation_tools(
     store: Arc<AutomationStore>,
     registry: Arc<DeviceRegistry>,
     log: Arc<RunLog>,
+    proposals: Arc<Proposals>,
+    tz: chrono_tz::Tz,
 ) {
     reg.register(Box::new(ProposeAutomation {
         store: store.clone(),
         registry: registry.clone(),
+        proposals: proposals.clone(),
+        tz,
     }));
     reg.register(Box::new(CreateAutomation {
         store: store.clone(),
         registry,
+        proposals,
     }));
     reg.register(Box::new(ListAutomations {
         store: store.clone(),
@@ -557,6 +702,8 @@ mod tests {
         let propose = ProposeAutomation {
             store: store.clone(),
             registry: house(),
+            proposals: Arc::new(Proposals::new()),
+            tz: chrono_tz::Tz::UTC,
         };
         let out = propose.execute(garden_door("office")).await.unwrap();
         assert_eq!(
@@ -573,6 +720,8 @@ mod tests {
         let propose = ProposeAutomation {
             store: store.clone(),
             registry: house(),
+            proposals: Arc::new(Proposals::new()),
+            tz: chrono_tz::Tz::UTC,
         };
         let out = propose.execute(garden_door("offers")).await.unwrap();
         assert_eq!(
@@ -592,6 +741,7 @@ mod tests {
         let create = CreateAutomation {
             store: store.clone(),
             registry: house(),
+            proposals: Arc::new(Proposals::new()),
         };
         assert!(create.execute(garden_door("offers")).await.is_err());
         assert!(store.list().is_empty());
@@ -603,6 +753,7 @@ mod tests {
         let create = CreateAutomation {
             store: store.clone(),
             registry: house(),
+            proposals: Arc::new(Proposals::new()),
         };
         let made = create.execute(garden_door("office")).await.unwrap();
         let id = made["id"].as_str().unwrap().to_string();
@@ -639,11 +790,60 @@ mod tests {
         let create = CreateAutomation {
             store: store.clone(),
             registry: house(),
+            proposals: Arc::new(Proposals::new()),
         };
         let mut rule = garden_door("office");
         rule["id"] = json!("whatever-it-likes");
         let made = create.execute(rule).await.unwrap();
         assert_eq!(made["id"], "office-lights-off-when-the-garden-door-opens");
+    }
+
+    #[tokio::test]
+    async fn a_proposal_waits_for_its_answer() {
+        let store = Arc::new(AutomationStore::new());
+        let proposals = Arc::new(Proposals::new());
+        let propose = ProposeAutomation {
+            store: store.clone(),
+            registry: house(),
+            proposals: proposals.clone(),
+            tz: chrono_tz::Tz::UTC,
+        };
+        propose.execute(garden_door("office")).await.unwrap();
+        assert!(proposals.pending());
+        let rule = proposals.take().unwrap();
+        assert_eq!(
+            rule.description,
+            "Office lights off when the garden door opens"
+        );
+        assert!(!proposals.pending());
+        // A misheard one is not offered.
+        propose.execute(garden_door("offers")).await.unwrap();
+        assert!(!proposals.pending());
+    }
+
+    #[test]
+    fn hears_a_plain_yes_or_no() {
+        for yes in [
+            "Yes",
+            "yes please.",
+            "Yeah",
+            "Go ahead, Niles",
+            "Okay",
+            "Ja",
+            "Yes, save it",
+        ] {
+            assert_eq!(answer(yes), Some(true), "{yes:?}");
+        }
+        for no in ["No", "No thanks", "Cancel", "never mind", "Nej"] {
+            assert_eq!(answer(no), Some(false), "{no:?}");
+        }
+        for neither in [
+            "Yes but at nine",
+            "turn off the lights",
+            "no wait, make it ten minutes",
+        ] {
+            assert_eq!(answer(neither), None, "{neither:?}");
+        }
     }
 
     #[tokio::test]
@@ -653,6 +853,7 @@ mod tests {
         let made = CreateAutomation {
             store: store.clone(),
             registry: house(),
+            proposals: Arc::new(Proposals::new()),
         }
         .execute(garden_door("office"))
         .await
