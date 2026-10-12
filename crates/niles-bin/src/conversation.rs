@@ -5,16 +5,22 @@
 //!
 //! This is the in-context half of ARCHITECTURE.md Phase 12's
 //! "conversation memory (short-term in context, long-term in Postgres)".
-//! Long-term persistence is a separate, later concern — here we only
-//! hold the last few turns in memory, scoped to one room and expired by
-//! a short idle TTL so an unrelated command minutes later starts fresh.
+//! It holds only the last few turns, scoped to one room and expired by a
+//! short idle TTL so an unrelated command minutes later starts fresh.
+//!
+//! Every change is also handed on whole, to be kept in Postgres: a
+//! restart — every deploy — used to forget what was said a minute ago.
+//! Times are wall-clock for the same reason; an `Instant` means nothing
+//! to the next process.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use niles_core::RoomName;
 use niles_llm::Message;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Production tuning: how many exchanges to keep, and how long after the
 /// last turn a follow-up still counts as the same conversation.
@@ -37,17 +43,30 @@ pub(crate) enum Thread {
 }
 
 /// One completed exchange: what the user said and how niles replied.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Turn {
     user: String,
     assistant: String,
     /// What wrote the reply when it was not Niles's own models.
-    via: Option<&'static str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    via: Option<String>,
 }
 
 struct History {
     turns: VecDeque<Turn>,
-    last_at: Instant,
+    last_at: SystemTime,
+}
+
+/// One thread as it is kept.
+#[derive(Serialize, Deserialize)]
+struct Kept {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    room: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat: Option<String>,
+    /// Seconds since the Unix epoch.
+    last_at: u64,
+    turns: VecDeque<Turn>,
 }
 
 /// Recent turns keyed by thread. Satellites with no room mapping share
@@ -58,6 +77,7 @@ pub(crate) struct ConversationMemory {
     by_thread: Mutex<HashMap<Thread, History>>,
     max_turns: usize,
     ttl: Duration,
+    sink: Option<UnboundedSender<String>>,
 }
 
 impl Default for ConversationMemory {
@@ -72,7 +92,56 @@ impl ConversationMemory {
             by_thread: Mutex::new(HashMap::new()),
             max_turns,
             ttl,
+            sink: None,
         }
+    }
+
+    /// Pick up the conversations kept by an earlier run. Threads gone
+    /// quiet past their TTL are left behind; a document that will not
+    /// parse is reported and dropped — it is a few minutes of talk.
+    pub(crate) fn with_document(self, document: &str) -> Self {
+        let kept: Vec<Kept> = match serde_json::from_str(document) {
+            Ok(kept) => kept,
+            Err(e) => {
+                tracing::warn!("[conversation] the kept conversations would not parse: {e}");
+                return self;
+            }
+        };
+        let now = SystemTime::now();
+        let mut map = self.lock();
+        for k in kept {
+            let thread = match (k.room, k.chat) {
+                (_, Some(who)) => Thread::Chat(who),
+                (Some(room), None) => match RoomName::parse(room) {
+                    Ok(room) => Thread::Room(Some(room)),
+                    Err(_) => continue,
+                },
+                (None, None) => Thread::Room(None),
+            };
+            let last_at = UNIX_EPOCH + Duration::from_secs(k.last_at);
+            if elapsed(last_at, now) > self.limits(&thread).1 {
+                continue;
+            }
+            map.insert(
+                thread,
+                History {
+                    turns: k.turns,
+                    last_at,
+                },
+            );
+        }
+        drop(map);
+        self
+    }
+
+    /// Hand every change on, whole, to be kept.
+    pub(crate) fn with_sink(mut self, sink: UnboundedSender<String>) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Thread, History>> {
+        self.by_thread.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Prior turns in `thread` as alternating user/assistant messages,
@@ -80,17 +149,17 @@ impl ConversationMemory {
     /// current utterance. Empty when there's no live history (nothing
     /// recorded, or the last turn is older than the TTL).
     pub(crate) fn recent_messages(&self, thread: &Thread) -> Vec<Message> {
-        self.recent_messages_at(thread, Instant::now())
+        self.recent_messages_at(thread, SystemTime::now())
     }
 
     /// The live turns in `thread` as (what was said, what Niles replied,
     /// what wrote the reply), oldest first — what the app shows when the
     /// chat is reopened.
-    pub(crate) fn turns(&self, thread: &Thread) -> Vec<(String, String, Option<&'static str>)> {
-        self.live(thread, Instant::now(), |turns| {
+    pub(crate) fn turns(&self, thread: &Thread) -> Vec<(String, String, Option<String>)> {
+        self.live(thread, SystemTime::now(), |turns| {
             turns
                 .iter()
-                .map(|t| (t.user.clone(), t.assistant.clone(), t.via))
+                .map(|t| (t.user.clone(), t.assistant.clone(), t.via.clone()))
                 .collect()
         })
     }
@@ -98,7 +167,7 @@ impl ConversationMemory {
     /// Record a completed exchange so the next turn in the same thread
     /// can see it. A turn arriving after the TTL starts a fresh history.
     pub(crate) fn record(&self, thread: &Thread, user: &str, assistant: &str) {
-        self.record_at(thread, user, assistant, None, Instant::now());
+        self.record_at(thread, user, assistant, None, SystemTime::now());
     }
 
     /// [`Self::record`], saying what wrote the reply.
@@ -107,15 +176,16 @@ impl ConversationMemory {
         thread: &Thread,
         user: &str,
         assistant: &str,
-        via: Option<&'static str>,
+        via: Option<&str>,
     ) {
-        self.record_at(thread, user, assistant, via, Instant::now());
+        self.record_at(thread, user, assistant, via, SystemTime::now());
     }
 
     /// Start `thread` over.
     pub(crate) fn forget(&self, thread: &Thread) {
-        let mut map = self.by_thread.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.lock();
         map.remove(thread);
+        self.keep(&map, SystemTime::now());
     }
 
     fn limits(&self, thread: &Thread) -> (usize, Duration) {
@@ -128,20 +198,20 @@ impl ConversationMemory {
     fn live<T: Default>(
         &self,
         thread: &Thread,
-        now: Instant,
+        now: SystemTime,
         read: impl FnOnce(&VecDeque<Turn>) -> T,
     ) -> T {
-        let map = self.by_thread.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self.lock();
         let Some(history) = map.get(thread) else {
             return T::default();
         };
-        if now.duration_since(history.last_at) > self.limits(thread).1 {
+        if elapsed(history.last_at, now) > self.limits(thread).1 {
             return T::default();
         }
         read(&history.turns)
     }
 
-    fn recent_messages_at(&self, thread: &Thread, now: Instant) -> Vec<Message> {
+    fn recent_messages_at(&self, thread: &Thread, now: SystemTime) -> Vec<Message> {
         self.live(thread, now, |turns| {
             let mut out = Vec::with_capacity(turns.len() * 2);
             for turn in turns {
@@ -162,30 +232,73 @@ impl ConversationMemory {
         thread: &Thread,
         user: &str,
         assistant: &str,
-        via: Option<&'static str>,
-        now: Instant,
+        via: Option<&str>,
+        now: SystemTime,
     ) {
         let (max_turns, ttl) = self.limits(thread);
-        let mut map = self.by_thread.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.lock();
         let entry = map.entry(thread.clone()).or_insert_with(|| History {
             turns: VecDeque::new(),
             last_at: now,
         });
         // An idle gap past the TTL means this is a new conversation, not a
         // follow-up — drop the stale turns rather than splicing them in.
-        if now.duration_since(entry.last_at) > ttl {
+        if elapsed(entry.last_at, now) > ttl {
             entry.turns.clear();
         }
         entry.turns.push_back(Turn {
             user: user.to_string(),
             assistant: assistant.to_string(),
-            via,
+            via: via.map(str::to_string),
         });
         while entry.turns.len() > max_turns {
             entry.turns.pop_front();
         }
         entry.last_at = now;
+        self.keep(&map, now);
     }
+
+    /// Hand the live threads on. Called with the lock held, so what is
+    /// kept arrives in the order it was said.
+    fn keep(&self, map: &HashMap<Thread, History>, now: SystemTime) {
+        let Some(sink) = &self.sink else { return };
+        let kept: Vec<Kept> = map
+            .iter()
+            .filter(|(thread, history)| elapsed(history.last_at, now) <= self.limits(thread).1)
+            .map(|(thread, history)| {
+                let (room, chat) = match thread {
+                    Thread::Room(room) => (room.as_ref().map(|r| r.as_str().to_string()), None),
+                    Thread::Chat(who) => (None, Some(who.clone())),
+                };
+                Kept {
+                    room,
+                    chat,
+                    last_at: history
+                        .last_at
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    turns: history.turns.clone(),
+                }
+            })
+            .collect();
+        match serde_json::to_string(&kept) {
+            Ok(document) => {
+                if sink.send(document).is_err() {
+                    tracing::warn!(
+                        "[conversation] nothing is keeping it any more; this turn is in memory only"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("[conversation] could not be written down: {e}"),
+        }
+    }
+}
+
+/// How long since `then`. A clock stepped backwards reads as no time
+/// at all, which keeps the conversation rather than dropping it.
+fn elapsed(then: SystemTime, now: SystemTime) -> Duration {
+    now.duration_since(then).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -249,7 +362,7 @@ mod tests {
     fn stale_history_is_dropped_after_ttl() {
         let mem = ConversationMemory::new(4, Duration::from_secs(180));
         let office = room("office");
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         mem.record_at(&office, "u1", "a1", None, t0);
         // Just inside the window: still there.
         assert!(
@@ -294,7 +407,7 @@ mod tests {
     fn a_chat_outlasts_a_pause_that_ends_a_spoken_conversation() {
         let mem = ConversationMemory::default();
         let mark = Thread::Chat("mark@example.com".into());
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         mem.record_at(&mark, "u1", "a1", None, t0);
         let later = t0 + Duration::from_secs(10 * 60);
         assert_eq!(
@@ -320,7 +433,7 @@ mod tests {
         mem.record_via(&mark, "u1", "a1", Some("claude"));
         mem.record(&mark, "u2", "a2");
         let vias: Vec<_> = mem.turns(&mark).into_iter().map(|t| t.2).collect();
-        assert_eq!(vias, vec![Some("claude"), None]);
+        assert_eq!(vias, vec![Some("claude".to_string()), None]);
     }
 
     #[test]
@@ -336,7 +449,7 @@ mod tests {
     fn a_new_turn_after_ttl_resets_history() {
         let mem = ConversationMemory::new(4, Duration::from_secs(180));
         let office = room("office");
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         mem.record_at(&office, "u1", "a1", None, t0);
         // Recording again after the TTL clears the stale turn first.
         let later = t0 + Duration::from_secs(300);
@@ -345,5 +458,78 @@ mod tests {
             texts(&mem.recent_messages_at(&office, later)),
             vec!["u2", "a2"]
         );
+    }
+
+    fn kept_by(
+        mem: ConversationMemory,
+    ) -> (
+        ConversationMemory,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (mem.with_sink(tx), rx)
+    }
+
+    fn last(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+        let mut last = None;
+        while let Ok(document) = rx.try_recv() {
+            last = Some(document);
+        }
+        last.expect("something was kept")
+    }
+
+    #[test]
+    fn a_conversation_outlasts_a_restart() {
+        let (mem, mut rx) = kept_by(ConversationMemory::default());
+        let office = room("office");
+        let mark = Thread::Chat("mark@example.com".into());
+        mem.record(&office, "turn on the office light", "Done.");
+        mem.record_via(&mark, "u1", "a1", Some("claude"));
+        mem.record(&Thread::Room(None), "what time is it", "Ten past nine.");
+
+        let next = ConversationMemory::default().with_document(&last(&mut rx));
+        assert_eq!(
+            texts(&next.recent_messages(&office)),
+            vec!["turn on the office light", "Done."]
+        );
+        assert_eq!(
+            next.turns(&mark),
+            vec![("u1".into(), "a1".into(), Some("claude".into()))]
+        );
+        assert_eq!(
+            texts(&next.recent_messages(&Thread::Room(None))),
+            vec!["what time is it", "Ten past nine."]
+        );
+    }
+
+    #[test]
+    fn a_conversation_gone_quiet_is_not_picked_up_again() {
+        let (mem, mut rx) = kept_by(ConversationMemory::default());
+        let office = room("office");
+        let mark = Thread::Chat("mark@example.com".into());
+        let ten_minutes_ago = SystemTime::now() - Duration::from_secs(10 * 60);
+        mem.record_at(&office, "u1", "a1", None, ten_minutes_ago);
+        mem.record_at(&mark, "u2", "a2", None, ten_minutes_ago);
+
+        let next = ConversationMemory::default().with_document(&last(&mut rx));
+        assert!(next.recent_messages(&office).is_empty());
+        assert_eq!(texts(&next.recent_messages(&mark)), vec!["u2", "a2"]);
+    }
+
+    #[test]
+    fn forgetting_is_kept_too() {
+        let (mem, mut rx) = kept_by(ConversationMemory::default());
+        let mark = Thread::Chat("mark@example.com".into());
+        mem.record(&mark, "u1", "a1");
+        mem.forget(&mark);
+
+        let next = ConversationMemory::default().with_document(&last(&mut rx));
+        assert!(next.turns(&mark).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_document_starts_empty() {
+        let mem = ConversationMemory::default().with_document("not json");
+        assert!(mem.recent_messages(&room("office")).is_empty());
     }
 }
