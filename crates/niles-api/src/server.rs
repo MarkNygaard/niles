@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
             "/automations/{id}",
             put(crate::automations::update).delete(crate::automations::remove),
         )
+        .route("/automations/{id}/runs", get(crate::automations::runs))
         .route(
             "/groceries",
             get(crate::groceries::list).post(crate::groceries::add),

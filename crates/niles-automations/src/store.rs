@@ -6,7 +6,8 @@
 //! the record (the later of two conflicting rules wins).
 
 use crate::error::{Error, Result};
-use crate::rule::Rule;
+use crate::rule::{Rule, assign_trigger_ids};
+use crate::sun::Location;
 use niles_config::AutomationRuleDto;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -25,6 +26,8 @@ pub struct AutomationStore {
     sink: Option<Arc<dyn AutomationPersistence>>,
     /// Bumped after each change, so the engine can take the new set.
     changed: watch::Sender<u64>,
+    /// Where the house is: a rule that uses the sun is refused without.
+    location: Option<Location>,
 }
 
 impl Default for AutomationStore {
@@ -33,6 +36,7 @@ impl Default for AutomationStore {
             rules: Mutex::new(Vec::new()),
             sink: None,
             changed: watch::Sender::new(0),
+            location: None,
         }
     }
 }
@@ -47,6 +51,11 @@ impl AutomationStore {
         let store = Self::default();
         *store.lock() = serde_json::from_str(document)?;
         Ok(store)
+    }
+
+    pub fn with_location(mut self, location: Option<Location>) -> Self {
+        self.location = location;
+        self
     }
 
     pub fn with_sink(mut self, sink: Arc<dyn AutomationPersistence>) -> Self {
@@ -84,7 +93,7 @@ impl AutomationStore {
     pub fn create(&self, mut rule: AutomationRuleDto) -> Result<AutomationRuleDto> {
         let mut rules = self.lock();
         rule.id = unique_id(&rule.description, &rules);
-        Rule::from_dto(&rule, DEFAULT_SOURCE)?;
+        self.check(&mut rule)?;
         rules.push(rule.clone());
         self.saved(&rules);
         Ok(rule)
@@ -95,7 +104,7 @@ impl AutomationStore {
         let mut rules = self.lock();
         let at = position(&rules, id)?;
         rule.id = id.to_string();
-        Rule::from_dto(&rule, DEFAULT_SOURCE)?;
+        self.check(&mut rule)?;
         rules[at] = rule.clone();
         self.saved(&rules);
         Ok(rule)
@@ -117,6 +126,22 @@ impl AutomationStore {
         let gone = rules.remove(at);
         self.saved(&rules);
         Ok(gone)
+    }
+
+    /// Name its triggers, and refuse it if it cannot run: as written,
+    /// or for want of a sun to go by.
+    fn check(&self, rule: &mut AutomationRuleDto) -> Result<()> {
+        assign_trigger_ids(rule);
+        let parsed = Rule::from_dto(rule, DEFAULT_SOURCE)?;
+        if parsed.uses_sun() && self.location.is_none() {
+            return Err(Error::Invalid {
+                id: rule.id.clone(),
+                reason: "the sun needs to know where the house is; set its location under \
+                         Settings → Home"
+                    .into(),
+            });
+        }
+        Ok(())
     }
 
     /// Wakes after every change.
@@ -176,17 +201,21 @@ fn unique_id(description: &str, rules: &[AutomationRuleDto]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use niles_config::{ActionDto, TriggerDto};
+    use niles_config::{ActionDto, TriggerDto, TriggerKind};
 
     fn garden_door(description: &str) -> AutomationRuleDto {
         AutomationRuleDto {
             id: String::new(),
             description: description.into(),
             enabled: true,
-            trigger: TriggerDto::Contact {
-                device: "office/door".into(),
-                open: Some(true),
-            },
+            triggers: vec![TriggerDto {
+                id: None,
+                kind: TriggerKind::Contact {
+                    device: "office/door".into(),
+                    open: Some(true),
+                    hold: None,
+                },
+            }],
             conditions: vec![],
             actions: vec![ActionDto::SetRoom {
                 room: "office".into(),
@@ -216,6 +245,35 @@ mod tests {
             .unwrap();
         assert_eq!(again.id, "office-lights-off-garden-door-2");
         assert_eq!(store.create(garden_door("")).unwrap().id, "automation");
+    }
+
+    #[test]
+    fn names_triggers_and_keeps_the_names() {
+        let store = AutomationStore::new();
+        let made = store.create(garden_door("door")).unwrap();
+        assert_eq!(made.triggers[0].id.as_deref(), Some("t1"));
+        assert_eq!(
+            store.get(&made.id).unwrap().triggers[0].id.as_deref(),
+            Some("t1")
+        );
+    }
+
+    #[test]
+    fn refuses_the_sun_without_a_house_to_see_it_from() {
+        let mut porch = garden_door("porch");
+        porch.triggers[0].kind = TriggerKind::Sun {
+            event: "sunset".into(),
+            offset_minutes: None,
+        };
+        assert!(
+            AutomationStore::new()
+                .create(porch.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("where the house is")
+        );
+        let located = AutomationStore::new().with_location(Location::of(56.15, 10.2));
+        assert!(located.create(porch).is_ok());
     }
 
     #[test]

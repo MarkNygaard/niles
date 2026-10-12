@@ -5152,9 +5152,12 @@ impl niles_automations::AutomationPersistence for QueuedAutomations {
 /// set that cannot be read is left out rather than started empty: the
 /// first rule made would otherwise overwrite the real ones.
 async fn build_automation_store(cfg: &Config) -> Option<Arc<niles_automations::AutomationStore>> {
+    let location = house_location(cfg);
     let in_memory = || {
         tracing::warn!("[automations] no database; rules made now will not survive a restart");
-        Some(Arc::new(niles_automations::AutomationStore::new()))
+        Some(Arc::new(
+            niles_automations::AutomationStore::new().with_location(location),
+        ))
     };
     let Some(database) = &cfg.database else {
         return in_memory();
@@ -5194,8 +5197,15 @@ async fn build_automation_store(cfg: &Config) -> Option<Arc<niles_automations::A
         }
     });
     Some(Arc::new(
-        store.with_sink(Arc::new(QueuedAutomations { tx })),
+        store
+            .with_location(location)
+            .with_sink(Arc::new(QueuedAutomations { tx })),
     ))
+}
+
+/// Where the house is, for sunrise and sunset; none until it is set.
+fn house_location(cfg: &Config) -> Option<niles_automations::sun::Location> {
+    niles_automations::sun::Location::of(cfg.home.latitude, cfg.home.longitude)
 }
 
 /// The typed lighting config the curve loop runs on, plus the snapshot it
@@ -5902,6 +5912,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let scenes = build_scene_store(&cfg).await;
     let groceries = build_grocery_store(&cfg).await;
     let automations = build_automation_store(&cfg).await;
+    // What each rule did lately: written by the engine, read by the app
+    // and by voice.
+    let automation_runs = Arc::new(niles_automations::RunLog::new());
     let calendars = build_calendars(&cfg);
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader
@@ -5953,7 +5966,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // brighter", "start the morning ramp half an hour later".
     niles_tools::register_config_tools(&mut tools, store.clone());
     if let Some(automations) = &automations {
-        niles_tools::register_automation_tools(&mut tools, automations.clone(), registry.clone());
+        niles_tools::register_automation_tools(
+            &mut tools,
+            automations.clone(),
+            registry.clone(),
+            automation_runs.clone(),
+        );
     }
     if let (Some(calendars), Ok(tz)) = (&calendars, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         calendar::register(&mut tools, calendars.clone(), store.clone(), tz);
@@ -6076,13 +6094,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     });
     // Always running, even with no rules: one made by voice or in the
     // app starts working without a restart.
-    let automation_engine = Arc::new(AutomationEngine::new(
-        automation_rules(automations.as_deref(), &cfg.automations),
-        registry.clone(),
-        tz,
-        automation_sink,
-        Some(automation_notifier),
-    ));
+    let automation_engine = Arc::new(
+        AutomationEngine::new(
+            automation_rules(automations.as_deref(), &cfg.automations),
+            registry.clone(),
+            tz,
+            automation_sink,
+            Some(automation_notifier),
+        )
+        .with_location(house_location(&cfg))
+        .with_log(automation_runs.clone()),
+    );
     let _automation_handle = automation_engine.clone().spawn(bus.clone());
     if let Some(store) = automations.clone() {
         let engine = automation_engine.clone();
@@ -6144,6 +6166,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
     .with_automations(automations.clone())
+    .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
