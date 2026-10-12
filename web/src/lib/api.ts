@@ -417,23 +417,67 @@ function errorMessage(text: string): string | undefined {
   }
 }
 
-/** What starts an automation. Devices are named `room/name`, without
-    the source prefix: the server fills that in. */
-export type Trigger =
-  /** A door or window: `open` true opens, false closes, absent either. */
-  | { type: "contact"; device: string; open?: boolean }
-  | { type: "device_state"; device?: string; room?: string; on?: boolean }
+/** How long, in parts: `{ minutes: 10 }`. At most 24 hours in all. */
+export interface Duration {
+  hours?: number;
+  minutes?: number;
+  seconds?: number;
+}
+
+/** A reading a sensor or a light reports. */
+export type Measure = "temperature" | "humidity" | "battery" | "brightness";
+
+export type Day = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+/**
+ * What starts an automation. Devices are named `room/name`, without
+ * the source prefix: the server fills that in.
+ *
+ * `id` is how a `triggered_by` condition names the trigger. The server
+ * gives every saved trigger one; the app gives a new one its own
+ * (`t1`, `t2`…) so a condition can name it before it is saved, and
+ * never shows it.
+ */
+export type Trigger = { id?: string } & (
+  /** A door or window: `open` true opens, false closes, absent either.
+      With `for`, once it has stayed that way that long. */
+  | { type: "contact"; device: string; open?: boolean; for?: Duration }
+  | { type: "device_state"; device?: string; room?: string; on?: boolean; for?: Duration }
+  | {
+      type: "numeric";
+      device: string;
+      measure: Measure;
+      above?: number;
+      below?: number;
+      for?: Duration;
+    }
   /** A button or dimmer press, e.g. `on_press`; absent is any press. */
   | { type: "device_action"; device: string; action?: string }
+  | { type: "presence"; state?: "home" | "away"; for?: Duration }
+  /** `HH:MM`; no days is every day. */
+  | { type: "time"; at: string; days?: Day[] }
+  /** Minutes after the event; negative is before it. */
+  | { type: "sun"; event: "sunrise" | "sunset"; offset_minutes?: number }
   | { type: "timer_fired"; name?: string }
-  | { type: "presence"; state?: "home" | "away" | "unknown" };
+);
 
-/** What has to hold when the trigger fires for the actions to run. */
+/** What has to hold when a trigger fires for the actions to run. */
 export type Condition =
   /** `HH:MM`; the window may wrap past midnight. */
-  | { kind: "time_of_day"; after?: string; before?: string }
+  | { kind: "time_of_day"; after?: string; before?: string; days?: Day[] }
+  | {
+      kind: "sun";
+      after?: "sunrise" | "sunset";
+      before?: "sunrise" | "sunset";
+      after_offset_minutes?: number;
+      before_offset_minutes?: number;
+    }
   | { kind: "device_is"; device: string; on: boolean }
-  | { kind: "contact_is"; device: string; open: boolean };
+  | { kind: "contact_is"; device: string; open: boolean }
+  | { kind: "numeric"; device: string; measure: Measure; above?: number; below?: number }
+  | { kind: "presence_is"; state: "home" | "away" }
+  /** Which of the rule's triggers started this run, by their ids. */
+  | { kind: "triggered_by"; triggers: string[] };
 
 export type Action =
   | {
@@ -452,13 +496,18 @@ export type Action =
       body: string;
       room?: string;
       priority?: "routine" | "important" | "urgent";
-    };
+    }
+  /** Wait, then go on with the next action. */
+  | { do: "delay"; hours?: number; minutes?: number; seconds?: number }
+  /** The same conditions a rule takes; `then` and `else` may hold an
+      `if` in turn, three deep at most. */
+  | { do: "if"; conditions: Condition[]; then: Action[]; else?: Action[] };
 
 export interface Rule {
   id: string;
   description: string;
   enabled: boolean;
-  trigger: Trigger;
+  triggers: Trigger[];
   conditions: Condition[];
   actions: Action[];
 }
@@ -472,6 +521,20 @@ export interface AutomationView {
   sentence: string;
   /** Why the rule is not running, when it is invalid. */
   error: string | null;
+}
+
+/** One time a rule started, as `GET /automations/{id}/runs` lists it.
+    A trigger whose conditions did not hold is a run too, `stopped`. */
+export interface Run {
+  /** ISO 8601. */
+  started_at: string;
+  /** The id of the trigger that started it. */
+  trigger: string | null;
+  outcome: "running" | "done" | "stopped" | "replaced" | "failed";
+  /** Why it stopped ("it was before 07:00"), or the error it failed on. */
+  reason: string | null;
+  /** What it did, as short sentences. */
+  steps: string[];
 }
 
 /** One message to Niles in the app, and the answer. */
@@ -872,6 +935,9 @@ export const api = {
     }),
   deleteAutomation: (id: string) =>
     request<void>(`/automations/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** The rule's last runs, newest first. */
+  automationRuns: (id: string) =>
+    request<{ runs: Run[] }>(`/automations/${encodeURIComponent(id)}/runs`),
 
   history: () => request<Revision[]>("/config/history"),
 

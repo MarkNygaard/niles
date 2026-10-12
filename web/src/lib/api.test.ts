@@ -8,7 +8,7 @@ function answer(status: number, body: string) {
 const rule = {
   description: "",
   enabled: true,
-  trigger: { type: "contact" as const, device: "office/door", open: true },
+  triggers: [{ type: "contact" as const, device: "office/door", open: true }],
   conditions: [],
   actions: [],
 };

@@ -8,22 +8,34 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Adder } from "@/components/automations/Palette";
 import { KIND_ICON } from "@/components/automations/StepNode";
 import {
+  ACTION_KINDS,
+  CONDITION_KINDS,
+  DAYS,
   KIND_LABEL,
-  ROLE_LABEL,
+  MEASURE_CHOICES,
   TRIGGER_KINDS,
+  addAction,
+  defaultAction,
+  defaultCondition,
   defaultTrigger,
   deviceChoices,
+  headingOf,
   kindOf,
+  labelOf,
   moveStep,
   roomChoices,
+  siblings,
   stepAt,
+  toggleDay,
+  triggerChoices,
   withStep,
   withoutStep,
 } from "@/lib/automations";
-import type { Draft, Step, StepKind } from "@/lib/automations";
-import type { Action, Condition, Device, Trigger } from "@/lib/api";
+import type { ActionKind, Branch, Draft, Step, StepKind } from "@/lib/automations";
+import type { Action, Condition, Day, Device, Duration, Measure, Trigger } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export interface InspectorProps {
@@ -37,26 +49,41 @@ export interface InspectorProps {
 /** What the trigger picker offers, in the order it offers them. */
 export const TRIGGER_CHOICES = TRIGGER_KINDS.map((kind) => ({
   value: kind,
-  label: KIND_LABEL[kind],
+  label: KIND_LABEL.trigger[kind],
 }));
+
+/** What "Add to then" and "Add to else" offer on an `if` this deep
+    (1 for one at the top): no further `if` from the third down, which
+    is as deep as the server takes them. */
+export function branchKinds(depth: number): ActionKind[] {
+  return depth >= 3 ? ACTION_KINDS.filter((k) => k !== "if") : ACTION_KINDS;
+}
 
 /**
  * The side panel: the selected step's fields, and moving or removing
- * it. The trigger can change kind but never goes; conditions and
- * actions move along their part of the line.
+ * it. The last trigger can change kind but never goes; everything else
+ * moves along its own list.
  */
 export function Inspector({ rule, selected, devices, onChange }: InspectorProps) {
   const step = stepAt(rule, selected);
   if (!step) {
     return (
       <p className="text-muted-foreground text-sm">
-        Pick a step in the flow to change it, or add a condition or an action.
+        Pick a step in the flow to change it, or add a trigger, a condition or an action.
       </p>
     );
   }
   const kind = kindOf(step);
   const set = (next: Step) => onChange(withStep(rule, next), step.id);
-  const count = step.role === "condition" ? rule.conditions.length : rule.actions.length;
+  const count = siblings(rule, step);
+  const lone = step.role === "trigger" && rule.triggers.length <= 1;
+  const addTo = (branch: Branch) => (next: ActionKind) => {
+    const added = addAction(rule, defaultAction(next, devices, rule.triggers), {
+      id: step.id,
+      branch,
+    });
+    onChange(added.rule, added.id);
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -66,11 +93,11 @@ export function Inspector({ rule, selected, devices, onChange }: InspectorProps)
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-            {ROLE_LABEL[step.role]}
+            {headingOf(step)}
           </div>
-          <div className="truncate text-sm font-medium">{KIND_LABEL[kind]}</div>
+          <div className="truncate text-sm font-medium">{labelOf(step)}</div>
         </div>
-        {step.role !== "trigger" && (
+        {!lone && (
           <>
             <Button
               variant="ghost"
@@ -143,6 +170,7 @@ export function Inspector({ rule, selected, devices, onChange }: InspectorProps)
         <ConditionFields
           value={step.value}
           devices={devices}
+          triggers={rule.triggers}
           onChange={(value) => set({ ...step, value })}
         />
       )}
@@ -150,8 +178,25 @@ export function Inspector({ rule, selected, devices, onChange }: InspectorProps)
         <ActionFields
           value={step.value}
           devices={devices}
+          triggers={rule.triggers}
           onChange={(value) => set({ ...step, value })}
         />
+      )}
+      {step.role === "action" && step.value.do === "if" && (
+        <div className="flex flex-wrap gap-2">
+          <Adder
+            label="Add to then"
+            kinds={branchKinds(step.id.split(".").length)}
+            labels={KIND_LABEL.action}
+            onPick={addTo("then")}
+          />
+          <Adder
+            label="Add to else"
+            kinds={branchKinds(step.id.split(".").length)}
+            labels={KIND_LABEL.action}
+            onPick={addTo("else")}
+          />
+        </div>
       )}
     </div>
   );
@@ -192,6 +237,7 @@ function TriggerFields({
               })
             }
           />
+          <ForField value={value.for} onChange={(held) => onChange({ ...value, for: held })} />
         </>
       );
     case "device_state":
@@ -229,6 +275,18 @@ function TriggerFields({
               })
             }
           />
+          <ForField value={value.for} onChange={(held) => onChange({ ...value, for: held })} />
+        </>
+      );
+    case "numeric":
+      return (
+        <>
+          <ReadingFields
+            value={value}
+            devices={devices}
+            onChange={(r) => onChange({ ...value, ...r })}
+          />
+          <ForField value={value.for} onChange={(held) => onChange({ ...value, for: held })} />
         </>
       );
     case "device_action":
@@ -264,21 +322,57 @@ function TriggerFields({
       );
     case "presence":
       return (
-        <Choices
-          label="When"
-          value={value.state ?? "either"}
-          options={[
-            { value: "home", label: "Somebody comes home" },
-            { value: "away", label: "Everybody leaves" },
-            { value: "either", label: "Either" },
-          ]}
-          onChange={(next) =>
-            onChange({
-              ...value,
-              state: next === "either" ? undefined : (next as "home" | "away"),
-            })
-          }
-        />
+        <>
+          <Choices
+            label="When"
+            value={value.state ?? "either"}
+            options={[
+              { value: "home", label: "Somebody comes home" },
+              { value: "away", label: "Everybody leaves" },
+              { value: "either", label: "Either" },
+            ]}
+            onChange={(next) =>
+              onChange({
+                ...value,
+                state: next === "either" ? undefined : (next as "home" | "away"),
+              })
+            }
+          />
+          <ForField value={value.for} onChange={(held) => onChange({ ...value, for: held })} />
+        </>
+      );
+    case "time":
+      return (
+        <>
+          <Field label="At">
+            <Input
+              type="time"
+              aria-label="At"
+              value={value.at}
+              onChange={(e) => onChange({ ...value, at: e.target.value })}
+            />
+          </Field>
+          <DaysField value={value.days} onChange={(days) => onChange({ ...value, days })} />
+        </>
+      );
+    case "sun":
+      return (
+        <>
+          <Choices
+            label="At"
+            value={value.event}
+            options={[
+              { value: "sunrise", label: "Sunrise" },
+              { value: "sunset", label: "Sunset" },
+            ]}
+            onChange={(next) => onChange({ ...value, event: next as "sunrise" | "sunset" })}
+          />
+          <OffsetField
+            label="Minutes after"
+            value={value.offset_minutes}
+            onChange={(offset) => onChange({ ...value, offset_minutes: offset })}
+          />
+        </>
       );
   }
 }
@@ -286,36 +380,62 @@ function TriggerFields({
 function ConditionFields({
   value,
   devices,
+  triggers,
   onChange,
 }: {
   value: Condition;
   devices: Device[];
+  triggers: Trigger[];
   onChange: (value: Condition) => void;
 }) {
   switch (value.kind) {
     case "time_of_day":
       return (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="After">
-            <Input
-              type="time"
-              aria-label="After"
-              value={value.after ?? ""}
-              onChange={(e) => onChange({ ...value, after: e.target.value || undefined })}
-            />
-          </Field>
-          <Field label="Before">
-            <Input
-              type="time"
-              aria-label="Before"
-              value={value.before ?? ""}
-              onChange={(e) => onChange({ ...value, before: e.target.value || undefined })}
-            />
-          </Field>
-          <p className="text-muted-foreground col-span-2 text-xs">
-            A window that ends before it starts runs past midnight.
-          </p>
-        </div>
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="After">
+              <Input
+                type="time"
+                aria-label="After"
+                value={value.after ?? ""}
+                onChange={(e) => onChange({ ...value, after: e.target.value || undefined })}
+              />
+            </Field>
+            <Field label="Before">
+              <Input
+                type="time"
+                aria-label="Before"
+                value={value.before ?? ""}
+                onChange={(e) => onChange({ ...value, before: e.target.value || undefined })}
+              />
+            </Field>
+            <p className="text-muted-foreground col-span-2 text-xs">
+              A window that ends before it starts runs past midnight.
+            </p>
+          </div>
+          <DaysField value={value.days} onChange={(days) => onChange({ ...value, days })} />
+        </>
+      );
+    case "sun":
+      return (
+        <>
+          <SunEdge
+            label="After"
+            value={value.after}
+            offset={value.after_offset_minutes}
+            onChange={(after, offset) =>
+              onChange({ ...value, after, after_offset_minutes: offset })
+            }
+          />
+          <SunEdge
+            label="Before"
+            value={value.before}
+            offset={value.before_offset_minutes}
+            onChange={(before, offset) =>
+              onChange({ ...value, before, before_offset_minutes: offset })
+            }
+          />
+        </>
       );
     case "device_is":
       return (
@@ -359,16 +479,46 @@ function ConditionFields({
           />
         </>
       );
+    case "numeric":
+      return (
+        <ReadingFields
+          value={value}
+          devices={devices}
+          onChange={(r) => onChange({ ...value, ...r })}
+        />
+      );
+    case "presence_is":
+      return (
+        <Choices
+          label="When"
+          value={value.state}
+          options={[
+            { value: "home", label: "Somebody is home" },
+            { value: "away", label: "Everybody is away" },
+          ]}
+          onChange={(next) => onChange({ ...value, state: next as "home" | "away" })}
+        />
+      );
+    case "triggered_by":
+      return (
+        <StartedByField
+          value={value.triggers}
+          triggers={triggers}
+          onChange={(ids) => onChange({ ...value, triggers: ids })}
+        />
+      );
   }
 }
 
 function ActionFields({
   value,
   devices,
+  triggers,
   onChange,
 }: {
   value: Action;
   devices: Device[];
+  triggers: Trigger[];
   onChange: (value: Action) => void;
 }) {
   switch (value.do) {
@@ -432,6 +582,74 @@ function ActionFields({
           />
         </>
       );
+    case "delay":
+      return (
+        <DurationFields
+          label="Wait for"
+          value={value}
+          onChange={(held) => onChange({ do: "delay", ...held })}
+        />
+      );
+    case "if":
+      return (
+        <Field label="If all of these hold">
+          <div className="flex flex-col gap-2">
+            {value.conditions.length === 0 && (
+              <p className="text-muted-foreground text-xs">
+                With nothing to check, it always takes "then".
+              </p>
+            )}
+            {value.conditions.map((condition, i) => (
+              <div key={i} className="flex flex-col gap-3 rounded-lg border p-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground [&>svg]:size-4">
+                    {KIND_ICON[condition.kind]}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                    {KIND_LABEL.condition[condition.kind]}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Remove condition ${i + 1}`}
+                    onClick={() =>
+                      onChange({
+                        ...value,
+                        conditions: value.conditions.filter((_, j) => j !== i),
+                      })
+                    }
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+                <ConditionFields
+                  value={condition}
+                  devices={devices}
+                  triggers={triggers}
+                  onChange={(next) =>
+                    onChange({
+                      ...value,
+                      conditions: value.conditions.map((c, j) => (j === i ? next : c)),
+                    })
+                  }
+                />
+              </div>
+            ))}
+            <Adder
+              label="Add condition"
+              kinds={CONDITION_KINDS}
+              labels={KIND_LABEL.condition}
+              className="self-start"
+              onPick={(kind) =>
+                onChange({
+                  ...value,
+                  conditions: [...value.conditions, defaultCondition(kind, devices, triggers)],
+                })
+              }
+            />
+          </div>
+        </Field>
+      );
   }
 }
 
@@ -492,6 +710,270 @@ function LevelFields({ value, onChange }: { value: Levels; onChange: (next: Leve
   );
 }
 
+interface Reading {
+  device: string;
+  measure: Measure;
+  above?: number;
+  below?: number;
+}
+
+/** Which device, which of its readings, and the values it is held
+    against. Either value may be left out, not both. */
+function ReadingFields({
+  value,
+  devices,
+  onChange,
+}: {
+  value: Reading;
+  devices: Device[];
+  onChange: (next: Partial<Reading>) => void;
+}) {
+  return (
+    <>
+      <PickField
+        label="Reading"
+        value={value.measure}
+        choices={MEASURE_CHOICES}
+        empty="Pick a reading"
+        onChange={(measure) => measure && onChange({ measure: measure as Measure })}
+      />
+      <DeviceField
+        label="Device"
+        kind="numeric"
+        measure={value.measure}
+        value={value.device}
+        devices={devices}
+        onChange={(device) => onChange({ device: device ?? "" })}
+      />
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Above">
+          <Input
+            type="number"
+            aria-label="Above"
+            step="any"
+            value={value.above ?? ""}
+            onChange={(e) => onChange({ above: numberOrNothing(e.target.value) })}
+          />
+        </Field>
+        <Field label="Below">
+          <Input
+            type="number"
+            aria-label="Below"
+            step="any"
+            value={value.below ?? ""}
+            onChange={(e) => onChange({ below: numberOrNothing(e.target.value) })}
+          />
+        </Field>
+      </div>
+    </>
+  );
+}
+
+/** Hours, minutes and seconds; all three empty is none. */
+function DurationFields({
+  label,
+  value,
+  hint,
+  onChange,
+}: {
+  label: string;
+  value: Duration | undefined;
+  hint?: string;
+  onChange: (value: Duration | undefined) => void;
+}) {
+  const parts = [
+    ["hours", "Hours"],
+    ["minutes", "Minutes"],
+    ["seconds", "Seconds"],
+  ] as const;
+  const change = (key: keyof Duration, raw: string) => {
+    const next: Duration = {};
+    for (const [part] of parts) {
+      const n = part === key ? numberOrNothing(raw) : value?.[part];
+      if (n !== undefined) next[part] = n;
+    }
+    onChange(Object.keys(next).length > 0 ? next : undefined);
+  };
+  return (
+    <Field label={label}>
+      <div className="grid grid-cols-3 gap-2">
+        {parts.map(([part, name]) => (
+          <div key={part} className="flex flex-col gap-1">
+            <Input
+              type="number"
+              inputMode="numeric"
+              aria-label={name}
+              min={0}
+              placeholder="0"
+              value={value?.[part] ?? ""}
+              onChange={(e) => change(part, e.target.value)}
+            />
+            <span className="text-muted-foreground text-xs">{name.toLowerCase()}</span>
+          </div>
+        ))}
+      </div>
+      {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
+    </Field>
+  );
+}
+
+/** How long a state must hold before the trigger fires. Optional: none
+    fires the moment it changes. */
+function ForField({
+  value,
+  onChange,
+}: {
+  value: Duration | undefined;
+  onChange: (value: Duration | undefined) => void;
+}) {
+  return (
+    <DurationFields
+      label="And has stayed so for"
+      value={value}
+      hint="Leave empty to start at once. At most 24 hours."
+      onChange={onChange}
+    />
+  );
+}
+
+function OffsetField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number | undefined;
+  onChange: (value: number | undefined) => void;
+}) {
+  return (
+    <Field label={label}>
+      <Input
+        type="number"
+        inputMode="numeric"
+        aria-label={label}
+        step={1}
+        placeholder="0"
+        value={value ?? ""}
+        onChange={(e) => onChange(numberOrNothing(e.target.value) || undefined)}
+      />
+      <p className="text-muted-foreground text-xs">Negative is before it.</p>
+    </Field>
+  );
+}
+
+/** One end of a sun window: sunrise, sunset or open, and how far from
+    it. Open clears the offset with it. */
+function SunEdge({
+  label,
+  value,
+  offset,
+  onChange,
+}: {
+  label: string;
+  value: "sunrise" | "sunset" | undefined;
+  offset: number | undefined;
+  onChange: (value: "sunrise" | "sunset" | undefined, offset: number | undefined) => void;
+}) {
+  return (
+    <>
+      <Choices
+        label={label}
+        value={value ?? "open"}
+        options={[
+          { value: "sunrise", label: "Sunrise" },
+          { value: "sunset", label: "Sunset" },
+          { value: "open", label: "Any" },
+        ]}
+        onChange={(next) =>
+          next === "open"
+            ? onChange(undefined, undefined)
+            : onChange(next as "sunrise" | "sunset", offset)
+        }
+      />
+      {value && (
+        <OffsetField
+          label={`${label}: minutes after ${value}`}
+          value={offset}
+          onChange={(next) => onChange(value, next)}
+        />
+      )}
+    </>
+  );
+}
+
+/** Seven toggles, Monday first; none on is every day. */
+function DaysField({
+  value,
+  onChange,
+}: {
+  value: Day[] | undefined;
+  onChange: (value: Day[] | undefined) => void;
+}) {
+  const on = new Set(value ?? []);
+  return (
+    <Field label="On">
+      <div role="group" aria-label="Days" className="flex gap-1">
+        {DAYS.map((day) => (
+          <button
+            key={day.value}
+            type="button"
+            aria-pressed={on.has(day.value)}
+            onClick={() => onChange(toggleDay(value, day.value))}
+            className={cn(
+              "h-7 flex-1 rounded-md border text-xs transition-colors",
+              "focus-visible:ring-ring/50 focus-visible:ring-3 focus-visible:outline-none",
+              on.has(day.value)
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {day.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-muted-foreground text-xs">None picked is every day.</p>
+    </Field>
+  );
+}
+
+/** The rule's triggers as boxes to tick, by place and sentence. The
+    ids stay in the triggers' order, whatever order they were ticked. */
+function StartedByField({
+  value,
+  triggers,
+  onChange,
+}: {
+  value: string[];
+  triggers: Trigger[];
+  onChange: (value: string[]) => void;
+}) {
+  const choices = triggerChoices(triggers);
+  const ticked = new Set(value);
+  return (
+    <Field label="Only if started by">
+      <div className="flex flex-col gap-1.5">
+        {choices.map((choice) => (
+          <label key={choice.value} className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="accent-primary size-4 shrink-0"
+              checked={ticked.has(choice.value)}
+              onChange={(e) => {
+                if (e.target.checked) ticked.add(choice.value);
+                else ticked.delete(choice.value);
+                onChange(choices.map((c) => c.value).filter((id) => ticked.has(id)));
+              }}
+            />
+            <span className="min-w-0 truncate" title={choice.label}>
+              {choice.label}
+            </span>
+          </label>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
 function numberOrNothing(raw: string): number | undefined {
   if (raw.trim() === "") return undefined;
   const value = Number(raw);
@@ -549,6 +1031,7 @@ function Choices({
 function DeviceField({
   label,
   kind,
+  measure,
   value,
   devices,
   any,
@@ -556,12 +1039,13 @@ function DeviceField({
 }: {
   label: string;
   kind: StepKind;
+  measure?: Measure;
   value: string | undefined;
   devices: Device[];
   any?: string;
   onChange: (device: string | null) => void;
 }) {
-  const choices = deviceChoices(devices, kind, value || undefined);
+  const choices = deviceChoices(devices, kind, value || undefined, measure);
   return (
     <PickField
       label={label}

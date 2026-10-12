@@ -3,13 +3,13 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AutomationsPage } from "./AutomationsPage";
 import { api } from "@/lib/api";
-import type { AutomationView, Rule } from "@/lib/api";
+import type { AutomationView, Rule, Run } from "@/lib/api";
 
 const garden: Rule = {
   id: "4f1c",
   description: "Garden door",
   enabled: true,
-  trigger: { type: "contact", device: "office/door", open: true },
+  triggers: [{ id: "t1", type: "contact", device: "office/door", open: true }],
   conditions: [],
   actions: [{ do: "set_room", room: "office", on: false }],
 };
@@ -26,7 +26,7 @@ const fromConfig: AutomationView = {
     id: "config-0",
     description: "",
     enabled: true,
-    trigger: { type: "presence", state: "away" },
+    triggers: [{ id: "t1", type: "presence", state: "away" }],
     conditions: [],
     actions: [{ do: "set_room", room: "hall", on: false }],
   },
@@ -35,8 +35,9 @@ const fromConfig: AutomationView = {
   error: null,
 };
 
-function show(rules: AutomationView[]) {
+function show(rules: AutomationView[], runs: Run[] = []) {
   vi.spyOn(api, "automations").mockResolvedValue({ rules });
+  vi.spyOn(api, "automationRuns").mockResolvedValue({ runs });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -80,6 +81,36 @@ describe("AutomationsPage", () => {
   it("says why a rule is not running", async () => {
     show([{ ...stored, error: "office/door is not a door or window" }]);
     expect(await screen.findByText("office/door is not a door or window")).toBeInTheDocument();
+  });
+
+  it("says when a stored rule last ran, and how it ended", async () => {
+    const today = new Date();
+    today.setHours(14, 2, 0, 0);
+    show(
+      [stored, fromConfig],
+      [
+        {
+          started_at: today.toISOString(),
+          trigger: "t1",
+          outcome: "stopped",
+          reason: "it was before 07:00",
+          steps: [],
+        },
+      ],
+    );
+    expect(
+      await screen.findByText("Last run today 14:02 — stopped: it was before 07:00"),
+    ).toBeInTheDocument();
+    // A rule from the config file has no runs of its own to ask for.
+    expect(api.automationRuns).toHaveBeenCalledTimes(1);
+    expect(api.automationRuns).toHaveBeenCalledWith("4f1c");
+  });
+
+  it("says nothing of runs for a rule that has not run", async () => {
+    show([stored]);
+    expect(await screen.findByText(stored.sentence)).toBeInTheDocument();
+    await waitFor(() => expect(api.automationRuns).toHaveBeenCalled());
+    expect(screen.queryByText(/Last run/)).toBeNull();
   });
 
   it("says a paused rule is paused", async () => {
