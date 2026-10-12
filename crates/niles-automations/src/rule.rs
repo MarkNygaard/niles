@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::sun::{self, Location, SunEvent};
-use chrono::{DateTime, Datelike, NaiveDateTime, NaiveTime, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
 use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, DurationDto, TriggerKind};
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, PresenceState, RoomName};
@@ -287,6 +287,48 @@ impl Rule {
             triggers,
             conditions,
             actions,
+        })
+    }
+
+    /// Whether a rule started only by the clock could never get past
+    /// its own time and sun conditions: "at sunset, if it is 30 minutes
+    /// after sunset" is never true at sunset. Checked for the day of
+    /// `now`; a rule with any other kind of trigger is not judged.
+    pub fn never_runs(
+        &self,
+        registry: &DeviceRegistry,
+        now: DateTime<Utc>,
+        tz: Tz,
+        location: Option<Location>,
+    ) -> bool {
+        let timed: Vec<&Condition> = self
+            .conditions
+            .iter()
+            .filter(|c| matches!(c, Condition::TimeOfDay { .. } | Condition::Sun { .. }))
+            .collect();
+        if timed.is_empty() {
+            return false;
+        }
+        let mut due = Vec::with_capacity(self.triggers.len());
+        for t in &self.triggers {
+            match t.trigger.due_on(now, tz, location) {
+                Some(at) => due.push((t.id.as_str(), at)),
+                None => return false,
+            }
+        }
+        !due.iter().any(|(id, at)| {
+            let Some(at) = tz.from_local_datetime(at).earliest() else {
+                return true;
+            };
+            let ctx = Context {
+                registry,
+                now: at.with_timezone(&Utc),
+                tz,
+                location,
+                presence: None,
+                trigger: Some(id),
+            };
+            timed.iter().all(|c| c.evaluate(&ctx))
         })
     }
 
@@ -1494,6 +1536,38 @@ mod tests {
             .done(),
             "set the office lights off"
         );
+    }
+
+    #[test]
+    fn a_sunset_rule_waiting_for_after_sunset_never_runs() {
+        let registry = DeviceRegistry::new();
+        let tz: Tz = "Europe/Copenhagen".parse().unwrap();
+        let here = Location::of(56.1572, 10.2107);
+        let now = Utc.with_ymd_and_hms(2026, 10, 12, 9, 0, 0).unwrap();
+        let curtains = |trigger: serde_json::Value, conditions: serde_json::Value| {
+            rule(json!({
+                "id": "curtains",
+                "triggers": [trigger],
+                "conditions": conditions,
+                "actions": [{ "do": "notify", "body": "Close the curtains" }],
+            }))
+            .unwrap()
+        };
+        let wrong = curtains(
+            json!({ "type": "sun", "event": "sunset" }),
+            json!([{ "kind": "sun", "after": "sunset", "after_offset_minutes": 30 }]),
+        );
+        assert!(wrong.never_runs(&registry, now, tz, here));
+        let right = curtains(
+            json!({ "type": "sun", "event": "sunset", "offset_minutes": 30 }),
+            json!([]),
+        );
+        assert!(!right.never_runs(&registry, now, tz, here));
+        let evening = curtains(
+            json!({ "type": "time", "at": "21:00" }),
+            json!([{ "kind": "sun", "after": "sunset" }]),
+        );
+        assert!(!evening.never_runs(&registry, now, tz, here));
     }
 
     #[test]

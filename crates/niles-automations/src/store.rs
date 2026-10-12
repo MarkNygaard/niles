@@ -58,6 +58,10 @@ impl AutomationStore {
         self
     }
 
+    pub fn location(&self) -> Option<Location> {
+        self.location
+    }
+
     pub fn with_sink(mut self, sink: Arc<dyn AutomationPersistence>) -> Self {
         self.sink = Some(sink);
         self

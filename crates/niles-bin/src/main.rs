@@ -3033,6 +3033,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         courtesy: Arc::new(courtesy::Courtesy::default()),
         claude: claude.clone(),
         follow_ups: Arc::default(),
+        automations: None,
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -3418,6 +3419,12 @@ struct DispatchCtx {
     /// presence use: tado rotates its refresh token on every use, so
     /// there can only be one.
     tado: Option<Arc<TadoSource>>,
+    /// The household's rules, and the one last read back for a yes.
+    /// Absent outside `serve`.
+    automations: Option<(
+        Arc<niles_automations::AutomationStore>,
+        Arc<niles_tools::automations::Proposals>,
+    )>,
 }
 
 impl DispatchCtx {
@@ -3872,6 +3879,32 @@ fn without_vocative(text: &str) -> Option<&str> {
     (!rest.is_empty()).then_some(rest)
 }
 
+/// A plain yes or no to the rule Niles just read back, answered here
+/// rather than by the model. Asked to save it, the model proposed it
+/// again and said "saved" — and nothing was.
+fn answer_to_proposal(ctx: &DispatchCtx, peer: SocketAddr, text: &str) -> Option<String> {
+    let (store, proposals) = ctx.automations.as_ref()?;
+    if !proposals.pending() {
+        return None;
+    }
+    let yes = niles_tools::automations::answer(text)?;
+    let rule = proposals.take()?;
+    if !yes {
+        tracing::info!("[{peer}] automation not saved: {:?}", rule.description);
+        return Some("All right, I won't save it.".into());
+    }
+    Some(match store.create(rule) {
+        Ok(made) => {
+            tracing::info!("[{peer}] automation saved: {}", made.id);
+            format!("Saved. {}", niles_automations::sentence(&made))
+        }
+        Err(e) => {
+            tracing::warn!("[{peer}] automation could not be saved: {e}");
+            format!("I couldn't save it: {e}")
+        }
+    })
+}
+
 /// The command, without the name that summoned it.
 ///
 /// The satellite sends the second before its wake word as well as what
@@ -4105,6 +4138,10 @@ async fn dispatch_text(
     meant: bool,
 ) -> Option<String> {
     let origin_room = ctx.satellites.room_for(peer);
+
+    if let Some(reply) = answer_to_proposal(ctx, peer, text) {
+        return Some(reply);
+    }
 
     // IntentRouter is a zero-sized unit struct; the regexes are
     // compiled once into a static OnceLock, so constructing one
@@ -5915,6 +5952,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // What each rule did lately: written by the engine, read by the app
     // and by voice.
     let automation_runs = Arc::new(niles_automations::RunLog::new());
+    // The rule Niles last read back, saved by a plain yes.
+    let proposals = Arc::new(niles_tools::automations::Proposals::new());
     let calendars = build_calendars(&cfg);
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader
@@ -5971,6 +6010,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             automations.clone(),
             registry.clone(),
             automation_runs.clone(),
+            proposals.clone(),
+            tz,
         );
     }
     if let (Some(calendars), Ok(tz)) = (&calendars, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
@@ -6274,6 +6315,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         courtesy: Arc::new(courtesy::Courtesy::default()),
         claude: claude.clone(),
         follow_ups: Arc::default(),
+        automations: automations.clone().map(|store| (store, proposals.clone())),
     };
     // The API is already up; from here on the chat has something to
     // answer with.
