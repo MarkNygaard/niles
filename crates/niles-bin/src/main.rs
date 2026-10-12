@@ -1405,24 +1405,116 @@ impl niles_notifications::NotificationDelivery for WyomingDelivery {
     }
 }
 
-/// Build a `MemoryStore` from the `[memory]` section.
-/// Returns `None` when no directory is configured or when opening the store fails.
-fn build_memory_store(cfg: &niles_config::MemoryConfig) -> Option<Arc<MemoryStore>> {
-    let dir = cfg.directory.as_ref()?;
-    match MemoryStore::open(niles_memory::MemoryConfig {
-        directory: dir.clone(),
-        user_char_limit: cfg.user_char_limit,
-        agent_char_limit: cfg.agent_char_limit,
-    }) {
-        Ok(store) => Some(Arc::new(store)),
-        Err(e) => {
+/// Hands a changed memory document to the task that writes it, so the
+/// tool that changed it never waits on the database.
+struct QueuedMemory {
+    tx: tokio::sync::mpsc::UnboundedSender<(niles_memory::Target, String)>,
+}
+
+impl niles_memory::MemoryPersistence for QueuedMemory {
+    fn store(&self, target: niles_memory::Target, document: &str) {
+        if self.tx.send((target, document.to_string())).is_err() {
             tracing::warn!(
-                "Failed to open memory store at {}: {e}; memory tools disabled",
-                dir.display()
+                "[memory] nothing is writing it any more; this change is in memory only"
             );
-            None
         }
     }
+}
+
+/// What Niles remembers, kept in Postgres when there is one. Always on:
+/// it used to need a `[memory] directory`, and without one Niles forgot
+/// everything it was told.
+///
+/// Without a database it lasts as long as the process, and says so.
+/// Memory that cannot be read is left out rather than started empty:
+/// the first thing remembered would otherwise overwrite the rest.
+async fn build_memory_store(cfg: &Config) -> Option<Arc<MemoryStore>> {
+    let store = MemoryStore::new(niles_memory::MemoryConfig {
+        user_char_limit: cfg.memory.user_char_limit,
+        agent_char_limit: cfg.memory.agent_char_limit,
+    });
+    let in_memory = |store| {
+        tracing::warn!("[memory] no database; what Niles learns now will not survive a restart");
+        Some(Arc::new(store))
+    };
+    let Some(database) = &cfg.database else {
+        return in_memory(store);
+    };
+    let Ok(url) = database.resolve_url() else {
+        return in_memory(store);
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return in_memory(store);
+    };
+    let table = Arc::new(niles_db::PostgresMemory::new(
+        backend.pool(),
+        backend.describe_target(),
+    ));
+    let user = niles_memory::Target::User;
+    let agent = niles_memory::Target::Memory;
+    let documents = match (
+        table.load(user.as_str()).await,
+        table.load(agent.as_str()).await,
+    ) {
+        (Ok(u), Ok(a)) => store.with_documents(&u, &a).map_err(|e| e.to_string()),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    };
+    let store = match documents {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::error!("[memory] could not be read ({e}); it is unavailable this run");
+            return None;
+        }
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(niles_memory::Target, String)>();
+    tokio::spawn(async move {
+        while let Some((target, document)) = rx.recv().await {
+            if let Err(e) = table.store(target.as_str(), &document).await {
+                tracing::error!("[memory] save failed: {e}");
+            }
+        }
+    });
+    Some(Arc::new(store.with_sink(Arc::new(QueuedMemory { tx }))))
+}
+
+/// The conversations going on, kept in Postgres when there is one, so
+/// a restart does not forget what was said a minute ago.
+async fn build_conversation_memory(cfg: &Config) -> Arc<conversation::ConversationMemory> {
+    let memory = conversation::ConversationMemory::default();
+    let Some(database) = &cfg.database else {
+        return Arc::new(memory);
+    };
+    let Ok(url) = database.resolve_url() else {
+        return Arc::new(memory);
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return Arc::new(memory);
+    };
+    let table = niles_db::PostgresConversations::new(backend.pool(), backend.describe_target());
+    let memory = match table.load().await {
+        Ok(Some(document)) => memory.with_document(&document),
+        Ok(None) => memory,
+        Err(e) => {
+            tracing::warn!("[conversation] could not be read ({e}); starting fresh");
+            memory
+        }
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(mut document) = rx.recv().await {
+            // Each document is the whole of it; only the newest matters.
+            while let Ok(newer) = rx.try_recv() {
+                document = newer;
+            }
+            if let Err(e) = table.store(&document).await {
+                tracing::warn!("[conversation] save failed: {e}");
+            }
+        }
+    });
+    Arc::new(memory.with_sink(tx))
 }
 
 /// Build a `SkillStore` from the `[skills]` section.
@@ -2281,7 +2373,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let capability_loader = build_capability_loader(&cfg.capabilities);
     let capability_index = capability_loader.as_deref().map(build_capability_index);
 
-    let memory_store = build_memory_store(&cfg.memory);
+    let memory_store = build_memory_store(&cfg).await;
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
@@ -2322,23 +2414,10 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
 
     let user_mem = memory_store
         .as_ref()
-        .and_then(|s| match s.load(niles_memory::Target::User) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!("failed to load user memory: {e}");
-                None
-            }
-        });
-    let agent_mem =
-        memory_store
-            .as_ref()
-            .and_then(|s| match s.load(niles_memory::Target::Memory) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!("failed to load agent memory: {e}");
-                    None
-                }
-            });
+        .map(|s| s.load(niles_memory::Target::User));
+    let agent_mem = memory_store
+        .as_ref()
+        .map(|s| s.load(niles_memory::Target::Memory));
     let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
     let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
 
@@ -2884,7 +2963,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .map(build_capability_index)
         .map(Arc::new);
 
-    let memory_store = build_memory_store(&cfg.memory);
+    let memory_store = build_memory_store(&cfg).await;
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
@@ -3039,13 +3118,13 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         satellites: satellites.clone(),
         device_index: Arc::clone(&device_index),
         history: command_writer,
-        memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
+        memory: memory_store,
         skill_store,
         home: Arc::new(cfg.home.clone()),
         captures: None,
         settings: None,
         review: cfg.skills.review.clone(),
-        conversation: Arc::new(conversation::ConversationMemory::default()),
+        conversation: build_conversation_memory(&cfg).await,
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
         tado: tado.clone(),
@@ -3331,11 +3410,7 @@ impl niles_api::chat::Chat for AppChat {
         ctx.conversation
             .turns(&conversation::Thread::Chat(who.to_string()))
             .into_iter()
-            .map(|(said, reply, via)| niles_api::chat::Exchange {
-                said,
-                reply,
-                via: via.map(str::to_string),
-            })
+            .map(|(said, reply, via)| niles_api::chat::Exchange { said, reply, via })
             .collect()
     }
 
@@ -3405,7 +3480,8 @@ struct DispatchCtx {
     satellites: Arc<SatelliteRegistry>,
     device_index: Arc<RwLock<DeviceIndex>>,
     history: Arc<CommandWriter>,
-    memory: Arc<MemoryStore>,
+    /// Absent only when the kept memory could not be read.
+    memory: Option<Arc<MemoryStore>>,
     skill_store: Option<Arc<SkillStore>>,
     home: Arc<niles_config::HomeConfig>,
     /// Where kept wake audio goes, when there is a database for it.
@@ -3588,20 +3664,14 @@ async fn dispatch_tier1(
     speaker: &SpeakerContext,
 ) -> Option<String> {
     tracing::info!("[{peer}] dispatching to Tier 1 LLM: {text:?}");
-    let user_mem = match ctx.memory.load(niles_memory::Target::User) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            tracing::warn!("[{peer}] failed to load user memory: {e}");
-            None
-        }
-    };
-    let agent_mem = match ctx.memory.load(niles_memory::Target::Memory) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            tracing::warn!("[{peer}] failed to load agent memory: {e}");
-            None
-        }
-    };
+    let user_mem = ctx
+        .memory
+        .as_ref()
+        .map(|m| m.load(niles_memory::Target::User));
+    let agent_mem = ctx
+        .memory
+        .as_ref()
+        .map(|m| m.load(niles_memory::Target::Memory));
     let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
     let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
     let skill_summaries = ctx
@@ -3656,7 +3726,7 @@ async fn dispatch_tier1(
     {
         Ok((LoopOutcome::Done(response), tool_trace)) => {
             tracing::info!("[{peer}] \"{text}\" -> (Tier 1) {response}");
-            let memory_for_review = ctx.memory.is_enabled().then(|| ctx.memory.clone());
+            let memory_for_review = ctx.memory.clone();
             let snapshot = review::ReviewSnapshot {
                 transcript: text.to_string(),
                 spoken_response: response.clone(),
@@ -5980,7 +6050,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .map(build_capability_index)
         .map(Arc::new);
 
-    let memory_store = build_memory_store(&cfg.memory);
+    let memory_store = build_memory_store(&cfg).await;
     let skill_store = build_skill_store(&cfg.skills);
     let weather_client = build_weather_client();
     let _skill_curator_handle = skill_store
@@ -6321,13 +6391,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         satellites: satellites.clone(),
         device_index,
         history: command_writer,
-        memory: memory_store.unwrap_or_else(|| Arc::new(MemoryStore::disabled())),
+        memory: memory_store,
         skill_store,
         home: Arc::new(cfg.home.clone()),
         captures: captures.clone(),
         settings: Some(store.clone()),
         review: cfg.skills.review.clone(),
-        conversation: Arc::new(conversation::ConversationMemory::default()),
+        conversation: build_conversation_memory(&cfg).await,
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
         tado: tado.clone(),

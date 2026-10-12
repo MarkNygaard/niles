@@ -1,15 +1,15 @@
 //! niles-memory — Hermes-style persistent markdown memory.
 //!
-//! Two files live in a configured directory:
-//! - `USER.md`  — facts about the household humans
-//! - `MEMORY.md` — the agent's own learnings
+//! Two documents:
+//! - `user`  — facts about the household humans
+//! - `agent` — Niles's own learnings
 //!
-//! Entries are §-delimited.  All writes are atomic (tempfile-rename
-//! + OS advisory file lock) and gated by a security scan.
+//! Entries are §-delimited, and every write is gated by a security
+//! scan. Niles keeps both in Postgres.
 
 pub mod error;
 pub mod scan;
 pub mod store;
 
 pub use error::{Error, Result};
-pub use store::{Entry, MemoryConfig, MemoryStore, Target};
+pub use store::{Entry, MemoryConfig, MemoryPersistence, MemoryStore, Target};

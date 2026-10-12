@@ -895,13 +895,13 @@ impl Tool for MemoryTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "memory".into(),
-            description: "Manage persistent memory. Actions: 'add' requires 'content'; 'replace' requires 'old_text' and 'content'; 'remove' requires 'old_text'; 'view' needs only 'target'. Targets are 'user' (USER.md) or 'agent' (MEMORY.md).".into(),
+            description: "Manage persistent memory. Actions: 'add' requires 'content'; 'replace' requires 'old_text' and 'content'; 'remove' requires 'old_text'; 'view' needs only 'target'. Targets are 'user' (facts about the household) or 'agent' (what you have learned).".into(),
             parameters: json!({
                 "type": "object",
                 "required": ["action", "target"],
                 "properties": {
                     "action": { "type": "string", "enum": ["add", "replace", "remove", "view"], "description": "Action to perform." },
-                    "target": { "type": "string", "enum": ["user", "agent"], "description": "'user' for household facts (USER.md) or 'agent' for learnings (MEMORY.md)." },
+                    "target": { "type": "string", "enum": ["user", "agent"], "description": "'user' for household facts or 'agent' for learnings." },
                     "content": { "type": "string", "description": "Text to add or replace with. Required for 'add' and 'replace'." },
                     "old_text": { "type": "string", "description": "Snippet to match for 'replace' or 'remove'. Must uniquely identify one entry." }
                 }
@@ -925,11 +925,12 @@ impl Tool for MemoryTool {
 
         match action {
             "view" => {
-                let entries = self
+                let lines: Vec<String> = self
                     .store
                     .load(target)
-                    .map_err(|e| Error::Memory(format!("{e}")))?;
-                let lines: Vec<String> = entries.into_iter().map(|e| e.text).collect();
+                    .into_iter()
+                    .map(|e| e.text)
+                    .collect();
                 Ok(json!({ "entries": lines }))
             }
             "add" => {
@@ -2929,14 +2930,9 @@ mod tests {
 
     #[test]
     fn restricted_registry_for_review_with_both_stores_has_exact_tools() {
-        let tmp = TempDir::new().unwrap();
-        let memory = Arc::new(
-            niles_memory::MemoryStore::open(niles_memory::MemoryConfig {
-                directory: tmp.path().to_path_buf(),
-                ..Default::default()
-            })
-            .unwrap(),
-        );
+        let memory = Arc::new(niles_memory::MemoryStore::new(
+            niles_memory::MemoryConfig::default(),
+        ));
         let skill_tmp = TempDir::new().unwrap();
         let skill =
             Arc::new(niles_skills::SkillStore::open(skill_tmp.path(), 100_000, 1_048_576).unwrap());
@@ -2964,14 +2960,9 @@ mod tests {
 
     #[test]
     fn restricted_registry_for_review_excludes_device_tools() {
-        let tmp = TempDir::new().unwrap();
-        let memory = Arc::new(
-            niles_memory::MemoryStore::open(niles_memory::MemoryConfig {
-                directory: tmp.path().to_path_buf(),
-                ..Default::default()
-            })
-            .unwrap(),
-        );
+        let memory = Arc::new(niles_memory::MemoryStore::new(
+            niles_memory::MemoryConfig::default(),
+        ));
         let skill_tmp = TempDir::new().unwrap();
         let skill =
             Arc::new(niles_skills::SkillStore::open(skill_tmp.path(), 100_000, 1_048_576).unwrap());

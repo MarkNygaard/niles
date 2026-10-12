@@ -10,7 +10,3 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
-fs2.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

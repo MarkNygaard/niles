@@ -1410,26 +1410,9 @@ exclude_devices = ["wled:living_room/tv_light"]
     // ------------------------------------------------------------------
 
     #[test]
-    fn memory_section_absent_defaults_to_none() {
+    fn memory_section_absent_uses_default_limits() {
         let cfg = Config::load_from_str(valid_toml()).unwrap();
         cfg.validate().unwrap();
-        assert!(cfg.memory.directory.is_none());
-        assert_eq!(cfg.memory.user_char_limit, 1375);
-        assert_eq!(cfg.memory.agent_char_limit, 2200);
-    }
-
-    #[test]
-    fn memory_directory_parses_into_pathbuf() {
-        let toml = format!(
-            "{}\n[memory]\ndirectory = \"/var/niles/memory\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        cfg.validate().unwrap();
-        assert_eq!(
-            cfg.memory.directory.as_deref(),
-            Some(std::path::Path::new("/var/niles/memory"))
-        );
         assert_eq!(cfg.memory.user_char_limit, 1375);
         assert_eq!(cfg.memory.agent_char_limit, 2200);
     }
@@ -1437,7 +1420,7 @@ exclude_devices = ["wled:living_room/tv_light"]
     #[test]
     fn memory_char_limits_explicit() {
         let toml = format!(
-            "{}\n[memory]\ndirectory = \"/tmp\"\nuser_char_limit = 500\nagent_char_limit = 1000\n",
+            "{}\n[memory]\nuser_char_limit = 500\nagent_char_limit = 1000\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -1447,26 +1430,9 @@ exclude_devices = ["wled:living_room/tv_light"]
     }
 
     #[test]
-    fn rejects_empty_memory_directory() {
-        let toml = format!(
-            "{}\n[memory]\ndirectory = \"\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "memory",
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn rejects_zero_user_char_limit() {
         let toml = format!(
-            "{}\n[memory]\ndirectory = \"/tmp\"\nuser_char_limit = 0\n",
+            "{}\n[memory]\nuser_char_limit = 0\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
@@ -1483,7 +1449,7 @@ exclude_devices = ["wled:living_room/tv_light"]
     #[test]
     fn rejects_zero_agent_char_limit() {
         let toml = format!(
-            "{}\n[memory]\ndirectory = \"/tmp\"\nagent_char_limit = 0\n",
+            "{}\n[memory]\nagent_char_limit = 0\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();

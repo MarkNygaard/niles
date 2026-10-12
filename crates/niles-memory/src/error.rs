@@ -6,12 +6,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("I/O failed: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("file is locked by another process")]
-    Locked,
-
     #[error("security scan failed: {reason}")]
     ScanFailed { reason: String },
 
