@@ -969,7 +969,7 @@ fn origin_context(room: &RoomName) -> String {
 }
 
 /// Outcome of per-utterance speaker ID, as surfaced to the LLM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum SpeakerContext {
     Disabled,
     /// Confident match: the display name, and what Niles knows about
@@ -2677,12 +2677,12 @@ fn spawn_dispatch_task(
             };
             // An answer to a question, heard without the wake word: taken
             // only when a question is waiting, and from the voice asked.
+            let question = follow_up.then(|| ctx.follow_ups.take(peer)).flatten();
+            let asker = question
+                .as_ref()
+                .and_then(|a| a.asker.clone().zip(a.known.clone()));
             let answering = if follow_up {
-                match follow_up::judge(
-                    ctx.follow_ups.take(peer),
-                    speaker_name.as_deref(),
-                    attempted,
-                ) {
+                match follow_up::judge(question, speaker_name.as_deref(), attempted) {
                     follow_up::Verdict::Answer { round } => Some(round),
                     follow_up::Verdict::Unasked => {
                         tracing::info!(
@@ -2699,6 +2699,20 @@ fn spawn_dispatch_task(
                 }
             } else {
                 None
+            };
+            // An answer too short to know the voice in — "yes" — is taken
+            // as the answer of whoever was asked. Otherwise the lock on
+            // unknown voices threw away the yes to "shall I save it?",
+            // and a calendar question's yes had nobody to belong to.
+            let speaker = match (answering, speaker, asker) {
+                (Some(_), SpeakerContext::Unknown, Some((name, known))) => {
+                    SpeakerContext::Identified { name, known }
+                }
+                (_, speaker, _) => speaker,
+            };
+            let speaker_name = match &speaker {
+                SpeakerContext::Identified { name, .. } => Some(name.clone()),
+                _ => None,
             };
             let dispatch_started = Instant::now();
             let say = if follow_up && answering.is_none() {
@@ -2725,7 +2739,12 @@ fn spawn_dispatch_task(
                 && round <= follow_up::MAX_ROUNDS
                 && (speaker_name.is_some() || !attempted);
             if listen {
-                ctx.follow_ups.expect(peer, speaker_name.clone(), round);
+                let known = match &speaker {
+                    SpeakerContext::Identified { known, .. } => Some(known.clone()),
+                    _ => None,
+                };
+                ctx.follow_ups
+                    .expect(peer, speaker_name.clone(), known, round);
             }
             asked = listen;
 

@@ -247,7 +247,59 @@ fn read_rule(tool: &str, args: &Value) -> Result<AutomationRuleDto> {
     object.insert("id".into(), Value::String(String::new()));
     object.entry("enabled").or_insert(Value::Bool(true));
     object.entry("conditions").or_insert(json!([]));
-    serde_json::from_value(body).map_err(|e| invalid(tool, format!("not a rule: {e}")))
+    let mut rule: AutomationRuleDto =
+        serde_json::from_value(body).map_err(|e| invalid(tool, format!("not a rule: {e}")))?;
+    lift_moment(&mut rule);
+    Ok(rule)
+}
+
+/// A rule with no trigger, whose one time or sun condition only says
+/// *after* something — "after sunset, plus thirty minutes" — means at
+/// that moment. The model wrote it so twice in an evening ("remind me
+/// to close the curtains 30 minutes after sunset"); read it as meant
+/// rather than refuse it.
+fn lift_moment(rule: &mut AutomationRuleDto) {
+    if !rule.triggers.is_empty() {
+        return;
+    }
+    let moments: Vec<usize> = rule
+        .conditions
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            matches!(
+                c,
+                ConditionDto::Sun {
+                    after: Some(_),
+                    before: None,
+                    ..
+                } | ConditionDto::TimeOfDay {
+                    after: Some(_),
+                    before: None,
+                    ..
+                }
+            )
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let [only] = moments[..] else { return };
+    let kind = match rule.conditions.remove(only) {
+        ConditionDto::Sun {
+            after: Some(event),
+            after_offset_minutes,
+            ..
+        } => TriggerKind::Sun {
+            event,
+            offset_minutes: after_offset_minutes,
+        },
+        ConditionDto::TimeOfDay {
+            after: Some(at),
+            days,
+            ..
+        } => TriggerKind::Time { at, days },
+        _ => return,
+    };
+    rule.triggers.push(TriggerDto { id: None, kind });
 }
 
 /// What the rule names that this house does not have — a misheard
@@ -819,6 +871,34 @@ mod tests {
         // A misheard one is not offered.
         propose.execute(garden_door("offers")).await.unwrap();
         assert!(!proposals.pending());
+    }
+
+    #[tokio::test]
+    async fn a_time_written_as_a_condition_is_read_as_the_moment() {
+        let store = Arc::new(
+            AutomationStore::new()
+                .with_location(niles_automations::sun::Location::of(56.1572, 10.2107)),
+        );
+        let propose = ProposeAutomation {
+            store,
+            registry: house(),
+            proposals: Arc::new(Proposals::new()),
+            tz: chrono_tz::Tz::UTC,
+        };
+        // As the model sent it, twice, on 2026-10-12.
+        let out = propose
+            .execute(json!({
+                "description": "Close the curtains",
+                "conditions": [{ "kind": "sun", "after": "sunset", "after_offset_minutes": 30 }],
+                "actions": [{ "do": "notify", "body": "Please close the curtains." }],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(out["problems"], json!([]));
+        assert_eq!(
+            out["sentence"],
+            "When it is 30 minutes after sunset, say \"Please close the curtains.\"."
+        );
     }
 
     #[test]

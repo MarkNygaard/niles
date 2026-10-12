@@ -248,7 +248,11 @@ impl Rule {
         };
 
         if dto.triggers.is_empty() {
-            return Err(invalid("a rule needs a trigger".into()));
+            return Err(invalid(
+                "a rule needs a trigger: the moment it starts, in `triggers` — \
+                 e.g. {\"type\": \"sun\", \"event\": \"sunset\", \"offset_minutes\": 30}"
+                    .into(),
+            ));
         }
         if dto.triggers.len() > MAX_TRIGGERS {
             return Err(invalid(format!("at most {MAX_TRIGGERS} triggers")));

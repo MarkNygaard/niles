@@ -21,10 +21,13 @@ const WAITING: Duration = Duration::from_secs(60);
 pub(crate) const MAX_ROUNDS: u8 = 3;
 
 /// A question asked through one satellite.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Asked {
     /// Who was asked, when the voice was recognised.
     pub asker: Option<String>,
+    /// What Niles knows of them: an answer too short to recognise — a
+    /// "yes" — is theirs, and acts as theirs, calendar and notes alike.
+    pub known: Option<crate::profile::Known>,
     /// Which question in a row this is, from 1.
     pub round: u8,
     at: Instant,
@@ -52,11 +55,18 @@ pub(crate) struct FollowUps {
 
 impl FollowUps {
     /// Wait for an answer at `peer`, from `asker` if the voice was known.
-    pub(crate) fn expect(&self, peer: SocketAddr, asker: Option<String>, round: u8) {
+    pub(crate) fn expect(
+        &self,
+        peer: SocketAddr,
+        asker: Option<String>,
+        known: Option<crate::profile::Known>,
+        round: u8,
+    ) {
         self.lock().insert(
             peer.ip(),
             Asked {
                 asker,
+                known,
                 round,
                 at: Instant::now(),
             },
@@ -127,6 +137,7 @@ mod tests {
     fn asked(asker: Option<&str>) -> Option<Asked> {
         Some(Asked {
             asker: asker.map(String::from),
+            known: None,
             round: 1,
             at: Instant::now(),
         })
@@ -186,7 +197,7 @@ mod tests {
     #[test]
     fn a_question_is_answered_once() {
         let waiting = FollowUps::default();
-        waiting.expect(peer(), Some("Mark".into()), 1);
+        waiting.expect(peer(), Some("Mark".into()), None, 1);
         assert!(waiting.take(peer()).is_some());
         assert!(waiting.take(peer()).is_none());
     }
@@ -194,7 +205,7 @@ mod tests {
     #[test]
     fn a_question_left_too_long_lapses() {
         let waiting = FollowUps::default();
-        waiting.expect(peer(), None, 1);
+        waiting.expect(peer(), None, None, 1);
         let later = Instant::now() + WAITING + Duration::from_secs(1);
         assert!(waiting.take_at(peer(), later).is_none());
     }
@@ -202,7 +213,7 @@ mod tests {
     #[test]
     fn the_answer_comes_from_a_new_connection() {
         let waiting = FollowUps::default();
-        waiting.expect(peer(), None, 1);
+        waiting.expect(peer(), None, None, 1);
         let next: SocketAddr = "192.168.69.188:51834".parse().unwrap();
         assert!(waiting.take(next).is_some());
     }
@@ -210,7 +221,7 @@ mod tests {
     #[test]
     fn each_satellite_waits_for_its_own_answer() {
         let waiting = FollowUps::default();
-        waiting.expect(peer(), None, 1);
+        waiting.expect(peer(), None, None, 1);
         let other: SocketAddr = "192.168.69.189:40000".parse().unwrap();
         assert!(waiting.take(other).is_none());
         assert!(waiting.take(peer()).is_some());
