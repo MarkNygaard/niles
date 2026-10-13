@@ -10,6 +10,7 @@ import { AvatarMenu } from "@/components/AvatarMenu";
 import { MyProfile } from "@/components/MyProfile";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { SignIn } from "@/components/SignIn";
+import { SkillsPage } from "@/components/SkillsPage";
 import { TabBar } from "@/components/TabBar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
@@ -197,6 +198,8 @@ function screenFor(route: string): Screen {
         parent: "#/automations",
         body: editor(),
       };
+    case "/skills":
+      return { at: route, title: "Skills", body: <SkillsPage /> };
   }
   const rule = /^\/automations\/([^/]+)$/.exec(route);
   if (rule) {
