@@ -2298,7 +2298,23 @@ pub(crate) enum LoopOutcome {
         reason: String,
         messages: Vec<Message>,
     },
+    /// The model reached for a tool that is handed on rather than run:
+    /// nothing from that response was executed.
+    HandOff {
+        tool: String,
+    },
 }
+
+/// The tools that change a household's rules. The fast model knows an
+/// automation when it hears one — it reached for these every time the
+/// curtain reminder came up — but builds them badly, so when Claude is
+/// on, reaching for one hands the whole turn to Claude instead.
+const AUTOMATION_CHANGES: &[&str] = &[
+    "propose_automation",
+    "create_automation",
+    "pause_automation",
+    "remove_automation",
+];
 
 /// Internal helper that starts from an existing message history.
 async fn run_tool_calling_chat_with_messages(
@@ -2307,6 +2323,7 @@ async fn run_tool_calling_chat_with_messages(
     mut messages: Vec<Message>,
     max_iterations: usize,
     exclude_tool: Option<&str>,
+    hand_off: &[&str],
 ) -> anyhow::Result<(LoopOutcome, Vec<review::ToolTrace>)> {
     // Only the tools this request could plausibly use. Every schema
     // goes on the wire on every iteration, and with thirty-odd
@@ -2344,6 +2361,19 @@ async fn run_tool_calling_chat_with_messages(
 
         if resp.tool_calls.is_empty() {
             return Ok((LoopOutcome::Done(resp.content.unwrap_or_default()), trace));
+        }
+
+        if let Some(call) = resp
+            .tool_calls
+            .iter()
+            .find(|c| hand_off.contains(&c.name.as_str()))
+        {
+            return Ok((
+                LoopOutcome::HandOff {
+                    tool: call.name.clone(),
+                },
+                trace,
+            ));
         }
 
         messages.push(Message::Assistant {
@@ -2454,7 +2484,7 @@ pub(crate) async fn run_tool_calling_chat(
     messages.push(Message::User {
         content: prompt.to_string(),
     });
-    run_tool_calling_chat_with_messages(client, registry, messages, max_iterations, None).await
+    run_tool_calling_chat_with_messages(client, registry, messages, max_iterations, None, &[]).await
 }
 
 async fn chat(args: ChatArgs) -> anyhow::Result<()> {
@@ -2561,6 +2591,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
                 "[niles chat] Tier 1 requested escalation ({reason}) but Tier 2 is not available in chat mode"
             );
         }
+        Ok((LoopOutcome::HandOff { .. }, _trace)) => unreachable!("nothing is handed off here"),
         Err(e) => eprintln!("[niles chat] {e:#}"),
     }
 
@@ -3861,24 +3892,68 @@ async fn dispatch_tier1(
     }
     let mut messages = Vec::new();
     messages.push(Message::System {
-        content: system_prompt,
+        content: system_prompt.clone(),
     });
     messages.extend(ctx.conversation.recent_messages(thread));
     messages.push(Message::User {
         content: text.to_string(),
     });
+    // A spoken rule the keyword check missed — "every weekday at 6:30
+    // turn on the bedroom light" — still reaches Claude: the fast model
+    // reaches for the automation tools, and is stopped there.
+    let hand_off: &[&str] = if matches!(thread, conversation::Thread::Room(_))
+        && ctx.automations.is_some()
+        && claude_switched_on(ctx)
+    {
+        AUTOMATION_CHANGES
+    } else {
+        &[]
+    };
+    let unhanded = messages.clone();
     match run_tool_calling_chat_with_messages(
         ctx.llm.as_ref(),
         ctx.tools.as_ref(),
         messages,
         MAX_TOOL_ITERATIONS,
         None,
+        hand_off,
     )
     .await
     {
         Ok((LoopOutcome::Done(response), _)) => {
             tracing::info!("[{peer}] \"{text}\" -> (Tier 1) {response}");
             Some(response)
+        }
+        Ok((LoopOutcome::HandOff { tool }, _)) => {
+            tracing::info!("[{peer}] the fast model reached for {tool}; \"{text}\" goes to Claude");
+            if let Some(reply) =
+                ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
+            {
+                if follow_up::asks(&reply)
+                    && let Some((_, proposals)) = ctx.automations.as_ref()
+                {
+                    proposals.discussed();
+                }
+                return Some(reply);
+            }
+            // Claude could not answer: the fast model does it after all.
+            match run_tool_calling_chat_with_messages(
+                ctx.llm.as_ref(),
+                ctx.tools.as_ref(),
+                unhanded,
+                MAX_TOOL_ITERATIONS,
+                None,
+                &[],
+            )
+            .await
+            {
+                Ok((LoopOutcome::Done(response), _)) => Some(response),
+                Ok(_) => Some("Sorry, I'm not able to handle that request.".into()),
+                Err(e) => {
+                    tracing::warn!("[{peer}] Tier 1 LLM dispatch failed: {e:#}");
+                    Some("Sorry, something went wrong.".into())
+                }
+            }
         }
         Ok((LoopOutcome::EscalateRequested { reason, messages }, _tool_trace)) => {
             tracing::info!("[{peer}] Tier 1 requested escalation: {reason}");
@@ -3891,6 +3966,7 @@ async fn dispatch_tier1(
                         messages,
                         MAX_TOOL_ITERATIONS,
                         Some(niles_tools::escalate::ESCALATE_TOOL_NAME),
+                        &[],
                     )
                     .await
                     {
@@ -3898,7 +3974,10 @@ async fn dispatch_tier1(
                             tracing::info!("[{peer}] \"{text}\" -> (Tier 2) {response}");
                             Some(response)
                         }
-                        Ok((LoopOutcome::EscalateRequested { .. }, _)) => {
+                        Ok((
+                            LoopOutcome::EscalateRequested { .. } | LoopOutcome::HandOff { .. },
+                            _,
+                        )) => {
                             println!(
                                 "[{peer}] \"{text}\" -> (Tier 2) escalation requested; ignoring"
                             );
@@ -3930,6 +4009,19 @@ async fn dispatch_tier1(
         }
     }
 }
+/// Whether Claude Code is there and switched on, read per turn like the
+/// chat's switch.
+fn claude_switched_on(ctx: &DispatchCtx) -> bool {
+    ctx.claude.is_some()
+        && ctx.settings.as_ref().is_some_and(|s| {
+            s.current()
+                .integrations
+                .claude_code
+                .as_ref()
+                .is_some_and(|c| c.enabled)
+        })
+}
+
 /// The chat's answer from Claude Code, when it is switched on and can
 /// give one.
 ///
@@ -8113,6 +8205,45 @@ mod chat_loop_tests {
     }
 
     #[tokio::test]
+    async fn a_tool_that_is_handed_off_is_not_run() {
+        // "every weekday at 6:30 turn on the bedroom light": the model
+        // reaches for the rule tools, and the turn goes to Claude rather
+        // than having the fast model build the rule itself.
+        let fake = FakeChat::new(vec![ChatResponse {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "a".into(),
+                name: "propose_automation".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+        }]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "propose_automation".into(),
+            result: json!({"ok": true}),
+        }));
+        let messages = vec![Message::User {
+            content: "every weekday at 6:30 turn on the bedroom light".into(),
+        }];
+        let (outcome, trace) = run_tool_calling_chat_with_messages(
+            &fake,
+            &registry,
+            messages,
+            5,
+            None,
+            AUTOMATION_CHANGES,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, LoopOutcome::HandOff { ref tool } if tool == "propose_automation")
+        );
+        assert!(trace.is_empty(), "nothing was run");
+        assert_eq!(fake.captured_requests().len(), 1);
+    }
+
+    #[tokio::test]
     async fn empty_content_returns_empty_string() {
         let fake = FakeChat::new(vec![ChatResponse {
             content: None,
@@ -8338,6 +8469,7 @@ mod chat_loop_tests {
             messages,
             5,
             Some(niles_tools::escalate::ESCALATE_TOOL_NAME),
+            &[],
         )
         .await
         .unwrap();

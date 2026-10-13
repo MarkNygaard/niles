@@ -314,6 +314,20 @@ const GROUPS: &[Group] = &[
             "why didn't",
             "didn't turn",
             "save",
+            // A rule said without "when": "every weekday at 6:30 turn on
+            // the bedroom light" — sent only the light tools, the model
+            // turned the light on there and then.
+            "every",
+            "everyday",
+            "daily",
+            "nightly",
+            "weekdays",
+            "weekends",
+            "automatically",
+            "routine",
+            "routines",
+            "schedule",
+            "remind",
         ],
         tools: &[
             "propose_automation",
@@ -411,6 +425,22 @@ mod tests {
         let names = relevant_tool_names("why is the hall light on").expect("matched");
         assert!(names.contains(&"explain_device_state"));
         assert!(names.contains(&"query_device_state_history"));
+    }
+
+    #[test]
+    fn a_rule_said_without_when_still_reaches_the_rule_tools() {
+        for sentence in [
+            "every weekday at 6:30 turn on the bedroom light",
+            "turn off the TV automatically at midnight",
+            "set up a routine that dims the living room at 10",
+            "remind me to take out the bins on Tuesdays",
+        ] {
+            let names = relevant_tool_names(sentence).unwrap_or_default();
+            assert!(
+                names.is_empty() || names.contains(&"propose_automation"),
+                "{sentence}: {names:?}"
+            );
+        }
     }
 
     #[test]
