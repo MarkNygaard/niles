@@ -24,6 +24,117 @@ pub enum Kind {
     Provider,
     /// Anything with its own wiring — an OAuth flow, a webhook.
     Service,
+    /// Set up on a Settings page of its own rather than here. Listed so
+    /// a new install sees it beside the other things Niles needs,
+    /// instead of finding out from lights that never answer.
+    Setting,
+}
+
+/// Where it sits on the Integrations page.
+///
+/// By what it does for the house rather than by how it is set up: a
+/// newcomer looks for "music", not for "OAuth service".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Group {
+    Essentials,
+    Music,
+    Presence,
+    Calendars,
+    Shopping,
+    Assistants,
+}
+
+/// How much a house misses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Importance {
+    /// Niles does not do its job without it — or, for a provider,
+    /// without one of the providers that serve the same role.
+    Required,
+    /// Noticeably better with it, for a house that has the thing.
+    Recommended,
+    Optional,
+}
+
+/// A group as the page heads it.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct GroupInfo {
+    pub id: Group,
+    pub label: &'static str,
+    pub blurb: &'static str,
+    /// What the group as a whole has to have, when that is not "each of
+    /// these". The speech and AI providers are "one of", and a Required
+    /// badge on each of them alone would say "all three".
+    pub requirement: Option<&'static str>,
+}
+
+/// The groups, in the order the page shows them. Essentials first, so
+/// a new install can work down the page.
+pub const GROUPS: &[GroupInfo] = &[
+    GroupInfo {
+        id: Group::Essentials,
+        label: "Essentials",
+        blurb: "What Niles needs to reach your lights, hear what you say and answer.",
+        requirement: Some(
+            "Niles needs one speech-to-text provider and one AI provider. Groq does both on one account.",
+        ),
+    },
+    GroupInfo {
+        id: Group::Music,
+        label: "Music & TV",
+        blurb: "Speakers, music and the television, by voice.",
+        requirement: None,
+    },
+    GroupInfo {
+        id: Group::Presence,
+        label: "Presence & climate",
+        blurb: "Who is home, and the heating.",
+        requirement: None,
+    },
+    GroupInfo {
+        id: Group::Calendars,
+        label: "Calendars",
+        blurb: "Each person's calendar, read out for whoever asks. iCloud needs nothing here: each person connects it from their own profile.",
+        requirement: None,
+    },
+    GroupInfo {
+        id: Group::Shopping,
+        label: "Shopping",
+        blurb: "Groceries, from the shopping list to the door.",
+        requirement: None,
+    },
+    GroupInfo {
+        id: Group::Assistants,
+        label: "Assistants & tools",
+        blurb: "For the technically minded: Claude in the chat, and work handed to Niles from Linear.",
+        requirement: None,
+    },
+];
+
+impl Group {
+    pub fn info(self) -> &'static GroupInfo {
+        GROUPS
+            .iter()
+            .find(|g| g.id == self)
+            .expect("every group is in GROUPS")
+    }
+
+    /// Where it comes on the page.
+    pub fn position(self) -> usize {
+        GROUPS
+            .iter()
+            .position(|g| g.id == self)
+            .expect("every group is in GROUPS")
+    }
+}
+
+/// The Settings page a [`Kind::Setting`] entry is set up on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct SettingsPage {
+    /// The section's id in the app's Settings navigation.
+    pub id: &'static str,
+    pub label: &'static str,
 }
 
 /// Which API a provider speaks.
@@ -41,8 +152,23 @@ pub enum Api {
 pub struct Known {
     pub id: &'static str,
     pub label: &'static str,
+    /// What it does for the house, in a sentence or two a newcomer can
+    /// follow. Not what the API is.
     pub blurb: &'static str,
+    /// What somebody needs before they start: an account, a key, a
+    /// device on the network, a subscription.
+    pub needs: &'static str,
     pub kind: Kind,
+    pub group: Group,
+    pub importance: Importance,
+    /// A Lucide icon name. Generic on purpose: the card says what kind
+    /// of thing it is, and the row beside it carries the brand.
+    pub icon: &'static str,
+    /// Every credential it keeps. Removing it deletes the stored ones,
+    /// since nothing else shows them once it is gone.
+    pub secrets: &'static [&'static str],
+    /// [`Kind::Setting`] only.
+    pub settings_page: Option<SettingsPage>,
     /// Providers only. The one address its API lives at, so nobody has
     /// to look it up or mistype it.
     pub base_url: Option<&'static str>,
@@ -67,12 +193,41 @@ pub struct Known {
 /// they have always defaulted to.
 pub const DEFAULT_PROVIDER: &str = "groq";
 
+/// In the order the page shows them: by group, and within a group the
+/// way a new install should work down it.
 pub const KNOWN: &[Known] = &[
+    Known {
+        id: "mqtt",
+        label: "Zigbee & MQTT",
+        blurb: "How Niles reaches your lights. Zigbee lights and WLED strips all talk to Niles through an MQTT broker.",
+        needs: "An MQTT broker on your network, with Zigbee2MQTT connected to it. You set it up under Settings.",
+        kind: Kind::Setting,
+        group: Group::Essentials,
+        importance: Importance::Required,
+        icon: "network",
+        // The broker's login belongs to its own Settings page, and
+        // nothing here removes it.
+        secrets: &[],
+        settings_page: Some(SettingsPage {
+            id: "mqtt",
+            label: "Zigbee & MQTT",
+        }),
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
     Known {
         id: "groq",
         label: "Groq",
-        blurb: "Speech-to-text and language models, fast enough for a house.",
+        blurb: "Turns what you say into text and works out the answer, fast enough to reply while you wait. One account does both jobs.",
+        needs: "A Groq account (there is a free tier) and an API key from console.groq.com.",
         kind: Kind::Provider,
+        group: Group::Essentials,
+        importance: Importance::Required,
+        icon: "sparkles",
+        secrets: &["provider.groq.api_key"],
+        settings_page: None,
         base_url: Some("https://api.groq.com/openai/v1"),
         serves: &[Role::Stt, Role::Llm],
         api: Api::OpenAi,
@@ -87,10 +242,32 @@ pub const KNOWN: &[Known] = &[
         ],
     },
     Known {
+        id: "elevenlabs",
+        label: "ElevenLabs",
+        blurb: "Turns what you say into text, and is the best at hearing Niles's own name. It only listens, so pair it with an AI provider.",
+        needs: "An ElevenLabs account and an API key.",
+        kind: Kind::Provider,
+        group: Group::Essentials,
+        importance: Importance::Required,
+        icon: "audio-lines",
+        secrets: &["provider.elevenlabs.api_key"],
+        settings_page: None,
+        base_url: Some("https://api.elevenlabs.io/v1"),
+        serves: &[Role::Stt],
+        api: Api::ElevenLabs,
+        models: &[(Role::Stt, "scribe_v2")],
+    },
+    Known {
         id: "cerebras",
         label: "Cerebras",
-        blurb: "Language models on wafer-scale silicon — the fastest way to answer out loud.",
+        blurb: "Works out the answer, and is the fastest way to have one said out loud. It does not listen, so pair it with Groq or ElevenLabs.",
+        needs: "A Cerebras account and an API key.",
         kind: Kind::Provider,
+        group: Group::Essentials,
+        importance: Importance::Required,
+        icon: "brain",
+        secrets: &["provider.cerebras.api_key"],
+        settings_page: None,
         base_url: Some("https://api.cerebras.ai/v1"),
         // Language only. There is no speech endpoint here, and
         // offering one would fail as a 404 from somebody else's
@@ -100,40 +277,16 @@ pub const KNOWN: &[Known] = &[
         models: &[(Role::Llm, "gpt-oss-120b"), (Role::Llm, "qwen-3.8-27b")],
     },
     Known {
-        id: "elevenlabs",
-        label: "ElevenLabs",
-        blurb: "Scribe speech-to-text: listens for Niles's own name, and scores every word.",
-        kind: Kind::Provider,
-        base_url: Some("https://api.elevenlabs.io/v1"),
-        serves: &[Role::Stt],
-        api: Api::ElevenLabs,
-        models: &[(Role::Stt, "scribe_v2")],
-    },
-    Known {
-        id: "tado",
-        label: "tado°",
-        blurb: "Who is home, from the thermostats that already know.",
-        kind: Kind::Service,
-        base_url: None,
-        serves: &[],
-        api: Api::OpenAi,
-        models: &[],
-    },
-    Known {
-        id: "unifi",
-        label: "UniFi",
-        blurb: "Who is home, from the Wi-Fi — the moment a phone is in range.",
-        kind: Kind::Service,
-        base_url: None,
-        serves: &[],
-        api: Api::OpenAi,
-        models: &[],
-    },
-    Known {
         id: "sonos",
         label: "Sonos",
-        blurb: "Music and radio in each room, and quieter while Niles speaks.",
+        blurb: "Music and radio in each room, turned down while Niles is speaking.",
+        needs: "Sonos speakers on the same network as Niles.",
         kind: Kind::Service,
+        group: Group::Music,
+        importance: Importance::Optional,
+        icon: "speaker",
+        secrets: &[],
+        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -142,28 +295,17 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "spotify",
         label: "Spotify",
-        blurb: "Play any artist, song or album on Sonos, by name.",
+        blurb: "Ask for any artist, song or album by name, and it plays on your Sonos.",
+        needs: "Sonos, a Spotify Premium account linked in the Sonos app, and a free Spotify developer app for its two keys.",
         kind: Kind::Service,
-        base_url: None,
-        serves: &[],
-        api: Api::OpenAi,
-        models: &[],
-    },
-    Known {
-        id: "microsoft",
-        label: "Microsoft calendars",
-        blurb: "Each person's Outlook and work calendars, read by voice for whoever asks.",
-        kind: Kind::Service,
-        base_url: None,
-        serves: &[],
-        api: Api::OpenAi,
-        models: &[],
-    },
-    Known {
-        id: "google",
-        label: "Google calendars",
-        blurb: "Each person's Gmail calendar, read by voice for whoever asks.",
-        kind: Kind::Service,
+        group: Group::Music,
+        importance: Importance::Optional,
+        icon: "music",
+        secrets: &[
+            "integrations.spotify.client_id",
+            "integrations.spotify.client_secret",
+        ],
+        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -172,8 +314,106 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "lg_tv",
         label: "LG TV",
-        blurb: "On and off, apps and inputs by voice, and Niles's news on the screen.",
+        blurb: "Turn the TV on and off, open apps and switch inputs by voice, and see Niles's news on the screen.",
+        needs: "An LG TV on the same network. No LG account; you accept a prompt on the TV once.",
         kind: Kind::Service,
+        group: Group::Music,
+        importance: Importance::Optional,
+        icon: "tv",
+        // Issued by one TV when it is paired, so a TV added again pairs
+        // again rather than keeping a key for the last one.
+        secrets: &["tv.client_key"],
+        settings_page: None,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
+        id: "unifi",
+        label: "UniFi",
+        blurb: "Knows who is home from their phone on the Wi-Fi, the moment it is in range. Lights can follow when the house empties or someone comes back.",
+        needs: "A UniFi network with its console on your network, and an API key made in UniFi Network.",
+        kind: Kind::Service,
+        group: Group::Presence,
+        importance: Importance::Recommended,
+        icon: "wifi",
+        secrets: &["presence.unifi.api_key"],
+        settings_page: None,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
+        id: "tado",
+        label: "tado°",
+        blurb: "Heating in each room by voice, and who is home from the thermostats that already know.",
+        needs: "tado° thermostats and the tado° account they are set up with.",
+        kind: Kind::Service,
+        group: Group::Presence,
+        importance: Importance::Optional,
+        icon: "thermometer",
+        // tado keeps tokens rather than a key, and fetches them itself.
+        secrets: &[],
+        settings_page: None,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
+        id: "microsoft",
+        label: "Microsoft calendars",
+        blurb: "Each person's Outlook and work calendars, read out for whoever asks.",
+        needs: "A free app registration in Microsoft Entra, made once for the house. Then each person signs in from their profile.",
+        kind: Kind::Service,
+        group: Group::Calendars,
+        importance: Importance::Optional,
+        icon: "calendar",
+        secrets: &[
+            "integrations.microsoft.client_id",
+            "integrations.microsoft.client_secret",
+        ],
+        settings_page: None,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
+        id: "google",
+        label: "Google calendars",
+        blurb: "Each person's Gmail calendar, read out for whoever asks.",
+        needs: "A free Google Cloud project with the Calendar API, made once for the house. Then each person signs in from their profile.",
+        kind: Kind::Service,
+        group: Group::Calendars,
+        importance: Importance::Optional,
+        icon: "calendar-days",
+        secrets: &[
+            "integrations.google.client_id",
+            "integrations.google.client_secret",
+        ],
+        settings_page: None,
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
+        id: "nemlig",
+        label: "nemlig.com",
+        blurb: "Groceries delivered: Niles picks the product behind each item on the shopping list and fills the basket.",
+        needs: "A nemlig.com account, with its email and password.",
+        kind: Kind::Service,
+        group: Group::Shopping,
+        importance: Importance::Optional,
+        icon: "shopping-basket",
+        secrets: &[
+            "integrations.nemlig.username",
+            "integrations.nemlig.password",
+        ],
+        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -183,17 +423,13 @@ pub const KNOWN: &[Known] = &[
         id: "claude_code",
         label: "Claude Code",
         blurb: "Answers the chat with Claude, on your Claude subscription.",
+        needs: "A paid Claude subscription, and a token from running `claude setup-token` on a computer.",
         kind: Kind::Service,
-        base_url: None,
-        serves: &[],
-        api: Api::OpenAi,
-        models: &[],
-    },
-    Known {
-        id: "nemlig",
-        label: "nemlig.com",
-        blurb: "Groceries delivered: pick the product behind each item on the list.",
-        kind: Kind::Service,
+        group: Group::Assistants,
+        importance: Importance::Optional,
+        icon: "bot",
+        secrets: &["integrations.claude_code.oauth_token"],
+        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -203,7 +439,13 @@ pub const KNOWN: &[Known] = &[
         id: "linear",
         label: "Linear",
         blurb: "Turns an issue into work Niles picks up.",
+        needs: "A Linear workspace, an API key, and the team whose issues Niles should watch.",
         kind: Kind::Service,
+        group: Group::Assistants,
+        importance: Importance::Optional,
+        icon: "list-todo",
+        secrets: &["integrations.linear.api_key"],
+        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -247,7 +489,7 @@ impl Known {
             Kind::Service if self.id == "google" => {
                 Some("integrations.google.client_secret".into())
             }
-            Kind::Service => None,
+            Kind::Service | Kind::Setting => None,
         }
     }
 }
@@ -317,11 +559,136 @@ mod tests {
 
     #[test]
     fn a_service_offers_no_models_and_no_endpoint() {
-        for known in KNOWN.iter().filter(|k| k.kind == Kind::Service) {
+        for known in KNOWN.iter().filter(|k| k.kind != Kind::Provider) {
             assert!(known.base_url.is_none(), "{}", known.id);
             assert!(known.models.is_empty(), "{}", known.id);
             assert!(known.serves.is_empty(), "{}", known.id);
         }
+    }
+
+    #[test]
+    fn only_a_setting_points_at_a_settings_page() {
+        // The card for one says where to go instead of opening a setup
+        // flow, and a card that does neither is a dead end.
+        for known in KNOWN {
+            assert_eq!(
+                known.settings_page.is_some(),
+                known.kind == Kind::Setting,
+                "{}",
+                known.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_required_set_is_the_broker_and_the_voice_providers() {
+        // Required means Niles does not do its job without it. The
+        // broker is how it reaches any light at all; the providers are
+        // "one of" for each role, which the group says rather than each
+        // card. Anything else marked required would send a new install
+        // off registering apps it does not need.
+        let required: Vec<&str> = KNOWN
+            .iter()
+            .filter(|k| k.importance == Importance::Required)
+            .map(|k| k.id)
+            .collect();
+        assert_eq!(required, ["mqtt", "groq", "elevenlabs", "cerebras"]);
+        for known in KNOWN.iter().filter(|k| k.kind == Kind::Provider) {
+            assert_eq!(known.importance, Importance::Required, "{}", known.id);
+            assert_eq!(known.group, Group::Essentials, "{}", known.id);
+        }
+    }
+
+    #[test]
+    fn a_group_of_required_providers_says_one_of_each_is_enough() {
+        let requirement = Group::Essentials.info().requirement.expect("said");
+        assert!(requirement.contains("one speech-to-text"));
+        assert!(requirement.contains("one AI provider"));
+    }
+
+    #[test]
+    fn between_them_the_required_providers_serve_every_role() {
+        for role in [Role::Stt, Role::Llm] {
+            assert!(
+                KNOWN.iter().any(|k| k.kind == Kind::Provider
+                    && k.importance == Importance::Required
+                    && k.serves.contains(&role)),
+                "nothing required serves {role:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_entry_has_card_text_and_an_icon() {
+        for known in KNOWN {
+            assert!(!known.blurb.trim().is_empty(), "{}", known.id);
+            assert!(!known.needs.trim().is_empty(), "{}", known.id);
+            assert!(!known.icon.trim().is_empty(), "{}", known.id);
+            assert!(!known.group.info().label.is_empty(), "{}", known.id);
+        }
+    }
+
+    #[test]
+    fn every_group_is_listed_once_and_used() {
+        for (i, group) in GROUPS.iter().enumerate() {
+            assert_eq!(group.id.position(), i, "{:?} listed twice", group.id);
+            assert!(
+                KNOWN.iter().any(|k| k.group == group.id),
+                "{:?} has nothing in it",
+                group.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_list_is_in_the_order_the_page_shows_it() {
+        // The page heads its groups in the order they first appear, so
+        // the catalogue's order is the page's order.
+        let positions: Vec<usize> = KNOWN.iter().map(|k| k.group.position()).collect();
+        assert!(positions.is_sorted(), "{positions:?}");
+        assert_eq!(KNOWN[0].group, Group::Essentials);
+    }
+
+    #[test]
+    fn the_key_that_says_finished_is_one_it_owns() {
+        // Removing an integration deletes what it owns; a key it reads
+        // but does not own would be left behind with nothing showing it.
+        for known in KNOWN {
+            if let Some(key) = known.secret_key() {
+                assert!(known.secrets.contains(&key.as_str()), "{}", known.id);
+            }
+        }
+    }
+
+    #[test]
+    fn what_each_integration_owns() {
+        let owns = |id: &str| find(id).expect("in the catalogue").secrets.to_vec();
+        assert_eq!(
+            owns("nemlig"),
+            [
+                "integrations.nemlig.username",
+                "integrations.nemlig.password"
+            ]
+        );
+        for id in ["spotify", "microsoft", "google"] {
+            assert_eq!(
+                owns(id),
+                [
+                    format!("integrations.{id}.client_id"),
+                    format!("integrations.{id}.client_secret")
+                ]
+            );
+        }
+        assert_eq!(owns("lg_tv"), ["tv.client_key"]);
+        assert_eq!(owns("unifi"), ["presence.unifi.api_key"]);
+        assert_eq!(owns("linear"), ["integrations.linear.api_key"]);
+        assert_eq!(
+            owns("claude_code"),
+            ["integrations.claude_code.oauth_token"]
+        );
+        // The broker's login is set on its own page and outlives
+        // anything done here.
+        assert!(owns("mqtt").is_empty());
     }
 
     #[test]
@@ -349,12 +716,14 @@ mod tests {
         // Niles reads. A provider without this is one the page offers
         // and nobody can finish setting up.
         for known in KNOWN.iter().filter(|k| k.kind == Kind::Provider) {
+            let key = format!("provider.{}.api_key", known.id);
             assert_eq!(
                 known.secret_key().as_deref(),
-                Some(format!("provider.{}.api_key", known.id).as_str()),
+                Some(key.as_str()),
                 "{}",
                 known.id
             );
+            assert_eq!(known.secrets, [key.as_str()], "{}", known.id);
         }
     }
 

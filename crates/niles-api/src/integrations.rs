@@ -23,7 +23,18 @@ pub struct IntegrationDto {
     pub id: String,
     pub label: String,
     pub blurb: String,
+    pub needs: String,
     pub kind: catalogue::Kind,
+    /// Whole rather than an id, so the page can head a group without a
+    /// second request and without knowing the groups itself. Entries
+    /// arrive in page order, so the first appearance of a group is
+    /// where it goes.
+    pub group: catalogue::GroupInfo,
+    pub importance: catalogue::Importance,
+    pub icon: String,
+    /// Every key it keeps, which removing it deletes.
+    pub secret_keys: Vec<String>,
+    pub settings_page: Option<catalogue::SettingsPage>,
     pub base_url: Option<String>,
     pub serves: Vec<Role>,
     /// What it can be asked for, per role — `{"stt": [...], "llm": [...]}`.
@@ -51,7 +62,13 @@ pub async fn list(State(state): State<AppState>) -> Json<Vec<IntegrationDto>> {
                 id: known.id.to_string(),
                 label: known.label.to_string(),
                 blurb: known.blurb.to_string(),
+                needs: known.needs.to_string(),
                 kind: known.kind,
+                group: *known.group.info(),
+                importance: known.importance,
+                icon: known.icon.to_string(),
+                secret_keys: known.secrets.iter().map(|k| k.to_string()).collect(),
+                settings_page: known.settings_page,
                 base_url: known.base_url.map(Into::into),
                 serves: known.serves.to_vec(),
                 models: models_of(known),
@@ -105,6 +122,7 @@ fn is_added(cfg: &Config, id: &str) -> bool {
         "sonos" => !cfg.speakers.host.trim().is_empty(),
         // An address, as with UniFi and Sonos: `[tv]` always exists.
         "lg_tv" => !cfg.tv.host.trim().is_empty(),
+        "mqtt" => !cfg.mqtt.host.trim().is_empty(),
         other => cfg.providers.iter().any(|p| p.name == other),
     }
 }
@@ -185,5 +203,13 @@ team = \"niles\"
             "linear"
         ));
         assert!(!is_added(&cfg(""), "linear"));
+    }
+
+    #[test]
+    fn the_broker_counts_as_added_once_it_has_a_host() {
+        // Not as a provider: "mqtt" is no `[[providers]]` entry, and
+        // falling through to that arm would call it missing forever.
+        assert!(is_added(&cfg("[mqtt]\nhost = \"10.0.0.2\"\n"), "mqtt"));
+        assert!(!is_added(&cfg(""), "mqtt"));
     }
 }

@@ -68,11 +68,36 @@ export interface WledStrip {
  * the config — and because the endpoint of a known provider is
  * something Niles already knows and nobody should have to type.
  */
-export interface Integration {
+export interface IntegrationGroup {
   id: string;
   label: string;
   blurb: string;
-  kind: "provider" | "service";
+  /** What the group as a whole needs, when that is "one of these"
+      rather than each of them. */
+  requirement: string | null;
+}
+
+export type Importance = "required" | "recommended" | "optional";
+
+export interface Integration {
+  id: string;
+  label: string;
+  /** What it does for the house, for a newcomer. */
+  blurb: string;
+  /** What you need before you start. */
+  needs: string;
+  /** `setting` is set up on its own Settings page, named by
+      `settings_page`. */
+  kind: "provider" | "service" | "setting";
+  /** The list arrives in page order, so a group goes where it first
+      appears. */
+  group: IntegrationGroup;
+  importance: Importance;
+  /** A Lucide icon name. */
+  icon: string;
+  /** Every key it keeps; removing it deletes the stored ones. */
+  secret_keys: string[];
+  settings_page: { id: string; label: string } | null;
   base_url: string | null;
   serves: ("stt" | "llm")[];
   /**
