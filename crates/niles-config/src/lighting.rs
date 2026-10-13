@@ -13,7 +13,7 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 fn default_enabled() -> bool {
-    true
+    false
 }
 
 /// `[lighting]` section of the config file.
@@ -22,10 +22,12 @@ fn default_enabled() -> bool {
 pub struct LightingConfig {
     /// Whether the daily curve runs.
     ///
-    /// Defaults to on, because a config that bothered to set anchors
-    /// meant them. Off stops the curve touching lights; it does not
-    /// stop anything else — voice, the dashboard and the dimmer all
-    /// still work, which is the point of a switch rather than a
+    /// Off until somebody turns it on: a new Niles must not start
+    /// changing the lights of a house it has just met. Turned on, it
+    /// runs the shipped curve below, which is there to be seen working
+    /// and then changed. Off stops the curve touching lights; it does
+    /// not stop anything else — voice, the dashboard and the dimmer
+    /// all still work, which is the point of a switch rather than a
     /// deletion.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -225,6 +227,7 @@ fn default_anchors() -> Vec<ColorTempAnchor> {
         ("05:45", 2000),
         ("06:30", 2700),
         ("12:00", 4500),
+        ("17:00", 3500),
         ("21:30", 2700),
         ("23:00", 2000),
         ("23:59", 2000),

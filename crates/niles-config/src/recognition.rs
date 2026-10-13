@@ -6,14 +6,32 @@ use std::path::PathBuf;
 
 pub use niles_recognition::MatchStrategy;
 
+/// Where the image puts the speaker model, when it was built with one.
+pub const BUNDLED_MODEL: &str = "/usr/local/share/niles/ecapa.onnx";
+
+/// The bundled model, if this install has it.
+fn bundled_model() -> Option<PathBuf> {
+    let path = PathBuf::from(BUNDLED_MODEL);
+    path.is_file().then_some(path)
+}
+
+/// On when the image carries the model: knowing who is speaking was
+/// built in, and needing a ConfigMap section to say so was not.
+fn default_enabled() -> bool {
+    bundled_model().is_some()
+}
+
 /// `[recognition]` section. When `model_path` is `None`, the
 /// recognition subsystem is disabled — niles starts without
-/// instantiating the embedder.
-#[derive(Debug, Clone, Deserialize, Default)]
+/// instantiating the embedder. Both default to the model the image
+/// carries, so an image built with one recognises voices with no
+/// section at all.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecognitionConfig {
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default = "bundled_model")]
     pub model_path: Option<PathBuf>,
     #[serde(default)]
     pub use_gpu: bool,
@@ -33,6 +51,18 @@ pub struct RecognitionConfig {
     /// for as long as it takes them to say their name.
     #[serde(default)]
     pub known_voices_only: bool,
+}
+
+impl Default for RecognitionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            model_path: bundled_model(),
+            use_gpu: false,
+            matcher: MatcherConfig::default(),
+            known_voices_only: false,
+        }
+    }
 }
 
 impl RecognitionConfig {
@@ -130,6 +160,16 @@ fn default_threshold() -> f32 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn recognition_is_on_exactly_when_the_image_carries_the_model() {
+        let cfg: RecognitionConfig = toml::from_str("").unwrap();
+        let carried = std::path::Path::new(BUNDLED_MODEL).is_file();
+        assert_eq!(cfg.enabled, carried);
+        assert_eq!(cfg.model_path.is_some(), carried);
+        cfg.validate().unwrap();
+        assert_eq!(RecognitionConfig::default().enabled, carried);
+    }
 
     #[test]
     fn disabled_with_no_paths_ok() {
