@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::registry::ToolRegistry;
-use crate::skill::register_skill_tools;
+use crate::skill::register_background_skill_tools;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -1428,7 +1428,7 @@ pub fn restricted_registry_for_review(
         register_memory_tools(&mut reg, s);
     }
     if let Some(s) = skill_store {
-        register_skill_tools(&mut reg, s);
+        register_background_skill_tools(&mut reg, s);
     }
     reg
 }
@@ -2941,7 +2941,8 @@ mod tests {
             "memory",
             "mint_skill",
             "patch_skill",
-            "delete_skill",
+            "retire_skill",
+            "list_skills",
             "view_skill",
         ]
         .iter()

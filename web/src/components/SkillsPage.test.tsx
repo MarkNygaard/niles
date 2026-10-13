@@ -40,11 +40,22 @@ const oldParty: Skill = {
 const BODY = "## Steps\n\n1. Dim the living room to 40%.\n2. Turn off the kitchen.";
 
 function detail(skill: Skill): SkillDetail {
-  return { ...skill, body: BODY };
+  return {
+    ...skill,
+    body: BODY,
+    changes: [
+      { at: "2026-10-12T19:00:00Z", change: "edited" },
+      { at: "2026-10-01T19:00:00Z", change: "made" },
+    ],
+  };
 }
 
-function show(skills: Skill[]) {
+function show(skills: Skill[], tidied: { at: string | null; summary: string | null } = {
+  at: null,
+  summary: null,
+}) {
   vi.spyOn(api, "skills").mockResolvedValue(skills);
+  vi.spyOn(api, "skillsTidied").mockResolvedValue(tidied);
   vi.spyOn(api, "skill").mockImplementation(async (name) =>
     detail(skills.find((s) => s.name === name)!),
   );
@@ -120,6 +131,30 @@ describe("SkillsPage", () => {
     const dialog = await open("Evening wind down");
     expect(await within(dialog).findByText(/Dim the living room to 40%/)).toBeInTheDocument();
     expect(vi.mocked(api.skill).mock.calls[0][0]).toBe("evening-wind-down");
+  });
+
+  it("lists a skill's changes and undoes the last", async () => {
+    show([windDown]);
+    const undo = vi
+      .spyOn(api, "undoSkill")
+      .mockResolvedValue({ at: "2026-10-12T19:00:00Z", change: "edited" });
+    const dialog = await open("Evening wind down");
+    const changes = await within(dialog).findByRole("region", { name: "Changes" });
+    expect(within(changes).getByText(/Edited/)).toBeInTheDocument();
+    expect(within(changes).getByText(/Made/)).toBeInTheDocument();
+    fireEvent.click(within(changes).getByRole("button", { name: 'Undo "edited"' }));
+    await waitFor(() => expect(undo).toHaveBeenCalled());
+    expect(undo.mock.calls[0][0]).toBe("evening-wind-down");
+  });
+
+  it("says when Niles last tidied its skills", async () => {
+    show([windDown], {
+      at: new Date().toISOString(),
+      summary: "Folded night into evening.",
+    });
+    expect(
+      await screen.findByText("Tidied just now: Folded night into evening."),
+    ).toBeInTheDocument();
   });
 
   it("pins a skill with its switch", async () => {

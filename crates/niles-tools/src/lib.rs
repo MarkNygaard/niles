@@ -58,7 +58,8 @@ pub fn register_notification_tools(
 pub use linear::{CreateTaskTool, GetTaskTool, ListTasksTool, register_linear_tools};
 pub use registry::ToolRegistry;
 pub use skill::{
-    DeleteSkillTool, MintSkillTool, PatchSkillTool, ViewSkillTool, register_skill_tools,
+    DeleteSkillTool, ListSkillsTool, MintSkillTool, PatchSkillTool, RetireSkillTool, ViewSkillTool,
+    Viewed, register_background_skill_tools, register_skill_tools,
 };
 pub use tool::{Tool, ToolDescriptor};
 pub use weather::{WeatherTool, register_weather_tools};

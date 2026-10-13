@@ -69,6 +69,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/automations/{id}/runs", get(crate::automations::runs))
         .route("/skills", get(crate::skills::list))
+        .route("/skills/_tidy", get(crate::skills::tidied))
+        .route("/skills/{name}/undo", post(crate::skills::undo))
         .route(
             "/skills/{name}",
             get(crate::skills::get)

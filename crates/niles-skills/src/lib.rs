@@ -13,4 +13,7 @@ pub mod store;
 
 pub use error::{Error, Result};
 pub use sidecar::{Provenance, Sidecar, SkillStatus};
-pub use store::{Skill, SkillPersistence, SkillStatusFilter, SkillStore, SkillSummary};
+pub use store::{
+    Change, MAX_DESCRIPTION_CHARS, Skill, SkillPersistence, SkillStatusFilter, SkillStore,
+    SkillSummary, Tidied,
+};

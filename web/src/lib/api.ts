@@ -561,12 +561,29 @@ export interface Skill {
   usage_count: number;
   view_count: number;
   patch_count: number;
+  /** The skill this one was folded into, when Niles retired it. */
+  absorbed_into?: string;
+}
+
+/** One change to a skill, as it can be undone. */
+export interface SkillChangeRecord {
+  at: string;
+  /** "made", "edited", "rewritten", "folded into evening", "deleted". */
+  change: string;
 }
 
 /** One skill with its procedure, as `GET /skills/{name}` has it. */
 export interface SkillDetail extends Skill {
   /** Markdown. */
   body: string;
+  /** What can be undone, newest first. */
+  changes: SkillChangeRecord[];
+}
+
+/** When Niles last tidied its skills, and what it did. */
+export interface SkillTidy {
+  at: string | null;
+  summary: string | null;
 }
 
 /** What `PATCH /skills/{name}` changes. */
@@ -999,6 +1016,10 @@ export const api = {
   /** Refused while the skill is pinned. */
   deleteSkill: (name: string) =>
     request<void>(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  /** Back to how it was before its last change; says what was undone. */
+  undoSkill: (name: string) =>
+    request<SkillChangeRecord>(`/skills/${encodeURIComponent(name)}/undo`, { method: "POST" }),
+  skillsTidied: () => request<SkillTidy>("/skills/_tidy"),
 
   memory: () => request<Memory>("/memory"),
   /** Only the entry whose text is exactly `text`. */

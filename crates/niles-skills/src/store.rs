@@ -60,18 +60,77 @@ struct Absorbed {
     absorbed_into: String,
 }
 
+/// The longest description a new skill may have. It is all a model sees
+/// of a skill when deciding whether to open it, so it has to say when
+/// to use it in a line: "Use when the house is wound down at night."
+pub const MAX_DESCRIPTION_CHARS: usize = 60;
+
+/// How many changes are kept to undo, across all skills. Skills are
+/// written by Niles while nobody watches; this is how somebody puts one
+/// back the way it was.
+const MAX_REVISIONS: usize = 100;
+
+/// One change to one skill: what it was before and after. `None` before
+/// is a skill made; `None` after is one deleted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Revision {
+    at: DateTime<Utc>,
+    name: String,
+    change: String,
+    before: Option<Skill>,
+    after: Option<Skill>,
+}
+
+/// A change as the app shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub at: DateTime<Utc>,
+    /// "made", "edited", "rewritten", "folded into evening", "deleted".
+    pub change: String,
+}
+
+/// When the set was last tidied, and what the tidy-up said it did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tidied {
+    pub at: DateTime<Utc>,
+    pub summary: String,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Document {
     #[serde(default)]
     skills: Vec<Skill>,
     #[serde(default)]
     absorbed: Vec<Absorbed>,
+    #[serde(default)]
+    revisions: Vec<Revision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tidied: Option<Tidied>,
 }
 
 #[derive(Default)]
 struct Skills {
     by_name: BTreeMap<String, Skill>,
     absorbed: Vec<Absorbed>,
+    revisions: Vec<Revision>,
+    tidied: Option<Tidied>,
+}
+
+impl Skills {
+    fn revise(&mut self, name: &str, change: &str, before: Option<Skill>) {
+        let after = self.by_name.get(name).cloned();
+        self.revisions.push(Revision {
+            at: Utc::now(),
+            name: name.to_string(),
+            change: change.to_string(),
+            before,
+            after,
+        });
+        if self.revisions.len() > MAX_REVISIONS {
+            let excess = self.revisions.len() - MAX_REVISIONS;
+            self.revisions.drain(..excess);
+        }
+    }
 }
 
 /// The household's skills.
@@ -104,6 +163,8 @@ impl SkillStore {
                 skills.by_name.insert(skill.name.clone(), skill);
             }
             skills.absorbed = document.absorbed;
+            skills.revisions = document.revisions;
+            skills.tidied = document.tidied;
         }
         Ok(store)
     }
@@ -148,6 +209,8 @@ impl SkillStore {
             let document = Document {
                 skills: skills.by_name.values().cloned().collect(),
                 absorbed: skills.absorbed.clone(),
+                revisions: skills.revisions.clone(),
+                tidied: skills.tidied.clone(),
             };
             match serde_json::to_string(&document) {
                 Ok(document) => sink.store(&document),
@@ -176,6 +239,16 @@ impl SkillStore {
         provenance: Provenance,
     ) -> Result<()> {
         self.check(name, description, version, body)?;
+        let length = description.chars().count();
+        if length > MAX_DESCRIPTION_CHARS {
+            return Err(Error::TooLarge {
+                reason: format!(
+                    "the description is {length} characters (max {MAX_DESCRIPTION_CHARS}); \
+                     it is all a model sees when choosing, so say when to use it: \
+                     \"Use when ...\""
+                ),
+            });
+        }
         self.change(|skills| {
             if skills.by_name.contains_key(name) {
                 return Err(Error::AlreadyExists {
@@ -193,6 +266,7 @@ impl SkillStore {
                 },
             );
             skills.absorbed.retain(|a| a.name != name);
+            skills.revise(name, "made", None);
             Ok(((), true))
         })
     }
@@ -216,10 +290,41 @@ impl SkillStore {
         }
     }
 
-    /// Patch an existing skill's body.
+    /// Replace an existing skill's whole body. For a small change,
+    /// [`Self::edit`]: a body rewritten from memory loses what the
+    /// writer did not remember.
     pub fn patch(&self, name: &str, new_body: &str) -> Result<()> {
         validate_skill_name(name)?;
         self.check_body(new_body)?;
+        self.rewrite(name, "rewritten", |_| Ok(new_body.to_string()))
+    }
+
+    /// Replace the one place `old` appears in a skill's body with `new`.
+    pub fn edit(&self, name: &str, old: &str, new: &str) -> Result<()> {
+        validate_skill_name(name)?;
+        if old.is_empty() {
+            return Err(Error::EditNotFound {
+                name: name.to_string(),
+            });
+        }
+        self.rewrite(name, "edited", |body| match body.matches(old).count() {
+            0 => Err(Error::EditNotFound {
+                name: name.to_string(),
+            }),
+            1 => Ok(body.replacen(old, new, 1)),
+            count => Err(Error::EditAmbiguous {
+                name: name.to_string(),
+                count,
+            }),
+        })
+    }
+
+    fn rewrite(
+        &self,
+        name: &str,
+        change: &str,
+        body: impl FnOnce(&str) -> Result<String>,
+    ) -> Result<()> {
         self.change(|skills| {
             let skill = Self::named(skills, name)?;
             if skill.sidecar.pinned && matches!(skill.sidecar.provenance, Provenance::AgentCreated)
@@ -228,24 +333,119 @@ impl SkillStore {
                     name: name.to_string(),
                 });
             }
-            skill.body = new_body.to_string();
+            let new_body = body(&skill.body)?;
+            self.check_body(&new_body)?;
+            let before = skill.clone();
+            skill.body = new_body;
             skill.sidecar.patch_count += 1;
             skill.sidecar.last_patched_at = Some(Utc::now());
             skill.sidecar.status = SkillStatus::Active;
+            skills.revise(name, change, Some(before));
             Ok(((), true))
         })
+    }
+
+    /// Put a skill away because another now holds what it said. Archived,
+    /// not deleted, and `into` must exist: a skill retired without
+    /// anywhere to go is just lost. What Niles does on its own, where a
+    /// person would delete.
+    pub fn retire(&self, name: &str, into: &str) -> Result<()> {
+        validate_skill_name(name)?;
+        validate_skill_name(into)?;
+        self.change(|skills| {
+            if name == into || !skills.by_name.contains_key(into) {
+                return Err(Error::NotFound {
+                    name: into.to_string(),
+                });
+            }
+            let skill = Self::named(skills, name)?;
+            if skill.sidecar.pinned {
+                return Err(Error::Pinned {
+                    name: name.to_string(),
+                });
+            }
+            let before = skill.clone();
+            skill.sidecar.status = SkillStatus::Archived;
+            skill.sidecar.absorbed_into = Some(into.to_string());
+            skills.revise(name, &format!("folded into {into}"), Some(before));
+            Ok(((), true))
+        })
+    }
+
+    /// Put the skill back as it was before its last change, and forget
+    /// that change: undoing again goes one further back.
+    pub fn undo(&self, name: &str) -> Result<Change> {
+        validate_skill_name(name)?;
+        self.change(|skills| {
+            let at = skills
+                .revisions
+                .iter()
+                .rposition(|r| r.name == name)
+                .ok_or_else(|| Error::NothingToUndo {
+                    name: name.to_string(),
+                })?;
+            let revision = skills.revisions.remove(at);
+            match revision.before {
+                Some(skill) => {
+                    skills.absorbed.retain(|a| a.name != name);
+                    skills.by_name.insert(name.to_string(), skill);
+                }
+                None => {
+                    skills.by_name.remove(name);
+                }
+            }
+            Ok((
+                Change {
+                    at: revision.at,
+                    change: revision.change,
+                },
+                true,
+            ))
+        })
+    }
+
+    /// The changes that can be undone for `name`, newest first.
+    pub fn changes(&self, name: &str) -> Vec<Change> {
+        self.lock()
+            .revisions
+            .iter()
+            .rev()
+            .filter(|r| r.name == name)
+            .map(|r| Change {
+                at: r.at,
+                change: r.change.clone(),
+            })
+            .collect()
+    }
+
+    /// When the set was last tidied.
+    pub fn tidied(&self) -> Option<Tidied> {
+        self.lock().tidied.clone()
+    }
+
+    /// Note that the set was tidied, and what was done.
+    pub fn mark_tidied(&self, summary: &str) {
+        let _ = self.change(|skills| {
+            skills.tidied = Some(Tidied {
+                at: Utc::now(),
+                summary: summary.to_string(),
+            });
+            Ok(((), true))
+        });
     }
 
     /// Delete a skill. With `absorbed_into`, remember where it went.
     pub fn delete(&self, name: &str, absorbed_into: Option<&str>) -> Result<()> {
         validate_skill_name(name)?;
         self.change(|skills| {
-            if Self::named(skills, name)?.sidecar.pinned {
+            let before = Self::named(skills, name)?.clone();
+            if before.sidecar.pinned {
                 return Err(Error::Pinned {
                     name: name.to_string(),
                 });
             }
             skills.by_name.remove(name);
+            skills.revise(name, "deleted", Some(before));
             if let Some(target) = absorbed_into {
                 skills.absorbed.retain(|a| a.name != name);
                 skills.absorbed.push(Absorbed {
@@ -755,6 +955,131 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    fn evening(store: &SkillStore) {
+        store
+            .create(
+                "evening",
+                "Use when winding the house down at night",
+                "0.1.0",
+                "1. Dim the living room to 30%.\n2. Turn off the kitchen.",
+                Provenance::AgentCreated,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_new_skill_says_when_to_use_it_in_a_line() {
+        let err = store()
+            .create(
+                "s",
+                "A long description of everything this skill does in the evening",
+                "0.1.0",
+                "B",
+                Provenance::AgentCreated,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::TooLarge { ref reason } if reason.contains("Use when")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_edit_replaces_one_place_and_keeps_the_rest() {
+        let store = store();
+        evening(&store);
+        store.edit("evening", "30%", "20%").unwrap();
+        assert_eq!(
+            store.load("evening").unwrap().body,
+            "1. Dim the living room to 20%.\n2. Turn off the kitchen."
+        );
+        assert!(matches!(
+            store.edit("evening", "the bedroom", "x").unwrap_err(),
+            Error::EditNotFound { .. }
+        ));
+        assert!(matches!(
+            store.edit("evening", "the ", "x").unwrap_err(),
+            Error::EditAmbiguous { count: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn retiring_archives_into_a_skill_that_exists() {
+        let store = store();
+        evening(&store);
+        store
+            .create(
+                "night",
+                "Use when going to bed",
+                "0.1.0",
+                "Turn everything off.",
+                Provenance::AgentCreated,
+            )
+            .unwrap();
+        assert!(matches!(
+            store.retire("night", "nowhere").unwrap_err(),
+            Error::NotFound { .. }
+        ));
+        store.retire("night", "evening").unwrap();
+        let night = store.load("night").unwrap();
+        assert_eq!(night.sidecar.status, SkillStatus::Archived);
+        assert_eq!(night.sidecar.absorbed_into.as_deref(), Some("evening"));
+        store.set_pinned("evening", true).unwrap();
+        assert!(matches!(
+            store.retire("evening", "night").unwrap_err(),
+            Error::Pinned { .. }
+        ));
+    }
+
+    #[test]
+    fn undo_walks_back_one_change_at_a_time() {
+        let store = store();
+        evening(&store);
+        store.edit("evening", "30%", "20%").unwrap();
+        store.patch("evening", "Turn everything off.").unwrap();
+        let changes: Vec<_> = store
+            .changes("evening")
+            .into_iter()
+            .map(|c| c.change)
+            .collect();
+        assert_eq!(changes, vec!["rewritten", "edited", "made"]);
+
+        assert_eq!(store.undo("evening").unwrap().change, "rewritten");
+        assert!(store.load("evening").unwrap().body.contains("20%"));
+        assert_eq!(store.undo("evening").unwrap().change, "edited");
+        assert!(store.load("evening").unwrap().body.contains("30%"));
+        assert_eq!(store.undo("evening").unwrap().change, "made");
+        assert!(store.load("evening").is_err());
+        assert!(matches!(
+            store.undo("evening").unwrap_err(),
+            Error::NothingToUndo { .. }
+        ));
+    }
+
+    #[test]
+    fn a_deleted_skill_comes_back_with_undo() {
+        let store = store();
+        evening(&store);
+        store.delete("evening", None).unwrap();
+        store.undo("evening").unwrap();
+        assert_eq!(store.load("evening").unwrap().name, "evening");
+    }
+
+    #[test]
+    fn changes_and_the_tidy_up_outlast_a_restart() {
+        let kept = Arc::new(Kept::default());
+        let store = store().with_sink(kept.clone());
+        evening(&store);
+        store.edit("evening", "30%", "20%").unwrap();
+        store.mark_tidied("Nothing needed tidying.");
+
+        let next = SkillStore::from_json(&kept.last(), 100_000).unwrap();
+        assert_eq!(next.changes("evening").len(), 2);
+        assert_eq!(next.tidied().unwrap().summary, "Nothing needed tidying.");
+        next.undo("evening").unwrap();
+        assert!(next.load("evening").unwrap().body.contains("30%"));
     }
 
     #[test]

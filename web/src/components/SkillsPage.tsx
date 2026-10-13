@@ -19,12 +19,14 @@ import {
   PROVENANCE_LABEL,
   STATUS_LABEL,
   activityText,
+  relativeTime,
   skillTitle,
   splitArchived,
 } from "@/lib/skills";
 import { cn } from "@/lib/utils";
 
 export const SKILLS = ["skills"];
+const TIDIED = ["skills", "_tidy"];
 
 /**
  * What Niles has learned to do: the procedures it writes for itself
@@ -35,6 +37,7 @@ export const SKILLS = ["skills"];
  */
 export function SkillsPage() {
   const list = useQuery({ queryKey: SKILLS, queryFn: api.skills });
+  const tidied = useQuery({ queryKey: TIDIED, queryFn: api.skillsTidied });
   const [open, setOpen] = useState<string>();
   const [showArchived, setShowArchived] = useState(false);
 
@@ -78,6 +81,14 @@ export function SkillsPage() {
             </ul>
           )}
         </>
+      )}
+
+      {tidied.data?.at && (
+        // Niles tidies on its own once a week; this is where that shows.
+        <p className="text-muted-foreground text-xs">
+          Tidied {relativeTime(tidied.data.at)}
+          {tidied.data.summary && `: ${tidied.data.summary}`}
+        </p>
       )}
 
       {archived.length > 0 && (
@@ -194,6 +205,10 @@ function SkillSheet({ name, onClose }: { name: string; onClose: () => void }) {
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: SKILLS }),
   });
+  const undo = useMutation({
+    mutationFn: () => api.undoSkill(name),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: SKILLS }),
+  });
   const remove = useMutation({
     mutationFn: () => api.deleteSkill(name),
     onSuccess: () => {
@@ -234,11 +249,40 @@ function SkillSheet({ name, onClose }: { name: string; onClose: () => void }) {
               {skill.description && <DialogDescription>{skill.description}</DialogDescription>}
               <SkillBadges skill={skill} />
               <p className="text-muted-foreground text-xs">{activityText(skill)}</p>
+              {skill.absorbed_into && (
+                <p className="text-sm">Folded into {skillTitle(skill.absorbed_into)}.</p>
+              )}
               {/* Markdown, shown as written: the steps read fine as they
                   are, and a renderer is a dependency for one page. */}
               <pre className="bg-muted/50 rounded-lg p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap">
                 {skill.body}
               </pre>
+              {skill.changes.length > 0 && (
+                <section aria-label="Changes" className="flex flex-col gap-2">
+                  <ul className="text-muted-foreground flex flex-col gap-0.5 text-xs">
+                    {skill.changes.slice(0, 5).map((c) => (
+                      <li key={c.at + c.change}>
+                        {c.change.charAt(0).toUpperCase() + c.change.slice(1)} ·{" "}
+                        {relativeTime(c.at)}
+                      </li>
+                    ))}
+                  </ul>
+                  {/* Niles changes skills while nobody watches; this puts
+                      the last of those back. */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="self-start"
+                    disabled={undo.isPending}
+                    onClick={() => undo.mutate()}
+                  >
+                    Undo "{skill.changes[0].change}"
+                  </Button>
+                  {undo.error && (
+                    <p className="text-destructive text-sm">{undo.error.message}</p>
+                  )}
+                </section>
+              )}
             </>
           )
         )}
