@@ -5702,6 +5702,32 @@ fn build_secret_store(cfg: &Config) -> Option<Arc<niles_db::PostgresSecrets>> {
     }
 }
 
+/// The key the sign-in cookie is signed with, made once and kept sealed
+/// when nobody has set one. It is a random string nobody needs to know,
+/// and asking the household to invent it was the last thing the
+/// Credentials page was for. Only after the stored secrets were read:
+/// made over one that could not be read, it would sign everybody out.
+async fn ensure_session_key(cfg: &Config, secrets: &niles_db::PostgresSecrets) {
+    if cfg.auth.resolve_session_secret().is_ok() {
+        return;
+    }
+    let key = format!(
+        "{:032x}{:032x}",
+        rand::random::<u128>(),
+        rand::random::<u128>()
+    );
+    match secrets.set("auth.session_secret", &key).await {
+        Ok(()) => match secrets.load_all().await {
+            Ok(values) => {
+                niles_config::secrets::load(values);
+                tracing::info!("[secrets] made a session key and kept it");
+            }
+            Err(e) => tracing::error!("[secrets] made a session key, but reloading failed: {e}"),
+        },
+        Err(e) => tracing::error!("[secrets] could not keep a new session key: {e}"),
+    }
+}
+
 /// Each person's calendars, when there is a database and a secrets key
 /// to seal their sign-ins with. Without both there are none: a refresh
 /// token is a standing key to somebody's calendar, and is not kept in
@@ -6040,6 +6066,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 let n = values.len();
                 niles_config::secrets::load(values);
                 tracing::info!("[secrets] {n} loaded from the database");
+                ensure_session_key(&cfg, secrets).await;
             }
             // Not fatal: an install whose credentials are all env vars
             // does not need these, and refusing to start would make a

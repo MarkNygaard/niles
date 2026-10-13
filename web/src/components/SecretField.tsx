@@ -24,10 +24,8 @@ export interface SecretFieldProps {
  * it is set, it works, and offering to replace it from here would
  * quietly move where it lives.
  *
- * Its own component because the same field belongs in two places: the
- * Credentials page, which lists every key Niles holds, and an
- * integration's own card, where the key is part of setting that one
- * thing up.
+ * Its own component because every page that sets something up has its
+ * keys beside it: an integration's card, the broker's login, sign-in.
  */
 export function SecretField({ secret, writable, onChanged }: SecretFieldProps) {
   const [draft, setDraft] = useState("");

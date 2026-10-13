@@ -23,7 +23,7 @@ import { VoicesCard } from "@/components/VoicesCard";
 import { CaptureCard } from "@/components/CaptureCard";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
 import { RoleCard } from "@/components/RoleCard";
-import { SecretsCard } from "@/components/SecretsCard";
+import { SecretField } from "@/components/SecretField";
 import { SECTIONS, SettingsNav } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
 import { SetupBanner } from "@/components/SetupBanner";
@@ -188,9 +188,7 @@ const LAMP_PLUG_ROWS: Row[] = [
 
 /**
  * The broker, which everything on Zigbee and WLED is reached through.
- *
- * The username and password are not here: they are secrets, and live
- * under Credentials with the rest.
+ * Its login is on the same page, as secrets: typed in, never shown.
  */
 const MQTT_ROWS: Row[] = [
   {
@@ -365,6 +363,22 @@ export function ConfigPanel() {
   const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
+  /** The keys a page sets up, each where it is used: there is no list
+      of every key, so a key is never shown in two places. */
+  const secretFields = (keys: string[]) =>
+    keys.map((key) => {
+      const secret = secrets.data?.secrets.find((s) => s.key === key);
+      return (
+        secret && (
+          <SecretField
+            key={key}
+            secret={secret}
+            writable={secrets.data?.writable ?? false}
+            onChanged={() => secrets.refetch()}
+          />
+        )
+      );
+    });
   const setup = useQuery({ queryKey: ["setup"], queryFn: api.setup });
   // Keyed by the address so a new one is asked at once. Not fetched
   // without one: there is nobody to ask.
@@ -857,11 +871,20 @@ export function ConfigPanel() {
               <CardDescription>
                 The broker every light, plug and sensor is reached through.
                 Niles connects once as it starts, so a change here waits for a
-                restart. The username and password are under Credentials.
+                restart.
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-border divide-y">
               {MQTT_ROWS.map(row)}
+              <section aria-label="Broker login" className="flex flex-col gap-3 py-4">
+                <div>
+                  <h3 className="text-sm font-medium">Login</h3>
+                  <p className="text-muted-foreground text-sm">
+                    Only if the broker asks for one.
+                  </p>
+                </div>
+                {secretFields(["mqtt.username", "mqtt.password"])}
+              </section>
             </CardContent>
           </Card>
         </TabsContent>
@@ -945,6 +968,24 @@ export function ConfigPanel() {
         </TabsContent>
 
         <TabsContent value="people">
+          <Card className="mb-4">
+            <CardHeader>
+              <CardTitle>Signing in</CardTitle>
+              <CardDescription>
+                The GitHub app the sign-in button uses, from github.com under
+                Settings, Developer settings, OAuth Apps. The token is for
+                scripts and terminals that read Niles without a browser; leave
+                it empty if nothing does.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              {secretFields([
+                "auth.github_client_id",
+                "auth.github_client_secret",
+                "auth.api_token",
+              ])}
+            </CardContent>
+          </Card>
           <Card>
             <CardHeader>
               <CardTitle>People</CardTitle>
@@ -1013,15 +1054,6 @@ export function ConfigPanel() {
 
         <TabsContent value="memory">
           <MemoryCard />
-        </TabsContent>
-
-        <TabsContent value="credentials" className="flex flex-col gap-4">
-          {secrets.data && (
-            <SecretsCard
-              report={secrets.data}
-              onChanged={() => secrets.refetch()}
-            />
-          )}
         </TabsContent>
 
         <TabsContent value="language" className="flex flex-col gap-4">
