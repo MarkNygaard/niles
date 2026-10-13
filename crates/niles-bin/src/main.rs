@@ -311,9 +311,11 @@ struct EnrollArgs {
 
 #[derive(Args)]
 struct ServeArgs {
-    /// Path to the Niles config file.
-    #[arg(short, long, default_value = "niles.toml")]
-    config: PathBuf,
+    /// A config file to start from. Optional: without one Niles runs on
+    /// its defaults and what the app has saved in the database, which is
+    /// everything a household sets. A file named here must exist.
+    #[arg(short, long)]
+    config: Option<PathBuf>,
     /// Match and log intents but skip the actual MQTT publish.
     #[arg(long)]
     dry_run: bool,
@@ -6023,12 +6025,19 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Where the override document lives is deliberately *not* itself
     // overridable — it's how we find the overrides in the first place — so
     // it comes from a plain read of the base file.
-    let bootstrap = Config::load_from_path(&args.config)
-        .with_context(|| format!("loading config from {}", args.config.display()))?;
+    let bootstrap = match &args.config {
+        Some(path) => Config::load_from_path(path)
+            .with_context(|| format!("loading config from {}", path.display()))?,
+        None => Config::load_from_str("").context("Niles's own defaults")?,
+    };
     let backend = build_override_backend(&bootstrap)?;
-    let (store, outcome) = ConfigStore::open(&args.config, backend)
+    let base = args.config.as_deref();
+    let (store, outcome) = ConfigStore::open(base, backend)
         .await
-        .with_context(|| format!("loading config from {}", args.config.display()))?;
+        .with_context(|| match base {
+            Some(path) => format!("loading config from {}", path.display()),
+            None => "starting from Niles's defaults".to_string(),
+        })?;
     let store = Arc::new(store);
     // Never fatal: the base still loaded. But say it loudly — the user's
     // tuning just silently reverted to file defaults.

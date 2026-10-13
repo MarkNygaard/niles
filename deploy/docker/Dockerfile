@@ -104,4 +104,6 @@ USER niles
 # 8080 = HTTP API + /healthz · 10300 = Wyoming voice (idle without a satellite).
 EXPOSE 8080 10300
 ENTRYPOINT ["niles"]
-CMD ["serve", "--config", "/etc/niles/niles.toml"]
+# No config file: Niles runs on its defaults and what the app saves in
+# the database. Pass `--config <file>` to start from one instead.
+CMD ["serve"]

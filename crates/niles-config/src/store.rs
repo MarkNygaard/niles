@@ -79,6 +79,9 @@ struct Inner {
 
 impl ConfigStore {
     /// Load `base_path`, layer whatever `backend` holds, and validate.
+    /// With no file, the base is Niles's own defaults: everything a
+    /// household changes lives in the backend, so a deployment needs no
+    /// file at all.
     ///
     /// A backend that fails, or that holds a document producing an
     /// invalid config, is **not** fatal: it is reported through the
@@ -88,14 +91,16 @@ impl ConfigStore {
     /// down with it. An invalid *base* is still fatal; there is nothing
     /// safe to fall back to.
     pub async fn open(
-        base_path: impl AsRef<Path>,
+        base_path: Option<&Path>,
         backend: Box<dyn OverrideBackend>,
     ) -> Result<(Self, LoadOutcome)> {
-        let base_path = base_path.as_ref();
-        let raw = std::fs::read_to_string(base_path).map_err(|source| Error::Read {
-            path: base_path.to_path_buf(),
-            source,
-        })?;
+        let raw = match base_path {
+            Some(path) => std::fs::read_to_string(path).map_err(|source| Error::Read {
+                path: path.to_path_buf(),
+                source,
+            })?,
+            None => String::new(),
+        };
         let base: toml::Table = toml::from_str(&raw)?;
         let base_config = deserialize_validated(&base)?;
 
@@ -133,7 +138,7 @@ impl ConfigStore {
 
     /// A store whose writes apply but are never persisted.
     pub async fn open_in_memory(base_path: impl AsRef<Path>) -> Result<(Self, LoadOutcome)> {
-        Self::open(base_path, Box::new(MemoryBackend::new())).await
+        Self::open(Some(base_path.as_ref()), Box::new(MemoryBackend::new())).await
     }
 
     /// Build a store from TOML text, backed by memory. Writes apply and
@@ -1319,7 +1324,7 @@ daytime_brightness = {value}"
         }
 
         async fn open(&self, base_path: &Path) -> (ConfigStore, LoadOutcome) {
-            ConfigStore::open(base_path, Box::new(self.clone()))
+            ConfigStore::open(Some(base_path), Box::new(self.clone()))
                 .await
                 .unwrap()
         }
@@ -1534,9 +1539,23 @@ daytime_brightness = 72",
     }
 
     #[tokio::test]
+    async fn without_a_file_the_base_is_niles_s_defaults() {
+        let (store, outcome) = ConfigStore::open(None, Box::new(MemoryBackend::new()))
+            .await
+            .expect("no file is a valid start");
+        assert!(matches!(outcome, LoadOutcome::Clean));
+        assert_eq!(store.current().api.bind_address, "0.0.0.0:8080");
+        assert!(!store.current().lighting.enabled);
+
+        let patch: toml::Table = toml::from_str("[lighting]\nenabled = true").unwrap();
+        store.apply(&patch, ChangeSource::Api).await.unwrap();
+        assert!(store.current().lighting.enabled);
+    }
+
+    #[tokio::test]
     async fn an_unreachable_backend_does_not_stop_the_boot() {
         let (_tmp, base_path) = base_file();
-        let (store, outcome) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+        let (store, outcome) = ConfigStore::open(Some(&base_path), Box::new(BrokenBackend))
             .await
             .unwrap();
         assert!(matches!(outcome, LoadOutcome::BackendUnavailable(_)));
@@ -1552,7 +1571,7 @@ daytime_brightness = 72",
         // The alternative — applying in memory and hoping — would show the
         // user a change that vanishes at the next restart.
         let (_tmp, base_path) = base_file();
-        let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+        let (store, _) = ConfigStore::open(Some(&base_path), Box::new(BrokenBackend))
             .await
             .unwrap();
         let err = store
@@ -1576,7 +1595,7 @@ daytime_brightness = 85",
         // down: without it the house runs on defaults until someone
         // notices and restarts it.
         let (_tmp, base_path) = base_file();
-        let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+        let (store, _) = ConfigStore::open(Some(&base_path), Box::new(BrokenBackend))
             .await
             .unwrap();
         store
@@ -1594,7 +1613,7 @@ daytime_brightness = 60",
     #[tokio::test]
     async fn adopt_refuses_state_that_would_not_validate() {
         let (_tmp, base_path) = base_file();
-        let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
+        let (store, _) = ConfigStore::open(Some(&base_path), Box::new(BrokenBackend))
             .await
             .unwrap();
         assert!(

@@ -2,8 +2,8 @@
 
 Multi-stage [`Dockerfile`](Dockerfile) that builds the `niles` binary into a
 slim Debian runtime image. The image contains **only the binary** — no
-config. `niles.toml` is mounted at runtime (see "Configuration" below), so
-config changes never require an image rebuild.
+config. Settings live in Postgres and are changed from the app (see
+"Configuration" below), so config changes never require an image rebuild.
 
 ## Building + publishing
 
@@ -84,11 +84,16 @@ GHCR packages are **private by default**. Either:
 
 ## Configuration (runtime, not baked in)
 
-The deployment mounts a ConfigMap at `/etc/niles/niles.toml` and runs
-`niles serve --config /etc/niles/niles.toml`. **Set all config there** — in
-your kustomize ConfigMap or Helm chart — not in the image. Secrets
-(`NILES_MQTT_USERNAME` / `NILES_MQTT_PASSWORD`, `GROQ_API_KEY`) come from a
-`niles-secrets` Secret via env vars.
+The image runs `niles serve` with no config file. Give it a Secret with
+`NILES_DATABASE_URL` (a Postgres connection string) and `NILES_SECRET_KEY`
+(base64 of 32 bytes, which seals the keys typed into the app), and set
+everything else from the app's Settings: the MQTT broker, speech and AI
+providers, integrations, the lighting curve. It is all kept in the
+database, so nothing needs a ConfigMap.
+
+A file still works for starting from fixed values: mount one and run
+`niles serve --config /etc/niles/niles.toml`. What the app saves is layered
+on top of it.
 
 `serve` runs the full stack, but with no satellite connected the Wyoming
 voice server just sits idle — the lighting curve, room light-switches, and
