@@ -130,8 +130,8 @@ mod tests {
         // anything.
         let cfg = Config::load_from_str("").expect("an empty config is a valid one");
         assert_eq!(cfg.api.bind_address, "0.0.0.0:8080");
-        assert!(cfg.lighting.enabled);
-        assert_eq!(cfg.lighting.color_temp_anchors.len(), 7);
+        assert!(!cfg.lighting.enabled);
+        assert_eq!(cfg.lighting.color_temp_anchors.len(), 8);
     }
 
     #[test]

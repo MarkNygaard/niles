@@ -19,6 +19,10 @@ use serde::Deserialize;
 /// fresh install there is nobody to authenticate as, and a login page
 /// nobody can pass is not a safer state, it is a locked cupboard with
 /// the house key inside.
+/// Where the session key is looked for when the config names nowhere:
+/// naming it was the only reason a deployment needed an `[auth]` section.
+pub const DEFAULT_SESSION_SECRET_ENV: &str = "NILES_SESSION_SECRET";
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AuthConfig {
@@ -138,7 +142,14 @@ impl AuthConfig {
     /// different after every restart, and everybody would be signed out
     /// by each deploy with nothing to explain why.
     pub fn resolve_session_secret(&self) -> Result<String> {
-        self.resolve("session_secret_env", self.session_secret_env.as_deref())
+        self.resolve(
+            "session_secret_env",
+            Some(
+                self.session_secret_env
+                    .as_deref()
+                    .unwrap_or(DEFAULT_SESSION_SECRET_ENV),
+            ),
+        )
     }
 
     /// The operator's token, or `None` when none is configured.
@@ -247,6 +258,17 @@ impl AllowedPerson {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_key_is_looked_for_where_a_deployment_would_put_it() {
+        // Nothing named, nothing stored, nothing set: the complaint names
+        // the variable it looked in, which is the default one.
+        let err = AuthConfig::default().resolve_session_secret().unwrap_err();
+        assert!(
+            err.to_string().contains(DEFAULT_SESSION_SECRET_ENV),
+            "{err}"
+        );
+    }
 
     fn person(email: &str) -> AllowedPerson {
         AllowedPerson {

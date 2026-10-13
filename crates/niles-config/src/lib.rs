@@ -1875,13 +1875,17 @@ exclude_devices = ["wled:living_room/tv_light"]
     // ------------------------------------------------------------------
 
     #[test]
-    fn the_curve_runs_unless_it_is_turned_off() {
-        // Defaults to on, because a config that bothered to set anchors
-        // meant them — and every config written before the switch
-        // existed has to keep working.
+    fn the_curve_waits_to_be_turned_on() {
+        // A new Niles must not start changing the lights of a house it
+        // has just met; the shipped curve is ready the moment it is on.
         let cfg = Config::load_from_str(valid_toml()).unwrap();
-        assert!(cfg.lighting.enabled);
-        assert!(cfg.lighting.to_curve_config().expect("valid curve").enabled);
+        assert!(!cfg.lighting.enabled);
+        assert!(!cfg.lighting.to_curve_config().expect("valid curve").enabled);
+        let on = Config::load_from_str(
+            &valid_toml().replace("[lighting]", "[lighting]\nenabled = true"),
+        )
+        .unwrap();
+        assert!(on.lighting.to_curve_config().expect("valid curve").enabled);
     }
 
     #[test]

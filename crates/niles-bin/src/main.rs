@@ -1500,9 +1500,13 @@ async fn build_journal(cfg: &Config) -> Arc<review::Journal> {
     let journal = match table.load().await {
         Ok(Some(document)) => journal.with_document(&document),
         Ok(None) => journal,
+        // Not read is not empty: started empty and saved, it would
+        // overwrite what is there. This run keeps its own, unsaved.
         Err(e) => {
-            tracing::warn!("[learning] the journal could not be read ({e}); starting empty");
-            journal
+            tracing::warn!(
+                "[learning] the journal could not be read ({e}); this run's is not saved"
+            );
+            return Arc::new(journal);
         }
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -1538,8 +1542,8 @@ async fn build_conversation_memory(cfg: &Config) -> Arc<conversation::Conversati
         Ok(Some(document)) => memory.with_document(&document),
         Ok(None) => memory,
         Err(e) => {
-            tracing::warn!("[conversation] could not be read ({e}); starting fresh");
-            memory
+            tracing::warn!("[conversation] could not be read ({e}); this run's is not saved");
+            return Arc::new(memory);
         }
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
