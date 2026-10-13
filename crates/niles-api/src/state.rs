@@ -74,6 +74,9 @@ pub struct AppState {
     pub automation_runs: Option<Arc<niles_automations::RunLog>>,
     /// The skills Niles has made, shared with the voice tools.
     pub skills: Option<Arc<niles_skills::SkillStore>>,
+    /// What Niles remembers between conversations, shared with the
+    /// voice tools and the background review that writes to it.
+    pub memory: Option<Arc<niles_memory::MemoryStore>>,
     /// Each person's calendars. Absent without a database and its
     /// secrets key: a refresh token is not kept anywhere unsealed.
     pub calendars: Option<Arc<niles_calendar::Calendars>>,
@@ -112,6 +115,7 @@ impl AppState {
             automations: None,
             automation_runs: None,
             skills: None,
+            memory: None,
             calendars: None,
             calendar_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             chat: None,
@@ -188,6 +192,11 @@ impl AppState {
 
     pub fn with_skills(mut self, skills: Option<Arc<niles_skills::SkillStore>>) -> Self {
         self.skills = skills;
+        self
+    }
+
+    pub fn with_memory(mut self, memory: Option<Arc<niles_memory::MemoryStore>>) -> Self {
+        self.memory = memory;
         self
     }
 

@@ -33,6 +33,7 @@ pub mod handlers;
 pub mod integrations;
 pub mod logs;
 pub mod me;
+pub mod memory;
 pub mod music;
 pub mod places;
 pub mod presence;
