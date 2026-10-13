@@ -29,6 +29,14 @@ export interface Setting {
   of?: "light" | "outlet";
   /** `devices` only: what to say when there is nothing to pick. */
   optionsEmpty?: string;
+  /**
+   * Emptying it is a value: the setting goes back to unset. Saved as a
+   * reset rather than a write, because the server refuses an empty
+   * string and a JSON `null` both — `stt.language` is the case.
+   */
+  optional?: boolean;
+  /** What an empty box means, when that is not "not set". */
+  placeholder?: string;
 }
 
 export interface SettingRowProps {
@@ -42,8 +50,13 @@ export interface SettingRowProps {
   joiner?: string;
   /** Effective value per path; `undefined` for a setting that is unset. */
   values: Record<string, unknown>;
-  /** The subset of paths with an override in force. */
+  /** The subset of paths set away from Niles's defaults, which a reset drops. */
   overridden: string[];
+  /**
+   * What Niles runs for a path nobody has set. Shown in an empty box,
+   * and beside a value that differs from it.
+   */
+  defaults?: Record<string, unknown>;
   /** False for boot-only sections: the edit is stored but needs a restart. */
   hot: boolean;
   saving?: boolean;
@@ -74,6 +87,7 @@ export function SettingRow({
   joiner,
   values,
   overridden,
+  defaults = {},
   hot,
   saving,
   error,
@@ -100,12 +114,28 @@ export function SettingRow({
   // box isn't: half a time is a value, and it must not reach the lights.
   const instant = settings.every((s) => s.kind === "devices");
   const changed = settings.filter((s) => drafts[s.path] !== server[s.path]);
-  const blocked = changed.some((s) => !usable(drafts[s.path], s.kind));
-  const unset = settings.filter((s) => values[s.path] === undefined);
+  const cleared = changed.filter(
+    (s) => s.optional && drafts[s.path].trim() === "",
+  );
+  const written = changed.filter((s) => !cleared.includes(s));
+  const blocked = written.some((s) => !usable(drafts[s.path], s.kind));
+  // A setting with a shipped default is not missing anything when it is
+  // unset: the default is running, and the box shows which.
+  const unset = settings.filter(
+    (s) =>
+      values[s.path] === undefined &&
+      defaults[s.path] === undefined &&
+      s.placeholder === undefined,
+  );
 
   function save() {
     if (changed.length === 0 || blocked || saving) return;
-    onSave(changed.map((s) => ({ path: s.path, value: parse(drafts[s.path], s.kind) })));
+    if (written.length > 0) {
+      onSave(
+        written.map((s) => ({ path: s.path, value: parse(drafts[s.path], s.kind) })),
+      );
+    }
+    if (cleared.length > 0) onReset(cleared.map((s) => s.path));
   }
 
   return (
@@ -115,11 +145,6 @@ export function SettingRow({
           <Label htmlFor={settings[0].path} className="text-sm font-medium">
             {label}
           </Label>
-          {overridden.length > 0 && (
-            <Badge variant="secondary" title="Changed away from the config file">
-              overridden
-            </Badge>
-          )}
           {unset.length === settings.length &&
             overridden.length === 0 &&
             !settings.some((s) => s.kind === "devices") && (
@@ -168,7 +193,13 @@ export function SettingRow({
                 title={setting.path}
                 value={drafts[setting.path] ?? ""}
                 inputMode={setting.kind === "number" ? "numeric" : "text"}
-                placeholder={values[setting.path] === undefined ? "not set" : undefined}
+                placeholder={
+                  values[setting.path] === undefined
+                    ? (setting.placeholder ??
+                      format(defaults[setting.path], setting.kind)) ||
+                      "not set"
+                    : undefined
+                }
                 disabled={saving}
                 aria-invalid={error ? true : undefined}
                 onChange={(e) =>
@@ -181,13 +212,22 @@ export function SettingRow({
                 className={cn(
                   "font-mono",
                   drafts[setting.path] !== server[setting.path] &&
-                    usable(drafts[setting.path], setting.kind) &&
+                    (usable(drafts[setting.path], setting.kind) ||
+                      (setting.optional && drafts[setting.path].trim() === "")) &&
                     "border-primary",
                 )}
               />
               )}
               <span className="text-muted-foreground/70 pl-0.5 text-[11px]">
                 {setting.caption}
+                {differs(values[setting.path], defaults[setting.path], setting.kind) && (
+                  <>
+                    {" · default "}
+                    <span className="font-mono">
+                      {format(defaults[setting.path], setting.kind)}
+                    </span>
+                  </>
+                )}
               </span>
             </div>
           </Fragment>
@@ -211,8 +251,8 @@ export function SettingRow({
               variant="ghost"
               onClick={() => onReset(overridden)}
               disabled={saving}
-              aria-label="Reset to the config file"
-              title="Return to the value in the config file"
+              aria-label="Reset to Niles's default"
+              title="Return to Niles's built-in value"
             >
               <RotateCcw />
             </Button>
@@ -236,6 +276,15 @@ function format(value: unknown, kind: FieldKind): string {
     return Array.isArray(value) ? value.join(", ") : String(value);
   }
   return String(value);
+}
+
+/** Set, and not to what Niles would run unset. */
+function differs(value: unknown, fallback: unknown, kind: FieldKind): boolean {
+  return (
+    value !== undefined &&
+    fallback !== undefined &&
+    format(value, kind) !== format(fallback, kind)
+  );
 }
 
 /** A comma-separated draft as the list it stands for. */

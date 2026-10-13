@@ -355,8 +355,8 @@ export function RoleCard({
           saying nothing at all. */}
       {!current && fallbackHost && (
         <p className="text-muted-foreground text-xs">
-          Using <span className="font-mono">{fallbackHost}</span> from the
-          config file. Picking something here replaces it.
+          Using <span className="font-mono">{fallbackHost}</span> directly,
+          without a provider. Picking one here replaces it.
         </p>
       )}
     </div>

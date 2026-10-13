@@ -244,13 +244,30 @@ impl ConfigStore {
     /// it asked for — the difference between a confirmation and a no-op
     /// nobody noticed. On any error the store is untouched.
     pub async fn apply(&self, patch: &toml::Table, source: ChangeSource) -> Result<Applied> {
-        if patch.is_empty() {
+        self.apply_and_reset(patch, &[], source).await
+    }
+
+    /// [`Self::apply`] and [`Self::reset`] in one revision: what the app
+    /// sends when it sets some values and clears others in one save —
+    /// TOML has no null, so a cleared value is a path to drop instead.
+    pub async fn apply_and_reset(
+        &self,
+        patch: &toml::Table,
+        resets: &[String],
+        source: ChangeSource,
+    ) -> Result<Applied> {
+        if patch.is_empty() && resets.is_empty() {
             return Ok(Applied::empty());
         }
         self.commit(source, |overrides| {
             let mut next = overrides.clone();
             merge(&mut next, patch);
-            (next, flatten(patch).into_iter().map(|(p, _)| p).collect())
+            for path in resets {
+                remove_path(&mut next, path);
+            }
+            let mut paths: Vec<String> = flatten(patch).into_iter().map(|(p, _)| p).collect();
+            paths.extend(resets.iter().cloned());
+            (next, paths)
         })
         .await
     }

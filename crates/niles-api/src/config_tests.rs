@@ -151,6 +151,50 @@ async fn patch_changes_a_value_and_reports_the_diff() {
 }
 
 #[tokio::test]
+async fn a_null_puts_a_value_back_to_niles_s_default() {
+    let app = app(true);
+    send(
+        &app,
+        patch(json!({"lighting": {"daytime_brightness": 85, "night_floor_brightness": 20}})),
+    )
+    .await;
+    // One save that sets one value and clears another: one revision.
+    let (status, body) = send(
+        &app,
+        patch(json!({"lighting": {"daytime_brightness": null, "night_floor_brightness": 25}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revision"], 2);
+
+    let (_, after) = send(&app, get("/config")).await;
+    assert_eq!(after["effective"]["lighting"]["daytime_brightness"], 100);
+    assert_eq!(after["effective"]["lighting"]["night_floor_brightness"], 25);
+    assert!(
+        after["overrides"]["lighting"]
+            .get("daytime_brightness")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn the_defaults_the_app_shows_come_from_the_code() {
+    let (_, body) = send(&app(true), get("/config")).await;
+    let defaults = &body["defaults"];
+    assert_eq!(defaults["mqtt"]["port"], 1883);
+    assert_eq!(defaults["lighting"]["enabled"], false);
+    let shipped = niles_config::Config::load_from_str("").unwrap();
+    assert_eq!(
+        defaults["lighting"]["color_temp_anchors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        shipped.lighting.color_temp_anchors.len()
+    );
+    assert_eq!(defaults["tts"]["default_voice"], shipped.tts.default_voice);
+}
+
+#[tokio::test]
 async fn patch_leaves_unmentioned_values_alone() {
     let app = app(true);
     send(&app, patch(json!({"lighting": {"daytime_brightness": 85}}))).await;
