@@ -12,14 +12,12 @@ describe("SettingsNav", () => {
     ).toHaveTextContent("The services Niles reads from");
   });
 
-  it("keeps credentials apart from the things that use them", () => {
-    // They answer different questions — "what is Niles connected to"
-    // and "what keys does it hold" — and one page called Services made
-    // somebody scroll past a broker password to reach tado.
+  it("has no page of every key: each key is set where it is used", () => {
+    // A list of every key showed most of them twice, beside the
+    // integration each belongs to.
     render(<SettingsNav current={null} onPick={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /Credentials/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Credentials/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Integrations/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Services/ })).toBeNull();
   });
 
   it("opens the section that was pressed", () => {

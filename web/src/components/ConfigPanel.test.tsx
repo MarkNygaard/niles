@@ -84,6 +84,37 @@ describe("ConfigPanel", () => {
     );
   });
 
+  it("sets each key where it is used: the broker's login, and sign-in", async () => {
+    stubHouse();
+    const secret = (key: string, label: string) => ({
+      key,
+      label,
+      source: "unset" as const,
+    });
+    vi.mocked(api.secrets).mockResolvedValue({
+      writable: true,
+      secrets: [
+        secret("mqtt.username", "Zigbee2MQTT broker username"),
+        secret("mqtt.password", "Zigbee2MQTT broker password"),
+        secret("auth.github_client_id", "GitHub OAuth client ID"),
+        secret("auth.github_client_secret", "GitHub OAuth client secret"),
+        secret("auth.api_token", "API token"),
+        secret("auth.session_secret", "Session signing secret"),
+      ],
+    });
+    renderPanel();
+
+    await open(/Zigbee & MQTT/);
+    const login = await screen.findByRole("region", { name: "Broker login" });
+    expect(within(login).getByLabelText("Zigbee2MQTT broker password")).toBeInTheDocument();
+
+    await open(/People/);
+    expect(await screen.findByLabelText("GitHub OAuth client secret")).toBeInTheDocument();
+    expect(screen.getByLabelText("API token")).toBeInTheDocument();
+    // Made by Niles itself; nobody needs to see it.
+    expect(screen.queryByLabelText("Session signing secret")).toBeNull();
+  });
+
   it("re-asks the credentials too, since a key's source depends on the config", async () => {
     stubApi();
     renderPanel();
