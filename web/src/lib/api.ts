@@ -18,7 +18,7 @@ export interface SectionView {
 export interface ConfigView {
   /** Base with overrides applied — what Niles is actually running. */
   effective: Record<string, unknown>;
-  /** Only the values changed away from the config file. */
+  /** Only the values set from the app, away from Niles's defaults. */
   overrides: Record<string, unknown>;
   sections: SectionView[];
   /** False when there is no writable volume: changes are lost on restart. */

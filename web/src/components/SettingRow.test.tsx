@@ -172,13 +172,82 @@ describe("SettingRow", () => {
     expect(screen.queryByText("not set")).toBeNull();
   });
 
-  it("resets every overridden value in the row at once", () => {
+  it("resets every value set in the row at once, back to Niles's default", () => {
     const { onReset } = setup({ overridden: RAMP.map((s) => s.path) });
-    fireEvent.click(screen.getByRole("button", { name: "Reset to the config file" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset to Niles's default" }));
     expect(onReset).toHaveBeenCalledWith([
       "lighting.morning_start",
       "lighting.morning_end",
     ]);
+  });
+
+  it("does not badge a value as overridden", () => {
+    // With no config file under it, everything saved from the app is an
+    // override, and a badge on every row says nothing.
+    setup({ overridden: RAMP.map((s) => s.path) });
+    expect(screen.queryByText("overridden")).toBeNull();
+  });
+
+  it("shows the default in an empty box, and does not call it unset", () => {
+    // An unset port is not a missing one: 1883 is running.
+    setup({
+      label: "Broker",
+      settings: [{ path: "mqtt.port", kind: "number", caption: "port" }],
+      values: { "mqtt.port": undefined },
+      defaults: { "mqtt.port": 1883 },
+    });
+    expect(input("Broker port")).toHaveAttribute("placeholder", "1883");
+    expect(screen.queryByText("not set")).toBeNull();
+  });
+
+  it("names the default beside a value that differs from it", () => {
+    setup({
+      label: "Broker",
+      settings: [{ path: "mqtt.port", kind: "number", caption: "port" }],
+      values: { "mqtt.port": 8883 },
+      defaults: { "mqtt.port": 1883 },
+    });
+    expect(screen.getByText("1883")).toBeInTheDocument();
+    expect(screen.getByText(/default/)).toBeInTheDocument();
+  });
+
+  it("says nothing about the default when the value is the default", () => {
+    setup({
+      label: "Broker",
+      settings: [{ path: "mqtt.port", kind: "number", caption: "port" }],
+      values: { "mqtt.port": 1883 },
+      defaults: { "mqtt.port": 1883 },
+    });
+    expect(screen.queryByText(/default/)).toBeNull();
+  });
+
+  it("clears an optional setting by resetting it, since the server takes no empty value", () => {
+    // `stt.language` empty is auto-detect. The server refuses "" and
+    // a JSON null both, so emptying the box drops the value instead.
+    const { onSave, onReset } = setup({
+      label: "Language",
+      settings: [
+        {
+          path: "stt.language",
+          kind: "text",
+          caption: "code",
+          optional: true,
+          placeholder: "auto-detect",
+        },
+      ],
+      values: { "stt.language": "en" },
+      overridden: ["stt.language"],
+    });
+    type(input("Language code"), "  ");
+    fireEvent.click(saveButton());
+    expect(onReset).toHaveBeenCalledWith(["stt.language"]);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("still refuses an emptied setting that is not optional", () => {
+    setup({ values: { "lighting.morning_start": "05:20", "lighting.morning_end": "06:10" } });
+    type(input("Morning ramp starts"), "");
+    expect(saveButton()).toBeDisabled();
   });
 
   it("says when a value only takes effect after a restart", () => {

@@ -75,7 +75,7 @@ export interface IntegrationsPageProps {
   error?: string;
   /** Config writes, batched as one revision per action. */
   onChange: (row: string, entries: { path: string; value: unknown }[]) => void;
-  /** Drop overrides, returning those paths to what the config file says. */
+  /** Drop what was set, returning those paths to Niles's defaults. */
   onReset: (row: string, paths: string[]) => void;
   onSecretsChanged: () => void;
   onTadoChanged: () => void;

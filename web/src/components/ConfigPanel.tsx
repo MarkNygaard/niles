@@ -14,6 +14,8 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { CurveChart } from "@/components/CurveChart";
+import { AnchorEditor, SHIPPED_ANCHORS } from "@/components/AnchorEditor";
+import type { Anchor } from "@/components/AnchorEditor";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
@@ -184,7 +186,103 @@ const LAMP_PLUG_ROWS: Row[] = [
   },
 ];
 
+/**
+ * The broker, which everything on Zigbee and WLED is reached through.
+ *
+ * The username and password are not here: they are secrets, and live
+ * under Credentials with the rest.
+ */
+const MQTT_ROWS: Row[] = [
+  {
+    label: "Broker",
+    description:
+      "Where Zigbee2MQTT and the WLED strips publish. Leave the host empty and Niles has no lights at all.",
+    joiner: ":",
+    settings: [
+      { path: "mqtt.host", kind: "text", caption: "host", width: "min-w-48 flex-1" },
+      { path: "mqtt.port", kind: "number", caption: "port", width: "w-24" },
+    ],
+  },
+  {
+    label: "Zigbee2MQTT prefix",
+    description:
+      "The topic Zigbee2MQTT publishes under, its base_topic. One word, no slashes.",
+    settings: [
+      { path: "mqtt.z2m_prefix", kind: "text", caption: "topic", width: "w-48" },
+    ],
+  },
+  {
+    label: "Client id",
+    description:
+      "What Niles calls itself to the broker. Two clients with one id knock each other off.",
+    settings: [
+      { path: "mqtt.client_id", kind: "text", caption: "client id", width: "w-48" },
+    ],
+  },
+];
+
+/** Piper, which speaks the replies. */
+const TTS_ROWS: Row[] = [
+  {
+    label: "Piper",
+    description: "The Piper server Niles sends a reply to, to have it spoken.",
+    settings: [
+      { path: "tts.base_url", kind: "text", caption: "address", width: "min-w-72 flex-1" },
+    ],
+  },
+  {
+    label: "Voice",
+    description: "Which of Piper's voice models speaks.",
+    settings: [
+      { path: "tts.default_voice", kind: "text", caption: "voice model", width: "w-56" },
+    ],
+  },
+];
+
+const LANGUAGE_ROW: Row = {
+  label: "Language",
+  description:
+    "What the house speaks, as a two-letter code. Empty lets the transcriber work it out each time, which costs a little accuracy on short commands.",
+  settings: [
+    {
+      path: "stt.language",
+      kind: "text",
+      caption: "ISO 639-1, like en",
+      width: "w-28",
+      optional: true,
+      placeholder: "auto-detect",
+    },
+  ],
+};
+
+/**
+ * What Niles runs where nothing is set, for the fields whose defaults
+ * the server does not report yet. Each mirrors the `default_*` function
+ * beside the field in `crates/niles-config/src`. Read after
+ * `view.defaults`, so the server's answer wins once it sends one.
+ */
+const SHIPPED: Record<string, unknown> = {
+  "mqtt.port": 1883,
+  "mqtt.z2m_prefix": "zigbee2mqtt",
+  "mqtt.client_id": "niles",
+  "tts.base_url": "http://piper.home-automation.svc.cluster.local:5000",
+  "tts.default_voice": "en_GB-alan-medium",
+};
+
 type Entry = { path: string; value: unknown };
+
+/** The anchors at `lighting.color_temp_anchors`, or `null` for none. */
+function anchorsAt(root: unknown): Anchor[] | null {
+  const value = valueAt(root, "lighting.color_temp_anchors");
+  if (!Array.isArray(value)) return null;
+  return value.filter(
+    (a): a is Anchor =>
+      Boolean(a) &&
+      typeof a === "object" &&
+      typeof a.time === "string" &&
+      typeof a.kelvin === "number",
+  );
+}
 
 function numberAt(root: unknown, path: string): number | undefined {
   const value = valueAt(root, path);
@@ -346,6 +444,9 @@ export function ConfigPanel() {
   // open, so nothing lands on an empty pane.
   const phone = useMediaQuery("(max-width: 639px)");
   const [section, setSection] = useState<string | null>(null);
+  // The anchor list as it is being edited, drawn on the chart before it
+  // is saved: a colour point is judged by the curve it makes.
+  const [anchorPreview, setAnchorPreview] = useState<Anchor[] | null>(null);
   const showNav = !phone || section === null;
   const showSection = !phone || section !== null;
 
@@ -430,6 +531,9 @@ export function ConfigPanel() {
 
   const view = config.data as ConfigView;
   const sectionMeta = new Map(view.sections.map((s) => [s.name, s]));
+  const shippedAt = (path: string) => valueAt(view.defaults, path) ?? SHIPPED[path];
+  const shippedAnchors = anchorsAt(view.defaults) ?? SHIPPED_ANCHORS;
+  const anchors = anchorsAt(view.effective) ?? shippedAnchors;
   // Absent means on: every config written before the switch existed
   // has a curve that runs, and the server defaults the same way.
   const providers =
@@ -496,6 +600,7 @@ export function ConfigPanel() {
         overridden={settings
           .map((s) => s.path)
           .filter((path) => valueAt(view.overrides, path) !== undefined)}
+        defaults={Object.fromEntries(settings.map((s) => [s.path, shippedAt(s.path)]))}
         hot={sections.every((section) => section?.reload === "hot")}
         saving={save.isPending || reset.isPending}
         error={rowError?.row === id ? rowError.message : undefined}
@@ -600,8 +705,44 @@ export function ConfigPanel() {
                   come back untouched when the curve does. */}
               {curveOn && (
                 <div className="divide-border divide-y">
-                  <CurveChart lighting={view.effective.lighting} />
+                  <CurveChart
+                    lighting={
+                      anchorPreview
+                        ? {
+                            ...(view.effective.lighting as object | undefined),
+                            color_temp_anchors: anchorPreview,
+                          }
+                        : view.effective.lighting
+                    }
+                  />
                   {CURVE_ROWS.map(row)}
+                  <AnchorEditor
+                    anchors={anchors}
+                    shipped={shippedAnchors}
+                    overridden={
+                      valueAt(view.overrides, "lighting.color_temp_anchors") !== undefined
+                    }
+                    hot={sectionMeta.get("lighting")?.reload === "hot"}
+                    saving={save.isPending || reset.isPending}
+                    error={
+                      rowError?.row === "lighting.color_temp_anchors"
+                        ? rowError.message
+                        : undefined
+                    }
+                    onPreview={setAnchorPreview}
+                    onSave={(next) =>
+                      save.mutate({
+                        row: "lighting.color_temp_anchors",
+                        entries: [{ path: "lighting.color_temp_anchors", value: next }],
+                      })
+                    }
+                    onReset={() =>
+                      reset.mutate({
+                        row: "lighting.color_temp_anchors",
+                        paths: ["lighting.color_temp_anchors"],
+                      })
+                    }
+                  />
                 </div>
               )}
             </CardContent>
@@ -716,6 +857,22 @@ export function ConfigPanel() {
             onChange={(entries) => save.mutate({ row: "home", entries })}
             onClear={(path) => reset.mutate({ row: "home", paths: [path] })}
           />
+        </TabsContent>
+
+        <TabsContent value="mqtt">
+          <Card>
+            <CardHeader>
+              <CardTitle>Zigbee &amp; MQTT</CardTitle>
+              <CardDescription>
+                The broker every light, plug and sensor is reached through.
+                Niles connects once as it starts, so a change here waits for a
+                restart. The username and password are under Credentials.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="divide-border divide-y">
+              {MQTT_ROWS.map(row)}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="rooms">
@@ -931,6 +1088,7 @@ export function ConfigPanel() {
                   }
                 />
               </label>
+              {row(LANGUAGE_ROW)}
               <div className="pt-5">
                 <RoleCard
                   role="llm"
@@ -959,6 +1117,18 @@ export function ConfigPanel() {
                   }
                 />
               </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Spoken replies</CardTitle>
+              <CardDescription>
+                What a satellite says back is spoken by Piper, which runs in
+                the house rather than in somebody else&apos;s cloud.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="divide-border divide-y">
+              {TTS_ROWS.map(row)}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1052,7 +1222,6 @@ export function ConfigPanel() {
                     ) : (
                       <Badge variant="outline">restart required</Badge>
                     )}
-                    {section.overridden && <Badge>overridden</Badge>}
                   </div>
                   {view.effective[section.name] === undefined ? (
                     <p className="text-muted-foreground text-xs">
@@ -1093,7 +1262,7 @@ function HistoryList({ revisions }: { revisions: Revision[] }) {
   if (revisions.length === 0) {
     return (
       <p className="text-muted-foreground text-sm">
-        Nothing changed yet — everything is as the config file has it.
+        Nothing changed yet — everything is as Niles ships it.
       </p>
     );
   }
