@@ -8,14 +8,36 @@
 
 use crate::error::{Error, Result};
 use crate::scan;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Which memory document to operate on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
+    #[serde(rename = "user")]
     User,
+    #[serde(rename = "agent")]
     Memory,
 }
+
+/// A note taken out of memory — by somebody, or by Niles tidying — and
+/// kept a while so it can be put back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forgotten {
+    pub target: Target,
+    pub text: String,
+    pub at: DateTime<Utc>,
+}
+
+/// How many forgotten notes are kept to put back.
+const MAX_FORGOTTEN: usize = 50;
+
+/// How alike two notes must be, as the share of their words they have in
+/// common, to be the same note said twice. Three wordings of one
+/// automation reminder, written in a minute, shared 0.61.
+const SIMILAR: f64 = 0.6;
 
 impl Target {
     pub fn as_str(self) -> &'static str {
@@ -53,12 +75,15 @@ impl Default for MemoryConfig {
 /// hand the document on, not wait for it to be stored.
 pub trait MemoryPersistence: Send + Sync {
     fn store(&self, target: Target, document: &str);
+    /// The forgotten notes, as JSON.
+    fn store_forgotten(&self, document: &str);
 }
 
 #[derive(Default)]
 struct Documents {
     user: String,
     agent: String,
+    forgotten: Vec<Forgotten>,
 }
 
 impl Documents {
@@ -92,10 +117,20 @@ impl MemoryStore {
     pub fn with_documents(self, user: &str, agent: &str) -> Result<Self> {
         scan::scan(user)?;
         scan::scan(agent)?;
-        *self.lock() = Documents {
-            user: user.to_string(),
-            agent: agent.to_string(),
-        };
+        let mut documents = self.lock();
+        documents.user = user.to_string();
+        documents.agent = agent.to_string();
+        drop(documents);
+        Ok(self)
+    }
+
+    /// Start from the notes forgotten earlier.
+    pub fn with_forgotten(self, document: &str) -> Result<Self> {
+        let forgotten: Vec<Forgotten> = serde_json::from_str(document)?;
+        for f in &forgotten {
+            scan::scan(&f.text)?;
+        }
+        self.lock().forgotten = forgotten;
         Ok(self)
     }
 
@@ -121,18 +156,61 @@ impl MemoryStore {
         parse_entries(self.lock().get_mut(target))
     }
 
-    /// Append a new entry to `target`.  Enforces scan + budget.
+    /// How full `target` is: characters used, and the most it holds.
+    pub fn usage(&self, target: Target) -> (usize, usize) {
+        let used = self.lock().get_mut(target).chars().count();
+        (used, self.char_limit(target))
+    }
+
+    /// The notes forgotten lately, newest first.
+    pub fn forgotten(&self) -> Vec<Forgotten> {
+        self.lock().forgotten.iter().rev().cloned().collect()
+    }
+
+    /// Append a new entry to `target`. Enforces scan + budget, and
+    /// refuses a note that is one already there said again.
     pub fn add(&self, target: Target, content: &str) -> Result<()> {
         scan::scan(content)?;
         Self::validate_entry_content(content)?;
         let limit = self.char_limit(target);
         self.mutate(target, |raw| {
             let mut entries = parse_entries(raw);
+            if let Some(existing) = entries.iter().find(|e| similar(&e.text, content)) {
+                return Err(Error::Similar {
+                    target: target.as_str(),
+                    existing: existing.text.clone(),
+                });
+            }
             entries.push(Entry {
                 text: content.trim().to_string(),
             });
-            within_budget(target, limit, serialize_entries(&entries))
+            Ok((
+                within_budget(target, limit, serialize_entries(&entries))?,
+                None,
+            ))
         })
+    }
+
+    /// Put a forgotten note back.
+    pub fn restore(&self, target: Target, text: &str) -> Result<()> {
+        let limit = self.char_limit(target);
+        let mut documents = self.lock();
+        let at = documents
+            .forgotten
+            .iter()
+            .rposition(|f| f.target == target && f.text == text)
+            .ok_or(Error::NotForgotten {
+                target: target.as_str(),
+            })?;
+        let mut entries = parse_entries(documents.get_mut(target));
+        entries.push(Entry {
+            text: text.to_string(),
+        });
+        let restored = within_budget(target, limit, serialize_entries(&entries))?;
+        *documents.get_mut(target) = restored;
+        documents.forgotten.remove(at);
+        self.keep(&mut documents, target, true);
+        Ok(())
     }
 
     /// Replace the entry whose text contains `old_text` with
@@ -147,10 +225,16 @@ impl MemoryStore {
         self.mutate(target, |raw| {
             let mut entries = parse_entries(raw);
             let at = only_match(target, &entries, old_text)?;
-            entries[at] = Entry {
-                text: new_content.trim().to_string(),
-            };
-            within_budget(target, limit, serialize_entries(&entries))
+            let old = std::mem::replace(
+                &mut entries[at],
+                Entry {
+                    text: new_content.trim().to_string(),
+                },
+            );
+            Ok((
+                within_budget(target, limit, serialize_entries(&entries))?,
+                Some(old.text),
+            ))
         })
     }
 
@@ -163,8 +247,8 @@ impl MemoryStore {
         self.mutate(target, |raw| {
             let mut entries = parse_entries(raw);
             let at = only_match(target, &entries, old_text)?;
-            entries.remove(at);
-            Ok(serialize_entries(&entries))
+            let gone = entries.remove(at);
+            Ok((serialize_entries(&entries), Some(gone.text)))
         })
     }
 
@@ -180,8 +264,8 @@ impl MemoryStore {
                 .ok_or(Error::NotFound {
                     target: target.as_str(),
                 })?;
-            entries.remove(at);
-            Ok(serialize_entries(&entries))
+            let gone = entries.remove(at);
+            Ok((serialize_entries(&entries), Some(gone.text)))
         })
     }
 
@@ -192,18 +276,60 @@ impl MemoryStore {
         }
     }
 
-    /// Read → apply `f` → scan → keep, and hand the result on.
-    fn mutate(&self, target: Target, f: impl FnOnce(&str) -> Result<String>) -> Result<()> {
+    /// Read → apply `f` → scan → keep, and hand the result on. What `f`
+    /// says it took out is kept among the forgotten notes.
+    fn mutate(
+        &self,
+        target: Target,
+        f: impl FnOnce(&str) -> Result<(String, Option<String>)>,
+    ) -> Result<()> {
         let mut documents = self.lock();
-        let document = documents.get_mut(target);
-        let changed = f(document)?;
+        let (changed, gone) = f(documents.get_mut(target))?;
         scan::scan(&changed)?;
-        *document = changed;
-        if let Some(sink) = &self.sink {
-            sink.store(target, document);
+        *documents.get_mut(target) = changed;
+        if let Some(text) = &gone {
+            documents.forgotten.push(Forgotten {
+                target,
+                text: text.clone(),
+                at: Utc::now(),
+            });
+            if documents.forgotten.len() > MAX_FORGOTTEN {
+                let excess = documents.forgotten.len() - MAX_FORGOTTEN;
+                documents.forgotten.drain(..excess);
+            }
         }
+        self.keep(&mut documents, target, gone.is_some());
         Ok(())
     }
+
+    fn keep(&self, documents: &mut Documents, target: Target, forgotten_changed: bool) {
+        let Some(sink) = &self.sink else { return };
+        sink.store(target, documents.get_mut(target));
+        if forgotten_changed {
+            match serde_json::to_string(&documents.forgotten) {
+                Ok(document) => sink.store_forgotten(&document),
+                Err(e) => tracing::error!("the forgotten notes could not be written down: {e}"),
+            }
+        }
+    }
+}
+
+/// Whether two notes are the same note in other words: most of their
+/// words in common. Short words ("a", "to", "in") say nothing either way.
+fn similar(a: &str, b: &str) -> bool {
+    let words = |s: &str| -> HashSet<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.chars().count() > 2)
+            .map(str::to_string)
+            .collect()
+    };
+    let (a, b) = (words(a), words(b));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let shared = a.intersection(&b).count() as f64;
+    shared / a.union(&b).count() as f64 >= SIMILAR
 }
 
 fn only_match(target: Target, entries: &[Entry], old_text: &str) -> Result<usize> {
@@ -279,11 +405,15 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Kept(Mutex<Vec<(Target, String)>>);
+    struct Kept(Mutex<Vec<(Target, String)>>, Mutex<Vec<String>>);
 
     impl MemoryPersistence for Kept {
         fn store(&self, target: Target, document: &str) {
             self.0.lock().unwrap().push((target, document.to_string()));
+        }
+
+        fn store_forgotten(&self, document: &str) {
+            self.1.lock().unwrap().push(document.to_string());
         }
     }
 
@@ -327,8 +457,92 @@ mod tests {
     fn deduplication() {
         let store = setup();
         store.add(Target::User, "Duplicate.").unwrap();
-        store.add(Target::User, "Duplicate.").unwrap();
+        let err = store.add(Target::User, "Duplicate.").unwrap_err();
+        assert!(matches!(err, Error::Similar { .. }), "{err}");
         assert_eq!(store.load(Target::User).len(), 1);
+    }
+
+    /// The three notes the review wrote on 2026-10-13, a minute apart.
+    #[test]
+    fn the_same_note_in_other_words_is_refused() {
+        let store = setup();
+        store
+            .add(
+                Target::Memory,
+                "User wants an automation that triggers 30 minutes after sunset to notify \
+                 \"Please close the curtains\" in the living room.",
+            )
+            .unwrap();
+        let err = store
+            .add(
+                Target::Memory,
+                "User wants automation that triggers 30 minutes after sunset to perform an \
+                 action (e.g., notify to close curtains).",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Similar { ref existing, .. } if existing.contains("living room")),
+            "{err}"
+        );
+        // Different facts that share a few words are both kept.
+        store
+            .add(Target::User, "Mark takes his coffee black.")
+            .unwrap();
+        store
+            .add(Target::User, "Majse takes her coffee with oat milk.")
+            .unwrap();
+        assert_eq!(store.load(Target::User).len(), 2);
+    }
+
+    #[test]
+    fn what_is_taken_out_can_be_put_back() {
+        let kept = Arc::new(Kept::default());
+        let store = setup().with_sink(kept.clone());
+        store
+            .add(Target::User, "Mark takes his coffee black.")
+            .unwrap();
+        store
+            .replace(Target::User, "coffee", "Mark takes his coffee with milk.")
+            .unwrap();
+        store
+            .forget(Target::User, "Mark takes his coffee with milk.")
+            .unwrap();
+        let forgotten: Vec<_> = store.forgotten().into_iter().map(|f| f.text).collect();
+        assert_eq!(
+            forgotten,
+            vec![
+                "Mark takes his coffee with milk.",
+                "Mark takes his coffee black."
+            ]
+        );
+        assert!(store.load(Target::User).is_empty());
+
+        store
+            .restore(Target::User, "Mark takes his coffee black.")
+            .unwrap();
+        assert_eq!(
+            store.load(Target::User)[0].text,
+            "Mark takes his coffee black."
+        );
+        assert_eq!(store.forgotten().len(), 1);
+        assert!(matches!(
+            store.restore(Target::User, "never said").unwrap_err(),
+            Error::NotForgotten { .. }
+        ));
+
+        let next = setup()
+            .with_forgotten(&kept.1.lock().unwrap().last().cloned().unwrap())
+            .unwrap();
+        assert_eq!(next.forgotten().len(), 1);
+    }
+
+    #[test]
+    fn says_how_full_it_is() {
+        let store = limited(100);
+        store
+            .add(Target::User, "Mark takes his coffee black.")
+            .unwrap();
+        assert_eq!(store.usage(Target::User), (28, 100));
     }
 
     #[test]
@@ -403,12 +617,12 @@ mod tests {
 
     #[test]
     fn forgetting_takes_exactly_the_entry_named() {
-        let store = setup();
-        store
-            .add(Target::User, "Mark takes his coffee black")
-            .unwrap();
-        store
-            .add(Target::User, "Mark takes his coffee black on weekdays")
+        // Kept earlier, before notes this alike were refused.
+        let store = setup()
+            .with_documents(
+                "Mark takes his coffee black\n§\nMark takes his coffee black on weekdays",
+                "",
+            )
             .unwrap();
         store
             .forget(Target::User, "Mark takes his coffee black")
@@ -541,8 +755,7 @@ mod tests {
             let s = store.clone();
             handles.push(std::thread::spawn(move || {
                 for i in 0..20 {
-                    s.add(Target::User, &format!("thread-{t}-entry-{i}"))
-                        .unwrap();
+                    s.add(Target::User, &format!("entry{t}x{i}")).unwrap();
                 }
             }));
         }

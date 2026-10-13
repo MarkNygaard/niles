@@ -5,7 +5,8 @@
 //! has no default, so a Niles without the section remembered nothing,
 //! and said nothing about it.
 //!
-//! One row per document, keyed `user` or `agent`.
+//! One row per document, keyed `user` or `agent` — and `forgotten`, the
+//! notes taken out lately, as JSON, so they can be put back.
 
 use sqlx::{Row, postgres::PgPool};
 
@@ -15,6 +16,9 @@ create table if not exists memory (
     document   text not null,
     updated_at timestamptz not null default now()
 );
+alter table memory drop constraint if exists memory_target_check;
+alter table memory add constraint memory_target_check
+    check (target in ('user', 'agent', 'forgotten'));
 ";
 
 pub struct PostgresMemory {

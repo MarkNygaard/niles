@@ -1,11 +1,30 @@
-//! Background-review fork: re-run a completed turn through a
-//! restricted tool set (memory + skills only) to auto-capture
-//! learnings.
+//! What Niles learns, in the background.
+//!
+//! Every exchange goes into a journal. When the house has been quiet for
+//! a few minutes, Claude reads what was said since the last review and
+//! decides what is worth keeping: a fact for memory, a way of doing
+//! something for a skill — or, most of the time, nothing. Once a week,
+//! after a long quiet, it tidies: merges notes that say the same thing,
+//! takes out what is done or kept elsewhere, folds overlapping skills
+//! together.
+//!
+//! Both borrowed from Hermes Agent, which reviews every ten turns rather
+//! than every turn. Ours ran after every turn, with a small model looking
+//! at one turn at a time, and wrote a half-made automation into memory
+//! four times in a minute.
+//!
+//! Neither job can touch the house: its tools are memory, skills and the
+//! list of automations. The review only adds; the tidy-up may take out,
+//! and what it takes out can be put back from the app.
 
-use niles_memory::MemoryStore;
-use niles_skills::SkillSummary;
+use chrono::{DateTime, Utc};
+use niles_memory::{MemoryStore, Target};
+use niles_skills::SkillStore;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Trace of one tool call made during the main turn.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -15,440 +34,440 @@ pub struct ToolTrace {
     pub result: Value,
 }
 
-/// Everything the review fork needs to reconstruct the turn.
-pub struct ReviewSnapshot {
-    pub transcript: String,
-    pub spoken_response: String,
-    pub tool_trace: Vec<ToolTrace>,
-    pub user_memory: Option<String>,
-    pub agent_memory: Option<String>,
-    pub skill_summaries: Vec<SkillSummary>,
+/// How long the house is quiet before what was said is reviewed: long
+/// enough that a conversation is over, and its outcome known.
+const REVIEW_AFTER: chrono::Duration = chrono::Duration::minutes(5);
+/// How often the tidy-up runs, and how quiet the house must be first.
+const TIDY_EVERY: chrono::Duration = chrono::Duration::days(7);
+const TIDY_AFTER: chrono::Duration = chrono::Duration::hours(2);
+/// After a tidy-up that failed, how long before it is tried again.
+const TIDY_RETRY: chrono::Duration = chrono::Duration::hours(6);
+const CHECK_EVERY: Duration = Duration::from_secs(60);
+/// The most exchanges kept for one review. A day of commands is a few
+/// dozen; this is a week without Claude, and then the oldest go.
+const MAX_JOURNAL: usize = 300;
+
+/// One exchange, as the review reads it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Said {
+    pub at: DateTime<Utc>,
+    /// "the living room", "the app".
+    pub place: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub who: Option<String>,
+    pub said: String,
+    pub reply: String,
 }
 
-/// System prompt for the background-review fork.
-pub const SKILL_REVIEW_PROMPT: &str = r#"You are niles's background-review process.
+/// What was said since the last review. Kept in Postgres, so a deploy
+/// between a conversation and its review loses neither.
+pub(crate) struct Journal {
+    said: Mutex<Vec<Said>>,
+    last_heard: Mutex<DateTime<Utc>>,
+    sink: Option<UnboundedSender<String>>,
+}
 
-You have access to exactly these tools:
-- memory(action, target, content, old_text) – manage USER.md (target=user) and MEMORY.md (target=agent)
-- mint_skill(name, description, version, body) – create a new persistent skill
-- patch_skill(name, body) – update an existing skill's body
-- delete_skill(name, absorbed_into) – remove a skill
-- view_skill(name) – inspect a skill's body
-
-Hard rules:
-1. Do NOT capture failures, errors, or "sorry" turns. If the main turn failed, do nothing.
-2. Do NOT store ephemeral state (timers, device readings, weather). Only durable knowledge.
-3. Prefer patch_skill over mint_skill when a similar skill already exists.
-4. Prefer doing NOTHING over creating low-value content. Respond with NOTHING if there is nothing durable to capture.
-5. Skill bodies should be concise how-to instructions, NOT raw conversation transcripts.
-6. Skill names must be short kebab-case (e.g. "morning-routine", "wfh-tuesdays").
-
-If you have nothing to add, patch, delete, or memorialize, respond with the single word NOTHING."#;
-
-/// Format the user message sent to the review fork.
-pub fn format_review_user_message(snapshot: &ReviewSnapshot) -> String {
-    let mut out = String::new();
-
-    out.push_str("The user said:\n> ");
-    out.push_str(&snapshot.transcript);
-    out.push('\n');
-
-    out.push_str("\nniles spoke back:\n> ");
-    out.push_str(&snapshot.spoken_response);
-    out.push('\n');
-
-    out.push_str("\nTool calls during this turn:\n");
-    if snapshot.tool_trace.is_empty() {
-        out.push_str("(none)\n");
-    } else {
-        for t in &snapshot.tool_trace {
-            out.push_str(&format!(
-                "- {}({}) → {}\n",
-                t.tool,
-                serde_json::to_string(&t.arguments).unwrap_or_default(),
-                serde_json::to_string(&t.result).unwrap_or_default()
-            ));
+impl Default for Journal {
+    fn default() -> Self {
+        Self {
+            said: Mutex::default(),
+            // A restart counts as being heard: the tidy-up waits for a
+            // quiet it has seen, not one it assumed.
+            last_heard: Mutex::new(Utc::now()),
+            sink: None,
         }
     }
+}
 
-    out.push_str("\nCurrent memory:\n");
-    match (&snapshot.user_memory, &snapshot.agent_memory) {
-        (None, None) => out.push_str("(none)\n"),
-        (user, agent) => {
-            out.push_str("USER.md:\n");
-            out.push_str(user.as_deref().unwrap_or("(none)"));
-            out.push_str("\nMEMORY.md:\n");
-            out.push_str(agent.as_deref().unwrap_or("(none)"));
-            out.push('\n');
+impl Journal {
+    /// Pick up what an earlier run had not reviewed yet.
+    pub(crate) fn with_document(self, document: &str) -> Self {
+        match serde_json::from_str::<Vec<Said>>(document) {
+            Ok(said) => *self.lock() = said,
+            Err(e) => tracing::warn!("[learning] the journal would not read ({e}); starting empty"),
         }
+        self
     }
 
-    out.push_str("\nAvailable skills:\n");
-    if snapshot.skill_summaries.is_empty() {
-        out.push_str("(none)\n");
-    } else {
-        for s in &snapshot.skill_summaries {
-            out.push_str(&format!("- {}: {}\n", s.name, s.description));
-        }
+    pub(crate) fn with_sink(mut self, sink: UnboundedSender<String>) -> Self {
+        self.sink = Some(sink);
+        self
     }
 
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Said>> {
+        self.said.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// One exchange, as it ended.
+    pub(crate) fn note(&self, place: &str, who: Option<&str>, said: &str, reply: &str) {
+        let now = Utc::now();
+        let mut journal = self.lock();
+        journal.push(Said {
+            at: now,
+            place: place.to_string(),
+            who: who.map(str::to_string),
+            said: said.to_string(),
+            reply: reply.to_string(),
+        });
+        if journal.len() > MAX_JOURNAL {
+            let excess = journal.len() - MAX_JOURNAL;
+            journal.drain(..excess);
+        }
+        *self.last_heard.lock().unwrap_or_else(|e| e.into_inner()) = now;
+        self.keep(&journal);
+    }
+
+    /// How long nobody has said anything.
+    pub(crate) fn quiet_for(&self, now: DateTime<Utc>) -> chrono::Duration {
+        now - *self.last_heard.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn pending(&self) -> Vec<Said> {
+        self.lock().clone()
+    }
+
+    /// The first `count` exchanges have been reviewed.
+    pub(crate) fn done_through(&self, count: usize) {
+        let mut journal = self.lock();
+        let count = count.min(journal.len());
+        journal.drain(..count);
+        self.keep(&journal);
+    }
+
+    fn keep(&self, journal: &[Said]) {
+        let Some(sink) = &self.sink else { return };
+        match serde_json::to_string(journal) {
+            Ok(document) => {
+                if sink.send(document).is_err() {
+                    tracing::warn!("[learning] nothing is keeping the journal any more");
+                }
+            }
+            Err(e) => tracing::warn!("[learning] the journal could not be written down: {e}"),
+        }
+    }
+}
+
+const REVIEW_PROMPT: &str = "You are the background review of Niles, the voice assistant of one \
+household. Below is what was said to Niles since the last review, and what it answered. Decide \
+whether any of it should be kept for the future. Most of the time nothing should.
+
+There are two places to keep things.
+
+Memory holds facts. 'user' is about the household: who lives here, their preferences, how the \
+house is set up. 'agent' is what you have noted about doing the job here. Keep only facts that \
+hold in every conversation, whatever the task, written as plain facts rather than instructions. \
+Memory is not for what was done or asked for: automations, scenes, timers and the shopping list \
+are kept elsewhere (list_automations shows the rules). Nor for anything stale within a week, \
+small talk, or a request that was never finished. You can only add notes, and a note that is \
+already there in other words will be refused.
+
+Skills hold how to do something for this household that will come up again: a procedure, with \
+the household's particulars. Patch the closest existing skill rather than making a new one, and \
+view_skill before you patch. A new skill's description is at most 60 characters and starts with \
+'Use when'. One-off requests and anything a tool already does in one step are not skills.
+
+Do not keep: failures and errors, what a tool could not do, passing state (weather, what is \
+playing, whether a light is on), a correction already acted on unless it shows a lasting \
+preference, or anything you are unsure was meant.
+
+If something is worth keeping, keep it once, in the right place. Finish with one short sentence \
+saying what you kept, or 'Nothing to keep.'";
+
+const TIDY_PROMPT: &str = "You are the weekly tidy-up of Niles, the voice assistant of one \
+household. Its memory and skills are written a little at a time, by different conversations. \
+Once a week you put them in order, so that what goes into every prompt is short, true and said \
+once.
+
+Memory ('user' is about the household; 'agent' is Niles's own notes):
+- Merge notes that say the same thing into one: replace one, remove the rest.
+- Remove notes about things done or asked for, such as an automation, a scene, a timer or a \
+shopping item. Those are kept elsewhere; list_automations shows the rules. Remove notes that \
+went stale within a week, and instructions-to-self that are not facts.
+- Keep every lasting fact about the household. When unsure, keep it.
+- The household can put back anything you remove, from the app.
+
+Skills (list_skills, view_skill):
+- Fold skills that overlap into one: patch the one that stays so nothing is lost, then \
+retire_skill the other into it.
+- Fix a skill that is wrong or unclear in place, with patch_skill old_text and new_text.
+- Leave pinned skills and skills the household asked for as they are, unless two say the same.
+- Do not make new skills.
+
+Read before you change anything. Prefer few, clear changes. Finish with one or two short \
+sentences for the household saying what you changed, for example 'Removed 3 notes about the \
+curtain reminder, which is an automation.', or 'Nothing needed tidying.'";
+
+/// What memory holds now, with how full each part is: a model that can
+/// see the space running out writes shorter, and merges.
+fn memory_section(memory: &MemoryStore) -> String {
+    let mut out = String::from("# Memory now\n");
+    for (target, title) in [
+        (Target::User, "About the household ('user')"),
+        (Target::Memory, "Noted by Niles ('agent')"),
+    ] {
+        let (used, limit) = memory.usage(target);
+        let percent = used * 100 / limit.max(1);
+        out.push_str(&format!(
+            "\n## {title} — {percent}% full, {used} of {limit} characters\n"
+        ));
+        let entries = memory.load(target);
+        if entries.is_empty() {
+            out.push_str("(nothing)\n");
+        }
+        for entry in entries {
+            out.push_str(&format!("- {}\n", entry.text));
+        }
+    }
     out
 }
 
-/// Whether the main turn is eligible for background review.
-///
-/// Guard rails here enforce the prompt's "do not capture failures or
-/// sorry turns" rule before spawning any review LLM work.
-pub fn is_reviewable_turn(snapshot: &ReviewSnapshot) -> bool {
-    let spoken = snapshot.spoken_response.trim();
-    if spoken.is_empty() {
-        return false;
+fn skills_section(skills: &SkillStore) -> String {
+    let mut out = String::from("\n# Skills now\n");
+    let summaries = skills.list_summaries();
+    if summaries.is_empty() {
+        out.push_str("(none)\n");
     }
-
-    let spoken_lower = spoken.to_ascii_lowercase();
-    if spoken_lower.contains("sorry") {
-        return false;
+    for s in summaries {
+        out.push_str(&format!("- {}: {}\n", s.name, s.description));
     }
-
-    // A turn that ends in a question is not finished, and a proposal is
-    // not yet anything. On 2026-10-13 the review noted a half-made
-    // automation four times in one minute, into memory that goes into
-    // every prompt.
-    if crate::follow_up::asks(spoken) {
-        return false;
-    }
-    if snapshot
-        .tool_trace
-        .iter()
-        .any(|t| t.tool.starts_with("propose_"))
-    {
-        return false;
-    }
-
-    !snapshot
-        .tool_trace
-        .iter()
-        .any(|t| t.result.get("error").is_some())
+    out
 }
 
-/// Spawn a detached background review task.
-///
-/// Short-circuits (returns a handle that resolves immediately) when
-/// both stores are absent.
-pub fn spawn_skill_review(
-    snapshot: ReviewSnapshot,
-    memory_store: Option<Arc<MemoryStore>>,
-    skill_store: Option<Arc<niles_skills::SkillStore>>,
-    llm: Arc<dyn crate::ChatProvider>,
-    home: Arc<niles_config::HomeConfig>,
-    max_iters: usize,
-) -> tokio::task::JoinHandle<()> {
-    if memory_store.is_none() && skill_store.is_none() {
-        return tokio::spawn(async {});
+/// The exchanges as a transcript, in the house's own time.
+fn journal_section(said: &[Said], tz: chrono_tz::Tz) -> String {
+    let mut out = String::from("\n# What was said since the last review\n");
+    for s in said {
+        let at = s.at.with_timezone(&tz).format("%a %-d %b %H:%M");
+        let who = s.who.as_deref().unwrap_or("Someone");
+        out.push_str(&format!(
+            "\n[{at}, {place}]\n{who}: {said}\nNiles: {reply}\n",
+            place = s.place,
+            said = s.said,
+            reply = s.reply,
+        ));
+    }
+    out
+}
+
+/// The background jobs, and what they need.
+pub(crate) struct Learning {
+    pub claude: Arc<crate::claude_code::ClaudeCode>,
+    pub settings: Arc<niles_config::ConfigStore>,
+    pub journal: Arc<Journal>,
+    pub memory: Option<Arc<MemoryStore>>,
+    pub skills: Option<Arc<SkillStore>>,
+    pub automations: Option<Arc<niles_automations::AutomationStore>>,
+    pub tidy_tried: Mutex<Option<DateTime<Utc>>>,
+}
+
+impl Learning {
+    pub(crate) fn spawn(self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(CHECK_EVERY).await;
+                self.tick(Utc::now()).await;
+            }
+        })
     }
 
-    tokio::spawn(async move {
-        let tools = niles_tools::restricted_registry_for_review(memory_store, skill_store);
-        let system = format!("{}\n\n{}", SKILL_REVIEW_PROMPT, crate::home_context(&home));
-        let user_msg = format_review_user_message(&snapshot);
-
-        match crate::run_tool_calling_chat(
-            llm.as_ref(),
-            &tools,
-            &user_msg,
-            Some(&system),
-            max_iters,
-        )
-        .await
-        {
-            Ok(_) => tracing::debug!("skill review completed"),
-            Err(e) => tracing::warn!("skill review failed: {e:#}"),
+    async fn tick(&self, now: DateTime<Utc>) {
+        let quiet = self.journal.quiet_for(now);
+        if !self.journal.pending().is_empty() && quiet >= REVIEW_AFTER {
+            self.review().await;
+        } else if quiet >= TIDY_AFTER && self.tidy_due(now) {
+            *self.tidy_tried.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+            self.tidy().await;
         }
-    })
+    }
+
+    /// Claude's token, when Claude Code is switched on. Without it there
+    /// is no review: a missed review costs nothing, a careless one fills
+    /// memory that goes into every prompt.
+    fn token(&self) -> Option<String> {
+        let cfg = self.settings.current();
+        let claude = cfg
+            .integrations
+            .claude_code
+            .as_ref()
+            .filter(|c| c.enabled)?;
+        claude
+            .resolve_oauth_token()
+            .inspect_err(|e| tracing::warn!("[learning] Claude Code has no token: {e}"))
+            .ok()
+    }
+
+    fn tz(&self) -> chrono_tz::Tz {
+        self.settings
+            .current()
+            .home
+            .timezone
+            .parse()
+            .unwrap_or(chrono_tz::Tz::UTC)
+    }
+
+    async fn review(&self) {
+        let said = self.journal.pending();
+        let enabled = self.settings.current().skills.review.enabled;
+        let token = enabled.then(|| self.token()).flatten();
+        let Some(token) = token else {
+            tracing::info!(
+                "[learning] {} exchange(s) left unreviewed: the review is off, or Claude Code is",
+                said.len()
+            );
+            self.journal.done_through(said.len());
+            return;
+        };
+        let mut prompt = String::new();
+        if let Some(memory) = &self.memory {
+            prompt.push_str(&memory_section(memory));
+        }
+        if let Some(skills) = &self.skills {
+            prompt.push_str(&skills_section(skills));
+        }
+        prompt.push_str(&journal_section(&said, self.tz()));
+        let tools = niles_tools::background_registry(
+            niles_tools::Background::Review,
+            self.memory.clone(),
+            self.skills.clone(),
+            self.automations.clone(),
+        );
+        let system = format!(
+            "{REVIEW_PROMPT}\n\n{}",
+            crate::home_context(&self.settings.current().home)
+        );
+        tracing::info!("[learning] reviewing {} exchange(s)", said.len());
+        match self
+            .claude
+            .background(&token, &system, &prompt, tools)
+            .await
+        {
+            Ok(summary) => tracing::info!("[learning] review: {summary}"),
+            Err(e) => tracing::warn!("[learning] the review did not finish: {e:#}"),
+        }
+        // Reviewed or not, these are done: a review that fails on the
+        // same exchanges every minute would never let the next ones in.
+        self.journal.done_through(said.len());
+    }
+
+    fn tidy_due(&self, now: DateTime<Utc>) -> bool {
+        let Some(skills) = &self.skills else {
+            return false;
+        };
+        let tried = *self.tidy_tried.lock().unwrap_or_else(|e| e.into_inner());
+        if tried.is_some_and(|t| now - t < TIDY_RETRY) {
+            return false;
+        }
+        match skills.tidied() {
+            Some(t) => now - t.at >= TIDY_EVERY,
+            None => {
+                !skills.list().is_empty()
+                    || self.memory.as_ref().is_some_and(|m| {
+                        !m.load(Target::User).is_empty() || !m.load(Target::Memory).is_empty()
+                    })
+            }
+        }
+    }
+
+    async fn tidy(&self) {
+        let (Some(skills), Some(token)) = (&self.skills, self.token()) else {
+            return;
+        };
+        let mut prompt = String::new();
+        if let Some(memory) = &self.memory {
+            prompt.push_str(&memory_section(memory));
+        }
+        prompt.push_str(&skills_section(skills));
+        let tools = niles_tools::background_registry(
+            niles_tools::Background::Tidy,
+            self.memory.clone(),
+            Some(skills.clone()),
+            self.automations.clone(),
+        );
+        let system = format!(
+            "{TIDY_PROMPT}\n\n{}",
+            crate::home_context(&self.settings.current().home)
+        );
+        tracing::info!("[learning] tidying memory and skills");
+        match self
+            .claude
+            .background(&token, &system, &prompt, tools)
+            .await
+        {
+            Ok(summary) => {
+                let summary: String = summary.trim().chars().take(400).collect();
+                tracing::info!("[learning] tidy-up: {summary}");
+                skills.mark_tidied(&summary);
+            }
+            Err(e) => tracing::warn!("[learning] the tidy-up did not finish: {e:#}"),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[derive(Debug)]
-    struct DummyChat;
-
-    #[async_trait::async_trait]
-    impl niles_llm::LlmBackend for DummyChat {
-        async fn chat(
-            &self,
-            _req: niles_llm::ChatRequest,
-        ) -> niles_llm::Result<niles_llm::ChatResponse> {
-            unreachable!("short-circuit should not call chat")
-        }
-    }
 
     #[test]
-    fn skill_review_prompt_smoke() {
-        assert!(!SKILL_REVIEW_PROMPT.is_empty());
-        assert!(SKILL_REVIEW_PROMPT.contains("memory("));
-        assert!(SKILL_REVIEW_PROMPT.contains("mint_skill("));
-    }
-
-    #[test]
-    fn format_review_user_message_sections_in_order() {
-        let snapshot = ReviewSnapshot {
-            transcript: "turn on the lights".into(),
-            spoken_response: "done".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        let msg = format_review_user_message(&snapshot);
-        let user_pos = msg.find("The user said:").unwrap();
-        let niles_pos = msg.find("niles spoke back:").unwrap();
-        let tools_pos = msg.find("Tool calls during this turn:").unwrap();
-        let mem_pos = msg.find("Current memory:").unwrap();
-        let skills_pos = msg.find("Available skills:").unwrap();
-        assert!(user_pos < niles_pos);
-        assert!(niles_pos < tools_pos);
-        assert!(tools_pos < mem_pos);
-        assert!(mem_pos < skills_pos);
-    }
-
-    #[test]
-    fn format_review_shows_none_for_empty_trace() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        let msg = format_review_user_message(&snapshot);
-        assert!(msg.contains("Tool calls during this turn:\n(none)"));
-    }
-
-    #[test]
-    fn format_review_shows_tool_calls() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![ToolTrace {
-                tool: "memory".into(),
-                arguments: json!({"action": "add"}),
-                result: json!({"ok": true}),
-            }],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        let msg = format_review_user_message(&snapshot);
-        assert!(msg.contains("memory("));
-        assert!(msg.contains("→"));
-    }
-
-    #[test]
-    fn format_review_shows_none_for_absent_memory() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        let msg = format_review_user_message(&snapshot);
-        assert!(msg.contains("Current memory:\n(none)"));
-    }
-
-    #[test]
-    fn format_review_shows_memory_sections() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![],
-            user_memory: Some("User likes tea.".into()),
-            agent_memory: Some("Agent learned Danish.".into()),
-            skill_summaries: vec![],
-        };
-        let msg = format_review_user_message(&snapshot);
-        assert!(msg.contains("USER.md:\nUser likes tea."));
-        assert!(msg.contains("MEMORY.md:\nAgent learned Danish."));
-    }
-
-    #[test]
-    fn format_review_shows_user_memory_when_agent_is_none() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![],
-            user_memory: Some("User likes tea.".into()),
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        let msg = format_review_user_message(&snapshot);
-        assert!(msg.contains("USER.md:\nUser likes tea."));
-        assert!(msg.contains("MEMORY.md:\n(none)"));
-    }
-
-    #[test]
-    fn format_review_shows_agent_memory_when_user_is_none() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: Some("Agent learned Danish.".into()),
-            skill_summaries: vec![],
-        };
-        let msg = format_review_user_message(&snapshot);
-        assert!(msg.contains("USER.md:\n(none)"));
-        assert!(msg.contains("MEMORY.md:\nAgent learned Danish."));
-    }
-
-    #[test]
-    fn format_review_shows_skill_summaries() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![SkillSummary {
-                name: "lights".into(),
-                description: "Control lights".into(),
-                version: "1.0.0".into(),
-                status: niles_skills::SkillStatus::Active,
-                last_activity_at: None,
-                pinned: false,
-                provenance: niles_skills::Provenance::UserCreated,
-            }],
-        };
-        let msg = format_review_user_message(&snapshot);
-        assert!(msg.contains("- lights: Control lights"));
-    }
-
-    #[test]
-    fn is_reviewable_turn_accepts_normal_success() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "done".into(),
-            tool_trace: vec![ToolTrace {
-                tool: "memory".into(),
-                arguments: json!({"action": "add"}),
-                result: json!({"ok": true}),
-            }],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        assert!(is_reviewable_turn(&snapshot));
-    }
-
-    #[test]
-    fn is_reviewable_turn_rejects_sorry_response() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "Sorry, something went wrong.".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        assert!(!is_reviewable_turn(&snapshot));
-    }
-
-    #[test]
-    fn is_reviewable_turn_rejects_tool_error_trace() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "done".into(),
-            tool_trace: vec![ToolTrace {
-                tool: "memory".into(),
-                arguments: json!({"action": "add"}),
-                result: json!({"error": "boom"}),
-            }],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        assert!(!is_reviewable_turn(&snapshot));
-    }
-
-    /// The turns from 2026-10-13 that the review wrote into memory four
-    /// times in a minute: a read-back waiting for its yes, and a
-    /// question back.
-    #[test]
-    fn an_unfinished_turn_is_not_reviewed() {
-        let proposed = ReviewSnapshot {
-            transcript: "make an automation that reminds me to close the curtains".into(),
-            spoken_response:
-                "When the sun sets, I'll say \"Please close the curtains\". Shall I save it?".into(),
-            tool_trace: vec![ToolTrace {
-                tool: "propose_automation".into(),
-                arguments: json!({}),
-                result: json!({"saved": false}),
-            }],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        assert!(!is_reviewable_turn(&proposed));
-
-        let asked = ReviewSnapshot {
-            transcript: "the automation should be triggered half an hour after sunset".into(),
-            spoken_response: "Should I set the trigger to 30 minutes after sunset?".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        assert!(!is_reviewable_turn(&asked));
-
-        let read_back_without_asking = ReviewSnapshot {
-            tool_trace: vec![ToolTrace {
-                tool: "propose_automation".into(),
-                arguments: json!({}),
-                result: json!({"saved": false}),
-            }],
-            spoken_response: "Here is the rule.".into(),
-            ..asked
-        };
-        assert!(!is_reviewable_turn(&read_back_without_asking));
-    }
-
-    #[tokio::test]
-    async fn spawn_skill_review_short_circuits_when_both_stores_none() {
-        let snapshot = ReviewSnapshot {
-            transcript: "hi".into(),
-            spoken_response: "hello".into(),
-            tool_trace: vec![],
-            user_memory: None,
-            agent_memory: None,
-            skill_summaries: vec![],
-        };
-        let handle = spawn_skill_review(
-            snapshot,
-            None,
-            None,
-            Arc::new(DummyChat),
-            Arc::new(niles_config::HomeConfig {
-                name: "test".into(),
-                latitude: 0.0,
-                longitude: 0.0,
-                timezone: "UTC".into(),
-                locale: "en_US".into(),
-                units: None,
-                country: None,
-                default_language: None,
-                address: None,
-            }),
-            1,
+    fn the_journal_holds_what_was_said_until_it_is_reviewed() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let journal = Journal::default().with_sink(tx);
+        journal.note(
+            "the living room",
+            Some("Mark"),
+            "turn off the lights",
+            "Done.",
         );
-        // The handle should resolve immediately because both stores are None.
-        tokio::time::timeout(tokio::time::Duration::from_secs(1), handle)
-            .await
-            .expect("handle should resolve immediately")
-            .expect("task should not panic");
+        journal.note("the app", None, "add milk", "Added milk.");
+        assert_eq!(journal.pending().len(), 2);
+
+        journal.done_through(1);
+        assert_eq!(journal.pending()[0].said, "add milk");
+
+        let mut last = None;
+        while let Ok(document) = rx.try_recv() {
+            last = Some(document);
+        }
+        let next = Journal::default().with_document(&last.unwrap());
+        assert_eq!(next.pending().len(), 1);
+    }
+
+    #[test]
+    fn quiet_is_counted_from_the_last_thing_said() {
+        let journal = Journal::default();
+        journal.note("the office", None, "hello", "Good afternoon.");
+        let later = Utc::now() + chrono::Duration::minutes(6);
+        assert!(journal.quiet_for(later) >= REVIEW_AFTER);
+        assert!(journal.quiet_for(Utc::now()) < REVIEW_AFTER);
+    }
+
+    #[test]
+    fn the_review_reads_a_transcript_in_the_house_s_time() {
+        let said = vec![Said {
+            at: "2026-10-13T12:46:00Z".parse().unwrap(),
+            place: "the living room".into(),
+            who: Some("Mark".into()),
+            said: "Yes".into(),
+            reply: "Saved. When it is 30 minutes after sunset, ...".into(),
+        }];
+        let out = journal_section(&said, chrono_tz::Europe::Copenhagen);
+        assert!(
+            out.contains("[Tue 13 Oct 14:46, the living room]\nMark: Yes\nNiles: Saved."),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn memory_is_shown_with_how_full_it_is() {
+        let memory = MemoryStore::new(niles_memory::MemoryConfig {
+            user_char_limit: 100,
+            agent_char_limit: 200,
+        });
+        memory
+            .add(Target::User, "Mark takes his coffee black.")
+            .unwrap();
+        let out = memory_section(&memory);
+        assert!(out.contains("28% full, 28 of 100 characters"), "{out}");
+        assert!(out.contains("- Mark takes his coffee black."));
+        assert!(out.contains("Noted by Niles ('agent') — 0% full"));
     }
 }

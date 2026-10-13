@@ -28,11 +28,11 @@ pub mod web_search;
 pub use announce::{AnnounceTool, register_announce_tool};
 pub use automations::register_automation_tools;
 pub use builtin::{
-    CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState, GetTimerRemaining,
-    ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
-    QueryCommandHistory, QueryDeviceStateHistory, SetDevice, SetLightEffect, default_registry,
-    register_history_tools, register_memory_tools, register_state_history_tools,
-    register_timer_tools, restricted_registry_for_review,
+    Background, CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState,
+    GetTimerRemaining, ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
+    QueryCommandHistory, QueryDeviceStateHistory, SetDevice, SetLightEffect, background_registry,
+    default_registry, register_history_tools, register_memory_tools, register_state_history_tools,
+    register_timer_tools,
 };
 pub use config::{GetConfig, ResetConfig, UndoConfigChange, UpdateConfig, register_config_tools};
 pub use datetime::{CurrentDatetimeTool, register_datetime_tool};

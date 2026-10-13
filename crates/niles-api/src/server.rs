@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/memory", get(crate::memory::list))
         .route("/memory/{target}", delete(crate::memory::remove))
+        .route("/memory/{target}/restore", post(crate::memory::restore))
         .route(
             "/groceries",
             get(crate::groceries::list).post(crate::groceries::add),
