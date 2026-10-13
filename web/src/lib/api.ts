@@ -537,6 +537,44 @@ export interface Run {
   steps: string[];
 }
 
+/** Where a skill is in its life: the curator marks one nobody used in
+    30 days stale, and one unused in 90 archived. */
+export type SkillStatus = "active" | "stale" | "archived";
+
+/** A procedure Niles wrote for itself, as `GET /skills` lists it. */
+export interface Skill {
+  /** Lowercase and hyphenated: `evening-wind-down`. */
+  name: string;
+  description: string;
+  version: string;
+  status: SkillStatus;
+  /** `agent-created` it wrote after a conversation; `user-created`
+      somebody asked it to. */
+  provenance: "agent-created" | "user-created";
+  /** Kept from the curator and from deletion. */
+  pinned: boolean;
+  /** ISO 8601, like the other times. */
+  created_at: string;
+  last_used_at: string | null;
+  last_viewed_at: string | null;
+  last_patched_at: string | null;
+  usage_count: number;
+  view_count: number;
+  patch_count: number;
+}
+
+/** One skill with its procedure, as `GET /skills/{name}` has it. */
+export interface SkillDetail extends Skill {
+  /** Markdown. */
+  body: string;
+}
+
+/** What `PATCH /skills/{name}` changes. */
+export interface SkillChange {
+  pinned?: boolean;
+  status?: "active" | "archived";
+}
+
 /** One message to Niles in the app, and the answer. */
 export interface Exchange {
   said: string;
@@ -938,6 +976,19 @@ export const api = {
   /** The rule's last runs, newest first. */
   automationRuns: (id: string) =>
     request<{ runs: Run[] }>(`/automations/${encodeURIComponent(id)}/runs`),
+
+  /** Every skill, archived ones too, by name. */
+  skills: () => request<Skill[]>("/skills"),
+  skill: (name: string) => request<SkillDetail>(`/skills/${encodeURIComponent(name)}`),
+  /** Pin or unpin, archive or restore. */
+  updateSkill: (name: string, change: SkillChange) =>
+    request<void>(`/skills/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      body: JSON.stringify(change),
+    }),
+  /** Refused while the skill is pinned. */
+  deleteSkill: (name: string) =>
+    request<void>(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
 
   history: () => request<Revision[]>("/config/history"),
 

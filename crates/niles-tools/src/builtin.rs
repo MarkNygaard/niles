@@ -2933,9 +2933,7 @@ mod tests {
         let memory = Arc::new(niles_memory::MemoryStore::new(
             niles_memory::MemoryConfig::default(),
         ));
-        let skill_tmp = TempDir::new().unwrap();
-        let skill =
-            Arc::new(niles_skills::SkillStore::open(skill_tmp.path(), 100_000, 1_048_576).unwrap());
+        let skill = Arc::new(niles_skills::SkillStore::new(100_000));
         let reg = restricted_registry_for_review(Some(memory), Some(skill));
         let names: std::collections::HashSet<String> =
             reg.llm_tools().into_iter().map(|t| t.name).collect();
@@ -2963,9 +2961,7 @@ mod tests {
         let memory = Arc::new(niles_memory::MemoryStore::new(
             niles_memory::MemoryConfig::default(),
         ));
-        let skill_tmp = TempDir::new().unwrap();
-        let skill =
-            Arc::new(niles_skills::SkillStore::open(skill_tmp.path(), 100_000, 1_048_576).unwrap());
+        let skill = Arc::new(niles_skills::SkillStore::new(100_000));
         let reg = restricted_registry_for_review(Some(memory), Some(skill));
         let names: Vec<String> = reg.llm_tools().into_iter().map(|t| t.name).collect();
         for excluded in [

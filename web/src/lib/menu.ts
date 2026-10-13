@@ -3,20 +3,34 @@ import { valueAt } from "@/lib/api";
 /** The menu entries that can be moved. Home and My profile are not:
     Home is the main navigation's first entry, My profile the avatar
     menu's. Settings moves but does not hide — it is the way back here. */
-export type MenuEntry = "groceries" | "chat" | "media" | "settings" | "automations";
+export type MenuEntry =
+  | "groceries"
+  | "chat"
+  | "media"
+  | "settings"
+  | "automations"
+  | "skills";
 
 /** Every movable entry, in the order the main navigation shows them
     before anybody arranges it. */
-export const MOVABLE: MenuEntry[] = ["groceries", "chat", "media", "settings", "automations"];
+export const MOVABLE: MenuEntry[] = [
+  "groceries",
+  "chat",
+  "media",
+  "settings",
+  "automations",
+  "skills",
+];
 
 /** Where Settings sits before anybody moves it. */
 const AVATAR_AT_FIRST: MenuEntry[] = ["settings"];
 
 /** Entries that go to the end of the avatar menu, not the main
     navigation, while neither list names them. Automations is opened
-    now and then, to look or to fix one: it has no claim on a tab, and
-    a menu arranged before it existed should not gain one. */
-export const AVATAR_UNLESS_PLACED: MenuEntry[] = ["automations"];
+    now and then, to look or to fix one, and Skills to see what Niles
+    has learned: neither has a claim on a tab, and a menu arranged
+    before they existed should not gain one. */
+export const AVATAR_UNLESS_PLACED: MenuEntry[] = ["automations", "skills"];
 
 /** When the Media entry is in the menu. */
 export type MediaShown = "playing" | "always" | "never";

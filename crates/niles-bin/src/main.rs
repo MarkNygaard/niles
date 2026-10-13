@@ -1517,20 +1517,78 @@ async fn build_conversation_memory(cfg: &Config) -> Arc<conversation::Conversati
     Arc::new(memory.with_sink(tx))
 }
 
-/// Build a `SkillStore` from the `[skills]` section.
-/// Returns `None` when no directory is configured or when opening the store fails.
-fn build_skill_store(cfg: &niles_config::SkillsConfig) -> Option<Arc<SkillStore>> {
-    let dir = cfg.directory.as_ref()?;
-    match SkillStore::open(dir, cfg.skill_max_chars, cfg.supporting_file_max_bytes) {
-        Ok(store) => Some(Arc::new(store)),
-        Err(e) => {
+/// Hands the changed set of skills to the task that writes it.
+struct QueuedSkills {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl niles_skills::SkillPersistence for QueuedSkills {
+    fn store(&self, document: &str) {
+        if self.tx.send(document.to_string()).is_err() {
             tracing::warn!(
-                "Failed to open skill store at {}: {e}; skill tools disabled",
-                dir.display()
+                "[skills] nothing is writing them any more; this change is in memory only"
             );
-            None
         }
     }
+}
+
+/// The skills Niles has made, kept in Postgres when there is one. Always
+/// on: they used to need a `[skills] directory`, and without one Niles
+/// could not learn anything.
+///
+/// Without a database they last as long as the process, and say so. A
+/// set that cannot be read is left out rather than started empty: the
+/// first skill made would otherwise overwrite the rest.
+async fn build_skill_store(cfg: &Config) -> Option<Arc<SkillStore>> {
+    let max_chars = cfg.skills.skill_max_chars;
+    let in_memory = || {
+        tracing::warn!("[skills] no database; skills made now will not survive a restart");
+        Some(Arc::new(SkillStore::new(max_chars)))
+    };
+    let Some(database) = &cfg.database else {
+        return in_memory();
+    };
+    let Ok(url) = database.resolve_url() else {
+        return in_memory();
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return in_memory();
+    };
+    let table = Arc::new(niles_db::PostgresSkills::new(
+        backend.pool(),
+        backend.describe_target(),
+    ));
+    let store = match table.load().await {
+        Ok(Some(document)) => match SkillStore::from_json(&document, max_chars) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!(
+                    "[skills] the stored skills would not load ({e}); they are unavailable this run"
+                );
+                return None;
+            }
+        },
+        Ok(None) => SkillStore::new(max_chars),
+        Err(e) => {
+            tracing::error!("[skills] could not be read ({e}); they are unavailable this run");
+            return None;
+        }
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(mut document) = rx.recv().await {
+            // Each document is the whole set; only the newest matters.
+            while let Ok(newer) = rx.try_recv() {
+                document = newer;
+            }
+            if let Err(e) = table.store(&document).await {
+                tracing::error!("[skills] save failed: {e}");
+            }
+        }
+    });
+    Some(Arc::new(store.with_sink(Arc::new(QueuedSkills { tx }))))
 }
 
 /// Build an `OpenMeteoClient`.
@@ -1911,19 +1969,17 @@ fn spawn_skill_curator(
         // Defer the first sweep so startup work isn't competed with.
         tokio::time::sleep(Duration::from_secs(60)).await;
         loop {
-            match niles_skills::curator::apply_automatic_transitions(&store, Utc::now(), thresholds)
-            {
-                Ok(r) => tracing::info!(
-                    examined = r.examined,
-                    became_stale = r.became_stale,
-                    became_archived = r.became_archived,
-                    revived = r.revived,
-                    skipped_pinned = r.skipped_pinned,
-                    skipped_user_created = r.skipped_user_created,
-                    "skill curator swept",
-                ),
-                Err(e) => tracing::warn!("skill curator sweep failed: {e:#}"),
-            }
+            let r =
+                niles_skills::curator::apply_automatic_transitions(&store, Utc::now(), thresholds);
+            tracing::info!(
+                examined = r.examined,
+                became_stale = r.became_stale,
+                became_archived = r.became_archived,
+                revived = r.revived,
+                skipped_pinned = r.skipped_pinned,
+                skipped_user_created = r.skipped_user_created,
+                "skill curator swept",
+            );
             tokio::time::sleep(interval).await;
         }
     }))
@@ -2374,7 +2430,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let capability_index = capability_loader.as_deref().map(build_capability_index);
 
     let memory_store = build_memory_store(&cfg).await;
-    let skill_store = build_skill_store(&cfg.skills);
+    let skill_store = build_skill_store(&cfg).await;
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
@@ -2421,13 +2477,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
     let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
 
-    let skill_summaries = skill_store.as_ref().and_then(|s| match s.list_summaries() {
-        Ok(v) => Some(v),
-        Err(e) => {
-            tracing::warn!("failed to list skills: {e}");
-            None
-        }
-    });
+    let skill_summaries = skill_store.as_ref().map(|s| s.list_summaries());
 
     let system_prompt = assemble_system_prompt_with_optional_capabilities(
         &args.prompt,
@@ -2964,7 +3014,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         .map(Arc::new);
 
     let memory_store = build_memory_store(&cfg).await;
-    let skill_store = build_skill_store(&cfg.skills);
+    let skill_store = build_skill_store(&cfg).await;
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
     let linear_client = build_linear_client(&cfg.integrations);
@@ -3674,16 +3724,7 @@ async fn dispatch_tier1(
         .map(|m| m.load(niles_memory::Target::Memory));
     let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
     let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
-    let skill_summaries = ctx
-        .skill_store
-        .as_ref()
-        .and_then(|s| match s.list_summaries() {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!("[{peer}] failed to list skills: {e}");
-                None
-            }
-        });
+    let skill_summaries = ctx.skill_store.as_ref().map(|s| s.list_summaries());
     let system_prompt = assemble_system_prompt_with_optional_capabilities(
         text,
         &ctx.home,
@@ -6051,7 +6092,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .map(Arc::new);
 
     let memory_store = build_memory_store(&cfg).await;
-    let skill_store = build_skill_store(&cfg.skills);
+    let skill_store = build_skill_store(&cfg).await;
     let weather_client = build_weather_client();
     let _skill_curator_handle = skill_store
         .clone()
@@ -6296,6 +6337,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
     .with_automations(automations.clone())
+    .with_skills(skill_store.clone())
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
     .with_nemlig(nemlig.clone())
@@ -8945,18 +8987,7 @@ mod system_prompt_tests {
         // No tokio runtime needed — the enabled branch returns None
         // before any spawn.
         assert!(
-            spawn_skill_curator(
-                Arc::new(
-                    niles_skills::SkillStore::open(
-                        std::env::temp_dir().join("niles-test-curator-noop"),
-                        100_000,
-                        1_048_576,
-                    )
-                    .unwrap()
-                ),
-                cfg,
-            )
-            .is_none()
+            spawn_skill_curator(Arc::new(niles_skills::SkillStore::new(100_000)), cfg,).is_none()
         );
     }
 

@@ -4,9 +4,9 @@ import { menuLayout } from "./menu";
 const ids = (items: { id: string }[]) => items.map((i) => i.id);
 
 describe("menuLayout", () => {
-  it("puts Settings and Automations in the avatar menu and the rest at the bottom at first", () => {
+  it("puts Settings, Automations and Skills in the avatar menu and the rest at the bottom at first", () => {
     const layout = menuLayout({});
-    expect(ids(layout.avatar)).toEqual(["settings", "automations"]);
+    expect(ids(layout.avatar)).toEqual(["settings", "automations", "skills"]);
     expect(ids(layout.main)).toEqual(["groceries", "chat", "media"]);
   });
 
@@ -14,7 +14,7 @@ describe("menuLayout", () => {
     const layout = menuLayout({
       menu: { avatar: ["automations", "chat", "settings"], order: ["media", "groceries"] },
     });
-    expect(ids(layout.avatar)).toEqual(["automations", "chat", "settings"]);
+    expect(ids(layout.avatar)).toEqual(["automations", "chat", "settings", "skills"]);
     expect(ids(layout.main)).toEqual(["media", "groceries"]);
   });
 
@@ -29,16 +29,24 @@ describe("menuLayout", () => {
     const layout = menuLayout({
       menu: { avatar: ["chat", "settings"], order: ["media", "groceries"] },
     });
-    expect(ids(layout.avatar)).toEqual(["chat", "settings", "automations"]);
+    expect(ids(layout.avatar)).toEqual(["chat", "settings", "automations", "skills"]);
     expect(ids(layout.main)).not.toContain("automations");
+    expect(ids(layout.main)).not.toContain("skills");
+  });
+
+  it("keeps Skills where it was put, and hides it like any other entry", () => {
+    const main = menuLayout({ menu: { order: ["skills", "chat"], hidden: ["skills"] } });
+    expect(ids(main.main).slice(0, 2)).toEqual(["skills", "chat"]);
+    expect(ids(main.avatar)).not.toContain("skills");
+    expect(main.main.find((m) => m.id === "skills")!.hidden).toBe(true);
   });
 
   it("keeps Automations where it was put", () => {
     const main = menuLayout({ menu: { avatar: ["settings"], order: ["automations", "chat"] } });
-    expect(ids(main.avatar)).toEqual(["settings"]);
+    expect(ids(main.avatar)).toEqual(["settings", "skills"]);
     expect(ids(main.main).slice(0, 2)).toEqual(["automations", "chat"]);
     const avatar = menuLayout({ menu: { avatar: ["automations", "settings"] } });
-    expect(ids(avatar.avatar)).toEqual(["automations", "settings"]);
+    expect(ids(avatar.avatar)).toEqual(["automations", "settings", "skills"]);
   });
 
   it("hides Automations like any other entry", () => {
@@ -48,7 +56,7 @@ describe("menuLayout", () => {
 
   it("ignores names it does not know and names given twice", () => {
     const layout = menuLayout({ menu: { avatar: ["me", "settings", "settings", 3] } });
-    expect(ids(layout.avatar)).toEqual(["settings", "automations"]);
+    expect(ids(layout.avatar)).toEqual(["settings", "automations", "skills"]);
   });
 
   it("hides what is hidden, but never Settings", () => {

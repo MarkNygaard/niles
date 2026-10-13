@@ -1,9 +1,8 @@
 //! Skill lifecycle curator — pure stale/archive transitions over
-//! the on-disk sidecar telemetry. No LLM involvement; that's PR 4.
+//! each skill's usage telemetry. No LLM involvement.
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::error::Result;
 use crate::sidecar::{Provenance, SkillStatus};
 use crate::store::{SkillStatusFilter, SkillStore};
 
@@ -41,9 +40,9 @@ pub fn apply_automatic_transitions(
     store: &SkillStore,
     now: DateTime<Utc>,
     thresholds: CuratorThresholds,
-) -> Result<TransitionReport> {
+) -> TransitionReport {
     let mut report = TransitionReport::default();
-    let summaries = store.list_summaries_filtered(SkillStatusFilter::All)?;
+    let summaries = store.list_summaries_filtered(SkillStatusFilter::All);
     for s in summaries {
         report.examined += 1;
         if matches!(s.provenance, Provenance::UserCreated) {
@@ -84,7 +83,7 @@ pub fn apply_automatic_transitions(
             SkillStatus::Active => report.revived += 1,
         }
     }
-    Ok(report)
+    report
 }
 
 #[cfg(test)]
@@ -92,10 +91,9 @@ mod tests {
     use super::*;
     use crate::sidecar::Sidecar;
     use chrono::TimeZone;
-    use tempfile::TempDir;
 
-    fn store(tmp: &TempDir) -> SkillStore {
-        SkillStore::open(tmp.path(), 100_000, 1_048_576).unwrap()
+    fn store() -> SkillStore {
+        SkillStore::new(100_000)
     }
 
     // ------------------------------------------------------------------
@@ -144,8 +142,7 @@ mod tests {
 
     #[test]
     fn agent_skill_60_days_idle_becomes_stale() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
@@ -153,9 +150,7 @@ mod tests {
         let mut sidecar = Sidecar::new(Provenance::AgentCreated);
         sidecar.created_at = created;
         sidecar.last_used_at = Some(created);
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 3, 15, 12, 0, 0).unwrap(); // ~73 days later
         let report = apply_automatic_transitions(
@@ -165,8 +160,7 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.became_stale, 1);
         assert_eq!(report.became_archived, 0);
         assert_eq!(store.load("s").unwrap().sidecar.status, SkillStatus::Stale);
@@ -174,8 +168,7 @@ mod tests {
 
     #[test]
     fn agent_skill_100_days_idle_becomes_archived() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
@@ -183,9 +176,7 @@ mod tests {
         let mut sidecar = Sidecar::new(Provenance::AgentCreated);
         sidecar.created_at = created;
         sidecar.last_used_at = Some(created);
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap(); // ~104 days later
         let report = apply_automatic_transitions(
@@ -195,8 +186,7 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.became_stale, 0);
         assert_eq!(report.became_archived, 1);
         assert_eq!(
@@ -207,8 +197,7 @@ mod tests {
 
     #[test]
     fn pinned_agent_skill_100_days_idle_unchanged() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
@@ -218,9 +207,7 @@ mod tests {
         sidecar.created_at = created;
         sidecar.last_used_at = Some(created);
         sidecar.pinned = true;
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
         let report = apply_automatic_transitions(
@@ -230,8 +217,7 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.skipped_pinned, 1);
         assert_eq!(report.became_archived, 0);
         assert_eq!(store.load("s").unwrap().sidecar.status, SkillStatus::Active);
@@ -239,8 +225,7 @@ mod tests {
 
     #[test]
     fn user_created_skill_100_days_idle_unchanged() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::UserCreated)
             .unwrap();
@@ -248,9 +233,7 @@ mod tests {
         let mut sidecar = Sidecar::new(Provenance::UserCreated);
         sidecar.created_at = created;
         sidecar.last_used_at = Some(created);
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
         let report = apply_automatic_transitions(
@@ -260,8 +243,7 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.skipped_user_created, 1);
         assert_eq!(report.became_archived, 0);
         assert_eq!(store.load("s").unwrap().sidecar.status, SkillStatus::Active);
@@ -269,8 +251,7 @@ mod tests {
 
     #[test]
     fn never_used_agent_skill_with_old_created_at_becomes_archived() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
@@ -278,9 +259,7 @@ mod tests {
         let mut sidecar = Sidecar::new(Provenance::AgentCreated);
         sidecar.created_at = created;
         // No activity fields set — latest_activity_at() returns None.
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
         let report = apply_automatic_transitions(
@@ -290,8 +269,7 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.became_archived, 1);
         assert_eq!(
             store.load("s").unwrap().sidecar.status,
@@ -301,8 +279,7 @@ mod tests {
 
     #[test]
     fn stale_skill_with_fresh_activity_revives_to_active() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
@@ -311,9 +288,7 @@ mod tests {
         sidecar.created_at = created;
         sidecar.status = SkillStatus::Stale;
         sidecar.last_used_at = Some(Utc.with_ymd_and_hms(2026, 4, 10, 12, 0, 0).unwrap()); // 5 days ago
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
         let report = apply_automatic_transitions(
@@ -323,16 +298,14 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.revived, 1);
         assert_eq!(store.load("s").unwrap().sidecar.status, SkillStatus::Active);
     }
 
     #[test]
     fn report_counts_match_transitions() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
 
         // 1. agent, idle 60 days → Stale
         store
@@ -341,8 +314,7 @@ mod tests {
         let mut sc = Sidecar::new(Provenance::AgentCreated);
         sc.created_at = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         sc.last_used_at = Some(Utc.with_ymd_and_hms(2026, 2, 14, 12, 0, 0).unwrap());
-        sc.write(&tmp.path().join("agent-stale").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("agent-stale", sc.clone());
 
         // 2. agent, idle 100 days → Archived
         store
@@ -357,8 +329,7 @@ mod tests {
         let mut sc = Sidecar::new(Provenance::AgentCreated);
         sc.created_at = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         sc.last_used_at = Some(sc.created_at);
-        sc.write(&tmp.path().join("agent-archived").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("agent-archived", sc.clone());
 
         // 3. agent, pinned, idle 100 days → skipped
         store
@@ -368,8 +339,7 @@ mod tests {
         sc.created_at = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         sc.last_used_at = Some(sc.created_at);
         sc.pinned = true;
-        sc.write(&tmp.path().join("agent-pinned").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("agent-pinned", sc.clone());
 
         // 4. user-created, idle 100 days → skipped
         store
@@ -378,8 +348,7 @@ mod tests {
         let mut sc = Sidecar::new(Provenance::UserCreated);
         sc.created_at = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         sc.last_used_at = Some(sc.created_at);
-        sc.write(&tmp.path().join("user-idle").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("user-idle", sc.clone());
 
         // 5. agent, stale on disk, fresh activity → revived
         store
@@ -389,8 +358,7 @@ mod tests {
         sc.created_at = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         sc.status = SkillStatus::Stale;
         sc.last_used_at = Some(Utc.with_ymd_and_hms(2026, 4, 10, 12, 0, 0).unwrap());
-        sc.write(&tmp.path().join("agent-revived").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("agent-revived", sc.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
         let report = apply_automatic_transitions(
@@ -400,8 +368,7 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
 
         assert_eq!(report.examined, 5);
         assert_eq!(report.became_stale, 1);
@@ -413,17 +380,14 @@ mod tests {
 
     #[test]
     fn equal_thresholds_skips_stale_goes_straight_to_archived() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
         let created = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let mut sidecar = Sidecar::new(Provenance::AgentCreated);
         sidecar.created_at = created;
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap(); // ~104 days
         let report = apply_automatic_transitions(
@@ -433,8 +397,7 @@ mod tests {
                 stale_after: Duration::days(90),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.became_stale, 0);
         assert_eq!(report.became_archived, 1);
         assert_eq!(
@@ -445,8 +408,7 @@ mod tests {
 
     #[test]
     fn archived_skill_with_fresh_activity_revives_to_active() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
@@ -455,9 +417,7 @@ mod tests {
         sidecar.created_at = created;
         sidecar.status = SkillStatus::Archived;
         sidecar.last_used_at = Some(Utc.with_ymd_and_hms(2026, 4, 10, 12, 0, 0).unwrap()); // 5 days ago
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 4, 15, 12, 0, 0).unwrap();
         let report = apply_automatic_transitions(
@@ -467,16 +427,14 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(report.revived, 1);
         assert_eq!(store.load("s").unwrap().sidecar.status, SkillStatus::Active);
     }
 
     #[test]
     fn bump_after_curator_set_to_stale_resets_to_active() {
-        let tmp = TempDir::new().unwrap();
-        let store = store(&tmp);
+        let store = store();
         store
             .create("s", "D", "0.1.0", "B", Provenance::AgentCreated)
             .unwrap();
@@ -484,9 +442,7 @@ mod tests {
         let mut sidecar = Sidecar::new(Provenance::AgentCreated);
         sidecar.created_at = created;
         sidecar.last_used_at = Some(created);
-        sidecar
-            .write(&tmp.path().join("s").join(".usage.json"))
-            .unwrap();
+        store.put_sidecar("s", sidecar.clone());
 
         let now = Utc.with_ymd_and_hms(2026, 3, 15, 12, 0, 0).unwrap();
         apply_automatic_transitions(
@@ -496,8 +452,7 @@ mod tests {
                 stale_after: Duration::days(30),
                 archive_after: Duration::days(90),
             },
-        )
-        .unwrap();
+        );
         assert_eq!(store.load("s").unwrap().sidecar.status, SkillStatus::Stale);
 
         store.bump_use("s").unwrap();

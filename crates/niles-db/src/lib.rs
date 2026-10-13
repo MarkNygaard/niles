@@ -37,6 +37,7 @@ mod memory;
 mod room_music;
 mod scenes;
 mod secrets;
+mod skills;
 mod tado_tokens;
 pub use automations::PostgresAutomations;
 pub use calendars::PostgresCalendars;
@@ -48,6 +49,7 @@ pub use memory::PostgresMemory;
 pub use room_music::PostgresRoomMusic;
 pub use scenes::PostgresScenes;
 pub use secrets::{PostgresSecrets, Sealer};
+pub use skills::PostgresSkills;
 pub use tado_tokens::PostgresTadoTokens;
 
 use async_trait::async_trait;

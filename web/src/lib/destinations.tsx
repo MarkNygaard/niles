@@ -4,6 +4,7 @@ import {
   Music,
   ShoppingBasket,
   SlidersHorizontal,
+  Sparkles,
   UserRound,
   Workflow,
 } from "lucide-react";
@@ -66,5 +67,11 @@ export const DESTINATIONS: Record<MenuEntry, Destination> = {
     label: "Automations",
     icon: <Workflow />,
     owns: (r) => r === "/automations" || r.startsWith("/automations/"),
+  },
+  skills: {
+    href: "#/skills",
+    label: "Skills",
+    icon: <Sparkles />,
+    owns: (r) => r === "/skills",
   },
 };

@@ -217,17 +217,14 @@ pub fn register_skill_tools(reg: &mut ToolRegistry, store: Arc<SkillStore>) {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tempfile::TempDir;
 
-    fn store() -> (TempDir, Arc<SkillStore>) {
-        let tmp = TempDir::new().unwrap();
-        let s = SkillStore::open(tmp.path(), 100_000, 1_048_576).unwrap();
-        (tmp, Arc::new(s))
+    fn store() -> Arc<SkillStore> {
+        Arc::new(SkillStore::new(100_000))
     }
 
     #[tokio::test]
     async fn mint_then_view_round_trips() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s.clone());
         let view = ViewSkillTool::new(s.clone());
 
@@ -246,7 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn mint_invalid_name_errors() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s);
         let err = mint
             .execute(json!({
@@ -262,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn mint_missing_required_field_errors() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s);
         let err = mint
             .execute(json!({
@@ -279,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_updates_body_preserves_meta() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s.clone());
         let patch = PatchSkillTool::new(s.clone());
         let view = ViewSkillTool::new(s);
@@ -306,7 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_removes_skill() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s.clone());
         let delete = DeleteSkillTool::new(s.clone());
         let view = ViewSkillTool::new(s);
@@ -327,10 +324,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_with_absorbed_into_writes_graveyard() {
-        let (tmp, s) = store();
+    async fn delete_with_absorbed_into_says_where_it_went() {
+        let s = store();
         let mint = MintSkillTool::new(s.clone());
-        let delete = DeleteSkillTool::new(s);
+        let delete = DeleteSkillTool::new(s.clone());
 
         mint.execute(json!({
             "name": "my-skill",
@@ -346,12 +343,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(tmp.path().join(".absorbed").join("my-skill.json").exists());
+        let err = ViewSkillTool::new(s)
+            .execute(json!({"name": "my-skill"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("folded into `other`"), "{err}");
     }
 
     #[tokio::test]
     async fn view_bumps_view_counter() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s.clone());
         let view = ViewSkillTool::new(s.clone());
 
@@ -373,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn view_unknown_skill_errors() {
-        let (_tmp, s) = store();
+        let s = store();
         let view = ViewSkillTool::new(s);
         let err = view.execute(json!({"name": "nope"})).await.unwrap_err();
         assert!(matches!(err, Error::Skill(_)));
@@ -381,7 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_missing_skill_errors() {
-        let (_tmp, s) = store();
+        let s = store();
         let patch = PatchSkillTool::new(s);
         let err = patch
             .execute(json!({"name": "nope", "body": "New"}))
@@ -392,7 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_missing_skill_errors() {
-        let (_tmp, s) = store();
+        let s = store();
         let delete = DeleteSkillTool::new(s);
         let err = delete.execute(json!({"name": "nope"})).await.unwrap_err();
         assert!(matches!(err, Error::Skill(_)));
@@ -400,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_pinned_skill_errors() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s.clone());
         let delete = DeleteSkillTool::new(s.clone());
 
@@ -424,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn mint_existing_skill_errors() {
-        let (_tmp, s) = store();
+        let s = store();
         let mint = MintSkillTool::new(s);
 
         mint.execute(json!({
