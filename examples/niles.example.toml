@@ -82,22 +82,16 @@ api_key_env = "GROQ_API_KEY"
 # ip = "192.168.1.20"
 # room = "kitchen"
 
-# Optional Tier B capability reference directory. If set, niles loads
-# every `<directory>/<name>/SKILL.md` at startup and registers the
-# `look_up_capability` tool so the LLM can pull a capability's full
-# markdown body on demand. Missing/empty/unreadable — niles starts
-# without the tool and logs the cause.
+# Where Niles keeps everything that must survive a restart: settings
+# changed in the app, memory, skills, automations, scenes, timers. Nothing
+# to write here: set NILES_DATABASE_URL (from a Secret) to a Postgres
+# connection string and Niles uses it. Without it, state lives in memory
+# and is lost when the process exits — Niles says so at startup.
 #
-# [capabilities]
-# directory = "docs/capabilities"
-
-# Optional. Where Niles keeps the config changes made through the web UI
-# and by voice, so they survive a restart. Without this section, and
-# without [persistence], those changes apply immediately but are lost when
-# the process exits — Niles says so at startup.
-#
-# url_env names the environment variable holding the connection string; it
-# is never the string itself, which would put a password in this file.
+# The section only exists to change the defaults. url_env names the
+# environment variable holding the connection string; it is never the
+# string itself, which would put a password in this file. max_connections
+# is the whole of Niles's share of the database, every store together.
 # [database]
 # url_env = "NILES_DATABASE_URL"
 # max_connections = 5
