@@ -421,13 +421,20 @@ impl NemligClient {
         }
         let answer: LoginAnswer = read(response).await?;
         tracing::info!("[nemlig] signed in");
-        Ok(Session {
+        let mut session = Session {
             signed_in_as: credentials.fingerprint(),
             signed_in_at: Instant::now(),
-            zone_id: answer.delivery_zone_id,
-            timeslot_utc: answer.timeslot_utc,
+            zone_id: answer.delivery_zone_id.unwrap_or_default(),
+            timeslot_utc: answer.timeslot_utc.clone().unwrap_or_default(),
             token: None,
-        })
+        };
+        // Since 2026-10-13 the login can answer with only where to go
+        // next — `{"RedirectUrl":"/","MergeSuccessful":false,…}` — and
+        // the zone it used to carry comes from the basket instead.
+        if answer.delivery_zone_id.is_none() || answer.timeslot_utc.is_none() {
+            self.read_basket(&mut session).await?;
+        }
+        Ok(session)
     }
 
     async fn token(&self, session: &mut Session) -> Result<String> {
@@ -493,12 +500,13 @@ fn note_context(session: &mut Session, raw: &RawBasket) {
     }
 }
 
-/// What a login answers with: where the account is, for pricing.
+/// What a login answers with: where the account is, for pricing —
+/// when it says. Not every login does.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct LoginAnswer {
-    delivery_zone_id: i64,
-    timeslot_utc: String,
+    delivery_zone_id: Option<i64>,
+    timeslot_utc: Option<String>,
 }
 
 async fn read<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
@@ -656,6 +664,19 @@ mod tests {
 
     /// The real site, with a real account. Ignored: it needs
     /// `NEMLIG_USER` and `NEMLIG_PASSWORD`, and talks to nemlig.com.
+    #[test]
+    fn a_login_that_only_says_where_to_go_next_is_read() {
+        let answer: LoginAnswer = serde_json::from_str(
+            r#"{"RedirectUrl":"/","MergeSuccessful":false,"CanCreateShoppingList":true}"#,
+        )
+        .unwrap();
+        assert_eq!(answer.delivery_zone_id, None);
+        let answer: LoginAnswer =
+            serde_json::from_str(r#"{"DeliveryZoneId":4,"TimeslotUtc":"2026100905-120-1020"}"#)
+                .unwrap();
+        assert_eq!(answer.delivery_zone_id, Some(4));
+    }
+
     #[tokio::test]
     #[ignore]
     async fn searches_the_real_site() {
@@ -679,6 +700,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again.first().map(|p| &p.id), Some(&rolls[0].id));
+    }
+
+    /// Signing in again over a session that is still alive, as Niles
+    /// does every `SESSION_LIFETIME` with the old cookies still in the
+    /// jar. The answer then carries no zone. Ignored: real site.
+    #[tokio::test]
+    #[ignore]
+    async fn signs_in_again_over_a_live_session() {
+        let credentials = Credentials {
+            username: std::env::var("NEMLIG_USER").expect("NEMLIG_USER"),
+            password: std::env::var("NEMLIG_PASSWORD").expect("NEMLIG_PASSWORD"),
+        };
+        let client = NemligClient::new().unwrap();
+        client.log_in(&credentials).await.unwrap();
+        let again = client.log_in(&credentials).await.unwrap();
+        assert_ne!(again.zone_id, 0);
+        assert!(!again.timeslot_utc.is_empty());
     }
 
     /// The basket and delivery days on the real site, and one product in
