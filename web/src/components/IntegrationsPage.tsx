@@ -28,6 +28,8 @@ import { CalendarAppPanel, redirectUri } from "@/components/CalendarAppPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
+import { MqttPanel } from "@/components/MqttPanel";
+import type { MqttSettings } from "@/components/MqttPanel";
 import { IntegrationGallery, groupsOf } from "@/components/IntegrationGallery";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -81,9 +83,9 @@ export interface IntegrationsPageProps {
   onReset: (row: string, paths: string[]) => void;
   onSecretsChanged: () => void;
   onTadoChanged: () => void;
-  /** Go to a Settings section, for what is set up there rather than
-      here: the broker. */
-  onOpenSettings?: (section: string) => void;
+  /** `[mqtt]` as the config has it, and Niles's own values for it. */
+  mqtt?: MqttSettings;
+  mqttDefaults?: MqttSettings;
 }
 
 /**
@@ -127,7 +129,8 @@ export function IntegrationsPage({
   onReset,
   onSecretsChanged,
   onTadoChanged,
-  onOpenSettings,
+  mqtt,
+  mqttDefaults,
 }: IntegrationsPageProps) {
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
@@ -136,11 +139,6 @@ export function IntegrationsPage({
 
   const added = integrations.filter((i) => i.added);
   const current = integrations.find((i) => i.id === open);
-
-  function openSettings(section: string) {
-    setAdding(false);
-    onOpenSettings?.(section);
-  }
 
   function secretFor(key: string | null): Secret | undefined {
     if (!key) return undefined;
@@ -154,8 +152,6 @@ export function IntegrationsPage({
    * and answers nothing.
    */
   function ready(integration: Integration): boolean {
-    // Set up on its own page, which says what is missing there.
-    if (integration.kind === "setting") return integration.added;
     if (integration.id === "tado") return Boolean(tado?.authorised);
     if (integration.id === "linear") return Boolean(linear?.team?.trim());
     if (integration.id === "nemlig")
@@ -239,6 +235,7 @@ export function IntegrationsPage({
           { path: "integrations.google.enabled", value: true },
           { path: "integrations.google.redirect_uri", value: redirectUri("google") },
         ]);
+      case "mqtt":
       case "unifi":
       case "sonos":
       case "lg_tv":
@@ -297,6 +294,9 @@ export function IntegrationsPage({
         return onChange("presence.unifi", [
           { path: "presence.unifi.host", value: "" },
         ]);
+      // The broker's login went with its keys, above.
+      case "mqtt":
+        return onChange("mqtt", [{ path: "mqtt.host", value: "" }]);
       // The pairing key is gone with it: it belongs to one TV, so a TV
       // added again pairs again.
       case "lg_tv":
@@ -369,13 +369,7 @@ export function IntegrationsPage({
                       integration={integration}
                       ready={ready(integration)}
                       disabled={saving}
-                      onOpen={
-                        integration.kind === "setting"
-                          ? integration.settings_page && onOpenSettings
-                            ? () => openSettings(integration.settings_page!.id)
-                            : undefined
-                          : () => setOpen(integration.id)
-                      }
+                      onOpen={() => setOpen(integration.id)}
                     />
                   ))}
                 </div>
@@ -398,7 +392,6 @@ export function IntegrationsPage({
         onOpenChange={setAdding}
         integrations={integrations}
         disabled={saving}
-        onOpenSettings={onOpenSettings ? openSettings : undefined}
         onPick={(integration) => {
           if (integration.added) {
             setAdding(false);
@@ -589,6 +582,19 @@ export function IntegrationsPage({
                   />
                 )}
 
+                {current.id === "mqtt" && (
+                  <MqttPanel
+                    mqtt={mqtt ?? {}}
+                    defaults={mqttDefaults ?? {}}
+                    username={secretFor("mqtt.username")}
+                    password={secretFor("mqtt.password")}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onChange={(entries) => onChange("mqtt", entries)}
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
                 {current.id === "unifi" && (
                   <UnifiPanel
                     host={unifiHost ?? ""}
@@ -670,8 +676,7 @@ function IntegrationRow({
   integration: Integration;
   ready: boolean;
   disabled?: boolean;
-  /** Absent for one set up on a Settings page nobody can take us to. */
-  onOpen?: () => void;
+  onOpen: () => void;
 }) {
   return (
     <div className="flex items-center gap-3 px-1 py-2.5">
@@ -693,23 +698,15 @@ function IntegrationRow({
           </span>
         )}
       </span>
-      {onOpen ? (
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={disabled}
-          aria-label={`Configure ${integration.label}`}
-          onClick={onOpen}
-        >
-          Configure
-        </Button>
-      ) : (
-        integration.settings_page && (
-          <span className="text-muted-foreground text-xs">
-            In Settings → {integration.settings_page.label}
-          </span>
-        )
-      )}
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={disabled}
+        aria-label={`Configure ${integration.label}`}
+        onClick={onOpen}
+      >
+        Configure
+      </Button>
     </div>
   );
 }

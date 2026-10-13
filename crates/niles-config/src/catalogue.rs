@@ -22,12 +22,9 @@ pub enum Kind {
     /// An inference account: one endpoint, one key, and the roles it
     /// can serve. Adding it appends to `[[providers]]`.
     Provider,
-    /// Anything with its own wiring — an OAuth flow, a webhook.
+    /// Anything with its own wiring — an OAuth flow, a webhook, a
+    /// broker.
     Service,
-    /// Set up on a Settings page of its own rather than here. Listed so
-    /// a new install sees it beside the other things Niles needs,
-    /// instead of finding out from lights that never answer.
-    Setting,
 }
 
 /// Where it sits on the Integrations page.
@@ -129,14 +126,6 @@ impl Group {
     }
 }
 
-/// The Settings page a [`Kind::Setting`] entry is set up on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct SettingsPage {
-    /// The section's id in the app's Settings navigation.
-    pub id: &'static str,
-    pub label: &'static str,
-}
-
 /// Which API a provider speaks.
 ///
 /// Every provider here but one answers the OpenAI shape at its base URL,
@@ -167,8 +156,6 @@ pub struct Known {
     /// Every credential it keeps. Removing it deletes the stored ones,
     /// since nothing else shows them once it is gone.
     pub secrets: &'static [&'static str],
-    /// [`Kind::Setting`] only.
-    pub settings_page: Option<SettingsPage>,
     /// Providers only. The one address its API lives at, so nobody has
     /// to look it up or mistype it.
     pub base_url: Option<&'static str>,
@@ -200,18 +187,12 @@ pub const KNOWN: &[Known] = &[
         id: "mqtt",
         label: "Zigbee & MQTT",
         blurb: "How Niles reaches your lights. Zigbee lights and WLED strips all talk to Niles through an MQTT broker.",
-        needs: "An MQTT broker on your network, with Zigbee2MQTT connected to it. You set it up under Settings.",
-        kind: Kind::Setting,
+        needs: "An MQTT broker on your network, with Zigbee2MQTT connected to it.",
+        kind: Kind::Service,
         group: Group::Essentials,
         importance: Importance::Required,
         icon: "network",
-        // The broker's login belongs to its own Settings page, and
-        // nothing here removes it.
-        secrets: &[],
-        settings_page: Some(SettingsPage {
-            id: "mqtt",
-            label: "Zigbee & MQTT",
-        }),
+        secrets: &["mqtt.username", "mqtt.password"],
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -227,7 +208,6 @@ pub const KNOWN: &[Known] = &[
         importance: Importance::Required,
         icon: "sparkles",
         secrets: &["provider.groq.api_key"],
-        settings_page: None,
         base_url: Some("https://api.groq.com/openai/v1"),
         serves: &[Role::Stt, Role::Llm],
         api: Api::OpenAi,
@@ -251,7 +231,6 @@ pub const KNOWN: &[Known] = &[
         importance: Importance::Required,
         icon: "audio-lines",
         secrets: &["provider.elevenlabs.api_key"],
-        settings_page: None,
         base_url: Some("https://api.elevenlabs.io/v1"),
         serves: &[Role::Stt],
         api: Api::ElevenLabs,
@@ -267,7 +246,6 @@ pub const KNOWN: &[Known] = &[
         importance: Importance::Required,
         icon: "brain",
         secrets: &["provider.cerebras.api_key"],
-        settings_page: None,
         base_url: Some("https://api.cerebras.ai/v1"),
         // Language only. There is no speech endpoint here, and
         // offering one would fail as a 404 from somebody else's
@@ -286,7 +264,6 @@ pub const KNOWN: &[Known] = &[
         importance: Importance::Optional,
         icon: "speaker",
         secrets: &[],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -305,7 +282,6 @@ pub const KNOWN: &[Known] = &[
             "integrations.spotify.client_id",
             "integrations.spotify.client_secret",
         ],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -323,7 +299,6 @@ pub const KNOWN: &[Known] = &[
         // Issued by one TV when it is paired, so a TV added again pairs
         // again rather than keeping a key for the last one.
         secrets: &["tv.client_key"],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -339,7 +314,6 @@ pub const KNOWN: &[Known] = &[
         importance: Importance::Recommended,
         icon: "wifi",
         secrets: &["presence.unifi.api_key"],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -356,7 +330,6 @@ pub const KNOWN: &[Known] = &[
         icon: "thermometer",
         // tado keeps tokens rather than a key, and fetches them itself.
         secrets: &[],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -375,7 +348,6 @@ pub const KNOWN: &[Known] = &[
             "integrations.microsoft.client_id",
             "integrations.microsoft.client_secret",
         ],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -394,7 +366,6 @@ pub const KNOWN: &[Known] = &[
             "integrations.google.client_id",
             "integrations.google.client_secret",
         ],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -413,7 +384,6 @@ pub const KNOWN: &[Known] = &[
             "integrations.nemlig.username",
             "integrations.nemlig.password",
         ],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -429,7 +399,6 @@ pub const KNOWN: &[Known] = &[
         importance: Importance::Optional,
         icon: "bot",
         secrets: &["integrations.claude_code.oauth_token"],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -445,7 +414,6 @@ pub const KNOWN: &[Known] = &[
         importance: Importance::Optional,
         icon: "list-todo",
         secrets: &["integrations.linear.api_key"],
-        settings_page: None,
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -489,7 +457,7 @@ impl Known {
             Kind::Service if self.id == "google" => {
                 Some("integrations.google.client_secret".into())
             }
-            Kind::Service | Kind::Setting => None,
+            Kind::Service => None,
         }
     }
 }
@@ -563,20 +531,6 @@ mod tests {
             assert!(known.base_url.is_none(), "{}", known.id);
             assert!(known.models.is_empty(), "{}", known.id);
             assert!(known.serves.is_empty(), "{}", known.id);
-        }
-    }
-
-    #[test]
-    fn only_a_setting_points_at_a_settings_page() {
-        // The card for one says where to go instead of opening a setup
-        // flow, and a card that does neither is a dead end.
-        for known in KNOWN {
-            assert_eq!(
-                known.settings_page.is_some(),
-                known.kind == Kind::Setting,
-                "{}",
-                known.id
-            );
         }
     }
 
@@ -686,9 +640,7 @@ mod tests {
             owns("claude_code"),
             ["integrations.claude_code.oauth_token"]
         );
-        // The broker's login is set on its own page and outlives
-        // anything done here.
-        assert!(owns("mqtt").is_empty());
+        assert_eq!(owns("mqtt"), ["mqtt.username", "mqtt.password"]);
     }
 
     #[test]

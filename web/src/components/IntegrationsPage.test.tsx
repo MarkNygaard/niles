@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
+import type { IntegrationsPageProps } from "@/components/IntegrationsPage";
 import { api } from "@/lib/api";
 import type { Integration, IntegrationGroup, SecretsReport } from "@/lib/api";
 
@@ -39,7 +40,6 @@ const GROQ: Integration = {
   importance: "required",
   icon: "sparkles",
   secret_keys: ["provider.groq.api_key"],
-  settings_page: null,
   base_url: "https://api.groq.com/openai/v1",
   serves: ["stt", "llm"],
   added: false,
@@ -64,12 +64,11 @@ const MQTT: Integration = {
   label: "Zigbee & MQTT",
   blurb: "How Niles reaches your lights.",
   needs: "An MQTT broker.",
-  kind: "setting",
+  kind: "service",
   group: ESSENTIALS,
   importance: "required",
   icon: "network",
-  secret_keys: [],
-  settings_page: { id: "mqtt", label: "Zigbee & MQTT" },
+  secret_keys: ["mqtt.username", "mqtt.password"],
   base_url: null,
   serves: [],
   added: false,
@@ -86,7 +85,6 @@ const TADO: Integration = {
   importance: "optional",
   icon: "thermometer",
   secret_keys: [],
-  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -115,7 +113,6 @@ const UNIFI: Integration = {
   importance: "recommended",
   icon: "wifi",
   secret_keys: ["presence.unifi.api_key"],
-  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -143,7 +140,6 @@ const CLAUDE: Integration = {
   importance: "optional",
   icon: "bot",
   secret_keys: ["integrations.claude_code.oauth_token"],
-  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -172,7 +168,6 @@ const NEMLIG: Integration = {
   importance: "optional",
   icon: "shopping-basket",
   secret_keys: ["integrations.nemlig.username", "integrations.nemlig.password"],
-  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -191,7 +186,7 @@ function setup(
   integrations: Integration[],
   secrets: SecretsReport = SECRETS,
   unifiHost?: string,
-  onOpenSettings?: (section: string) => void,
+  extra: Partial<IntegrationsPageProps> = {},
 ) {
   const onChange = vi.fn();
   const onReset = vi.fn();
@@ -205,7 +200,7 @@ function setup(
       onReset={onReset}
       onSecretsChanged={onSecretsChanged}
       onTadoChanged={vi.fn()}
-      onOpenSettings={onOpenSettings}
+      {...extra}
     />,
   );
   return { onChange, onReset, onSecretsChanged };
@@ -452,11 +447,35 @@ describe("IntegrationsPage groups", () => {
     ).toBeInTheDocument();
   });
 
-  it("sends the broker's Configure to its Settings page", () => {
-    const onOpenSettings = vi.fn();
-    setup([{ ...MQTT, added: true }], SECRETS, undefined, onOpenSettings);
+  it("sets the broker up in its own dialog, login and all", () => {
+    // Once, here: there is no Settings page for it as well.
+    const withLogin: SecretsReport = {
+      writable: true,
+      secrets: [
+        { key: "mqtt.username", label: "Zigbee2MQTT broker username", source: "unset" },
+        { key: "mqtt.password", label: "Zigbee2MQTT broker password", source: "unset" },
+      ],
+    };
+    const { onChange } = setup([{ ...MQTT, added: true }], withLogin, undefined, {
+      mqtt: { host: "10.0.0.2" },
+      mqttDefaults: { port: 1883, z2m_prefix: "zigbee2mqtt", client_id: "niles" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Configure Zigbee & MQTT" }));
-    expect(onOpenSettings).toHaveBeenCalledWith("mqtt");
+    const host = screen.getByLabelText("Broker address");
+    expect(host).toHaveValue("10.0.0.2");
+    expect(screen.getByLabelText("Port")).toHaveAttribute("placeholder", "1883");
+    expect(screen.getByLabelText("Zigbee2MQTT broker password")).toBeInTheDocument();
+    expect(screen.getByText(/take effect when Niles restarts/)).toBeInTheDocument();
+
+    fireEvent.change(host, { target: { value: "mosquitto.local" } });
+    fireEvent.blur(host);
+    expect(onChange).toHaveBeenCalledWith("mqtt", [
+      { path: "mqtt.host", value: "mosquitto.local" },
+    ]);
+    const port = screen.getByLabelText("Port");
+    fireEvent.change(port, { target: { value: "8883" } });
+    fireEvent.blur(port);
+    expect(onChange).toHaveBeenCalledWith("mqtt", [{ path: "mqtt.port", value: 8883 }]);
   });
 });
 
@@ -510,7 +529,7 @@ describe("IntegrationsPage gallery", () => {
   });
 
   it("badges Required and Recommended where they apply", () => {
-    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO], SECRETS, undefined, vi.fn());
+    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO]);
     const dialog = gallery();
     const card = (name: RegExp) => within(dialog).getByRole("button", { name });
     expect(card(/Zigbee & MQTT/)).toHaveTextContent("Required");
@@ -555,19 +574,10 @@ describe("IntegrationsPage gallery", () => {
     expect(screen.queryByLabelText("Console address")).toBeNull();
   });
 
-  it("takes the broker's card to its Settings page", () => {
-    const onOpenSettings = vi.fn();
-    setup([MQTT], SECRETS, undefined, onOpenSettings);
-    fireEvent.click(within(gallery()).getByRole("button", { name: /Zigbee & MQTT/ }));
-    expect(onOpenSettings).toHaveBeenCalledWith("mqtt");
-  });
-
-  it("says where the broker is set up when it cannot go there itself", () => {
-    // A button that did nothing would be worse than a card that says.
+  it("sets up the broker from its card, asking for its address first", () => {
     setup([MQTT]);
-    const dialog = gallery();
-    expect(within(dialog).queryByRole("button", { name: /Zigbee & MQTT/ })).toBeNull();
-    expect(dialog).toHaveTextContent("In Settings → Zigbee & MQTT");
+    fireEvent.click(within(gallery()).getByRole("button", { name: /Zigbee & MQTT/ }));
+    expect(screen.getByLabelText("Broker address")).toBeInTheDocument();
   });
 });
 

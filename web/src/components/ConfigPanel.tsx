@@ -30,6 +30,7 @@ import { SetupBanner } from "@/components/SetupBanner";
 import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
+import type { MqttSettings } from "@/components/MqttPanel";
 import { MemoryCard } from "@/components/MemoryCard";
 import { MenuCard } from "@/components/MenuCard";
 import { RoomOrderCard } from "@/components/RoomOrderCard";
@@ -182,39 +183,6 @@ const LAMP_PLUG_ROWS: Row[] = [
         caption: "pick from the plugs Niles knows about",
         width: "min-w-72 flex-1",
       },
-    ],
-  },
-];
-
-/**
- * The broker, which everything on Zigbee and WLED is reached through.
- * Its login is on the same page, as secrets: typed in, never shown.
- */
-const MQTT_ROWS: Row[] = [
-  {
-    label: "Broker",
-    description:
-      "Where Zigbee2MQTT and the WLED strips publish. Leave the host empty and Niles has no lights at all.",
-    joiner: ":",
-    settings: [
-      { path: "mqtt.host", kind: "text", caption: "host", width: "min-w-48 flex-1" },
-      { path: "mqtt.port", kind: "number", caption: "port", width: "w-24" },
-    ],
-  },
-  {
-    label: "Zigbee2MQTT prefix",
-    description:
-      "The topic Zigbee2MQTT publishes under, its base_topic. One word, no slashes.",
-    settings: [
-      { path: "mqtt.z2m_prefix", kind: "text", caption: "topic", width: "w-48" },
-    ],
-  },
-  {
-    label: "Client id",
-    description:
-      "What Niles calls itself to the broker. Two clients with one id knock each other off.",
-    settings: [
-      { path: "mqtt.client_id", kind: "text", caption: "client id", width: "w-48" },
     ],
   },
 ];
@@ -864,31 +832,6 @@ export function ConfigPanel() {
           />
         </TabsContent>
 
-        <TabsContent value="mqtt">
-          <Card>
-            <CardHeader>
-              <CardTitle>Zigbee &amp; MQTT</CardTitle>
-              <CardDescription>
-                The broker every light, plug and sensor is reached through.
-                Niles connects once as it starts, so a change here waits for a
-                restart.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="divide-border divide-y">
-              {MQTT_ROWS.map(row)}
-              <section aria-label="Broker login" className="flex flex-col gap-3 py-4">
-                <div>
-                  <h3 className="text-sm font-medium">Login</h3>
-                  <p className="text-muted-foreground text-sm">
-                    Only if the broker asks for one.
-                  </p>
-                </div>
-                {secretFields(["mqtt.username", "mqtt.password"])}
-              </section>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
         <TabsContent value="rooms">
           {/* The same list the dashboard builds, arranged the same way,
               so what is dragged here is what moves there. */}
@@ -1158,7 +1101,8 @@ export function ConfigPanel() {
 
         <TabsContent value="integrations">
           <IntegrationsPage
-            onOpenSettings={setSection}
+            mqtt={valueAt(view.effective, "mqtt") as MqttSettings | undefined}
+            mqttDefaults={valueAt(view.defaults, "mqtt") as MqttSettings | undefined}
             integrations={integrations.data ?? []}
             secrets={secrets.data}
             tado={tado.data}

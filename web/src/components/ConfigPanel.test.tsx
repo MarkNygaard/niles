@@ -33,8 +33,7 @@ function stubApi() {
       importance: "optional",
       icon: "thermometer",
       secret_keys: [],
-      settings_page: null,
-      base_url: null,
+          base_url: null,
       serves: [],
       added: true,
       secret_key: null,
@@ -90,7 +89,7 @@ describe("ConfigPanel", () => {
     );
   });
 
-  it("sets each key where it is used: the broker's login, and sign-in", async () => {
+  it("sets the sign-in keys on People, and never shows the session key", async () => {
     stubHouse();
     const secret = (key: string, label: string) => ({
       key,
@@ -109,10 +108,6 @@ describe("ConfigPanel", () => {
       ],
     });
     renderPanel();
-
-    await open(/Zigbee & MQTT/);
-    const login = await screen.findByRole("region", { name: "Broker login" });
-    expect(within(login).getByLabelText("Zigbee2MQTT broker password")).toBeInTheDocument();
 
     await open(/People/);
     expect(await screen.findByLabelText("GitHub OAuth client secret")).toBeInTheDocument();
@@ -224,36 +219,11 @@ async function setAndSave(label: string, value: string) {
 describe("ConfigPanel, the settings that left the ConfigMap", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it.each([
-    ["Broker host", "mosquitto.local", { mqtt: { host: "mosquitto.local" } }],
-    ["Broker port", "8883", { mqtt: { port: 8883 } }],
-    ["Zigbee2MQTT prefix topic", "z2m", { mqtt: { z2m_prefix: "z2m" } }],
-    ["Client id client id", "niles-2", { mqtt: { client_id: "niles-2" } }],
-  ])("writes %s from the broker page", async (label, value, body) => {
-    const { patch } = stubHouse();
-    renderPanel();
-    await open(/Zigbee & MQTT/);
-    await setAndSave(label, value);
-    await waitFor(() => expect(patch).toHaveBeenCalled());
-    expect(patch.mock.calls[0][0]).toEqual(body);
-  });
-
-  it("says the broker only changes after a restart", async () => {
+  it("has no Settings page for the broker: it is an integration", async () => {
     stubHouse();
     renderPanel();
-    await open(/Zigbee & MQTT/);
-    await screen.findByLabelText("Broker host");
-    expect(within(rowOf("Broker")).getByText("restart required")).toBeInTheDocument();
-  });
-
-  it("shows the port Niles uses when none is set", async () => {
-    stubHouse();
-    renderPanel();
-    await open(/Zigbee & MQTT/);
-    expect(await screen.findByLabelText("Broker port")).toHaveAttribute(
-      "placeholder",
-      "1883",
-    );
+    await screen.findByRole("button", { name: /Integrations/ });
+    expect(screen.queryByRole("button", { name: /Zigbee & MQTT/ })).toBeNull();
   });
 
   it.each([
