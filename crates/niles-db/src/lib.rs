@@ -83,6 +83,31 @@ create table if not exists config_revisions (
 );
 ";
 
+/// The pool for `dsn`: the one already open, or a new one. The first
+/// caller's size is the size.
+fn shared_pool(dsn: &str, max_connections: u32) -> Result<PgPool, String> {
+    static POOLS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PgPool>>> =
+        std::sync::OnceLock::new();
+    let mut pools = POOLS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(pool) = pools.get(dsn) {
+        return Ok(pool.clone());
+    }
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        // A failover replaces the server under us. Without a bounded
+        // acquire timeout, a write would hang on a dead pool for as
+        // long as the switchover takes instead of failing and letting
+        // the caller say so.
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect_lazy(dsn)
+        .map_err(|e| format!("invalid database URL: {e}"))?;
+    pools.insert(dsn.to_string(), pool.clone());
+    Ok(pool)
+}
+
 /// Config overrides kept in Postgres.
 pub struct PostgresBackend {
     pool: PgPool,
@@ -106,20 +131,16 @@ impl PostgresBackend {
     /// Must be called from within a Tokio runtime — the pool starts a
     /// background task to reap idle connections even before it has
     /// opened one.
+    ///
+    /// Every backend for the same DSN shares one pool, whoever builds it.
+    /// Each store used to open its own: sixteen pools of five against a
+    /// role with its own connection limit, so after a deploy the stores
+    /// that came up last could not get a connection at all ("pool timed
+    /// out while waiting for an open connection", 2026-10-13).
     pub fn connect_lazy(dsn: &str, max_connections: u32) -> Result<Self, String> {
-        let describe = redact(dsn);
-        let pool = PgPoolOptions::new()
-            .max_connections(max_connections)
-            // A failover replaces the server under us. Without a bounded
-            // acquire timeout, a write would hang on a dead pool for as
-            // long as the switchover takes instead of failing and letting
-            // the caller say so.
-            .acquire_timeout(std::time::Duration::from_secs(10))
-            .connect_lazy(dsn)
-            .map_err(|e| format!("invalid database URL: {e}"))?;
         Ok(Self {
-            pool,
-            describe,
+            pool: shared_pool(dsn, max_connections)?,
+            describe: redact(dsn),
             schema: tokio::sync::OnceCell::new(),
         })
     }
@@ -333,6 +354,21 @@ mod tests {
         let out = redact(dsn);
         assert!(!out.contains("p@ss"), "{out}");
         assert!(!out.contains("niles:"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn every_backend_for_one_database_shares_one_pool() {
+        let dsn = "postgres://niles:pw@shared.invalid:5432/niles";
+        let first = PostgresBackend::connect_lazy(dsn, 5).unwrap();
+        let second = PostgresBackend::connect_lazy(dsn, 5).unwrap();
+        // Closing one closes the other: they are the same pool.
+        first.pool().close().await;
+        assert!(second.pool().is_closed());
+
+        let other =
+            PostgresBackend::connect_lazy("postgres://niles:pw@other.invalid:5432/niles", 5)
+                .unwrap();
+        assert!(!other.pool().is_closed());
     }
 
     #[test]
