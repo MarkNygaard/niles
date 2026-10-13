@@ -1633,6 +1633,7 @@ dependencies = [
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
+ "niles-skills",
  "niles-speakers",
  "niles-webos",
  "rand 0.10.2",
@@ -1969,12 +1970,8 @@ name = "niles-skills"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "fs2",
- "niles-capabilities",
  "serde",
  "serde_json",
- "serde_yaml",
- "tempfile",
  "thiserror",
  "tracing",
 ]

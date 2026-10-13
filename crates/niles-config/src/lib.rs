@@ -1468,80 +1468,27 @@ exclude_devices = ["wled:living_room/tv_light"]
     // ------------------------------------------------------------------
 
     #[test]
-    fn skills_section_absent_defaults_to_none() {
+    fn skills_section_absent_uses_default_limits() {
         let cfg = Config::load_from_str(valid_toml()).unwrap();
         cfg.validate().unwrap();
-        assert!(cfg.skills.directory.is_none());
         assert_eq!(cfg.skills.skill_max_chars, 100_000);
-        assert_eq!(cfg.skills.supporting_file_max_bytes, 1_048_576);
-    }
-
-    #[test]
-    fn skills_directory_parses_into_pathbuf() {
-        let toml = format!(
-            "{}\n[skills]\ndirectory = \"/var/niles/skills\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        cfg.validate().unwrap();
-        assert_eq!(
-            cfg.skills.directory.as_deref(),
-            Some(std::path::Path::new("/var/niles/skills"))
-        );
-        assert_eq!(cfg.skills.skill_max_chars, 100_000);
-        assert_eq!(cfg.skills.supporting_file_max_bytes, 1_048_576);
     }
 
     #[test]
     fn skills_limits_explicit() {
         let toml = format!(
-            "{}\n[skills]\ndirectory = \"/tmp\"\nskill_max_chars = 50_000\nsupporting_file_max_bytes = 524_288\n",
+            "{}\n[skills]\nskill_max_chars = 50_000\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
         cfg.validate().unwrap();
         assert_eq!(cfg.skills.skill_max_chars, 50_000);
-        assert_eq!(cfg.skills.supporting_file_max_bytes, 524_288);
-    }
-
-    #[test]
-    fn rejects_empty_skills_directory() {
-        let toml = format!(
-            "{}\n[skills]\ndirectory = \"\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "skills",
-                ..
-            }
-        ));
     }
 
     #[test]
     fn rejects_zero_skill_max_chars() {
         let toml = format!(
-            "{}\n[skills]\ndirectory = \"/tmp\"\nskill_max_chars = 0\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "skills",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_zero_supporting_file_max_bytes() {
-        let toml = format!(
-            "{}\n[skills]\ndirectory = \"/tmp\"\nsupporting_file_max_bytes = 0\n",
+            "{}\n[skills]\nskill_max_chars = 0\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();

@@ -1,11 +1,7 @@
-//! `.usage.json` sidecar telemetry for each skill.
+//! Usage telemetry kept with each skill.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-
-use crate::error::Result;
-use crate::util;
 
 /// Who created the skill.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,7 +21,7 @@ pub enum SkillStatus {
     Archived,
 }
 
-/// Telemetry sidecar stored as `<skill-dir>/.usage.json`.
+/// Who made a skill, and how much it has been used since.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Sidecar {
     pub created_at: DateTime<Utc>,
@@ -72,26 +68,12 @@ impl Sidecar {
             .flatten()
             .max()
     }
-
-    /// Read the sidecar from `path`.
-    pub fn read(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)?;
-        let sidecar: Self = serde_json::from_str(&raw)?;
-        Ok(sidecar)
-    }
-
-    /// Write the sidecar to `path` atomically.
-    pub fn write(&self, path: &Path) -> Result<()> {
-        let raw = serde_json::to_vec_pretty(self)?;
-        util::atomic_write(path, &raw)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use tempfile::TempDir;
 
     #[test]
     fn serde_round_trip() {
@@ -108,10 +90,8 @@ mod tests {
             status: SkillStatus::Stale,
         };
 
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join(".usage.json");
-        sidecar.write(&path).unwrap();
-        let read_back = Sidecar::read(&path).unwrap();
+        let raw = serde_json::to_string(&sidecar).unwrap();
+        let read_back: Sidecar = serde_json::from_str(&raw).unwrap();
         assert_eq!(sidecar, read_back);
     }
 

@@ -6,14 +6,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("I/O failed: {0}")]
-    Io(#[from] std::io::Error),
-
     #[error("JSON serialization failed: {0}")]
     Json(#[from] serde_json::Error),
-
-    #[error("YAML serialization failed: {0}")]
-    Yaml(#[from] serde_yaml::Error),
 
     #[error("skill `{name}` already exists")]
     AlreadyExists { name: String },
@@ -33,6 +27,6 @@ pub enum Error {
     #[error("skill `{name}` not found")]
     NotFound { name: String },
 
-    #[error("store is locked by another process")]
-    Locked,
+    #[error("skill `{name}` was folded into `{into}`")]
+    Absorbed { name: String, into: String },
 }

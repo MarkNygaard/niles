@@ -40,6 +40,7 @@ pub mod publish;
 pub mod scenes;
 pub mod secrets;
 pub mod server;
+pub mod skills;
 pub mod speakers;
 pub mod state;
 pub mod tv;
