@@ -1158,6 +1158,7 @@ export function ConfigPanel() {
 
         <TabsContent value="integrations">
           <IntegrationsPage
+            onOpenSettings={setSection}
             integrations={integrations.data ?? []}
             secrets={secrets.data}
             tado={tado.data}

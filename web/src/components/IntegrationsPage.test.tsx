@@ -1,24 +1,92 @@
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
-import type { Integration, SecretsReport } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { Integration, IntegrationGroup, SecretsReport } from "@/lib/api";
+
+const ESSENTIALS: IntegrationGroup = {
+  id: "essentials",
+  label: "Essentials",
+  blurb: "What Niles needs.",
+  requirement: "Niles needs one speech-to-text provider and one AI provider.",
+};
+const PRESENCE: IntegrationGroup = {
+  id: "presence",
+  label: "Presence & climate",
+  blurb: "Who is home.",
+  requirement: null,
+};
+const SHOPPING: IntegrationGroup = {
+  id: "shopping",
+  label: "Shopping",
+  blurb: "Groceries.",
+  requirement: null,
+};
+const ASSISTANTS: IntegrationGroup = {
+  id: "assistants",
+  label: "Assistants & tools",
+  blurb: "For the technically minded.",
+  requirement: null,
+};
 
 const GROQ: Integration = {
   id: "groq",
   label: "Groq",
   blurb: "Speech-to-text and language models.",
+  needs: "A Groq account and an API key.",
   kind: "provider",
+  group: ESSENTIALS,
+  importance: "required",
+  icon: "sparkles",
+  secret_keys: ["provider.groq.api_key"],
+  settings_page: null,
   base_url: "https://api.groq.com/openai/v1",
   serves: ["stt", "llm"],
   added: false,
   secret_key: "provider.groq.api_key",
 };
 
+const CEREBRAS: Integration = {
+  ...GROQ,
+  id: "cerebras",
+  label: "Cerebras",
+  blurb: "Works out the answer.",
+  needs: "A Cerebras account and an API key.",
+  icon: "brain",
+  secret_keys: ["provider.cerebras.api_key"],
+  base_url: "https://api.cerebras.ai/v1",
+  serves: ["llm"],
+  secret_key: "provider.cerebras.api_key",
+};
+
+const MQTT: Integration = {
+  id: "mqtt",
+  label: "Zigbee & MQTT",
+  blurb: "How Niles reaches your lights.",
+  needs: "An MQTT broker.",
+  kind: "setting",
+  group: ESSENTIALS,
+  importance: "required",
+  icon: "network",
+  secret_keys: [],
+  settings_page: { id: "mqtt", label: "Zigbee & MQTT" },
+  base_url: null,
+  serves: [],
+  added: false,
+  secret_key: null,
+};
+
 const TADO: Integration = {
   id: "tado",
   label: "tado°",
   blurb: "Who is home.",
+  needs: "tado° thermostats.",
   kind: "service",
+  group: PRESENCE,
+  importance: "optional",
+  icon: "thermometer",
+  secret_keys: [],
+  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -41,7 +109,13 @@ const UNIFI: Integration = {
   id: "unifi",
   label: "UniFi",
   blurb: "Who is home, from the Wi-Fi.",
+  needs: "A UniFi console.",
   kind: "service",
+  group: PRESENCE,
+  importance: "recommended",
+  icon: "wifi",
+  secret_keys: ["presence.unifi.api_key"],
+  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -63,7 +137,13 @@ const CLAUDE: Integration = {
   id: "claude_code",
   label: "Claude Code",
   blurb: "Answers the chat with Claude, on your Claude subscription.",
+  needs: "A Claude subscription.",
   kind: "service",
+  group: ASSISTANTS,
+  importance: "optional",
+  icon: "bot",
+  secret_keys: ["integrations.claude_code.oauth_token"],
+  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -86,7 +166,13 @@ const NEMLIG: Integration = {
   id: "nemlig",
   label: "nemlig.com",
   blurb: "Groceries delivered.",
+  needs: "A nemlig.com account.",
   kind: "service",
+  group: SHOPPING,
+  importance: "optional",
+  icon: "shopping-basket",
+  secret_keys: ["integrations.nemlig.username", "integrations.nemlig.password"],
+  settings_page: null,
   base_url: null,
   serves: [],
   added: false,
@@ -105,9 +191,11 @@ function setup(
   integrations: Integration[],
   secrets: SecretsReport = SECRETS,
   unifiHost?: string,
+  onOpenSettings?: (section: string) => void,
 ) {
   const onChange = vi.fn();
   const onReset = vi.fn();
+  const onSecretsChanged = vi.fn();
   render(
     <IntegrationsPage
       integrations={integrations}
@@ -115,12 +203,17 @@ function setup(
       unifiHost={unifiHost}
       onChange={onChange}
       onReset={onReset}
-      onSecretsChanged={vi.fn()}
+      onSecretsChanged={onSecretsChanged}
       onTadoChanged={vi.fn()}
+      onOpenSettings={onOpenSettings}
     />,
   );
-  return { onChange, onReset };
+  return { onChange, onReset, onSecretsChanged };
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function openAddList() {
   fireEvent.click(screen.getByRole("button", { name: /Add integration/ }));
@@ -330,5 +423,193 @@ describe("IntegrationsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
     fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
     expect(onReset).toHaveBeenCalledWith("integrations.nemlig", ["integrations.nemlig"]);
+  });
+});
+
+describe("IntegrationsPage groups", () => {
+  it("lists what is set up under its group's heading, in the order given", () => {
+    setup(
+      [
+        { ...GROQ, added: true },
+        { ...UNIFI, added: true },
+        { ...NEMLIG, added: true },
+        TADO,
+      ],
+      UNIFI_KEY,
+      "192.168.1.1",
+    );
+    const headings = screen
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(headings).toEqual(["Essentials", "Presence & climate", "Shopping"]);
+
+    const presence = screen.getByRole("region", { name: "Presence & climate" });
+    expect(within(presence).getByText("UniFi")).toBeInTheDocument();
+    // Not added, so not listed — its group shows only what is.
+    expect(within(presence).queryByText("tado°")).toBeNull();
+    expect(
+      within(screen.getByRole("region", { name: "Essentials" })).getByText("Groq"),
+    ).toBeInTheDocument();
+  });
+
+  it("sends the broker's Configure to its Settings page", () => {
+    const onOpenSettings = vi.fn();
+    setup([{ ...MQTT, added: true }], SECRETS, undefined, onOpenSettings);
+    fireEvent.click(screen.getByRole("button", { name: "Configure Zigbee & MQTT" }));
+    expect(onOpenSettings).toHaveBeenCalledWith("mqtt");
+  });
+});
+
+describe("IntegrationsPage gallery", () => {
+  const EVERYTHING = [MQTT, { ...GROQ, added: true }, CEREBRAS, UNIFI, TADO, NEMLIG, CLAUDE];
+
+  function gallery() {
+    openAddList();
+    return screen.getByRole("dialog", { name: "Add an integration" });
+  }
+
+  it("opens as cards under the same groups, Essentials first", () => {
+    setup(EVERYTHING);
+    const dialog = gallery();
+    const headings = within(dialog)
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(headings).toEqual([
+      "Essentials",
+      "Presence & climate",
+      "Shopping",
+      "Assistants & tools",
+    ]);
+    // What a newcomer needs to choose: what it does, and what it takes.
+    const nemlig = within(dialog).getByRole("button", { name: /nemlig.com/ });
+    expect(nemlig).toHaveTextContent("Groceries delivered.");
+    expect(nemlig).toHaveTextContent("You need: A nemlig.com account.");
+  });
+
+  it("marks what is already added, and opens its settings", () => {
+    setup(EVERYTHING);
+    const groq = within(gallery()).getByRole("button", { name: /Groq/ });
+    expect(groq).toHaveTextContent("Added");
+    fireEvent.click(groq);
+    expect(screen.getByLabelText("groq API key")).toBeInTheDocument();
+  });
+
+  it("badges Required and Recommended where they apply", () => {
+    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO], SECRETS, undefined, vi.fn());
+    const dialog = gallery();
+    const card = (name: RegExp) => within(dialog).getByRole("button", { name });
+    expect(card(/Zigbee & MQTT/)).toHaveTextContent("Required");
+    expect(card(/Groq/)).toHaveTextContent("Required");
+    expect(card(/UniFi/)).toHaveTextContent("Recommended");
+    expect(card(/tado°/)).not.toHaveTextContent(/Required|Recommended/);
+    // The group says it is one of each, not every one of them.
+    expect(dialog).toHaveTextContent(
+      "Niles needs one speech-to-text provider and one AI provider.",
+    );
+  });
+
+  it("stops calling the other providers required once a role is covered", () => {
+    // Groq answers and transcribes, so Cerebras is a choice, not a gap.
+    setup([{ ...GROQ, added: true }, CEREBRAS]);
+    const cerebras = within(gallery()).getByRole("button", { name: /Cerebras/ });
+    expect(cerebras).not.toHaveTextContent("Required");
+  });
+
+  it("puts the more important cards first within a group", () => {
+    setup([TADO, UNIFI]);
+    const dialog = gallery();
+    const presence = within(dialog).getByRole("region", { name: "Presence & climate" });
+    const names = within(presence)
+      .getAllByRole("button")
+      .map((b) => b.textContent ?? "");
+    expect(names[0]).toMatch(/^UniFi/);
+    expect(names[1]).toMatch(/^tado°/);
+  });
+
+  it("opens the setup flow for the card picked", () => {
+    const { onChange } = setup([UNIFI, NEMLIG], {
+      writable: true,
+      secrets: [...UNIFI_KEY.secrets, ...NEMLIG_LOGIN.secrets],
+    });
+    fireEvent.click(within(gallery()).getByRole("button", { name: /nemlig.com/ }));
+    expect(screen.queryByRole("dialog", { name: "Add an integration" })).toBeNull();
+    expect(onChange).toHaveBeenCalledWith("integrations.nemlig", [
+      { path: "integrations.nemlig.enabled", value: true },
+    ]);
+    expect(screen.getByText("nemlig.com password")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Console address")).toBeNull();
+  });
+
+  it("takes the broker's card to its Settings page", () => {
+    const onOpenSettings = vi.fn();
+    setup([MQTT], SECRETS, undefined, onOpenSettings);
+    fireEvent.click(within(gallery()).getByRole("button", { name: /Zigbee & MQTT/ }));
+    expect(onOpenSettings).toHaveBeenCalledWith("mqtt");
+  });
+
+  it("says where the broker is set up when it cannot go there itself", () => {
+    // A button that did nothing would be worse than a card that says.
+    setup([MQTT]);
+    const dialog = gallery();
+    expect(within(dialog).queryByRole("button", { name: /Zigbee & MQTT/ })).toBeNull();
+    expect(dialog).toHaveTextContent("In Settings → Zigbee & MQTT");
+  });
+});
+
+describe("IntegrationsPage removing", () => {
+  it("deletes the keys it saved, and leaves ones from the environment", async () => {
+    const clear = vi.spyOn(api, "clearSecret").mockResolvedValue(undefined);
+    const { onReset, onSecretsChanged } = setup([{ ...NEMLIG, added: true }], {
+      writable: true,
+      secrets: [
+        { ...NEMLIG_LOGIN.secrets[0], source: "environment" },
+        { ...NEMLIG_LOGIN.secrets[1], source: "stored" },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    expect(screen.getByText("Its saved keys are deleted too.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
+
+    await waitFor(() =>
+      expect(onReset).toHaveBeenCalledWith("integrations.nemlig", ["integrations.nemlig"]),
+    );
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledWith("integrations.nemlig.password");
+    expect(onSecretsChanged).toHaveBeenCalled();
+  });
+
+  it("deletes a provider's key before the provider, while the server still accepts it", async () => {
+    const order: string[] = [];
+    vi.spyOn(api, "clearSecret").mockImplementation(async (key) => {
+      order.push(`clear ${key}`);
+    });
+    const { onChange } = setup([{ ...GROQ, added: true }], {
+      writable: true,
+      secrets: [{ ...SECRETS.secrets[0], source: "stored" }],
+    });
+    onChange.mockImplementation((row: string) => order.push(`change ${row}`));
+    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove Groq/ }));
+    await waitFor(() =>
+      expect(order).toEqual(["clear provider.groq.api_key", "change providers"]),
+    );
+  });
+
+  it("keeps it when a key cannot be deleted, and says why", async () => {
+    vi.spyOn(api, "clearSecret").mockRejectedValue(new Error("no database"));
+    const { onReset } = setup([{ ...NEMLIG, added: true }], {
+      writable: true,
+      secrets: NEMLIG_LOGIN.secrets.map((s) => ({ ...s, source: "stored" as const })),
+    });
+    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
+    expect(await screen.findByText("no database")).toBeInTheDocument();
+    expect(onReset).not.toHaveBeenCalled();
+  });
+
+  it("says nothing about keys when it has none saved", () => {
+    setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
+    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    expect(screen.queryByText(/saved keys are deleted/)).toBeNull();
   });
 });

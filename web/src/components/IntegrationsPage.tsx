@@ -28,7 +28,9 @@ import { CalendarAppPanel, redirectUri } from "@/components/CalendarAppPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
+import { IntegrationGallery, groupsOf } from "@/components/IntegrationGallery";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 import type {
   Integration,
   Secret,
@@ -79,6 +81,9 @@ export interface IntegrationsPageProps {
   onReset: (row: string, paths: string[]) => void;
   onSecretsChanged: () => void;
   onTadoChanged: () => void;
+  /** Go to a Settings section, for what is set up there rather than
+      here: the broker. */
+  onOpenSettings?: (section: string) => void;
 }
 
 /**
@@ -93,7 +98,8 @@ export interface IntegrationsPageProps {
  * Only what is set up is listed; the rest is behind the add button.
  * That is the difference from the pair of text boxes this replaces,
  * where any name and any URL bought you a provider that would never
- * work.
+ * work. Both are under the same groups, so a thing is found in the same
+ * place whether or not it is set up yet.
  */
 export function IntegrationsPage({
   integrations,
@@ -121,13 +127,20 @@ export function IntegrationsPage({
   onReset,
   onSecretsChanged,
   onTadoChanged,
+  onOpenSettings,
 }: IntegrationsPageProps) {
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const added = integrations.filter((i) => i.added);
-  const available = integrations.filter((i) => !i.added);
   const current = integrations.find((i) => i.id === open);
+
+  function openSettings(section: string) {
+    setAdding(false);
+    onOpenSettings?.(section);
+  }
 
   function secretFor(key: string | null): Secret | undefined {
     if (!key) return undefined;
@@ -141,6 +154,8 @@ export function IntegrationsPage({
    * and answers nothing.
    */
   function ready(integration: Integration): boolean {
+    // Set up on its own page, which says what is missing there.
+    if (integration.kind === "setting") return integration.added;
     if (integration.id === "tado") return Boolean(tado?.authorised);
     if (integration.id === "linear") return Boolean(linear?.team?.trim());
     if (integration.id === "nemlig")
@@ -243,7 +258,35 @@ export function IntegrationsPage({
     }
   }
 
-  function remove(integration: Integration) {
+  /** The keys it keeps that were typed in here, as against ones an
+      environment variable provides, which are not this page's to delete. */
+  function storedKeys(integration: Integration): string[] {
+    return integration.secret_keys.filter(
+      (key) => secretFor(key)?.source === "stored",
+    );
+  }
+
+  async function remove(integration: Integration) {
+    // Its keys go with it. A key shows only on its integration's card,
+    // so one left behind is one nobody can see or delete. Cleared
+    // before the config changes, because the server accepts a
+    // provider's key only while that provider is declared.
+    const keys = storedKeys(integration);
+    if (keys.length > 0) {
+      setRemoveError(null);
+      setRemoving(true);
+      try {
+        for (const key of keys) await api.clearSecret(key);
+      } catch (e) {
+        // Stopped rather than carried on: removing it anyway would
+        // strand whatever is left with nothing to show it.
+        setRemoveError(e instanceof Error ? e.message : String(e));
+        return;
+      } finally {
+        setRemoving(false);
+        onSecretsChanged();
+      }
+    }
     setOpen(null);
     switch (integration.id) {
       case "tado":
@@ -254,25 +297,24 @@ export function IntegrationsPage({
         return onChange("presence.unifi", [
           { path: "presence.unifi.host", value: "" },
         ]);
-      // The pairing stays in Credentials, for an address put back.
+      // The pairing key is gone with it: it belongs to one TV, so a TV
+      // added again pairs again.
       case "lg_tv":
         return onChange("tv", [{ path: "tv.host", value: "" }]);
       // The rooms each Sonos is placed in stay, for when it comes back.
       case "sonos":
         return onChange("speakers", [{ path: "speakers.host", value: "" }]);
-      // Gone, not switched off — the card's own switch is for that. The
-      // stored token stays in Credentials until somebody clears it.
+      // Gone, not switched off — the card's own switch is for that, and
+      // keeps the token. Removing it deletes the token too.
       case "claude_code":
         return onReset("integrations.claude_code", ["integrations.claude_code"]);
-      // Like Claude Code: gone from the config, while the stored login
-      // stays in Credentials until somebody clears it.
+      // Like Claude Code: gone from the config, and the login with it.
       case "nemlig":
         return onReset("integrations.nemlig", ["integrations.nemlig"]);
-      // The stored keys stay in Credentials, as with nemlig.
       case "spotify":
         return onReset("integrations.spotify", ["integrations.spotify"]);
-      // The keys stay in Credentials, and everyone's connections stay
-      // in the database for when it comes back.
+      // The app's keys are deleted; everyone's own connections stay in
+      // the database for when it comes back with new ones.
       case "microsoft":
         return onReset("integrations.microsoft", ["integrations.microsoft"]);
       case "google":
@@ -295,87 +337,85 @@ export function IntegrationsPage({
         <CardHeader>
           <CardTitle>Connected services</CardTitle>
           <CardDescription>
-            What Niles can reach beyond the house: who transcribes speech, who
-            answers a question, who knows whether anyone is home.
+            What Niles is connected to: the broker your lights talk through,
+            who transcribes speech, who answers a question, who knows whether
+            anyone is home.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           {added.length === 0 ? (
             <p className="text-muted-foreground text-sm">
-              Nothing yet. Niles runs the house without any of these — the
-              lights, the curve, the dashboard — so what goes here is what it
-              can do beyond it.
+              Nothing yet. Start with Add integration: the ones marked
+              Required are what Niles needs to reach your lights, hear you and
+              answer.
             </p>
           ) : (
-            <div className="divide-border/60 -mx-1 divide-y">
-              {added.map((integration) => (
-                <IntegrationRow
-                  key={integration.id}
-                  integration={integration}
-                  ready={ready(integration)}
-                  disabled={saving}
-                  onOpen={() => setOpen(integration.id)}
-                />
-              ))}
-            </div>
+            groupsOf(added).map(({ group, items }) => (
+              <section
+                key={group.id}
+                aria-labelledby={`added-group-${group.id}`}
+                className="flex flex-col"
+              >
+                <h3
+                  id={`added-group-${group.id}`}
+                  className="text-muted-foreground text-xs font-medium tracking-wide uppercase"
+                >
+                  {group.label}
+                </h3>
+                <div className="divide-border/60 -mx-1 divide-y">
+                  {items.map((integration) => (
+                    <IntegrationRow
+                      key={integration.id}
+                      integration={integration}
+                      ready={ready(integration)}
+                      disabled={saving}
+                      onOpen={
+                        integration.kind === "setting"
+                          ? integration.settings_page && onOpenSettings
+                            ? () => openSettings(integration.settings_page!.id)
+                            : undefined
+                          : () => setOpen(integration.id)
+                      }
+                    />
+                  ))}
+                </div>
+              </section>
+            ))
           )}
 
-          {adding ? (
-            <div className="flex flex-col gap-1 border-t pt-3">
-              <p className="text-muted-foreground mb-1 text-xs">
-                Everything Niles has been taught to talk to.
-              </p>
-              {available.length === 0 && (
-                <p className="text-muted-foreground text-sm">
-                  All of them are already set up.
-                </p>
-              )}
-              {available.map((integration) => (
-                <button
-                  key={integration.id}
-                  type="button"
-                  disabled={saving}
-                  onClick={() => add(integration)}
-                  className="hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 flex items-center gap-3 rounded-lg px-1 py-2 text-left focus-visible:outline-none"
-                >
-                  <BrandMark
-                    id={integration.id}
-                    label={integration.label}
-                    className="text-muted-foreground"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">
-                      {integration.label}
-                    </span>
-                    <span className="text-muted-foreground block text-xs">
-                      {integration.blurb}
-                    </span>
-                  </span>
-                  <span className="text-muted-foreground text-xs">Connect</span>
-                </button>
-              ))}
-              <div>
-                <Button variant="ghost" onClick={() => setAdding(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div>
-              <Button variant="outline" onClick={() => setAdding(true)}>
-                <Plus aria-hidden /> Add integration
-              </Button>
-            </div>
-          )}
+          <div>
+            <Button variant="outline" onClick={() => setAdding(true)}>
+              <Plus aria-hidden /> Add integration
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
       {error && <p className="text-destructive text-sm">{error}</p>}
 
+      <IntegrationGallery
+        open={adding}
+        onOpenChange={setAdding}
+        integrations={integrations}
+        disabled={saving}
+        onOpenSettings={onOpenSettings ? openSettings : undefined}
+        onPick={(integration) => {
+          if (integration.added) {
+            setAdding(false);
+            setOpen(integration.id);
+          } else {
+            add(integration);
+          }
+        }}
+      />
+
       <Dialog
         open={current !== undefined}
         onOpenChange={(next: boolean) => {
-          if (!next) setOpen(null);
+          if (!next) {
+            setOpen(null);
+            setRemoveError(null);
+          }
         }}
       >
         <DialogContent className="sm:max-w-lg">
@@ -567,8 +607,8 @@ export function IntegrationsPage({
                 {current.kind === "provider" && (
                   <>
                     <p className="text-muted-foreground text-sm">
-                      {current.blurb} Pick it for a job under Speech &amp;
-                      language — one account can do both.
+                      {current.blurb} Choose what it does under Speech &amp;
+                      language.
                     </p>
                     {secretFor(current.secret_key) && (
                       <SecretField
@@ -589,15 +629,27 @@ export function IntegrationsPage({
                   </>
                 )}
 
-                <div className="border-t pt-3">
-                  <Button
-                    variant="ghost"
-                    className="text-muted-foreground"
-                    disabled={saving}
-                    onClick={() => remove(current)}
-                  >
-                    <Trash2 aria-hidden /> Remove {current.label}
-                  </Button>
+                <div className="flex flex-col gap-1 border-t pt-3">
+                  <div>
+                    <Button
+                      variant="ghost"
+                      className="text-muted-foreground"
+                      disabled={saving || removing}
+                      onClick={() => remove(current)}
+                    >
+                      <Trash2 aria-hidden /> Remove {current.label}
+                    </Button>
+                  </div>
+                  {/* Said before the click rather than after: there is
+                      nowhere to get a deleted key back from. */}
+                  {storedKeys(current).length > 0 && (
+                    <p className="text-muted-foreground px-3 text-xs">
+                      Its saved keys are deleted too.
+                    </p>
+                  )}
+                  {removeError && (
+                    <p className="text-destructive px-3 text-sm">{removeError}</p>
+                  )}
                 </div>
               </DialogBody>
             </>
@@ -618,7 +670,8 @@ function IntegrationRow({
   integration: Integration;
   ready: boolean;
   disabled?: boolean;
-  onOpen: () => void;
+  /** Absent for one set up on a Settings page nobody can take us to. */
+  onOpen?: () => void;
 }) {
   return (
     <div className="flex items-center gap-3 px-1 py-2.5">
@@ -640,15 +693,23 @@ function IntegrationRow({
           </span>
         )}
       </span>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={disabled}
-        aria-label={`Configure ${integration.label}`}
-        onClick={onOpen}
-      >
-        Configure
-      </Button>
+      {onOpen ? (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          aria-label={`Configure ${integration.label}`}
+          onClick={onOpen}
+        >
+          Configure
+        </Button>
+      ) : (
+        integration.settings_page && (
+          <span className="text-muted-foreground text-xs">
+            In Settings → {integration.settings_page.label}
+          </span>
+        )
+      )}
     </div>
   );
 }
