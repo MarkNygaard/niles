@@ -2,7 +2,6 @@ import {
   Brain,
   ChevronRight,
   Clock,
-  FileCode,
   House,
   LayoutGrid,
   Lightbulb,
@@ -109,12 +108,6 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
   {
     group: "Advanced",
     items: [
-      {
-        id: "all",
-        label: "Raw config",
-        hint: "Every section, including ones with no page yet",
-        icon: FileCode,
-      },
       {
         id: "history",
         label: "History",

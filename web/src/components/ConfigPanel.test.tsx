@@ -335,15 +335,6 @@ describe("ConfigPanel, the settings that left the ConfigMap", () => {
     await waitFor(() => expect(stops()).toHaveLength(3));
   });
 
-  it("badges no section of the raw config as overridden", async () => {
-    // The base is Niles's own defaults now, so nearly everything saved
-    // from the app is an override and the badge says nothing.
-    stubHouse();
-    renderPanel();
-    await open(/Raw config/);
-    await screen.findByText("lighting");
-    expect(screen.queryByText("overridden")).toBeNull();
-  });
 });
 
 describe("satellitesAt", () => {
