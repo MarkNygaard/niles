@@ -151,10 +151,17 @@ const REVIEW_PROMPT: &str = "You are the background review of Niles, the voice a
 household. Below is what was said to Niles since the last review, and what it answered. Decide \
 whether any of it should be kept for the future. Most of the time nothing should.
 
-There are two places to keep things.
+There are three places to keep things.
 
-Memory holds facts. 'user' is about the household: who lives here, their preferences, how the \
-house is set up. 'agent' is what you have noted about doing the job here. Keep only facts that \
+A person's own notes (note_about_person) hold what is true of one person: a preference, a \
+routine, a habit, how they like things done. Niles reads them only when that person speaks. \
+Nobody has to have said 'remember': something a person says about themselves, or shows twice, \
+and that will still be true next month, belongs there. Their current notes are below; do not \
+repeat them.
+
+Memory holds facts about the household as a whole. 'user' is the household: who lives here, \
+how the house is set up, what holds for everyone. 'agent' is what you have noted about doing \
+the job here. A fact about one person goes in their notes, not here. Keep only facts that \
 hold in every conversation, whatever the task, written as plain facts rather than instructions. \
 Memory is not for what was done or asked for: automations, scenes, timers and the shopping list \
 are kept elsewhere (list_automations shows the rules). Nor for anything stale within a week, \
@@ -249,6 +256,25 @@ fn journal_section(said: &[Said], tz: chrono_tz::Tz) -> String {
     out
 }
 
+/// What Niles knows about each person, as their notes stand.
+fn people_section(voices: &[niles_recognition::EnrolledSpeaker]) -> String {
+    let mut out = String::from("\n# What Niles knows about each person\n");
+    if voices.is_empty() {
+        out.push_str("(nobody is enrolled)\n");
+    }
+    for v in voices {
+        out.push_str(&format!("\n## {}\n", v.display_name));
+        match v.notes.as_deref().filter(|n| !n.trim().is_empty()) {
+            Some(notes) => {
+                out.push_str(notes.trim());
+                out.push('\n');
+            }
+            None => out.push_str("(nothing yet)\n"),
+        }
+    }
+    out
+}
+
 /// The background jobs, and what they need.
 pub(crate) struct Learning {
     pub claude: Arc<crate::claude_code::ClaudeCode>,
@@ -257,6 +283,8 @@ pub(crate) struct Learning {
     pub memory: Option<Arc<MemoryStore>>,
     pub skills: Option<Arc<SkillStore>>,
     pub automations: Option<Arc<niles_automations::AutomationStore>>,
+    /// The enrolled voices, whose own notes the review may add to.
+    pub voices: Option<Arc<dyn niles_recognition::VoiceRoster>>,
     pub tidy_tried: Mutex<Option<DateTime<Utc>>>,
 }
 
@@ -324,13 +352,22 @@ impl Learning {
         if let Some(skills) = &self.skills {
             prompt.push_str(&skills_section(skills));
         }
-        prompt.push_str(&journal_section(&said, self.tz()));
-        let tools = niles_tools::background_registry(
+        let mut tools = niles_tools::background_registry(
             niles_tools::Background::Review,
             self.memory.clone(),
             self.skills.clone(),
             self.automations.clone(),
         );
+        if let Some(voices) = &self.voices {
+            match voices.voices().await {
+                Ok(people) => {
+                    prompt.push_str(&people_section(&people));
+                    crate::profile::register_for_review(&mut tools, voices.clone());
+                }
+                Err(e) => tracing::warn!("[learning] the people could not be read: {e}"),
+            }
+        }
+        prompt.push_str(&journal_section(&said, self.tz()));
         let system = format!(
             "{REVIEW_PROMPT}\n\n{}",
             crate::home_context(&self.settings.current().home)
@@ -452,6 +489,30 @@ mod tests {
         let out = journal_section(&said, chrono_tz::Europe::Copenhagen);
         assert!(
             out.contains("[Tue 13 Oct 14:46, the living room]\nMark: Yes\nNiles: Saved."),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn each_person_s_notes_are_shown_so_they_are_not_repeated() {
+        let voice = |name: &str, notes: Option<&str>| niles_recognition::EnrolledSpeaker {
+            speaker: name.to_lowercase(),
+            display_name: name.to_string(),
+            spoken_as: None,
+            address_as: None,
+            notes: notes.map(str::to_string),
+            birthday: None,
+            created_at: Utc::now(),
+            last_seen_at: None,
+            clip_count: 3,
+            embeddings: Vec::new(),
+        };
+        let out = people_section(&[
+            voice("Mark", Some("- Takes his coffee black")),
+            voice("Majse", None),
+        ]);
+        assert!(
+            out.contains("## Mark\n- Takes his coffee black\n\n## Majse\n(nothing yet)"),
             "{out}"
         );
     }

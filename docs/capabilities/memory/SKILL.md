@@ -14,7 +14,7 @@ memory:
   tools:
     memory: action add|replace|remove|view, target user (facts about the household) | agent (what you have learned);
             replace/remove take old_text matching exactly one entry
-    remember_about_me: add|remove|view one short fact in the speaker's own notes
+    remember_about_me: add|remove|view one short fact in the speaker's own notes, when they ask
     set_my_birthday: month, day, year only if said; they are wished a happy birthday on the day
     mint_skill: name (short kebab-case), description ("Use when ...", at most 60 characters), version, body (the how-to, not the conversation)
     patch_skill: old_text + new_text replaces one place in the body (view_skill first); body alone rewrites it; prefer it over a new skill when one overlaps
@@ -26,7 +26,8 @@ memory:
     - remember_about_me and set_my_birthday need a recognised voice (or a chat linked to one)
     - mint a skill only when the person explicitly asks to save or learn a routine
     - a note that is one already kept, in other words, is refused: replace the existing one instead
-    - when the house has been quiet for 5 minutes, Claude reviews what was said and may add a note or write a skill;
+    - when the house has been quiet for 5 minutes, Claude reviews what was said and may add a note, add to a
+      person's own notes (what is lasting about them, said or shown, without "remember"), or write a skill;
       once a week it tidies memory and skills (merges, removes notes about finished things, folds overlapping skills)
     - anything taken out of memory is listed in Settings, Memory, under Recently forgotten, and can be restored
     - skills Niles wrote itself go stale after 30 days unused and are archived after 90; ones the person asked for never are

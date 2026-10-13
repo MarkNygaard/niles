@@ -12,4 +12,4 @@ pub mod scan;
 pub mod store;
 
 pub use error::{Error, Result};
-pub use store::{Entry, Forgotten, MemoryConfig, MemoryPersistence, MemoryStore, Target};
+pub use store::{Entry, Forgotten, MemoryConfig, MemoryPersistence, MemoryStore, Target, similar};

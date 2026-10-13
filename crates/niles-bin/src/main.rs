@@ -6468,6 +6468,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             memory: memory_store.clone(),
             skills: skill_store.clone(),
             automations: automations.clone(),
+            voices: voices.clone(),
             tidy_tried: Mutex::default(),
         }
         .spawn()

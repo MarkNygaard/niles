@@ -316,7 +316,7 @@ impl MemoryStore {
 
 /// Whether two notes are the same note in other words: most of their
 /// words in common. Short words ("a", "to", "in") say nothing either way.
-fn similar(a: &str, b: &str) -> bool {
+pub fn similar(a: &str, b: &str) -> bool {
     let words = |s: &str| -> HashSet<String> {
         s.to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
