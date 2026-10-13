@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import {
-  AnchorEditor,
-  SHIPPED_ANCHORS,
-  anchorProblems,
-  sortedAnchors,
-} from "@/components/AnchorEditor";
+import { AnchorEditor, anchorProblems, sortedAnchors } from "@/components/AnchorEditor";
 import type { Anchor, AnchorEditorProps } from "@/components/AnchorEditor";
+
+/** Niles's curve, as `GET /config` reports it under `defaults`. */
+const SHIPPED_ANCHORS: Anchor[] = [
+  { time: "00:00", kelvin: 2000 },
+  { time: "05:45", kelvin: 2000 },
+  { time: "06:30", kelvin: 2700 },
+  { time: "12:00", kelvin: 4500 },
+  { time: "17:00", kelvin: 3500 },
+  { time: "21:30", kelvin: 2700 },
+  { time: "23:00", kelvin: 2000 },
+  { time: "23:59", kelvin: 2000 },
+];
 
 const THREE: Anchor[] = [
   { time: "00:00", kelvin: 2000 },

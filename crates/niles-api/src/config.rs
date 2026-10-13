@@ -151,6 +151,10 @@ pub async fn patch_config(
     let Some(store) = store(&state) else {
         return unconfigured();
     };
+    // A null is "back to Niles's default": TOML has no null, and the app
+    // clears a field by sending one.
+    let mut resets = Vec::new();
+    let body = without_nulls(body, "", &mut resets);
     let patch: toml::Table = match serde_json::from_value(body) {
         Ok(patch) => patch,
         Err(e) => {
@@ -160,7 +164,10 @@ pub async fn patch_config(
             );
         }
     };
-    match store.apply(&patch, ChangeSource::Api).await {
+    match store
+        .apply_and_reset(&patch, &resets, ChangeSource::Api)
+        .await
+    {
         Ok(applied) => applied_response(applied),
         // A rejected value is the caller's mistake, not a server fault,
         // and the message from `validate()` says which field and why.
@@ -207,15 +214,72 @@ pub async fn undo_config(State(state): State<AppState>) -> Response {
 
 /// Read off a default `Config` rather than written out again here, so
 /// the page cannot show a different value from the one Niles runs.
+/// The object `value` with every null taken out, each noted in `resets`
+/// as a dotted path. Nulls inside arrays are left for the parser to
+/// refuse: a list is replaced whole, never cleared item by item.
+fn without_nulls(
+    value: serde_json::Value,
+    prefix: &str,
+    resets: &mut Vec<String>,
+) -> serde_json::Value {
+    let serde_json::Value::Object(map) = value else {
+        return value;
+    };
+    let mut kept = serde_json::Map::new();
+    for (key, child) in map {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match child {
+            serde_json::Value::Null => resets.push(path),
+            child => {
+                kept.insert(key, without_nulls(child, &path, resets));
+            }
+        }
+    }
+    serde_json::Value::Object(kept)
+}
+
+/// What Niles runs where nothing is set, for every field the app shows
+/// beside its own value or draws from. Read from the defaults in code,
+/// so the app has nothing to keep in step: it used to hold its own copy,
+/// which was a curve point behind within the day it was written.
 fn shipped_defaults() -> serde_json::Value {
     // An empty config *is* the defaults — every field has one, which is
     // what lets Niles start with no file at all.
     let Ok(cfg) = niles_config::Config::load_from_str("") else {
         return serde_json::Value::Null;
     };
+    let lighting = &cfg.lighting;
+    let anchors: Vec<serde_json::Value> = lighting
+        .color_temp_anchors
+        .iter()
+        .map(|a| serde_json::json!({ "time": a.time, "kelvin": a.kelvin }))
+        .collect();
     serde_json::json!({
         "stt": { "model": cfg.stt.model },
         "llm": { "model": cfg.llm.model },
+        "mqtt": {
+            "port": cfg.mqtt.port,
+            "client_id": cfg.mqtt.client_id,
+            "z2m_prefix": cfg.mqtt.z2m_prefix,
+        },
+        "tts": {
+            "base_url": cfg.tts.base_url,
+            "default_voice": cfg.tts.default_voice,
+        },
+        "lighting": {
+            "enabled": lighting.enabled,
+            "morning_start": lighting.morning_start,
+            "morning_end": lighting.morning_end,
+            "sunset_start": lighting.sunset_start,
+            "sunset_end": lighting.sunset_end,
+            "night_floor_brightness": lighting.night_floor_brightness,
+            "daytime_brightness": lighting.daytime_brightness,
+            "color_temp_anchors": anchors,
+        },
     })
 }
 

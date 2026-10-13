@@ -14,7 +14,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { CurveChart } from "@/components/CurveChart";
-import { AnchorEditor, SHIPPED_ANCHORS } from "@/components/AnchorEditor";
+import { AnchorEditor } from "@/components/AnchorEditor";
 import type { Anchor } from "@/components/AnchorEditor";
 import { AmbientControls } from "@/components/AmbientControls";
 import { deviceOptions } from "@/components/DevicePicker";
@@ -253,20 +253,6 @@ const LANGUAGE_ROW: Row = {
       placeholder: "auto-detect",
     },
   ],
-};
-
-/**
- * What Niles runs where nothing is set, for the fields whose defaults
- * the server does not report yet. Each mirrors the `default_*` function
- * beside the field in `crates/niles-config/src`. Read after
- * `view.defaults`, so the server's answer wins once it sends one.
- */
-const SHIPPED: Record<string, unknown> = {
-  "mqtt.port": 1883,
-  "mqtt.z2m_prefix": "zigbee2mqtt",
-  "mqtt.client_id": "niles",
-  "tts.base_url": "http://piper.home-automation.svc.cluster.local:5000",
-  "tts.default_voice": "en_GB-alan-medium",
 };
 
 type Entry = { path: string; value: unknown };
@@ -531,11 +517,11 @@ export function ConfigPanel() {
 
   const view = config.data as ConfigView;
   const sectionMeta = new Map(view.sections.map((s) => [s.name, s]));
-  const shippedAt = (path: string) => valueAt(view.defaults, path) ?? SHIPPED[path];
-  const shippedAnchors = anchorsAt(view.defaults) ?? SHIPPED_ANCHORS;
+  // Niles's own values for what is not set, as the server reports them
+  // from its code: a copy kept here fell behind within a day.
+  const shippedAt = (path: string) => valueAt(view.defaults, path);
+  const shippedAnchors = anchorsAt(view.defaults) ?? [];
   const anchors = anchorsAt(view.effective) ?? shippedAnchors;
-  // Absent means on: every config written before the switch existed
-  // has a curve that runs, and the server defaults the same way.
   const providers =
     (view.effective.providers as import("@/lib/api").Provider[] | undefined) ?? [];
   /** What each provider offers for a role, from the catalogue. */
@@ -550,9 +536,17 @@ export function ConfigPanel() {
     (view.effective[section] as Record<string, unknown> | undefined)?.[field] as
       | string
       | undefined;
+  // Off unless turned on: a new Niles leaves the lights alone.
   const curveOn =
-    (view.effective.lighting as { enabled?: boolean } | undefined)?.enabled !==
-    false;
+    ((view.effective.lighting as { enabled?: boolean } | undefined)?.enabled ??
+      (view.defaults?.lighting as { enabled?: boolean } | undefined)?.enabled) ===
+    true;
+  // What the curve runs on: its own settings over Niles's, so the chart
+  // draws for a house that has changed nothing.
+  const curveLighting = {
+    ...(view.defaults?.lighting as object | undefined),
+    ...(view.effective.lighting as object | undefined),
+  };
 
   const lights = deviceOptions(devices.data ?? []);
   const plugs = deviceOptions(devices.data ?? [], "outlet");
@@ -708,11 +702,8 @@ export function ConfigPanel() {
                   <CurveChart
                     lighting={
                       anchorPreview
-                        ? {
-                            ...(view.effective.lighting as object | undefined),
-                            color_temp_anchors: anchorPreview,
-                          }
-                        : view.effective.lighting
+                        ? { ...curveLighting, color_temp_anchors: anchorPreview }
+                        : curveLighting
                     }
                   />
                   {CURVE_ROWS.map(row)}

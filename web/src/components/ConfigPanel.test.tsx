@@ -111,6 +111,7 @@ function stubHouse() {
     effective: {
       stt: { language: "en" },
       lighting: {
+        enabled: true,
         morning_start: "05:45",
         morning_end: "06:30",
         sunset_start: "21:30",
@@ -129,6 +130,21 @@ function stubHouse() {
         color_temp_anchors: [
           { time: "00:00", kelvin: 2000 },
           { time: "12:00", kelvin: 4500 },
+        ],
+      },
+    },
+    defaults: {
+      mqtt: { port: 1883, client_id: "niles", z2m_prefix: "zigbee2mqtt" },
+      tts: {
+        base_url: "http://piper.home-automation.svc.cluster.local:5000",
+        default_voice: "en_GB-alan-medium",
+      },
+      lighting: {
+        enabled: false,
+        color_temp_anchors: [
+          { time: "00:00", kelvin: 2000 },
+          { time: "12:00", kelvin: 4500 },
+          { time: "23:59", kelvin: 2000 },
         ],
       },
     },

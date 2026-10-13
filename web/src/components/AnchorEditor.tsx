@@ -12,24 +12,6 @@ export interface Anchor {
   kelvin: number;
 }
 
-/**
- * The curve Niles runs when nobody has set one, as `default_anchors()`
- * in `crates/niles-config/src/lighting.rs` has it.
- *
- * Held here because `GET /config` only reports defaults for the two
- * model names. Read after `view.defaults`, so the server's answer wins
- * once it sends one.
- */
-export const SHIPPED_ANCHORS: Anchor[] = [
-  { time: "00:00", kelvin: 2000 },
-  { time: "05:45", kelvin: 2000 },
-  { time: "06:30", kelvin: 2700 },
-  { time: "12:00", kelvin: 4500 },
-  { time: "21:30", kelvin: 2700 },
-  { time: "23:00", kelvin: 2000 },
-  { time: "23:59", kelvin: 2000 },
-];
-
 /** `CurveConfig::validate` in `niles-scheduler`. */
 export const KELVIN_MIN = 1000;
 export const KELVIN_MAX = 10000;
