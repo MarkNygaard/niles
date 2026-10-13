@@ -8,6 +8,7 @@ import type { Memory } from "@/lib/api";
 const HOUSE: Memory = {
   user: ["Mark takes his coffee black", "Anna is vegetarian"],
   agent: ["The hallway lamp is slow to respond"],
+  forgotten: [],
 };
 
 function show(memory: Memory) {
@@ -43,7 +44,7 @@ describe("MemoryCard", () => {
   });
 
   it("says so when a group has nothing in it", async () => {
-    show({ user: [], agent: ["The hallway lamp is slow to respond"] });
+    show({ user: [], agent: ["The hallway lamp is slow to respond"], forgotten: [] });
     expect(
       await screen.findByText(/Niles keeps what you tell it about yourselves here/),
     ).toBeInTheDocument();
@@ -52,7 +53,7 @@ describe("MemoryCard", () => {
   });
 
   it("says so for both when there is nothing at all", async () => {
-    show({ user: [], agent: [] });
+    show({ user: [], agent: [], forgotten: [] });
     expect(
       await screen.findByText(/Niles keeps what you tell it about yourselves here/),
     ).toBeInTheDocument();
@@ -105,5 +106,26 @@ describe("MemoryCard", () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText("this Niles instance has no memory store")).toBeInTheDocument();
+  });
+
+  it("folds away what was forgotten, and puts a note back", async () => {
+    show({
+      ...HOUSE,
+      forgotten: [
+        {
+          target: "agent",
+          text: "User wants an automation 30 minutes after sunset.",
+          at: new Date().toISOString(),
+        },
+      ],
+    });
+    const restore = vi.spyOn(api, "restoreMemory").mockResolvedValue(undefined);
+    fireEvent.click(await screen.findByRole("button", { name: "Recently forgotten (1)" }));
+    const list = screen.getByRole("list", { name: "Recently forgotten" });
+    expect(within(list).getByText("just now")).toBeInTheDocument();
+    fireEvent.click(within(list).getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(restore).toHaveBeenCalled());
+    expect(restore.mock.calls[0][0]).toBe("agent");
+    expect(restore.mock.calls[0][1]).toBe("User wants an automation 30 minutes after sunset.");
   });
 });

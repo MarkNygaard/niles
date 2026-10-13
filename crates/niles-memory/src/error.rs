@@ -22,6 +22,20 @@ pub enum Error {
     #[error("multiple entries in {target} memory match the given text; be more specific")]
     Ambiguous { target: &'static str },
 
+    #[error(
+        "{target} memory already has a note like this: \"{existing}\" — replace that one rather than add another"
+    )]
+    Similar {
+        target: &'static str,
+        existing: String,
+    },
+
+    #[error("nothing like that was forgotten from {target} memory")]
+    NotForgotten { target: &'static str },
+
+    #[error("the forgotten notes would not read: {0}")]
+    Forgotten(#[from] serde_json::Error),
+
     #[error("search text must not be empty")]
     EmptySearch,
 

@@ -882,25 +882,63 @@ impl Tool for LookUpCapability {
 
 pub struct MemoryTool {
     store: Arc<MemoryStore>,
+    adding_only: bool,
 }
 
 impl MemoryTool {
     pub fn new(store: Arc<MemoryStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            adding_only: false,
+        }
+    }
+
+    /// For a review nobody watches: it may add a note, never change or
+    /// take one out. Hermes Agent stages those for a person; here the
+    /// weekly tidy-up does them, and every one can be put back.
+    pub fn adding_only(store: Arc<MemoryStore>) -> Self {
+        Self {
+            store,
+            adding_only: true,
+        }
     }
 }
+
+/// What belongs in memory, for any model that writes to it. From
+/// Hermes Agent's rules, which were learned the way ours were: by
+/// finding the notes a model should not have kept.
+const WHAT_MEMORY_IS: &str = "Long-term notes, read before every answer. Keep only facts that \
+    hold in every conversation, whatever the task: who lives here, their preferences, how the \
+    house is set up. Not memory: what was just done or is in progress, anything that is stale \
+    within a week, anything already kept elsewhere (automations, scenes, skills, the shopping \
+    list), or instructions to yourself — write facts, not orders. One fact goes in one place, \
+    once. 'user' is about the household; 'agent' is what you have noted about doing your job \
+    here.";
 
 #[async_trait]
 impl Tool for MemoryTool {
     fn descriptor(&self) -> ToolDescriptor {
+        let (actions, how): (&[&str], &str) = if self.adding_only {
+            (
+                &["add", "view"],
+                "Actions: 'add' requires 'content'; 'view' needs only 'target'. Notes are only \
+                 added here; nothing is changed or taken out.",
+            )
+        } else {
+            (
+                &["add", "replace", "remove", "view"],
+                "Actions: 'add' requires 'content'; 'replace' requires 'old_text' and \
+                 'content'; 'remove' requires 'old_text'; 'view' needs only 'target'.",
+            )
+        };
         ToolDescriptor {
             name: "memory".into(),
-            description: "Manage persistent memory. Actions: 'add' requires 'content'; 'replace' requires 'old_text' and 'content'; 'remove' requires 'old_text'; 'view' needs only 'target'. Targets are 'user' (facts about the household) or 'agent' (what you have learned).".into(),
+            description: format!("{WHAT_MEMORY_IS} {how}"),
             parameters: json!({
                 "type": "object",
                 "required": ["action", "target"],
                 "properties": {
-                    "action": { "type": "string", "enum": ["add", "replace", "remove", "view"], "description": "Action to perform." },
+                    "action": { "type": "string", "enum": actions, "description": "Action to perform." },
                     "target": { "type": "string", "enum": ["user", "agent"], "description": "'user' for household facts or 'agent' for learnings." },
                     "content": { "type": "string", "description": "Text to add or replace with. Required for 'add' and 'replace'." },
                     "old_text": { "type": "string", "description": "Snippet to match for 'replace' or 'remove'. Must uniquely identify one entry." }
@@ -923,6 +961,12 @@ impl Tool for MemoryTool {
             }
         };
 
+        if self.adding_only && !matches!(action, "add" | "view") {
+            return Err(Error::InvalidArgs {
+                tool: "memory".into(),
+                reason: "notes are only added here; leave the rest for the tidy-up".into(),
+            });
+        }
         match action {
             "view" => {
                 let lines: Vec<String> = self
@@ -1414,21 +1458,38 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
     reg
 }
 
-/// Build a `ToolRegistry` containing only memory + skill tools.
-/// Used by `niles-bin`'s per-turn background-review fork. Excludes
-/// device, weather, web_search, timer, capability, and history
-/// tools — anything that could take a user-facing action or fan
-/// out to external services.
-pub fn restricted_registry_for_review(
+/// Which background job a tool set is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Background {
+    /// After a quiet spell: what the day's conversations taught. Adds
+    /// notes, never takes them out.
+    Review,
+    /// Weekly: merge, correct and put away. What it takes out can be
+    /// put back.
+    Tidy,
+}
+
+/// The tools for a background job: memory and skills, and the
+/// automations to read — nothing that acts on the house or reaches out
+/// of it. Nobody watches these runs.
+pub fn background_registry(
+    job: Background,
     memory_store: Option<Arc<niles_memory::MemoryStore>>,
     skill_store: Option<Arc<niles_skills::SkillStore>>,
+    automations: Option<Arc<niles_automations::AutomationStore>>,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     if let Some(s) = memory_store {
-        register_memory_tools(&mut reg, s);
+        reg.register(Box::new(match job {
+            Background::Review => MemoryTool::adding_only(s),
+            Background::Tidy => MemoryTool::new(s),
+        }));
     }
     if let Some(s) = skill_store {
         register_background_skill_tools(&mut reg, s);
+    }
+    if let Some(a) = automations {
+        crate::automations::register_automation_reading(&mut reg, a);
     }
     reg
 }
@@ -2928,13 +2989,42 @@ mod tests {
         assert!(names.contains(&"device_state_snapshot_at".to_string()));
     }
 
-    #[test]
-    fn restricted_registry_for_review_with_both_stores_has_exact_tools() {
+    fn background(job: Background) -> ToolRegistry {
         let memory = Arc::new(niles_memory::MemoryStore::new(
             niles_memory::MemoryConfig::default(),
         ));
         let skill = Arc::new(niles_skills::SkillStore::new(100_000));
-        let reg = restricted_registry_for_review(Some(memory), Some(skill));
+        let automations = Arc::new(niles_automations::AutomationStore::new());
+        background_registry(job, Some(memory), Some(skill), Some(automations))
+    }
+
+    #[tokio::test]
+    async fn the_review_only_adds_notes_and_the_tidy_up_may_take_them_out() {
+        let memory = Arc::new(niles_memory::MemoryStore::new(
+            niles_memory::MemoryConfig::default(),
+        ));
+        memory
+            .add(MemoryTarget::Memory, "Mark likes the hallway dim at night.")
+            .unwrap();
+        let call = |args: Value| niles_llm::ToolCall {
+            id: "1".into(),
+            name: "memory".into(),
+            arguments: args,
+        };
+        let remove = call(json!({"action": "remove", "target": "agent", "old_text": "hallway"}));
+        let review = background_registry(Background::Review, Some(memory.clone()), None, None);
+        assert!(review.execute(&remove).await.is_err());
+        assert_eq!(memory.load(MemoryTarget::Memory).len(), 1);
+
+        let tidy = background_registry(Background::Tidy, Some(memory.clone()), None, None);
+        tidy.execute(&remove).await.unwrap();
+        assert!(memory.load(MemoryTarget::Memory).is_empty());
+        assert_eq!(memory.forgotten().len(), 1);
+    }
+
+    #[test]
+    fn restricted_registry_for_review_with_both_stores_has_exact_tools() {
+        let reg = background(Background::Review);
         let names: std::collections::HashSet<String> =
             reg.llm_tools().into_iter().map(|t| t.name).collect();
         let expected: std::collections::HashSet<String> = [
@@ -2944,6 +3034,7 @@ mod tests {
             "retire_skill",
             "list_skills",
             "view_skill",
+            "list_automations",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2953,18 +3044,17 @@ mod tests {
 
     #[test]
     fn restricted_registry_for_review_with_none_is_empty() {
-        let reg = restricted_registry_for_review(None, None);
+        let reg = background_registry(Background::Review, None, None, None);
         assert!(reg.llm_tools().is_empty());
     }
 
     #[test]
     fn restricted_registry_for_review_excludes_device_tools() {
-        let memory = Arc::new(niles_memory::MemoryStore::new(
-            niles_memory::MemoryConfig::default(),
-        ));
-        let skill = Arc::new(niles_skills::SkillStore::new(100_000));
-        let reg = restricted_registry_for_review(Some(memory), Some(skill));
-        let names: Vec<String> = reg.llm_tools().into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = [Background::Review, Background::Tidy]
+            .into_iter()
+            .flat_map(|job| background(job).llm_tools())
+            .map(|t| t.name)
+            .collect();
         for excluded in [
             "get_device_state",
             "explain_device_state",
@@ -2980,6 +3070,10 @@ mod tests {
             "get_timer_remaining",
             "weather",
             "web_search",
+            "propose_automation",
+            "create_automation",
+            "pause_automation",
+            "remove_automation",
         ] {
             assert!(
                 !names.contains(&excluded.to_string()),

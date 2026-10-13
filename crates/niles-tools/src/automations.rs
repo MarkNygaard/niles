@@ -738,6 +738,12 @@ fn invalid(tool: &str, reason: String) -> Error {
 
 /// Register the automation tools over the store the app and the engine
 /// share, and the log the engine writes its runs to.
+/// Only the list: for a background job that has to know what rules exist
+/// — to tell a note about one from a fact — and may not change them.
+pub fn register_automation_reading(reg: &mut ToolRegistry, store: Arc<AutomationStore>) {
+    reg.register(Box::new(ListAutomations { store }));
+}
+
 pub fn register_automation_tools(
     reg: &mut ToolRegistry,
     store: Arc<AutomationStore>,

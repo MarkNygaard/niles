@@ -600,6 +600,8 @@ export type MemoryTarget = "user" | "agent";
 export interface Memory {
   user: string[];
   agent: string[];
+  /** Taken out lately, newest first, by somebody or by Niles tidying. */
+  forgotten: { target: MemoryTarget; text: string; at: string }[];
 }
 
 /** One message to Niles in the app, and the answer. */
@@ -1026,6 +1028,12 @@ export const api = {
   forgetMemory: (target: MemoryTarget, text: string) =>
     request<void>(`/memory/${target}`, {
       method: "DELETE",
+      body: JSON.stringify({ text }),
+    }),
+  /** Put a forgotten note back. */
+  restoreMemory: (target: MemoryTarget, text: string) =>
+    request<void>(`/memory/${target}/restore`, {
+      method: "POST",
       body: JSON.stringify({ text }),
     }),
 

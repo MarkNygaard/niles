@@ -34,8 +34,23 @@ const SERVER_NAME: &str = "niles";
 /// lost, and the timeout ends it anyway.
 const MAX_TURNS: u32 = 12;
 
-/// Live turn tokens, and the speaker each was started for.
-type Turns = Arc<Mutex<HashMap<String, Option<String>>>>;
+/// The background jobs — the review and the tidy-up — get the strongest
+/// model whatever the chat uses: nobody waits for them, and their
+/// judgement is what goes into every later prompt.
+const BACKGROUND_MODEL: &str = "opus";
+const BACKGROUND_TURNS: u32 = 80;
+const BACKGROUND_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+/// One run's grant: who it was started for, and — for a background job
+/// — the only tools it may see. `None` is the whole registry.
+#[derive(Clone)]
+struct Grant {
+    speaker: Option<String>,
+    tools: Option<Arc<ToolRegistry>>,
+}
+
+/// Live turn tokens, and what each grants.
+type Turns = Arc<Mutex<HashMap<String, Grant>>>;
 
 pub(crate) struct ClaudeCode {
     mcp_url: String,
@@ -81,16 +96,65 @@ impl ClaudeCode {
         text: &str,
         speaker: Option<String>,
     ) -> anyhow::Result<String> {
-        let turn = TurnToken::issue(&self.turns, speaker);
+        let run = Run {
+            model: &cfg.model,
+            max_turns: MAX_TURNS,
+            timeout: Duration::from_secs(cfg.timeout_seconds),
+        };
+        let grant = Grant {
+            speaker,
+            tools: None,
+        };
+        self.run(
+            run,
+            oauth_token,
+            system_prompt,
+            &transcript(history, text),
+            grant,
+        )
+        .await
+    }
+
+    /// A job nobody waits for, with only `tools` to work with: the
+    /// house's devices are not among them.
+    pub(crate) async fn background(
+        &self,
+        oauth_token: &str,
+        system_prompt: &str,
+        prompt: &str,
+        tools: ToolRegistry,
+    ) -> anyhow::Result<String> {
+        let run = Run {
+            model: BACKGROUND_MODEL,
+            max_turns: BACKGROUND_TURNS,
+            timeout: BACKGROUND_TIMEOUT,
+        };
+        let grant = Grant {
+            speaker: None,
+            tools: Some(Arc::new(tools)),
+        };
+        self.run(run, oauth_token, system_prompt, prompt, grant)
+            .await
+    }
+
+    async fn run(
+        &self,
+        run: Run<'_>,
+        oauth_token: &str,
+        system_prompt: &str,
+        prompt: &str,
+        grant: Grant,
+    ) -> anyhow::Result<String> {
+        let turn = TurnToken::issue(&self.turns, grant);
         let state = state_dir()?;
         let work = state.join("work");
 
         let mut command = tokio::process::Command::new("claude");
         command
             .args(arguments(
-                cfg,
+                &run,
                 system_prompt,
-                &transcript(history, text),
+                prompt,
                 &mcp_config(&self.mcp_url, &turn.0),
             ))
             .env("CLAUDE_CODE_OAUTH_TOKEN", oauth_token)
@@ -107,11 +171,10 @@ impl ClaudeCode {
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
 
-        let output =
-            tokio::time::timeout(Duration::from_secs(cfg.timeout_seconds), command.output())
-                .await
-                .map_err(|_| anyhow!("no answer within {}s", cfg.timeout_seconds))?
-                .context("starting `claude` — is Claude Code installed in this image?")?;
+        let output = tokio::time::timeout(run.timeout, command.output())
+            .await
+            .map_err(|_| anyhow!("no answer within {}s", run.timeout.as_secs()))?
+            .context("starting `claude` — is Claude Code installed in this image?")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if !output.status.success() && stdout.trim().is_empty() {
@@ -153,16 +216,23 @@ fn state_dir() -> anyhow::Result<PathBuf> {
     bail!("nowhere to keep its state: tried {}", tried.join(", "))
 }
 
+/// How one run of `claude` is sized.
+struct Run<'a> {
+    model: &'a str,
+    max_turns: u32,
+    timeout: Duration,
+}
+
 /// A token for one run, withdrawn when the run is over however it ends.
 struct TurnToken(String, Turns);
 
 impl TurnToken {
-    fn issue(turns: &Turns, speaker: Option<String>) -> Self {
+    fn issue(turns: &Turns, grant: Grant) -> Self {
         let token = format!("{:032x}", rand::random::<u128>());
         turns
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(token.clone(), speaker);
+            .insert(token.clone(), grant);
         Self(token, turns.clone())
     }
 }
@@ -191,7 +261,7 @@ async fn serve_mcp(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let speaker = token.and_then(|t| {
+    let grant = token.and_then(|t| {
         state
             .turns
             .lock()
@@ -199,11 +269,14 @@ async fn serve_mcp(
             .get(t)
             .cloned()
     });
-    let Some(speaker) = speaker else {
+    let Some(grant) = grant else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // A background job lists and calls only its own tools: asking for
+    // `set_device` by name finds nothing.
+    let tools = grant.tools.unwrap_or_else(|| state.tools.clone());
     match crate::profile::SPEAKER
-        .scope(speaker, niles_tools::mcp::handle(&state.tools, &message))
+        .scope(grant.speaker, niles_tools::mcp::handle(&tools, &message))
         .await
     {
         Some(reply) => Json(reply).into_response(),
@@ -244,19 +317,14 @@ fn mcp_config(url: &str, token: &str) -> String {
     .to_string()
 }
 
-fn arguments(
-    cfg: &niles_config::ClaudeCodeConfig,
-    system_prompt: &str,
-    prompt: &str,
-    mcp_config: &str,
-) -> Vec<String> {
+fn arguments(run: &Run<'_>, system_prompt: &str, prompt: &str, mcp_config: &str) -> Vec<String> {
     [
         "-p",
         prompt,
         "--output-format",
         "json",
         "--model",
-        &cfg.model,
+        run.model,
         // Replaced, not appended to: Claude Code's own prompt is about
         // writing software in a repository.
         "--system-prompt",
@@ -274,7 +342,7 @@ fn arguments(
         "--permission-mode",
         "dontAsk",
         "--max-turns",
-        &MAX_TURNS.to_string(),
+        &run.max_turns.to_string(),
     ]
     .into_iter()
     .map(str::to_string)
@@ -352,7 +420,13 @@ mod tests {
 
     #[test]
     fn claude_code_gets_no_tools_of_its_own() {
-        let args = arguments(&cfg(), "You are Niles.", "hi", "{}");
+        let cfg = cfg();
+        let run = Run {
+            model: &cfg.model,
+            max_turns: MAX_TURNS,
+            timeout: Duration::from_secs(cfg.timeout_seconds),
+        };
+        let args = arguments(&run, "You are Niles.", "hi", "{}");
         let after = |flag: &str| {
             let i = args.iter().position(|a| a == flag).expect(flag);
             args[i + 1].as_str()
@@ -394,11 +468,17 @@ mod tests {
     #[test]
     fn a_token_is_withdrawn_when_the_turn_ends() {
         let turns: Turns = Arc::default();
-        let token = TurnToken::issue(&turns, Some("mark".into()));
+        let token = TurnToken::issue(
+            &turns,
+            Grant {
+                speaker: Some("mark".into()),
+                tools: None,
+            },
+        );
         let key = token.0.clone();
         assert_eq!(
-            turns.lock().unwrap().get(&key),
-            Some(&Some("mark".to_string()))
+            turns.lock().unwrap().get(&key).unwrap().speaker.as_deref(),
+            Some("mark")
         );
         drop(token);
         assert!(turns.lock().unwrap().is_empty());
@@ -420,7 +500,13 @@ mod tests {
             .unwrap();
         assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-        let token = TurnToken::issue(&claude.turns, None);
+        let token = TurnToken::issue(
+            &claude.turns,
+            Grant {
+                speaker: None,
+                tools: None,
+            },
+        );
         let answered = client
             .post(&claude.mcp_url)
             .bearer_auth(&token.0)
@@ -431,6 +517,48 @@ mod tests {
         assert_eq!(answered.status(), reqwest::StatusCode::OK);
         let body: Value = answered.json().await.unwrap();
         assert_eq!(body["result"], json!({}));
+    }
+
+    /// A background job's token sees its own tools and none of the
+    /// house's: the review must not be able to turn on a light.
+    #[tokio::test]
+    async fn a_background_grant_sees_only_its_own_tools() {
+        let mut house = ToolRegistry::new();
+        niles_tools::register_grocery_tools(
+            &mut house,
+            Arc::new(niles_groceries::GroceryStore::new()),
+            None,
+        );
+        let claude = ClaudeCode::start(Arc::new(house)).await.unwrap();
+        let skills = Arc::new(niles_skills::SkillStore::new(100_000));
+        let mut own = ToolRegistry::new();
+        niles_tools::register_background_skill_tools(&mut own, skills);
+        let token = TurnToken::issue(
+            &claude.turns,
+            Grant {
+                speaker: None,
+                tools: Some(Arc::new(own)),
+            },
+        );
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let body: Value = reqwest::Client::new()
+            .post(&claude.mcp_url)
+            .bearer_auth(&token.0)
+            .json(&list)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let names: Vec<&str> = body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"view_skill"), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("grocer")), "{names:?}");
     }
 
     /// Real Claude Code against the real MCP server and the real grocery

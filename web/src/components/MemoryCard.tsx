@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { ChevronRight, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,7 +18,9 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import type { MemoryTarget } from "@/lib/api";
+import type { Memory, MemoryTarget } from "@/lib/api";
+import { relativeTime } from "@/lib/skills";
+import { cn } from "@/lib/utils";
 
 export const MEMORY = ["memory"];
 
@@ -43,10 +45,10 @@ const GROUPS: { target: MemoryTarget; title: string; empty: string }[] = [
 /**
  * What Niles carries from one conversation to the next.
  *
- * Mostly written by a review after a voice turn that nobody watches, so
- * it can keep things it should not have. This is where they are seen
- * and thrown out; there is nothing to write here — telling Niles is how
- * something gets in.
+ * Mostly written by Claude's review once the house is quiet, which
+ * nobody watches, and kept in order by its weekly tidy-up. This is where
+ * they are seen, thrown out and put back; there is nothing to write
+ * here — telling Niles is how something gets in.
  */
 export function MemoryCard() {
   const memory = useQuery({ queryKey: MEMORY, queryFn: api.memory });
@@ -106,9 +108,66 @@ export function MemoryCard() {
             </section>
           ))
         )}
+        {memory.data && memory.data.forgotten.length > 0 && (
+          <Forgotten forgotten={memory.data.forgotten} />
+        )}
       </CardContent>
       <ConfirmForget entry={forgetting} onClose={() => setForgetting(undefined)} />
     </Card>
+  );
+}
+
+/** What was taken out lately — most of it by Niles's weekly tidy-up —
+    folded away, each with a way back. */
+function Forgotten({ forgotten }: { forgotten: Memory["forgotten"] }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const restore = useMutation({
+    mutationFn: ({ target, text }: Forgetting) => api.restoreMemory(target, text),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: MEMORY }),
+  });
+  return (
+    <section className="flex flex-col gap-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex items-center gap-1 self-start rounded px-1 text-xs font-medium tracking-wide uppercase focus-visible:ring-3 focus-visible:outline-none"
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn("size-4 transition-transform", open && "rotate-90")}
+        />
+        Recently forgotten ({forgotten.length})
+      </button>
+      {open && (
+        <ul aria-label="Recently forgotten" className="flex flex-col gap-2">
+          {forgotten.map((f) => (
+            <li
+              key={f.at + f.text}
+              className="flex items-start gap-2 rounded-lg border border-dashed py-2 pr-1.5 pl-3"
+            >
+              <div className="min-w-0 flex-1 py-1">
+                <p className="text-muted-foreground text-sm break-words whitespace-pre-wrap">
+                  {f.text}
+                </p>
+                <p className="text-muted-foreground mt-0.5 text-xs">{relativeTime(f.at)}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                disabled={restore.isPending}
+                onClick={() => restore.mutate({ target: f.target, text: f.text })}
+              >
+                Restore
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {restore.error && <p className="text-destructive text-sm">{restore.error.message}</p>}
+    </section>
   );
 }
 

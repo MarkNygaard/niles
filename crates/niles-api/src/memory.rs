@@ -18,6 +18,9 @@ type Failure = (StatusCode, String);
 pub struct MemoryView {
     pub user: Vec<String>,
     pub agent: Vec<String>,
+    /// Taken out lately — by somebody, or by Niles tidying — newest
+    /// first, to be put back if that was wrong.
+    pub forgotten: Vec<niles_memory::Forgotten>,
 }
 
 fn store(state: &AppState) -> Result<&Arc<MemoryStore>, Failure> {
@@ -40,7 +43,9 @@ fn target(name: &str) -> Result<Target, Failure> {
 
 fn failure(e: Error) -> Failure {
     match e {
-        Error::NotFound { .. } => (StatusCode::NOT_FOUND, e.to_string()),
+        Error::NotFound { .. } | Error::NotForgotten { .. } => {
+            (StatusCode::NOT_FOUND, e.to_string())
+        }
         _ => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
     }
 }
@@ -55,6 +60,7 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<MemoryView>, Fai
     Ok(Json(MemoryView {
         user: texts(store, Target::User),
         agent: texts(store, Target::Memory),
+        forgotten: store.forgotten(),
     }))
 }
 
@@ -73,6 +79,18 @@ pub async fn remove(
     let store = store(&state)?;
     let target = target(&name)?;
     store.forget(target, &forget.text).map_err(failure)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /memory/{target}/restore` — put a forgotten note back.
+pub async fn restore(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(note): Json<Forget>,
+) -> Result<StatusCode, Failure> {
+    let store = store(&state)?;
+    let target = target(&name)?;
+    store.restore(target, &note.text).map_err(failure)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -131,17 +149,46 @@ mod tests {
     }
 
     fn house() -> Arc<MemoryStore> {
-        let store = Arc::new(MemoryStore::new(MemoryConfig::default()));
-        store
-            .add(Target::User, "Mark takes his coffee black")
-            .unwrap();
-        store
-            .add(Target::User, "Mark takes his coffee black on weekdays")
-            .unwrap();
-        store
-            .add(Target::Memory, "The hallway lamp is slow to respond")
-            .unwrap();
-        store
+        // Kept before notes this alike were refused.
+        Arc::new(
+            MemoryStore::new(MemoryConfig::default())
+                .with_documents(
+                    "Mark takes his coffee black\n\u{a7}\nMark takes his coffee black on weekdays",
+                    "The hallway lamp is slow to respond",
+                )
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_deleted_note_is_listed_as_forgotten_and_can_be_put_back() {
+        let store = house();
+        let app = app(Some(store.clone()));
+        send(
+            &app,
+            "DELETE",
+            "/memory/agent",
+            Some(json!({ "text": "The hallway lamp is slow to respond" })),
+        )
+        .await;
+        let (_, body) = send(&app, "GET", "/memory", None).await;
+        let listed: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(listed["forgotten"][0]["target"], "agent");
+        assert_eq!(
+            listed["forgotten"][0]["text"],
+            "The hallway lamp is slow to respond"
+        );
+
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/memory/agent/restore",
+            Some(json!({ "text": "The hallway lamp is slow to respond" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert_eq!(texts(&store, Target::Memory).len(), 1);
+        assert!(store.forgotten().is_empty());
     }
 
     fn texts(store: &MemoryStore, target: Target) -> Vec<String> {
@@ -161,6 +208,7 @@ mod tests {
                     "Mark takes his coffee black on weekdays",
                 ],
                 "agent": ["The hallway lamp is slow to respond"],
+                "forgotten": [],
             })
         );
     }

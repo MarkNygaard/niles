@@ -1388,16 +1388,29 @@ impl niles_notifications::NotificationDelivery for WyomingDelivery {
 /// Hands a changed memory document to the task that writes it, so the
 /// tool that changed it never waits on the database.
 struct QueuedMemory {
-    tx: tokio::sync::mpsc::UnboundedSender<(niles_memory::Target, String)>,
+    tx: tokio::sync::mpsc::UnboundedSender<(&'static str, String)>,
 }
 
-impl niles_memory::MemoryPersistence for QueuedMemory {
-    fn store(&self, target: niles_memory::Target, document: &str) {
-        if self.tx.send((target, document.to_string())).is_err() {
+impl QueuedMemory {
+    fn send(&self, row: &'static str, document: &str) {
+        if self.tx.send((row, document.to_string())).is_err() {
             tracing::warn!(
                 "[memory] nothing is writing it any more; this change is in memory only"
             );
         }
+    }
+}
+
+/// The row the forgotten notes are kept in, beside `user` and `agent`.
+const FORGOTTEN_ROW: &str = "forgotten";
+
+impl niles_memory::MemoryPersistence for QueuedMemory {
+    fn store(&self, target: niles_memory::Target, document: &str) {
+        self.send(target.as_str(), document);
+    }
+
+    fn store_forgotten(&self, document: &str) {
+        self.send(FORGOTTEN_ROW, document);
     }
 }
 
@@ -1436,9 +1449,19 @@ async fn build_memory_store(cfg: &Config) -> Option<Arc<MemoryStore>> {
     let documents = match (
         table.load(user.as_str()).await,
         table.load(agent.as_str()).await,
+        table.load(FORGOTTEN_ROW).await,
     ) {
-        (Ok(u), Ok(a)) => store.with_documents(&u, &a).map_err(|e| e.to_string()),
-        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Ok(u), Ok(a), Ok(f)) => store
+            .with_documents(&u, &a)
+            .and_then(|s| {
+                if f.is_empty() {
+                    Ok(s)
+                } else {
+                    s.with_forgotten(&f)
+                }
+            })
+            .map_err(|e| e.to_string()),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
     };
     let store = match documents {
         Ok(store) => store,
@@ -1448,15 +1471,52 @@ async fn build_memory_store(cfg: &Config) -> Option<Arc<MemoryStore>> {
         }
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(niles_memory::Target, String)>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(&'static str, String)>();
     tokio::spawn(async move {
-        while let Some((target, document)) = rx.recv().await {
-            if let Err(e) = table.store(target.as_str(), &document).await {
+        while let Some((row, document)) = rx.recv().await {
+            if let Err(e) = table.store(row, &document).await {
                 tracing::error!("[memory] save failed: {e}");
             }
         }
     });
     Some(Arc::new(store.with_sink(Arc::new(QueuedMemory { tx }))))
+}
+
+/// What was said since the last review, kept in Postgres when there is
+/// one, so a deploy between a conversation and its review loses neither.
+async fn build_journal(cfg: &Config) -> Arc<review::Journal> {
+    let journal = review::Journal::default();
+    let Some(database) = &cfg.database else {
+        return Arc::new(journal);
+    };
+    let Ok(url) = database.resolve_url() else {
+        return Arc::new(journal);
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return Arc::new(journal);
+    };
+    let table = niles_db::PostgresJournal::new(backend.pool(), backend.describe_target());
+    let journal = match table.load().await {
+        Ok(Some(document)) => journal.with_document(&document),
+        Ok(None) => journal,
+        Err(e) => {
+            tracing::warn!("[learning] the journal could not be read ({e}); starting empty");
+            journal
+        }
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(mut document) = rx.recv().await {
+            while let Ok(newer) = rx.try_recv() {
+                document = newer;
+            }
+            if let Err(e) = table.store(&document).await {
+                tracing::warn!("[learning] journal save failed: {e}");
+            }
+        }
+    });
+    Arc::new(journal.with_sink(tx))
 }
 
 /// The conversations going on, kept in Postgres when there is one, so
@@ -3188,7 +3248,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         home: Arc::new(cfg.home.clone()),
         captures: None,
         settings: None,
-        review: cfg.skills.review.clone(),
+        journal: Arc::default(),
         conversation: build_conversation_memory(&cfg).await,
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
@@ -3461,6 +3521,11 @@ impl niles_api::chat::Chat for AppChat {
         // the answer. On a screen that looks like being ignored.
         let reply = reply.unwrap_or_else(|| "Done.".to_string());
         ctx.conversation.record_via(&thread, text, &reply, via);
+        let who = match &known {
+            SpeakerContext::Identified { name, .. } => Some(name.as_str()),
+            _ => None,
+        };
+        ctx.journal.note("the app", who, text, &reply);
         Ok(niles_api::chat::Reply {
             reply,
             via: via.map(str::to_string),
@@ -3562,7 +3627,8 @@ struct DispatchCtx {
     /// which nobody edits mid-sentence. It is wrong for anything with
     /// a switch in front of it.
     settings: Option<Arc<niles_config::ConfigStore>>,
-    review: niles_config::SkillsReviewConfig,
+    /// What was said, for the review once the house is quiet.
+    journal: Arc<review::Journal>,
     conversation: Arc<conversation::ConversationMemory>,
     /// What "it" refers to, per room. See [`last_target`].
     last_target: Arc<last_target::LastTarget>,
@@ -3709,8 +3775,18 @@ async fn handle_transcript(
         }
     }
     if let Some(reply) = &response {
-        let thread = conversation::Thread::Room(ctx.satellites.room_for(peer).cloned());
-        ctx.conversation.record(&thread, text, reply);
+        let room = ctx.satellites.room_for(peer).cloned();
+        let place = room.as_ref().map_or_else(
+            || "a room".to_string(),
+            |r| format!("the {}", r.as_str().replace('_', " ")),
+        );
+        let who = match speaker {
+            SpeakerContext::Identified { name, .. } => Some(name.as_str()),
+            _ => None,
+        };
+        ctx.journal.note(&place, who, text, reply);
+        ctx.conversation
+            .record(&conversation::Thread::Room(room), text, reply);
     }
     response
 }
@@ -3794,30 +3870,8 @@ async fn dispatch_tier1(
     )
     .await
     {
-        Ok((LoopOutcome::Done(response), tool_trace)) => {
+        Ok((LoopOutcome::Done(response), _)) => {
             tracing::info!("[{peer}] \"{text}\" -> (Tier 1) {response}");
-            let memory_for_review = ctx.memory.clone();
-            let snapshot = review::ReviewSnapshot {
-                transcript: text.to_string(),
-                spoken_response: response.clone(),
-                tool_trace,
-                user_memory: user_mem_str.clone(),
-                agent_memory: agent_mem_str.clone(),
-                skill_summaries: skill_summaries.clone().unwrap_or_default(),
-            };
-            if ctx.review.enabled
-                && (memory_for_review.is_some() || ctx.skill_store.is_some())
-                && review::is_reviewable_turn(&snapshot)
-            {
-                let _handle = review::spawn_skill_review(
-                    snapshot,
-                    memory_for_review,
-                    ctx.skill_store.clone(),
-                    ctx.llm.clone(),
-                    ctx.home.clone(),
-                    ctx.review.max_iters as usize,
-                );
-            }
             Some(response)
         }
         Ok((LoopOutcome::EscalateRequested { reason, messages }, _tool_trace)) => {
@@ -6402,6 +6456,23 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     };
 
+    // What Niles learns: Claude reviews what was said once the house is
+    // quiet, and tidies memory and skills weekly. Whether Claude Code is
+    // on is read each time, like the chat's.
+    let journal = build_journal(&cfg).await;
+    let _learning = claude.clone().map(|claude| {
+        review::Learning {
+            claude,
+            settings: store.clone(),
+            journal: journal.clone(),
+            memory: memory_store.clone(),
+            skills: skill_store.clone(),
+            automations: automations.clone(),
+            tidy_tried: Mutex::default(),
+        }
+        .spawn()
+    });
+
     // Timer driver: shares the `timers` Arc registered with the LLM
     // tools (above) and threaded into `DispatchCtx` (below) so
     // timers set via voice in `serve` actually fire. See
@@ -6536,7 +6607,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         home: Arc::new(cfg.home.clone()),
         captures: captures.clone(),
         settings: Some(store.clone()),
-        review: cfg.skills.review.clone(),
+        journal: journal.clone(),
         conversation: build_conversation_memory(&cfg).await,
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
