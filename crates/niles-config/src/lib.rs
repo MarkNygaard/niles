@@ -285,7 +285,10 @@ pub struct Config {
     #[serde(default)]
     pub capture: CaptureConfig,
     /// Optional. When present, config overrides and runtime state live
-    /// here instead of in memory — see `niles-db`.
+    /// here instead of in memory — see `niles-db`. With no section, the
+    /// database is the one `NILES_DATABASE_URL` names, when it is set:
+    /// the Secret holding the connection string is all it takes.
+    #[serde(default = "database::from_environment")]
     pub database: Option<DatabaseConfig>,
     #[serde(default)]
     pub recognition: RecognitionConfig,

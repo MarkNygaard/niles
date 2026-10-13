@@ -1,7 +1,8 @@
 //! `[database]` — where Niles keeps state that must outlive a restart.
 //!
-//! Optional. Without it Niles keeps that state in memory, loses it on
-//! every restart, and says so at startup.
+//! Optional, and not needed: with no section, Niles uses the database
+//! in `NILES_DATABASE_URL` when that is set. Without either it keeps its
+//! state in memory, loses it on every restart, and says so at startup.
 
 use crate::error::{Error, Result};
 use serde::Deserialize;
@@ -14,6 +15,7 @@ pub struct DatabaseConfig {
     /// never the string itself. Config files are mounted from a ConfigMap
     /// and read by the config API; a DSN carries a password, so it lives
     /// in a Secret and arrives as an env var like every other credential.
+    #[serde(default = "default_url_env")]
     pub url_env: String,
 
     /// Pool size. One long-lived process reading at startup and writing
@@ -33,6 +35,26 @@ pub struct DatabaseConfig {
     /// what every install did before this existed.
     #[serde(default = "default_secret_key_env")]
     pub secret_key_env: String,
+}
+
+/// Where the connection string is looked for when nothing says otherwise.
+pub const DEFAULT_URL_ENV: &str = "NILES_DATABASE_URL";
+
+fn default_url_env() -> String {
+    DEFAULT_URL_ENV.into()
+}
+
+/// The database when the config file has no `[database]` section: the
+/// one in `NILES_DATABASE_URL`, if it is set. Turning the database on
+/// used to take a section in the ConfigMap as well as the Secret.
+pub(crate) fn from_environment() -> Option<DatabaseConfig> {
+    std::env::var(DEFAULT_URL_ENV)
+        .is_ok_and(|v| !v.trim().is_empty())
+        .then(|| DatabaseConfig {
+            url_env: default_url_env(),
+            max_connections: default_max_connections(),
+            secret_key_env: default_secret_key_env(),
+        })
 }
 
 fn default_secret_key_env() -> String {
@@ -104,11 +126,24 @@ mod tests {
     }
 
     #[test]
-    fn url_env_is_required_and_max_connections_defaults() {
-        let cfg = parse(r#"url_env = "NILES_DATABASE_URL""#);
+    fn every_field_has_a_default() {
+        let cfg = parse("");
         assert_eq!(cfg.url_env, "NILES_DATABASE_URL");
         assert_eq!(cfg.max_connections, 5);
+        assert_eq!(cfg.secret_key_env, "NILES_SECRET_KEY");
         cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn without_a_section_the_database_comes_from_the_environment() {
+        // SAFETY: tests in this crate read this variable only here.
+        unsafe { std::env::remove_var(DEFAULT_URL_ENV) };
+        assert!(from_environment().is_none());
+        unsafe { std::env::set_var(DEFAULT_URL_ENV, "postgres://niles@db/niles") };
+        let cfg = from_environment().expect("the variable is set");
+        assert_eq!(cfg.url_env, DEFAULT_URL_ENV);
+        assert_eq!(cfg.resolve_url().unwrap(), "postgres://niles@db/niles");
+        unsafe { std::env::remove_var(DEFAULT_URL_ENV) };
     }
 
     #[test]
