@@ -110,6 +110,21 @@ pub fn is_reviewable_turn(snapshot: &ReviewSnapshot) -> bool {
         return false;
     }
 
+    // A turn that ends in a question is not finished, and a proposal is
+    // not yet anything. On 2026-10-13 the review noted a half-made
+    // automation four times in one minute, into memory that goes into
+    // every prompt.
+    if crate::follow_up::asks(spoken) {
+        return false;
+    }
+    if snapshot
+        .tool_trace
+        .iter()
+        .any(|t| t.tool.starts_with("propose_"))
+    {
+        return false;
+    }
+
     !snapshot
         .tool_trace
         .iter()
@@ -358,6 +373,48 @@ mod tests {
             skill_summaries: vec![],
         };
         assert!(!is_reviewable_turn(&snapshot));
+    }
+
+    /// The turns from 2026-10-13 that the review wrote into memory four
+    /// times in a minute: a read-back waiting for its yes, and a
+    /// question back.
+    #[test]
+    fn an_unfinished_turn_is_not_reviewed() {
+        let proposed = ReviewSnapshot {
+            transcript: "make an automation that reminds me to close the curtains".into(),
+            spoken_response:
+                "When the sun sets, I'll say \"Please close the curtains\". Shall I save it?".into(),
+            tool_trace: vec![ToolTrace {
+                tool: "propose_automation".into(),
+                arguments: json!({}),
+                result: json!({"saved": false}),
+            }],
+            user_memory: None,
+            agent_memory: None,
+            skill_summaries: vec![],
+        };
+        assert!(!is_reviewable_turn(&proposed));
+
+        let asked = ReviewSnapshot {
+            transcript: "the automation should be triggered half an hour after sunset".into(),
+            spoken_response: "Should I set the trigger to 30 minutes after sunset?".into(),
+            tool_trace: vec![],
+            user_memory: None,
+            agent_memory: None,
+            skill_summaries: vec![],
+        };
+        assert!(!is_reviewable_turn(&asked));
+
+        let read_back_without_asking = ReviewSnapshot {
+            tool_trace: vec![ToolTrace {
+                tool: "propose_automation".into(),
+                arguments: json!({}),
+                result: json!({"saved": false}),
+            }],
+            spoken_response: "Here is the rule.".into(),
+            ..asked
+        };
+        assert!(!is_reviewable_turn(&read_back_without_asking));
     }
 
     #[tokio::test]

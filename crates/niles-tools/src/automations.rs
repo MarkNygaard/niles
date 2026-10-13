@@ -26,6 +26,9 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 pub struct Proposals {
     pending: Mutex<Option<(AutomationRuleDto, Instant)>>,
+    /// When a rule was last talked about without one to say yes to:
+    /// a question back, or a read-back with something wrong in it.
+    talk: Mutex<Option<Instant>>,
 }
 
 impl Proposals {
@@ -40,6 +43,25 @@ impl Proposals {
         *self.lock() = Some((rule, Instant::now()));
     }
 
+    /// A rule is being worked out: what is said next belongs to it,
+    /// even when it does not say "automation" again — "half an hour
+    /// after the sun has set".
+    pub fn discussed(&self) {
+        *self.talk_lock() = Some(Instant::now());
+    }
+
+    /// Whether a rule is being worked out, or waiting for its answer.
+    pub fn in_talk(&self) -> bool {
+        self.pending()
+            || self
+                .talk_lock()
+                .is_some_and(|at| at.elapsed() < Self::FRESH)
+    }
+
+    fn talk_lock(&self) -> std::sync::MutexGuard<'_, Option<Instant>> {
+        self.talk.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// The rule waiting for an answer, if one still is.
     pub fn pending(&self) -> bool {
         self.lock()
@@ -49,6 +71,7 @@ impl Proposals {
 
     /// Take the rule waiting for an answer.
     pub fn take(&self) -> Option<AutomationRuleDto> {
+        self.talk_lock().take();
         self.lock()
             .take()
             .filter(|(_, at)| at.elapsed() < Self::FRESH)
@@ -56,12 +79,46 @@ impl Proposals {
     }
 
     pub fn clear(&self) {
+        self.talk_lock().take();
         self.lock().take();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<(AutomationRuleDto, Instant)>> {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// Whether `said` asks for a rule to be made or changed: worth the
+/// slower, better model, which gets the shape of one right the first
+/// time. Narrower than the tool groups' "when" and "if" on purpose —
+/// "when is my next meeting" is not a rule.
+pub fn about_automations(said: &str) -> bool {
+    let words: String = said
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let padded = format!(" {words} ");
+    let has = |phrase: &str| padded.contains(&format!(" {phrase} "));
+    const RULE: &[&str] = &[
+        "automation",
+        "automations",
+        "automate",
+        "rule",
+        "rules",
+        "whenever",
+        "every time",
+        "each time",
+        "as soon as",
+    ];
+    if RULE.iter().any(|p| has(p)) {
+        return true;
+    }
+    // "Remind me to close the curtains after sunset" is a rule; "remind
+    // me in ten minutes" is a timer.
+    const MOMENT: &[&str] = &["sunset", "sunrise", "sun", "every", "when", "whenever"];
+    has("remind me") && MOMENT.iter().any(|p| has(p))
 }
 
 /// A plain yes or no to a question, and nothing else: `Some(true)` for
@@ -899,6 +956,38 @@ mod tests {
             out["sentence"],
             "When it is 30 minutes after sunset, say \"Please close the curtains.\"."
         );
+    }
+
+    #[test]
+    fn knows_a_request_for_a_rule() {
+        for said in [
+            "make an automation that reminds me to close the curtains half an hour after the sun has set",
+            "Niles, whenever the garden door opens, turn off the office light",
+            "change the curtain rule to an hour after sunset",
+            "remind me to take out the bins every Tuesday evening",
+            "as soon as Mark comes home turn on the hallway",
+        ] {
+            assert!(about_automations(said), "{said}");
+        }
+        for said in [
+            "when is my next meeting",
+            "remind me in ten minutes",
+            "turn off the office light",
+            "what's the weather",
+            "set a timer for 5 minutes",
+        ] {
+            assert!(!about_automations(said), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_rule_being_worked_out_holds_the_talk_until_answered() {
+        let proposals = Proposals::new();
+        assert!(!proposals.in_talk());
+        proposals.discussed();
+        assert!(proposals.in_talk());
+        proposals.clear();
+        assert!(!proposals.in_talk());
     }
 
     #[test]
