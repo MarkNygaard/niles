@@ -29,4 +29,17 @@ pub enum Error {
 
     #[error("skill `{name}` was folded into `{into}`")]
     Absorbed { name: String, into: String },
+
+    #[error(
+        "the text to replace is not in skill `{name}`; view_skill it and copy the text exactly"
+    )]
+    EditNotFound { name: String },
+
+    #[error(
+        "the text to replace appears {count} times in skill `{name}`; include more of it so it appears once"
+    )]
+    EditAmbiguous { name: String, count: usize },
+
+    #[error("skill `{name}` has no change to undo")]
+    NothingToUndo { name: String },
 }

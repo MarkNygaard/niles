@@ -42,6 +42,9 @@ pub struct Sidecar {
     pub last_viewed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub status: SkillStatus,
+    /// The skill this one was folded into when it was retired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absorbed_into: Option<String>,
 }
 
 impl Sidecar {
@@ -57,6 +60,7 @@ impl Sidecar {
             view_count: 0,
             last_viewed_at: None,
             status: SkillStatus::Active,
+            absorbed_into: None,
         }
     }
 
@@ -88,6 +92,7 @@ mod tests {
             view_count: 2,
             last_viewed_at: Some(Utc.with_ymd_and_hms(2026, 1, 4, 12, 0, 0).unwrap()),
             status: SkillStatus::Stale,
+            absorbed_into: Some("evening".into()),
         };
 
         let raw = serde_json::to_string(&sidecar).unwrap();

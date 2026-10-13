@@ -31,9 +31,30 @@ pub struct SkillView {
     pub usage_count: u64,
     pub view_count: u64,
     pub patch_count: u64,
+    /// The skill this one was folded into, when it was retired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub absorbed_into: Option<String>,
     /// Only when one skill is asked for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// What can be undone, newest first. Only when one skill is asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes: Option<Vec<ChangeView>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangeView {
+    pub at: DateTime<Utc>,
+    pub change: String,
+}
+
+impl From<niles_skills::Change> for ChangeView {
+    fn from(c: niles_skills::Change) -> Self {
+        Self {
+            at: c.at,
+            change: c.change,
+        }
+    }
 }
 
 fn view(skill: Skill, with_body: bool) -> SkillView {
@@ -52,7 +73,9 @@ fn view(skill: Skill, with_body: bool) -> SkillView {
         usage_count: usage.usage_count,
         view_count: usage.view_count,
         patch_count: usage.patch_count,
+        absorbed_into: usage.absorbed_into,
         body: with_body.then_some(skill.body),
+        changes: None,
     }
 }
 
@@ -65,7 +88,9 @@ fn store(state: &AppState) -> Result<&Arc<SkillStore>, Failure> {
 
 fn failure(e: Error) -> Failure {
     let status = match e {
-        Error::NotFound { .. } | Error::Absorbed { .. } => StatusCode::NOT_FOUND,
+        Error::NotFound { .. } | Error::Absorbed { .. } | Error::NothingToUndo { .. } => {
+            StatusCode::NOT_FOUND
+        }
         Error::Pinned { .. } => StatusCode::CONFLICT,
         Error::InvalidName { .. } => StatusCode::BAD_REQUEST,
         _ => StatusCode::UNPROCESSABLE_ENTITY,
@@ -90,8 +115,37 @@ pub async fn get(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<SkillView>, Failure> {
-    let skill = store(&state)?.load(&name).map_err(failure)?;
-    Ok(Json(view(skill, true)))
+    let store = store(&state)?;
+    let skill = store.load(&name).map_err(failure)?;
+    let mut view = view(skill, true);
+    view.changes = Some(store.changes(&name).into_iter().map(Into::into).collect());
+    Ok(Json(view))
+}
+
+/// `POST /skills/{name}/undo` — put it back as it was before its last
+/// change, which Niles may have made while nobody watched.
+pub async fn undo(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<ChangeView>, Failure> {
+    let undone = store(&state)?.undo(&name).map_err(failure)?;
+    Ok(Json(undone.into()))
+}
+
+#[derive(Debug, Serialize)]
+pub struct TidyView {
+    pub at: Option<DateTime<Utc>>,
+    pub summary: Option<String>,
+}
+
+/// `GET /skills/_tidy` — when the skills were last tidied, and what was
+/// done. Underscored: no skill can be called that.
+pub async fn tidied(State(state): State<AppState>) -> Result<Json<TidyView>, Failure> {
+    let tidied = store(&state)?.tidied();
+    Ok(Json(TidyView {
+        at: tidied.as_ref().map(|t| t.at),
+        summary: tidied.map(|t| t.summary),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,6 +332,45 @@ mod tests {
         let (status, _) = send(&app, "DELETE", "/skills/away", None).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(store.list(), vec!["evening-wind-down"]);
+    }
+
+    #[tokio::test]
+    async fn a_change_can_be_seen_and_undone() {
+        let store = house();
+        store.edit("evening-wind-down", "30%", "20%").unwrap();
+        let app = app(Some(store.clone()));
+        let (_, body) = send(&app, "GET", "/skills/evening-wind-down", None).await;
+        let skill: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(skill["changes"][0]["change"], "edited");
+        assert_eq!(skill["changes"][1]["change"], "made");
+
+        let (status, body) = send(&app, "POST", "/skills/evening-wind-down/undo", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            store
+                .load("evening-wind-down")
+                .unwrap()
+                .body
+                .contains("30%")
+        );
+
+        let (status, _) = send(&app, "POST", "/skills/nothing/undo", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn says_when_the_skills_were_last_tidied() {
+        let store = house();
+        let app = app(Some(store.clone()));
+        let (_, body) = send(&app, "GET", "/skills/_tidy", None).await;
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["at"],
+            Value::Null
+        );
+        store.mark_tidied("Folded night into evening.");
+        let (_, body) = send(&app, "GET", "/skills/_tidy", None).await;
+        let tidy: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(tidy["summary"], "Folded night into evening.");
     }
 
     #[tokio::test]
