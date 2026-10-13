@@ -1,3 +1,4 @@
+import { BrandMark, hasBrandMark } from "@/components/BrandMark";
 import {
   AudioLines,
   Bot,
@@ -250,6 +251,9 @@ function GalleryCard({
   onPick: () => void;
   onOpenSettings?: (section: string) => void;
 }) {
+  // The service's own mark, as the page shows it once added; the
+  // catalogue's generic icon only where there is none (the broker).
+  const brand = hasBrandMark(integration.id);
   const Icon = ICONS[integration.icon] ?? Plug;
   const page = integration.settings_page;
   // A Settings-page entry with nowhere to go is a card to read, not a
@@ -261,9 +265,14 @@ function GalleryCard({
       <span className="flex items-start gap-3">
         <span
           aria-hidden
+          data-logo={brand ? "brand" : "icon"}
           className="bg-muted text-foreground flex size-9 shrink-0 items-center justify-center rounded-lg"
         >
-          <Icon className="size-5" />
+          {brand ? (
+            <BrandMark id={integration.id} label={integration.label} className="size-5" />
+          ) : (
+            <Icon className="size-5" />
+          )}
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">

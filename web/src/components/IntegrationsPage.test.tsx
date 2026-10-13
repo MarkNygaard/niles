@@ -486,6 +486,21 @@ describe("IntegrationsPage gallery", () => {
     expect(nemlig).toHaveTextContent("You need: A nemlig.com account.");
   });
 
+  it("shows each service's own logo, as the page does once it is added", () => {
+    setup([MQTT, GROQ, NEMLIG]);
+    const dialog = gallery();
+    // The card holding `name`: the nearest box around it with a logo.
+    const logo = (name: RegExp) => {
+      let node: HTMLElement | null = within(dialog).getByText(name);
+      while (node && !node.querySelector("[data-logo]")) node = node.parentElement;
+      return node?.querySelector("[data-logo]") ?? null;
+    };
+    expect(logo(/^Groq$/)).toHaveAttribute("data-logo", "brand");
+    expect(logo(/^nemlig\.com$/)).toHaveAttribute("data-logo", "brand");
+    // The broker has no logo of its own.
+    expect(logo(/^Zigbee & MQTT$/)).toHaveAttribute("data-logo", "icon");
+  });
+
   it("marks what is already added, and opens its settings", () => {
     setup(EVERYTHING);
     const groq = within(gallery()).getByRole("button", { name: /Groq/ });

@@ -151,6 +151,14 @@ function GroqMark({ className }: { className?: string }) {
  * Drawing something that merely looks like a company's logo would be
  * inventing one rather than showing it.
  */
+/** The marks drawn as their own components rather than one path. */
+const DRAWN = new Set(["groq", "cerebras", "nemlig", "microsoft"]);
+
+/** Whether `id` has a real mark here, rather than the initial in a dot. */
+export function hasBrandMark(id: string): boolean {
+  return DRAWN.has(id) || id in MARKS;
+}
+
 export function BrandMark({ id, label, className }: BrandMarkProps) {
   if (id === "groq") return <GroqMark className={className} />;
   if (id === "cerebras") return <CerebrasMark className={className} />;
