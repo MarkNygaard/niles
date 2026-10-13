@@ -1223,44 +1223,6 @@ export function ConfigPanel() {
           />
         </TabsContent>
 
-        <TabsContent value="all">
-          <Card>
-            <CardHeader>
-              <CardTitle>Raw config</CardTitle>
-              <CardDescription>
-                Every section as Niles has it, read-only — including the ones
-                with no page of their own yet, which is why this exists.
-                Sections marked “restart required” are only read at startup,
-                so editing them here would look like it worked without doing
-                anything.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {view.sections.map((section) => (
-                <div key={section.name}>
-                  <div className="mb-1 flex items-center gap-2">
-                    <span className="font-mono text-sm">{section.name}</span>
-                    {section.reload === "hot" ? (
-                      <Badge variant="secondary">live</Badge>
-                    ) : (
-                      <Badge variant="outline">restart required</Badge>
-                    )}
-                  </div>
-                  {view.effective[section.name] === undefined ? (
-                    <p className="text-muted-foreground text-xs">
-                      Not configured — Niles uses its defaults.
-                    </p>
-                  ) : (
-                    <pre className="bg-muted/40 overflow-x-auto rounded-md p-3 text-xs">
-                      {JSON.stringify(view.effective[section.name], null, 2)}
-                    </pre>
-                  )}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
         <TabsContent value="history">
           <Card>
             <CardHeader>
