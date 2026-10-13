@@ -11,7 +11,13 @@ use std::time::Duration;
 /// The whole rule as one sentence.
 pub fn sentence(rule: &AutomationRuleDto) -> String {
     let triggers: Vec<String> = rule.triggers.iter().map(trigger).collect();
-    let mut out = format!("When {}", triggers.join(", or when "));
+    // Read back while it is still being worked out: "When , if…" was
+    // what a rule with no trigger sounded like.
+    let mut out = if triggers.is_empty() {
+        "With nothing yet to start it".to_string()
+    } else {
+        format!("When {}", triggers.join(", or when "))
+    };
     let names = trigger_names(&rule.triggers);
     let conditions: Vec<String> = rule
         .conditions

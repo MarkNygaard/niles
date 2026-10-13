@@ -2348,6 +2348,11 @@ async fn run_tool_calling_chat_with_messages(
                 name = call.name,
                 keys = arg_keys.join(",")
             );
+            // The whole rule, for automations: a rule the model got wrong
+            // can only be put right once it can be seen what it sent.
+            if call.name.contains("automation") {
+                tracing::info!("tool_call {} arguments: {}", call.name, call.arguments);
+            }
 
             let result = if call.name == niles_tools::escalate::ESCALATE_TOOL_NAME {
                 call.arguments.clone()
@@ -2727,6 +2732,32 @@ fn wav_duration_ms(session: &niles_wyoming::AudioSession) -> u128 {
     frames * 1000 / rate
 }
 
+/// Run `work` while telling the satellite at `peer` every few seconds
+/// that an answer is still coming. It gives up after ten silent
+/// seconds, and a slow model call — seventeen seconds, once — or a turn
+/// handed to Claude Code took longer than that: the answer was made and
+/// spoken to nobody.
+async fn keep_waiting<T>(
+    sender: &WyomingSender,
+    peer: SocketAddr,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    const EVERY: Duration = Duration::from_secs(4);
+    tokio::pin!(work);
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + EVERY, EVERY);
+    loop {
+        tokio::select! {
+            out = &mut work => return out,
+            _ = tick.tick() => {
+                // Gone is fine: the satellite hung up or was asked
+                // something else, and the reply will say so when it
+                // fails.
+                let _ = sender.still_thinking(peer).await;
+            }
+        }
+    }
+}
+
 /// Spawn a fire-and-forget task that transcribes `session`, dispatches
 /// the transcript, and speaks the response back to the satellite.
 fn spawn_dispatch_task(
@@ -2847,14 +2878,18 @@ fn spawn_dispatch_task(
             let say = if follow_up && answering.is_none() {
                 None
             } else {
-                handle_transcript(
-                    &ctx,
+                keep_waiting(
+                    &sender,
                     peer,
-                    &text,
-                    confidence,
-                    &speaker,
-                    voice.as_deref(),
-                    answering.is_some(),
+                    handle_transcript(
+                        &ctx,
+                        peer,
+                        &text,
+                        confidence,
+                        &speaker,
+                        voice.as_deref(),
+                        answering.is_some(),
+                    ),
                 )
                 .await
             };
@@ -3745,6 +3780,20 @@ async fn dispatch_tier1(
         system_prompt.push_str(TYPED_IN_THE_APP);
         if let Some(reply) = ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
         {
+            return Some(reply);
+        }
+    } else if let Some((_, proposals)) = ctx.automations.as_ref()
+        && (niles_tools::automations::about_automations(text) || proposals.in_talk())
+    {
+        // A rule spoken aloud goes to Claude when it is switched on: the
+        // fast model dropped "half an hour after" and left out the
+        // trigger, and five turns went by before the rule was right.
+        // Slower, but the satellite is kept waiting (`keep_waiting`).
+        if let Some(reply) = ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
+        {
+            if follow_up::asks(&reply) {
+                proposals.discussed();
+            }
             return Some(reply);
         }
     }

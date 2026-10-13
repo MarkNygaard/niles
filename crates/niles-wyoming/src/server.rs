@@ -174,6 +174,22 @@ impl WyomingSender {
         tx.send(event).await.map_err(|_| SendError::NotConnected)
     }
 
+    /// Tell `peer` an answer is still coming. A satellite gives up on a
+    /// reply after ten silent seconds; every byte it receives restarts
+    /// that, and an event it does not know — a `ping` — is skipped.
+    pub async fn still_thinking(&self, peer: SocketAddr) -> std::result::Result<(), SendError> {
+        self.send_to(
+            peer,
+            Event {
+                kind: EventKind::Ping,
+                data: json!({}),
+                payload: Vec::new(),
+                version: None,
+            },
+        )
+        .await
+    }
+
     /// Frame `pcm` as `audio-start` → N `audio-chunk`s → `audio-stop`
     /// and send the sequence to `peer`.
     ///
@@ -502,6 +518,36 @@ mod tests {
         assert_eq!(received.kind, EventKind::Pong);
         assert_eq!(received.data, json!({"ok": true}));
         assert_eq!(received.payload, vec![0x01, 0x02]);
+    }
+
+    /// A satellite waiting for a reply hears that one is still coming
+    /// as a `ping` with nothing in it — a line it skips.
+    #[tokio::test]
+    async fn still_thinking_is_a_bare_ping() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let (server, mut events_rx, _disconnects_rx) = WyomingServer::bind(addr).await.unwrap();
+        let bound = server.listener.local_addr().unwrap();
+        let sender = server.sender();
+        let _server_task = tokio::spawn(server.run());
+
+        let stream = TcpStream::connect(bound).await.unwrap();
+        let client_peer = stream.local_addr().unwrap();
+        let (read_half, write_half) = stream.into_split();
+        let mut reader = WyomingReader::new(read_half);
+        let mut writer = WyomingWriter::new(write_half);
+        writer.write_event(&event(EventKind::Ping)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("timed out");
+
+        sender.still_thinking(client_peer).await.unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(2), reader.read_event())
+            .await
+            .expect("timed out")
+            .expect("read result")
+            .expect("event");
+        assert_eq!(received.kind, EventKind::Ping);
+        assert!(received.payload.is_empty());
     }
 
     /// PCM larger than AUDIO_CHUNK_BYTES is split into multiple
