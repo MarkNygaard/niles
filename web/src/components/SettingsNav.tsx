@@ -1,4 +1,5 @@
 import {
+  Brain,
   ChevronRight,
   Clock,
   FileCode,
@@ -61,6 +62,12 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
         label: "People",
         hint: "Who can sign in",
         icon: Users,
+      },
+      {
+        id: "memory",
+        label: "Memory",
+        hint: "What Niles remembers between conversations",
+        icon: Brain,
       },
       {
         id: "satellites",

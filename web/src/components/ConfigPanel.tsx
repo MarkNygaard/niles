@@ -28,6 +28,7 @@ import { SetupBanner } from "@/components/SetupBanner";
 import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
+import { MemoryCard } from "@/components/MemoryCard";
 import { MenuCard } from "@/components/MenuCard";
 import { RoomOrderCard } from "@/components/RoomOrderCard";
 import { SatellitesCard } from "@/components/SatellitesCard";
@@ -860,6 +861,10 @@ export function ConfigPanel() {
               onClear={() => clearCaptures.mutate()}
             />
           </div>
+        </TabsContent>
+
+        <TabsContent value="memory">
+          <MemoryCard />
         </TabsContent>
 
         <TabsContent value="credentials" className="flex flex-col gap-4">

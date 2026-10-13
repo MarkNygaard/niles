@@ -29,6 +29,13 @@ describe("SettingsNav", () => {
     expect(onPick).toHaveBeenCalledWith("lighting");
   });
 
+  it("leads to what Niles remembers", () => {
+    const onPick = vi.fn();
+    render(<SettingsNav current={null} onPick={onPick} />);
+    fireEvent.click(screen.getByRole("button", { name: /Memory/ }));
+    expect(onPick).toHaveBeenCalledWith("memory");
+  });
+
   it("marks the open one for a screen reader, not just with a tint", () => {
     render(<SettingsNav current="people" onPick={vi.fn()} />);
     expect(screen.getByRole("button", { name: /People/ })).toHaveAttribute(

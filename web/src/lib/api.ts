@@ -575,6 +575,16 @@ export interface SkillChange {
   status?: "active" | "archived";
 }
 
+/** Which memory document: facts about the household, or what Niles
+    noted for itself. */
+export type MemoryTarget = "user" | "agent";
+
+/** What Niles remembers, entry by entry, as `GET /memory` has it. */
+export interface Memory {
+  user: string[];
+  agent: string[];
+}
+
 /** One message to Niles in the app, and the answer. */
 export interface Exchange {
   said: string;
@@ -989,6 +999,14 @@ export const api = {
   /** Refused while the skill is pinned. */
   deleteSkill: (name: string) =>
     request<void>(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+
+  memory: () => request<Memory>("/memory"),
+  /** Only the entry whose text is exactly `text`. */
+  forgetMemory: (target: MemoryTarget, text: string) =>
+    request<void>(`/memory/${target}`, {
+      method: "DELETE",
+      body: JSON.stringify({ text }),
+    }),
 
   history: () => request<Revision[]>("/config/history"),
 

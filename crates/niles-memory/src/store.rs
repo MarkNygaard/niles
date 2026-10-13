@@ -168,6 +168,23 @@ impl MemoryStore {
         })
     }
 
+    /// Remove the entry whose text is exactly `text` — for a person
+    /// pointing at one, where "contains" could take out a longer entry
+    /// that happens to include a short one, or refuse to choose.
+    pub fn forget(&self, target: Target, text: &str) -> Result<()> {
+        self.mutate(target, |raw| {
+            let mut entries = parse_entries(raw);
+            let at = entries
+                .iter()
+                .position(|e| e.text == text.trim())
+                .ok_or(Error::NotFound {
+                    target: target.as_str(),
+                })?;
+            entries.remove(at);
+            Ok(serialize_entries(&entries))
+        })
+    }
+
     fn char_limit(&self, target: Target) -> usize {
         match target {
             Target::User => self.config.user_char_limit,
@@ -382,6 +399,28 @@ mod tests {
         store.add(Target::User, "Alice likes coffee.").unwrap();
         let err = store.remove(Target::User, "Alice").unwrap_err();
         assert!(matches!(err, Error::Ambiguous { .. }));
+    }
+
+    #[test]
+    fn forgetting_takes_exactly_the_entry_named() {
+        let store = setup();
+        store
+            .add(Target::User, "Mark takes his coffee black")
+            .unwrap();
+        store
+            .add(Target::User, "Mark takes his coffee black on weekdays")
+            .unwrap();
+        store
+            .forget(Target::User, "Mark takes his coffee black")
+            .unwrap();
+        assert_eq!(
+            store.load(Target::User),
+            vec![Entry {
+                text: "Mark takes his coffee black on weekdays".into()
+            }]
+        );
+        let err = store.forget(Target::User, "coffee").unwrap_err();
+        assert!(matches!(err, Error::NotFound { .. }));
     }
 
     #[test]

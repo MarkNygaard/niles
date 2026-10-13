@@ -6387,6 +6387,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_groceries(groceries.clone())
     .with_automations(automations.clone())
     .with_skills(skill_store.clone())
+    .with_memory(memory_store.clone())
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
     .with_nemlig(nemlig.clone())
