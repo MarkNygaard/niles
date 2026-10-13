@@ -41,14 +41,6 @@ fn target(name: &str) -> Result<Target, Failure> {
 fn failure(e: Error) -> Failure {
     match e {
         Error::NotFound { .. } => (StatusCode::NOT_FOUND, e.to_string()),
-        // The store's own reason says "be more specific", which nobody
-        // pressing a delete button can be.
-        Error::Ambiguous { .. } => (
-            StatusCode::CONFLICT,
-            "another entry contains this one word for word, so it cannot be \
-             deleted on its own; delete the longer one first"
-                .to_string(),
-        ),
         _ => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
     }
 }
@@ -73,8 +65,6 @@ pub struct Forget {
 }
 
 /// `DELETE /memory/{target}` — the entry whose text is exactly `text`.
-/// The store removes by substring, which from a delete button would
-/// take out whichever longer entry happened to contain a short one.
 pub async fn remove(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -82,12 +72,7 @@ pub async fn remove(
 ) -> Result<StatusCode, Failure> {
     let store = store(&state)?;
     let target = target(&name)?;
-    if !store.load(target).iter().any(|e| e.text == forget.text) {
-        return Err(failure(Error::NotFound {
-            target: target.as_str(),
-        }));
-    }
-    store.remove(target, &forget.text).map_err(failure)?;
+    store.forget(target, &forget.text).map_err(failure)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -200,7 +185,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_entry_inside_a_longer_one_is_refused_rather_than_guessed() {
+    async fn an_entry_inside_a_longer_one_is_deleted_on_its_own() {
         let store = house();
         let app = app(Some(store.clone()));
         let (status, reason) = send(
@@ -210,9 +195,11 @@ mod tests {
             Some(json!({ "text": "Mark takes his coffee black" })),
         )
         .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(reason.contains("delete the longer one first"), "{reason}");
-        assert_eq!(texts(&store, Target::User).len(), 2);
+        assert_eq!(status, StatusCode::NO_CONTENT, "{reason}");
+        assert_eq!(
+            texts(&store, Target::User),
+            vec!["Mark takes his coffee black on weekdays"]
+        );
     }
 
     #[tokio::test]
