@@ -34,7 +34,6 @@ pub struct IntegrationDto {
     pub icon: String,
     /// Every key it keeps, which removing it deletes.
     pub secret_keys: Vec<String>,
-    pub settings_page: Option<catalogue::SettingsPage>,
     pub base_url: Option<String>,
     pub serves: Vec<Role>,
     /// What it can be asked for, per role — `{"stt": [...], "llm": [...]}`.
@@ -68,7 +67,6 @@ pub async fn list(State(state): State<AppState>) -> Json<Vec<IntegrationDto>> {
                 importance: known.importance,
                 icon: known.icon.to_string(),
                 secret_keys: known.secrets.iter().map(|k| k.to_string()).collect(),
-                settings_page: known.settings_page,
                 base_url: known.base_url.map(Into::into),
                 serves: known.serves.to_vec(),
                 models: models_of(known),

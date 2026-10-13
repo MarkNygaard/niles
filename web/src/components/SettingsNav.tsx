@@ -8,7 +8,6 @@ import {
   Menu,
   MessagesSquare,
   Mic,
-  Network,
   Plug,
   Speaker,
   Users,
@@ -85,12 +84,6 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
   {
     group: "Connections",
     items: [
-      {
-        id: "mqtt",
-        label: "Zigbee & MQTT",
-        hint: "The broker the lights and sensors talk through",
-        icon: Network,
-      },
       {
         id: "integrations",
         label: "Integrations",

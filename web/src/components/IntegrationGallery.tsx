@@ -1,3 +1,4 @@
+import { BrandMark, hasBrandMark } from "@/components/BrandMark";
 import {
   AudioLines,
   Bot,
@@ -114,9 +115,6 @@ export interface IntegrationGalleryProps {
   disabled?: boolean;
   /** An integration's card was picked: set it up, or open what is set up. */
   onPick: (integration: Integration) => void;
-  /** Where a Settings-page entry is taken; without it the card only says
-      where to go. */
-  onOpenSettings?: (section: string) => void;
 }
 
 /**
@@ -132,7 +130,6 @@ export function IntegrationGallery({
   integrations,
   disabled,
   onPick,
-  onOpenSettings,
 }: IntegrationGalleryProps) {
   const uncovered = uncoveredRoles(integrations);
   const everything = integrations.length > 0 && integrations.every((i) => i.added);
@@ -187,7 +184,6 @@ export function IntegrationGallery({
                       required={showsRequired(integration, uncovered)}
                       disabled={disabled}
                       onPick={() => onPick(integration)}
-                      onOpenSettings={onOpenSettings}
                     />
                   ))}
               </div>
@@ -242,28 +238,30 @@ function GalleryCard({
   required,
   disabled,
   onPick,
-  onOpenSettings,
 }: {
   integration: Integration;
   required: boolean;
   disabled?: boolean;
   onPick: () => void;
-  onOpenSettings?: (section: string) => void;
 }) {
+  // The service's own mark, as the page shows it once added; the
+  // catalogue's generic icon only where there is none (the broker).
+  const brand = hasBrandMark(integration.id);
   const Icon = ICONS[integration.icon] ?? Plug;
-  const page = integration.settings_page;
-  // A Settings-page entry with nowhere to go is a card to read, not a
-  // button that does nothing.
-  const inert = integration.kind === "setting" && !onOpenSettings;
 
   const body = (
     <>
       <span className="flex items-start gap-3">
         <span
           aria-hidden
+          data-logo={brand ? "brand" : "icon"}
           className="bg-muted text-foreground flex size-9 shrink-0 items-center justify-center rounded-lg"
         >
-          <Icon className="size-5" />
+          {brand ? (
+            <BrandMark id={integration.id} label={integration.label} className="size-5" />
+          ) : (
+            <Icon className="size-5" />
+          )}
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">
@@ -291,12 +289,8 @@ function GalleryCard({
         {integration.needs}
       </span>
       <span className="text-muted-foreground mt-auto flex items-center gap-1 pt-1 text-xs font-medium">
-        {integration.kind === "setting" && page
-          ? `In Settings → ${page.label}`
-          : integration.added
-            ? "Open its settings"
-            : "Set up"}
-        {!inert && <ChevronRight aria-hidden className="size-3.5" />}
+        {integration.added ? "Open its settings" : "Set up"}
+        <ChevronRight aria-hidden className="size-3.5" />
       </span>
     </>
   );
@@ -304,16 +298,11 @@ function GalleryCard({
   const shape =
     "border-border flex h-full flex-col gap-2 rounded-xl border p-3 text-left";
 
-  if (inert) return <div className={shape}>{body}</div>;
-
   return (
     <button
       type="button"
       disabled={disabled}
-      onClick={() => {
-        if (integration.kind === "setting" && page) onOpenSettings?.(page.id);
-        else onPick();
-      }}
+      onClick={onPick}
       className={cn(
         shape,
         "hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:opacity-50",

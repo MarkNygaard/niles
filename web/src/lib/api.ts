@@ -86,9 +86,7 @@ export interface Integration {
   blurb: string;
   /** What you need before you start. */
   needs: string;
-  /** `setting` is set up on its own Settings page, named by
-      `settings_page`. */
-  kind: "provider" | "service" | "setting";
+  kind: "provider" | "service";
   /** The list arrives in page order, so a group goes where it first
       appears. */
   group: IntegrationGroup;
@@ -97,7 +95,6 @@ export interface Integration {
   icon: string;
   /** Every key it keeps; removing it deletes the stored ones. */
   secret_keys: string[];
-  settings_page: { id: string; label: string } | null;
   base_url: string | null;
   serves: ("stt" | "llm")[];
   /**
