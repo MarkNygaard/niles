@@ -901,38 +901,18 @@ fn build_tier2_client(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ChatProvide
     Ok(Some(Arc::new(client)))
 }
 
-/// Build a `CapabilityLoader` from config, or `None` if capabilities
-/// are not configured or fail to load. A loader failure is **not
-/// fatal** — niles starts without the `look_up_capability` tool and
-/// logs the cause. This matches the optional-subsystem semantics of
-/// the voice / STT / TTS stacks.
-fn build_capability_loader(
-    cfg: &niles_config::CapabilitiesConfig,
-) -> Option<Arc<CapabilityLoader>> {
-    let Some(dir) = &cfg.directory else {
-        tracing::info!(
-            "no capabilities directory configured; LLM will run without look_up_capability"
-        );
-        return None;
-    };
-    match CapabilityLoader::load_from_dir(dir) {
-        Ok(loader) if loader.is_empty() => {
-            tracing::warn!(
-                "capability directory {} is empty; not registering look_up_capability",
-                dir.display()
-            );
-            None
-        }
+/// The capability references built into the binary. A set that will
+/// not parse is **not fatal** — niles starts without the
+/// `look_up_capability` tool and logs the cause — though the
+/// niles-capabilities tests make that a build that never ships.
+fn build_capability_loader() -> Option<Arc<CapabilityLoader>> {
+    match CapabilityLoader::builtin() {
         Ok(loader) => {
-            tracing::info!(
-                "loaded {} capabilities from {}",
-                loader.len(),
-                dir.display()
-            );
+            tracing::info!("loaded {} built-in capability references", loader.len());
             Some(Arc::new(loader))
         }
         Err(e) => {
-            tracing::warn!("failed to load capabilities from {}: {e}", dir.display());
+            tracing::error!("the built-in capability references would not load: {e}");
             None
         }
     }
@@ -2208,7 +2188,7 @@ Your manner is that of a butler who has served this household for years and know
 Your reply is spoken aloud, not read. Answer in one or two short sentences — someone waiting for a light to come on is also waiting through every word you say. Say numbers the way a person would: 'about sixteen degrees', not '15.7'. Give what was asked and leave out the rest; a tool returning ten fields is not a request for ten facts.";
 
 /// Appended to the persona only when the `look_up_capability` tool is
-/// registered (a capabilities directory is configured). Advertising it
+/// registered (the built-in references loaded). Advertising it
 /// otherwise makes the model emit a call to a tool absent from
 /// `request.tools`, which the provider rejects with a 400.
 const CAPABILITY_GUIDANCE: &str = " \
@@ -2431,7 +2411,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let wled_handle = spawn_wled_source(&cfg, registry.clone(), bus.clone()).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let capability_loader = build_capability_loader(&cfg.capabilities);
+    let capability_loader = build_capability_loader();
     let capability_index = capability_loader.as_deref().map(build_capability_index);
 
     let memory_store = build_memory_store(&cfg).await;
@@ -3042,7 +3022,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // startup (wake-word + speech + STT round-trip), so Z2M has plenty
     // of time to populate before any tool call hits the registry.
     let llm = Arc::new(build_groq_client(&cfg)?);
-    let capability_loader = build_capability_loader(&cfg.capabilities);
+    let capability_loader = build_capability_loader();
     let capability_index = capability_loader
         .as_deref()
         .map(build_capability_index)
@@ -5238,46 +5218,94 @@ fn current_minute_of_day(
     }
 }
 
-fn load_timer_store(dir: Option<&Path>) -> TimerStore {
-    let Some(dir) = dir else {
-        return TimerStore::new();
+/// Running timers, kept in Postgres when there is one, so a deploy no
+/// longer drops the one somebody has going. A timer that ran out while
+/// Niles was down comes back ringing.
+///
+/// Without a database they last as long as the process, and say so. A
+/// stored document that will not parse is logged and dropped: timers
+/// are minutes long, and starting with none costs less than refusing to.
+async fn build_timer_store(cfg: &Config) -> Arc<TimerStore> {
+    let in_memory = || {
+        tracing::warn!("[timers] no database; timers will not survive a restart");
+        Arc::new(TimerStore::new())
     };
-    let path = dir.join("timers.json");
-    match TimerStore::load_from_file(&path) {
-        Ok(s) => s.with_persistence(path),
+    let Some(database) = &cfg.database else {
+        return in_memory();
+    };
+    let Ok(url) = database.resolve_url() else {
+        return in_memory();
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return in_memory();
+    };
+    let table = Arc::new(niles_db::PostgresTimers::new(
+        backend.pool(),
+        backend.describe_target(),
+    ));
+    let store = match table.load().await {
+        Ok(Some(document)) => TimerStore::from_json(&document).unwrap_or_else(|e| {
+            tracing::error!("[timers] the stored document would not parse ({e}); starting empty");
+            TimerStore::new()
+        }),
+        Ok(None) => TimerStore::new(),
         Err(e) => {
-            tracing::warn!("persistence: timers load failed ({e}); starting empty");
-            TimerStore::new().with_persistence(path)
+            // Saving over a set that could not be read would lose it for
+            // good; leave it for the next run instead.
+            tracing::error!("[timers] could not be read ({e}); this run's timers are not saved");
+            return Arc::new(TimerStore::new());
         }
-    }
+    };
+    let sink = queue_document_writes("timers", move |document| {
+        let table = table.clone();
+        async move { table.store(&document).await }
+    });
+    Arc::new(store.with_sink(sink))
 }
 
-fn load_scene_store(dir: Option<&Path>) -> SceneStore {
-    let Some(dir) = dir else {
-        return SceneStore::new();
+/// The lights the morning routine holds, kept in Postgres when there is
+/// one. A restart mid-ramp would otherwise hand them straight back to
+/// the curve.
+///
+/// Without a database the claims last as long as the process, and say
+/// so. A stored document that will not parse is logged and dropped: the
+/// worst a lost claim does is end one morning's ramp early.
+async fn build_morning_claims(cfg: &Config) -> Arc<MorningClaimTracker> {
+    let in_memory = || {
+        tracing::warn!("[morning] no database; claims will not survive a restart");
+        Arc::new(MorningClaimTracker::new())
     };
-    let path = dir.join("scenes.json");
-    match SceneStore::load_from_file(&path) {
-        Ok(s) => s.with_persistence(path),
-        Err(e) => {
-            tracing::warn!("persistence: scenes load failed ({e}); starting empty");
-            SceneStore::new().with_persistence(path)
-        }
-    }
-}
-
-fn load_morning_claims(dir: Option<&Path>) -> MorningClaimTracker {
-    let Some(dir) = dir else {
-        return MorningClaimTracker::new();
+    let Some(database) = &cfg.database else {
+        return in_memory();
     };
-    let path = dir.join("morning_claims.json");
-    match MorningClaimTracker::load_from_file(&path) {
-        Ok(s) => s.with_persistence(path),
+    let Ok(url) = database.resolve_url() else {
+        return in_memory();
+    };
+    let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
+    else {
+        return in_memory();
+    };
+    let table = Arc::new(niles_db::PostgresMorningClaims::new(
+        backend.pool(),
+        backend.describe_target(),
+    ));
+    let tracker = match table.load().await {
+        Ok(Some(document)) => MorningClaimTracker::from_json(&document).unwrap_or_else(|e| {
+            tracing::error!("[morning] the stored claims would not parse ({e}); starting empty");
+            MorningClaimTracker::new()
+        }),
+        Ok(None) => MorningClaimTracker::new(),
         Err(e) => {
-            tracing::warn!("persistence: morning_claims load failed ({e}); starting empty");
-            MorningClaimTracker::new().with_persistence(path)
+            tracing::error!("[morning] claims could not be read ({e}); this run's are not saved");
+            return Arc::new(MorningClaimTracker::new());
         }
-    }
+    };
+    let sink = queue_document_writes("morning", move |document| {
+        let table = table.clone();
+        async move { table.store(&document).await }
+    });
+    Arc::new(tracker.with_sink(sink))
 }
 
 // ------------------------------------------------------------------
@@ -5659,30 +5687,55 @@ fn build_capture_store(cfg: &Config) -> Option<Arc<niles_db::PostgresCaptures>> 
     )))
 }
 
-/// Writes scenes to Postgres on a task of its own.
+/// Hands a scheduler store's changed document to a task that writes it.
 ///
-/// [`SceneStore`] is sync — it is read on paths that cannot await — so
-/// it cannot do a database round trip itself. It hands the document to
-/// this instead, and a task drains the queue. The last document wins,
-/// which is what "the whole set, replaced" already means.
+/// The scene, timer and morning-claim stores are sync — they are read on
+/// paths that cannot await — so they cannot do a database round trip
+/// themselves. They hand the document to this instead, and a task
+/// drains the queue. The last document wins, which is what "the whole
+/// set, replaced" already means.
 ///
-/// The window where a scene is saved and the process dies before the
-/// write lands is real and small. A save that blocked a voice reply on
-/// a database is worse.
-struct QueuedScenes {
+/// The window where a change is made and the process dies before the
+/// write lands is real and small. A change that blocked a voice reply
+/// on a database is worse.
+struct QueuedDocument {
+    what: &'static str,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 }
 
-impl niles_scheduler::ScenePersistence for QueuedScenes {
+impl niles_scheduler::DocumentSink for QueuedDocument {
     fn store(&self, document: &str) {
         // A closed channel means the writer task is gone, which is
-        // worth one line rather than one per save.
+        // worth one line rather than one per change.
         if self.tx.send(document.to_string()).is_err() {
             tracing::warn!(
-                "[scenes] nothing is writing scenes any more; this one is in memory only"
+                "[{}] nothing is writing them any more; this change is in memory only",
+                self.what
             );
         }
     }
+}
+
+/// Start the task that writes `what` with `save`, and return the sink
+/// that feeds it.
+fn queue_document_writes<F, Fut>(what: &'static str, save: F) -> Arc<QueuedDocument>
+where
+    F: Fn(String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), String>> + Send,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(mut document) = rx.recv().await {
+            // Each document is the whole state; only the newest matters.
+            while let Ok(newer) = rx.try_recv() {
+                document = newer;
+            }
+            if let Err(e) = save(document).await {
+                tracing::error!("[{what}] save failed: {e}");
+            }
+        }
+    });
+    Arc::new(QueuedDocument { what, tx })
 }
 
 /// Where each room's last station is kept: the database, when there is
@@ -5698,23 +5751,26 @@ fn build_room_music(cfg: &Config) -> Option<Arc<niles_db::PostgresRoomMusic>> {
     )))
 }
 
-/// The scene store, kept wherever this install can keep it.
+/// The scene store, kept in Postgres when there is one: it needs
+/// nothing in the config file beyond the line that names the database,
+/// which is the point.
 ///
-/// Postgres first: it needs nothing in the config file beyond the line
-/// that names the database, which is the point. A directory is still
-/// honoured for installs that have one, and with neither, scenes live
-/// until the process does — and say so, because losing them silently
-/// is how this was found.
+/// Without a database scenes live until the process does — and say so,
+/// because losing them silently is how this was found.
 async fn build_scene_store(cfg: &Config) -> Arc<SceneStore> {
+    let in_memory = || {
+        tracing::warn!("[scenes] no database; scenes will not survive a restart");
+        Arc::new(SceneStore::new())
+    };
     let Some(database) = &cfg.database else {
-        return Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
+        return in_memory();
     };
     let Ok(url) = database.resolve_url() else {
-        return Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
+        return in_memory();
     };
     let Ok(backend) = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections)
     else {
-        return Arc::new(load_scene_store(cfg.persistence.directory.as_deref()));
+        return in_memory();
     };
     let describe = backend.describe_target();
     let scenes = Arc::new(niles_db::PostgresScenes::new(backend.pool(), describe));
@@ -5733,19 +5789,15 @@ async fn build_scene_store(cfg: &Config) -> Arc<SceneStore> {
         }
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    tokio::spawn(async move {
-        while let Some(document) = rx.recv().await {
-            if let Err(e) = scenes.store(&document).await {
-                tracing::error!("[scenes] save failed: {e}");
-            }
-        }
+    let sink = queue_document_writes("scenes", move |document| {
+        let scenes = scenes.clone();
+        async move { scenes.store(&document).await }
     });
-    Arc::new(store.with_sink(Arc::new(QueuedScenes { tx })))
+    Arc::new(store.with_sink(sink))
 }
 
 /// Hands each new grocery document to a task that writes it, the way
-/// [`QueuedScenes`] does for scenes: checking something off in the shop
+/// [`QueuedDocument`] does for scenes: checking something off in the shop
 /// must not wait on the database.
 struct QueuedGroceries {
     tx: tokio::sync::mpsc::UnboundedSender<String>,
@@ -5880,10 +5932,7 @@ fn build_override_backend(cfg: &Config) -> anyhow::Result<Box<dyn niles_config::
             })?;
         return Ok(Box::new(backend));
     }
-    match cfg.persistence.directory.as_ref() {
-        Some(dir) => Ok(Box::new(niles_config::FileBackend::new(dir.join("config")))),
-        None => Ok(Box::new(niles_config::MemoryBackend::new())),
-    }
+    Ok(Box::new(niles_config::MemoryBackend::new()))
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
@@ -5979,7 +6028,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();
     let tracker = Arc::new(ManualModeTracker::new());
-    let claim_tracker = Arc::new(load_morning_claims(cfg.persistence.directory.as_deref()));
+    let claim_tracker = build_morning_claims(&cfg).await;
 
     // Device index: built from the registry at startup and updated
     // on DeviceAdded / DeviceRemoved so Tier 0 matchers can resolve
@@ -6124,7 +6173,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // transcript arrives, by which point Z2M has had seconds to
     // populate. See voice_dispatch for the same reasoning.
     let llm = Arc::new(build_groq_client(&cfg)?);
-    let timers = Arc::new(load_timer_store(cfg.persistence.directory.as_deref()));
+    let timers = build_timer_store(&cfg).await;
     let scenes = build_scene_store(&cfg).await;
     let groceries = build_grocery_store(&cfg).await;
     let automations = build_automation_store(&cfg).await;
@@ -6134,7 +6183,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // The rule Niles last read back, saved by a plain yes.
     let proposals = Arc::new(niles_tools::automations::Proposals::new());
     let calendars = build_calendars(&cfg);
-    let capability_loader = build_capability_loader(&cfg.capabilities);
+    let capability_loader = build_capability_loader();
     let capability_index = capability_loader
         .as_deref()
         .map(build_capability_index)
@@ -6456,8 +6505,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let n_claims = claim_tracker.claimed_count();
     tracing::info!(
         target: "niles::persistence",
-        "loaded {n_timers} timers, {n_scenes} scenes, {n_claims} morning claims (dir={:?})",
-        cfg.persistence.directory.as_deref(),
+        "loaded {n_timers} timers, {n_scenes} scenes, {n_claims} morning claims",
     );
 
     let mut session_tracker = SessionTracker::new();
@@ -9570,19 +9618,7 @@ url_env = \"NILES_TEST_DEFINITELY_NOT_SET\"
     }
 
     #[tokio::test]
-    async fn without_a_database_a_persistence_directory_is_used() {
-        let cfg = config_with(
-            "
-[persistence]
-directory = \"/var/lib/niles\"
-",
-        );
-        let described = build_override_backend(&cfg).unwrap().describe();
-        assert!(described.contains("directory"), "got: {described}");
-    }
-
-    #[tokio::test]
-    async fn with_neither_it_falls_back_to_memory_and_says_so() {
+    async fn without_a_database_it_falls_back_to_memory_and_says_so() {
         let described = build_override_backend(&config_with("")).unwrap().describe();
         assert!(described.contains("memory"), "got: {described}");
     }

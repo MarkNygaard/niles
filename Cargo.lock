@@ -1961,7 +1961,6 @@ dependencies = [
  "niles-core",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror",
  "tracing",
 ]

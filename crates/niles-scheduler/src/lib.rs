@@ -9,6 +9,7 @@
 //! - [`morning`] — the morning auto-turn-on routine + claim tracker.
 //! - [`switch`] — pure-logic classifier for hardware button events.
 //! - [`timer`] — in-memory timer store for voice-dispatch timers.
+//! - [`persistence`] — the sink the stores hand their state to.
 
 pub mod curve;
 pub mod error;
@@ -31,7 +32,8 @@ pub use morning::{
     MorningClaimTracker, MorningRoutineConfig, Skipped, kick_on_skip, routine_brightness_at,
     should_fire_today,
 };
-pub use scenes::{SceneEntry, ScenePersistence, SceneStore};
+pub use persistence::DocumentSink;
+pub use scenes::{SceneEntry, SceneStore};
 pub use sink::{BRIGHTNESS_DEBOUNCE, build_ambient_target, build_curve_target};
 pub use switch::{SwitchEffect, classify_action};
 pub use time::MinuteOfDay;

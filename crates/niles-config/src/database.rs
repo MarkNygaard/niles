@@ -1,7 +1,7 @@
 //! `[database]` — where Niles keeps state that must outlive a restart.
 //!
-//! Optional. Without it Niles falls back to `[persistence]`'s directory,
-//! or to memory, and says so at startup.
+//! Optional. Without it Niles keeps that state in memory, loses it on
+//! every restart, and says so at startup.
 
 use crate::error::{Error, Result};
 use serde::Deserialize;

@@ -1,14 +1,14 @@
 //! Scene store — snapshots and replays device state by name.
 //!
-//! Optional file persistence (JSON) survives process restarts.
+//! Every change is handed to an optional [`DocumentSink`] as a JSON
+//! document, which [`SceneStore::from_json`] reads back after a restart.
 
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, RoomName};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
-use crate::persistence::{atomic_write_json, read_json_or_empty};
+use crate::persistence::{DocumentSink, hand_over};
 use crate::timer::canonicalize_name;
 
 /// A single device captured in a scene.
@@ -120,46 +120,24 @@ fn rehydrate(persisted: PersistedScenes) -> HashMap<String, Vec<SceneEntry>> {
     scenes
 }
 
-/// Somewhere a scene outlives the process.
-///
-/// A trait rather than a path, because the answer is no longer always
-/// a file. A scene kept on a mounted directory needs a config file to
-/// say where that directory is, and the config file is the thing Niles
-/// is trying to stop needing: in a cluster they go to the database
-/// instead, alongside the credentials and the overrides.
-///
-/// Handed the whole document rather than one change. The store is a
-/// handful of scenes, and the alternative is two ways for it to be
-/// wrong.
-pub trait ScenePersistence: Send + Sync {
-    fn store(&self, document: &str);
-}
-
 /// In-memory store for named lighting scenes.
 ///
 /// Mirrors the `RwLock<HashMap>` shape of [`ManualModeTracker`].
 pub struct SceneStore {
     scenes: RwLock<HashMap<String, Vec<SceneEntry>>>,
-    persistence_path: Option<PathBuf>,
-    sink: Option<std::sync::Arc<dyn ScenePersistence>>,
+    sink: Option<Arc<dyn DocumentSink>>,
 }
 
 impl SceneStore {
     pub fn new() -> Self {
         Self {
             scenes: RwLock::new(HashMap::new()),
-            persistence_path: None,
             sink: None,
         }
     }
 
-    pub fn with_persistence(mut self, path: PathBuf) -> Self {
-        self.persistence_path = Some(path);
-        self
-    }
-
-    /// Write every change somewhere that is not a file.
-    pub fn with_sink(mut self, sink: std::sync::Arc<dyn ScenePersistence>) -> Self {
+    /// Hand every change to `sink`.
+    pub fn with_sink(mut self, sink: Arc<dyn DocumentSink>) -> Self {
         self.sink = Some(sink);
         self
     }
@@ -169,7 +147,6 @@ impl SceneStore {
         let persisted: PersistedScenes = serde_json::from_str(document)?;
         Ok(Self {
             scenes: RwLock::new(rehydrate(persisted)),
-            persistence_path: None,
             sink: None,
         })
     }
@@ -180,40 +157,8 @@ impl SceneStore {
         serde_json::to_string(&persistable(&inner)).unwrap_or_else(|_| "{}".into())
     }
 
-    pub fn load_from_file(path: &Path) -> std::io::Result<Self> {
-        let persisted: PersistedScenes = read_json_or_empty(path, "scenes")?;
-        Ok(Self {
-            scenes: RwLock::new(rehydrate(persisted)),
-            persistence_path: None,
-            sink: None,
-        })
-    }
-
-    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
-        let inner = self.scenes_read();
-        self.save_locked(&inner, path)
-    }
-
-    fn save_locked(
-        &self,
-        inner: &HashMap<String, Vec<SceneEntry>>,
-        path: &Path,
-    ) -> std::io::Result<()> {
-        atomic_write_json(path, &persistable(inner))
-    }
-
     fn maybe_save(&self, inner: &HashMap<String, Vec<SceneEntry>>) {
-        if let Some(path) = self.persistence_path.as_deref()
-            && let Err(e) = self.save_locked(inner, path)
-        {
-            tracing::warn!("persistence: scenes save failed: {e}");
-        }
-        if let Some(sink) = self.sink.as_ref() {
-            match serde_json::to_string(&persistable(inner)) {
-                Ok(document) => sink.store(&document),
-                Err(e) => tracing::warn!("persistence: scenes would not serialize: {e}"),
-            }
-        }
+        hand_over(self.sink.as_ref(), &persistable(inner), "scenes");
     }
 
     /// Snapshot every *light* in `room` (or the whole registry if `room`
@@ -307,6 +252,7 @@ impl Default for SceneStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::Spy;
     use niles_core::{Device, DeviceClass};
 
     fn dev_in(room: &str, name: &str) -> DeviceId {
@@ -426,7 +372,6 @@ mod tests {
 
     #[test]
     fn arc_clones_share_writes() {
-        use std::sync::Arc;
         let store = Arc::new(SceneStore::new());
         let store2 = store.clone();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
@@ -541,20 +486,14 @@ mod tests {
         // Including a delete: a scene somebody removed has to actually
         // disappear, and sending only saves would leave it there until
         // a restart.
-        struct Spy(std::sync::Mutex<Vec<String>>);
-        impl ScenePersistence for Spy {
-            fn store(&self, document: &str) {
-                self.0.lock().unwrap().push(document.to_string());
-            }
-        }
-        let spy = std::sync::Arc::new(Spy(std::sync::Mutex::new(Vec::new())));
+        let spy = Arc::new(Spy::default());
         let registry = registry_with(&[("living_room", "bulb_1", state(true, 60, 2700))]);
         let store = SceneStore::new().with_sink(spy.clone());
 
         store.save("cosy", &registry, None, &HashSet::new());
         store.delete("cosy");
 
-        let seen = spy.0.lock().unwrap();
+        let seen = spy.documents();
         assert_eq!(seen.len(), 2, "a save and a delete");
         assert!(seen[0].contains("cosy"));
         assert!(!seen[1].contains("cosy"), "the delete has to travel too");
@@ -562,9 +501,7 @@ mod tests {
 
     #[test]
     fn persistence_roundtrips_rgb() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("scenes.json");
-        let store = SceneStore::new().with_persistence(path.clone());
+        let store = SceneStore::new();
         let reg = DeviceRegistry::new();
         reg.upsert(Device::new(
             dev_in("kitchen", "a"),
@@ -577,7 +514,7 @@ mod tests {
         ));
         store.save("evening", &reg, None, &HashSet::new());
 
-        let loaded = SceneStore::load_from_file(&path).unwrap();
+        let loaded = SceneStore::from_json(&store.to_json()).unwrap();
         let entries = loaded.get("evening").unwrap();
         assert_eq!(entries[0].state.rgb, Some([255, 128, 0]));
     }
@@ -632,15 +569,11 @@ mod tests {
 
     #[test]
     fn persists_and_reloads_scenes_with_state_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scenes.json");
-        let store = SceneStore::new().with_persistence(path.clone());
+        let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
         store.save("evening", &reg, None, &HashSet::new());
 
-        let reloaded = SceneStore::load_from_file(&path)
-            .unwrap()
-            .with_persistence(path);
+        let reloaded = SceneStore::from_json(&store.to_json()).unwrap();
         let entries = reloaded.get("evening").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].device_id, dev_in("kitchen", "a"));
@@ -651,49 +584,35 @@ mod tests {
 
     #[test]
     fn name_canonicalization_survives_reload() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scenes.json");
-        let store = SceneStore::new().with_persistence(path.clone());
+        let store = SceneStore::new();
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
         store.save("Kitchen Evening", &reg, None, &HashSet::new());
 
-        let reloaded = SceneStore::load_from_file(&path)
-            .unwrap()
-            .with_persistence(path);
+        let reloaded = SceneStore::from_json(&store.to_json()).unwrap();
         assert!(reloaded.exists("kitchen_evening"));
     }
 
     #[test]
-    fn load_from_corrupt_file_yields_empty_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scenes.json");
-        std::fs::write(&path, b"not json").unwrap();
-        let store = SceneStore::load_from_file(&path).unwrap();
-        assert!(store.names().is_empty());
+    fn a_document_that_is_not_json_is_refused() {
+        // The caller decides what an unreadable document means; the
+        // store does not quietly start empty.
+        assert!(SceneStore::from_json("not json").is_err());
     }
 
     #[test]
-    fn write_through_persists_on_save_and_delete() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scenes.json");
-        let store = SceneStore::new().with_persistence(path.clone());
+    fn the_sink_gets_the_whole_set_on_save_and_delete() {
+        let spy = Arc::new(Spy::default());
+        let store = SceneStore::new().with_sink(spy.clone());
         let reg = registry_with(&[("kitchen", "a", state(true, 80, 2700))]);
         store.save("evening", &reg, None, &HashSet::new());
-
-        let raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw["scenes"].as_object().unwrap().len(), 1);
+        assert_eq!(spy.last()["scenes"].as_object().unwrap().len(), 1);
 
         store.delete("evening");
-        let raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw["scenes"].as_object().unwrap().len(), 0);
+        assert_eq!(spy.last()["scenes"].as_object().unwrap().len(), 0);
     }
 
     #[test]
-    fn malformed_device_id_in_file_is_dropped_not_fatal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scenes.json");
+    fn malformed_device_id_in_a_document_is_dropped_not_fatal() {
         let raw = serde_json::json!({
             "scenes": {
                 "evening": [
@@ -702,18 +621,15 @@ mod tests {
                 ]
             }
         });
-        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
 
-        let store = SceneStore::load_from_file(&path).unwrap();
+        let store = SceneStore::from_json(&raw.to_string()).unwrap();
         let entries = store.get("evening").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].device_id, dev_in("kitchen", "a"));
     }
 
     #[test]
-    fn non_canonical_scene_name_in_file_is_canonicalized_on_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scenes.json");
+    fn non_canonical_scene_name_in_a_document_is_canonicalized_on_load() {
         let raw = serde_json::json!({
             "scenes": {
                 "Kitchen Evening": [
@@ -721,18 +637,15 @@ mod tests {
                 ]
             }
         });
-        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
 
-        let store = SceneStore::load_from_file(&path).unwrap();
+        let store = SceneStore::from_json(&raw.to_string()).unwrap();
         assert!(store.exists("kitchen_evening"));
         assert_eq!(store.names(), vec!["kitchen_evening"]);
     }
 
     #[test]
     fn empty_scene_survives_reload() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scenes.json");
-        let store = SceneStore::new().with_persistence(path.clone());
+        let store = SceneStore::new();
         let reg = DeviceRegistry::new();
         reg.upsert(Device::new(
             dev_in("kitchen", "thermometer"),
@@ -746,9 +659,7 @@ mod tests {
         assert!(store.exists("sensors_only"));
         assert_eq!(store.get("sensors_only").unwrap().len(), 0);
 
-        let reloaded = SceneStore::load_from_file(&path)
-            .unwrap()
-            .with_persistence(path);
+        let reloaded = SceneStore::from_json(&store.to_json()).unwrap();
         assert!(reloaded.exists("sensors_only"));
         assert_eq!(reloaded.get("sensors_only").unwrap().len(), 0);
     }

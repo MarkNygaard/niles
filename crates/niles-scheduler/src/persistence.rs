@@ -1,60 +1,65 @@
-//! Shared persistence helpers for scheduler stores.
+//! How a scheduler store's state outlives the process.
 
-use serde::{Serialize, de::DeserializeOwned};
-use std::io::{ErrorKind, Result};
-use std::path::Path;
+use std::sync::Arc;
 
-/// Atomically write `value` as JSON to `path`.
+use serde::Serialize;
+
+/// Somewhere a store's state outlives the process.
 ///
-/// Uses `tempfile::NamedTempFile` in the target directory, calls
-/// `sync_all()`, then renames into place. A crash between
-/// `sync_all` and `persist` leaves the prior file intact.
-pub(crate) fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if dir != Path::new(".") {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    serde_json::to_writer_pretty(tmp.as_file_mut(), value).map_err(std::io::Error::other)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    // Ensure the directory entry is durable on POSIX.
-    if let Ok(dir_file) = std::fs::File::open(dir) {
-        let _ = dir_file.sync_all();
-    }
-    Ok(())
+/// A trait rather than a path. State kept on a mounted directory needs
+/// a config file to say where that directory is, and the config file
+/// is the thing Niles is trying to stop needing: in a cluster the state
+/// goes to the database instead, alongside the credentials and the
+/// overrides.
+///
+/// Handed the whole document rather than one change. Each store is a
+/// handful of entries, and the alternative is two ways for it to be
+/// wrong.
+///
+/// Called with the store's lock held, so documents arrive in the order
+/// the changes were made. An implementation must not block: the stores
+/// are used on paths that cannot wait for a database.
+pub trait DocumentSink: Send + Sync {
+    fn store(&self, document: &str);
 }
 
-/// Read JSON from `path`, returning `T::default()` on missing or
-/// corrupt files.
-///
-/// Missing files are expected on first start. Corrupt files are
-/// logged and recovered-from by starting empty.
-pub(crate) fn read_json_or_empty<T: DeserializeOwned + Default>(
-    path: &Path,
+/// Serialize `document` and give it to `sink`, if there is one.
+pub(crate) fn hand_over<T: Serialize>(
+    sink: Option<&Arc<dyn DocumentSink>>,
+    document: &T,
     label: &'static str,
-) -> Result<T> {
-    match std::fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<T>(&bytes) {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                tracing::warn!(
-                    "persistence: {label} at {} corrupted ({e}); starting empty",
-                    path.display()
-                );
-                Ok(T::default())
-            }
-        },
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            tracing::info!(
-                "persistence: {label} at {} not found; starting empty",
-                path.display()
-            );
-            Ok(T::default())
-        }
-        Err(e) => Err(e),
+) {
+    let Some(sink) = sink else {
+        return;
+    };
+    match serde_json::to_string(document) {
+        Ok(document) => sink.store(&document),
+        Err(e) => tracing::warn!("persistence: {label} would not serialize: {e}"),
+    }
+}
+
+/// Records every document it is handed, for tests.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Spy(std::sync::Mutex<Vec<String>>);
+
+#[cfg(test)]
+impl Spy {
+    pub(crate) fn documents(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+
+    /// The most recent document, parsed.
+    pub(crate) fn last(&self) -> serde_json::Value {
+        let documents = self.documents();
+        let last = documents.last().expect("a document was stored");
+        serde_json::from_str(last).expect("the document is JSON")
+    }
+}
+
+#[cfg(test)]
+impl DocumentSink for Spy {
+    fn store(&self, document: &str) {
+        self.0.lock().unwrap().push(document.to_string());
     }
 }

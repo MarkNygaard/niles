@@ -837,7 +837,7 @@ This compresses what would be paragraphs of prose into something the LLM parses 
 
 ### Single source of truth
 
-The reference files live in the repo at `docs/capabilities/<topic>.md`. They are:
+The reference files live in the repo at `docs/capabilities/<topic>/SKILL.md` (YAML frontmatter with `name`, `description`, `version`, then the reference). They are:
 
 - **Loaded by the runtime** for Tier B context assembly
 - **Rendered into the user-facing mdBook docs** as part of the docs build
@@ -877,7 +877,7 @@ Not the full reference — that's overwhelming when spoken. A summary that invit
 
 A new crate, `niles-capabilities`:
 
-- Loads all reference files at startup
+- Compiles every reference file into the binary, so no directory or config is needed at runtime
 - Exposes lookup by topic for the context-assembly layer
 - Provides the keyword-to-topic mapping consumed by the intent router
 
