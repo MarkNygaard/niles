@@ -127,10 +127,10 @@ impl Tool for RememberAboutMe {
             name: "remember_about_me".into(),
             description: "Keep or forget a fact about the person speaking, in their own notes, \
                 which you are shown whenever they speak to you. Use it when they ask you to \
-                remember or forget something about themselves, or tell you something about \
-                themselves worth knowing next time. One short fact per call. Facts about one \
-                person go here rather than in memory, which is for the household as a whole. \
-                For a birthday use set_my_birthday instead."
+                remember or forget something about themselves; what they only mention is left \
+                to the review once the house is quiet. One short fact per call. Facts about \
+                one person go here rather than in memory, which is for the household as a \
+                whole. For a birthday use set_my_birthday instead."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -214,6 +214,85 @@ impl Tool for SetMyBirthday {
     }
 }
 
+/// The background review's way into a person's own notes. It reads a
+/// transcript rather than hearing a voice, so it names the person — as
+/// the transcript does — and it only adds: their notes are theirs to
+/// edit, on My profile.
+pub struct NoteAboutPerson {
+    roster: Arc<dyn VoiceRoster>,
+}
+
+#[async_trait::async_trait]
+impl Tool for NoteAboutPerson {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "note_about_person".into(),
+            description: "Add one short fact about one person to their own notes, which Niles \
+                reads whenever that person speaks, and nobody else's turns see. For what is \
+                true of one person — a preference, a routine, a habit — rather than of the \
+                household. person is the name as the transcript gives it. A fact already in \
+                their notes in other words is refused."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "required": ["person", "fact"],
+                "properties": {
+                    "person": { "type": "string", "description": "Their name, as in the transcript." },
+                    "fact": { "type": "string", "description": "One short fact, as a statement: 'Works from home on Fridays'." }
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let invalid = |reason: String| Error::InvalidArgs {
+            tool: "note_about_person".into(),
+            reason,
+        };
+        let person = args.get("person").and_then(Value::as_str).unwrap_or("");
+        let fact = args.get("fact").and_then(Value::as_str).unwrap_or("");
+        let voices = self
+            .roster
+            .voices()
+            .await
+            .map_err(|e| Error::Memory(e.to_string()))?;
+        let Some(voice) = voices.iter().find(|v| {
+            v.display_name.eq_ignore_ascii_case(person.trim())
+                || v.speaker.eq_ignore_ascii_case(person.trim())
+        }) else {
+            let known: Vec<&str> = voices.iter().map(|v| v.display_name.as_str()).collect();
+            return Err(invalid(format!(
+                "nobody called {person:?} is known; the household is {}",
+                known.join(", ")
+            )));
+        };
+        let notes = voice.notes.clone().unwrap_or_default();
+        let bare = fact.trim().trim_start_matches("- ");
+        if let Some(line) = notes
+            .lines()
+            .find(|line| niles_memory::similar(line.trim_start_matches("- "), bare))
+        {
+            return Err(invalid(format!(
+                "{}'s notes already say this: {line:?}",
+                voice.display_name
+            )));
+        }
+        let next = edit_notes(&notes, "add", fact).map_err(invalid)?;
+        self.roster
+            .set_notes(&voice.speaker, Some(&next))
+            .await
+            .map_err(|e| Error::Memory(e.to_string()))?;
+        tracing::info!("[learning] noted about {}: {fact:?}", voice.speaker);
+        Ok(json!({ "ok": true, "person": voice.display_name }))
+    }
+}
+
+/// The review's person tool, beside the memory and skill tools of
+/// `niles_tools::background_registry`.
+pub fn register_for_review(reg: &mut ToolRegistry, roster: Arc<dyn VoiceRoster>) {
+    reg.register(Box::new(NoteAboutPerson { roster }));
+}
+
 pub fn register(reg: &mut ToolRegistry, roster: Arc<dyn VoiceRoster>) {
     reg.register(Box::new(RememberAboutMe {
         roster: roster.clone(),
@@ -224,6 +303,97 @@ pub fn register(reg: &mut ToolRegistry, roster: Arc<dyn VoiceRoster>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use niles_recognition::EnrolledSpeaker;
+    use std::sync::Mutex;
+
+    struct Roster(Mutex<Vec<EnrolledSpeaker>>);
+
+    impl Roster {
+        fn of(people: &[(&str, &str, Option<&str>)]) -> Arc<Self> {
+            Arc::new(Self(Mutex::new(
+                people
+                    .iter()
+                    .map(|(slug, name, notes)| EnrolledSpeaker {
+                        speaker: slug.to_string(),
+                        display_name: name.to_string(),
+                        spoken_as: None,
+                        address_as: None,
+                        notes: notes.map(str::to_string),
+                        birthday: None,
+                        created_at: chrono::Utc::now(),
+                        last_seen_at: None,
+                        clip_count: 3,
+                        embeddings: Vec::new(),
+                    })
+                    .collect(),
+            )))
+        }
+
+        fn notes(&self, slug: &str) -> Option<String> {
+            let all = self.0.lock().unwrap();
+            all.iter().find(|v| v.speaker == slug)?.notes.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl VoiceRoster for Roster {
+        async fn voices(&self) -> niles_recognition::Result<Vec<EnrolledSpeaker>> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        async fn forget(&self, _: &str) -> niles_recognition::Result<()> {
+            Ok(())
+        }
+        async fn rename(&self, _: &str, _: &str) -> niles_recognition::Result<()> {
+            Ok(())
+        }
+        async fn set_spoken_as(&self, _: &str, _: Option<&str>) -> niles_recognition::Result<()> {
+            Ok(())
+        }
+        async fn set_address_as(&self, _: &str, _: Option<&str>) -> niles_recognition::Result<()> {
+            Ok(())
+        }
+        async fn set_notes(&self, s: &str, v: Option<&str>) -> niles_recognition::Result<()> {
+            let mut all = self.0.lock().unwrap();
+            if let Some(voice) = all.iter_mut().find(|x| x.speaker == s) {
+                voice.notes = v.map(str::to_string);
+            }
+            Ok(())
+        }
+        async fn set_birthday(&self, _: &str, _: Option<&str>) -> niles_recognition::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_review_adds_to_the_named_person_s_notes() {
+        let roster = Roster::of(&[
+            ("mark", "Mark", Some("- Takes his coffee black")),
+            ("majse", "Majse", None),
+        ]);
+        let tool = NoteAboutPerson {
+            roster: roster.clone(),
+        };
+        tool.execute(json!({"person": "Mark", "fact": "Works from home on Fridays"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            roster.notes("mark").unwrap(),
+            "- Takes his coffee black\n- Works from home on Fridays"
+        );
+        assert_eq!(roster.notes("majse"), None);
+
+        let err = tool
+            .execute(json!({"person": "Mark", "fact": "Mark works from home on Fridays"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already say"), "{err}");
+
+        let err = tool
+            .execute(json!({"person": "Anna", "fact": "Likes jazz"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Mark, Majse"), "{err}");
+    }
 
     #[test]
     fn a_fact_is_a_line() {

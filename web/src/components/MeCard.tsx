@@ -93,7 +93,8 @@ export interface MeCardProps {
  * Theirs alone: nobody else in the house can open it, and Niles reads
  * the notes only when it is their voice it hears. So it can hold what a
  * household page should not — the name you would rather be called, the
- * tea you take — and Niles adds to it when told "remember that I…".
+ * tea you take. Niles adds to it when told "remember that I…", and on
+ * its own when its review notices something lasting about them.
  */
 export function MeCard({ me, device, saving, error, onSave, onPair, onUnpair }: MeCardProps) {
   if (!me) return null;
@@ -194,9 +195,9 @@ function NotesCard({
       <CardHeader>
         <CardTitle>What Niles knows about you</CardTitle>
         <CardDescription>
-          Read by Niles whenever it hears {name}, and by nobody else. Tell it
-          “remember that I…” and it adds a line here; edit anything it got
-          wrong.
+          Read by Niles whenever it hears {name}, and by nobody else. Niles
+          adds a line here when you say “remember that I…”, or when it
+          notices something lasting about you; edit anything it got wrong.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
