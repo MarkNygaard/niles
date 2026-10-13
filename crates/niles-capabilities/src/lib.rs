@@ -1,8 +1,9 @@
 //! niles-capabilities — capability reference loader for tiered LLM context assembly.
 //!
-//! Scans a capability directory for subdirectories containing `SKILL.md` files
-//! (agentskills.io / Hermes Agent convention), parses YAML frontmatter +
-//! markdown body, and exposes indexed capabilities to callers.
+//! Parses `SKILL.md` files (agentskills.io / Hermes Agent convention) —
+//! YAML frontmatter + markdown body — and exposes indexed capabilities
+//! to callers. The references in `docs/capabilities` are compiled into
+//! the crate; see [`CapabilityLoader::builtin`].
 
 mod error;
 mod loader;

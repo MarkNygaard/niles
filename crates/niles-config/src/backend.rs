@@ -5,17 +5,15 @@
 //! would produce an invalid config. Where the bytes live is a separate
 //! question, and this trait is the seam.
 //!
-//! Two implementations ship here: [`FileBackend`], which writes TOML into
-//! a directory, and [`MemoryBackend`], which keeps everything in RAM and
-//! forgets it on drop. A Postgres backend lives in its own crate so this
-//! one keeps no database dependency.
+//! [`MemoryBackend`] ships here; it keeps everything in RAM and forgets
+//! it on drop. The Postgres backend lives in its own crate so this one
+//! keeps no database dependency.
 //!
 //! # Why the methods are async
 //!
-//! A local file needs no async at all. A database does, and the store
-//! persists *before* it swaps the running config — so that a write which
-//! reaches memory but not durable storage can't silently revert on the
-//! next restart. Preserving that ordering across a network call is what
+//! A database needs async, and the store persists *before* it swaps the
+//! running config — so that a write which reaches memory but not durable
+//! storage can't silently revert on the next restart. Preserving that ordering across a network call is what
 //! makes the whole write path async.
 
 use crate::Revision;
@@ -61,8 +59,8 @@ pub trait OverrideBackend: Send + Sync {
         true
     }
 
-    /// Short description for logs — "the directory /var/lib/niles/config",
-    /// "the niles database". Used when reporting that a backend failed.
+    /// Short description for logs — "the niles database". Used when
+    /// reporting that a backend failed.
     fn describe(&self) -> String;
 }
 
@@ -107,85 +105,6 @@ impl MemoryBackend {
     }
 }
 
-/// TOML files in a directory: `overrides.toml` beside `revisions.toml`.
-///
-/// Human-readable and diffable on purpose — the same reasoning as the
-/// memory store's markdown files. Someone debugging at 2am should be able
-/// to `cat` the file and see what the house thinks it was told.
-pub struct FileBackend {
-    dir: std::path::PathBuf,
-}
-
-/// The file name of the override document inside the backend's directory.
-pub(crate) const OVERRIDES_FILE: &str = "overrides.toml";
-
-/// Companion journal, alongside the override document.
-pub(crate) const REVISIONS_FILE: &str = "revisions.toml";
-
-impl FileBackend {
-    pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
-        Self { dir: dir.into() }
-    }
-}
-
-/// The journal is stored as an array of tables so it stays readable and
-/// diffable by hand, like everything else in the config directory.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct RevisionFile {
-    #[serde(default, rename = "revision")]
-    revisions: Vec<Revision>,
-}
-
-#[async_trait]
-impl OverrideBackend for FileBackend {
-    async fn load(&self) -> Result<Option<StoredState>, String> {
-        let overrides = match std::fs::read_to_string(self.dir.join(OVERRIDES_FILE)) {
-            Ok(raw) => toml::from_str(&raw).map_err(|e| e.to_string())?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.to_string()),
-        };
-        // A damaged journal costs history, not config: the override
-        // document alone decides what is in force.
-        let revisions = match std::fs::read_to_string(self.dir.join(REVISIONS_FILE)) {
-            Ok(raw) => toml::from_str::<RevisionFile>(&raw)
-                .map(|f| f.revisions)
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-        Ok(Some(StoredState {
-            overrides,
-            revisions,
-        }))
-    }
-
-    async fn save(&self, state: &StoredState) -> Result<(), String> {
-        let overrides = toml::to_string_pretty(&state.overrides).map_err(|e| e.to_string())?;
-        let journal = toml::to_string_pretty(&RevisionFile {
-            revisions: state.revisions.clone(),
-        })
-        .map_err(|e| e.to_string())?;
-        write_atomically(&self.dir, OVERRIDES_FILE, &overrides)?;
-        write_atomically(&self.dir, REVISIONS_FILE, &journal)
-    }
-
-    fn describe(&self) -> String {
-        format!("the directory {}", self.dir.display())
-    }
-}
-
-/// Temp file + rename, so a crash mid-write can't leave a half-parsed
-/// file that fails the next boot.
-fn write_atomically(dir: &std::path::Path, name: &str, body: &str) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let path = dir.join(name);
-    let tmp = dir.join(format!("{name}.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e.to_string()
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,49 +133,5 @@ mod tests {
         backend.save(&saved).await.unwrap();
         assert_eq!(backend.load().await.unwrap(), Some(saved));
         assert!(!backend.is_persistent());
-    }
-
-    #[tokio::test]
-    async fn file_backend_round_trips() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let backend = FileBackend::new(tmp.path());
-        assert_eq!(backend.load().await.unwrap(), None);
-        let saved = state();
-        backend.save(&saved).await.unwrap();
-
-        let loaded = backend.load().await.unwrap().expect("saved state");
-        assert_eq!(loaded.overrides, saved.overrides);
-        assert_eq!(loaded.revisions.len(), 1);
-        assert_eq!(loaded.revisions[0].source, crate::ChangeSource::Voice);
-        assert!(backend.is_persistent());
-    }
-
-    #[tokio::test]
-    async fn file_backend_creates_its_directory() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let backend = FileBackend::new(tmp.path().join("nested/config"));
-        backend.save(&state()).await.unwrap();
-        assert!(backend.load().await.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn a_damaged_journal_costs_history_not_overrides() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let backend = FileBackend::new(tmp.path());
-        backend.save(&state()).await.unwrap();
-        std::fs::write(tmp.path().join(REVISIONS_FILE), "not = = toml").unwrap();
-
-        let loaded = backend.load().await.unwrap().expect("overrides still load");
-        assert_eq!(loaded.overrides, state().overrides);
-        assert!(loaded.revisions.is_empty());
-    }
-
-    #[tokio::test]
-    async fn an_unparseable_override_document_is_an_error_not_an_empty_state() {
-        // Silently reporting "nothing stored" would look identical to a
-        // fresh install and quietly discard the user's tuning.
-        let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(OVERRIDES_FILE), "not = = toml").unwrap();
-        assert!(FileBackend::new(tmp.path()).load().await.is_err());
     }
 }

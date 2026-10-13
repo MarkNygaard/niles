@@ -15,8 +15,7 @@
 //! nicer to read in `psql`, but a TOML → JSON → TOML round-trip silently
 //! degrades types: a TOML datetime comes back a string. No field is
 //! affected today, which is exactly how that breaks quietly a year from
-//! now when someone adds one. Text keeps this backend and the file
-//! backend byte-identical in behaviour.
+//! now when someone adds one. Text stores exactly what was written.
 //!
 //! # Failovers are normal here
 //!
@@ -34,11 +33,13 @@ mod conversations;
 mod enrollments;
 mod groceries;
 mod memory;
+mod morning_claims;
 mod room_music;
 mod scenes;
 mod secrets;
 mod skills;
 mod tado_tokens;
+mod timers;
 pub use automations::PostgresAutomations;
 pub use calendars::PostgresCalendars;
 pub use captures::{Capture, PostgresCaptures};
@@ -46,11 +47,13 @@ pub use conversations::PostgresConversations;
 pub use enrollments::PostgresEnrollments;
 pub use groceries::PostgresGroceries;
 pub use memory::PostgresMemory;
+pub use morning_claims::PostgresMorningClaims;
 pub use room_music::PostgresRoomMusic;
 pub use scenes::PostgresScenes;
 pub use secrets::{PostgresSecrets, Sealer};
 pub use skills::PostgresSkills;
 pub use tado_tokens::PostgresTadoTokens;
+pub use timers::PostgresTimers;
 
 use async_trait::async_trait;
 use niles_config::{OverrideBackend, Revision, StoredState};

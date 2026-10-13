@@ -2,17 +2,17 @@
 //!
 //! Timers live in a `HashMap<TimerId, TimerEntry>` behind an `RwLock`
 //! so they can be queried from both sync and async contexts.
-//! Optional file persistence (JSON) survives process restarts.
+//! Every change is handed to an optional [`DocumentSink`] as a JSON
+//! document, which [`TimerStore::from_json`] reads back after a restart.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use crate::persistence::{atomic_write_json, read_json_or_empty};
+use crate::persistence::{DocumentSink, hand_over};
 
 mod serde_duration {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -129,13 +129,22 @@ impl From<PersistedTimer> for TimerEntry {
     }
 }
 
+/// The document form of what the store holds, in id order so the same
+/// timers always make the same document.
+fn persistable(inner: &TimerStoreInner) -> PersistedTimers {
+    let mut entries: Vec<PersistedTimer> =
+        inner.timers.values().map(PersistedTimer::from).collect();
+    entries.sort_by_key(|e| e.id);
+    PersistedTimers { entries }
+}
+
 /// In-memory store for pending / ringing timers.
 ///
 /// Mirrors the `RwLock<HashMap>` shape of [`SceneStore`](crate::scenes::SceneStore)
 /// and [`ManualModeTracker`](crate::manual_mode::ManualModeTracker).
 pub struct TimerStore {
     inner: RwLock<TimerStoreInner>,
-    persistence_path: Option<PathBuf>,
+    sink: Option<Arc<dyn DocumentSink>>,
 }
 
 impl TimerStore {
@@ -145,21 +154,23 @@ impl TimerStore {
                 next_id: 1,
                 timers: HashMap::new(),
             }),
-            persistence_path: None,
+            sink: None,
         }
     }
 
-    /// Configure a persistence path. Call before handing the store
-    /// to driver/tasks. Returns `self` for chaining.
-    pub fn with_persistence(mut self, path: PathBuf) -> Self {
-        self.persistence_path = Some(path);
+    /// Hand every change to `sink`. Call before handing the store to
+    /// the driver and tasks.
+    pub fn with_sink(mut self, sink: Arc<dyn DocumentSink>) -> Self {
+        self.sink = Some(sink);
         self
     }
 
-    /// Load timers from a JSON file. Missing or corrupt files yield
-    /// an empty store (logged, not fatal).
-    pub fn load_from_file(path: &Path) -> std::io::Result<Self> {
-        let persisted: PersistedTimers = read_json_or_empty(path, "timers")?;
+    /// Read a document written by [`Self::to_json`].
+    ///
+    /// A timer that ran out while Niles was down comes back ringing,
+    /// and new ids continue past the highest one held.
+    pub fn from_json(document: &str) -> serde_json::Result<Self> {
+        let persisted: PersistedTimers = serde_json::from_str(document)?;
         let now = Utc::now();
         let mut max_id = 0u64;
         let timers: HashMap<TimerId, TimerEntry> = persisted
@@ -179,29 +190,18 @@ impl TimerStore {
                 next_id: max_id.wrapping_add(1),
                 timers,
             }),
-            persistence_path: None,
+            sink: None,
         })
     }
 
-    /// Save timers to a JSON file (atomic via tempfile).
-    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
+    /// Everything held, as the document a sink is given.
+    pub fn to_json(&self) -> String {
         let inner = self.inner_read();
-        self.save_locked(&inner, path)
-    }
-
-    fn save_locked(&self, inner: &TimerStoreInner, path: &Path) -> std::io::Result<()> {
-        let mut entries: Vec<PersistedTimer> =
-            inner.timers.values().map(PersistedTimer::from).collect();
-        entries.sort_by_key(|e| e.id);
-        atomic_write_json(path, &PersistedTimers { entries })
+        serde_json::to_string(&persistable(&inner)).unwrap_or_else(|_| "{}".into())
     }
 
     fn maybe_save(&self, inner: &TimerStoreInner) {
-        if let Some(path) = self.persistence_path.as_deref()
-            && let Err(e) = self.save_locked(inner, path)
-        {
-            tracing::warn!("persistence: timers save failed: {e}");
-        }
+        hand_over(self.sink.as_ref(), &persistable(inner), "timers");
     }
 
     /// Register a new timer. Returns its assigned [`TimerId`].
@@ -381,6 +381,7 @@ pub use niles_core::canonicalize_name;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::Spy;
     use std::sync::Arc;
 
     fn localhost() -> SocketAddr {
@@ -592,11 +593,13 @@ mod tests {
     // Persistence tests
     // ------------------------------------------------------------------
 
+    fn entry_count(document: &serde_json::Value) -> usize {
+        document["entries"].as_array().unwrap().len()
+    }
+
     #[test]
     fn persists_and_reloads_pending_timers() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        let store = TimerStore::new().with_persistence(path.clone());
+        let store = TimerStore::new();
         let now = Utc::now();
         let id1 = store.set(
             Duration::from_secs(60),
@@ -606,9 +609,7 @@ mod tests {
         );
         let id2 = store.set(Duration::from_secs(120), None, localhost(), now);
 
-        let reloaded = TimerStore::load_from_file(&path)
-            .unwrap()
-            .with_persistence(path);
+        let reloaded = TimerStore::from_json(&store.to_json()).unwrap();
         let entries = reloaded.list();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, id1);
@@ -618,26 +619,14 @@ mod tests {
     }
 
     #[test]
-    fn load_from_missing_file_yields_empty_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nope.json");
-        let store = TimerStore::load_from_file(&path).unwrap();
-        assert!(store.list().is_empty());
-    }
-
-    #[test]
-    fn load_from_corrupt_file_yields_empty_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        std::fs::write(&path, b"not json").unwrap();
-        let store = TimerStore::load_from_file(&path).unwrap();
-        assert!(store.list().is_empty());
+    fn a_document_that_is_not_json_is_refused() {
+        // The caller decides what an unreadable document means; the
+        // store does not quietly start empty.
+        assert!(TimerStore::from_json("not json").is_err());
     }
 
     #[test]
     fn loaded_pending_expired_timer_becomes_ringing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
         let store = TimerStore::new();
         let now = Utc::now();
         let id = store.set(
@@ -646,16 +635,12 @@ mod tests {
             localhost(),
             now,
         );
-        store.save_to_file(&path).unwrap();
 
-        // Manually rewrite expires_at to the past.
-        let mut raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut raw: serde_json::Value = serde_json::from_str(&store.to_json()).unwrap();
         raw["entries"][0]["expires_at"] =
             serde_json::json!((now - chrono::Duration::days(1)).to_rfc3339());
-        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
 
-        let reloaded = TimerStore::load_from_file(&path).unwrap();
+        let reloaded = TimerStore::from_json(&raw.to_string()).unwrap();
         let entries = reloaded.list();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, id);
@@ -664,44 +649,33 @@ mod tests {
 
     #[test]
     fn next_id_after_reload_is_strictly_greater_than_persisted_max() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        let store = TimerStore::new().with_persistence(path.clone());
+        let store = TimerStore::new();
         let now = Utc::now();
         store.set(Duration::from_secs(60), None, localhost(), now);
         store.set(Duration::from_secs(60), None, localhost(), now);
         store.set(Duration::from_secs(60), None, localhost(), now);
 
-        let reloaded = TimerStore::load_from_file(&path)
-            .unwrap()
-            .with_persistence(path);
+        let reloaded = TimerStore::from_json(&store.to_json()).unwrap();
         let next_id = reloaded.set(Duration::from_secs(60), None, localhost(), now);
         assert_eq!(next_id, TimerId(4));
     }
 
     #[test]
-    fn write_through_persists_on_set_and_cancel() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        let store = TimerStore::new().with_persistence(path.clone());
+    fn the_sink_sees_set_and_cancel() {
+        let spy = Arc::new(Spy::default());
+        let store = TimerStore::new().with_sink(spy.clone());
         let now = Utc::now();
         let id = store.set(Duration::from_secs(60), None, localhost(), now);
-
-        let raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(entry_count(&spy.last()), 1);
 
         store.cancel(id);
-        let raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(entry_count(&spy.last()), 0);
     }
 
     #[test]
-    fn write_through_persists_on_cancel_by_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        let store = TimerStore::new().with_persistence(path.clone());
+    fn the_sink_sees_cancel_by_name() {
+        let spy = Arc::new(Spy::default());
+        let store = TimerStore::new().with_sink(spy.clone());
         let now = Utc::now();
         store.set(
             Duration::from_secs(60),
@@ -709,71 +683,59 @@ mod tests {
             localhost(),
             now,
         );
-
-        let raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(entry_count(&spy.last()), 1);
 
         store.cancel_by_name("pasta");
-        let raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(entry_count(&spy.last()), 0);
     }
 
     #[test]
-    fn write_through_persists_on_mark_ringing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        let store = TimerStore::new().with_persistence(path.clone());
-        let now = Utc::now();
-        let id = store.set(Duration::from_secs(60), None, localhost(), now);
+    fn the_sink_sees_cancel_soonest_pending() {
+        let spy = Arc::new(Spy::default());
+        let store = TimerStore::new().with_sink(spy.clone());
+        store.set(Duration::from_secs(60), None, localhost(), Utc::now());
 
-        let raw_before: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw_before["entries"][0]["state"], "Pending");
-
-        store.mark_ringing(id);
-        let raw_after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw_after["entries"][0]["state"], "Ringing");
+        store.cancel_soonest_pending();
+        assert_eq!(entry_count(&spy.last()), 0);
     }
 
     #[test]
-    fn write_through_persists_on_stop_most_recent_ringing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        let store = TimerStore::new().with_persistence(path.clone());
+    fn the_sink_sees_mark_ringing() {
+        let spy = Arc::new(Spy::default());
+        let store = TimerStore::new().with_sink(spy.clone());
+        let now = Utc::now();
+        let id = store.set(Duration::from_secs(60), None, localhost(), now);
+        assert_eq!(spy.last()["entries"][0]["state"], "Pending");
+
+        store.mark_ringing(id);
+        assert_eq!(spy.last()["entries"][0]["state"], "Ringing");
+    }
+
+    #[test]
+    fn the_sink_sees_stop_most_recent_ringing() {
+        let spy = Arc::new(Spy::default());
+        let store = TimerStore::new().with_sink(spy.clone());
         let now = Utc::now();
         let id = store.set(Duration::from_secs(60), None, localhost(), now);
         store.mark_ringing(id);
-
-        let raw_before: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw_before["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(entry_count(&spy.last()), 1);
 
         store.stop_most_recent_ringing();
-        let raw_after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw_after["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(entry_count(&spy.last()), 0);
     }
 
     #[test]
-    fn overflowing_duration_fails_to_persist() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
-        let store = TimerStore::new().with_persistence(path.clone());
-        let now = Utc::now();
-        let huge = Duration::from_secs(u64::MAX);
-        store.set(huge, None, localhost(), now);
-        // Serialization of u64::MAX seconds exceeds u64 millis and should fail.
-        // The temp file is dropped, so the target path should never be created.
-        assert!(!path.exists());
+    fn overflowing_duration_is_not_handed_to_the_sink() {
+        // u64::MAX seconds exceeds u64 millis, so the document will not
+        // serialize. The sink is given nothing rather than half a set.
+        let spy = Arc::new(Spy::default());
+        let store = TimerStore::new().with_sink(spy.clone());
+        store.set(Duration::from_secs(u64::MAX), None, localhost(), Utc::now());
+        assert!(spy.documents().is_empty());
     }
 
     #[test]
     fn reload_with_u64_max_id_allocates_non_colliding_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("timers.json");
         let raw = serde_json::json!({
             "entries": [{
                 "id": u64::MAX,
@@ -784,9 +746,8 @@ mod tests {
                 "state": "Pending"
             }]
         });
-        std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
 
-        let store = TimerStore::load_from_file(&path).unwrap();
+        let store = TimerStore::from_json(&raw.to_string()).unwrap();
         let new_id = store.set(Duration::from_secs(60), None, localhost(), Utc::now());
         assert_eq!(new_id, TimerId(1));
         assert_eq!(store.list().len(), 2);
@@ -809,7 +770,7 @@ mod tests {
                     },
                 )]),
             }),
-            persistence_path: None,
+            sink: None,
         };
         let new_id = store.set(Duration::from_secs(60), None, localhost(), Utc::now());
         assert_eq!(new_id, TimerId(2));

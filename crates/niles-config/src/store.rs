@@ -19,7 +19,7 @@
 //! ```text
 //!   niles.toml (ConfigMap, read-only)   ← defaults, owned by git
 //!         +
-//!   overrides.toml (writable dir)       ← only what was changed
+//!   overrides (Postgres)                ← only what was changed
 //!         =
 //!   effective Config                    ← always validated
 //! ```
@@ -35,7 +35,7 @@
 //! store keeps its previous state. The effective config is therefore
 //! valid at every observable moment, including after a rejected write.
 
-use crate::backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
+use crate::backend::{MemoryBackend, OverrideBackend, StoredState};
 use crate::error::{Error, Result};
 use crate::{Config, Reload, section_reload};
 use std::path::Path;
@@ -129,14 +129,6 @@ impl ConfigStore {
             },
             outcome,
         ))
-    }
-
-    /// A store over a directory of TOML files.
-    pub async fn open_with_dir(
-        base_path: impl AsRef<Path>,
-        dir: impl Into<std::path::PathBuf>,
-    ) -> Result<(Self, LoadOutcome)> {
-        Self::open(base_path, Box::new(FileBackend::new(dir))).await
     }
 
     /// A store whose writes apply but are never persisted.
@@ -707,7 +699,6 @@ fn sections_of(changes: &[Change]) -> Vec<SectionChange> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{OVERRIDES_FILE, REVISIONS_FILE};
     use std::path::PathBuf;
 
     /// A minimal config that `validate()` accepts, used as the base in
@@ -1289,22 +1280,60 @@ daytime_brightness = {value}"
         assert!(history[0].id > 1, "oldest revisions are dropped");
     }
 
-    // ---- on-disk behaviour ------------------------------------------------
+    // ---- a backend that outlives the store --------------------------------
 
-    /// A store backed by a temp dir, with the base written to a file the
-    /// way the cluster mounts it.
-    fn on_disk() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    /// Stands in for the database: a store opened over a clone sees what
+    /// an earlier one wrote, the way Niles does after a restart.
+    #[derive(Clone, Default)]
+    struct Durable(std::sync::Arc<std::sync::Mutex<Option<StoredState>>>);
+
+    impl Durable {
+        fn holding(overrides: &str) -> Self {
+            let durable = Self::default();
+            *durable.0.lock().unwrap() = Some(StoredState {
+                overrides: patch(overrides),
+                revisions: Vec::new(),
+            });
+            durable
+        }
+
+        fn stored(&self) -> Option<StoredState> {
+            self.0.lock().unwrap().clone()
+        }
+
+        async fn open(&self, base_path: &Path) -> (ConfigStore, LoadOutcome) {
+            ConfigStore::open(base_path, Box::new(self.clone()))
+                .await
+                .unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl OverrideBackend for Durable {
+        async fn load(&self) -> std::result::Result<Option<StoredState>, String> {
+            Ok(self.stored())
+        }
+        async fn save(&self, state: &StoredState) -> std::result::Result<(), String> {
+            *self.0.lock().unwrap() = Some(state.clone());
+            Ok(())
+        }
+        fn describe(&self) -> String {
+            "the test backend".into()
+        }
+    }
+
+    /// The base written to a file the way the cluster mounts it.
+    fn base_file() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::TempDir::new().unwrap();
         let base_path = tmp.path().join("niles.toml");
         std::fs::write(&base_path, base_toml()).unwrap();
-        let dir = tmp.path().join("config");
-        (tmp, base_path, dir)
+        (tmp, base_path)
     }
 
     #[tokio::test]
-    async fn open_without_an_override_file_uses_the_base() {
-        let (_tmp, base_path, dir) = on_disk();
-        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+    async fn open_without_stored_overrides_uses_the_base() {
+        let (_tmp, base_path) = base_file();
+        let (store, outcome) = Durable::default().open(&base_path).await;
         assert!(outcome.is_clean());
         assert_eq!(store.current().lighting.daytime_brightness, 100);
         assert!(store.is_persistent());
@@ -1312,11 +1341,10 @@ daytime_brightness = {value}"
 
     #[tokio::test]
     async fn writes_survive_a_reopen() {
-        let (_tmp, base_path, dir) = on_disk();
+        let (_tmp, base_path) = base_file();
+        let durable = Durable::default();
         {
-            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
-                .await
-                .unwrap();
+            let (store, _) = durable.open(&base_path).await;
             store
                 .apply(
                     &patch("[lighting]\ndaytime_brightness = 72"),
@@ -1325,20 +1353,19 @@ daytime_brightness = {value}"
                 .await
                 .unwrap();
         }
-        let (reopened, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        let (reopened, outcome) = durable.open(&base_path).await;
         assert!(outcome.is_clean());
         assert_eq!(reopened.current().lighting.daytime_brightness, 72);
     }
 
     #[tokio::test]
     async fn a_reopened_store_still_tracks_the_base_for_untouched_keys() {
-        // The override file holds only the delta, so a later change to
-        // the ConfigMap must still flow through on the next boot.
-        let (_tmp, base_path, dir) = on_disk();
+        // The override document holds only the delta, so a later change
+        // to the ConfigMap must still flow through on the next boot.
+        let (_tmp, base_path) = base_file();
+        let durable = Durable::default();
         {
-            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
-                .await
-                .unwrap();
+            let (store, _) = durable.open(&base_path).await;
             store
                 .apply(
                     &patch("[lighting]\ndaytime_brightness = 72"),
@@ -1352,7 +1379,7 @@ daytime_brightness = {value}"
             base_toml().replace("night_floor_brightness = 15", "night_floor_brightness = 8");
         std::fs::write(&base_path, edited).unwrap();
 
-        let (reopened, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        let (reopened, _) = durable.open(&base_path).await;
         let current = reopened.current();
         assert_eq!(
             current.lighting.night_floor_brightness, 8,
@@ -1365,32 +1392,12 @@ daytime_brightness = {value}"
     }
 
     #[tokio::test]
-    async fn unparseable_overrides_do_not_stop_the_boot() {
-        let (_tmp, base_path, dir) = on_disk();
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(OVERRIDES_FILE), "this is not = = toml").unwrap();
-
-        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
-        assert!(matches!(outcome, LoadOutcome::BackendUnavailable(_)));
-        assert_eq!(
-            store.current().lighting.daytime_brightness,
-            100,
-            "falls back to the base rather than refusing to start"
-        );
-    }
-
-    #[tokio::test]
     async fn overrides_that_fail_validation_do_not_stop_the_boot() {
-        let (_tmp, base_path, dir) = on_disk();
-        std::fs::create_dir_all(&dir).unwrap();
+        let (_tmp, base_path) = base_file();
         // Parses fine, but inverts the morning ramp.
-        std::fs::write(
-            dir.join(OVERRIDES_FILE),
-            "[lighting]\nmorning_start = \"09:00\"\n",
-        )
-        .unwrap();
+        let durable = Durable::holding("[lighting]\nmorning_start = \"09:00\"\n");
 
-        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        let (store, outcome) = durable.open(&base_path).await;
         assert!(matches!(outcome, LoadOutcome::OverridesRejected(_)));
         assert_eq!(store.current().lighting.morning_start, "05:45");
     }
@@ -1412,11 +1419,10 @@ daytime_brightness = {value}"
 
     #[tokio::test]
     async fn reset_is_persisted_too() {
-        let (_tmp, base_path, dir) = on_disk();
+        let (_tmp, base_path) = base_file();
+        let durable = Durable::default();
         {
-            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
-                .await
-                .unwrap();
+            let (store, _) = durable.open(&base_path).await;
             store
                 .apply(
                     &patch("[lighting]\ndaytime_brightness = 72"),
@@ -1429,16 +1435,15 @@ daytime_brightness = {value}"
                 .await
                 .unwrap();
         }
-        let (reopened, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        let (reopened, _) = durable.open(&base_path).await;
         assert_eq!(reopened.current().lighting.daytime_brightness, 100);
     }
 
     #[tokio::test]
-    async fn a_refused_write_leaves_the_file_alone() {
-        let (_tmp, base_path, dir) = on_disk();
-        let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
-            .await
-            .unwrap();
+    async fn a_refused_write_is_not_stored() {
+        let (_tmp, base_path) = base_file();
+        let durable = Durable::default();
+        let (store, _) = durable.open(&base_path).await;
         store
             .apply(
                 &patch("[lighting]\ndaytime_brightness = 72"),
@@ -1453,21 +1458,21 @@ daytime_brightness = {value}"
             )
             .await;
 
-        let raw = std::fs::read_to_string(dir.join(OVERRIDES_FILE)).unwrap();
+        let stored = durable.stored().expect("the first write was stored");
+        let raw = toml::to_string(&stored.overrides).unwrap();
         assert!(raw.contains("72"));
         assert!(
             !raw.contains("09:00"),
-            "a rejected value must not reach disk"
+            "a rejected value must not be stored"
         );
     }
 
     #[tokio::test]
     async fn history_survives_a_reopen_and_can_still_be_undone() {
-        let (_tmp, base_path, dir) = on_disk();
+        let (_tmp, base_path) = base_file();
+        let durable = Durable::default();
         {
-            let (store, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
-                .await
-                .unwrap();
+            let (store, _) = durable.open(&base_path).await;
             store
                 .apply(
                     &patch(
@@ -1479,7 +1484,7 @@ daytime_brightness = 72",
                 .await
                 .unwrap();
         }
-        let (reopened, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        let (reopened, _) = durable.open(&base_path).await;
         let history = reopened.history();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].source, ChangeSource::Voice);
@@ -1491,25 +1496,6 @@ daytime_brightness = 72",
             .unwrap()
             .expect("undoable after reopen");
         assert_eq!(reopened.current().lighting.daytime_brightness, 100);
-    }
-
-    #[tokio::test]
-    async fn a_damaged_journal_costs_history_not_config() {
-        let (_tmp, base_path, dir) = on_disk();
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(OVERRIDES_FILE),
-            "[lighting]
-daytime_brightness = 72
-",
-        )
-        .unwrap();
-        std::fs::write(dir.join(REVISIONS_FILE), "not = = toml").unwrap();
-
-        let (store, outcome) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
-        assert!(outcome.is_clean(), "the override document is still fine");
-        assert_eq!(store.current().lighting.daytime_brightness, 72);
-        assert!(store.history().is_empty());
     }
 
     // ---- an unreachable backend -------------------------------------------
@@ -1532,7 +1518,7 @@ daytime_brightness = 72
 
     #[tokio::test]
     async fn an_unreachable_backend_does_not_stop_the_boot() {
-        let (_tmp, base_path, _dir) = on_disk();
+        let (_tmp, base_path) = base_file();
         let (store, outcome) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
             .await
             .unwrap();
@@ -1548,7 +1534,7 @@ daytime_brightness = 72
     async fn a_write_to_an_unreachable_backend_fails_and_changes_nothing() {
         // The alternative — applying in memory and hoping — would show the
         // user a change that vanishes at the next restart.
-        let (_tmp, base_path, _dir) = on_disk();
+        let (_tmp, base_path) = base_file();
         let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
             .await
             .unwrap();
@@ -1572,7 +1558,7 @@ daytime_brightness = 85",
         // The repair path for a pod that started while its backend was
         // down: without it the house runs on defaults until someone
         // notices and restarts it.
-        let (_tmp, base_path, _dir) = on_disk();
+        let (_tmp, base_path) = base_file();
         let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
             .await
             .unwrap();
@@ -1590,7 +1576,7 @@ daytime_brightness = 60",
 
     #[tokio::test]
     async fn adopt_refuses_state_that_would_not_validate() {
-        let (_tmp, base_path, _dir) = on_disk();
+        let (_tmp, base_path) = base_file();
         let (store, _) = ConfigStore::open(&base_path, Box::new(BrokenBackend))
             .await
             .unwrap();
@@ -1610,11 +1596,10 @@ morning_start = \"09:00\""
 
     #[tokio::test]
     async fn reload_adopts_what_the_backend_holds() {
-        let (_tmp, base_path, dir) = on_disk();
+        let (_tmp, base_path) = base_file();
+        let durable = Durable::default();
         {
-            let (writer, _) = ConfigStore::open_with_dir(&base_path, dir.clone())
-                .await
-                .unwrap();
+            let (writer, _) = durable.open(&base_path).await;
             writer
                 .apply(
                     &patch(
@@ -1626,7 +1611,7 @@ daytime_brightness = 42",
                 .await
                 .unwrap();
         }
-        let (store, _) = ConfigStore::open_with_dir(&base_path, dir).await.unwrap();
+        let (store, _) = durable.open(&base_path).await;
         assert!(store.reload().await.unwrap());
         assert_eq!(store.current().lighting.daytime_brightness, 42);
     }

@@ -10,7 +10,6 @@ pub mod api;
 pub mod auth;
 pub mod automations;
 pub mod backend;
-pub mod capabilities;
 mod capture;
 pub mod catalogue;
 pub mod database;
@@ -26,7 +25,6 @@ pub mod memory;
 pub mod menu;
 pub mod mqtt;
 pub mod notifications;
-pub mod persistence;
 pub mod presence;
 pub mod providers;
 pub mod recognition;
@@ -52,8 +50,7 @@ pub use automations::{
     ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, DurationDto, TriggerDto,
     TriggerKind,
 };
-pub use backend::{FileBackend, MemoryBackend, OverrideBackend, StoredState};
-pub use capabilities::CapabilitiesConfig;
+pub use backend::{MemoryBackend, OverrideBackend, StoredState};
 pub use capture::CaptureConfig;
 pub use database::DatabaseConfig;
 pub use error::{Error, Result};
@@ -67,7 +64,6 @@ pub use memory::MemoryConfig;
 pub use menu::MenuConfig;
 pub use mqtt::MqttConfig;
 pub use notifications::NotificationsConfig;
-pub use persistence::PersistenceConfig;
 pub use presence::{PresenceConfig, TadoConfigDto};
 pub use providers::{ProviderConfig, Role};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
@@ -243,8 +239,6 @@ pub const SECTIONS: &[&str] = &[
     "mqtt",
     "api",
     "auth",
-    "capabilities",
-    "persistence",
     "database",
     "recognition",
     "satellites",
@@ -289,13 +283,9 @@ pub struct Config {
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
-    pub capabilities: CapabilitiesConfig,
-    #[serde(default)]
     pub capture: CaptureConfig,
-    #[serde(default)]
-    pub persistence: PersistenceConfig,
-    /// Optional. When present, config overrides live here instead of on
-    /// disk — see `niles-db`.
+    /// Optional. When present, config overrides and runtime state live
+    /// here instead of in memory — see `niles-db`.
     pub database: Option<DatabaseConfig>,
     #[serde(default)]
     pub recognition: RecognitionConfig,
@@ -383,9 +373,7 @@ impl Config {
         self.mqtt.validate()?;
         self.api.validate()?;
         self.auth.validate()?;
-        self.capabilities.validate()?;
         self.capture.validate()?;
-        self.persistence.validate()?;
         if let Some(database) = &self.database {
             database.validate()?;
         }
@@ -1228,92 +1216,6 @@ exclude_devices = ["wled:living_room/tv_light"]
             "[lighting.morning_routine]\nunknown_field = 42",
         );
         assert!(Config::load_from_str(&bad).is_err());
-    }
-
-    // ------------------------------------------------------------------
-    // Capabilities section tests
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn capabilities_section_absent_defaults_to_none() {
-        // The existing valid_toml() has no [capabilities] section.
-        let cfg = Config::load_from_str(valid_toml()).unwrap();
-        cfg.validate().unwrap();
-        assert!(cfg.capabilities.directory.is_none());
-    }
-
-    #[test]
-    fn capabilities_directory_parses_into_pathbuf() {
-        let toml = format!(
-            "{}\n[capabilities]\ndirectory = \"/x\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        cfg.validate().unwrap();
-        assert_eq!(
-            cfg.capabilities.directory.as_deref(),
-            Some(std::path::Path::new("/x"))
-        );
-    }
-
-    #[test]
-    fn rejects_empty_capabilities_directory() {
-        let toml = format!(
-            "{}\n[capabilities]\ndirectory = \"\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "capabilities",
-                ..
-            }
-        ));
-    }
-
-    // ------------------------------------------------------------------
-    // Persistence section tests
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn persistence_section_absent_defaults_to_none() {
-        // The existing valid_toml() has no [persistence] section.
-        let cfg = Config::load_from_str(valid_toml()).unwrap();
-        cfg.validate().unwrap();
-        assert!(cfg.persistence.directory.is_none());
-    }
-
-    #[test]
-    fn persistence_directory_parses_into_pathbuf() {
-        let toml = format!(
-            "{}\n[persistence]\ndirectory = \"/var/niles\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        cfg.validate().unwrap();
-        assert_eq!(
-            cfg.persistence.directory.as_deref(),
-            Some(std::path::Path::new("/var/niles"))
-        );
-    }
-
-    #[test]
-    fn rejects_empty_persistence_directory() {
-        let toml = format!(
-            "{}\n[persistence]\ndirectory = \"\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "persistence",
-                ..
-            }
-        ));
     }
 
     // ------------------------------------------------------------------
