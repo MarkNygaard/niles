@@ -1,11 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ChatView, SUGGESTIONS } from "@/components/ChatView";
-import type { ChatViewProps } from "@/components/ChatView";
+import type { ChatViewProps, ShownTurn } from "@/components/ChatView";
+
+function turn(said: string, reply: string, rest: Partial<ShownTurn> = {}): ShownTurn {
+  return {
+    at: "2026-10-14T12:00:00Z",
+    said,
+    reply,
+    via: "app",
+    room: null,
+    by: null,
+    proposal: null,
+    ...rest,
+  };
+}
 
 function renderChat(props: Partial<ChatViewProps> = {}) {
-  const handlers = { onSend: vi.fn(), onForget: vi.fn() };
-  render(<ChatView exchanges={[]} {...handlers} {...props} />);
+  const handlers = { onSend: vi.fn(), onNew: vi.fn(), onBrowse: vi.fn(), onAnswer: vi.fn() };
+  render(<ChatView turns={[]} {...handlers} {...props} />);
   return handlers;
 }
 
@@ -13,7 +26,7 @@ const field = () => screen.getByRole("textbox", { name: "Message Niles" });
 
 describe("ChatView", () => {
   it("shows both sides of the conversation", () => {
-    renderChat({ exchanges: [{ said: "Is anyone home?", reply: "Only you, Sir." }] });
+    renderChat({ turns: [turn("Is anyone home?", "Only you, Sir.")] });
     expect(screen.getByText("Is anyone home?")).toBeInTheDocument();
     expect(screen.getByText("Only you, Sir.")).toBeInTheDocument();
   });
@@ -50,25 +63,74 @@ describe("ChatView", () => {
   });
 
   it("says when Claude wrote a reply", () => {
-    renderChat({ exchanges: [{ said: "hi", reply: "Good evening.", via: "claude" }] });
+    renderChat({ turns: [turn("hi", "Good evening.", { by: "claude" })] });
     expect(screen.getByText("Claude")).toBeInTheDocument();
   });
 
   it("says why Claude did not answer", () => {
     renderChat({
-      exchanges: [{ said: "hi", reply: "Good evening.", fallback: "Claude Code has no token" }],
+      turns: [turn("hi", "Good evening.", { fallback: "Claude Code has no token" })],
     });
     expect(screen.getByText(/Answered without Claude — Claude Code has no token/)).toBeInTheDocument();
   });
 
-  it("starts over", () => {
-    const { onForget } = renderChat({ exchanges: [{ said: "hi", reply: "Good evening." }] });
-    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
-    expect(onForget).toHaveBeenCalled();
+  it("starts a new chat", () => {
+    const { onNew } = renderChat({ turns: [turn("hi", "Good evening.")] });
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+    expect(onNew).toHaveBeenCalled();
+  });
+
+  it("offers no new chat on one that is already empty", () => {
+    renderChat();
+    expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
+  });
+
+  it("opens the past conversations", () => {
+    const { onBrowse } = renderChat();
+    fireEvent.click(screen.getByRole("button", { name: "Conversations" }));
+    expect(onBrowse).toHaveBeenCalled();
+  });
+
+  it("says which room a spoken turn was said in", () => {
+    renderChat({
+      turns: [
+        turn("turn on the lamp", "Done.", { via: "voice", room: "living_room" }),
+        turn("and the kitchen?", "Done."),
+      ],
+    });
+    expect(screen.getAllByText("Done.")).toHaveLength(2);
+    // The typed one is not marked.
+    expect(screen.getAllByText("Living room")).toHaveLength(1);
+  });
+
+  describe("a proposal", () => {
+    const proposal = { sentence: 'When it is 30 minutes after sunset, say "Close the curtains".' };
+    const asked = turn("remind me to close the curtains", "… Shall I save it?", { proposal });
+
+    it("can be saved, or not, from the last turn", () => {
+      const { onAnswer } = renderChat({ turns: [turn("hi", "Good evening."), asked] });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(onAnswer).toHaveBeenLastCalledWith(1, true);
+      fireEvent.click(screen.getByRole("button", { name: "Don't save" }));
+      expect(onAnswer).toHaveBeenLastCalledWith(1, false);
+    });
+
+    it("is not offered once another turn follows it", () => {
+      renderChat({ turns: [asked, turn("Yes", "Saved.")] });
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Don't save" })).toBeNull();
+    });
+
+    it("is not offered on a turn without one", () => {
+      renderChat({ turns: [turn("hi", "Good evening.")] });
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    });
   });
 
   it("gives the tab bar back when it unmounts mid-typing", () => {
-    const { unmount } = render(<ChatView exchanges={[]} onSend={vi.fn()} onForget={vi.fn()} />);
+    const { unmount } = render(
+      <ChatView turns={[]} onSend={vi.fn()} onNew={vi.fn()} onBrowse={vi.fn()} onAnswer={vi.fn()} />,
+    );
     fireEvent.focus(field());
     expect(document.documentElement.dataset.typing).toBe("");
     unmount();

@@ -36,11 +36,15 @@ pub fn router(state: AppState) -> Router {
             "/scenes/{name}",
             post(crate::scenes::apply_scene).delete(crate::scenes::delete_scene),
         )
+        .route("/chat", post(crate::chat::send))
+        .route("/chat/conversations", get(crate::chat::conversations))
         .route(
-            "/chat",
-            get(crate::chat::history)
-                .post(crate::chat::send)
-                .delete(crate::chat::forget),
+            "/chat/conversations/{id}",
+            get(crate::chat::conversation).delete(crate::chat::delete),
+        )
+        .route(
+            "/chat/conversations/{id}/proposal",
+            post(crate::chat::answer),
         )
         .route(
             "/chat/dictation",

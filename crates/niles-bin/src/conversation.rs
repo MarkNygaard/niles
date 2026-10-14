@@ -153,8 +153,8 @@ impl ConversationMemory {
     }
 
     /// The live turns in `thread` as (what was said, what Niles replied,
-    /// what wrote the reply), oldest first — what the app shows when the
-    /// chat is reopened.
+    /// what wrote the reply), oldest first.
+    #[cfg(test)]
     pub(crate) fn turns(&self, thread: &Thread) -> Vec<(String, String, Option<String>)> {
         self.live(thread, SystemTime::now(), |turns| {
             turns
@@ -179,6 +179,28 @@ impl ConversationMemory {
         via: Option<&str>,
     ) {
         self.record_at(thread, user, assistant, via, SystemTime::now());
+    }
+
+    /// Make `thread` exactly these turns — a kept conversation picked up
+    /// again, every turn of it, however long ago the last one was. The
+    /// next turn recorded trims it to the usual length.
+    pub(crate) fn seed(&self, thread: &Thread, turns: Vec<(String, String, Option<String>)>) {
+        let mut map = self.lock();
+        map.insert(
+            thread.clone(),
+            History {
+                turns: turns
+                    .into_iter()
+                    .map(|(user, assistant, via)| Turn {
+                        user,
+                        assistant,
+                        via,
+                    })
+                    .collect(),
+                last_at: SystemTime::now(),
+            },
+        );
+        self.keep(&map, SystemTime::now());
     }
 
     /// Start `thread` over.
@@ -434,6 +456,22 @@ mod tests {
         mem.record(&mark, "u2", "a2");
         let vias: Vec<_> = mem.turns(&mark).into_iter().map(|t| t.2).collect();
         assert_eq!(vias, vec![Some("claude".to_string()), None]);
+    }
+
+    #[test]
+    fn a_picked_up_conversation_is_all_there_until_the_next_turn() {
+        let mem = ConversationMemory::default();
+        let mark = Thread::Chat("mark@example.com".into());
+        mem.record(&mark, "stale", "gone");
+        let kept: Vec<_> = (0..20)
+            .map(|i| (format!("u{i}"), format!("a{i}"), None))
+            .collect();
+        mem.seed(&mark, kept);
+        let turns = mem.turns(&mark);
+        assert_eq!(turns.len(), 20);
+        assert_eq!(turns[0].0, "u0");
+        mem.record(&mark, "next", "reply");
+        assert_eq!(mem.turns(&mark).len(), CHAT_MAX_TURNS);
     }
 
     #[test]

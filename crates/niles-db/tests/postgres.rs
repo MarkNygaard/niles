@@ -166,3 +166,46 @@ async fn a_voice_nobody_enrolled_is_not_found() {
     let err = store.load("nobody_here").await.unwrap_err();
     assert!(err.to_string().contains("not found"), "{err}");
 }
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_conversation_is_appended_to_and_kept_for_its_person_only() {
+    let Some(backend) = backend() else {
+        return;
+    };
+    let log = niles_db::PostgresConversationLog::new(backend.pool(), "test".into());
+    let person = format!("person:test-{}", std::process::id());
+    let id = log
+        .append(&person, None, "hello", r#"{"said":"hello"}"#, true)
+        .await
+        .expect("start")
+        .expect("an id");
+    assert_eq!(log.active(&person, 300).await.expect("active"), Some(id));
+    let into = log
+        .append(&person, Some(id), "", r#"{"said":"again"}"#, false)
+        .await
+        .expect("append");
+    assert_eq!(into, Some(id));
+
+    let (row, turns) = log.get(&person, id).await.expect("get").expect("theirs");
+    assert_eq!(row.turns, 2);
+    assert!(row.spoken);
+    assert!(turns.contains("again"), "{turns}");
+
+    // Somebody else neither sees it nor adds to it.
+    assert!(
+        log.get("person:someone-else", id)
+            .await
+            .expect("get")
+            .is_none()
+    );
+    assert_eq!(
+        log.append("person:someone-else", Some(id), "", "{}", false)
+            .await
+            .expect("append"),
+        None
+    );
+
+    assert!(log.delete(&person, id).await.expect("delete"));
+    assert!(log.list(&person).await.expect("list").is_empty());
+}

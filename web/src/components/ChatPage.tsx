@@ -1,63 +1,165 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChatView } from "@/components/ChatView";
+import type { ShownTurn } from "@/components/ChatView";
+import { ConversationList } from "@/components/ConversationList";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import type { Exchange } from "@/lib/api";
+import type { Conversation, ConversationSummary } from "@/lib/api";
 
-const KEY = ["chat"];
+export const CHAT = ["chat"];
+const LIST = [...CHAT, "conversations"];
+const one = (id: number) => [...CHAT, "conversation", id];
+
+/** The quiet after which the server starts a new conversation. */
+const QUIET_MS = 5 * 60 * 1000;
 
 /**
- * The chat, kept on the server so it survives a reload and a trip to
- * another tab, and so the next message has the last one as context.
+ * Which conversation the tab opens on: the latest, while it is still
+ * going by the server's five-minute rule, else an empty new one.
+ */
+export function landingOn(
+  conversations: ConversationSummary[],
+  now: number = Date.now(),
+): number | null {
+  const latest = conversations[0];
+  if (!latest) return null;
+  return now - new Date(latest.last_at).getTime() < QUIET_MS ? latest.id : null;
+}
+
+/**
+ * Every conversation the signed-in person has had with Niles, spoken or
+ * typed, one on screen at a time, kept on the server so the next message
+ * has its history as context.
  */
 export function ChatPage() {
   const queryClient = useQueryClient();
-  const history = useQuery({
-    queryKey: KEY,
-    queryFn: api.chat,
-    // Only this page writes to it, and a refetch landing mid-send would
-    // briefly drop the message being answered.
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
+  const list = useQuery({ queryKey: LIST, queryFn: api.conversations });
+  // `null` is an empty new chat; undefined is "not chosen yet", settled
+  // once from the list. Settled rather than worked out on every render,
+  // or a refetch after five quiet minutes would empty the screen under
+  // whoever is reading it.
+  const [chosen, setChosen] = useState<number | null>();
+  if (chosen === undefined && list.data) {
+    setChosen(landingOn(list.data));
+  }
+  const current = chosen ?? null;
+  const conversation = useQuery({
+    queryKey: one(current ?? 0),
+    queryFn: () => api.conversation(current!),
+    enabled: current !== null,
   });
-  const [pending, setPending] = useState<string>();
+  const [browsing, setBrowsing] = useState(false);
+  // Kept here because the server does not: only a reply just sent says
+  // why Claude Code did not write it. Keyed by conversation and turn.
+  const [fallbacks, setFallbacks] = useState<Record<string, string>>({});
 
   const send = useMutation({
-    mutationFn: api.sendChat,
-    onMutate: (text) => setPending(text),
-    onSuccess: ({ reply, via, fallback }, said) => {
-      queryClient.setQueryData<Exchange[]>(KEY, (old) => [
-        ...(old ?? []),
-        { said, reply, via, fallback },
-      ]);
+    mutationFn: ({ text, to }: { text: string; to: number | null }) =>
+      api.sendChat(text, to === null ? { new: true } : { conversation_id: to }),
+    onSuccess: ({ reply, via, fallback, conversation_id }, { text: said, to }) => {
+      const now = new Date().toISOString();
+      const turn = {
+        at: now,
+        said,
+        reply,
+        via: "app",
+        room: null,
+        by: via ?? null,
+        proposal: null,
+      } as const;
+      // In place at once, so the message does not drop out between the
+      // pending bubble going and the refetch landing.
+      const old = queryClient.getQueryData<Conversation>(one(conversation_id));
+      queryClient.setQueryData<Conversation>(one(conversation_id), {
+        id: conversation_id,
+        title: old?.title ?? said,
+        started_at: old?.started_at ?? now,
+        last_at: now,
+        turns: [...(old?.turns ?? []), turn],
+      });
+      if (fallback) {
+        const at = old?.turns.length ?? 0;
+        setFallbacks((f) => ({ ...f, [`${conversation_id}:${at}`]: fallback }));
+      }
+      // Unless somebody went to another conversation while waiting.
+      setChosen((shown) => (shown === to ? conversation_id : shown));
+      // The server's own copy says whether the reply asked to save a
+      // rule, which only it knows. Not awaited: the pending bubble has
+      // to go now that the turn is in place, or it shows twice.
+      void queryClient.invalidateQueries({ queryKey: CHAT });
     },
-    onSettled: () => setPending(undefined),
-  });
-  const forget = useMutation({
-    mutationFn: api.forgetChat,
-    onSuccess: () => queryClient.setQueryData<Exchange[]>(KEY, []),
   });
 
-  if (history.isLoading) {
+  const answer = useMutation({
+    mutationFn: ({ id, turn, save }: { id: number; turn: number; save: boolean }) =>
+      api.answerProposal(id, turn, save),
+    // Refetched whether it worked or not: a 409 means the conversation
+    // moved on elsewhere, and the buttons should go with it.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: CHAT }),
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: number) => api.deleteConversation(id),
+    onSuccess: async (_, id) => {
+      if (id === current) setChosen(null);
+      queryClient.removeQueries({ queryKey: one(id) });
+      await queryClient.invalidateQueries({ queryKey: LIST });
+    },
+  });
+
+  const startNew = () => {
+    setChosen(null);
+    setBrowsing(false);
+    send.reset();
+    answer.reset();
+  };
+
+  if (list.isLoading) {
     return <Skeleton className="h-64 w-full" />;
   }
-  if (history.isError) {
+  if (list.isError) {
     return (
-      <p className="text-muted-foreground text-sm">
-        Can't reach Niles: {history.error.message}
-      </p>
+      <p className="text-muted-foreground text-sm">Can't reach Niles: {list.error.message}</p>
     );
   }
 
+  const turns: ShownTurn[] =
+    current === null
+      ? []
+      : (conversation.data?.turns ?? []).map((turn, i) => ({
+          ...turn,
+          fallback: fallbacks[`${current}:${i}`],
+        }));
+
   return (
-    <ChatView
-      exchanges={history.data ?? []}
-      pending={pending}
-      error={send.error?.message ?? forget.error?.message}
-      onSend={(text) => send.mutate(text)}
-      onForget={() => forget.mutate()}
-      onDictate={async (audio) => (await api.dictate(audio)).text}
-    />
+    <>
+      <ChatView
+        turns={turns}
+        loading={current !== null && conversation.isLoading}
+        pending={send.isPending && send.variables.to === current ? send.variables.text : undefined}
+        error={send.error?.message ?? answer.error?.message ?? conversation.error?.message}
+        onSend={(text) => send.mutate({ text, to: current })}
+        onNew={startNew}
+        onBrowse={() => setBrowsing(true)}
+        onAnswer={(turn, save) => current !== null && answer.mutate({ id: current, turn, save })}
+        answering={answer.isPending}
+        onDictate={async (audio) => (await api.dictate(audio)).text}
+      />
+      <ConversationList
+        open={browsing}
+        onOpenChange={setBrowsing}
+        conversations={list.data}
+        current={current}
+        onPick={(id) => {
+          setChosen(id);
+          setBrowsing(false);
+          send.reset();
+          answer.reset();
+        }}
+        onNew={startNew}
+        onDelete={(id) => remove.mutateAsync(id)}
+      />
+    </>
   );
 }

@@ -54,6 +54,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 mod calendar;
+mod chat_log;
 mod claude_code;
 mod climate;
 mod conversation;
@@ -1523,6 +1524,17 @@ async fn build_journal(cfg: &Config) -> Arc<review::Journal> {
         }
     });
     Arc::new(journal.with_sink(tx))
+}
+
+/// Every conversation, kept per person for the app's chat. Nothing
+/// without a database: the chat then remembers only the one going on.
+fn build_chat_log(cfg: &Config) -> Option<Arc<chat_log::ChatLog>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    Some(Arc::new(chat_log::ChatLog::new(
+        niles_db::PostgresConversationLog::new(backend.pool(), backend.describe_target()),
+    )))
 }
 
 /// The conversations going on, kept in Postgres when there is one, so
@@ -3287,6 +3299,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         settings: None,
         journal: Arc::default(),
         conversation: build_conversation_memory(&cfg).await,
+        chat_log: None,
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
         tado: tado.clone(),
@@ -3529,12 +3542,36 @@ impl niles_api::chat::Chat for AppChat {
         who: &str,
         speaker: Option<&str>,
         text: &str,
+        into: niles_api::chat::Where,
     ) -> Result<niles_api::chat::Reply, String> {
         let ctx = self
             .ctx
             .get()
             .ok_or_else(|| "Niles is still starting; try again in a moment".to_string())?;
         let thread = conversation::Thread::Chat(who.to_string());
+        let person = chat_log::person(speaker, who);
+        // The conversation picked up is the context, every turn of it,
+        // spoken ones too: a reply to what was said in the kitchen knows
+        // what was said in the kitchen.
+        let target = match &ctx.chat_log {
+            Some(log) => {
+                let target = log.target(&person, into).await?;
+                let turns = target.as_ref().map_or_else(Vec::new, |(_, turns)| {
+                    turns
+                        .iter()
+                        .map(|t| (t.said.clone(), t.reply.clone(), t.by.clone()))
+                        .collect()
+                });
+                ctx.conversation.seed(&thread, turns);
+                target.map(|(id, _)| id)
+            }
+            None => {
+                if into == niles_api::chat::Where::New {
+                    ctx.conversation.forget(&thread);
+                }
+                None
+            }
+        };
         let known = typed_speaker(ctx, speaker);
         // The profile tools write to whoever is signed in, as they write
         // to whoever is speaking.
@@ -3542,6 +3579,7 @@ impl niles_api::chat::Chat for AppChat {
             SpeakerContext::Identified { known, .. } => known.slug.clone(),
             _ => None,
         };
+        let started = Instant::now();
         let (reply, note) = CHAT_NOTE
             .scope(std::cell::RefCell::default(), async {
                 let reply = profile::SPEAKER
@@ -3558,27 +3596,142 @@ impl niles_api::chat::Chat for AppChat {
         // the answer. On a screen that looks like being ignored.
         let reply = reply.unwrap_or_else(|| "Done.".to_string());
         ctx.conversation.record_via(&thread, text, &reply, via);
-        let who = match &known {
+        let name = match &known {
             SpeakerContext::Identified { name, .. } => Some(name.as_str()),
             _ => None,
         };
-        ctx.journal.note("the app", who, text, &reply);
+        ctx.journal.note("the app", name, text, &reply);
+        let conversation_id = match &ctx.chat_log {
+            Some(log) => {
+                let turn = niles_api::chat::Turn {
+                    at: chrono::Utc::now(),
+                    said: text.to_string(),
+                    reply: reply.clone(),
+                    via: "app".into(),
+                    room: None,
+                    by: via.map(str::to_string),
+                    proposal: proposal_since(ctx, started),
+                };
+                log.record(&person, target, &turn)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("[chat-log] a typed turn was not kept: {e}");
+                        None
+                    })
+            }
+            None => None,
+        };
         Ok(niles_api::chat::Reply {
             reply,
             via: via.map(str::to_string),
             fallback: note.fallback,
+            conversation_id,
         })
     }
 
-    fn history(&self, who: &str) -> Vec<niles_api::chat::Exchange> {
-        let Some(ctx) = self.ctx.get() else {
+    async fn conversations(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+    ) -> Vec<niles_api::chat::Summary> {
+        let Some(log) = self.ctx.get().and_then(|ctx| ctx.chat_log.as_ref()) else {
             return Vec::new();
         };
-        ctx.conversation
-            .turns(&conversation::Thread::Chat(who.to_string()))
-            .into_iter()
-            .map(|(said, reply, via)| niles_api::chat::Exchange { said, reply, via })
-            .collect()
+        log.list(&chat_log::person(speaker, who))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("[chat-log] {e}");
+                Vec::new()
+            })
+    }
+
+    async fn conversation(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        id: i64,
+    ) -> Option<niles_api::chat::Conversation> {
+        let log = self.ctx.get()?.chat_log.as_ref()?;
+        log.conversation(&chat_log::person(speaker, who), id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("[chat-log] {e}");
+                None
+            })
+    }
+
+    async fn answer(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        id: i64,
+        turn: usize,
+        save: bool,
+    ) -> Result<String, niles_api::chat::Unanswerable> {
+        use niles_api::chat::Unanswerable;
+        let ctx = self.ctx.get().ok_or(Unanswerable::NoSuchConversation)?;
+        let log = ctx
+            .chat_log
+            .as_ref()
+            .ok_or(Unanswerable::NoSuchConversation)?;
+        let person = chat_log::person(speaker, who);
+        let conversation = log
+            .conversation(&person, id)
+            .await
+            .ok()
+            .flatten()
+            .ok_or(Unanswerable::NoSuchConversation)?;
+        // Only the last turn's: anything said after a read-back answered
+        // it, or moved on from it.
+        if turn + 1 != conversation.turns.len() {
+            return Err(Unanswerable::NothingToAnswer);
+        }
+        let rule = conversation.turns[turn]
+            .proposal
+            .as_ref()
+            .and_then(|p| p.rule.clone())
+            .and_then(|rule| serde_json::from_value::<niles_config::AutomationRuleDto>(rule).ok())
+            .ok_or(Unanswerable::NothingToAnswer)?;
+        let Some((store, proposals)) = ctx.automations.as_ref() else {
+            return Err(Unanswerable::NothingToAnswer);
+        };
+        proposals.settled(&rule);
+        let reply = if save {
+            match store.create(rule) {
+                Ok(made) => {
+                    tracing::info!("[chat] automation saved from the app: {}", made.id);
+                    format!("Saved. {}", niles_automations::sentence(&made))
+                }
+                Err(e) => format!("I couldn't save it: {e}"),
+            }
+        } else {
+            "All right, I won't save it.".to_string()
+        };
+        let answered = niles_api::chat::Turn {
+            at: chrono::Utc::now(),
+            said: if save { "Save" } else { "Don't save" }.into(),
+            reply: reply.clone(),
+            via: "app".into(),
+            room: None,
+            by: None,
+            proposal: None,
+        };
+        if let Err(e) = log.record(&person, Some(id), &answered).await {
+            tracing::warn!("[chat-log] the answer was not kept: {e}");
+        }
+        Ok(reply)
+    }
+
+    async fn delete(&self, who: &str, speaker: Option<&str>, id: i64) -> bool {
+        let Some(log) = self.ctx.get().and_then(|ctx| ctx.chat_log.as_ref()) else {
+            return false;
+        };
+        log.delete(&chat_log::person(speaker, who), id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("[chat-log] {e}");
+                false
+            })
     }
 
     async fn transcribe(&self, audio: Vec<u8>, filename: &str) -> Result<String, String> {
@@ -3589,13 +3742,17 @@ impl niles_api::chat::Chat for AppChat {
             .map(|t| t.text.trim().to_string())
             .map_err(|e| format!("could not transcribe that: {e}"))
     }
+}
 
-    fn forget(&self, who: &str) {
-        if let Some(ctx) = self.ctx.get() {
-            ctx.conversation
-                .forget(&conversation::Thread::Chat(who.to_string()));
-        }
-    }
+/// The rule Niles read back during a turn that began at `started`, to
+/// keep with the turn: the app shows it with Save and Don't save.
+fn proposal_since(ctx: &DispatchCtx, started: Instant) -> Option<niles_api::chat::Proposal> {
+    let (_, proposals) = ctx.automations.as_ref()?;
+    let rule = proposals.offered_since(started)?;
+    Some(niles_api::chat::Proposal {
+        sentence: niles_automations::sentence(&rule),
+        rule: serde_json::to_value(&rule).ok(),
+    })
 }
 
 /// Who is typing, as the prompt would know them by voice.
@@ -3667,6 +3824,9 @@ struct DispatchCtx {
     /// What was said, for the review once the house is quiet.
     journal: Arc<review::Journal>,
     conversation: Arc<conversation::ConversationMemory>,
+    /// Every conversation, kept for the person who had it, for the app's
+    /// chat. Absent without a database.
+    chat_log: Option<Arc<chat_log::ChatLog>>,
     /// What "it" refers to, per room. See [`last_target`].
     last_target: Arc<last_target::LastTarget>,
     /// For "what's the weather", answered without the LLM.
@@ -3763,6 +3923,7 @@ async fn handle_transcript(
     // An answer to Niles's own question, heard without the wake word.
     answering: bool,
 ) -> Option<String> {
+    let started = Instant::now();
     // The first thing somebody says to Niles in a morning is greeted, as
     // Alexa does. Decided before the reply is built, because a greeting
     // addresses them and the confirmation must not then do it again.
@@ -3813,6 +3974,21 @@ async fn handle_transcript(
     }
     if let Some(reply) = &response {
         let room = ctx.satellites.room_for(peer).cloned();
+        if let (Some(log), SpeakerContext::Identified { known, .. }) = (&ctx.chat_log, speaker)
+            && let Some(slug) = &known.slug
+        {
+            let turn = niles_api::chat::Turn {
+                at: chrono::Utc::now(),
+                said: text.to_string(),
+                reply: reply.clone(),
+                via: "voice".into(),
+                room: room.as_ref().map(|r| r.as_str().to_string()),
+                by: None,
+                proposal: proposal_since(ctx, started),
+            };
+            let (log, person) = (log.clone(), chat_log::person(Some(slug), ""));
+            tokio::spawn(async move { log.record_spoken(&person, &turn).await });
+        }
         let place = room.as_ref().map_or_else(
             || "a room".to_string(),
             |r| format!("the {}", r.as_str().replace('_', " ")),
@@ -6742,6 +6918,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         settings: Some(store.clone()),
         journal: journal.clone(),
         conversation: build_conversation_memory(&cfg).await,
+        chat_log: build_chat_log(&cfg),
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
         tado: tado.clone(),
