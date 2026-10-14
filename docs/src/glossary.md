@@ -19,7 +19,7 @@ A user-defined shortcut: a natural-language trigger plus a body of instructions 
 The open voice-protocol that Niles speaks with its satellites. Handles wake-word detection, streaming audio in, and TTS audio out.
 
 ## Satellite
-An ESPHome-based voice appliance that listens for a wake word, streams audio to Niles, and plays back TTS responses. Satellites are identical and replaceable; all state lives on the server.
+A voice appliance (a reSpeaker XVF3800 with an ESP32-S3 running Niles's firmware) that listens for the wake word, streams audio to Niles, and plays back TTS responses. Satellites are identical and replaceable; all state lives on the server.
 
 ## Intent
 A user's goal extracted from a voice command. Niles routes intents through Tier 0 → Tier 1 → Tier 2 until one tier can satisfy the request.
