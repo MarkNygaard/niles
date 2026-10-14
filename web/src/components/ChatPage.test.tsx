@@ -177,6 +177,22 @@ describe("ChatPage", () => {
     expect(send.mock.calls[1][1]).toEqual({ conversation_id: 45 });
   });
 
+  it("names the assistant that did not answer a message just sent", async () => {
+    const conversations: Record<number, Conversation> = {};
+    show([], conversations);
+    const answered = reply(conversations, 46, "Nobody, Sir.");
+    vi.spyOn(api, "sendChat").mockImplementation(async (text) => ({
+      ...(await answered(text)),
+      fallback: "ChatGPT is not signed in",
+      fallback_from: "chatgpt" as const,
+    }));
+    await screen.findByRole("button", { name: "Conversations" });
+    type("Is anyone home?");
+    expect(
+      await screen.findByText("Answered without ChatGPT — ChatGPT is not signed in"),
+    ).toBeInTheDocument();
+  });
+
   it("goes back to a new chat on New chat", async () => {
     const conversations = { 42: conversationOf(CURTAINS, CURTAINS_TURNS) };
     show([CURTAINS], conversations);

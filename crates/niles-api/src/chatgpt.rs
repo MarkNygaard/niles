@@ -54,8 +54,12 @@ impl Logins {
     /// none, and finishes the newest — the one whose tab the person has
     /// just been in.
     fn finish(&self, state: Option<&str>) -> Option<Pending> {
+        self.finish_at(state, Instant::now())
+    }
+
+    fn finish_at(&self, state: Option<&str>, now: Instant) -> Option<Pending> {
         let mut pending = self.lock();
-        pending.retain(|p| p.started.elapsed() < TTL);
+        pending.retain(|p| now.saturating_duration_since(p.started) < TTL);
         let index = match state {
             Some(state) => pending.iter().position(|p| p.state == state)?,
             None => pending.len().checked_sub(1)?,
@@ -230,7 +234,7 @@ mod tests {
     fn a_stale_sign_in_cannot_be_finished() {
         let logins = Logins::default();
         logins.begin("late".into(), "v".into());
-        logins.lock()[0].started = Instant::now() - TTL - Duration::from_secs(1);
-        assert!(logins.finish(Some("late")).is_none());
+        let later = Instant::now() + TTL + Duration::from_secs(1);
+        assert!(logins.finish_at(Some("late"), later).is_none());
     }
 }
