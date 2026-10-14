@@ -181,6 +181,12 @@ fn device_full(device: &niles_core::Device) -> Value {
     insert_if_some(map, "motion", device.state.motion);
     insert_if_some(map, "illuminance_lux", device.state.illuminance_lux);
     insert_if_some(map, "position", device.state.position);
+    // Only here, not in `device_summary`: a metering plug alone reports
+    // four of them, and the list goes back into every request that
+    // asks it. One device's readings are one call away.
+    if !device.state.readings.is_empty() {
+        map.insert("readings".into(), json!(device.state.readings));
+    }
     v
 }
 
@@ -293,11 +299,12 @@ fn wants_more_than_on_off(target: &DeviceState) -> bool {
 
 fn explain_device(device: &niles_core::Device) -> String {
     let id = format!("{}/{}", device.id.room(), device.id.name());
-    match device.class {
+    let base = match device.class {
         DeviceClass::Light => explain_light(&id, &device.state),
         DeviceClass::Outlet => explain_outlet(&id, &device.state),
         DeviceClass::Switch => explain_switch(&id, &device.state),
-        DeviceClass::Sensor => explain_sensor(&id, &device.state),
+        // A sensor's readings are what it is, so they go in its own list.
+        DeviceClass::Sensor => return explain_sensor(&id, &device.state),
         DeviceClass::Motion => explain_motion(&id, &device.state),
         DeviceClass::Cover => match device.state.position {
             Some(0) => format!("{id} is a blind; closed"),
@@ -307,6 +314,48 @@ fn explain_device(device: &niles_core::Device) -> String {
         },
         // DeviceClass is #[non_exhaustive]; Unknown and future variants fall back to generic.
         _ => explain_unknown(&id, &device.state),
+    };
+    let readings = say_readings(&device.state);
+    if readings.is_empty() {
+        base
+    } else {
+        format!("{base}; {}", readings.join(", "))
+    }
+}
+
+/// Each reading as it is said: "power 340 W", "soil moisture 20.5%".
+fn say_readings(state: &DeviceState) -> Vec<String> {
+    state
+        .readings
+        .iter()
+        .map(|(name, reading)| {
+            let name = name.replace('_', " ");
+            let value = say_reading_value(reading.value);
+            match reading.unit.as_deref() {
+                Some(unit) if unit.starts_with('%') || unit.starts_with('°') => {
+                    format!("{name} {value}{unit}")
+                }
+                Some(unit) => format!("{name} {value} {unit}"),
+                None => format!("{name} {value}"),
+            }
+        })
+        .collect()
+}
+
+/// Precision that suits the size of the number: a 2300 W kettle to the
+/// watt, a price of 1.23 kr/kWh to the øre. Trailing zeros dropped, so
+/// 340 is not "340.00".
+fn say_reading_value(value: f64) -> String {
+    let decimals = match value.abs() {
+        v if v >= 100.0 => 0,
+        v if v >= 1.0 => 2,
+        _ => 3,
+    };
+    let s = format!("{value:.decimals$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
     }
 }
 
@@ -372,6 +421,7 @@ fn explain_sensor(id: &str, state: &DeviceState) -> String {
     if let Some(b) = state.battery_percent {
         parts.push(format!("battery {b}%"));
     }
+    parts.extend(say_readings(state));
     if parts.is_empty() {
         format!("{id} is a sensor but no readings have been reported yet")
     } else {
@@ -2753,6 +2803,78 @@ mod tests {
             explain_device(&d),
             "kitchen/thermometer is a sensor; temperature 21.5°C, humidity 47%, battery 88%"
         );
+    }
+
+    fn with_readings(readings: &[(&str, f64, Option<&str>)]) -> DeviceState {
+        DeviceState {
+            readings: readings
+                .iter()
+                .map(|(name, value, unit)| {
+                    (
+                        name.to_string(),
+                        niles_core::Reading::new(*value, unit.map(String::from)),
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn explain_a_plug_says_its_readings_with_units() {
+        let mut state =
+            with_readings(&[("power", 340.0, Some("W")), ("energy", 12.4, Some("kWh"))]);
+        state.on = Some(true);
+        let d = device("kitchen/dishwasher", DeviceClass::Outlet, state);
+        assert_eq!(
+            explain_device(&d),
+            "kitchen/dishwasher is on; energy 12.4 kWh, power 340 W"
+        );
+    }
+
+    #[test]
+    fn explain_a_sensor_with_only_readings_has_reported_something() {
+        let d = device(
+            "office/air",
+            DeviceClass::Sensor,
+            with_readings(&[
+                ("co2", 812.0, Some("ppm")),
+                ("soil_moisture", 20.5, Some("%")),
+                ("price", -0.0512, None),
+            ]),
+        );
+        assert_eq!(
+            explain_device(&d),
+            "office/air is a sensor; co2 812 ppm, price -0.051, soil moisture 20.5%"
+        );
+    }
+
+    #[test]
+    fn reading_values_are_rounded_to_their_size() {
+        assert_eq!(say_reading_value(2301.4), "2301");
+        assert_eq!(say_reading_value(1.234), "1.23");
+        assert_eq!(say_reading_value(12.0), "12");
+        assert_eq!(say_reading_value(0.0), "0");
+    }
+
+    #[tokio::test]
+    async fn get_device_state_includes_readings_and_the_list_does_not() {
+        let reg = Arc::new(DeviceRegistry::new());
+        reg.upsert(Device::new(
+            DeviceId::parse("z2m:kitchen/dishwasher").unwrap(),
+            with_readings(&[("power", 340.0, Some("W")), ("ratio", 0.5, None)]),
+            DeviceClass::Outlet,
+        ));
+        let full = GetDeviceState::new(reg.clone())
+            .execute(json!({ "device_id": "kitchen/dishwasher" }))
+            .await
+            .unwrap();
+        assert_eq!(
+            full["readings"],
+            json!({ "power": { "value": 340.0, "unit": "W" }, "ratio": { "value": 0.5 } })
+        );
+        let list = ListAllDevices::new(reg).execute(json!({})).await.unwrap();
+        assert!(list[0].get("readings").is_none());
     }
 
     #[test]

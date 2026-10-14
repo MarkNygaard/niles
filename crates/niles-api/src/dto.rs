@@ -7,6 +7,7 @@
 
 use niles_core::{Device, DeviceClass, DeviceState};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// JSON shape for a device. The `id` field is the canonical
 /// source-qualified identifier (e.g. `"z2m:kitchen/ceiling_light"`);
@@ -112,6 +113,21 @@ pub struct DeviceStateDto {
     pub illuminance_lux: Option<f32>,
     /// A blind: `0` shut, `100` open.
     pub position: Option<u8>,
+    /// Every other number the device reports, by name:
+    /// `{"power": {"value": 340, "unit": "W"}}`. Always present, empty
+    /// when there are none. On the event stream it is partial like the
+    /// rest — a name missing from it is unreported, not gone — so a
+    /// client merges it name by name. New keys inside a reading are
+    /// additions a client should ignore.
+    pub readings: BTreeMap<String, ReadingDto>,
+}
+
+/// One named reading on the wire.
+#[derive(Debug, Serialize)]
+pub struct ReadingDto {
+    pub value: f64,
+    /// `null` when the source did not say.
+    pub unit: Option<String>,
 }
 
 impl From<&DeviceState> for DeviceStateDto {
@@ -128,6 +144,19 @@ impl From<&DeviceState> for DeviceStateDto {
             motion: s.motion,
             illuminance_lux: s.illuminance_lux,
             position: s.position,
+            readings: s
+                .readings
+                .iter()
+                .map(|(name, r)| {
+                    (
+                        name.clone(),
+                        ReadingDto {
+                            value: r.value,
+                            unit: r.unit.clone(),
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }

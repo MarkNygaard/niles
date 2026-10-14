@@ -10,12 +10,12 @@ follow the daily lighting curve.
 ## Naming
 
 A device id is `room/name`, both parts lowercase letters, digits and `_`:
-`living_room/floor_lamp`, `garage/door`, `system/cheap_power`.
+`living_room/floor_lamp`, `garage/door`, `system/electricity`.
 
 - **Room** is one of the house's rooms (`kitchen`, `living_room`). The plugin
   rarely knows which, so ask: a `room` setting gives the user a drop-down of the
   house's rooms. Three room names are reserved for things that are not in a
-  room: `system` (virtual devices, like a "cheap power" indicator), `outdoor`
+  room: `system` (virtual devices, like an electricity price), `outdoor`
   and `none`.
 - **Name** is what people call it, in snake_case: `floor_lamp` is said "floor
   lamp". Niles's model and voice commands use these words, so pick the name a
@@ -24,7 +24,7 @@ A device id is `room/name`, both parts lowercase letters, digits and `_`:
   rather than inventing one.
 
 Inside Niles your devices' ids are prefixed with your source, `x_<plugin-id>:`
-(`x_spotprice:system/cheap_power`), which keeps them apart from Zigbee or WLED
+(`x_spotprice:system/electricity`), which keeps them apart from Zigbee or WLED
 devices with the same `room/name`. People and the model see `room/name`; you
 never write the prefix.
 
@@ -40,7 +40,7 @@ To move a device to another room, `remove` the old id and `upsert` the new one.
 | `contact` | A door or window sensor | `open`, `battery_percent` | no |
 | `motion` | A motion sensor | `motion`, `illuminance_lux`, `battery_percent` | no |
 | `cover` | A blind, curtain or shutter | `position` | usually |
-| `sensor` | Anything that only reports | any reading | no |
+| `sensor` | Anything that only reports | any field, and [readings](#readings) | no |
 
 The class decides how Niles treats a device: only `light`s are "the lights"
 of a room and follow the curve; `outlet`s switch but never dim; `contact` and
@@ -69,6 +69,7 @@ The same fields and units as everywhere in Niles:
 | `motion` | bool | `true` while it sees movement |
 | `illuminance_lux` | f32 | lux |
 | `position` | u8 | percent, 0 shut, 100 all the way open |
+| `readings` | list of `{name, value, unit}` | any other number; see [Readings](#readings) |
 
 Convert at the edge. If your device reports brightness as 0–254, or colour
 temperature in mireds (1,000,000 ÷ mireds = kelvin), or a contact sensor's
@@ -81,10 +82,46 @@ Niles merges a report field by field into what it knows, so report what
 changed and leave the rest `None`. Reporting `{on: Some(false)}` keeps the
 known brightness; it does not clear it.
 
-A reading Niles has no field for (a price, CO₂, power in watts) does not fit a
-device in v0.1. Offer it through a [tool](tools.md) and a
-[page or widget](ui.md). If a rule should follow it, a `sensor` reporting `on`
-for "above the threshold" works, as the worked example's `cheap_power` does.
+## Readings
+
+Any other number goes in `readings`: a list of `{name, value, unit}`. A price,
+a power draw, CO₂, a tank level.
+
+```rust
+use niles::integration::types::Reading;
+
+let mut state = empty_state();
+state.readings = vec![
+    Reading { name: "power".into(), value: 340.0, unit: Some("W".into()) },
+    Reading { name: "energy".into(), value: 12.4, unit: Some("kWh".into()) },
+];
+devices::report_state("kitchen/dishwasher", &state).map_err(|e| format!("{e:?}"))?;
+```
+
+- **Names** are `[a-z0-9_]+`, the word a person would use: `price`, `power`,
+  `co2`, `soil_moisture`. Rules and the assistant use the name ("when the
+  power of the kitchen dishwasher drops below 5"), so keep it stable across
+  versions.
+- **Not for the fixed fields.** A temperature is `temperature_celsius`, never a
+  reading called `temperature`: rules look for it in one place. The names
+  `temperature`, `humidity`, `battery`, `brightness` and `illuminance` are
+  taken.
+- **The unit is yours**, sent with every report and passed on as given: `W`,
+  `kWh`, `kr/kWh`, `ppm`, `µg/m³`. Niles never converts it, so pick one and keep
+  it. `None` for a plain number, such as a rank or a count.
+- **Merged by name**, like the fields: reporting `power` leaves `energy` as it
+  was, and an empty list says nothing. There is no way to clear one; report a
+  new value, or `set_available(false)` when the device stops answering.
+- **Measured, never set.** `set_device` never carries readings, and scenes do
+  not keep them.
+- At most 32 per device.
+
+Rules follow readings with the same numeric trigger and condition as a
+temperature: `"measure": "price", "below": 1`, with `for` if it must hold a
+while. The app shows them on the device's row (`340 W · 12.4 kWh`) and lists
+them in the automation editor with their units; the assistant sees them with
+the device's state. The [worked example](example-spotprice.md) reports an
+electricity price this way.
 
 ## Adding and reporting
 
@@ -104,7 +141,7 @@ devices::upsert(&Device {
 let mut state = empty_state();
 state.on = Some(true);
 state.brightness = Some(60);
-devices::report_state("living_room/floor_lamp", state).map_err(|e| format!("{e:?}"))?;
+devices::report_state("living_room/floor_lamp", &state).map_err(|e| format!("{e:?}"))?;
 ```
 
 - **`upsert`** adds a device or replaces its class, capabilities and
@@ -151,7 +188,7 @@ fn set_device(id: String, desired: DeviceState) -> Result<(), String> {
         lamp.white(kelvin)?;
     }
     // Report what the device now says, not what was asked for.
-    devices::report_state(&id, lamp.read_state()?).map_err(|e| format!("{e:?}"))?;
+    devices::report_state(&id, &lamp.read_state()?).map_err(|e| format!("{e:?}"))?;
     Ok(())
 }
 ```

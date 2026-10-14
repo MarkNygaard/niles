@@ -502,14 +502,22 @@ pub(crate) fn handle_device_state(
             return;
         }
     };
-    if !z2m_state.has_actionable_state_field() {
+    // Which numbers are readings, and in what unit, is what the device
+    // declared in `bridge/devices`; the payload itself only says
+    // `"power": 340`. Before that list has arrived nothing is a reading,
+    // and the next payload after it fills them in.
+    let reading_units = registry
+        .get(&id)
+        .map(|d| d.reading_units)
+        .unwrap_or_default();
+    if !z2m_state.has_actionable_state_field(&reading_units) {
         // Dimmer-style devices can republish `{"action":..,"linkquality":..}`
         // on every press. Those fields aren't tracked state, so skip
         // the merge + event entirely.
         debug!("skipping state payload for {id} (no actionable field)");
         return;
     }
-    let partial = z2m_state.to_device_state();
+    let partial = z2m_state.to_device_state(&reading_units);
     if !registry.merge_state(&id, partial.clone()) {
         // State can arrive before bridge/devices on startup. We
         // discard it from the registry (no entry to merge into) but
@@ -894,6 +902,45 @@ mod tests {
             Some(4000),
             "color_temp must survive a brightness-only update"
         );
+    }
+
+    #[test]
+    fn a_plug_reporting_power_keeps_its_energy_and_gets_its_unit() {
+        let (registry, bus, mut rx) = fixtures();
+        let device_list = br#"[{
+            "ieee_address":"0x1","friendly_name":"kitchen/dishwasher","type":"Router",
+            "definition":{"exposes":[
+                {"type":"switch","features":[{"type":"binary","property":"state","access":7}]},
+                {"type":"numeric","property":"power","access":5,"unit":"W"},
+                {"type":"numeric","property":"energy","access":5,"unit":"kWh"}
+            ]}
+        }]"#;
+        handle_device_list(device_list, &registry, &bus, &Mutex::default());
+        drain(&mut rx);
+
+        handle_device_state(
+            "kitchen",
+            "dishwasher",
+            br#"{"energy":12.4}"#,
+            &registry,
+            &bus,
+        );
+        handle_device_state(
+            "kitchen",
+            "dishwasher",
+            br#"{"power":340,"linkquality":90}"#,
+            &registry,
+            &bus,
+        );
+
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 2, "a power-only payload is still news");
+        let id = DeviceId::parse("z2m:kitchen/dishwasher").unwrap();
+        let readings = registry.get(&id).unwrap().state.readings;
+        assert_eq!(readings["power"].value, 340.0);
+        assert_eq!(readings["power"].unit.as_deref(), Some("W"));
+        assert_eq!(readings["energy"].value, 12.4, "power must not wipe energy");
+        assert!(!readings.contains_key("linkquality"));
     }
 
     #[test]

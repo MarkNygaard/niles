@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BLINDS_POSITION,
-  MEASURE_CHOICES,
+  measureChoices,
   MEASURE_HINT,
   addAction,
   addTrigger,
@@ -310,6 +310,24 @@ describe("summary", () => {
         },
       }),
     ).toBe("Office sensor humidity has been between 40% and 60% for 5 minutes");
+    expect(
+      of({
+        role: "trigger",
+        value: {
+          type: "numeric",
+          device: "system/electricity",
+          measure: "price",
+          below: 1,
+          for: { minutes: 15 },
+        },
+      }),
+    ).toBe("System electricity price has been below 1 for 15 minutes");
+    expect(
+      of({
+        role: "condition",
+        value: { kind: "numeric", device: "office/air", measure: "co2", above: 1000 },
+      }),
+    ).toBe("Office air CO2 is above 1000");
     expect(
       of({
         role: "trigger",
@@ -698,15 +716,57 @@ describe("roomChoices", () => {
   });
 });
 
-describe("MEASURE_CHOICES", () => {
-  it("offers every reading a rule can watch", () => {
-    expect(MEASURE_CHOICES.map((c) => c.label)).toEqual([
-      "Temperature",
-      "Humidity",
-      "Battery",
-      "Brightness",
-      "Light level (lux)",
+describe("measureChoices", () => {
+  const fixed = ["Temperature", "Humidity", "Battery", "Brightness", "Light level (lux)"];
+
+  it("offers every measure a rule can watch", () => {
+    expect(measureChoices(devices).map((c) => c.label)).toEqual(fixed);
+  });
+
+  it("adds the readings the house reports, labelled with their units", () => {
+    const house = [
+      ...devices,
+      device("z2m:system/electricity", "sensor", {
+        readings: { price: { value: 1.23, unit: "kr/kWh" } },
+      }),
+      device("z2m:kitchen/dishwasher", "outlet", {
+        readings: {
+          power: { value: 340, unit: "W" },
+          energy: { value: 12.4, unit: "kWh" },
+        },
+      }),
+      device("z2m:office/air", "sensor", {
+        readings: { co2: { value: 812, unit: "ppm" }, ratio: { value: 0.5, unit: null } },
+      }),
+    ];
+    expect(measureChoices(house)).toEqual([
+      ...fixed.map((label) => expect.objectContaining({ label })),
+      { value: "co2", label: "CO2 (ppm)" },
+      { value: "energy", label: "Energy (kWh)" },
+      { value: "power", label: "Power (W)" },
+      { value: "price", label: "Price (kr/kWh)" },
+      { value: "ratio", label: "Ratio" },
     ]);
+  });
+
+  it("keeps a reading nothing reports any more", () => {
+    expect(measureChoices(devices, "price").at(-1)).toEqual({ value: "price", label: "Price" });
+    expect(measureChoices(devices, "temperature")).toHaveLength(fixed.length);
+  });
+
+  it("offers the devices that report the reading chosen", () => {
+    const house = [
+      ...devices,
+      device("z2m:kitchen/dishwasher", "outlet", {
+        readings: { power: { value: 340, unit: "W" } },
+      }),
+      device("z2m:office/air", "sensor", { readings: { co2: { value: 812, unit: "ppm" } } }),
+    ];
+    const reporting = (measure: string) =>
+      deviceChoices(house, "numeric", undefined, measure).map((c) => c.value);
+    expect(reporting("power")).toEqual(["kitchen/dishwasher"]);
+    expect(reporting("co2")).toEqual(["office/air"]);
+    expect(deviceChoices(house, "numeric").map((c) => c.value)).toContain("office/air");
   });
 });
 

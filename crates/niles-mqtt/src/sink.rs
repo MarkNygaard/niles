@@ -8,10 +8,10 @@
 //!
 //! ## Sensor fields are ignored
 //!
-//! `DeviceState` has fields like `temperature_celsius` that come
-//! *from* devices but aren't settable *on* them. Those fields are
-//! silently dropped from set-command payloads — real Z2M devices
-//! would reject them anyway.
+//! `DeviceState` has fields like `temperature_celsius`, and named
+//! `readings`, that come *from* devices but aren't settable *on* them.
+//! Those fields are silently dropped from set-command payloads — real
+//! Z2M devices would reject them anyway.
 
 use niles_core::{DeviceId, DeviceState};
 use serde::Serialize;
@@ -263,6 +263,11 @@ mod tests {
                 motion: Some(true),
                 illuminance_lux: Some(120.0),
                 position: None,
+                readings: [(
+                    "power".to_string(),
+                    niles_core::Reading::new(9.5, Some("W".into())),
+                )]
+                .into(),
             },
         );
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -274,6 +279,8 @@ mod tests {
         assert!(v.get("temperature_celsius").is_none());
         assert!(v.get("humidity").is_none());
         assert!(v.get("battery").is_none());
+        assert!(v.get("power").is_none(), "a reading is never commanded");
+        assert!(v.get("readings").is_none());
     }
 
     #[test]
@@ -325,6 +332,15 @@ mod tests {
             temperature_celsius: Some(20.0),
             humidity_percent: Some(50.0),
             battery_percent: Some(88),
+            ..Default::default()
+        }));
+        // Nor is a reading — there is nothing to tell a plug's `power`.
+        assert!(!is_actionable(&DeviceState {
+            readings: [(
+                "power".to_string(),
+                niles_core::Reading::new(340.0, Some("W".into())),
+            )]
+            .into(),
             ..Default::default()
         }));
     }

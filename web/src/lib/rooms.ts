@@ -1,4 +1,4 @@
-import type { Device, DeviceState, SetLight, Zone } from "@/lib/api";
+import type { Device, DeviceState, Reading, SetLight, Zone } from "@/lib/api";
 
 /** `tv_lightstrip` → `Tv lightstrip`. Ids are snake_case by rule. */
 export function humanize(raw: string): string {
@@ -52,6 +52,8 @@ export interface Room {
   on: number;
   /** The blinds the source can reach, kept apart from the lights. */
   blinds: Device[];
+  /** What else in it reports readings — see `isMeter`. */
+  meters: Device[];
   /**
    * The names of the ones it cannot.
    *
@@ -140,6 +142,9 @@ export function roomsOf(
           .map((d) => humanize(d.name)),
         on: lights.filter((light) => light.state.on === true).length,
         blinds: blinds.filter((d) => d.available !== false),
+        meters: all
+          .filter((d) => isMeter(d) && d.available !== false)
+          .sort((a, b) => a.name.localeCompare(b.name)),
         zone: zones.find((z) => z.room === name),
         temperature: firstReported(all, "temperature_celsius"),
         humidity: firstReported(all, "humidity_percent"),
@@ -432,6 +437,10 @@ export function optimistic(device: Device, body: SetLight): Device {
  * `{on: false}` carries `null` for everything else. Replacing wholesale
  * would erase the brightness the light still has and the row would
  * lose its slider; `null` here means "didn't say", never "cleared".
+ *
+ * Readings the same way, one level down: a frame carries `{}` or only
+ * the ones that changed, and a plug saying `power` has not stopped
+ * having an `energy`.
  */
 export function mergeReported(
   known: DeviceState,
@@ -439,9 +448,64 @@ export function mergeReported(
 ): DeviceState {
   const merged = { ...known };
   for (const [field, value] of Object.entries(reported)) {
+    if (field === "readings") continue;
     if (value !== null && value !== undefined) {
       (merged as Record<string, unknown>)[field] = value;
     }
   }
+  if (reported.readings && Object.keys(reported.readings).length > 0) {
+    merged.readings = { ...known.readings, ...reported.readings };
+  }
   return merged;
+}
+
+/** Units whose numbers are never worth a decimal. */
+const WHOLE_UNITS = new Set(["ppm", "ppb", "µg/m³", "hPa", "lx", "lux", "%", "V", "mV", "dB"]);
+
+/**
+ * A reading the way a row shows it: `340 W`, `12.4 kWh`, `1.23 kr/kWh`.
+ *
+ * Rounded by unit where the unit says how — nobody wants a tenth of a
+ * ppm — and otherwise by size: whole numbers from 100, one decimal from
+ * 10, two below that, so a price keeps its øre and a kettle loses its
+ * fractions of a watt. A reading with no unit is meaningless as a bare
+ * number, so it is named instead.
+ */
+export function formatReading(name: string, reading: Reading): string {
+  const unit = reading.unit ?? "";
+  const size = Math.abs(reading.value);
+  const decimals = WHOLE_UNITS.has(unit)
+    ? 0
+    : unit.startsWith("°")
+      ? 1
+      : size >= 100
+        ? 0
+        : size >= 10
+          ? 1
+          : 2;
+  // Through Number to drop the zeros toFixed pads with: 340, not 340.00.
+  const value = String(Number(reading.value.toFixed(decimals)));
+  if (!unit) return `${humanize(name)} ${value}`;
+  return unit === "%" || unit.startsWith("°") ? `${value}${unit}` : `${value} ${unit}`;
+}
+
+/** A device's readings on one line, `340 W · 12.4 kWh`, by name order. */
+export function readingsLine(device: Device): string {
+  return Object.entries(device.state.readings ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, reading]) => formatReading(name, reading))
+    .join(" · ");
+}
+
+/**
+ * A device the room sheet lists only for what it measures: one that
+ * reports readings and is neither one of the lights nor a blind, which
+ * have rows of their own — a dishwasher's plug, an air-quality sensor.
+ */
+export function isMeter(device: Device): boolean {
+  return (
+    !isControllable(device) &&
+    !isBlind(device) &&
+    Object.keys(device.state.readings ?? {}).length > 0
+  );
 }

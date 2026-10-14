@@ -18,6 +18,8 @@ import {
   blindState,
   blindsSummary,
   withPosition,
+  formatReading,
+  readingsLine,
 } from "./rooms";
 import type { Room } from "./rooms";
 import type { Device, DeviceState, Zone } from "./api";
@@ -395,6 +397,78 @@ describe("mergeReported", () => {
       brightness: null,
     });
     expect(merged.brightness).toBe(70);
+  });
+
+  it("merges readings name by name", () => {
+    const known = state({
+      readings: {
+        power: { value: 340, unit: "W" },
+        energy: { value: 12.4, unit: "kWh" },
+      },
+    });
+    const merged = mergeReported(known, { readings: { power: { value: 5, unit: "W" } } });
+    expect(merged.readings).toEqual({
+      power: { value: 5, unit: "W" },
+      energy: { value: 12.4, unit: "kWh" },
+    });
+    // A frame about something else carries `{}`, which is not "none".
+    expect(mergeReported(known, { on: true, readings: {} }).readings).toEqual(known.readings);
+  });
+});
+
+describe("readings", () => {
+  it("rounds each by its unit, or by its size", () => {
+    const say = (value: number, unit: string | null, name = "x") =>
+      formatReading(name, { value, unit });
+    expect(say(340.4, "W")).toBe("340 W");
+    expect(say(5.25, "W")).toBe("5.25 W");
+    expect(say(12.44, "kWh")).toBe("12.4 kWh");
+    expect(say(1.2345, "kr/kWh")).toBe("1.23 kr/kWh");
+    expect(say(-0.05, "kr/kWh")).toBe("-0.05 kr/kWh");
+    expect(say(812.6, "ppm")).toBe("813 ppm");
+    expect(say(230.4, "V")).toBe("230 V");
+    expect(say(41.6, "%")).toBe("42%");
+    expect(say(21.46, "°C")).toBe("21.5°C");
+    expect(say(0.5, null, "duty_cycle")).toBe("Duty cycle 0.5");
+  });
+
+  it("puts a device's readings on one line", () => {
+    const plug = device("z2m:kitchen/dishwasher", {
+      class: "outlet",
+      state: {
+        readings: {
+          power: { value: 340, unit: "W" },
+          energy: { value: 12.4, unit: "kWh" },
+        },
+      },
+    });
+    expect(readingsLine(plug)).toBe("12.4 kWh · 340 W");
+    expect(readingsLine(device("z2m:kitchen/ceiling"))).toBe("");
+  });
+
+  it("lists what only measures in its room, apart from the lights", () => {
+    const [kitchen] = roomsOf([
+      device("z2m:kitchen/ceiling", {
+        state: { on: true, readings: { power: { value: 9, unit: "W" } } },
+      }),
+      device("z2m:kitchen/dishwasher", {
+        class: "outlet",
+        lamp: false,
+        state: { readings: { power: { value: 340, unit: "W" } } },
+      }),
+      device("z2m:kitchen/air", {
+        class: "sensor",
+        state: { readings: { co2: { value: 812, unit: "ppm" } } },
+      }),
+      device("z2m:kitchen/thermometer", { class: "sensor", state: { temperature_celsius: 21 } }),
+      device("z2m:kitchen/gone", {
+        class: "sensor",
+        available: false,
+        state: { readings: { co2: { value: 1, unit: "ppm" } } },
+      }),
+    ]);
+    expect(kitchen.meters.map((d) => d.name)).toEqual(["air", "dishwasher"]);
+    expect(kitchen.lights.map((d) => d.name)).toEqual(["ceiling"]);
   });
 });
 

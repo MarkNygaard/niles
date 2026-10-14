@@ -493,6 +493,32 @@ devices = [\"living_room/corner_lamp\"]
         assert_eq!(d["state"]["brightness"], 80);
         // Unset fields are JSON null:
         assert_eq!(d["state"]["color_temp_kelvin"], Value::Null);
+        // No readings is an empty object, not null:
+        assert_eq!(d["state"]["readings"], serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn device_dto_carries_readings_with_units() {
+        let state = make_state();
+        let mut plug = make_outlet("kitchen", "dishwasher");
+        plug.state.readings.insert(
+            "power".into(),
+            niles_core::Reading::new(340.0, Some("W".into())),
+        );
+        plug.state
+            .readings
+            .insert("ratio".into(), niles_core::Reading::new(0.5, None));
+        state.registry.upsert(plug);
+        let app = router(state);
+
+        let (_, body) = get(app, "/rooms/kitchen").await;
+        assert_eq!(
+            body[0]["state"]["readings"],
+            serde_json::json!({
+                "power": {"value": 340.0, "unit": "W"},
+                "ratio": {"value": 0.5, "unit": null},
+            })
+        );
     }
 
     #[tokio::test]

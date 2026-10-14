@@ -830,6 +830,64 @@ mod tests {
         assert_eq!(t.said().len(), 2);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_price_reading_fires_once_it_has_stayed_low_long_enough() {
+        let t = office(vec![json!({
+            "id": "cheap-power",
+            "triggers": [{
+                "type": "numeric", "device": "office/meter", "measure": "price",
+                "below": 1, "for": { "minutes": 15 }
+            }],
+            "actions": [{ "do": "notify", "body": "cheap" }],
+        })]);
+        let reading = |name: &str, value: f64, unit: &str| DeviceState {
+            readings: [(
+                name.to_string(),
+                niles_core::Reading::new(value, Some(unit.into())),
+            )]
+            .into(),
+            ..Default::default()
+        };
+        t.registry.upsert(Device::new(
+            id("office/meter"),
+            reading("price", 1.4, "kr/kWh"),
+            DeviceClass::Sensor,
+        ));
+        t.engine.seed().await;
+        let price = |kr: f64| Event::DeviceStateChanged {
+            id: id("office/meter"),
+            state: reading("price", kr, "kr/kWh"),
+        };
+
+        // Dipped, and back up within the quarter of an hour: nothing.
+        let waiting = t.send_and_go_on(price(0.9), noon()).await;
+        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+        t.send(price(1.2), noon()).await;
+        for h in waiting {
+            let _ = h.await;
+        }
+        assert!(t.said().is_empty());
+
+        // Down and staying down. Another reading arriving meanwhile says
+        // nothing about the price, and must not restart the wait.
+        let waiting = t.send_and_go_on(price(0.8), noon()).await;
+        t.send(
+            Event::DeviceStateChanged {
+                id: id("office/meter"),
+                state: reading("power", 300.0, "W"),
+            },
+            noon(),
+        )
+        .await;
+        for h in waiting {
+            let _ = h.await;
+        }
+        assert_eq!(t.said(), ["cheap"]);
+        // Still low: not again.
+        t.send(price(0.7), noon()).await;
+        assert_eq!(t.said(), ["cheap"]);
+    }
+
     #[tokio::test]
     async fn the_clock_fires_once_on_its_minute() {
         let t = office(vec![json!({

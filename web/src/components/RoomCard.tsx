@@ -19,6 +19,7 @@ import { FlameGlyph } from "@/components/FlameGlyph";
 import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
 import { AllBlinds, BlindRow } from "@/components/BlindRow";
+import { MeterRow } from "@/components/MeterRow";
 import { PowerButton } from "@/components/PowerButton";
 import { TvRow, tvLine, tvOn } from "@/components/TvRow";
 import { musicLine, musicPlaying } from "@/components/MusicRow";
@@ -232,6 +233,9 @@ export function RoomCard({
             disabled={disabled}
             onSet={(position) => onSetBlinds([blind], position)}
           />
+        ))}
+        {room.meters.map((meter) => (
+          <MeterRow key={meter.id} device={meter} />
         ))}
         {/* Named rather than simply gone. A control that publishes to
             something not listening looks broken, but a light that

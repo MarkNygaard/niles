@@ -7,6 +7,7 @@ import type {
   Day,
   Device,
   Duration,
+  FixedMeasure,
   Measure,
   Rule,
   Run,
@@ -552,7 +553,7 @@ export function toggleDay(days: Day[] | undefined, day: Day): Day[] | undefined 
   return next.length > 0 ? next : undefined;
 }
 
-const UNIT: Record<Measure, string> = {
+const UNIT: Record<FixedMeasure, string> = {
   temperature: "°",
   humidity: "%",
   battery: "%",
@@ -560,7 +561,7 @@ const UNIT: Record<Measure, string> = {
   illuminance: " lux",
 };
 
-export const MEASURE_LABEL: Record<Measure, string> = {
+export const MEASURE_LABEL: Record<FixedMeasure, string> = {
   temperature: "Temperature",
   humidity: "Humidity",
   battery: "Battery",
@@ -569,7 +570,7 @@ export const MEASURE_LABEL: Record<Measure, string> = {
 };
 
 /** A measure the way a sentence says it: nobody says "illuminance". */
-const MEASURE_WORD: Record<Measure, string> = {
+const MEASURE_WORD: Record<FixedMeasure, string> = {
   temperature: "temperature",
   humidity: "humidity",
   battery: "battery",
@@ -579,12 +580,42 @@ const MEASURE_WORD: Record<Measure, string> = {
 
 /** What the reading picker says under a measure whose numbers mean
     nothing on their own. */
-export const MEASURE_HINT: Partial<Record<Measure, string>> = {
+export const MEASURE_HINT: Partial<Record<FixedMeasure, string>> = {
   illuminance: "Below about 30 is dim.",
 };
 
+const MEASURES: FixedMeasure[] = ["temperature", "humidity", "battery", "brightness", "illuminance"];
+
+/** One of the measures every rule knows, rather than a reading's name. */
+export function isFixedMeasure(measure: Measure): measure is FixedMeasure {
+  return (MEASURES as string[]).includes(measure);
+}
+
+/** Reading names that are letters rather than words. The server's
+    sentence spells them the same way. */
+const READING_WORD: Record<string, string> = {
+  co2: "CO2",
+  voc: "VOC",
+  pm25: "PM2.5",
+  pm10: "PM10",
+};
+
+/** A measure as a sentence says it: "light level", "price", "CO2". */
+function measureWord(measure: Measure): string {
+  if (isFixedMeasure(measure)) return MEASURE_WORD[measure];
+  return READING_WORD[measure] ?? measure.replace(/_/g, " ");
+}
+
+/** The hint under a measure, when its numbers need one. */
+export function measureHint(measure: Measure): string | undefined {
+  return isFixedMeasure(measure) ? MEASURE_HINT[measure] : undefined;
+}
+
 function bounds(measure: Measure, above?: number, below?: number): string {
-  const unit = UNIT[measure];
+  // A reading's unit belongs to the device and is shown in the picker;
+  // the sentence is made from the rule alone and leaves it out rather
+  // than guess.
+  const unit = isFixedMeasure(measure) ? UNIT[measure] : "";
   if (above !== undefined && below !== undefined) {
     return `between ${above}${unit} and ${below}${unit}`;
   }
@@ -594,7 +625,7 @@ function bounds(measure: Measure, above?: number, below?: number): string {
 }
 
 function reading(name: string | undefined, measure: Measure): string {
-  return `${device(name, "A sensor")} ${MEASURE_WORD[measure]}`;
+  return `${device(name, "A sensor")} ${measureWord(measure)}`;
 }
 
 function setting(target: string, s: { on?: boolean; brightness?: number; kelvin?: number }) {
@@ -831,17 +862,21 @@ function reads(device: Device, measure: Measure): boolean {
       return device.class === "light" || (s.brightness ?? null) !== null;
     case "illuminance":
       return device.class === "motion" || (s.illuminance_lux ?? null) !== null;
+    default:
+      return s.readings?.[measure] !== undefined;
   }
 }
-
-const MEASURES: Measure[] = ["temperature", "humidity", "battery", "brightness", "illuminance"];
 
 function fits(device: Device, use: Use, measure?: Measure): boolean {
   if (use === "contact") return isContact(device);
   if (use === "motion") return isMotion(device);
   if (use === "blind") return isBlind(device);
   if (use === "reading") {
-    return measure ? reads(device, measure) : MEASURES.some((m) => reads(device, m));
+    if (measure) return reads(device, measure);
+    return (
+      MEASURES.some((m) => reads(device, m)) ||
+      Object.keys(device.state.readings ?? {}).length > 0
+    );
   }
   const switchable = ["light", "outlet", "switch"].includes(device.class);
   if (use === "switchable") return switchable;
@@ -856,11 +891,34 @@ export interface Choice {
   label: string;
 }
 
-/** What the measure picker offers. */
-export const MEASURE_CHOICES: Choice[] = MEASURES.map((m) => ({
-  value: m,
-  label: MEASURE_LABEL[m],
-}));
+/**
+ * What the measure picker offers: the fixed measures, then every
+ * reading the house's devices report right now, labelled with its unit
+ * — `Price (kr/kWh)`, `Power (W)`. The device picker below it then
+ * narrows to the devices reporting the one chosen.
+ *
+ * From what devices have *reported*, so a plug that has said nothing
+ * since Niles started is not offered its `power` yet; the server's
+ * read-back knows the declared ones too. `current` is kept even when
+ * nothing reports it, for the same reason a dead sensor is.
+ */
+export function measureChoices(devices: Device[], current?: Measure): Choice[] {
+  const units = new Map<string, string | null>();
+  for (const device of devices) {
+    for (const [name, reading] of Object.entries(device.state.readings ?? {})) {
+      if (isFixedMeasure(name)) continue;
+      if (!units.get(name)) units.set(name, reading.unit);
+    }
+  }
+  if (current && !isFixedMeasure(current) && !units.has(current)) units.set(current, null);
+  const readings = [...units.entries()]
+    .map(([name, unit]) => {
+      const word = READING_WORD[name] ?? humanize(name);
+      return { value: name, label: unit ? `${word} (${unit})` : word };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
+  return [...MEASURES.map((m) => ({ value: m, label: MEASURE_LABEL[m] })), ...readings];
+}
 
 /**
  * The devices a picker offers for a kind of step, by the name a rule

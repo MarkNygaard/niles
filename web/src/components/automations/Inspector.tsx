@@ -16,8 +16,8 @@ import {
   CONDITION_KINDS,
   DAYS,
   KIND_LABEL,
-  MEASURE_CHOICES,
-  MEASURE_HINT,
+  measureChoices,
+  measureHint,
   TRIGGER_KINDS,
   addAction,
   blindsPosition,
@@ -861,7 +861,7 @@ function ReadingFields({
       <PickField
         label="Reading"
         value={value.measure}
-        choices={MEASURE_CHOICES}
+        choices={measureChoices(devices, value.measure)}
         empty="Pick a reading"
         onChange={(measure) => measure && onChange({ measure: measure as Measure })}
       />
@@ -892,8 +892,8 @@ function ReadingFields({
             onChange={(e) => onChange({ below: numberOrNothing(e.target.value) })}
           />
         </Field>
-        {MEASURE_HINT[value.measure] && (
-          <p className="text-muted-foreground col-span-2 text-xs">{MEASURE_HINT[value.measure]}</p>
+        {measureHint(value.measure) && (
+          <p className="text-muted-foreground col-span-2 text-xs">{measureHint(value.measure)}</p>
         )}
       </div>
     </>

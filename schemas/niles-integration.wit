@@ -14,6 +14,7 @@
 ///   100 all the way open);
 /// - colour temperature is kelvin, temperatures are degrees Celsius,
 ///   light level is lux;
+/// - any other number is a named `reading` carrying its own unit;
 /// - room and device names are `[a-z0-9_]+`, such as `living_room`.
 ///
 /// Every call is synchronous from the plugin's point of view. Niles never
@@ -72,6 +73,19 @@ interface types {
         b: u8,
     }
 
+    /// A named number a device reports that has no field of its own in
+    /// `device-state`: an electricity price, a power draw, CO2.
+    record reading {
+        /// `[a-z0-9_]+`, such as `price`, `power` or `co2`. Never the
+        /// name of a fixed measure (`temperature`, `humidity`, `battery`,
+        /// `brightness`, `illuminance`): use the field for those.
+        name: string,
+        value: f64,
+        /// How it is shown, as given: `W`, `kWh`, `kr/kWh`, `ppm`.
+        /// Niles never converts it. None for a plain number.
+        unit: option<string>,
+    }
+
     /// A device's state, every field optional.
     ///
     /// `none` means "not reported" or "leave unchanged", never "off" or
@@ -100,6 +114,12 @@ interface types {
         illuminance-lux: option<f32>,
         /// A cover: 0 shut, 100 all the way open.
         position: option<u8>,
+        /// Every other number, by name. Merged name by name like the
+        /// fields: reporting `power` leaves `energy` as it was, and an
+        /// empty list says nothing about readings. Rules can follow any
+        /// of them ("when the price drops below 1"). Never sent in
+        /// `set-device`: a reading is measured, not set. At most 32.
+        readings: list<reading>,
     }
 
     /// One of this plugin's devices, as `room/name`, e.g. `office/air_quality`.
