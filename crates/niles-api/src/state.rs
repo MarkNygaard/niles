@@ -91,6 +91,8 @@ pub struct AppState {
     /// The nemlig.com session. Present whether or not the integration is
     /// switched on — that is read from the config per request.
     pub nemlig: Option<Arc<niles_nemlig::NemligClient>>,
+    /// The third-party plugins, when the binary runs them.
+    pub plugins: Option<Arc<dyn crate::plugins::Plugins>>,
 }
 
 impl AppState {
@@ -123,6 +125,7 @@ impl AppState {
             chatgpt_logins: Arc::default(),
             chat: None,
             nemlig: None,
+            plugins: None,
             music: None,
             tado: None,
             voices: None,
@@ -210,6 +213,11 @@ impl AppState {
 
     pub fn with_nemlig(mut self, nemlig: Option<Arc<niles_nemlig::NemligClient>>) -> Self {
         self.nemlig = nemlig;
+        self
+    }
+
+    pub fn with_plugins(mut self, plugins: Option<Arc<dyn crate::plugins::Plugins>>) -> Self {
+        self.plugins = plugins;
         self
     }
 

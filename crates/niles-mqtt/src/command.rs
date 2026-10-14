@@ -32,8 +32,11 @@ pub trait DeviceCommander: Send + Sync {
 
     /// Send `desired`. An `Err` is a sentence for whoever asked: voice
     /// reads it out, the app shows it.
-    async fn command(&self, id: &DeviceId, desired: &DeviceState)
-    -> std::result::Result<(), String>;
+    async fn command(
+        &self,
+        id: &DeviceId,
+        desired: &DeviceState,
+    ) -> std::result::Result<(), String>;
 }
 
 /// Routes set commands to the correct topic/payload format based on the
@@ -347,7 +350,10 @@ mod tests {
         };
         let pump = DeviceId::parse("x_pool:garden/pump").unwrap();
         assert!(router.commander_for(&pump, &on).is_some());
-        assert!(router.format(&pump, &on).is_none(), "nothing on MQTT for it");
+        assert!(
+            router.format(&pump, &on).is_none(),
+            "nothing on MQTT for it"
+        );
 
         let lamp = z2m_id("kitchen", "ceiling_light");
         assert!(router.commander_for(&lamp, &on).is_none());
@@ -358,7 +364,11 @@ mod tests {
     fn an_empty_command_is_not_sent_to_a_commander_either() {
         let router = CommandRouter::z2m_only("zigbee2mqtt").with_commander(Arc::new(Plugins));
         let pump = DeviceId::parse("x_pool:garden/pump").unwrap();
-        assert!(router.commander_for(&pump, &DeviceState::default()).is_none());
+        assert!(
+            router
+                .commander_for(&pump, &DeviceState::default())
+                .is_none()
+        );
     }
 
     #[test]

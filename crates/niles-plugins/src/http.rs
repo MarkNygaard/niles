@@ -158,9 +158,9 @@ async fn hop(
         }
     }
     let Some(ip) = chosen else {
-        return Err(Failure::NotPermitted(refusal.unwrap_or_else(|| {
-            format!("{} has no address", admitted.host)
-        })));
+        return Err(Failure::NotPermitted(
+            refusal.unwrap_or_else(|| format!("{} has no address", admitted.host)),
+        ));
     };
 
     let mut client = reqwest::Client::builder()
@@ -190,7 +190,10 @@ async fn read(mut response: reqwest::Response, until: Instant) -> Result<Respons
         .headers()
         .iter()
         .filter_map(|(name, value)| {
-            Some((name.as_str().to_ascii_lowercase(), value.to_str().ok()?.to_string()))
+            Some((
+                name.as_str().to_ascii_lowercase(),
+                value.to_str().ok()?.to_string(),
+            ))
         })
         .collect();
     if response
@@ -272,12 +275,32 @@ mod tests {
 
     #[tokio::test]
     async fn undeclared_hosts_are_refused_before_anything_is_sent() {
-        assert!(refused("https://elsewhere.example.org/").await.contains("not in the manifest"));
+        assert!(
+            refused("https://elsewhere.example.org/")
+                .await
+                .contains("not in the manifest")
+        );
         assert!(refused("http://api.example.com/").await.contains("https"));
-        assert!(refused("https://127.0.0.1/").await.contains("no plugin may reach"));
-        assert!(refused("http://[::1]:8080/").await.contains("no plugin may reach"));
-        assert!(refused("http://169.254.169.254/latest/").await.contains("no plugin may reach"));
-        assert!(refused("https://192.168.1.10/").await.contains("not in the manifest"));
+        assert!(
+            refused("https://127.0.0.1/")
+                .await
+                .contains("no plugin may reach")
+        );
+        assert!(
+            refused("http://[::1]:8080/")
+                .await
+                .contains("no plugin may reach")
+        );
+        assert!(
+            refused("http://169.254.169.254/latest/")
+                .await
+                .contains("no plugin may reach")
+        );
+        assert!(
+            refused("https://192.168.1.10/")
+                .await
+                .contains("not in the manifest")
+        );
     }
 
     #[tokio::test]
@@ -293,7 +316,13 @@ mod tests {
 
     #[tokio::test]
     async fn no_time_left_is_a_timeout_without_a_request() {
-        let err = send(&policy(), "ua", get("https://api.example.com/"), Instant::now()).await;
+        let err = send(
+            &policy(),
+            "ua",
+            get("https://api.example.com/"),
+            Instant::now(),
+        )
+        .await;
         assert_eq!(err.unwrap_err(), Failure::Timeout);
     }
 }

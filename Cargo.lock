@@ -2062,6 +2062,7 @@ dependencies = [
  "niles-mqtt",
  "niles-nemlig",
  "niles-notifications",
+ "niles-plugins",
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",

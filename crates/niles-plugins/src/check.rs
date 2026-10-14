@@ -60,19 +60,22 @@ pub async fn check(manifest: &str, component: Option<Vec<u8>>, logo: Option<Vec<
 
     match (&manifest.logo, logo) {
         (None, _) => {}
-        (Some(name), None) => report
-            .problems
-            .push(format!("logo: the manifest names {name}, and it is not there")),
+        (Some(name), None) => report.problems.push(format!(
+            "logo: the manifest names {name}, and it is not there"
+        )),
         (Some(name), Some(svg)) => match check_logo(&svg) {
-            Ok(()) => report.passed.push(format!("logo: {name} passes the sanitiser")),
+            Ok(()) => report
+                .passed
+                .push(format!("logo: {name} passes the sanitiser")),
             Err(why) => report.problems.push(format!("logo: {why}")),
         },
     }
 
     match component {
-        None => report
-            .problems
-            .push("component: no .wasm found; build it with cargo build --release --target wasm32-wasip2".into()),
+        None => report.problems.push(
+            "component: no .wasm found; build it with cargo build --release --target wasm32-wasip2"
+                .into(),
+        ),
         Some(bytes) => check_component(&manifest, bytes, &mut report).await,
     }
     report.manifest = Some(manifest);
@@ -101,7 +104,9 @@ async fn check_component(manifest: &Manifest, bytes: Vec<u8>, report: &mut Repor
             return;
         }
         Err(e) => {
-            report.problems.push(format!("component: the check failed: {e}"));
+            report
+                .problems
+                .push(format!("component: the check failed: {e}"));
             return;
         }
     };
@@ -205,10 +210,37 @@ pub fn check_logo(svg: &[u8]) -> Result<(), String> {
         "svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon",
     ];
     const ATTRIBUTES: &[&str] = &[
-        "viewBox", "width", "height", "version", "d", "cx", "cy", "r", "rx", "ry", "x", "y",
-        "x1", "y1", "x2", "y2", "points", "fill", "fill-rule", "fill-opacity", "clip-rule",
-        "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit",
-        "stroke-dasharray", "stroke-dashoffset", "stroke-opacity", "opacity", "transform",
+        "viewBox",
+        "width",
+        "height",
+        "version",
+        "d",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "points",
+        "fill",
+        "fill-rule",
+        "fill-opacity",
+        "clip-rule",
+        "stroke",
+        "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
+        "stroke-dasharray",
+        "stroke-dashoffset",
+        "stroke-opacity",
+        "opacity",
+        "transform",
     ];
     if svg.len() > MAX_LOGO {
         return Err(format!("{} bytes; at most 32 KiB", svg.len()));

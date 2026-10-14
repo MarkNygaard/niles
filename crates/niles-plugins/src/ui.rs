@@ -236,10 +236,14 @@ impl Surface {
         }
         if let Kind::Items { items } = &node.kind {
             for item in items {
-                let parts: Vec<&str> = [Some(item.title.as_str()), item.detail.as_deref(), item.trailing.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .collect();
+                let parts: Vec<&str> = [
+                    Some(item.title.as_str()),
+                    item.detail.as_deref(),
+                    item.trailing.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
                 out.push_str(&format!("{indent}  - {}\n", parts.join(" · ")));
             }
         }
@@ -263,8 +267,15 @@ fn describe(kind: &Kind) -> (&'static str, String) {
             "Text",
             format!("{value}{}", if *muted { " (muted)" } else { "" }),
         ),
-        Kind::Reading { label, value, unit: u } => ("Reading", format!("{label}: {value}{}", unit(u))),
-        Kind::Badge { label, tone } => ("Badge", format!("{label} ({})", format!("{tone:?}").to_lowercase())),
+        Kind::Reading {
+            label,
+            value,
+            unit: u,
+        } => ("Reading", format!("{label}: {value}{}", unit(u))),
+        Kind::Badge { label, tone } => (
+            "Badge",
+            format!("{label} ({})", format!("{tone:?}").to_lowercase()),
+        ),
         Kind::Items { items } => ("Items", format!("{} rows", items.len())),
         Kind::Button { id, label, style } => (
             "Button",
@@ -274,29 +285,60 @@ fn describe(kind: &Kind) -> (&'static str, String) {
             "Switch",
             format!("{id} {label:?} {}", if *value { "on" } else { "off" }),
         ),
-        Kind::Slider { id, label, min, max, step, value, unit: u } => (
+        Kind::Slider {
+            id,
+            label,
+            min,
+            max,
+            step,
+            value,
+            unit: u,
+        } => (
             "Slider",
             format!("{id} {label:?} {value}{} ({min}–{max} by {step})", unit(u)),
         ),
-        Kind::Choice { id, label, options, value } => (
+        Kind::Choice {
+            id,
+            label,
+            options,
+            value,
+        } => (
             "Choice",
             format!(
                 "{id} {label:?} = {} of {}",
                 value.as_deref().unwrap_or("-"),
-                options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>().join(", ")
+                options
+                    .iter()
+                    .map(|o| o.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         ),
-        Kind::TextField { id, label, value, .. } => (
+        Kind::TextField {
+            id, label, value, ..
+        } => (
             "TextField",
-            format!("{id} {label:?} = {:?}", value.as_deref().unwrap_or_default()),
+            format!(
+                "{id} {label:?} = {:?}",
+                value.as_deref().unwrap_or_default()
+            ),
         ),
-        Kind::Chart { kind, labels, series, unit: u } => (
+        Kind::Chart {
+            kind,
+            labels,
+            series,
+            unit: u,
+        } => (
             "Chart",
             format!(
                 "{}, {} points{}{}",
                 format!("{kind:?}").to_lowercase(),
                 labels.len(),
-                if series.len() > 1 { format!(", {} series", series.len()) } else { String::new() },
+                if series.len() > 1 {
+                    format!(", {} series", series.len())
+                } else {
+                    String::new()
+                },
                 u.as_deref().map(|u| format!(", {u}")).unwrap_or_default()
             ),
         ),
@@ -362,7 +404,9 @@ pub(crate) fn surface(tree: wit::UiTree, http: &HttpPolicy) -> Result<Surface, S
         });
     }
     let surface = Surface { nodes };
-    let size = serde_json::to_vec(&surface).map(|v| v.len()).unwrap_or(usize::MAX);
+    let size = serde_json::to_vec(&surface)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX);
     if size > MAX_BYTES {
         return Err(format!("the tree is {size} bytes; at most {MAX_BYTES}"));
     }
@@ -429,7 +473,9 @@ fn convert(kind: wit::NodeKind, http: &HttpPolicy) -> Result<Kind, String> {
             value: s.value,
         },
         wit::NodeKind::Slider(s) => {
-            let finite = [s.min, s.max, s.step, s.value].iter().all(|n| n.is_finite());
+            let finite = [s.min, s.max, s.step, s.value]
+                .iter()
+                .all(|n| n.is_finite());
             if !finite || s.min >= s.max || s.step <= 0.0 {
                 return Err(format!(
                     "slider {:?} needs min below max and a step above 0",
@@ -729,8 +775,14 @@ mod tests {
     fn actions_arrive_in_the_documented_shape() {
         let parse = |s: &str| serde_json::from_str::<ActionValue>(s).unwrap();
         assert_eq!(parse(r#"{"type":"pressed"}"#), ActionValue::Pressed);
-        assert_eq!(parse(r#"{"type":"toggled","value":true}"#), ActionValue::Toggled(true));
-        assert_eq!(parse(r#"{"type":"number","value":2.5}"#), ActionValue::Number(2.5));
+        assert_eq!(
+            parse(r#"{"type":"toggled","value":true}"#),
+            ActionValue::Toggled(true)
+        );
+        assert_eq!(
+            parse(r#"{"type":"number","value":2.5}"#),
+            ActionValue::Number(2.5)
+        );
         assert_eq!(
             parse(r#"{"type":"chosen","value":"DK2"}"#),
             ActionValue::Chosen("DK2".into())

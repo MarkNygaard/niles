@@ -85,7 +85,11 @@ impl HttpPolicy {
         let https = match url.scheme() {
             "https" => true,
             "http" => false,
-            other => return Err(format!("{other}: URLs are not allowed, only http and https")),
+            other => {
+                return Err(format!(
+                    "{other}: URLs are not allowed, only http and https"
+                ));
+            }
         };
         let (host, literal) = match url.host() {
             Some(url::Host::Domain(d)) => (d.trim_end_matches('.').to_ascii_lowercase(), None),
@@ -257,17 +261,14 @@ fn check_host_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 253 {
         return Err("not a host name".into());
     }
-    if name.eq_ignore_ascii_case("localhost") || name.to_ascii_lowercase().ends_with(".localhost")
-    {
+    if name.eq_ignore_ascii_case("localhost") || name.to_ascii_lowercase().ends_with(".localhost") {
         return Err("localhost is never reachable".into());
     }
     for label in name.split('.') {
         let ok = (1..=63).contains(&label.len())
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-');
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
         if !ok {
             return Err("not a host name".into());
         }
@@ -344,7 +345,9 @@ mod tests {
             ..Default::default()
         };
         HttpPolicy::new(&permissions, |key| {
-            (key == "address").then(|| address.map(str::to_string)).flatten()
+            (key == "address")
+                .then(|| address.map(str::to_string))
+                .flatten()
         })
     }
 
@@ -397,7 +400,11 @@ mod tests {
 
     #[test]
     fn loopback_and_metadata_are_never_reachable() {
-        let p = policy(&["api.example.com"], &["169.254.169.0/24"], Some("127.0.0.1"));
+        let p = policy(
+            &["api.example.com"],
+            &["169.254.169.0/24"],
+            Some("127.0.0.1"),
+        );
         let ok = p.admit(&url("https://api.example.com/")).unwrap();
         for never in [
             "127.0.0.1",
@@ -413,7 +420,10 @@ mod tests {
         }
         // Not even as a literal, nor through a setting that names it.
         assert!(p.admit(&url("http://127.0.0.1/")).is_err());
-        assert!(p.admit(&url("http://169.254.169.254/latest/meta-data")).is_err());
+        assert!(
+            p.admit(&url("http://169.254.169.254/latest/meta-data"))
+                .is_err()
+        );
     }
 
     #[test]
@@ -434,9 +444,16 @@ mod tests {
 
     #[test]
     fn a_setting_may_carry_a_scheme_or_a_port() {
-        for typed in ["http://192.168.1.50:8080/", "192.168.1.50:80", "192.168.1.50"] {
+        for typed in [
+            "http://192.168.1.50:8080/",
+            "192.168.1.50:80",
+            "192.168.1.50",
+        ] {
             let p = policy(&[], &["setting:address"], Some(typed));
-            assert!(p.admit(&url("http://192.168.1.50:8080/")).is_ok(), "{typed}");
+            assert!(
+                p.admit(&url("http://192.168.1.50:8080/")).is_ok(),
+                "{typed}"
+            );
         }
         let p = policy(&[], &["setting:address"], Some("inverter.lan"));
         let ok = p.admit(&url("http://inverter.lan/")).unwrap();
@@ -476,10 +493,16 @@ mod tests {
         assert!(check_local_entry("192.168.1.50").is_ok());
         assert!(check_local_entry("inverter.lan").is_ok());
         assert!(check_local_entry("192.168.20.0/24").is_ok());
-        assert!(check_local_entry("192.168.0.0/16").is_err(), "wider than a /24");
+        assert!(
+            check_local_entry("192.168.0.0/16").is_err(),
+            "wider than a /24"
+        );
         assert!(check_local_entry("127.0.0.1").is_err());
         assert!(check_local_entry("169.254.169.254").is_err());
-        assert!(check_local_entry("8.8.8.8").is_err(), "not the home network");
+        assert!(
+            check_local_entry("8.8.8.8").is_err(),
+            "not the home network"
+        );
         assert!(check_local_entry("8.8.8.0/24").is_err());
     }
 

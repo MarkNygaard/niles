@@ -119,6 +119,15 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(crate::groceries::update).delete(crate::groceries::remove),
         )
         .route("/integrations", get(crate::integrations::list))
+        .route("/plugins", get(crate::plugins::list))
+        .route(
+            "/plugins/{id}/surfaces/{surface}",
+            get(crate::plugins::render),
+        )
+        .route(
+            "/plugins/{id}/surfaces/{surface}/actions/{control}",
+            post(crate::plugins::act),
+        )
         .route("/integrations/chatgpt", get(crate::chatgpt::status))
         .route(
             "/integrations/chatgpt/login",
@@ -1262,6 +1271,77 @@ devices = [\"living_room/corner_lamp\"]
         let topics: Vec<String> = mock.calls().into_iter().map(|(t, _)| t).collect();
         assert_eq!(topics.len(), 2);
         assert!(topics.iter().all(|t| t.contains("/kitchen/")));
+    }
+
+    /// Stands in for the plugin runtime: owns every `x_` device and
+    /// remembers what it was told.
+    #[derive(Default)]
+    struct Commander {
+        told: Mutex<Vec<(String, DeviceState)>>,
+    }
+
+    #[async_trait]
+    impl niles_mqtt::DeviceCommander for Commander {
+        fn handles(&self, id: &DeviceId) -> bool {
+            id.source().starts_with("x_")
+        }
+        async fn command(&self, id: &DeviceId, desired: &DeviceState) -> Result<(), String> {
+            if id.name().as_str() == "pump" {
+                return Err("The pump did not answer.".into());
+            }
+            self.told
+                .lock()
+                .unwrap()
+                .push((id.to_string(), desired.clone()));
+            Ok(())
+        }
+    }
+
+    fn plugin_light(room: &str, name: &str) -> Device {
+        Device::new(
+            DeviceId::parse(&format!("x_hue:{room}/{name}")).unwrap(),
+            DeviceState::default(),
+            DeviceClass::Light,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_plugins_light_is_commanded_through_the_plugin_not_the_broker() {
+        let mock = Arc::new(MockPublisher::default());
+        let commander = Arc::new(Commander::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("kitchen", "ceiling"));
+        registry.upsert(plugin_light("kitchen", "strip"));
+        let router = CommandRouter::z2m_only("zigbee2mqtt").with_commander(commander.clone());
+        let app = app_routing(registry.clone(), mock.clone(), router.clone());
+
+        let (status, body) = post(app, "/rooms/kitchen", serde_json::json!({"on": true})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_eq!(body["lights"], 2);
+        assert_eq!(mock.calls().len(), 1, "only the Zigbee light is on MQTT");
+        assert_eq!(commander.told.lock().unwrap()[0].0, "x_hue:kitchen/strip");
+
+        let app = app_routing(registry.clone(), mock.clone(), router.clone());
+        let (status, _) = post(
+            app,
+            "/rooms/kitchen/x_hue:strip",
+            serde_json::json!({"brightness": 40}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(commander.told.lock().unwrap()[1].1.brightness, Some(40));
+
+        // The plugin's own sentence reaches whoever asked.
+        registry.upsert(Device::new(
+            DeviceId::parse("x_hue:kitchen/pump").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Outlet,
+        ));
+        let app = app_routing(registry, mock, router);
+        let (status, body) =
+            post(app, "/rooms/kitchen/pump", serde_json::json!({"on": true})).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body, Value::String("The pump did not answer.".into()));
     }
 
     #[tokio::test]

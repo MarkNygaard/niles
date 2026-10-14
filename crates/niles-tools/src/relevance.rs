@@ -527,10 +527,17 @@ mod tests {
 
     #[test]
     fn a_plugin_keyword_is_matched_as_a_whole_word_in_any_case() {
-        let keywords = vec!["bus".to_string(), "next bus".to_string(), "Elpris".to_string()];
+        let keywords = vec![
+            "bus".to_string(),
+            "next bus".to_string(),
+            "Elpris".to_string(),
+        ];
         assert!(mentions("When's the next bus?", &keywords));
         assert!(mentions("hvad er elprisen? nej, elpris", &keywords));
-        assert!(!mentions("how is business", &keywords), "bus is not business");
+        assert!(
+            !mentions("how is business", &keywords),
+            "bus is not business"
+        );
         assert!(!mentions("anything at all", &[]));
     }
 

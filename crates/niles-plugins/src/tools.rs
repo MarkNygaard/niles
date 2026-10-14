@@ -27,7 +27,9 @@ pub fn describe(plugin_id: &str, tool: &ToolDef) -> Result<ToolDescriptor, Strin
         return Err(format!("{:?}: tool names are [a-z0-9_]+", tool.name));
     }
     if name.len() > MAX_NAME {
-        return Err(format!("{name}: at most {MAX_NAME} characters with the plugin's id"));
+        return Err(format!(
+            "{name}: at most {MAX_NAME} characters with the plugin's id"
+        ));
     }
     if tool.description.trim().is_empty() || tool.description.len() > MAX_DESCRIPTION {
         return Err(format!(
@@ -35,7 +37,10 @@ pub fn describe(plugin_id: &str, tool: &ToolDef) -> Result<ToolDescriptor, Strin
         ));
     }
     if tool.schema.len() > MAX_SCHEMA {
-        return Err(format!("{name}: the schema is over {} KiB", MAX_SCHEMA / 1024));
+        return Err(format!(
+            "{name}: the schema is over {} KiB",
+            MAX_SCHEMA / 1024
+        ));
     }
     let schema: Value = serde_json::from_str(&tool.schema)
         .map_err(|e| format!("{name}: the schema is not JSON: {e}"))?;
@@ -77,12 +82,17 @@ pub(crate) fn offer(plugin: &Arc<Plugin>, house: &House, tools: Vec<ToolDef>) {
             break;
         }
         match describe(&plugin.id, tool) {
-            Ok(descriptor) if seen.insert(tool.name.clone()) => offered.push(Arc::new(PluginTool {
-                plugin: plugin.clone(),
-                name: tool.name.clone(),
-                descriptor,
-            })),
-            Ok(_) => plugin.log(Level::Warn, &format!("tool {:?} is offered twice", tool.name)),
+            Ok(descriptor) if seen.insert(tool.name.clone()) => {
+                offered.push(Arc::new(PluginTool {
+                    plugin: plugin.clone(),
+                    name: tool.name.clone(),
+                    descriptor,
+                }))
+            }
+            Ok(_) => plugin.log(
+                Level::Warn,
+                &format!("tool {:?} is offered twice", tool.name),
+            ),
             Err(why) => plugin.log(Level::Warn, &format!("tool not offered: {why}")),
         }
     }
@@ -151,8 +161,11 @@ mod tests {
 
     #[test]
     fn the_model_sees_the_plugin_id_before_the_name() {
-        let d = describe("spotprice", &tool("prices", r#"{"type":"object","properties":{}}"#))
-            .unwrap();
+        let d = describe(
+            "spotprice",
+            &tool("prices", r#"{"type":"object","properties":{}}"#),
+        )
+        .unwrap();
         assert_eq!(d.name, "spotprice_prices");
         assert_eq!(d.parameters["type"], "object");
     }
@@ -164,14 +177,20 @@ mod tests {
         assert!(describe("p", &tool(&"x".repeat(63), object)).is_err());
         assert!(describe("p", &tool("prices", r#"{"type":"string"}"#)).is_err());
         assert!(describe("p", &tool("prices", "not json")).is_err());
-        let big = format!(r#"{{"type":"object","description":"{}"}}"#, "x".repeat(MAX_SCHEMA));
+        let big = format!(
+            r#"{{"type":"object","description":"{}"}}"#,
+            "x".repeat(MAX_SCHEMA)
+        );
         assert!(describe("p", &tool("prices", &big)).is_err());
     }
 
     #[test]
     fn json_results_stay_json_and_long_ones_are_cut() {
         assert_eq!(result(r#"{"now":0.91}"#.into())["now"], 0.91);
-        assert_eq!(result("It is cheap now.".into()), Value::String("It is cheap now.".into()));
+        assert_eq!(
+            result("It is cheap now.".into()),
+            Value::String("It is cheap now.".into())
+        );
         let long = result("é".repeat(MAX_RESULT));
         let text = long.as_str().unwrap();
         assert!(text.ends_with("longer than 16 KiB.]"));

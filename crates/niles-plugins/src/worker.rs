@@ -187,7 +187,9 @@ impl Worker {
     }
 
     fn deadline(&self, store: &mut Store<HostState>, limit: Duration) {
-        let ticks = limit.as_nanos().div_ceil(self.limits.tick.as_nanos().max(1)) as u64;
+        let ticks = limit
+            .as_nanos()
+            .div_ceil(self.limits.tick.as_nanos().max(1)) as u64;
         store.set_epoch_deadline(ticks.max(1));
         store.data_mut().deadline = Instant::now() + limit;
     }
@@ -395,7 +397,10 @@ impl Worker {
             Some(Err(why)) => return Err(SurfaceError::Plugin(why)),
             Some(Ok(tree)) => tree,
         };
-        let live = self.live.as_ref().ok_or_else(|| unavailable(&self.plugin))?;
+        let live = self
+            .live
+            .as_ref()
+            .ok_or_else(|| unavailable(&self.plugin))?;
         crate::ui::surface(tree, live.store.data().policy()).map_err(|why| {
             tracing::warn!(plugin = %self.plugin.id, "{surface} cannot be drawn: {why}");
             SurfaceError::Plugin(format!("This page cannot be drawn: {why}."))

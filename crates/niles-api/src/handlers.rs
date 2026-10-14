@@ -79,8 +79,7 @@ pub async fn set_position(
         position: Some(body.position),
         ..Default::default()
     };
-    let (topic, payload) = command_for(&state, &blind.id, &desired)?;
-    publish(&state, topic, payload).await?;
+    send(&state, &blind.id, &desired).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -114,9 +113,8 @@ pub async fn set_device(
     let device = resolve_switchable(&state, &room, &device)?;
     let desired = desired_state(&body)?;
     within_reach(&device, &body)?;
-    let (topic, payload) = command_for(&state, &device.id, &desired)?;
     hold_against_the_curve(&state, &device.id, &desired);
-    publish(&state, topic, payload).await?;
+    send(&state, &device.id, &desired).await?;
     record_unechoed(&state, &device.id, &desired);
     Ok(StatusCode::ACCEPTED)
 }
@@ -212,6 +210,16 @@ async fn fan_out(
     let mut sent = 0;
     for light in lights {
         let narrowed = narrow_to(light, desired);
+        if let Some(commander) = state.router.commander_for(&light.id, &narrowed) {
+            hold_against_the_curve(state, &light.id, &narrowed);
+            // One device that does not answer must not keep the rest
+            // of the room from hearing the command.
+            match commander.command(&light.id, &narrowed).await {
+                Ok(()) => sent += 1,
+                Err(e) => tracing::warn!("{} did not take the command: {e}", light.id),
+            }
+            continue;
+        }
         let Some((topic, payload)) = state.router.format(&light.id, &narrowed) else {
             tracing::debug!("{} can't act on this, skipping", light.id);
             continue;
@@ -405,6 +413,19 @@ fn desired_state(body: &SetDeviceBody) -> Result<DeviceState, Failure> {
         return Err((StatusCode::BAD_REQUEST, "no settable field provided".into()));
     }
     Ok(desired)
+}
+
+/// Send `desired` to `id`: to the commander that owns it — a plugin's
+/// device — or as its source's MQTT message.
+async fn send(state: &AppState, id: &DeviceId, desired: &DeviceState) -> Result<(), Failure> {
+    if let Some(commander) = state.router.commander_for(id, desired) {
+        return commander
+            .command(id, desired)
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, e));
+    }
+    let (topic, payload) = command_for(state, id, desired)?;
+    publish(state, topic, payload).await
 }
 
 fn command_for(

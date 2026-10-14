@@ -47,8 +47,13 @@ pub trait PluginStore: Send + Sync {
     async fn installed(&self) -> Result<Vec<Installed>, String>;
     /// Keep a plugin, replacing one with the same id. Internal: what an
     /// approved install writes, after the caller has checked it.
-    async fn install(&self, id: &str, version: &str, manifest: &str, component: &[u8])
-    -> Result<(), String>;
+    async fn install(
+        &self,
+        id: &str,
+        version: &str,
+        manifest: &str,
+        component: &[u8],
+    ) -> Result<(), String>;
 
     async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>, String>;
     async fn set(&self, plugin: &str, key: &str, value: &str) -> Result<Stored, String>;
@@ -358,7 +363,10 @@ mod tests {
             .await
             .unwrap();
         let again = MemoryStore::in_file(file);
-        assert_eq!(again.get("p", "cursor").await.unwrap().as_deref(), Some("42"));
+        assert_eq!(
+            again.get("p", "cursor").await.unwrap().as_deref(),
+            Some("42")
+        );
     }
 
     #[test]

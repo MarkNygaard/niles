@@ -388,7 +388,11 @@ mod gating_tests {
         let mut reg = registry();
         let dynamic = DynamicTools::new();
         reg.attach_dynamic(dynamic.clone());
-        dynamic.set("evil", vec!["x".into()], vec![Arc::new(Named("set_device"))]);
+        dynamic.set(
+            "evil",
+            vec!["x".into()],
+            vec![Arc::new(Named("set_device"))],
+        );
         let all = names(reg.llm_tools());
         assert_eq!(all.iter().filter(|n| *n == "set_device").count(), 1);
     }

@@ -213,7 +213,10 @@ impl Manifest {
         if problems.is_empty() {
             Ok(manifest)
         } else {
-            Err(Error::Manifest(format!("is not valid: {}", problems.join("; "))))
+            Err(Error::Manifest(format!(
+                "is not valid: {}",
+                problems.join("; ")
+            )))
         }
     }
 
@@ -469,7 +472,10 @@ impl Manifest {
             if let Some(room) = &w.room
                 && !is_identifier(room)
             {
-                out.push(format!("widget {:?}: room {room:?} must be [a-z0-9_]+", w.id));
+                out.push(format!(
+                    "widget {:?}: room {room:?} must be [a-z0-9_]+",
+                    w.id
+                ));
             }
         }
     }
@@ -569,7 +575,9 @@ pub fn check_id(id: &str) -> std::result::Result<(), String> {
         ));
     }
     if niles_config::catalogue::find(id).is_some() {
-        return Err(format!("id {id:?} is the id of one of Niles's own integrations"));
+        return Err(format!(
+            "id {id:?} is the id of one of Niles's own integrations"
+        ));
     }
     Ok(())
 }
@@ -577,8 +585,7 @@ pub fn check_id(id: &str) -> std::result::Result<(), String> {
 /// `[a-z0-9_]+`, the rule for room, device, setting, tool and surface names.
 pub fn is_identifier(s: &str) -> bool {
     !s.is_empty()
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
@@ -588,8 +595,7 @@ fn is_icon_name(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('-')
         && !s.ends_with('-')
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
@@ -684,7 +690,10 @@ refresh_every = 300
 
     #[test]
     fn a_newer_niles_or_another_interface_is_refused() {
-        assert!(replacing(r#"min_niles = "0.2.0""#, r#"min_niles = "9.0.0""#)[0].contains("needs Niles"));
+        assert!(
+            replacing(r#"min_niles = "0.2.0""#, r#"min_niles = "9.0.0""#)[0]
+                .contains("needs Niles")
+        );
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#)[0].contains("interface"));
     }
 
@@ -700,11 +709,11 @@ refresh_every = 300
 
     #[test]
     fn tools_need_keywords() {
-        let problems = replacing(
-            r#"keywords = ["electricity", "power", "strøm"]"#,
-            "",
+        let problems = replacing(r#"keywords = ["electricity", "power", "strøm"]"#, "");
+        assert!(
+            problems.iter().any(|p| p.contains("keywords")),
+            "{problems:?}"
         );
-        assert!(problems.iter().any(|p| p.contains("keywords")), "{problems:?}");
     }
 
     #[test]
@@ -721,23 +730,33 @@ refresh_every = 300
 
     #[test]
     fn notify_takes_a_flag_or_urgent() {
-        let m = Manifest::parse(&SPOTPRICE.replace("ui = true\n", "ui = true\nnotify = \"urgent\"\n"))
-            .unwrap();
+        let m =
+            Manifest::parse(&SPOTPRICE.replace("ui = true\n", "ui = true\nnotify = \"urgent\"\n"))
+                .unwrap();
         assert_eq!(m.permissions.notify, Notify::Urgent);
-        assert!(Manifest::parse(&SPOTPRICE.replace("ui = true\n", "ui = true\nnotify = \"loud\"\n")).is_err());
+        assert!(
+            Manifest::parse(&SPOTPRICE.replace("ui = true\n", "ui = true\nnotify = \"loud\"\n"))
+                .is_err()
+        );
     }
 
     #[test]
     fn settings_defaults_must_fit_their_type() {
-        assert!(replacing("default = 4", r#"default = "four""#)
-            .iter()
-            .any(|p| p.contains("cheap_hours")));
-        assert!(replacing(r#"default = "DK1""#, r#"default = "DK3""#)
-            .iter()
-            .any(|p| p.contains("not one of the options")));
-        assert!(replacing("default = 4", "default = 40")
-            .iter()
-            .any(|p| p.contains("outside")));
+        assert!(
+            replacing("default = 4", r#"default = "four""#)
+                .iter()
+                .any(|p| p.contains("cheap_hours"))
+        );
+        assert!(
+            replacing(r#"default = "DK1""#, r#"default = "DK3""#)
+                .iter()
+                .any(|p| p.contains("not one of the options"))
+        );
+        assert!(
+            replacing("default = 4", "default = 40")
+                .iter()
+                .any(|p| p.contains("outside"))
+        );
     }
 
     #[test]
@@ -745,30 +764,40 @@ refresh_every = 300
         let problems = with(
             "[[settings]]\nkey = \"api_key\"\nlabel = \"API key\"\ntype = \"secret\"\ndefault = \"hunter2\"\n",
         );
-        assert!(problems.iter().any(|p| p.contains("secret")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("secret")),
+            "{problems:?}"
+        );
     }
 
     #[test]
     fn setting_keys_are_unique() {
-        let problems =
-            with("[[settings]]\nkey = \"area\"\nlabel = \"Again\"\ntype = \"string\"\n");
+        let problems = with("[[settings]]\nkey = \"area\"\nlabel = \"Again\"\ntype = \"string\"\n");
         assert!(problems.iter().any(|p| p.contains("twice")), "{problems:?}");
     }
 
     #[test]
     fn surfaces_need_the_ui_permission_and_good_ids() {
-        assert!(replacing("ui = true\n", "")
-            .iter()
-            .any(|p| p.contains("ui = true")));
-        assert!(replacing(r#"id = "electricity""#, r#"id = "Electricity""#)
-            .iter()
-            .any(|p| p.contains("surface id")));
-        assert!(replacing(r#"icon = "zap""#, r#"icon = "Zap Icon""#)
-            .iter()
-            .any(|p| p.contains("Lucide")));
-        assert!(replacing("refresh_every = 300", "refresh_every = 5")
-            .iter()
-            .any(|p| p.contains("at least 10")));
+        assert!(
+            replacing("ui = true\n", "")
+                .iter()
+                .any(|p| p.contains("ui = true"))
+        );
+        assert!(
+            replacing(r#"id = "electricity""#, r#"id = "Electricity""#)
+                .iter()
+                .any(|p| p.contains("surface id"))
+        );
+        assert!(
+            replacing(r#"icon = "zap""#, r#"icon = "Zap Icon""#)
+                .iter()
+                .any(|p| p.contains("Lucide"))
+        );
+        assert!(
+            replacing("refresh_every = 300", "refresh_every = 5")
+                .iter()
+                .any(|p| p.contains("at least 10"))
+        );
     }
 
     #[test]
@@ -777,16 +806,32 @@ refresh_every = 300
             r#"http = ["api.energidataservice.dk"]"#,
             "http = [\"api.energidataservice.dk\"]\nlocal_network = [\"setting:address\", \"setting:area\"]",
         );
-        assert!(problems.iter().any(|p| p.contains("setting:address names no")), "{problems:?}");
-        assert!(problems.iter().any(|p| p.contains("setting:area must name a string")), "{problems:?}");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("setting:address names no")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("setting:area must name a string")),
+            "{problems:?}"
+        );
     }
 
     #[test]
     fn a_default_answers_a_required_setting() {
         let m = spotprice();
-        assert!(m.missing_required(&toml::Table::new(), |_| false).is_empty());
+        assert!(
+            m.missing_required(&toml::Table::new(), |_| false)
+                .is_empty()
+        );
         let m = Manifest::parse(&SPOTPRICE.replace(r#"default = "DK1""#, "")).unwrap();
-        assert_eq!(m.missing_required(&toml::Table::new(), |_| false), vec!["Price area"]);
+        assert_eq!(
+            m.missing_required(&toml::Table::new(), |_| false),
+            vec!["Price area"]
+        );
         let mut entered = toml::Table::new();
         entered.insert("area".into(), "DK2".into());
         assert!(m.missing_required(&entered, |_| false).is_empty());

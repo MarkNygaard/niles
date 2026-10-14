@@ -146,9 +146,7 @@ async fn init_reads_its_settings_and_secrets() {
 async fn init_saying_what_is_wrong_is_the_status_line() {
     let house = House_::new(quick(), table(&[("greeting", "fail")])).await;
     house.install().await;
-    let status = house
-        .wait_for(|s| matches!(s, Status::Failing(_)))
-        .await;
+    let status = house.wait_for(|s| matches!(s, Status::Failing(_))).await;
     assert_eq!(status, Status::Failing("The greeting is fail.".into()));
     assert_eq!(status.line(), "Not working: The greeting is fail.");
 
@@ -164,7 +162,10 @@ async fn a_missing_required_setting_is_not_set_up() {
         "key = \"address\"\nlabel = \"Address\"\ntype = \"string\"\n",
         "key = \"address\"\nlabel = \"Address\"\ntype = \"string\"\nrequired = true\n",
     );
-    assert_ne!(manifest, MANIFEST, "the fixture still has the address setting");
+    assert_ne!(
+        manifest, MANIFEST,
+        "the fixture still has the address setting"
+    );
     let house = House_::new(quick(), toml::Table::new()).await;
     house
         .runtime
@@ -203,7 +204,10 @@ async fn tools_are_offered_by_keyword_and_called_through_the_shared_registry() {
         name: "hello_greet".into(),
         arguments: json!({"name": "Mark"}),
     };
-    assert_eq!(registry.execute(&call).await.unwrap(), json!("Hello, Mark!"));
+    assert_eq!(
+        registry.execute(&call).await.unwrap(),
+        json!("Hello, Mark!")
+    );
 
     // A tool's error is the plugin's sentence, for the model to say.
     let call = niles_llm::ToolCall {
@@ -218,7 +222,9 @@ async fn tools_are_offered_by_keyword_and_called_through_the_shared_registry() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_with_readings_joins_the_house_and_its_changes_are_published() {
     let house = House_::running().await;
-    let meter = house.device("x_hello:system/meter").expect("the meter is registered");
+    let meter = house
+        .device("x_hello:system/meter")
+        .expect("the meter is registered");
     assert_eq!(meter.class, DeviceClass::Sensor);
     assert_eq!(meter.state.readings["power"].value, 340.0);
     assert_eq!(meter.state.readings["power"].unit.as_deref(), Some("W"));
@@ -226,7 +232,10 @@ async fn a_device_with_readings_joins_the_house_and_its_changes_are_published() 
     assert!(lamp.supports_color_temperature());
 
     let mut rx = house.bus.subscribe();
-    assert_eq!(house.tool("reading", json!({"watts": 5})).await.unwrap(), "reported");
+    assert_eq!(
+        house.tool("reading", json!({"watts": 5})).await.unwrap(),
+        "reported"
+    );
     let event = next_event(&mut rx, |e| matches!(e, Event::DeviceStateChanged { .. })).await;
     let Event::DeviceStateChanged { id, state } = event else {
         unreachable!()
@@ -279,7 +288,10 @@ async fn a_command_to_a_plugin_device_reaches_its_set_device() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_timer_fires() {
     let house = House_::running().await;
-    assert_eq!(house.tool("timer", json!({"seconds": 1})).await.unwrap(), "set");
+    assert_eq!(
+        house.tool("timer", json!({"seconds": 1})).await.unwrap(),
+        "set"
+    );
     let until = Instant::now() + Duration::from_secs(5);
     while house.tool("ticks", json!({})).await.unwrap() == "0" {
         assert!(Instant::now() < until, "the timer never fired");
@@ -303,20 +315,37 @@ async fn timers_have_a_floor() {
 async fn storage_round_trips_and_the_quota_holds() {
     let house = House_::running().await;
     house
-        .tool("remember", json!({"key": "day:2026-10-14", "value": "cheap"}))
+        .tool(
+            "remember",
+            json!({"key": "day:2026-10-14", "value": "cheap"}),
+        )
         .await
         .unwrap();
     house
-        .tool("remember", json!({"key": "day:2026-10-13", "value": "dear"}))
+        .tool(
+            "remember",
+            json!({"key": "day:2026-10-13", "value": "dear"}),
+        )
         .await
         .unwrap();
-    assert_eq!(house.tool("recall", json!({"key": "day:2026-10-14"})).await.unwrap(), "cheap");
+    assert_eq!(
+        house
+            .tool("recall", json!({"key": "day:2026-10-14"}))
+            .await
+            .unwrap(),
+        "cheap"
+    );
     assert_eq!(
         house.tool("keys", json!({"prefix": "day:"})).await.unwrap(),
         r#"["day:2026-10-13","day:2026-10-14"]"#
     );
     assert_eq!(
-        house.store.get("hello", "day:2026-10-14").await.unwrap().as_deref(),
+        house
+            .store
+            .get("hello", "day:2026-10-14")
+            .await
+            .unwrap()
+            .as_deref(),
         Some("cheap"),
         "kept by Niles, under the plugin's id"
     );
@@ -343,7 +372,10 @@ async fn http_outside_the_manifest_is_refused() {
         "http://169.254.169.254/latest/meta-data",
         "http://192.168.1.50/",
     ] {
-        let err = house.tool("fetch", json!({ "url": url })).await.unwrap_err();
+        let err = house
+            .tool("fetch", json!({ "url": url }))
+            .await
+            .unwrap_err();
         assert!(err.contains("NotPermitted"), "{url}: {err}");
     }
 }
@@ -391,7 +423,10 @@ async fn a_call_past_its_deadline_restarts_the_plugin_and_repeated_failures_stop
     // Somebody presses Restart.
     house.runtime.restart("hello").unwrap();
     house.wait_for(|s| *s == Status::Running).await;
-    assert_eq!(house.tool("greet", json!({})).await.unwrap(), "Hello, world!");
+    assert_eq!(
+        house.tool("greet", json!({})).await.unwrap(),
+        "Hello, world!"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -421,11 +456,19 @@ async fn a_page_renders_is_cached_and_answers_its_controls() {
         room: None,
         person: Some("mark".into()),
     };
-    let page = house.runtime.render("hello", "page", mark.clone()).await.unwrap();
+    let page = house
+        .runtime
+        .render("hello", "page", mark.clone())
+        .await
+        .unwrap();
     let json = serde_json::to_value(&page).unwrap();
     assert_eq!(json["nodes"][0]["type"], "stack");
     assert_eq!(json["nodes"][1]["label"], "Greeting");
-    assert!(page.text().contains("Pressed 0 times, for mark."), "{}", page.text());
+    assert!(
+        page.text().contains("Pressed 0 times, for mark."),
+        "{}",
+        page.text()
+    );
 
     let outcome = house
         .runtime
@@ -434,15 +477,25 @@ async fn a_page_renders_is_cached_and_answers_its_controls() {
         .unwrap();
     assert_eq!(outcome.toast.as_deref(), Some("Hello pressed"));
     assert!(outcome.rerender);
-    let again = house.runtime.render("hello", "page", mark.clone()).await.unwrap();
-    assert!(again.text().contains("Pressed 1 times"), "a rerender is not served from the cache");
+    let again = house
+        .runtime
+        .render("hello", "page", mark.clone())
+        .await
+        .unwrap();
+    assert!(
+        again.text().contains("Pressed 1 times"),
+        "a rerender is not served from the cache"
+    );
 
     let err = house
         .runtime
         .act("hello", "page", "nothing", ActionValue::Pressed, mark)
         .await
         .unwrap_err();
-    assert_eq!(err, SurfaceError::Plugin("That button does nothing.".into()));
+    assert_eq!(
+        err,
+        SurfaceError::Plugin("That button does nothing.".into())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -452,10 +505,18 @@ async fn the_last_render_is_kept_until_invalidated() {
         room: Some("office".into()),
         person: None,
     };
-    let first = house.runtime.render("hello", "card", office.clone()).await.unwrap();
+    let first = house
+        .runtime
+        .render("hello", "card", office.clone())
+        .await
+        .unwrap();
     house.tool("timer", json!({"seconds": 1})).await.unwrap();
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    let cached = house.runtime.render("hello", "card", office.clone()).await.unwrap();
+    let cached = house
+        .runtime
+        .render("hello", "card", office.clone())
+        .await
+        .unwrap();
     assert_eq!(first, cached, "ten phones open on one page cost one render");
 
     let mut rx = house.bus.subscribe();
@@ -540,9 +601,15 @@ async fn subscribed_events_reach_the_plugin_and_others_do_not() {
 async fn notifications_are_rate_limited_and_urgent_needs_its_own_permission() {
     let house = House_::running().await;
     for _ in 0..6 {
-        assert_eq!(house.tool("say", json!({"message": "Hi."})).await.unwrap(), "said");
+        assert_eq!(
+            house.tool("say", json!({"message": "Hi."})).await.unwrap(),
+            "said"
+        );
     }
-    let err = house.tool("say", json!({"message": "Hi."})).await.unwrap_err();
+    let err = house
+        .tool("say", json!({"message": "Hi."}))
+        .await
+        .unwrap_err();
     assert!(err.contains("Limit"), "{err}");
     let err = house
         .tool("say", json!({"message": "Now!", "urgent": true}))
@@ -563,7 +630,9 @@ async fn devices_are_remembered_while_the_plugin_is_down() {
     let second = House_::with_store(quick(), table(&[("greeting", "fail")]), store).await;
     assert_eq!(second.runtime.load_installed().await, 1);
     second.wait_for(|s| matches!(s, Status::Failing(_))).await;
-    let lamp = second.device("x_hello:office/lamp").expect("still in its room");
+    let lamp = second
+        .device("x_hello:office/lamp")
+        .expect("still in its room");
     assert!(!lamp.available);
     assert_eq!(lamp.class, DeviceClass::Light);
 }
@@ -602,9 +671,13 @@ async fn check_reports_a_good_plugin_as_good() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn check_refuses_what_is_not_a_component() {
-    let report = niles_plugins::check::check(MANIFEST, Some(b"\0asm not really".to_vec()), None).await;
+    let report =
+        niles_plugins::check::check(MANIFEST, Some(b"\0asm not really".to_vec()), None).await;
     assert!(
-        report.problems.iter().any(|p| p.contains("not a WebAssembly component")),
+        report
+            .problems
+            .iter()
+            .any(|p| p.contains("not a WebAssembly component")),
         "{:?}",
         report.problems
     );

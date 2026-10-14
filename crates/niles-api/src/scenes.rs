@@ -48,6 +48,15 @@ pub async fn apply_scene(
     }
 
     for entry in entries {
+        if let Some(commander) = state.router.commander_for(&entry.device_id, &entry.state) {
+            if let Some(manual) = state.manual_mode.as_ref() {
+                manual.flag(&entry.device_id);
+            }
+            if let Err(e) = commander.command(&entry.device_id, &entry.state).await {
+                tracing::warn!("{} did not take the scene: {e}", entry.device_id);
+            }
+            continue;
+        }
         let Some((topic, payload)) = state.router.format(&entry.device_id, &entry.state) else {
             continue;
         };

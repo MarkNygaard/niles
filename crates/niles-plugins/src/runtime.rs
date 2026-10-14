@@ -217,7 +217,12 @@ struct Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        for plugin in self.plugins.get_mut().unwrap_or_else(|e| e.into_inner()).values() {
+        for plugin in self
+            .plugins
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
             plugin.queue.stop();
         }
     }
@@ -405,7 +410,12 @@ impl Runtime {
     }
 
     /// Call one of a plugin's tools by its bare name.
-    pub async fn call_tool(&self, id: &str, tool: &str, args_json: &str) -> std::result::Result<String, String> {
+    pub async fn call_tool(
+        &self,
+        id: &str,
+        tool: &str,
+        args_json: &str,
+    ) -> std::result::Result<String, String> {
         let plugin = self.inner.plugin(id).map_err(|e| e.to_string())?;
         plugin.call_tool(tool, args_json).await
     }
@@ -513,7 +523,9 @@ impl Inner {
                     .with_capabilities(device.light);
                 remembered.available = false;
                 self.house.registry.upsert(remembered.clone());
-                self.house.bus.publish(Event::DeviceAdded { device: remembered });
+                self.house
+                    .bus
+                    .publish(Event::DeviceAdded { device: remembered });
             }
             devices.insert(id, device);
         }
@@ -607,17 +619,20 @@ impl DeviceCommander for Runtime {
         id.source().starts_with("x_")
     }
 
-    async fn command(&self, id: &DeviceId, desired: &DeviceState) -> std::result::Result<(), String> {
+    async fn command(
+        &self,
+        id: &DeviceId,
+        desired: &DeviceState,
+    ) -> std::result::Result<(), String> {
         let spoken = format!("{} {}", id.room(), id.name()).replace('_', " ");
         let plugin = self
             .inner
             .by_source(id.source())
             .ok_or_else(|| format!("The {spoken}'s integration is not installed."))?;
-        let known = plugin
-            .devices()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("{} has no device called {spoken}.", plugin.manifest.name))?;
+        let known =
+            plugin.devices().get(id).cloned().ok_or_else(|| {
+                format!("{} has no device called {spoken}.", plugin.manifest.name)
+            })?;
         if !known.controllable {
             return Err(format!("The {spoken} cannot be switched."));
         }
@@ -845,7 +860,11 @@ impl Plugin {
         });
     }
 
-    pub async fn call_tool(&self, tool: &str, args_json: &str) -> std::result::Result<String, String> {
+    pub async fn call_tool(
+        &self,
+        tool: &str,
+        args_json: &str,
+    ) -> std::result::Result<String, String> {
         let (reply, answer) = oneshot::channel();
         self.queue.push(Job::CallTool {
             name: tool.to_string(),
@@ -855,7 +874,11 @@ impl Plugin {
         answer.await.unwrap_or_else(|_| Err(self.not_working()))
     }
 
-    async fn render(&self, surface: &str, context: Context) -> std::result::Result<Surface, SurfaceError> {
+    async fn render(
+        &self,
+        surface: &str,
+        context: Context,
+    ) -> std::result::Result<Surface, SurfaceError> {
         let key = (surface.to_string(), context.clone());
         let fresh_for = self
             .manifest
@@ -1108,7 +1131,10 @@ mod tests {
     #[test]
     fn six_notifications_an_hour() {
         let plugin = Plugin::new(
-            Manifest::parse(include_str!("../tests/fixtures/hello/niles-integration.toml")).unwrap(),
+            Manifest::parse(include_str!(
+                "../tests/fixtures/hello/niles-integration.toml"
+            ))
+            .unwrap(),
         );
         for _ in 0..6 {
             assert!(plugin.may_notify(6));
@@ -1119,7 +1145,10 @@ mod tests {
     #[test]
     fn device_patterns_narrow_by_room_and_name() {
         let plugin = Plugin::new(
-            Manifest::parse(include_str!("../tests/fixtures/hello/niles-integration.toml")).unwrap(),
+            Manifest::parse(include_str!(
+                "../tests/fixtures/hello/niles-integration.toml"
+            ))
+            .unwrap(),
         );
         let door = DeviceId::parse("z2m:office/door").unwrap();
         let lamp = DeviceId::parse("z2m:office/lamp").unwrap();

@@ -74,8 +74,14 @@ impl HostState {
             .allow_udp(false)
             .allow_ip_name_lookup(false)
             .socket_addr_check(|_, _| Box::pin(async { false }))
-            .stdout(crate::output::LogStream::new(plugin.clone(), log::Level::Info))
-            .stderr(crate::output::LogStream::new(plugin.clone(), log::Level::Warn));
+            .stdout(crate::output::LogStream::new(
+                plugin.clone(),
+                log::Level::Info,
+            ))
+            .stderr(crate::output::LogStream::new(
+                plugin.clone(),
+                log::Level::Warn,
+            ));
         let memory = MemoryCap::new(plugin.manifest.memory_mb());
         Self {
             wasi: wasi.build(),
@@ -276,7 +282,9 @@ impl storage::Host for HostState {
     fn set(&mut self, key: String, value: String) -> Result<(), HostError> {
         check_key(&key)?;
         if key.contains('\0') || value.contains('\0') {
-            return Err(HostError::Invalid("storage cannot hold a NUL character".into()));
+            return Err(HostError::Invalid(
+                "storage cannot hold a NUL character".into(),
+            ));
         }
         let store = self.house.store.clone();
         let id = self.id().to_string();
@@ -328,7 +336,9 @@ impl wit_http::Host for HostState {
             url: req.url,
             headers: req.headers,
             body: req.body,
-            timeout: req.timeout_ms.map(|ms| Duration::from_millis(u64::from(ms))),
+            timeout: req
+                .timeout_ms
+                .map(|ms| Duration::from_millis(u64::from(ms))),
         };
         let user_agent = format!(
             "niles-plugin/{}/{}",
@@ -336,10 +346,10 @@ impl wit_http::Host for HostState {
         );
         let deadline = self.deadline;
         let policy = self.policy.clone();
-        let sent = self
-            .house
-            .handle
-            .block_on(crate::http::send(&policy, &user_agent, request, deadline));
+        let sent =
+            self.house
+                .handle
+                .block_on(crate::http::send(&policy, &user_agent, request, deadline));
         match sent {
             Ok(r) => Ok(wit_http::Response {
                 status: r.status,
@@ -399,8 +409,7 @@ pub(crate) fn state_from_wit(s: types::DeviceState) -> Result<DeviceState, HostE
         return invalid("brightness, battery and position are 0-100");
     }
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
-    if !finite(s.temperature_celsius) || !finite(s.humidity_percent) || !finite(s.illuminance_lux)
-    {
+    if !finite(s.temperature_celsius) || !finite(s.humidity_percent) || !finite(s.illuminance_lux) {
         return invalid("a measurement is not a number");
     }
     if s.readings.len() > MAX_READINGS {
@@ -511,7 +520,10 @@ impl devices::Host for HostState {
         // state is what Niles already knew, merged with this one's.
         let replacement = Device::new(
             id.clone(),
-            existing.as_ref().map(|d| d.state.clone()).unwrap_or_default(),
+            existing
+                .as_ref()
+                .map(|d| d.state.clone())
+                .unwrap_or_default(),
             class,
         )
         .with_capabilities(light);
@@ -873,7 +885,10 @@ mod tests {
         let mut cap = MemoryCap::new(1);
         assert!(cap.memory_growing(0, 600 * 1024, None).unwrap());
         assert!(cap.memory_growing(0, 300 * 1024, None).unwrap());
-        assert!(cap.memory_growing(0, 300 * 1024, None).is_err(), "a third memory past 1 MiB");
+        assert!(
+            cap.memory_growing(0, 300 * 1024, None).is_err(),
+            "a third memory past 1 MiB"
+        );
         assert!(cap.memory_growing(300 * 1024, 400 * 1024, None).unwrap());
     }
 }
