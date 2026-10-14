@@ -703,15 +703,49 @@ static bool send_preroll(int sock) {
 }
 
 // ---- Wyoming streaming to niles (Stage 2) ----
+static constexpr int CONNECT_TIMEOUT_MS = 2000;
+static constexpr int SEND_TIMEOUT_MS = 1500;  // per send() call, via SO_SNDTIMEO
+
 static bool send_all(int sock, const void* buf, size_t len) {
   const uint8_t* p = static_cast<const uint8_t*>(buf);
   while (len) {
     int n = send(sock, p, len, 0);
-    if (n <= 0) return false;
+    if (n <= 0) {
+      ESP_LOGW(TAG, "send failed or timed out (errno %d)", errno);
+      return false;
+    }
     p += n;
     len -= n;
   }
   return true;
+}
+
+// connect() with a deadline: non-blocking connect, wait for the socket to
+// become writable, then read the outcome from SO_ERROR. The socket is left
+// blocking again, as the rest of the code expects.
+static bool connect_within(int sock, const struct sockaddr_in& dest, int timeout_ms) {
+  int flags = fcntl(sock, F_GETFL, 0);
+  fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+  bool ok = false;
+  if (connect(sock, reinterpret_cast<const struct sockaddr*>(&dest), sizeof(dest)) == 0) {
+    ok = true;
+  } else if (errno == EINPROGRESS) {
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(sock, &wfds);
+    struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+    if (select(sock + 1, nullptr, &wfds, nullptr, &tv) > 0) {
+      int err = 0;
+      socklen_t len = sizeof(err);
+      getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len);
+      ok = err == 0;
+      if (!ok) errno = err;
+    } else {
+      errno = ETIMEDOUT;
+    }
+  }
+  fcntl(sock, F_SETFL, flags);
+  return ok;
 }
 
 // Parse the integer right after `key` in a JSON header line (e.g. "\"rate\":").
@@ -981,11 +1015,22 @@ static bool stream_utterance(float wake_avg, uint32_t gen, bool follow_up) {
     ESP_LOGE(TAG, "socket() failed");
     return false;
   }
-  if (connect(sock, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest)) != 0) {
-    ESP_LOGE(TAG, "connect %s:%d failed (errno %d)", NILES_HOST, NILES_PORT, errno);
+  // This runs on the task that reads the microphone and listens for the
+  // wake word, so nothing here may wait without a limit. A plain connect()
+  // to a Niles that is down waits out TCP's own retries, and a send()
+  // into a stalled connection waits for good; either way the satellite
+  // stops hearing "Niles" until it gives up. On a LAN a connect takes
+  // milliseconds and a send of one frame less, so these limits are only
+  // ever met when something is wrong -- and then the command is dropped
+  // and the satellite goes back to listening.
+  if (!connect_within(sock, dest, CONNECT_TIMEOUT_MS)) {
+    ESP_LOGE(TAG, "connect %s:%d failed or took over %d ms (errno %d)", NILES_HOST,
+             NILES_PORT, CONNECT_TIMEOUT_MS, errno);
     close(sock);
     return false;
   }
+  struct timeval send_tv = {SEND_TIMEOUT_MS / 1000, (SEND_TIMEOUT_MS % 1000) * 1000};
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &send_tv, sizeof(send_tv));
 
   // The probability that fired rides along with the audio. It only
   // existed on the serial console before, so tuning the threshold meant
