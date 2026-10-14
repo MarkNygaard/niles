@@ -758,7 +758,7 @@ describe("statusOf", () => {
       statusOf(
         { ...TADO, id: "lg_tv", label: "LG TV", added: true },
         {
-          tv: { configured: true, paired: false, mac: null, room: null, status: null, error: null },
+          tv: { configured: true, paired: false, mac: null, transport: "tls", room: null, status: null, error: null },
         },
       ).text,
     ).toBe("TV not paired yet");

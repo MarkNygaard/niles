@@ -81,7 +81,7 @@ use std::path::Path;
 pub use store::{Applied, Change, ChangeSource, ConfigStore, LoadOutcome, Revision, SectionChange};
 pub use stt::{NoiseGate, SttConfig};
 pub use tts::TtsConfig;
-pub use tv::TvConfig;
+pub use tv::{Transport as TvTransport, TvConfig};
 pub use unifi::UnifiConfig;
 pub use web_search::WebSearchConfig;
 pub use wled::{WledConfig, WledDeviceConfig};

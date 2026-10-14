@@ -123,6 +123,7 @@ api_key_env = "GROQ_API_KEY"
 # [tv]
 # host = "192.168.69.10"
 # room = "living_room"
+# transport = "tls" # default; legacy_plaintext is unencrypted and LAN-only
 
 # The app's menu: which entries sit between Home and Me, in what order,
 # and which are left out. Home and Me always stay first and last. A

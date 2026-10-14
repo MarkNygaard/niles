@@ -215,6 +215,7 @@ export interface TvInfo {
   paired: boolean;
   mac: string | null;
   room: string | null;
+  transport: "tls" | "legacy_plaintext";
   /** Absent before pairing, or when the TV could not be asked. */
   status: { on: boolean; app: string | null } | null;
   error: string | null;

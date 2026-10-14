@@ -18,6 +18,7 @@ pub struct TvDto {
     /// The address it will be woken with, once known.
     pub mac: Option<String>,
     pub room: Option<String>,
+    pub transport: niles_config::TvTransport,
     /// Absent when it is not paired, or could not be asked.
     pub status: Option<niles_webos::Status>,
     pub error: Option<String>,
@@ -31,6 +32,7 @@ pub async fn get(State(state): State<AppState>) -> Json<TvDto> {
             paired: false,
             mac: None,
             room: None,
+            transport: niles_config::TvTransport::Tls,
             status: None,
             error: None,
         });
@@ -38,7 +40,14 @@ pub async fn get(State(state): State<AppState>) -> Json<TvDto> {
     let tv = &cfg.tv;
     let key = tv.resolve_client_key().ok();
     let (status, error) = match (&key, tv.is_configured()) {
-        (Some(key), true) => match niles_webos::Tv::new(tv.host.trim(), key).status().await {
+        (Some(key), true) => match niles_webos::Tv::with_transport(
+            tv.host.trim(),
+            key,
+            webos_transport(tv.transport),
+        )
+        .status()
+        .await
+        {
             Ok(status) => (Some(status), None),
             Err(e) => (None, Some(e.to_string())),
         },
@@ -50,6 +59,7 @@ pub async fn get(State(state): State<AppState>) -> Json<TvDto> {
         paired: key.is_some(),
         mac: present(&tv.mac),
         room: present(&tv.room),
+        transport: tv.transport,
         status,
         error,
     })
@@ -71,14 +81,16 @@ pub async fn pair(State(state): State<AppState>) -> Result<Json<Paired>, Failure
         "this Niles instance has no config store".to_string(),
     ))?;
     let secrets = crate::secrets::writable(&state)?;
-    let host = store.current().tv.host.trim().to_string();
+    let config = store.current();
+    let host = config.tv.host.trim().to_string();
     if host.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "give the TV's address first".to_string(),
         ));
     }
-    let key = niles_webos::pair(&host)
+    let transport = config.tv.transport;
+    let key = niles_webos::pair_with_transport(&host, webos_transport(transport))
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
     secrets.set("tv.client_key", &key).await.map_err(|e| {
@@ -89,7 +101,10 @@ pub async fn pair(State(state): State<AppState>) -> Result<Json<Paired>, Failure
     })?;
     crate::secrets::reload(&state).await;
 
-    let mac = match niles_webos::Tv::new(&host, &key).mac_address().await {
+    let mac = match niles_webos::Tv::with_transport(&host, &key, webos_transport(transport))
+        .mac_address()
+        .await
+    {
         Ok(mac) => mac,
         Err(e) => {
             tracing::warn!("[tv] paired, but its MAC address could not be read: {e}");
@@ -145,10 +160,17 @@ pub async fn power(
         let key = tv
             .resolve_client_key()
             .map_err(|_| (StatusCode::CONFLICT, "the TV is not paired".to_string()))?;
-        niles_webos::Tv::new(tv.host.trim(), key)
+        niles_webos::Tv::with_transport(tv.host.trim(), key, webos_transport(tv.transport))
             .turn_off()
             .await
             .map_err(failed)?;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn webos_transport(transport: niles_config::TvTransport) -> niles_webos::Transport {
+    match transport {
+        niles_config::TvTransport::Tls => niles_webos::Transport::Tls,
+        niles_config::TvTransport::LegacyPlaintext => niles_webos::Transport::LegacyPlaintext,
+    }
 }

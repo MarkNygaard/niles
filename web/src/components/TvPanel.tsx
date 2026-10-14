@@ -16,6 +16,7 @@ import type { TvInfo } from "@/lib/api";
 
 export interface TvPanelProps {
   host: string;
+  transport: "tls" | "legacy_plaintext";
   room: string;
   showAnnouncements: boolean;
   tv?: TvInfo;
@@ -40,6 +41,7 @@ export function pairingLine(tv?: TvInfo): string {
  */
 export function TvPanel({
   host,
+  transport,
   room,
   showAnnouncements,
   tv,
@@ -67,9 +69,9 @@ export function TvPanel({
   return (
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground text-sm">
-        “Turn on the TV”, “put on Netflix on the TV”, “switch the TV to HDMI 2” —
-        and Niles's announcements in the corner of the screen while it is on.
-        Straight to the TV on your network; no LG account.
+        “Turn on the TV”, “put on Netflix on the TV”, “switch the TV to HDMI 2” — and Niles's
+        announcements in the corner of the screen while it is on. Straight to the TV on your
+        network; no LG account.
       </p>
 
       <CommitField
@@ -79,6 +81,28 @@ export function TvPanel({
         disabled={saving}
         onCommit={(value) => onChange([{ path: "tv.host", value }])}
       />
+
+      <div className="flex items-center justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">Legacy plaintext transport</span>
+          <span className="text-muted-foreground block text-xs">
+            Unencrypted; use only on a trusted local network. TLS is the default.
+          </span>
+        </span>
+        <Switch
+          aria-label="Legacy plaintext transport"
+          checked={transport === "legacy_plaintext"}
+          disabled={saving}
+          onCheckedChange={(next) =>
+            onChange([
+              {
+                path: "tv.transport",
+                value: next ? "legacy_plaintext" : "tls",
+              },
+            ])
+          }
+        />
+      </div>
 
       <label className="flex flex-col gap-1">
         <span className="text-muted-foreground text-xs">Room</span>
@@ -109,18 +133,13 @@ export function TvPanel({
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm">{pairingLine(tv)}</span>
-          <Button
-            variant="outline"
-            disabled={saving || pairing || !host.trim()}
-            onClick={pair}
-          >
+          <Button variant="outline" disabled={saving || pairing || !host.trim()} onClick={pair}>
             {tv?.paired ? "Pair again" : "Pair"}
           </Button>
         </div>
         {pairing && (
           <p className="text-sm">
-            The TV is asking whether to allow Niles. Accept it with the remote — it
-            waits a minute.
+            The TV is asking whether to allow Niles. Accept it with the remote — it waits a minute.
           </p>
         )}
         {problem && <p className="text-destructive text-sm">{problem}</p>}
@@ -136,16 +155,13 @@ export function TvPanel({
         <Switch
           checked={showAnnouncements}
           disabled={saving}
-          onCheckedChange={(next) =>
-            onChange([{ path: "tv.show_announcements", value: next }])
-          }
+          onCheckedChange={(next) => onChange([{ path: "tv.show_announcements", value: next }])}
         />
       </label>
 
       <p className="text-muted-foreground text-xs">
-        Turning it on needs “Turn on via Wi-Fi” on the TV (Settings → General →
-        Devices → External Devices → TV On With Mobile), and a router that lets
-        Niles's wake-up reach the TV's network.
+        Turning it on needs “Turn on via Wi-Fi” on the TV (Settings → General → Devices → External
+        Devices → TV On With Mobile), and a router that lets Niles's wake-up reach the TV's network.
       </p>
     </div>
   );

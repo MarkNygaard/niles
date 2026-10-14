@@ -30,7 +30,16 @@ impl TvControl {
             .tv
             .resolve_client_key()
             .map_err(|_| "The TV isn't paired with Niles yet.".to_string())?;
-        Ok(Tv::new(cfg.tv.host.trim(), key))
+        Ok(Tv::with_transport(
+            cfg.tv.host.trim(),
+            key,
+            match cfg.tv.transport {
+                niles_config::TvTransport::Tls => niles_webos::Transport::Tls,
+                niles_config::TvTransport::LegacyPlaintext => {
+                    niles_webos::Transport::LegacyPlaintext
+                }
+            },
+        ))
     }
 
     /// Whether Niles's announcements should also go on the screen.

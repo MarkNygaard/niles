@@ -2,7 +2,17 @@
 
 use crate::error::{Error, Result};
 use niles_core::RoomName;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// The webOS websocket transport. Legacy plaintext is opt-in and should
+/// only be used on a trusted local network.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transport {
+    #[default]
+    Tls,
+    LegacyPlaintext,
+}
 
 /// `[tv]` section of the config file: an LG webOS TV.
 ///
@@ -15,6 +25,7 @@ use serde::Deserialize;
 /// host = "192.168.69.10"
 /// mac = "a8:23:fe:01:02:03"
 /// room = "living_room"
+/// transport = "tls"
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +35,9 @@ pub struct TvConfig {
     pub enabled: bool,
     #[serde(default)]
     pub host: String,
+    /// TLS remains the default; legacy_plaintext is unencrypted.
+    #[serde(default)]
+    pub transport: Transport,
     /// For waking it. Read from the TV at pairing, so rarely typed.
     #[serde(default)]
     pub mac: String,
@@ -46,6 +60,7 @@ impl Default for TvConfig {
         Self {
             enabled: true,
             host: String::new(),
+            transport: Transport::Tls,
             mac: String::new(),
             room: String::new(),
             show_announcements: true,
@@ -137,5 +152,32 @@ mod tests {
     #[test]
     fn refuses_a_room_no_device_could_have() {
         assert!(parse(r#"room = "Living Room""#).validate().is_err());
+    }
+
+    #[test]
+    fn transport_defaults_to_tls_and_legacy_round_trips() {
+        assert_eq!(parse(r#"host = "192.168.1.2""#).transport, Transport::Tls);
+        let legacy: TvConfig = parse("transport = \"legacy_plaintext\"");
+        assert_eq!(legacy.transport, Transport::LegacyPlaintext);
+        let encoded = toml::to_string(&TransportConfig {
+            transport: legacy.transport,
+        })
+        .unwrap();
+        assert_eq!(
+            toml::from_str::<TransportConfig>(&encoded)
+                .unwrap()
+                .transport,
+            Transport::LegacyPlaintext
+        );
+    }
+
+    #[test]
+    fn unknown_transport_is_rejected() {
+        assert!(toml::from_str::<TvConfig>(r#"transport = "plain""#).is_err());
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct TransportConfig {
+        transport: Transport,
     }
 }

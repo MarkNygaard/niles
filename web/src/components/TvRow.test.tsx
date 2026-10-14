@@ -4,7 +4,7 @@ import { TvRow, tvLine, tvOn } from "./TvRow";
 import type { TvInfo } from "@/lib/api";
 
 function tv(status: TvInfo["status"]): TvInfo {
-  return { configured: true, paired: true, mac: null, room: "living_room", status, error: null };
+  return { configured: true, paired: true, mac: null, transport: "tls", room: "living_room", status, error: null };
 }
 
 describe("TvRow", () => {

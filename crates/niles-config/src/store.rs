@@ -756,6 +756,28 @@ github_client_id_env = \"NILES_GITHUB_CLIENT_ID\"
     }
 
     #[tokio::test]
+    async fn tv_transport_override_survives_store_reload() {
+        let (store, _) = ConfigStore::open_in_memory("/dev/null").await.unwrap();
+        store
+            .apply(
+                &patch("[tv]\ntransport = \"legacy_plaintext\"\n"),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.current().tv.transport,
+            crate::TvTransport::LegacyPlaintext
+        );
+        let serialized = toml::to_string(&store.effective_table()).unwrap();
+        let reloaded = ConfigStore::from_str_in_memory(&serialized).unwrap();
+        assert_eq!(
+            reloaded.current().tv.transport,
+            crate::TvTransport::LegacyPlaintext
+        );
+    }
+
+    #[tokio::test]
     async fn the_last_person_cannot_be_removed() {
         // Nobody left on the allowlist means nobody can sign in to put
         // somebody back — and the page offering that button is the page

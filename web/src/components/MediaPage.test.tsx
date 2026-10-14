@@ -115,7 +115,7 @@ describe("the Media page", () => {
     vi.spyOn(api, "tv").mockResolvedValue({
       configured: false,
       paired: false,
-      mac: null,
+      mac: null, transport: "tls",
       room: null,
       status: null,
       error: null,

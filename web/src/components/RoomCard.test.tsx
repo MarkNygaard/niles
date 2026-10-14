@@ -133,7 +133,7 @@ describe("RoomCard", () => {
           info: {
             configured: true,
             paired: true,
-            mac: null,
+            mac: null, transport: "tls",
             room: "kitchen",
             status: { on: true, app: "Netflix" },
             error: null,

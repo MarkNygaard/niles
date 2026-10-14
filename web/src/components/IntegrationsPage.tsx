@@ -113,7 +113,7 @@ export interface IntegrationsPageProps {
   /** What the speaker at that address described. */
   sonosFound?: SpeakersReport;
   /** `[tv]` as the config has it. */
-  tvConfig?: { host?: string; room?: string; show_announcements?: boolean };
+  tvConfig?: { host?: string; room?: string; transport?: "tls" | "legacy_plaintext"; show_announcements?: boolean };
   tv?: TvInfo;
   onTvChanged?: () => void;
   saving?: boolean;
@@ -695,6 +695,7 @@ export function IntegrationsPage({
                 {current.id === "lg_tv" && (
                   <TvPanel
                     host={tvConfig?.host ?? ""}
+                    transport={tvConfig?.transport === "legacy_plaintext" ? "legacy_plaintext" : "tls"}
                     room={tvConfig?.room ?? ""}
                     showAnnouncements={tvConfig?.show_announcements !== false}
                     tv={tv}

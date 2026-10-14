@@ -1164,7 +1164,7 @@ export function ConfigPanel() {
             sonosFound={speakers.data}
             tvConfig={
               valueAt(view.effective, "tv") as
-                | { host?: string; room?: string; show_announcements?: boolean }
+                | { host?: string; room?: string; transport?: "tls" | "legacy_plaintext"; show_announcements?: boolean }
                 | undefined
             }
             tv={tv.data}

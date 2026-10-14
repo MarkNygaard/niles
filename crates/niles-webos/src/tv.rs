@@ -6,6 +6,15 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+/// Explicit webOS websocket transport. TLS is the default; plaintext is
+/// intended only for legacy TVs on a trusted local network.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Transport {
+    #[default]
+    Tls,
+    LegacyPlaintext,
+}
+
 /// How long the pairing prompt waits for somebody with the remote.
 pub const PAIRING: Duration = Duration::from_secs(60);
 
@@ -41,28 +50,47 @@ pub struct Status {
 pub struct Tv {
     host: String,
     client_key: String,
+    transport: Transport,
 }
 
 /// Pair with the TV at `host`: it shows a prompt, somebody accepts it
 /// with the remote, and the key it issues is what every later
 /// connection registers with.
 pub async fn pair(host: &str) -> Result<String> {
-    let (session, key) = Session::open(host, None, PAIRING).await?;
+    pair_with_transport(host, Transport::Tls).await
+}
+
+pub async fn pair_with_transport(host: &str, transport: Transport) -> Result<String> {
+    let (session, key) = Session::open(host, None, PAIRING, transport).await?;
     session.close().await;
     Ok(key)
 }
 
 impl Tv {
     pub fn new(host: impl Into<String>, client_key: impl Into<String>) -> Self {
+        Self::with_transport(host, client_key, Transport::Tls)
+    }
+
+    pub fn with_transport(
+        host: impl Into<String>,
+        client_key: impl Into<String>,
+        transport: Transport,
+    ) -> Self {
         Self {
             host: host.into(),
             client_key: client_key.into(),
+            transport,
         }
     }
 
     async fn ask(&self, uri: &str, payload: Value) -> Result<Value> {
-        let (mut session, _) =
-            Session::open(&self.host, Some(&self.client_key), Duration::ZERO).await?;
+        let (mut session, _) = Session::open(
+            &self.host,
+            Some(&self.client_key),
+            Duration::ZERO,
+            self.transport,
+        )
+        .await?;
         let answer = session.request(uri, payload).await;
         session.close().await;
         answer

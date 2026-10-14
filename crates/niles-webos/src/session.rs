@@ -4,8 +4,9 @@
 //! certificate the TV made itself. Nobody signed it, so there is nothing
 //! to check it against: the connection is encrypted, and trusting it is
 //! the same trust Niles gives the TV's address in the config. Newer
-//! firmware leaves port 3000 open and never answers on it, which is why
-//! there is no plain fallback.
+//! firmware leaves port 3000 open and never answers on it. An explicitly
+//! configured legacy transport uses that port without TLS; it never
+//! serves as a fallback for a failed TLS connection.
 //!
 //! A session per command rather than one held open: a TV is off most of
 //! the day, and a connection that has to notice that and come back is
@@ -76,24 +77,26 @@ impl Session {
         host: &str,
         client_key: Option<&str>,
         pairing: Duration,
+        transport: crate::Transport,
+    ) -> Result<(Session, String)> {
+        Self::open_at(host, client_key, pairing, transport, None).await
+    }
+
+    async fn open_at(
+        host: &str,
+        client_key: Option<&str>,
+        pairing: Duration,
+        transport: crate::Transport,
+        port_override: Option<u16>,
     ) -> Result<(Session, String)> {
         let unreachable = |reason: String| Error::Unreachable {
             host: host.to_string(),
             reason,
         };
-        let connector = Connector::Rustls(Arc::new(trusting_client()));
-        let (socket, _) = tokio::time::timeout(
-            CONNECT,
-            tokio_tungstenite::connect_async_tls_with_config(
-                format!("wss://{host}:3001"),
-                None,
-                false,
-                Some(connector),
-            ),
-        )
-        .await
-        .map_err(|_| unreachable("no answer".into()))?
-        .map_err(|e| unreachable(e.to_string()))?;
+        let socket = tokio::time::timeout(CONNECT, connect(host, transport, port_override))
+            .await
+            .map_err(|_| unreachable("no answer".into()))?
+            .map_err(|e| unreachable(e.to_string()))?;
         let mut session = Session { socket, next: 1 };
         session.send(registration(client_key)).await?;
         let key = tokio::time::timeout(pairing.max(ANSWER), session.registered())
@@ -193,6 +196,33 @@ impl Session {
     }
 }
 
+async fn connect(
+    host: &str,
+    transport: crate::Transport,
+    port_override: Option<u16>,
+) -> std::result::Result<Socket, tokio_tungstenite::tungstenite::Error> {
+    let (socket, _) = match transport {
+        crate::Transport::Tls => {
+            let connector = Connector::Rustls(Arc::new(trusting_client()));
+            tokio_tungstenite::connect_async_tls_with_config(
+                format!("wss://{host}:{}", port_override.unwrap_or(3001)),
+                None,
+                false,
+                Some(connector),
+            )
+            .await?
+        }
+        crate::Transport::LegacyPlaintext => {
+            tokio_tungstenite::connect_async(format!(
+                "ws://{host}:{}",
+                port_override.unwrap_or(3000)
+            ))
+            .await?
+        }
+    };
+    Ok(socket)
+}
+
 /// TLS that accepts the TV's own certificate. Signatures are still
 /// checked; only who issued the certificate is not, because nobody did.
 fn trusting_client() -> rustls::ClientConfig {
@@ -256,6 +286,23 @@ impl ServerCertVerifier for SelfSigned {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+
+    fn tls_config() -> rustls::ServerConfig {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let cert = CertificateDer::from(include_bytes!("../tests/fixtures/server.der").to_vec());
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            include_bytes!("../tests/fixtures/server-key.der").to_vec(),
+        ));
+        rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap()
+    }
 
     #[test]
     fn registers_with_a_key_once_it_has_one() {
@@ -277,5 +324,160 @@ mod tests {
             .collect();
         assert!(permissions.contains(&"CONTROL_POWER"));
         assert!(permissions.contains(&"WRITE_NOTIFICATION_TOAST"));
+    }
+
+    #[tokio::test]
+    async fn legacy_loopback_registers_and_completes_a_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server =
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = accept_async(stream).await.unwrap();
+                let registration: Value = serde_json::from_str(
+                    &socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(registration["type"], "register");
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "type": "registered", "payload": {"client-key": "loopback-key"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let request: Value = serde_json::from_str(
+                    &socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(request["uri"], "ssap://system/turnOff");
+                socket.send(Message::Text(json!({
+                "type": "response", "id": request["id"], "payload": {"returnValue": true}
+            }).to_string().into())).await.unwrap();
+            });
+
+        let (mut session, key) = Session::open_at(
+            "127.0.0.1",
+            None,
+            Duration::from_secs(1),
+            crate::Transport::LegacyPlaintext,
+            Some(port),
+        )
+        .await
+        .unwrap();
+        assert_eq!(key, "loopback-key");
+        let answer = session.request("system/turnOff", json!({})).await.unwrap();
+        assert_eq!(answer["returnValue"], true);
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tls_path_registers_then_reuses_key_for_a_later_request_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = tls_config();
+        let server = tokio::spawn(async move {
+            for expected_key in [None, Some("saved-key")] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let stream = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config.clone()))
+                    .accept(stream)
+                    .await
+                    .unwrap();
+                let mut socket = accept_async(stream).await.unwrap();
+                let registration: Value = serde_json::from_str(
+                    &socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(registration["payload"]["client-key"].as_str(), expected_key);
+                socket
+                    .send(Message::Text(
+                        json!({"type":"registered", "payload":{"client-key":"saved-key"}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                if expected_key.is_some() {
+                    let request: Value = serde_json::from_str(
+                        &socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                    )
+                    .unwrap();
+                    socket
+                        .send(Message::Text(json!({"type":"response", "id":request["id"], "payload":{"returnValue":true}}).to_string().into()))
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+
+        let (session, key) = Session::open_at(
+            "127.0.0.1",
+            None,
+            Duration::from_secs(1),
+            crate::Transport::Tls,
+            Some(port),
+        )
+        .await
+        .unwrap();
+        session.close().await;
+        assert_eq!(key, "saved-key");
+        let (mut session, _) = Session::open_at(
+            "127.0.0.1",
+            Some(&key),
+            Duration::ZERO,
+            crate::Transport::Tls,
+            Some(port),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            session.request("system/turnOff", json!({})).await.unwrap()["returnValue"],
+            true
+        );
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tls_default_endpoint_does_not_downgrade_to_plaintext() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 3];
+            tokio::time::timeout(Duration::from_secs(1), stream.readable())
+                .await
+                .unwrap()
+                .unwrap();
+            let count = stream.try_read(&mut bytes).unwrap();
+            assert_eq!(&bytes[..count], &[0x16, 0x03, 0x01]);
+        });
+        assert!(
+            connect("127.0.0.1", crate::Transport::Tls, Some(port))
+                .await
+                .is_err()
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tls_rejects_a_bad_tls_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config()));
+            let _ = acceptor.accept(stream).await;
+        });
+        assert!(
+            connect("127.0.0.1", crate::Transport::Tls, Some(port))
+                .await
+                .is_err()
+        );
+        server.await.unwrap();
     }
 }

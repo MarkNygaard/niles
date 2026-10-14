@@ -10,5 +10,5 @@ pub mod tv;
 pub mod wake;
 
 pub use error::{Error, Result};
-pub use tv::{App, Input, PAIRING, Status, Tv, pair};
+pub use tv::{App, Input, PAIRING, Status, Transport, Tv, pair, pair_with_transport};
 pub use wake::wake;
