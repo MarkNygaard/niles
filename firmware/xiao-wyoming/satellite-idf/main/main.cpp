@@ -1034,8 +1034,19 @@ static bool stream_utterance(float wake_avg, uint32_t gen, bool follow_up) {
   static const int STOP_DIVISOR = 16;
   static const int STOP_RMS_MIN = 60;  // the old fixed value, now the floor
   static const int STOP_RMS_MAX = 400;
-  static const int HANGOVER_FRAMES = 35; // ~350 ms of trailing silence ends it
-  static const int MAX_FRAMES = 400;     // ~4 s hard cap (was 6 s — too slow)
+  // How much quiet ends it depends on how much has been said. "Lights
+  // off" is over in a breath and should be answered as fast; a sentence
+  // that has gone on for a couple of seconds is someone explaining
+  // something, and they pause to breathe — at 350 ms for everything,
+  // "make an automation that…" was cut off at its first breath. An
+  // answer to Niles's question is given the longer pause from the start.
+  static const int HANGOVER_FRAMES = 40;      // ~400 ms after a short command
+  static const int LONG_HANGOVER_FRAMES = 100; // ~1 s once speaking ~2 s
+  static const int LONG_AFTER_FRAMES = 200;   // ~2 s of speech makes it long
+  // A cap, so a television left talking cannot hold the microphone
+  // open. 4 s cut sentences mid-word; the endpoint above, relative to
+  // the speaker, is what normally ends a capture, so this is rarely met.
+  static const int MAX_FRAMES = 1500;          // ~15 s
 
   // Speech-onset gate: don't start the end-of-utterance countdown until speech
   // actually BEGINS. Otherwise a slow start after the wake word ends the
@@ -1064,7 +1075,8 @@ static bool stream_utterance(float wake_avg, uint32_t gen, bool follow_up) {
 
   int16_t slice[STRIDE_SAMPLES];
   char hdr[64];
-  int silent = 0, total = 0, lead = 0;
+  // `spoken`: frames since speech began, pauses and all.
+  int silent = 0, total = 0, lead = 0, spoken = 0;
   bool started = false;
   long emin = 1 << 30, emax = 0;
   // The loudest speech seen since onset, which sets the bar for what
@@ -1137,8 +1149,12 @@ static bool stream_utterance(float wake_avg, uint32_t gen, bool follow_up) {
         if (scaled > STOP_RMS_MAX) scaled = STOP_RMS_MAX;
         stop_rms = (int)scaled;
       }
+      spoken++;
+      const int hangover = follow_up || spoken >= LONG_AFTER_FRAMES
+                               ? LONG_HANGOVER_FRAMES
+                               : HANGOVER_FRAMES;
       if (energy < stop_rms) {
-        if (++silent >= HANGOVER_FRAMES) break;
+        if (++silent >= hangover) break;
       } else {
         silent = 0;
       }
