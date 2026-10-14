@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BLINDS_POSITION,
   MEASURE_CHOICES,
   MEASURE_HINT,
   addAction,
   addTrigger,
+  blindsPosition,
+  blindsTarget,
   daysText,
   defaultAction,
   defaultCondition,
@@ -26,6 +29,7 @@ import {
   toFlow,
   toggleDay,
   triggerChoices,
+  withBlindsTarget,
   withStep,
   withTriggerIds,
   withoutStep,
@@ -44,6 +48,7 @@ const quiet: DeviceState = {
   open: null,
   motion: null,
   illuminance_lux: null,
+  position: null,
 };
 
 function device(id: string, cls: string, state: Partial<DeviceState> = {}): Device {
@@ -583,6 +588,98 @@ describe("motion", () => {
         conditions: [{ kind: "motion_is", device: "", detected: true }],
       }),
     ).toEqual(["Trigger 1 needs a device.", "Condition 1 needs a device."]);
+  });
+});
+
+describe("blinds", () => {
+  const of = (value: Action) => summary({ role: "action", id: "x", index: 0, branch: null, value });
+  // The house above, with a blind in the office and a bedroom that has
+  // nothing but blinds.
+  const house = [
+    ...devices,
+    device("z2m:office/blind", "cover", { position: 0 }),
+    device("z2m:bedroom/left_blind", "cover", { position: 100 }),
+    device("z2m:bedroom/right_blind", "cover", { position: 40 }),
+  ];
+
+  it("reads like the server's sentence", () => {
+    expect(of({ do: "set_blinds", room: "living_room", position: 0 })).toBe(
+      "Close the living room blinds",
+    );
+    expect(of({ do: "set_blinds", room: "living_room", position: 100 })).toBe(
+      "Open the living room blinds",
+    );
+    expect(of({ do: "set_blinds", device: "office/blind", position: 40 })).toBe(
+      "Open the office blind to 40%",
+    );
+  });
+
+  it("starts on a room with blinds, closing them", () => {
+    expect(defaultAction("set_blinds", house)).toEqual({
+      do: "set_blinds",
+      room: "bedroom",
+      position: 0,
+    });
+  });
+
+  it("offers only rooms with a blind, and only blinds", () => {
+    expect(roomChoices(house, undefined, "set_blinds").map((c) => c.value)).toEqual([
+      "bedroom",
+      "office",
+    ]);
+    expect(deviceChoices(house, "set_blinds").map((c) => c.value)).toEqual([
+      "bedroom/left_blind",
+      "bedroom/right_blind",
+      "office/blind",
+    ]);
+  });
+
+  it("is not offered by the light actions, nor taken for a button", () => {
+    // A room is not one with lights because it has blinds: the server
+    // never counts a blind as a light.
+    expect(roomChoices(house, undefined, "set_room").map((c) => c.value)).not.toContain(
+      "bedroom",
+    );
+    for (const kind of ["set_device", "device_state", "device_is", "device_action"] as const) {
+      expect(deviceChoices(house, kind).map((c) => c.value)).not.toContain("office/blind");
+    }
+  });
+
+  it("switches between a room and one blind, keeping the position", () => {
+    const room: Action = { do: "set_blinds", room: "bedroom", position: 40 };
+    expect(blindsTarget(room)).toBe("room");
+    const one = withBlindsTarget(room, "device", house);
+    expect(one).toEqual({ do: "set_blinds", device: "bedroom/left_blind", position: 40 });
+    expect(blindsTarget(one)).toBe("device");
+    expect(withBlindsTarget(one, "room", house)).toEqual({
+      do: "set_blinds",
+      room: "bedroom",
+      position: 40,
+    });
+  });
+
+  it("reads a position as close, open or part of the way", () => {
+    expect(blindsPosition(0)).toBe("close");
+    expect(blindsPosition(100)).toBe("open");
+    expect(blindsPosition(40)).toBe("part");
+    expect(BLINDS_POSITION).toEqual({ close: 0, open: 100, part: 50 });
+  });
+
+  it("wants one target and a position the server takes", () => {
+    const rule = (action: Action): Draft => ({ ...garden, actions: [action] });
+    expect(problems(rule({ do: "set_blinds", room: "bedroom", position: 0 }))).toEqual([]);
+    expect(problems(rule({ do: "set_blinds", device: "office/blind", position: 40 }))).toEqual(
+      [],
+    );
+    expect(problems(rule({ do: "set_blinds", room: "", position: 0 }))).toEqual([
+      "Action 1 needs a room or a blind.",
+    ]);
+    expect(
+      problems(rule({ do: "set_blinds", room: "bedroom", device: "office/blind", position: 0 })),
+    ).toEqual(["Action 1 names a room and a blind; it takes one or the other."]);
+    expect(problems(rule({ do: "set_blinds", room: "bedroom", position: 150 }))).toEqual([
+      "Action 1: a blind opens 0 to 100%.",
+    ]);
   });
 });
 

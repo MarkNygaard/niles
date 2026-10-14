@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { api } from "@/lib/api";
@@ -30,6 +30,7 @@ function light(id: string): Device {
       open: null,
       motion: null,
       illuminance_lux: null,
+      position: null,
     },
   };
 }
@@ -84,5 +85,27 @@ describe("RoomDashboard", () => {
     await waitFor(() =>
       expect(screen.getByText("Kitchen")).toBeInTheDocument(),
     );
+  });
+
+  it("moves a blind by its name, and shows it moving before it answers", async () => {
+    const shade: Device = {
+      ...light("z2m:kitchen/blind"),
+      class: "cover",
+      state: { ...light("z2m:kitchen/blind").state, on: null, brightness: null, position: 0 },
+    };
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1"), shade]);
+    // Never answers, so what shows is the guess and not a refetch.
+    const setPosition = vi
+      .spyOn(api, "setPosition")
+      .mockReturnValue(new Promise<null>(() => {}));
+
+    renderDashboard();
+    fireEvent.click(await screen.findByRole("button", { name: "Lights in Kitchen" }));
+    expect(screen.getByText("Closed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
+
+    await waitFor(() => expect(setPosition).toHaveBeenCalledWith("kitchen", "blind", 100));
+    expect(await screen.findByText("Open", { selector: "div" })).toBeInTheDocument();
   });
 });

@@ -15,6 +15,9 @@ import {
   measured,
   boosted,
   boostEndsAt,
+  blindState,
+  blindsSummary,
+  withPosition,
 } from "./rooms";
 import type { Room } from "./rooms";
 import type { Device, DeviceState, Zone } from "./api";
@@ -31,6 +34,7 @@ function state(partial: Partial<DeviceState> = {}): DeviceState {
     open: null,
     motion: null,
     illuminance_lux: null,
+    position: null,
     ...partial,
   };
 }
@@ -603,5 +607,74 @@ describe("the order rooms come out in", () => {
       "bedroom",
       "living_room",
     ]);
+  });
+});
+
+describe("blinds", () => {
+  const blind = (name: string, position: number | null, room = "office") =>
+    device(`z2m:${room}/${name}`, { class: "cover", state: { position } });
+
+  it("keeps a blind out of the room's lights and its count", () => {
+    // An open blind is not a light that is on: counting it would turn
+    // a dark room's card orange and its press into "turn all off".
+    const [room] = roomsOf([
+      device("z2m:office/lamp", { state: { on: false } }),
+      blind("blind", 100),
+    ]);
+    expect(room.lights.map((d) => d.name)).toEqual(["lamp"]);
+    expect(room.blinds.map((d) => d.name)).toEqual(["blind"]);
+    expect(room.on).toBe(0);
+    expect(roomToggle(room)).toEqual({ on: true });
+    expect(roomSummary(room)).toBe("Off");
+  });
+
+  it("leaves blinds out of the house's lights", () => {
+    const rooms = roomsOf([
+      device("z2m:office/lamp", { state: { on: true } }),
+      blind("blind", 100),
+      blind("blind", 100, "bedroom"),
+    ]);
+    expect(houseSummary(rooms)).toBe("All 1 on");
+    expect(houseToggle(rooms)).toEqual({ on: false });
+  });
+
+  it("is never what a room or house command moves", () => {
+    const shade = blind("blind", 0);
+    expect(targets(shade, { scope: "house" })).toBe(false);
+    expect(targets(shade, { scope: "room", room: "office" })).toBe(false);
+  });
+
+  it("gives a room with only blinds a card, and says what they are doing", () => {
+    const rooms = roomsOf([blind("left", 0), blind("right", 40)]);
+    expect(rooms).toHaveLength(1);
+    expect(roomSummary(rooms[0])).toBe("1 of 2 blinds open");
+  });
+
+  it("names a blind's position the way it is said", () => {
+    expect(blindState(blind("blind", 0))).toBe("Closed");
+    expect(blindState(blind("blind", 100))).toBe("Open");
+    expect(blindState(blind("blind", 40))).toBe("40% open");
+    expect(blindState(blind("blind", null))).toBe("Not heard from yet");
+  });
+
+  it("sums several blinds up the way it does lights", () => {
+    expect(blindsSummary([blind("a", 0), blind("b", 0)])).toBe("2 blinds, all closed");
+    expect(blindsSummary([blind("a", 100), blind("b", 30)])).toBe("All 2 blinds open");
+    expect(blindsSummary([blind("a", 40)])).toBe("40% open");
+  });
+
+  it("shows the position asked for before the blind gets there", () => {
+    const moved = withPosition(blind("blind", 0), 60);
+    expect(moved.state.position).toBe(60);
+    expect(blindState(moved)).toBe("60% open");
+  });
+
+  it("names an unreachable blind rather than dropping it", () => {
+    const [room] = roomsOf([
+      device("z2m:office/lamp"),
+      device("z2m:office/blind", { class: "cover", available: false, state: { position: 0 } }),
+    ]);
+    expect(room.blinds).toEqual([]);
+    expect(room.unreachable).toEqual(["Blind"]);
   });
 });

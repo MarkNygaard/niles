@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Droplet, Music, PersonStanding, Power, Tv, X } from "lucide-react";
+import { Blinds, Droplet, Music, PersonStanding, Power, Tv, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -18,6 +18,7 @@ import { BulbOutlineGlyph } from "@/components/BulbGlyph";
 import { FlameGlyph } from "@/components/FlameGlyph";
 import { OpeningGlyph, openingLabel } from "@/components/OpeningGlyph";
 import { LightRow } from "@/components/LightRow";
+import { AllBlinds, BlindRow } from "@/components/BlindRow";
 import { PowerButton } from "@/components/PowerButton";
 import { TvRow, tvLine, tvOn } from "@/components/TvRow";
 import { musicLine, musicPlaying } from "@/components/MusicRow";
@@ -35,6 +36,8 @@ export interface RoomCardProps {
   disabled?: boolean;
   onSetRoom: (body: SetLight) => void;
   onSetLight: (light: Device, body: SetLight) => void;
+  /** One blind, or all of the room's, to a position: `0` closed. */
+  onSetBlinds: (blinds: Device[], position: number) => void;
   /** Absent when this instance has no tado connection. */
   onSetZone?: (body: SetZone) => void;
   /** The TV, in the room it stands in. */
@@ -126,12 +129,16 @@ export function RoomCard({
   disabled,
   onSetRoom,
   onSetLight,
+  onSetBlinds,
   onSetZone,
   tv,
   music,
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
+  // A room with blinds and no lights has nothing for the card to
+  // switch, so pressing it opens the room instead.
+  const switchable = room.lights.length > 0 || room.blinds.length === 0;
   const hasZone = room.zone !== undefined && onSetZone !== undefined;
   const [open, setOpen] = useState<"lights" | "heating" | null>(null);
   /**
@@ -179,12 +186,14 @@ export function RoomCard({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <PowerButton
-            on={lit}
-            label={`All lights in ${room.label}`}
-            disabled={disabled}
-            onToggle={() => onSetRoom(toggle)}
-          />
+          {switchable && (
+            <PowerButton
+              on={lit}
+              label={`All lights in ${room.label}`}
+              disabled={disabled}
+              onToggle={() => onSetRoom(toggle)}
+            />
+          )}
           {/* No close button on the drawer: it is dismissed by swiping
               it away, which is the gesture the handle is advertising. */}
           {!phone && (
@@ -205,6 +214,23 @@ export function RoomCard({
             light={light}
             disabled={disabled}
             onSet={(body) => onSetLight(light, body)}
+          />
+        ))}
+        {/* After the lights and never among them: the lights are what
+            the room's switch moves, and a blind is not one of them. */}
+        {room.blinds.length > 1 && (
+          <AllBlinds
+            room={room.label}
+            disabled={disabled}
+            onSet={(position) => onSetBlinds(room.blinds, position)}
+          />
+        )}
+        {room.blinds.map((blind) => (
+          <BlindRow
+            key={blind.id}
+            blind={blind}
+            disabled={disabled}
+            onSet={(position) => onSetBlinds([blind], position)}
           />
         ))}
         {/* Named rather than simply gone. A control that publishes to
@@ -337,7 +363,7 @@ export function RoomCard({
             texture in the card than to something drawn on it. Only
             when the room is dark: a lit room announces itself in
             colour and does not need telling twice. */}
-        {!lit && (
+        {!lit && switchable && (
           <Power
             aria-hidden
             className="pointer-events-none absolute top-3 right-3 h-1/3 w-1/3 text-black/10 sm:top-4 sm:right-4"
@@ -347,8 +373,12 @@ export function RoomCard({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`${room.label}, ${roomSummary(room)}. Turn all ${toggle.on ? "on" : "off"}.`}
-          onClick={() => onSetRoom(toggle)}
+          aria-label={
+            switchable
+              ? `${room.label}, ${roomSummary(room)}. Turn all ${toggle.on ? "on" : "off"}.`
+              : `${room.label}, ${roomSummary(room)}. Show its blinds.`
+          }
+          onClick={() => (switchable ? onSetRoom(toggle) : setOpen("lights"))}
           className={cn(
             // Tighter under the subtitle than around it, and only
             // where the tile is small: at two cards to a row the line
@@ -445,12 +475,16 @@ export function RoomCard({
         <div className="flex">
           <button
             type="button"
-            aria-label={`Lights in ${room.label}`}
-            title="Lights"
+            aria-label={`${switchable ? "Lights" : "Blinds"} in ${room.label}`}
+            title={switchable ? "Lights" : "Blinds"}
             onClick={() => setOpen("lights")}
             className={FOOT}
           >
-            <BulbOutlineGlyph className="size-6" />
+            {switchable ? (
+              <BulbOutlineGlyph className="size-6" />
+            ) : (
+              <Blinds aria-hidden className="size-6" />
+            )}
           </button>
           {hasZone && (
             <button

@@ -180,7 +180,7 @@ function Control({
  * when it lands, so it is sent there and then. That is also the only
  * way it gets sent at all on a touch screen — see `trackPress` below.
  */
-function CommitSlider({
+export function CommitSlider({
   label,
   value,
   min,

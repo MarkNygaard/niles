@@ -16,6 +16,7 @@ function state(partial: Partial<DeviceState> = {}): DeviceState {
     open: null,
     motion: null,
     illuminance_lux: null,
+    position: null,
     ...partial,
   };
 }
@@ -66,14 +67,24 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function blind(name: string, position: number | null): Device {
+  return device(name, "cover", state({ position }));
+}
+
 function setup(devices: Device[]) {
   const onSetRoom = vi.fn();
   const onSetLight = vi.fn();
+  const onSetBlinds = vi.fn();
   const [room] = roomsOf(devices);
   render(
-    <RoomCard room={room} onSetRoom={onSetRoom} onSetLight={onSetLight} />,
+    <RoomCard
+      room={room}
+      onSetRoom={onSetRoom}
+      onSetLight={onSetLight}
+      onSetBlinds={onSetBlinds}
+    />,
   );
-  return { onSetRoom, onSetLight };
+  return { onSetRoom, onSetLight, onSetBlinds };
 }
 
 describe("RoomCard", () => {
@@ -117,6 +128,7 @@ describe("RoomCard", () => {
         room={room}
         onSetRoom={vi.fn()}
         onSetLight={vi.fn()}
+        onSetBlinds={vi.fn()}
         tv={{
           info: {
             configured: true,
@@ -223,5 +235,62 @@ describe("RoomCard", () => {
     // A room with no radiator gets one button, not a dead second one.
     setup([light("ceiling", true)]);
     expect(screen.queryByRole("button", { name: /^Heating in / })).toBeNull();
+  });
+});
+
+describe("RoomCard with blinds", () => {
+  it("does not count an open blind as a light that is on", () => {
+    setup([light("ceiling", false), blind("blind", 100)]);
+    expect(
+      screen.getByRole("button", { name: "Kitchen, Off. Turn all on." }),
+    ).toBeInTheDocument();
+  });
+
+  it("gives each blind its own row, apart from the lights", () => {
+    setup([light("ceiling", true), blind("blind", 40)]);
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    expect(screen.getByText("40% open")).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Blind position" })).toBeInTheDocument();
+    // The blind has no power button: it is not one of the lights.
+    expect(screen.queryByRole("button", { name: /^Blind —/ })).toBeNull();
+  });
+
+  it("opens and closes one blind", () => {
+    const { onSetBlinds } = setup([light("ceiling", true), blind("blind", 0)]);
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
+    expect(onSetBlinds).toHaveBeenLastCalledWith([expect.objectContaining({ name: "blind" })], 100);
+    fireEvent.click(screen.getByRole("button", { name: "Close Blind" }));
+    expect(onSetBlinds).toHaveBeenLastCalledWith([expect.objectContaining({ name: "blind" })], 0);
+  });
+
+  it("offers every blind at once only where there are several", () => {
+    const { onSetBlinds } = setup([
+      light("ceiling", true),
+      blind("left_blind", 0),
+      blind("right_blind", 0),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    fireEvent.click(screen.getByRole("button", { name: "Open all blinds in Kitchen" }));
+    expect(onSetBlinds).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ name: "left_blind" }),
+        expect.objectContaining({ name: "right_blind" }),
+      ],
+      100,
+    );
+  });
+
+  it("has no open-all for a single blind", () => {
+    setup([light("ceiling", true), blind("blind", 0)]);
+    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    expect(screen.queryByRole("button", { name: /all blinds/ })).toBeNull();
+  });
+
+  it("opens a room with only blinds rather than switching nothing", () => {
+    const { onSetRoom } = setup([blind("blind", 0)]);
+    fireEvent.click(screen.getByRole("button", { name: /^Kitchen, Closed/ }));
+    expect(onSetRoom).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Open Blind" })).toBeInTheDocument();
   });
 });

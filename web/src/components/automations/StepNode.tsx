@@ -3,6 +3,7 @@ import type { Node, NodeProps } from "@xyflow/react";
 import {
   AlarmClock,
   BellRing,
+  Blinds,
   Clock,
   DoorClosed,
   DoorOpen,
@@ -43,6 +44,7 @@ export const KIND_ICON: Record<StepKind, React.ReactNode> = {
   triggered_by: <ListFilter />,
   set_room: <LampCeiling />,
   set_device: <Lamp />,
+  set_blinds: <Blinds />,
   notify: <BellRing />,
   delay: <Hourglass />,
   if: <GitBranch />,

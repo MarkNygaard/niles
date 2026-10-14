@@ -16,6 +16,7 @@ const quiet: DeviceState = {
   open: null,
   motion: null,
   illuminance_lux: null,
+  position: null,
 };
 
 function device(id: string, cls: string, state: Partial<DeviceState> = {}): Device {

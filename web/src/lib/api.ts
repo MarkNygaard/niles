@@ -334,6 +334,8 @@ export interface DeviceState {
   motion: boolean | null;
   /** What a motion sensor also reads; below about 30 is dim. */
   illuminance_lux: number | null;
+  /** A blind: `0` closed, `100` fully open. */
+  position: number | null;
 }
 
 /** A device as `GET /devices` reports it. */
@@ -521,6 +523,9 @@ export type Action =
     }
   /** Every light in the room. */
   | { do: "set_room"; room: string; on?: boolean; brightness?: number; kelvin?: number }
+  /** Every blind in a room, or one blind: exactly one of the two.
+      `position` is 0 closed to 100 open. */
+  | { do: "set_blinds"; room?: string; device?: string; position: number }
   | {
       do: "notify";
       body: string;
@@ -1045,6 +1050,18 @@ export const api = {
         `${device.source}:${device.name}`,
       )}`,
       { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
+   * Move one blind, `0` closed to `100` open.
+   *
+   * By its bare name, not `source:name` like a light: only Z2M has
+   * blinds, so there is nothing to tell apart.
+   */
+  setPosition: (room: string, device: string, position: number) =>
+    request<null>(
+      `/rooms/${encodeURIComponent(room)}/${encodeURIComponent(device)}/position`,
+      { method: "POST", body: JSON.stringify({ position }) },
     ),
 
   /**
