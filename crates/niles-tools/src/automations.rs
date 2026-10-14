@@ -245,14 +245,15 @@ fn rule_schema() -> Value {
     });
     let action = json!({
         "type": "object",
-        "description": "do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=notify: say body in a room (a room with a satellite). do=delay: wait hours/minutes/seconds, then go on. do=if: conditions, then (actions), else (actions) — at most 3 deep.",
+        "description": "do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=set_blinds: blinds/curtains to a position (0 closed, 100 open), one (device) or every one in a room (room). do=notify: say body in a room (a room with a satellite). do=delay: wait hours/minutes/seconds, then go on. do=if: conditions, then (actions), else (actions) — at most 3 deep.",
         "properties": {
-            "do": { "type": "string", "enum": ["set_room", "set_device", "notify", "delay", "if"] },
+            "do": { "type": "string", "enum": ["set_room", "set_device", "set_blinds", "notify", "delay", "if"] },
             "room": { "type": "string" },
             "device": device,
             "on": { "type": "boolean" },
             "brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
             "kelvin": { "type": "integer", "minimum": 2000, "maximum": 6500 },
+            "position": { "type": "integer", "minimum": 0, "maximum": 100 },
             "body": { "type": "string" },
             "hours": { "type": "integer", "minimum": 0 },
             "minutes": { "type": "integer", "minimum": 0 },
@@ -419,6 +420,7 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
             match action {
                 ActionDto::SetDevice { device, .. } => devices.push(device),
                 ActionDto::SetRoom { room, .. } => lit.push(room),
+                ActionDto::SetBlinds { device, .. } => devices.extend(device.as_deref()),
                 ActionDto::If {
                     conditions,
                     then,

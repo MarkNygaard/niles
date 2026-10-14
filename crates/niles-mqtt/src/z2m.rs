@@ -88,6 +88,9 @@ impl Z2mDevice {
             if Self::expose_is_light(expose) {
                 return DeviceClass::Light;
             }
+            if expose.expose_type.as_deref() == Some("cover") {
+                return DeviceClass::Cover;
+            }
             if Self::expose_is_outlet(expose) {
                 has_outlet = true;
             }
@@ -213,6 +216,10 @@ pub struct Z2mState {
     /// `illuminance`; 2.x sends lux in `illuminance` and nothing here.
     pub illuminance_lux: Option<f32>,
     pub illuminance: Option<f32>,
+    /// A blind: `0` shut, `100` open — Zigbee2MQTT's own convention,
+    /// which a blind mounted the other way round fixes with its
+    /// `invert_cover` option rather than here.
+    pub position: Option<f32>,
 }
 
 impl Z2mState {
@@ -228,6 +235,7 @@ impl Z2mState {
             open: self.contact.map(|shut| !shut),
             motion: self.occupancy.or(self.presence),
             illuminance_lux: self.illuminance_lux.or(self.illuminance),
+            position: self.position.map(|p| p.round().clamp(0.0, 100.0) as u8),
         }
     }
 
@@ -255,6 +263,7 @@ impl Z2mState {
             || self.presence.is_some()
             || self.illuminance_lux.is_some()
             || self.illuminance.is_some()
+            || self.position.is_some()
     }
 }
 
@@ -485,6 +494,45 @@ mod tests {
             ..Default::default()
         };
         assert!(opened.has_actionable_state_field());
+    }
+
+    #[test]
+    fn an_ikea_blind_is_a_cover_and_says_where_it_is() {
+        // What an IKEA FYRTUR/KADRILJ (E1757, E1926) exposes.
+        let z2m = Z2mDevice {
+            ieee_address: "0x1".into(),
+            friendly_name: "living_room/left_blind".into(),
+            device_type: "EndDevice".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![
+                    Z2mExpose {
+                        expose_type: Some("cover".into()),
+                        features: vec![Z2mExpose {
+                            expose_type: Some("numeric".into()),
+                            property: Some("position".into()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    Z2mExpose {
+                        expose_type: Some("numeric".into()),
+                        property: Some("battery".into()),
+                        ..Default::default()
+                    },
+                ],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Cover);
+        let device = z2m.to_device().unwrap();
+        assert!(!device.is_switchable(), "a blind is not one of the lights");
+        assert!(device.is_cover());
+
+        let state: Z2mState = serde_json::from_str(r#"{"position":30,"state":"OPEN"}"#).unwrap();
+        assert!(state.has_actionable_state_field());
+        let state = state.to_device_state();
+        assert_eq!(state.position, Some(30));
+        // A blind's OPEN is not a light's ON.
+        assert_eq!(state.on, None);
     }
 
     #[test]

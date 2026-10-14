@@ -19,6 +19,7 @@ import {
   optimistic,
   roomsOf,
   targets,
+  withPosition,
 } from "@/lib/rooms";
 import type { Target } from "@/lib/rooms";
 
@@ -90,6 +91,39 @@ export function RoomDashboard() {
         failure instanceof ApiError ? failure.message : String(failure),
       );
     },
+  });
+
+  // One request per blind: the server has no room-wide endpoint for
+  // them, and a room has two or three at most.
+  const blinds = useMutation({
+    mutationFn: ({ blinds, position }: { blinds: Device[]; position: number }) =>
+      Promise.all(
+        blinds.map((blind) => api.setPosition(blind.room, blind.name, position)),
+      ).then(() => undefined),
+    onMutate: async ({ blinds, position }) => {
+      setError(null);
+      await queryClient.cancelQueries({ queryKey: ["devices"] });
+      const previous = queryClient.getQueryData<Device[]>(["devices"]);
+      const moving = new Set(blinds.map((blind) => blind.id));
+      queryClient.setQueryData<Device[]>(["devices"], (current) =>
+        current?.map((device) =>
+          moving.has(device.id) ? withPosition(device, position) : device,
+        ),
+      );
+      return { previous };
+    },
+    onError: (failure, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["devices"], context.previous);
+      }
+      setError(
+        failure instanceof ApiError ? failure.message : String(failure),
+      );
+    },
+    // No refetch once the requests settle: a blind takes seconds to
+    // travel, so asking straight away reads where it was and snaps the
+    // slider back. It reports its position over the event stream as it
+    // moves, which corrects a wrong guess on its own.
   });
 
   const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });
@@ -284,6 +318,9 @@ export function RoomDashboard() {
             }
             onSetLight={(light, body) =>
               command.mutate({ target: { scope: "light", light }, body })
+            }
+            onSetBlinds={(chosen, position) =>
+              blinds.mutate({ blinds: chosen, position })
             }
             onSetZone={
               room.zone

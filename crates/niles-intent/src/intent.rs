@@ -65,6 +65,16 @@ pub enum Intent {
         on: bool,
     },
 
+    /// "close the living room blinds", "open the blinds halfway", "set
+    /// the office blind to 40%". `room` is as said; none means the room
+    /// the satellite is in, unless `everywhere` ("close all the blinds").
+    /// `position` is `0` shut to `100` open.
+    BlindsSet {
+        room: Option<String>,
+        everywhere: bool,
+        position: u8,
+    },
+
     /// "dim the kitchen lights to 30%" / "set the bedroom light to 50 percent"
     ///
     /// `percent` is `0..=100`. The router rejects values outside that

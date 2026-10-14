@@ -60,6 +60,7 @@ pub fn is_actionable(target: &DeviceState) -> bool {
         || target.brightness.is_some()
         || target.color_temp_kelvin.is_some()
         || target.rgb.is_some()
+        || target.position.is_some()
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +73,9 @@ struct Z2mSetPayload {
     color_temp: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<Z2mColor>,
+    /// A blind's opening, `0..=100`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position: Option<u8>,
     /// Seconds, and fractional ones are allowed — which is why this is
     /// a float and not the `u16` the config keeps.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,6 +106,7 @@ impl Z2mSetPayload {
                 s.color_temp_kelvin.and_then(kelvin_to_mireds)
             },
             color: s.rgb.map(|[r, g, b]| Z2mColor { r, g, b }),
+            position: s.position.map(|p| p.min(100)),
             transition: (!fade.is_zero()).then_some(fade.as_secs_f32()),
         }
     }
@@ -135,6 +140,20 @@ mod tests {
     }
 
     // ---- conversions ---------------------------------------------
+
+    #[test]
+    fn a_blind_is_sent_its_position() {
+        let (topic, payload) = format_set_command(
+            "zigbee2mqtt",
+            &id("office", "blind"),
+            &DeviceState {
+                position: Some(40),
+                ..Default::default()
+            },
+        );
+        assert_eq!(topic, "zigbee2mqtt/office/blind/set");
+        assert_eq!(payload, r#"{"position":40}"#);
+    }
 
     #[test]
     fn a_fade_travels_as_transition_in_seconds() {
@@ -243,6 +262,7 @@ mod tests {
                 open: None,
                 motion: Some(true),
                 illuminance_lux: Some(120.0),
+                position: None,
             },
         );
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();

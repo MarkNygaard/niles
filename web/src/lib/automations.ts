@@ -12,7 +12,7 @@ import type {
   Run,
   Trigger,
 } from "@/lib/api";
-import { humanize } from "@/lib/rooms";
+import { humanize, isBlind } from "@/lib/rooms";
 
 /**
  * Rules as the Automations page draws and edits them.
@@ -67,7 +67,14 @@ export const CONDITION_KINDS: ConditionKind[] = [
   "presence_is",
   "triggered_by",
 ];
-export const ACTION_KINDS: ActionKind[] = ["set_room", "set_device", "notify", "delay", "if"];
+export const ACTION_KINDS: ActionKind[] = [
+  "set_room",
+  "set_device",
+  "set_blinds",
+  "notify",
+  "delay",
+  "if",
+];
 
 /** What each kind is called on a node, in the palette and in the
     trigger picker. By role, because a sun trigger and a sun condition
@@ -101,6 +108,7 @@ export const KIND_LABEL: {
   action: {
     set_room: "Lights in a room",
     set_device: "One device",
+    set_blinds: "Blinds",
     notify: "Say something",
     delay: "Wait",
     if: "If, then, else",
@@ -726,6 +734,16 @@ function actionText(a: Action, triggers: Trigger[]): string {
       return setting(device(a.device, "a device"), a);
     case "set_room":
       return setting(a.room ? `${humanize(a.room)} lights` : "a room's lights", a);
+    case "set_blinds": {
+      const what = a.device
+        ? `the ${deviceLabel(a.device).toLowerCase()}`
+        : a.room
+          ? `the ${humanize(a.room).toLowerCase()} blinds`
+          : "the blinds";
+      if (a.position <= 0) return `Close ${what}`;
+      if (a.position >= 100) return `Open ${what}`;
+      return `Open ${what} to ${a.position}%`;
+    }
     case "notify": {
       const said = a.body ? `Say "${a.body}"` : "Say something";
       return a.room ? `${said} in ${humanize(a.room)}` : said;
@@ -771,7 +789,7 @@ export function triggerChoices(triggers: Trigger[]): Choice[] {
 }
 
 /** What a device picker for this kind of step offers. */
-type Use = "contact" | "motion" | "switchable" | "button" | "reading";
+type Use = "contact" | "motion" | "switchable" | "button" | "reading" | "blind";
 
 const USE: Partial<Record<StepKind, Use>> = {
   contact: "contact",
@@ -781,6 +799,7 @@ const USE: Partial<Record<StepKind, Use>> = {
   device_state: "switchable",
   device_is: "switchable",
   set_device: "switchable",
+  set_blinds: "blind",
   device_action: "button",
   numeric: "reading",
 };
@@ -820,14 +839,16 @@ const MEASURES: Measure[] = ["temperature", "humidity", "battery", "brightness",
 function fits(device: Device, use: Use, measure?: Measure): boolean {
   if (use === "contact") return isContact(device);
   if (use === "motion") return isMotion(device);
+  if (use === "blind") return isBlind(device);
   if (use === "reading") {
     return measure ? reads(device, measure) : MEASURES.some((m) => reads(device, m));
   }
   const switchable = ["light", "outlet", "switch"].includes(device.class);
   if (use === "switchable") return switchable;
   // A remote or a dimmer has no class of its own: it is whatever is
-  // left once lights, plugs, doors and motion sensors are taken out.
-  return !switchable && !isContact(device) && !isMotion(device);
+  // left once lights, plugs, doors, motion sensors and blinds are taken
+  // out.
+  return !switchable && !isContact(device) && !isMotion(device) && !isBlind(device);
 }
 
 export interface Choice {
@@ -863,9 +884,21 @@ export function deviceChoices(
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
-/** Every room something is in, and `current` even when nothing is. */
-export function roomChoices(devices: Device[], current?: string): Choice[] {
-  const rooms = new Set(devices.map((d) => d.room).filter(Boolean));
+/**
+ * Every room something is in, and `current` even when nothing is.
+ *
+ * For the blinds action, only rooms with a blind in them. For the
+ * lights in a room, a room is not offered on the strength of its
+ * blinds: the server never counts one as a light.
+ */
+export function roomChoices(devices: Device[], current?: string, kind?: StepKind): Choice[] {
+  const counted =
+    kind === "set_blinds"
+      ? devices.filter(isBlind)
+      : kind === "set_room"
+        ? devices.filter((d) => !isBlind(d))
+        : devices;
+  const rooms = new Set(counted.map((d) => d.room).filter(Boolean));
   if (current) rooms.add(current);
   return [...rooms]
     .map((value) => ({ value, label: humanize(value) }))
@@ -945,9 +978,11 @@ export function defaultAction(
 ): Action {
   switch (kind) {
     case "set_room":
-      return { do: kind, room: roomChoices(devices)[0]?.value ?? "", on: true };
+      return { do: kind, room: roomChoices(devices, undefined, kind)[0]?.value ?? "", on: true };
     case "set_device":
       return { do: kind, device: first(devices, kind), on: true };
+    case "set_blinds":
+      return { do: kind, room: roomChoices(devices, undefined, kind)[0]?.value ?? "", position: 0 };
     case "notify":
       return { do: kind, body: "" };
     case "delay":
@@ -962,6 +997,46 @@ export function defaultAction(
       };
   }
 }
+
+type SetBlinds = Extract<Action, { do: "set_blinds" }>;
+
+/** What a blinds action is aimed at: every blind in a room, or one. */
+export type BlindsTarget = "room" | "device";
+
+export function blindsTarget(a: SetBlinds): BlindsTarget {
+  return a.device !== undefined ? "device" : "room";
+}
+
+/** The action aimed the other way, at the first room or blind that
+    fits. The other field goes: the server takes one, never both. */
+export function withBlindsTarget(a: SetBlinds, target: BlindsTarget, devices: Device[]): SetBlinds {
+  if (blindsTarget(a) === target) return a;
+  return target === "device"
+    ? { do: "set_blinds", device: first(devices, "set_blinds"), position: a.position }
+    : {
+        do: "set_blinds",
+        room: roomChoices(devices, undefined, "set_blinds")[0]?.value ?? "",
+        position: a.position,
+      };
+}
+
+/** A position the way the picker offers it: the two ends by name,
+    anything between as a percentage. */
+export type BlindsPosition = "close" | "open" | "part";
+
+export function blindsPosition(position: number): BlindsPosition {
+  if (position <= 0) return "close";
+  if (position >= 100) return "open";
+  return "part";
+}
+
+/** Where picking each lands. Part-open starts halfway, which is what
+    "open them halfway" asks for and the easiest place to move from. */
+export const BLINDS_POSITION: Record<BlindsPosition, number> = {
+  close: 0,
+  open: 100,
+  part: 50,
+};
 
 /**
  * A new rule, already the one most people come to make first: when
@@ -1064,6 +1139,17 @@ function actionProblems(
         return [...(a.device ? [] : [`${where} needs a device.`]), ...levels(where, a)];
       case "set_room":
         return [...(a.room ? [] : [`${where} needs a room.`]), ...levels(where, a)];
+      case "set_blinds":
+        return [
+          ...(a.room && a.device
+            ? [`${where} names a room and a blind; it takes one or the other.`]
+            : a.room || a.device
+              ? []
+              : [`${where} needs a room or a blind.`]),
+          ...(Number.isInteger(a.position) && a.position >= 0 && a.position <= 100
+            ? []
+            : [`${where}: a blind opens 0 to 100%.`]),
+        ];
       case "notify":
         return a.body.trim() ? [] : [`${where} needs something to say.`];
       case "delay":

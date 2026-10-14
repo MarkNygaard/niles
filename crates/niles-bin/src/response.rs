@@ -59,6 +59,43 @@ pub fn light_set(room: &str, on: bool) -> String {
     )
 }
 
+/// "Closing the living room blinds." / "Office blind to 40%."
+///
+/// `room` is as said; none is the room the satellite is in, and
+/// `everywhere` every blind in the house.
+pub fn blinds(room: Option<&str>, everywhere: bool, count: usize, position: u8) -> String {
+    let noun = if count == 1 { "blind" } else { "blinds" };
+    let what = match (room, everywhere) {
+        (_, true) => format!("all the {noun}"),
+        (Some(room), false) => format!("the {} {noun}", spoken_room(room)),
+        (None, false) => format!("the {noun}"),
+    };
+    match position {
+        0 => format!("Closing {what}."),
+        100 => format!("Opening {what}."),
+        p => format!("{} to {p}%.", capitalize_first(&what)),
+    }
+}
+
+#[cfg(test)]
+mod blinds_tests {
+    use super::blinds;
+
+    #[test]
+    fn says_what_the_blinds_are_doing() {
+        assert_eq!(
+            blinds(Some("living room"), false, 2, 0),
+            "Closing the living room blinds."
+        );
+        assert_eq!(
+            blinds(Some("office"), false, 1, 100),
+            "Opening the office blind."
+        );
+        assert_eq!(blinds(None, false, 2, 40), "The blinds to 40%.");
+        assert_eq!(blinds(None, true, 3, 0), "Closing all the blinds.");
+    }
+}
+
 /// "Kitchen lights to 30%."
 pub fn light_dim(room: &str, percent: u8) -> String {
     format!(

@@ -16,6 +16,7 @@ function light(room: string, on: boolean): Device {
     open: null,
     motion: null,
     illuminance_lux: null,
+    position: null,
   };
   return {
     id: `z2m:${room}/light`,

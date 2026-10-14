@@ -334,6 +334,22 @@ fn action(step: &ActionDto, names: &[(String, String)]) -> String {
             *brightness,
             *kelvin,
         ),
+        ActionDto::SetBlinds {
+            device,
+            room,
+            position,
+        } => {
+            let what = match (device, room) {
+                (Some(device), _) => thing(device),
+                (None, Some(room)) => format!("the {} blinds", words(room)),
+                (None, None) => "the blinds".into(),
+            };
+            match position {
+                0 => format!("close {what}"),
+                100 => format!("open {what}"),
+                p => format!("open {what} to {p}%"),
+            }
+        }
         ActionDto::Notify { body, room, .. } => match room {
             Some(room) => format!("say \"{body}\" in the {}", words(room)),
             None => format!("say \"{body}\""),
@@ -409,6 +425,21 @@ mod tests {
                 "actions": [{ "do": "set_room", "room": "office", "on": false }],
             })),
             "When the office door opens, turn off the office lights."
+        );
+    }
+
+    #[test]
+    fn says_the_blinds_rule() {
+        assert_eq!(
+            said(json!({
+                "id": "r",
+                "triggers": [{ "type": "sun", "event": "sunset" }],
+                "actions": [
+                    { "do": "set_blinds", "room": "living_room", "position": 0 },
+                    { "do": "set_blinds", "device": "office/blind", "position": 30 }
+                ],
+            })),
+            "When the sun sets, close the living room blinds, then open the office blind to 30%."
         );
     }
 

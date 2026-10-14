@@ -79,6 +79,7 @@ impl DeviceRegistry {
         s.open = partial.open.or(s.open);
         s.motion = partial.motion.or(s.motion);
         s.illuminance_lux = partial.illuminance_lux.or(s.illuminance_lux);
+        s.position = partial.position.or(s.position);
         true
     }
 

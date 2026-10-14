@@ -188,6 +188,9 @@ pub struct DeviceState {
     pub motion: Option<bool>,
     /// Light falling on a sensor, in lux.
     pub illuminance_lux: Option<f32>,
+    /// A blind or curtain: how far open, `0` shut and `100` all the way
+    /// open. Settable, unlike the readings above.
+    pub position: Option<u8>,
 }
 
 /// What a light can actually be told to do.
@@ -226,6 +229,9 @@ pub enum DeviceClass {
     /// A motion sensor. Like a door, its own class from the metadata,
     /// so it is one before anybody has walked past it.
     Motion,
+    /// A blind, curtain or shutter: it opens, closes and stops partway,
+    /// and is never one of "the lights".
+    Cover,
     Sensor,
     Unknown,
 }
@@ -270,6 +276,10 @@ impl Device {
     /// True if this device is classified as a light.
     pub fn is_light(&self) -> bool {
         matches!(self.class, DeviceClass::Light)
+    }
+
+    pub fn is_cover(&self) -> bool {
+        matches!(self.class, DeviceClass::Cover)
     }
 
     /// True if a switch can turn this device on/off — lights and on/off

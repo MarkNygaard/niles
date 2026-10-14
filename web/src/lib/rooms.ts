@@ -24,6 +24,24 @@ export function isDimmable(device: Device): boolean {
   return device.class === "light";
 }
 
+/**
+ * A blind. Never one of the lights: the server keeps it out of every
+ * room toggle and scene, and the page has to agree or "all off" would
+ * read as closing the curtains.
+ */
+export function isBlind(device: Device): boolean {
+  return device.class === "cover";
+}
+
+/** How a blind reads under its name. */
+export function blindState(blind: Device): string {
+  const position = blind.state.position;
+  if (position === null || position === undefined) return "Not heard from yet";
+  if (position <= 0) return "Closed";
+  if (position >= 100) return "Open";
+  return `${position}% open`;
+}
+
 export interface Room {
   /** The id Niles uses, and what the API is addressed by. */
   name: string;
@@ -32,6 +50,8 @@ export interface Room {
   lights: Device[];
   /** How many of them are reporting on. */
   on: number;
+  /** The blinds the source can reach, kept apart from the lights. */
+  blinds: Device[];
   /**
    * The names of the ones it cannot.
    *
@@ -74,6 +94,8 @@ export interface Opening {
  *
  * Rooms without a light are left out. The dashboard is for controlling
  * lights, and a card you can't press is a card that only takes up room.
+ * A blind is the exception: it is something to press, and the card is
+ * the only place in the app it can be pressed.
  *
  * `order` is the arrangement somebody chose, by room name. Rooms it
  * does not mention keep the alphabet and follow the ones it does: a
@@ -106,14 +128,18 @@ export function roomsOf(
         .filter(isControllable)
         .sort((a, b) => a.name.localeCompare(b.name));
       const lights = controllable.filter((d) => d.available !== false);
+      const blinds = all
+        .filter(isBlind)
+        .sort((a, b) => a.name.localeCompare(b.name));
       return {
         name,
         label: humanize(name),
         lights,
-        unreachable: controllable
+        unreachable: [...controllable, ...blinds]
           .filter((d) => d.available === false)
           .map((d) => humanize(d.name)),
         on: lights.filter((light) => light.state.on === true).length,
+        blinds: blinds.filter((d) => d.available !== false),
         zone: zones.find((z) => z.room === name),
         temperature: firstReported(all, "temperature_celsius"),
         humidity: firstReported(all, "humidity_percent"),
@@ -123,7 +149,7 @@ export function roomsOf(
     })
     .filter(
       (room) =>
-        room.lights.length + room.unreachable.length > 0 ||
+        room.lights.length + room.blinds.length + room.unreachable.length > 0 ||
         room.zone !== undefined,
     )
     .sort(
@@ -283,12 +309,32 @@ export function subtitle(room: Room): string {
 
 /** How the card reads under the room's name. */
 export function roomSummary(room: Room): string {
+  // Only a room with no lights talks about its blinds: "0 lights, all
+  // off" says nothing, and beside lights the colour already says enough.
+  if (room.lights.length === 0 && room.blinds.length > 0) {
+    return blindsSummary(room.blinds);
+  }
   if (room.lights.length === 1) {
     return room.on === 1 ? "On" : "Off";
   }
   if (room.on === 0) return `${room.lights.length} lights, all off`;
   if (room.on === room.lights.length) return `All ${room.on} on`;
   return `${room.on} of ${room.lights.length} on`;
+}
+
+/** The blinds, the way the lights are summed up: any opening counts. */
+export function blindsSummary(blinds: Device[]): string {
+  if (blinds.length === 1) return blindState(blinds[0]);
+  const open = blinds.filter((b) => (b.state.position ?? 0) > 0).length;
+  if (open === 0) return `${blinds.length} blinds, all closed`;
+  if (open === blinds.length) return `All ${open} blinds open`;
+  return `${open} of ${blinds.length} blinds open`;
+}
+
+/** A blind as it will be once the command lands, for the same reason
+    as `optimistic`. */
+export function withPosition(blind: Device, position: number): Device {
+  return { ...blind, state: { ...blind.state, position } };
 }
 
 /**

@@ -12,6 +12,7 @@ import { Adder } from "@/components/automations/Palette";
 import { KIND_ICON } from "@/components/automations/StepNode";
 import {
   ACTION_KINDS,
+  BLINDS_POSITION,
   CONDITION_KINDS,
   DAYS,
   KIND_LABEL,
@@ -19,6 +20,8 @@ import {
   MEASURE_HINT,
   TRIGGER_KINDS,
   addAction,
+  blindsPosition,
+  blindsTarget,
   defaultAction,
   defaultCondition,
   defaultTrigger,
@@ -32,10 +35,19 @@ import {
   stepAt,
   toggleDay,
   triggerChoices,
+  withBlindsTarget,
   withStep,
   withoutStep,
 } from "@/lib/automations";
-import type { ActionKind, Branch, Draft, Step, StepKind } from "@/lib/automations";
+import type {
+  ActionKind,
+  BlindsPosition,
+  BlindsTarget,
+  Branch,
+  Draft,
+  Step,
+  StepKind,
+} from "@/lib/automations";
 import type { Action, Condition, Day, Device, Duration, Measure, Trigger } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -590,6 +602,7 @@ function ActionFields({
         <>
           <RoomField
             label="Every light in"
+            kind="set_room"
             value={value.room}
             devices={devices}
             onChange={(room) => onChange({ ...value, room: room ?? "" })}
@@ -597,6 +610,71 @@ function ActionFields({
           <LevelFields value={value} onChange={(next) => onChange({ ...value, ...next })} />
         </>
       );
+    case "set_blinds": {
+      const position = blindsPosition(value.position);
+      return (
+        <>
+          <Choices
+            label="Which"
+            value={blindsTarget(value)}
+            options={[
+              { value: "room", label: "All in a room" },
+              { value: "device", label: "One blind" },
+            ]}
+            onChange={(next) => onChange(withBlindsTarget(value, next as BlindsTarget, devices))}
+          />
+          {blindsTarget(value) === "room" ? (
+            <RoomField
+              label="Every blind in"
+              kind="set_blinds"
+              value={value.room}
+              devices={devices}
+              onChange={(room) => onChange({ ...value, room: room ?? "" })}
+            />
+          ) : (
+            <DeviceField
+              label="Blind"
+              kind="set_blinds"
+              value={value.device}
+              devices={devices}
+              onChange={(device) => onChange({ ...value, device: device ?? "" })}
+            />
+          )}
+          <Choices
+            label="To"
+            value={position}
+            options={[
+              { value: "close", label: "Close" },
+              { value: "open", label: "Open" },
+              { value: "part", label: "Part open" },
+            ]}
+            onChange={(next) => {
+              // Pressing "Part open" again must not throw away the
+              // percentage already typed in.
+              if (next !== position) {
+                onChange({ ...value, position: BLINDS_POSITION[next as BlindsPosition] });
+              }
+            }}
+          />
+          {position === "part" && (
+            <Field label="Open (%)">
+              <Input
+                type="number"
+                inputMode="numeric"
+                aria-label="Open"
+                min={1}
+                max={99}
+                value={value.position}
+                onChange={(e) => {
+                  const next = numberOrNothing(e.target.value);
+                  if (next !== undefined) onChange({ ...value, position: next });
+                }}
+              />
+            </Field>
+          )}
+        </>
+      );
+    }
     case "notify":
       return (
         <>
@@ -1110,20 +1188,23 @@ function DeviceField({
   );
 }
 
+/** `kind` narrows the rooms to the ones the step can act on. */
 function RoomField({
   label,
+  kind,
   value,
   devices,
   any,
   onChange,
 }: {
   label: string;
+  kind?: StepKind;
   value: string | undefined;
   devices: Device[];
   any?: string;
   onChange: (room: string | null) => void;
 }) {
-  const choices = roomChoices(devices, value || undefined);
+  const choices = roomChoices(devices, value || undefined, kind);
   return (
     <PickField
       label={label}

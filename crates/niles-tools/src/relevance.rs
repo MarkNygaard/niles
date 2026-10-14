@@ -42,6 +42,12 @@ struct Group {
 const GROUPS: &[Group] = &[
     Group {
         keywords: &[
+            "blind", "blinds", "curtain", "curtains", "shade", "shades", "shutter", "shutters",
+        ],
+        tools: &["set_blinds"],
+    },
+    Group {
+        keywords: &[
             "tv",
             "television",
             "telly",
