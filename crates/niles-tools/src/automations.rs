@@ -12,7 +12,7 @@ use crate::registry::ToolRegistry;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use niles_automations::store::DEFAULT_SOURCE;
-use niles_automations::{AutomationStore, Rule, RunLog, sentence};
+use niles_automations::{AutomationStore, Measure, Rule, RunLog, sentence};
 use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, TriggerDto, TriggerKind};
 use niles_core::{DeviceId, DeviceRegistry, RoomName};
 use serde_json::{Value, json};
@@ -217,13 +217,17 @@ fn rule_schema() -> Value {
             "seconds": { "type": "integer", "minimum": 0 }
         }
     });
+    let measure = json!({
+        "type": "string",
+        "description": "temperature, humidity, battery, brightness, illuminance (lux; below about 30 is dim), or any reading name the device reports, e.g. price, power, energy, co2 — get_device_state lists a device's readings and their units."
+    });
     let days = json!({
         "type": "array",
         "items": { "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
     });
     let condition = json!({
         "type": "object",
-        "description": "kind=time_of_day: after/before HH:MM (may wrap midnight), optional days. kind=sun: after and/or before sunrise|sunset, with after_offset_minutes/before_offset_minutes (after sunset + before sunrise = while it is dark). kind=device_is: a device on/off. kind=contact_is: a door open/closed. kind=motion_is: a motion sensor seeing somebody (detected=true) or not. kind=numeric: a reading (measure temperature|humidity|battery|brightness|illuminance — illuminance is lux; below about 30 is dim) above and/or below a value. kind=presence_is: state home|away. kind=triggered_by: which of the rule's triggers (by id) started it — for a rule with several triggers doing different things.",
+        "description": "kind=time_of_day: after/before HH:MM (may wrap midnight), optional days. kind=sun: after and/or before sunrise|sunset, with after_offset_minutes/before_offset_minutes (after sunset + before sunrise = while it is dark). kind=device_is: a device on/off. kind=contact_is: a door open/closed. kind=motion_is: a motion sensor seeing somebody (detected=true) or not. kind=numeric: a number the device reports (see measure) above and/or below a value. kind=presence_is: state home|away. kind=triggered_by: which of the rule's triggers (by id) started it — for a rule with several triggers doing different things.",
         "properties": {
             "kind": { "type": "string", "enum": ["time_of_day", "sun", "device_is", "contact_is", "motion_is", "numeric", "presence_is", "triggered_by"] },
             "after": { "type": "string" },
@@ -235,7 +239,7 @@ fn rule_schema() -> Value {
             "on": { "type": "boolean" },
             "open": { "type": "boolean" },
             "detected": { "type": "boolean" },
-            "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness", "illuminance"] },
+            "measure": measure,
             "above": { "type": "number" },
             "below": { "type": "number" },
             "state": { "type": "string", "enum": ["home", "away"] },
@@ -274,7 +278,7 @@ fn rule_schema() -> Value {
             "triggers": {
                 "type": "array",
                 "minItems": 1,
-                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. A moment relative to the sun ('30 minutes after sunset') is ONE sun trigger with offset_minutes 30 — not a sunset trigger with a condition, which would never hold at sunset. type=contact: a door or window opens (open=true) or closes (false). type=motion: a motion sensor sees somebody (detected=true) or stops (false); lights on with motion and off again is TWO triggers — motion detected=true, and motion detected=false with `for` ('no motion for 5 minutes') — told apart by triggered_by. type=device_state: a device turns on/off. type=numeric: a reading goes above/below a value. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, motion, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
+                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. A moment relative to the sun ('30 minutes after sunset') is ONE sun trigger with offset_minutes 30 — not a sunset trigger with a condition, which would never hold at sunset. type=contact: a door or window opens (open=true) or closes (false). type=motion: a motion sensor sees somebody (detected=true) or stops (false); lights on with motion and off again is TWO triggers — motion detected=true, and motion detected=false with `for` ('no motion for 5 minutes') — told apart by triggered_by. type=device_state: a device turns on/off. type=numeric: a number the device reports (see measure) goes above/below a value — a price, a power draw, a temperature. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, motion, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -285,7 +289,7 @@ fn rule_schema() -> Value {
                         "open": { "type": "boolean" },
                         "detected": { "type": "boolean" },
                         "on": { "type": "boolean" },
-                        "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness", "illuminance"] },
+                        "measure": measure,
                         "above": { "type": "number" },
                         "below": { "type": "number" },
                         "action": { "type": "string" },
@@ -381,18 +385,25 @@ fn lift_moment(rule: &mut AutomationRuleDto) {
     rule.triggers.push(TriggerDto { id: None, kind });
 }
 
-/// What the rule names that this house does not have — a misheard
-/// "office" as "offers". Checked here rather than in the store because
-/// the app may well save a rule for a device not yet paired.
+//// What the rule names that this house does not have — a misheard
+/// "office" as "offers", or a reading the device never reports.
+/// Checked here rather than in the store because the app may well save
+/// a rule for a device not yet paired.
 fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     let mut devices: Vec<&str> = Vec::new();
     let mut rooms: Vec<&str> = Vec::new();
+    let mut measured: Vec<(&str, &str)> = Vec::new();
     for trigger in &rule.triggers {
         match &trigger.kind {
+            TriggerKind::Numeric {
+                device, measure, ..
+            } => {
+                devices.push(device);
+                measured.push((device, measure));
+            }
             TriggerKind::Contact { device, .. }
             | TriggerKind::Motion { device, .. }
-            | TriggerKind::DeviceAction { device, .. }
-            | TriggerKind::Numeric { device, .. } => devices.push(device),
+            | TriggerKind::DeviceAction { device, .. } => devices.push(device),
             TriggerKind::DeviceState { device, room, .. } => {
                 devices.extend(device.as_deref());
                 rooms.extend(room.as_deref());
@@ -400,13 +411,22 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
             _ => {}
         }
     }
-    fn in_conditions<'a>(conditions: &'a [ConditionDto], devices: &mut Vec<&'a str>) {
+    fn in_conditions<'a>(
+        conditions: &'a [ConditionDto],
+        devices: &mut Vec<&'a str>,
+        measured: &mut Vec<(&'a str, &'a str)>,
+    ) {
         for condition in conditions {
             match condition {
+                ConditionDto::Numeric {
+                    device, measure, ..
+                } => {
+                    devices.push(device);
+                    measured.push((device, measure));
+                }
                 ConditionDto::DeviceIs { device, .. }
                 | ConditionDto::ContactIs { device, .. }
-                | ConditionDto::MotionIs { device, .. }
-                | ConditionDto::Numeric { device, .. } => devices.push(device),
+                | ConditionDto::MotionIs { device, .. } => devices.push(device),
                 _ => {}
             }
         }
@@ -415,6 +435,7 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
         actions: &'a [ActionDto],
         devices: &mut Vec<&'a str>,
         lit: &mut Vec<&'a str>,
+        measured: &mut Vec<(&'a str, &'a str)>,
     ) {
         for action in actions {
             match action {
@@ -426,34 +447,67 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
                     then,
                     otherwise,
                 } => {
-                    in_conditions(conditions, devices);
-                    in_actions(then, devices, lit);
-                    in_actions(otherwise, devices, lit);
+                    in_conditions(conditions, devices, measured);
+                    in_actions(then, devices, lit, measured);
+                    in_actions(otherwise, devices, lit, measured);
                 }
                 _ => {}
             }
         }
     }
-    in_conditions(&rule.conditions, &mut devices);
-    in_actions(&rule.actions, &mut devices, &mut rooms);
+    in_conditions(&rule.conditions, &mut devices, &mut measured);
+    in_actions(&rule.actions, &mut devices, &mut rooms, &mut measured);
     devices.sort_unstable();
     devices.dedup();
     rooms.sort_unstable();
     rooms.dedup();
-    let mut missing = Vec::new();
-    for device in devices {
+    measured.sort_unstable();
+    measured.dedup();
+    let find = |device: &str| {
         let full = if device.contains(':') {
             device.to_string()
         } else {
             format!("{DEFAULT_SOURCE}:{device}")
         };
-        if DeviceId::parse(&full)
-            .ok()
-            .and_then(|id| registry.get(&id))
-            .is_none()
-        {
+        DeviceId::parse(&full).ok().and_then(|id| registry.get(&id))
+    };
+    let mut missing = Vec::new();
+    for device in devices {
+        if find(device).is_none() {
             missing.push(format!("no device called {device}"));
         }
+    }
+    // Any valid name parses as a reading, so "powr" for "power" would
+    // be a rule that never fires and never says why. A missing device
+    // has been said above.
+    for (device, measure) in measured {
+        let (Some(found), Some(Measure::Reading(name))) = (find(device), Measure::parse(measure))
+        else {
+            continue;
+        };
+        // Declared by the source counts as much as already reported: a
+        // plug that has drawn nothing since Niles started still has a
+        // `power` reading.
+        if found.state.readings.contains_key(&name) || found.reading_units.contains_key(&name) {
+            continue;
+        }
+        let mut has: Vec<&str> = found
+            .state
+            .readings
+            .keys()
+            .chain(found.reading_units.keys())
+            .map(String::as_str)
+            .collect();
+        has.sort_unstable();
+        has.dedup();
+        missing.push(if has.is_empty() {
+            format!("{device} reports no reading called {name}, nor any other")
+        } else {
+            format!(
+                "{device} reports no reading called {name}; it reports {}",
+                has.join(", ")
+            )
+        });
     }
     for room in rooms {
         let lit = RoomName::parse(room)
@@ -885,6 +939,62 @@ mod tests {
         };
         assert!(create.execute(garden_door("offers")).await.is_err());
         assert!(store.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reading_the_device_does_not_report_is_a_problem() {
+        let registry = house();
+        let mut meter = Device::new(
+            DeviceId::parse("z2m:system/electricity").unwrap(),
+            DeviceState::default(),
+            DeviceClass::Sensor,
+        );
+        meter.state.readings.insert(
+            "price".into(),
+            niles_core::Reading::new(1.2, Some("kr/kWh".into())),
+        );
+        // Declared but not yet reported: still a reading it has.
+        meter
+            .reading_units
+            .insert("energy".into(), Some("kWh".into()));
+        registry.upsert(meter);
+        let propose = ProposeAutomation {
+            store: Arc::new(AutomationStore::new()),
+            registry,
+            proposals: Arc::new(Proposals::new()),
+            tz: chrono_tz::Tz::UTC,
+        };
+        let when = |measure: &str| {
+            json!({
+                "description": "x",
+                "triggers": [{ "type": "numeric", "device": "system/electricity", "measure": measure, "below": 1 }],
+                "actions": [{ "do": "if",
+                    "conditions": [{ "kind": "numeric", "device": "office/door", "measure": "co2", "above": 1000 }],
+                    "then": [{ "do": "set_room", "room": "office", "on": true }] }],
+            })
+        };
+        let out = propose.execute(when("price")).await.unwrap();
+        assert_eq!(
+            out["problems"],
+            json!(["office/door reports no reading called co2, nor any other"]),
+            "found inside a branch too"
+        );
+        assert!(
+            out["sentence"]
+                .as_str()
+                .unwrap()
+                .starts_with("When the price of the system electricity goes below 1")
+        );
+        let out = propose.execute(when("energy")).await.unwrap();
+        assert_eq!(out["problems"].as_array().unwrap().len(), 1);
+        let out = propose.execute(when("powr")).await.unwrap();
+        assert_eq!(
+            out["problems"][1],
+            "system/electricity reports no reading called powr; it reports energy, price"
+        );
+        // A fixed measure is not second-guessed.
+        let out = propose.execute(when("temperature")).await.unwrap();
+        assert_eq!(out["problems"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

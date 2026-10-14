@@ -146,7 +146,8 @@ pub enum TriggerKind {
     Numeric {
         device: String,
         /// "temperature" | "humidity" | "battery" | "brightness" |
-        /// "illuminance".
+        /// "illuminance", or the name of any reading the device reports
+        /// ("price", "power", "co2").
         measure: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         above: Option<f64>,

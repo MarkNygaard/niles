@@ -81,8 +81,10 @@ pub enum Trigger {
     },
 }
 
-/// A reading a numeric trigger or condition looks at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A number a numeric trigger or condition looks at: one of the fixed
+/// fields, or a named reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Measure {
     Temperature,
     Humidity,
@@ -90,37 +92,50 @@ pub enum Measure {
     Brightness,
     /// Light falling on a sensor, in lux.
     Illuminance,
+    /// A named reading from `DeviceState::readings` — `price`, `power`,
+    /// `co2`. Any valid name that is not one of the above, so a rule
+    /// can follow a number nobody here has heard of.
+    Reading(String),
 }
 
 impl Measure {
+    /// `None` only for a name no reading could have. A misspelt reading
+    /// is still a reading — whether the device has it is a question for
+    /// whoever knows the device, which the rule tool asks.
     pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "temperature" => Some(Measure::Temperature),
-            "humidity" => Some(Measure::Humidity),
-            "battery" => Some(Measure::Battery),
-            "brightness" => Some(Measure::Brightness),
-            "illuminance" | "lux" | "light_level" => Some(Measure::Illuminance),
-            _ => None,
-        }
+        let value = value.trim().to_ascii_lowercase();
+        Some(match value.as_str() {
+            "temperature" => Measure::Temperature,
+            "humidity" => Measure::Humidity,
+            "battery" => Measure::Battery,
+            "brightness" => Measure::Brightness,
+            "illuminance" | "lux" | "light_level" => Measure::Illuminance,
+            _ => {
+                niles_core::validate_reading_name(&value).ok()?;
+                Measure::Reading(value)
+            }
+        })
     }
 
-    pub fn read(self, state: &DeviceState) -> Option<f64> {
+    pub fn read(&self, state: &DeviceState) -> Option<f64> {
         match self {
             Measure::Temperature => state.temperature_celsius.map(f64::from),
             Measure::Humidity => state.humidity_percent.map(f64::from),
             Measure::Battery => state.battery_percent.map(f64::from),
             Measure::Brightness => state.brightness.map(f64::from),
             Measure::Illuminance => state.illuminance_lux.map(f64::from),
+            Measure::Reading(name) => state.readings.get(name).map(|r| r.value),
         }
     }
 
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Measure::Temperature => "temperature",
             Measure::Humidity => "humidity",
             Measure::Battery => "battery",
             Measure::Brightness => "brightness",
             Measure::Illuminance => "illuminance",
+            Measure::Reading(name) => name,
         }
     }
 }
@@ -755,7 +770,8 @@ fn parse_measure(id: &str, value: &str) -> Result<Measure> {
     Measure::parse(value).ok_or_else(|| Error::Invalid {
         id: id.to_string(),
         reason: format!(
-            "{value:?} is not a reading; use temperature, humidity, battery or brightness"
+            "{value:?} is not a measure; use temperature, humidity, battery, brightness, \
+             illuminance, or a reading name made of a-z, 0-9 and _ (power, co2, price)"
         ),
     })
 }
@@ -1333,11 +1349,35 @@ mod tests {
         assert!(
             rule(json!({
                 "id": "r",
-                "triggers": [{ "type": "numeric", "device": "office/sensor", "measure": "loudness", "above": 1 }],
+                "triggers": [{ "type": "numeric", "device": "office/sensor", "measure": "loud ness", "above": 1 }],
                 "actions": [lights_off()],
             }))
-            .is_err()
+            .is_err(),
+            "no reading can be called that"
         );
+    }
+
+    #[test]
+    fn any_other_valid_name_is_a_reading() {
+        assert_eq!(
+            Measure::parse("price"),
+            Some(Measure::Reading("price".into()))
+        );
+        assert_eq!(
+            Measure::parse(" CO2 "),
+            Some(Measure::Reading("co2".into()))
+        );
+        assert_eq!(Measure::parse("lux"), Some(Measure::Illuminance));
+        assert_eq!(Measure::parse("temperature"), Some(Measure::Temperature));
+        assert_eq!(Measure::parse("co₂"), None);
+
+        let mut state = DeviceState::default();
+        state.readings.insert(
+            "price".into(),
+            niles_core::Reading::new(0.8, Some("kr/kWh".into())),
+        );
+        assert_eq!(Measure::Reading("price".into()).read(&state), Some(0.8));
+        assert_eq!(Measure::Reading("power".into()).read(&state), None);
     }
 
     #[test]
@@ -1445,6 +1485,47 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_numeric_condition_reads_a_named_reading() {
+        let r = rule(json!({
+            "id": "r",
+            "triggers": [door(true)],
+            "conditions": [{ "kind": "numeric", "device": "office/air", "measure": "co2", "above": 1000 }],
+            "actions": [lights_off()],
+        }))
+        .unwrap();
+        let condition = &r.conditions[0];
+        assert!(matches!(
+            condition,
+            Condition::Numeric { measure: Measure::Reading(name), .. } if name == "co2"
+        ));
+
+        let registry = DeviceRegistry::new();
+        let air = |ppm: f64| {
+            let mut state = DeviceState::default();
+            state.readings.insert(
+                "co2".into(),
+                niles_core::Reading::new(ppm, Some("ppm".into())),
+            );
+            Device::new(device_id("office", "air"), state, DeviceClass::Sensor)
+        };
+        registry.upsert(air(1200.0));
+        assert!(condition.evaluate(&ctx(&registry, Utc::now())));
+        registry.upsert(air(600.0));
+        assert!(!condition.evaluate(&ctx(&registry, Utc::now())));
+        assert_eq!(
+            condition.unmet(),
+            "the co2 of z2m:office/air was out of range"
+        );
+        // A device that has never reported it does not pass.
+        registry.upsert(Device::new(
+            device_id("office", "air"),
+            DeviceState::default(),
+            DeviceClass::Sensor,
+        ));
+        assert!(!condition.evaluate(&ctx(&registry, Utc::now())));
     }
 
     #[test]

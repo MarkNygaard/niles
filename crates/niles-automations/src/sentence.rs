@@ -82,10 +82,21 @@ fn number(n: f64) -> String {
     }
 }
 
-fn measure_words(measure: &str) -> &str {
-    match measure {
-        "illuminance" | "lux" | "light_level" => "light level",
-        other => other,
+/// What a measure is called aloud. A reading is said by its name —
+/// "the price of", "the soil moisture of" — with the few names that
+/// are letters rather than words spelled the way they are written.
+///
+/// Without its unit: the sentence is made from the rule alone, and the
+/// unit belongs to the device, which may not have reported yet. The
+/// number is the one the person gave, in the unit they had in mind.
+fn measure_words(measure: &str) -> String {
+    match measure.trim().to_ascii_lowercase().as_str() {
+        "illuminance" | "lux" | "light_level" => "light level".into(),
+        "co2" => "CO2".into(),
+        "voc" => "VOC".into(),
+        "pm25" => "PM2.5".into(),
+        "pm10" => "PM10".into(),
+        other => words(other),
     }
 }
 
@@ -519,6 +530,29 @@ mod tests {
             })),
             "When it is 22:00 on weekdays, or when it is 30 minutes before sunset, or when the \
              temperature of the office sensor goes above 24, say \"x\"."
+        );
+    }
+
+    #[test]
+    fn says_a_rule_that_follows_a_reading() {
+        assert_eq!(
+            said(json!({
+                "id": "r",
+                "triggers": [{
+                    "type": "numeric", "device": "system/electricity", "measure": "price",
+                    "below": 1, "for": { "minutes": 15 }
+                }],
+                "conditions": [
+                    { "kind": "numeric", "device": "kitchen/dishwasher", "measure": "power", "below": 5 },
+                    { "kind": "numeric", "device": "office/air", "measure": "co2", "above": 1000 },
+                    { "kind": "numeric", "device": "garden/plant", "measure": "soil_moisture", "below": 20.5 }
+                ],
+                "actions": [{ "do": "set_device", "device": "kitchen/dishwasher", "on": true }],
+            })),
+            "When the price of the system electricity has been below 1 for 15 minutes, if the \
+             power of the kitchen dishwasher is below 5 and the CO2 of the office air is above \
+             1000 and the soil moisture of the garden plant is below 20.5, turn on the kitchen \
+             dishwasher."
         );
     }
 
