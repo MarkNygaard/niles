@@ -60,6 +60,13 @@ hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
 roxmltree = "0.20"
+# Third-party plugins are WebAssembly components (component model, WASI
+# 0.2). Only what running them needs: no wasm text format, no on-disk
+# cache, no profiling, no WASI preview 1 or 3.
+wasmtime = { version = "49.0.3", default-features = false, features = ["cranelift", "runtime", "component-model", "std", "parallel-compilation"] }
+wasmtime-wasi = { version = "49.0.3", default-features = false, features = ["p2"] }
+wasmtime-wasi-http = { version = "49.0.3", default-features = false, features = ["p2"] }
+semver = "1"
 
 # Intra-workspace crate dependencies. Add a `crate.workspace = true` line in
 # any crate that depends on another workspace crate.
@@ -91,3 +98,4 @@ niles-notifications = { path = "crates/niles-notifications" }
 niles-presence = { path = "crates/niles-presence" }
 niles-automations = { path = "crates/niles-automations" }
 niles-integration-linear = { path = "crates/niles-integration-linear" }
+niles-plugins = { path = "crates/niles-plugins" }

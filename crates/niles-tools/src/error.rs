@@ -52,6 +52,11 @@ pub enum Error {
 
     #[error("linear error: {0}")]
     Linear(String),
+
+    /// A plugin's tool failed, in words the plugin wrote for the person
+    /// who asked: "The bus service is not answering."
+    #[error("{0}")]
+    Plugin(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

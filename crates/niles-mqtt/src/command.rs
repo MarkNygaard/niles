@@ -4,19 +4,55 @@
 //! `CommandRouter` dispatches on `DeviceId::source()` so WLED devices get
 //! WLED-formatted `/api` commands while Z2M devices continue to use the
 //! existing `/set` topic.
+//!
+//! Devices that are not reached over MQTT at all — a plugin's, under its
+//! `x_<id>` source — belong to a [`DeviceCommander`]. Every path that
+//! sends a command asks [`CommandRouter::commander_for`] first, and only
+//! formats an MQTT message when nothing else owns the device.
 
 use crate::sink::{format_set_command_fading, is_actionable};
 use crate::wled::{effect_to_fx, format_wled_command_fading, format_wled_effect};
+use async_trait::async_trait;
 use niles_core::{DeviceId, DeviceState};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Sends commands to devices that are not on the broker.
+///
+/// Lives beside the router rather than behind the publisher because a
+/// command here is a call with an answer — a plugin can say "the pump
+/// did not answer" — where an MQTT publish is fire-and-forget. Encoding
+/// one as the other would lose the answer, and would put a made-up topic
+/// in every log line.
+#[async_trait]
+pub trait DeviceCommander: Send + Sync {
+    /// Whether this commander owns `id`.
+    fn handles(&self, id: &DeviceId) -> bool;
+
+    /// Send `desired`. An `Err` is a sentence for whoever asked: voice
+    /// reads it out, the app shows it.
+    async fn command(&self, id: &DeviceId, desired: &DeviceState)
+    -> std::result::Result<(), String>;
+}
 
 /// Routes set commands to the correct topic/payload format based on the
 /// device source.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CommandRouter {
     z2m_prefix: String,
     wled: HashMap<DeviceId, String>, // id → base topic
+    commander: Option<Arc<dyn DeviceCommander>>,
+}
+
+impl std::fmt::Debug for CommandRouter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandRouter")
+            .field("z2m_prefix", &self.z2m_prefix)
+            .field("wled", &self.wled)
+            .field("commander", &self.commander.is_some())
+            .finish()
+    }
 }
 
 impl CommandRouter {
@@ -24,7 +60,28 @@ impl CommandRouter {
         Self {
             z2m_prefix: z2m_prefix.into(),
             wled,
+            commander: None,
         }
+    }
+
+    /// The same router, with `commander` owning the devices it says it
+    /// handles.
+    pub fn with_commander(mut self, commander: Arc<dyn DeviceCommander>) -> Self {
+        self.commander = Some(commander);
+        self
+    }
+
+    /// What sends `target` to `id` when it is not an MQTT publish: the
+    /// commander that owns the device, if one does and `target` has
+    /// anything in it to send. Callers ask this before [`format`](Self::format).
+    pub fn commander_for(
+        &self,
+        id: &DeviceId,
+        target: &DeviceState,
+    ) -> Option<&dyn DeviceCommander> {
+        self.commander
+            .as_deref()
+            .filter(|c| c.handles(id) && is_actionable(target))
     }
 
     /// Convenience constructor for Z2M-only setups.
@@ -269,6 +326,41 @@ mod tests {
         };
         assert!(router.format(&id, &target).is_none());
     }
+    struct Plugins;
+
+    #[async_trait]
+    impl DeviceCommander for Plugins {
+        fn handles(&self, id: &DeviceId) -> bool {
+            id.source().starts_with("x_")
+        }
+        async fn command(&self, _: &DeviceId, _: &DeviceState) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_plugin_device_goes_to_its_commander_not_the_broker() {
+        let router = CommandRouter::z2m_only("zigbee2mqtt").with_commander(Arc::new(Plugins));
+        let on = DeviceState {
+            on: Some(true),
+            ..Default::default()
+        };
+        let pump = DeviceId::parse("x_pool:garden/pump").unwrap();
+        assert!(router.commander_for(&pump, &on).is_some());
+        assert!(router.format(&pump, &on).is_none(), "nothing on MQTT for it");
+
+        let lamp = z2m_id("kitchen", "ceiling_light");
+        assert!(router.commander_for(&lamp, &on).is_none());
+        assert!(router.format(&lamp, &on).is_some());
+    }
+
+    #[test]
+    fn an_empty_command_is_not_sent_to_a_commander_either() {
+        let router = CommandRouter::z2m_only("zigbee2mqtt").with_commander(Arc::new(Plugins));
+        let pump = DeviceId::parse("x_pool:garden/pump").unwrap();
+        assert!(router.commander_for(&pump, &DeviceState::default()).is_none());
+    }
+
     #[test]
     fn format_effect_routes_wled() {
         let mut map = HashMap::new();
