@@ -330,6 +330,10 @@ export interface DeviceState {
   battery_percent: number | null;
   /** A door or window: `true` is open. `null` on everything else. */
   open: boolean | null;
+  /** A motion sensor: `true` while it sees somebody. */
+  motion: boolean | null;
+  /** What a motion sensor also reads; below about 30 is dim. */
+  illuminance_lux: number | null;
 }
 
 /** A device as `GET /devices` reports it. */
@@ -447,7 +451,7 @@ export interface Duration {
 }
 
 /** A reading a sensor or a light reports. */
-export type Measure = "temperature" | "humidity" | "battery" | "brightness";
+export type Measure = "temperature" | "humidity" | "battery" | "brightness" | "illuminance";
 
 export type Day = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
@@ -464,6 +468,9 @@ export type Trigger = { id?: string } & (
   /** A door or window: `open` true opens, false closes, absent either.
       With `for`, once it has stayed that way that long. */
   | { type: "contact"; device: string; open?: boolean; for?: Duration }
+  /** `detected` true sees somebody, false sees nobody any more, absent
+      either. With `for`, "no motion for 2 minutes". */
+  | { type: "motion"; device: string; detected?: boolean; for?: Duration }
   | { type: "device_state"; device?: string; room?: string; on?: boolean; for?: Duration }
   | {
       type: "numeric";
@@ -496,6 +503,7 @@ export type Condition =
     }
   | { kind: "device_is"; device: string; on: boolean }
   | { kind: "contact_is"; device: string; open: boolean }
+  | { kind: "motion_is"; device: string; detected: boolean }
   | { kind: "numeric"; device: string; measure: Measure; above?: number; below?: number }
   | { kind: "presence_is"; state: "home" | "away" }
   /** Which of the rule's triggers started this run, by their ids. */

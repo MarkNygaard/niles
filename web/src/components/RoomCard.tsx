@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Droplet, Music, Power, Tv, X } from "lucide-react";
+import { Droplet, Music, PersonStanding, Power, Tv, X } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -401,6 +401,11 @@ export function RoomCard({
               {tv && tvOn(tv.info) && (
                 <span title={`TV: ${tvLine(tv.info)}`}>
                   <Tv aria-label={`TV on: ${tvLine(tv.info)}`} className="size-4" />
+                </span>
+              )}
+              {room.motion && (
+                <span title="Motion">
+                  <PersonStanding aria-label="Motion" className="size-4" />
                 </span>
               )}
               {room.openings.map((opening) => (

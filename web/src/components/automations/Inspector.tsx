@@ -16,6 +16,7 @@ import {
   DAYS,
   KIND_LABEL,
   MEASURE_CHOICES,
+  MEASURE_HINT,
   TRIGGER_KINDS,
   addAction,
   defaultAction,
@@ -234,6 +235,34 @@ function TriggerFields({
               onChange({
                 ...value,
                 open: next === "either" ? undefined : next === "opens",
+              })
+            }
+          />
+          <ForField value={value.for} onChange={(held) => onChange({ ...value, for: held })} />
+        </>
+      );
+    case "motion":
+      return (
+        <>
+          <DeviceField
+            label="Motion sensor"
+            kind="motion"
+            value={value.device}
+            devices={devices}
+            onChange={(device) => onChange({ ...value, device: device ?? "" })}
+          />
+          <Choices
+            label="When it"
+            value={value.detected === undefined ? "either" : value.detected ? "sees" : "stops"}
+            options={[
+              { value: "sees", label: "Sees motion" },
+              { value: "stops", label: "Stops seeing motion" },
+              { value: "either", label: "Either" },
+            ]}
+            onChange={(next) =>
+              onChange({
+                ...value,
+                detected: next === "either" ? undefined : next === "sees",
               })
             }
           />
@@ -476,6 +505,27 @@ function ConditionFields({
               { value: "closed", label: "Closed" },
             ]}
             onChange={(next) => onChange({ ...value, open: next === "open" })}
+          />
+        </>
+      );
+    case "motion_is":
+      return (
+        <>
+          <DeviceField
+            label="Motion sensor"
+            kind="motion_is"
+            value={value.device}
+            devices={devices}
+            onChange={(device) => onChange({ ...value, device: device ?? "" })}
+          />
+          <Choices
+            label="Is"
+            value={value.detected ? "motion" : "none"}
+            options={[
+              { value: "motion", label: "Sees motion" },
+              { value: "none", label: "Sees no motion" },
+            ]}
+            onChange={(next) => onChange({ ...value, detected: next === "motion" })}
           />
         </>
       );
@@ -764,6 +814,9 @@ function ReadingFields({
             onChange={(e) => onChange({ below: numberOrNothing(e.target.value) })}
           />
         </Field>
+        {MEASURE_HINT[value.measure] && (
+          <p className="text-muted-foreground col-span-2 text-xs">{MEASURE_HINT[value.measure]}</p>
+        )}
       </div>
     </>
   );

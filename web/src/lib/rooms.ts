@@ -50,6 +50,8 @@ export interface Room {
   humidity?: number;
   /** What is standing open in it. Empty when everything is shut. */
   openings: Opening[];
+  /** Whether a motion sensor in it sees somebody right now. */
+  motion: boolean;
   /** The heating zone paired with this room, when there is one. */
   zone?: Zone;
 }
@@ -116,6 +118,7 @@ export function roomsOf(
         temperature: firstReported(all, "temperature_celsius"),
         humidity: firstReported(all, "humidity_percent"),
         openings: openingsOf(all),
+        motion: all.some((d) => d.state.motion === true),
       };
     })
     .filter(

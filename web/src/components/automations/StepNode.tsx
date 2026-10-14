@@ -13,6 +13,7 @@ import {
   LampCeiling,
   Lightbulb,
   ListFilter,
+  PersonStanding,
   Power,
   Sunset,
   Thermometer,
@@ -26,6 +27,7 @@ import { cn } from "@/lib/utils";
 
 export const KIND_ICON: Record<StepKind, React.ReactNode> = {
   contact: <DoorOpen />,
+  motion: <PersonStanding />,
   device_state: <Power />,
   device_action: <ToggleLeft />,
   timer_fired: <Timer />,
@@ -36,6 +38,7 @@ export const KIND_ICON: Record<StepKind, React.ReactNode> = {
   time_of_day: <Clock />,
   device_is: <Lightbulb />,
   contact_is: <DoorClosed />,
+  motion_is: <PersonStanding />,
   presence_is: <House />,
   triggered_by: <ListFilter />,
   set_room: <LampCeiling />,

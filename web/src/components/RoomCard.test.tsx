@@ -14,6 +14,8 @@ function state(partial: Partial<DeviceState> = {}): DeviceState {
     humidity_percent: null,
     battery_percent: null,
     open: null,
+    motion: null,
+    illuminance_lux: null,
     ...partial,
   };
 }
@@ -171,6 +173,16 @@ describe("RoomCard", () => {
     // on every card in the house that never means anything.
     setup([light("ceiling", true), contact("door", false)]);
     expect(screen.queryByTitle(/open/i)).toBeNull();
+  });
+
+  it("marks a room where a motion sensor sees somebody", () => {
+    setup([light("ceiling", true), device("motion", "motion", state({ motion: true }))]);
+    expect(screen.getByTitle("Motion")).toBeInTheDocument();
+  });
+
+  it("has no motion mark once the sensor sees nobody", () => {
+    setup([light("ceiling", true), device("motion", "motion", state({ motion: false }))]);
+    expect(screen.queryByTitle("Motion")).toBeNull();
   });
 
   it("counts windows rather than repeating the icon", () => {

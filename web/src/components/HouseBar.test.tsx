@@ -14,6 +14,8 @@ function light(room: string, on: boolean): Device {
     humidity_percent: null,
     battery_percent: null,
     open: null,
+    motion: null,
+    illuminance_lux: null,
   };
   return {
     id: `z2m:${room}/light`,

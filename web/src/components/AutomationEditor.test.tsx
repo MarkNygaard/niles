@@ -14,6 +14,8 @@ const quiet: DeviceState = {
   humidity_percent: null,
   battery_percent: null,
   open: null,
+  motion: null,
+  illuminance_lux: null,
 };
 
 function device(id: string, cls: string, state: Partial<DeviceState> = {}): Device {
@@ -252,6 +254,60 @@ describe("AutomationEditor", () => {
       target: { value: "10" },
     });
     expect(screen.getByText("Office door has been open for 10 minutes")).toBeInTheDocument();
+  });
+
+  it("follows a motion sensor until it has seen nobody for a while", async () => {
+    open(undefined, [], [...house, device("z2m:hallway/motion", "motion", { motion: false })]);
+    const create = vi.spyOn(api, "createAutomation").mockResolvedValue(stored);
+    fireEvent.click(await screen.findByRole("button", { name: "Add trigger" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Motion" }));
+    expect(await screen.findByText("Hallway motion: sees motion")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Stops seeing motion" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Minutes" }), {
+      target: { value: "2" },
+    });
+    expect(screen.getByText("Hallway motion: no motion for 2 minutes")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          triggers: [
+            { id: "t1", type: "contact", device: "office/door", open: true },
+            {
+              id: "t2",
+              type: "motion",
+              device: "hallway/motion",
+              detected: false,
+              for: { minutes: 2 },
+            },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("checks whether a motion sensor sees anybody", async () => {
+    open(undefined, [], [...house, device("z2m:hallway/motion", "motion", { motion: false })]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add condition" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Motion sensor sees" }));
+    expect(await screen.findByText("Hallway motion sees motion")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sees no motion" }));
+    expect(screen.getByText("Hallway motion sees no motion")).toBeInTheDocument();
+  });
+
+  it("says under a light level what counts as dim", async () => {
+    const dark: Rule = {
+      ...garden,
+      conditions: [
+        { kind: "numeric", device: "hallway/motion", measure: "illuminance", below: 30 },
+      ],
+    };
+    open("4f1c", [{ ...stored, rule: dark }], [
+      ...house,
+      device("z2m:hallway/motion", "motion", { illuminance_lux: 12 }),
+    ]);
+    fireEvent.click(await screen.findByText("Hallway motion light level is below 30 lux"));
+    expect(screen.getByText("Below about 30 is dim.")).toBeInTheDocument();
   });
 
   it("picks weekdays with toggles", async () => {

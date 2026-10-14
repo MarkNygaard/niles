@@ -48,6 +48,7 @@ export type Step =
 
 export const TRIGGER_KINDS: TriggerKind[] = [
   "contact",
+  "motion",
   "device_state",
   "numeric",
   "device_action",
@@ -61,6 +62,7 @@ export const CONDITION_KINDS: ConditionKind[] = [
   "sun",
   "device_is",
   "contact_is",
+  "motion_is",
   "numeric",
   "presence_is",
   "triggered_by",
@@ -77,6 +79,7 @@ export const KIND_LABEL: {
 } = {
   trigger: {
     contact: "Door or window",
+    motion: "Motion",
     device_state: "Device turns on or off",
     numeric: "A reading changes",
     device_action: "Button press",
@@ -90,6 +93,7 @@ export const KIND_LABEL: {
     sun: "Before or after sunset",
     device_is: "Device is on or off",
     contact_is: "Door or window is",
+    motion_is: "Motion sensor sees",
     numeric: "A reading is",
     presence_is: "Home or away",
     triggered_by: "Which trigger started it",
@@ -545,6 +549,7 @@ const UNIT: Record<Measure, string> = {
   humidity: "%",
   battery: "%",
   brightness: "%",
+  illuminance: " lux",
 };
 
 export const MEASURE_LABEL: Record<Measure, string> = {
@@ -552,6 +557,22 @@ export const MEASURE_LABEL: Record<Measure, string> = {
   humidity: "Humidity",
   battery: "Battery",
   brightness: "Brightness",
+  illuminance: "Light level (lux)",
+};
+
+/** A measure the way a sentence says it: nobody says "illuminance". */
+const MEASURE_WORD: Record<Measure, string> = {
+  temperature: "temperature",
+  humidity: "humidity",
+  battery: "battery",
+  brightness: "brightness",
+  illuminance: "light level",
+};
+
+/** What the reading picker says under a measure whose numbers mean
+    nothing on their own. */
+export const MEASURE_HINT: Partial<Record<Measure, string>> = {
+  illuminance: "Below about 30 is dim.",
 };
 
 function bounds(measure: Measure, above?: number, below?: number): string {
@@ -565,7 +586,7 @@ function bounds(measure: Measure, above?: number, below?: number): string {
 }
 
 function reading(name: string | undefined, measure: Measure): string {
-  return `${device(name, "A sensor")} ${measure}`;
+  return `${device(name, "A sensor")} ${MEASURE_WORD[measure]}`;
 }
 
 function setting(target: string, s: { on?: boolean; brightness?: number; kelvin?: number }) {
@@ -586,6 +607,16 @@ function triggerText(t: Trigger): string {
       if (t.for) return `${what} has been ${state} for ${durationText(t.for)}`;
       if (t.open === undefined) return `${what} opens or closes`;
       return `${what} ${t.open ? "opens" : "closes"}`;
+    }
+    case "motion": {
+      const what = device(t.device, "A motion sensor");
+      if (t.for) {
+        const held = durationText(t.for);
+        if (t.detected === undefined) return `${what}: unchanged for ${held}`;
+        return `${what}: ${t.detected ? "motion" : "no motion"} for ${held}`;
+      }
+      if (t.detected === undefined) return `${what}: motion starts or stops`;
+      return `${what}: ${t.detected ? "sees motion" : "motion stops"}`;
     }
     case "device_state": {
       const what = t.device
@@ -673,6 +704,8 @@ function conditionText(c: Condition, triggers: Trigger[]): string {
       return `${device(c.device, "A device")} is ${c.on ? "on" : "off"}`;
     case "contact_is":
       return `${device(c.device, "A door or window")} is ${c.open ? "open" : "closed"}`;
+    case "motion_is":
+      return `${device(c.device, "A motion sensor")} sees ${c.detected ? "motion" : "no motion"}`;
     case "numeric":
       return `${reading(c.device, c.measure)} is ${bounds(c.measure, c.above, c.below)}`;
     case "presence_is":
@@ -738,11 +771,13 @@ export function triggerChoices(triggers: Trigger[]): Choice[] {
 }
 
 /** What a device picker for this kind of step offers. */
-type Use = "contact" | "switchable" | "button" | "reading";
+type Use = "contact" | "motion" | "switchable" | "button" | "reading";
 
 const USE: Partial<Record<StepKind, Use>> = {
   contact: "contact",
   contact_is: "contact",
+  motion: "motion",
+  motion_is: "motion",
   device_state: "switchable",
   device_is: "switchable",
   set_device: "switchable",
@@ -754,6 +789,12 @@ const USE: Partial<Record<StepKind, Use>> = {
     classified still says `open`, and the office door is one. */
 export function isContact(device: Device): boolean {
   return device.class === "contact" || (device.state.open ?? null) !== null;
+}
+
+/** A motion sensor, by class or by reporting `motion`, for the same
+    reason as a door. */
+export function isMotion(device: Device): boolean {
+  return device.class === "motion" || (device.state.motion ?? null) !== null;
 }
 
 /** Whether a device reports a measure. A light's brightness counts
@@ -769,21 +810,24 @@ function reads(device: Device, measure: Measure): boolean {
       return (s.battery_percent ?? null) !== null;
     case "brightness":
       return device.class === "light" || (s.brightness ?? null) !== null;
+    case "illuminance":
+      return device.class === "motion" || (s.illuminance_lux ?? null) !== null;
   }
 }
 
-const MEASURES: Measure[] = ["temperature", "humidity", "battery", "brightness"];
+const MEASURES: Measure[] = ["temperature", "humidity", "battery", "brightness", "illuminance"];
 
 function fits(device: Device, use: Use, measure?: Measure): boolean {
   if (use === "contact") return isContact(device);
+  if (use === "motion") return isMotion(device);
   if (use === "reading") {
     return measure ? reads(device, measure) : MEASURES.some((m) => reads(device, m));
   }
   const switchable = ["light", "outlet", "switch"].includes(device.class);
   if (use === "switchable") return switchable;
   // A remote or a dimmer has no class of its own: it is whatever is
-  // left once lights, plugs and doors are taken out.
-  return !switchable && !isContact(device);
+  // left once lights, plugs, doors and motion sensors are taken out.
+  return !switchable && !isContact(device) && !isMotion(device);
 }
 
 export interface Choice {
@@ -836,6 +880,8 @@ export function defaultTrigger(kind: TriggerKind, devices: Device[]): Trigger {
   switch (kind) {
     case "contact":
       return { type: kind, device: first(devices, kind), open: true };
+    case "motion":
+      return { type: kind, device: first(devices, kind), detected: true };
     case "device_state":
       return { type: kind, device: first(devices, kind), on: true };
     case "numeric":
@@ -874,6 +920,8 @@ export function defaultCondition(
       return { kind, device: first(devices, kind), on: true };
     case "contact_is":
       return { kind, device: first(devices, kind), open: false };
+    case "motion_is":
+      return { kind, device: first(devices, kind), detected: true };
     case "numeric":
       return {
         kind,
@@ -986,6 +1034,7 @@ function conditionProblems(c: Condition, where: string, triggers: Trigger[]): st
       break;
     case "device_is":
     case "contact_is":
+    case "motion_is":
       if (!c.device) found.push(`${where} needs a device.`);
       break;
     case "presence_is":
@@ -1034,7 +1083,13 @@ function actionProblems(
 
 function triggerProblems(t: Trigger, where: string): string[] {
   const found: string[] = [];
-  if ((t.type === "contact" || t.type === "device_action" || t.type === "numeric") && !t.device) {
+  if (
+    (t.type === "contact" ||
+      t.type === "motion" ||
+      t.type === "device_action" ||
+      t.type === "numeric") &&
+    !t.device
+  ) {
     found.push(`${where} needs a device.`);
   }
   if (t.type === "numeric" && t.above === undefined && t.below === undefined) {

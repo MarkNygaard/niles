@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MEASURE_CHOICES,
+  MEASURE_HINT,
   addAction,
   addTrigger,
   daysText,
@@ -41,6 +42,8 @@ const quiet: DeviceState = {
   humidity_percent: null,
   battery_percent: null,
   open: null,
+  motion: null,
+  illuminance_lux: null,
 };
 
 function device(id: string, cls: string, state: Partial<DeviceState> = {}): Device {
@@ -68,6 +71,7 @@ const devices = [
   device("z2m:hall/front_door", "contact"),
   device("wled:living_room/tv", "light"),
   device("z2m:office/sensor", "unknown", { temperature_celsius: 21, humidity_percent: 40 }),
+  device("z2m:hall/motion", "motion", { motion: false, illuminance_lux: 12 }),
 ];
 
 const garden: Draft = {
@@ -482,6 +486,106 @@ describe("deviceChoices", () => {
   });
 });
 
+describe("motion", () => {
+  const of = (step: Partial<Step> & Pick<Step, "role" | "value">) =>
+    summary({ id: "x", index: 0, branch: null, ...step } as Step);
+
+  it("offers only motion sensors for a motion step", () => {
+    const motion = deviceChoices(devices, "motion").map((c) => c.value);
+    expect(motion).toEqual(["hall/motion"]);
+    expect(deviceChoices(devices, "motion_is").map((c) => c.value)).toEqual(motion);
+  });
+
+  it("offers a sensor that reports motion before Niles has classified it", () => {
+    const radar = device("z2m:office/radar", "unknown", { motion: true });
+    expect(deviceChoices([radar], "motion").map((c) => c.value)).toEqual(["office/radar"]);
+  });
+
+  it("does not take a motion sensor for a button", () => {
+    expect(deviceChoices(devices, "device_action").map((c) => c.value)).not.toContain(
+      "hall/motion",
+    );
+  });
+
+  it("offers a motion sensor's light level, and anything else that reports one", () => {
+    const lux = (list: Device[]) =>
+      deviceChoices(list, "numeric", undefined, "illuminance").map((c) => c.value);
+    expect(lux(devices)).toEqual(["hall/motion"]);
+    expect(lux([device("z2m:hall/motion", "motion")])).toEqual(["hall/motion"]);
+    expect(lux([device("z2m:garden/lux", "sensor", { illuminance_lux: 400 })])).toEqual([
+      "garden/lux",
+    ]);
+  });
+
+  it("says what dim is under the light level", () => {
+    expect(MEASURE_HINT.illuminance).toBe("Below about 30 is dim.");
+    expect(MEASURE_HINT.temperature).toBeUndefined();
+  });
+
+  it("builds a motion trigger and a motion condition from the house", () => {
+    expect(defaultTrigger("motion", devices)).toEqual({
+      type: "motion",
+      device: "hall/motion",
+      detected: true,
+    });
+    expect(defaultCondition("motion_is", devices)).toEqual({
+      kind: "motion_is",
+      device: "hall/motion",
+      detected: true,
+    });
+  });
+
+  it("reads a motion trigger without how long", () => {
+    const trigger = (detected?: boolean) =>
+      of({ role: "trigger", value: { type: "motion", device: "hallway/motion", detected } });
+    expect(trigger(true)).toBe("Hallway motion: sees motion");
+    expect(trigger(false)).toBe("Hallway motion: motion stops");
+    expect(trigger()).toBe("Hallway motion: motion starts or stops");
+  });
+
+  it("reads a motion trigger with how long", () => {
+    const held = (detected?: boolean) =>
+      of({
+        role: "trigger",
+        value: { type: "motion", device: "hallway/motion", detected, for: { minutes: 2 } },
+      });
+    expect(held(false)).toBe("Hallway motion: no motion for 2 minutes");
+    expect(held(true)).toBe("Hallway motion: motion for 2 minutes");
+    expect(held()).toBe("Hallway motion: unchanged for 2 minutes");
+  });
+
+  it("reads the motion condition and the light level", () => {
+    expect(
+      of({
+        role: "condition",
+        value: { kind: "motion_is", device: "hallway/motion", detected: true },
+      }),
+    ).toBe("Hallway motion sees motion");
+    expect(
+      of({
+        role: "condition",
+        value: { kind: "motion_is", device: "hallway/motion", detected: false },
+      }),
+    ).toBe("Hallway motion sees no motion");
+    expect(
+      of({
+        role: "condition",
+        value: { kind: "numeric", device: "hallway/motion", measure: "illuminance", below: 30 },
+      }),
+    ).toBe("Hallway motion light level is below 30 lux");
+  });
+
+  it("wants a motion sensor picked", () => {
+    expect(
+      problems({
+        ...garden,
+        triggers: [{ id: "t1", type: "motion", device: "", detected: false, for: { minutes: 2 } }],
+        conditions: [{ kind: "motion_is", device: "", detected: true }],
+      }),
+    ).toEqual(["Trigger 1 needs a device.", "Condition 1 needs a device."]);
+  });
+});
+
 describe("roomChoices", () => {
   it("offers every room once, by name", () => {
     expect(roomChoices(devices)).toEqual([
@@ -504,6 +608,7 @@ describe("MEASURE_CHOICES", () => {
       "Humidity",
       "Battery",
       "Brightness",
+      "Light level (lux)",
     ]);
   });
 });
