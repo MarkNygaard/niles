@@ -82,6 +82,8 @@ pub struct AppState {
     pub calendars: Option<Arc<niles_calendar::Calendars>>,
     /// Calendar sign-ins in flight, apart from the GitHub ones.
     pub calendar_attempts: Arc<crate::auth::flow::Attempts>,
+    /// ChatGPT sign-ins started from the app and not yet finished.
+    pub chatgpt_logins: Arc<crate::chatgpt::Logins>,
     /// What answers the app's chat, when the binary wired one up.
     pub chat: Option<Arc<dyn crate::chat::Chat>>,
     /// The rooms' music, for the room cards. Answered by the binary.
@@ -118,6 +120,7 @@ impl AppState {
             memory: None,
             calendars: None,
             calendar_attempts: Arc::new(crate::auth::flow::Attempts::new()),
+            chatgpt_logins: Arc::default(),
             chat: None,
             nemlig: None,
             music: None,

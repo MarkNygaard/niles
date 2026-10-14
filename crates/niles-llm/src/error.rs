@@ -17,4 +17,9 @@ pub enum Error {
 
     #[error("LLM provider returned a structurally invalid response: {reason}")]
     InvalidResponse { reason: String },
+
+    /// Signing in to ChatGPT went wrong, in words meant for the person
+    /// doing it.
+    #[error("{reason}")]
+    SignIn { reason: String },
 }

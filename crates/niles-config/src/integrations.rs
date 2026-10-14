@@ -23,8 +23,14 @@ fn default_claude_model() -> String {
     "sonnet".into()
 }
 
-fn default_claude_timeout_seconds() -> u64 {
+fn default_assistant_timeout_seconds() -> u64 {
     120
+}
+
+/// Balanced, as Sonnet is for Claude: the everyday GPT-5.6 tier, quick
+/// enough for a chat and careful enough to build a rule.
+fn default_chatgpt_model() -> String {
+    "gpt-5.6-terra".into()
 }
 
 /// Top-level `[integrations]` section of the config file.
@@ -35,6 +41,13 @@ pub struct IntegrationsConfig {
     pub linear: Option<LinearConfigDto>,
     #[serde(default)]
     pub claude_code: Option<ClaudeCodeConfig>,
+    #[serde(default)]
+    pub chatgpt: Option<ChatGptConfig>,
+    /// Which assistant answers when both are added, switched on and
+    /// signed in. With only one of them usable, that one answers
+    /// whatever this says.
+    #[serde(default)]
+    pub assistant: Assistant,
     #[serde(default)]
     pub nemlig: Option<NemligConfig>,
     #[serde(default)]
@@ -188,13 +201,24 @@ impl NemligConfig {
     }
 }
 
-/// `[integrations.claude_code]` — the app's chat answered by Claude Code,
-/// on the household's Claude subscription.
+/// The assistants that can answer in Niles's place, each on a
+/// household's own subscription.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Assistant {
+    #[default]
+    ClaudeCode,
+    Chatgpt,
+}
+
+/// `[integrations.claude_code]` — Claude Code, on the household's Claude
+/// subscription, as the assistant.
 ///
-/// Only the chat: a spoken command still goes to `[llm]`, because a
-/// process that takes seconds to start has no place in a voice reply.
-/// When this is off, or Claude Code fails, the chat falls back to
-/// `[llm]` as well.
+/// It answers the app's chat, a spoken turn about the house's rules (the
+/// satellite is kept waiting while it does), and the review of what was
+/// said. Other spoken commands still go to `[llm]`: a process that takes
+/// seconds to start has no place in "lights off". When this is off, or
+/// Claude Code fails, everything falls back to `[llm]` as well.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClaudeCodeConfig {
@@ -209,7 +233,7 @@ pub struct ClaudeCodeConfig {
     #[serde(default)]
     pub oauth_token_env: String,
     /// How long one answer may take, tool calls included.
-    #[serde(default = "default_claude_timeout_seconds")]
+    #[serde(default = "default_assistant_timeout_seconds")]
     pub timeout_seconds: u64,
 }
 
@@ -237,6 +261,97 @@ impl ClaudeCodeConfig {
             "integrations.claude_code.oauth_token",
             &self.oauth_token_env,
         )
+    }
+}
+
+/// `[integrations.chatgpt]` — the same assistant as Claude Code, on a
+/// household's ChatGPT subscription instead, run through the pi agent.
+///
+/// The sign-in is not here: it is made in the app and kept in the
+/// secret store, under the keys [`ChatGptSignIn`] names.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatGptConfig {
+    /// Off keeps the section, the model and the sign-in without using
+    /// them.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// A model the subscription offers through Codex: `gpt-5.6-terra`,
+    /// `gpt-6-astra`, …
+    #[serde(default = "default_chatgpt_model")]
+    pub model: String,
+    /// How long one answer may take, tool calls included.
+    #[serde(default = "default_assistant_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl ChatGptConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.model.trim().is_empty() {
+            return Err(Error::InvalidSection {
+                section: "integrations.chatgpt",
+                reason: "model must not be empty".into(),
+            });
+        }
+        if self.timeout_seconds < 10 || self.timeout_seconds > 600 {
+            return Err(Error::InvalidSection {
+                section: "integrations.chatgpt",
+                reason: "timeout_seconds must be between 10 and 600".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A ChatGPT sign-in, as the secret store keeps it.
+///
+/// Four keys rather than one blob so each is an ordinary stored secret:
+/// removing the integration deletes them like any other, and the page
+/// can tell whether one is there without reading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatGptSignIn {
+    pub access_token: String,
+    /// OpenAI rotates it on every use, so Niles alone may spend it.
+    pub refresh_token: String,
+    pub account_id: String,
+    /// When the access token stops working, in seconds since the epoch.
+    pub expires_at: i64,
+}
+
+impl ChatGptSignIn {
+    pub const ACCESS_TOKEN: &str = "integrations.chatgpt.access_token";
+    pub const REFRESH_TOKEN: &str = "integrations.chatgpt.refresh_token";
+    pub const ACCOUNT_ID: &str = "integrations.chatgpt.account_id";
+    pub const EXPIRES_AT: &str = "integrations.chatgpt.expires_at";
+    pub const KEYS: [&str; 4] = [
+        Self::ACCESS_TOKEN,
+        Self::REFRESH_TOKEN,
+        Self::ACCOUNT_ID,
+        Self::EXPIRES_AT,
+    ];
+
+    /// The sign-in in the secret store, if there is a whole one.
+    pub fn stored() -> Option<Self> {
+        Some(Self {
+            access_token: crate::secrets::get(Self::ACCESS_TOKEN)?,
+            refresh_token: crate::secrets::get(Self::REFRESH_TOKEN)?,
+            account_id: crate::secrets::get(Self::ACCOUNT_ID)?,
+            // Unreadable reads as expired, which costs one refresh.
+            expires_at: crate::secrets::get(Self::EXPIRES_AT)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0),
+        })
+    }
+
+    /// What to save, refresh token first: if saving stops part way, a
+    /// rotated refresh token is the one thing that cannot be got back.
+    pub fn entries(&self) -> [(&'static str, String); 4] {
+        [
+            (Self::REFRESH_TOKEN, self.refresh_token.clone()),
+            (Self::ACCESS_TOKEN, self.access_token.clone()),
+            (Self::ACCOUNT_ID, self.account_id.clone()),
+            (Self::EXPIRES_AT, self.expires_at.to_string()),
+        ]
     }
 }
 
@@ -268,6 +383,9 @@ impl IntegrationsConfig {
         }
         if let Some(claude) = &self.claude_code {
             claude.validate()?;
+        }
+        if let Some(chatgpt) = &self.chatgpt {
+            chatgpt.validate()?;
         }
         Ok(())
     }
@@ -308,5 +426,88 @@ impl LinearConfigDto {
             "integrations.linear.api_key",
             &self.api_key_env,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn integrations(toml: &str) -> IntegrationsConfig {
+        toml::from_str(toml).expect("valid")
+    }
+
+    #[test]
+    fn claude_answers_unless_told_otherwise() {
+        assert_eq!(integrations("").assistant, Assistant::ClaudeCode);
+        assert_eq!(
+            integrations("assistant = \"chatgpt\"").assistant,
+            Assistant::Chatgpt
+        );
+        assert!(toml::from_str::<IntegrationsConfig>("assistant = \"gemini\"").is_err());
+    }
+
+    #[test]
+    fn an_empty_chatgpt_section_is_a_working_one() {
+        let chatgpt = integrations("[chatgpt]").chatgpt.expect("added");
+        assert!(chatgpt.enabled);
+        assert_eq!(chatgpt.model, "gpt-5.6-terra");
+        assert_eq!(chatgpt.timeout_seconds, 120);
+        assert!(chatgpt.validate().is_ok());
+    }
+
+    #[test]
+    fn chatgpt_is_held_to_the_same_limits_as_claude() {
+        assert!(
+            integrations("[chatgpt]\ntimeout_seconds = 5")
+                .validate()
+                .is_err()
+        );
+        assert!(integrations("[chatgpt]\nmodel = \" \"").validate().is_err());
+        // The sign-in is not config, and a key for it here is a mistake.
+        assert!(toml::from_str::<IntegrationsConfig>("[chatgpt]\naccess_token = \"x\"").is_err());
+    }
+
+    #[test]
+    fn a_sign_in_is_read_back_whole_or_not_at_all() {
+        let _guard = crate::secrets::TEST_GUARD.lock();
+        let sign_in = ChatGptSignIn {
+            access_token: "at".into(),
+            refresh_token: "rt".into(),
+            account_id: "acct".into(),
+            expires_at: 1_900_000_000,
+        };
+        let stored = |skip: Option<&str>| {
+            sign_in
+                .entries()
+                .into_iter()
+                .filter(|(k, _)| Some(*k) != skip)
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        };
+        crate::secrets::load(stored(None));
+        assert_eq!(ChatGptSignIn::stored(), Some(sign_in.clone()));
+        crate::secrets::load(stored(Some(ChatGptSignIn::REFRESH_TOKEN)));
+        assert_eq!(ChatGptSignIn::stored(), None);
+        crate::secrets::load(Default::default());
+    }
+
+    #[test]
+    fn the_refresh_token_is_saved_first() {
+        let sign_in = ChatGptSignIn {
+            access_token: "at".into(),
+            refresh_token: "rt".into(),
+            account_id: "acct".into(),
+            expires_at: 0,
+        };
+        assert_eq!(
+            sign_in.entries()[0],
+            (ChatGptSignIn::REFRESH_TOKEN, "rt".to_string())
+        );
+        let mut keys: Vec<&str> = sign_in.entries().iter().map(|(k, _)| *k).collect();
+        keys.sort();
+        let mut known = ChatGptSignIn::KEYS.to_vec();
+        known.sort();
+        assert_eq!(keys, known);
     }
 }

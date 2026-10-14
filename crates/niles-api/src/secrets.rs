@@ -38,6 +38,22 @@ const KNOWN: &[(&str, &str)] = &[
         "integrations.claude_code.oauth_token",
         "Claude Code token, from `claude setup-token`",
     ),
+    // Written by signing in to ChatGPT from its card, never typed.
+    // Listed so the card can tell it is signed in, and so removing it
+    // deletes them.
+    (
+        "integrations.chatgpt.access_token",
+        "ChatGPT sign-in: access token",
+    ),
+    (
+        "integrations.chatgpt.refresh_token",
+        "ChatGPT sign-in: refresh token",
+    ),
+    (
+        "integrations.chatgpt.account_id",
+        "ChatGPT sign-in: account",
+    ),
+    ("integrations.chatgpt.expires_at", "ChatGPT sign-in: expiry"),
     ("integrations.nemlig.username", "nemlig.com email"),
     ("integrations.nemlig.password", "nemlig.com password"),
     ("integrations.spotify.client_id", "Spotify app Client ID"),

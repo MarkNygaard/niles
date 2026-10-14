@@ -1,29 +1,14 @@
-//! The app's chat answered by Claude Code, on the household's own Claude
-//! subscription.
-//!
-//! One `claude -p` per message. Claude Code is an agent, not an API, so
-//! Niles cannot hand it tools in a request the way it does Groq;
-//! instead Niles serves its tool registry over MCP on a loopback port,
-//! and points each run at it with a token that lives for that one turn.
-//! The token is also how a tool call knows who is typing: it maps to
-//! the speaker the turn was started for, so `remember_about_me` writes
-//! to the right person even though the call arrives on another request.
+//! Claude Code as the assistant, on the household's own Claude
+//! subscription: one `claude -p` per run, pointed at Niles's tools over
+//! MCP (see [`crate::assistant`]).
 //!
 //! Claude Code's own tools are switched off — no shell, no files, no
 //! web — and only Niles's are allowed. It runs inside the Niles pod,
 //! next to every credential the house has.
 
 use anyhow::{Context, anyhow, bail};
-use axum::Json;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use niles_llm::Message;
-use niles_tools::ToolRegistry;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// What MCP calls the server, and so the prefix of every tool name
@@ -41,152 +26,79 @@ const BACKGROUND_MODEL: &str = "opus";
 const BACKGROUND_TURNS: u32 = 80;
 const BACKGROUND_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-/// One run's grant: who it was started for, and — for a background job
-/// — the only tools it may see. `None` is the whole registry.
-#[derive(Clone)]
-struct Grant {
-    speaker: Option<String>,
-    tools: Option<Arc<ToolRegistry>>,
+/// How one run of `claude` is sized.
+pub(crate) struct Run<'a> {
+    model: &'a str,
+    max_turns: u32,
+    timeout: Duration,
 }
 
-/// Live turn tokens, and what each grants.
-type Turns = Arc<Mutex<HashMap<String, Grant>>>;
-
-pub(crate) struct ClaudeCode {
-    mcp_url: String,
-    turns: Turns,
-}
-
-impl ClaudeCode {
-    /// Serve the tools on a loopback port, so only a process in this pod
-    /// can reach them — and only with a turn's token.
-    pub(crate) async fn start(tools: Arc<ToolRegistry>) -> anyhow::Result<Self> {
-        let turns: Turns = Arc::default();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .context("binding the MCP port")?;
-        let addr = listener.local_addr()?;
-        let app = axum::Router::new()
-            .route(
-                "/mcp",
-                axum::routing::post(serve_mcp).get(|| async { StatusCode::METHOD_NOT_ALLOWED }),
-            )
-            .with_state(McpState {
-                tools,
-                turns: turns.clone(),
-            });
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
-                tracing::error!("[claude-code] the MCP server stopped: {e}");
-            }
-        });
-        Ok(Self {
-            mcp_url: format!("http://{addr}/mcp"),
-            turns,
-        })
-    }
-
-    /// Answer one chat message.
-    pub(crate) async fn answer(
-        &self,
-        cfg: &niles_config::ClaudeCodeConfig,
-        oauth_token: &str,
-        system_prompt: &str,
-        history: &[Message],
-        text: &str,
-        speaker: Option<String>,
-    ) -> anyhow::Result<String> {
-        let run = Run {
+impl<'a> Run<'a> {
+    pub(crate) fn chat(cfg: &'a niles_config::ClaudeCodeConfig) -> Self {
+        Self {
             model: &cfg.model,
             max_turns: MAX_TURNS,
             timeout: Duration::from_secs(cfg.timeout_seconds),
-        };
-        let grant = Grant {
-            speaker,
-            tools: None,
-        };
-        self.run(
-            run,
-            oauth_token,
-            system_prompt,
-            &transcript(history, text),
-            grant,
-        )
-        .await
+        }
     }
 
-    /// A job nobody waits for, with only `tools` to work with: the
-    /// house's devices are not among them.
-    pub(crate) async fn background(
-        &self,
-        oauth_token: &str,
-        system_prompt: &str,
-        prompt: &str,
-        tools: ToolRegistry,
-    ) -> anyhow::Result<String> {
-        let run = Run {
+    pub(crate) fn background() -> Self {
+        Self {
             model: BACKGROUND_MODEL,
             max_turns: BACKGROUND_TURNS,
             timeout: BACKGROUND_TIMEOUT,
-        };
-        let grant = Grant {
-            speaker: None,
-            tools: Some(Arc::new(tools)),
-        };
-        self.run(run, oauth_token, system_prompt, prompt, grant)
-            .await
-    }
-
-    async fn run(
-        &self,
-        run: Run<'_>,
-        oauth_token: &str,
-        system_prompt: &str,
-        prompt: &str,
-        grant: Grant,
-    ) -> anyhow::Result<String> {
-        let turn = TurnToken::issue(&self.turns, grant);
-        let state = state_dir()?;
-        let work = state.join("work");
-
-        let mut command = tokio::process::Command::new("claude");
-        command
-            .args(arguments(
-                &run,
-                system_prompt,
-                prompt,
-                &mcp_config(&self.mcp_url, &turn.0),
-            ))
-            .env("CLAUDE_CODE_OAUTH_TOKEN", oauth_token)
-            .env("CLAUDE_CONFIG_DIR", &state)
-            // And its home: some of what it writes goes beside the config
-            // directory rather than in it, and the container's user has
-            // no home it can write to.
-            .env("HOME", &state)
-            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-            .env("DISABLE_AUTOUPDATER", "1")
-            // An empty directory, so there is no CLAUDE.md or project
-            // settings for it to pick up.
-            .current_dir(&work)
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-
-        let output = tokio::time::timeout(run.timeout, command.output())
-            .await
-            .map_err(|_| anyhow!("no answer within {}s", run.timeout.as_secs()))?
-            .context("starting `claude` — is Claude Code installed in this image?")?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !output.status.success() && stdout.trim().is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "`claude` exited with {}: {}",
-                output.status,
-                stderr.trim().chars().take(300).collect::<String>()
-            );
         }
-        parse_result(&stdout)
     }
+}
+
+pub(crate) async fn run(
+    run: Run<'_>,
+    oauth_token: &str,
+    mcp_url: &str,
+    turn_token: &str,
+    system_prompt: &str,
+    prompt: &str,
+) -> anyhow::Result<String> {
+    let state = state_dir()?;
+    let work = state.join("work");
+
+    let mut command = tokio::process::Command::new("claude");
+    command
+        .args(arguments(
+            &run,
+            system_prompt,
+            prompt,
+            &mcp_config(mcp_url, turn_token),
+        ))
+        .env("CLAUDE_CODE_OAUTH_TOKEN", oauth_token)
+        .env("CLAUDE_CONFIG_DIR", &state)
+        // And its home: some of what it writes goes beside the config
+        // directory rather than in it, and the container's user has
+        // no home it can write to.
+        .env("HOME", &state)
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+        .env("DISABLE_AUTOUPDATER", "1")
+        // An empty directory, so there is no CLAUDE.md or project
+        // settings for it to pick up.
+        .current_dir(&work)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    let output = tokio::time::timeout(run.timeout, command.output())
+        .await
+        .map_err(|_| anyhow!("no answer within {}s", run.timeout.as_secs()))?
+        .context("starting `claude` — is Claude Code installed in this image?")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() && stdout.trim().is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "`claude` exited with {}: {}",
+            output.status,
+            stderr.trim().chars().take(300).collect::<String>()
+        );
+    }
+    parse_result(&stdout)
 }
 
 /// Where Claude Code keeps its state: the first of these it can write.
@@ -214,94 +126,6 @@ fn state_dir() -> anyhow::Result<PathBuf> {
         }
     }
     bail!("nowhere to keep its state: tried {}", tried.join(", "))
-}
-
-/// How one run of `claude` is sized.
-struct Run<'a> {
-    model: &'a str,
-    max_turns: u32,
-    timeout: Duration,
-}
-
-/// A token for one run, withdrawn when the run is over however it ends.
-struct TurnToken(String, Turns);
-
-impl TurnToken {
-    fn issue(turns: &Turns, grant: Grant) -> Self {
-        let token = format!("{:032x}", rand::random::<u128>());
-        turns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(token.clone(), grant);
-        Self(token, turns.clone())
-    }
-}
-
-impl Drop for TurnToken {
-    fn drop(&mut self) {
-        self.1
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.0);
-    }
-}
-
-#[derive(Clone)]
-struct McpState {
-    tools: Arc<ToolRegistry>,
-    turns: Turns,
-}
-
-async fn serve_mcp(
-    State(state): State<McpState>,
-    headers: HeaderMap,
-    Json(message): Json<Value>,
-) -> Response {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let grant = token.and_then(|t| {
-        state
-            .turns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(t)
-            .cloned()
-    });
-    let Some(grant) = grant else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    // A background job lists and calls only its own tools: asking for
-    // `set_device` by name finds nothing.
-    let tools = grant.tools.unwrap_or_else(|| state.tools.clone());
-    match crate::profile::SPEAKER
-        .scope(grant.speaker, niles_tools::mcp::handle(&tools, &message))
-        .await
-    {
-        Some(reply) => Json(reply).into_response(),
-        None => StatusCode::ACCEPTED.into_response(),
-    }
-}
-
-/// The conversation so far and the new message, as one prompt: each run
-/// starts fresh, so the history has to travel with it.
-fn transcript(history: &[Message], text: &str) -> String {
-    let mut out = String::new();
-    for message in history {
-        match message {
-            Message::User { content } => out.push_str(&format!("Person: {content}\n")),
-            Message::Assistant {
-                content: Some(content),
-                ..
-            } => out.push_str(&format!("Niles: {content}\n")),
-            _ => {}
-        }
-    }
-    if out.is_empty() {
-        return text.to_string();
-    }
-    format!("The conversation so far:\n\n{out}\nThe person now says:\n\n{text}")
 }
 
 fn mcp_config(url: &str, token: &str) -> String {
@@ -389,44 +213,16 @@ fn preview(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn cfg() -> niles_config::ClaudeCodeConfig {
         toml::from_str("").expect("every field has a default")
     }
 
     #[test]
-    fn a_first_message_is_sent_as_it_is() {
-        assert_eq!(transcript(&[], "is anyone home?"), "is anyone home?");
-    }
-
-    #[test]
-    fn a_follow_up_carries_the_conversation() {
-        let history = vec![
-            Message::User {
-                content: "add milk".into(),
-            },
-            Message::Assistant {
-                content: Some("Added milk, Sir.".into()),
-                tool_calls: None,
-            },
-        ];
-        let prompt = transcript(&history, "and eggs");
-        assert!(
-            prompt.contains("Person: add milk\nNiles: Added milk, Sir.\n"),
-            "{prompt}"
-        );
-        assert!(prompt.ends_with("and eggs"), "{prompt}");
-    }
-
-    #[test]
     fn claude_code_gets_no_tools_of_its_own() {
         let cfg = cfg();
-        let run = Run {
-            model: &cfg.model,
-            max_turns: MAX_TURNS,
-            timeout: Duration::from_secs(cfg.timeout_seconds),
-        };
-        let args = arguments(&run, "You are Niles.", "hi", "{}");
+        let args = arguments(&Run::chat(&cfg), "You are Niles.", "hi", "{}");
         let after = |flag: &str| {
             let i = args.iter().position(|a| a == flag).expect(flag);
             args[i + 1].as_str()
@@ -436,7 +232,15 @@ mod tests {
         assert_eq!(after("--permission-mode"), "dontAsk");
         assert_eq!(after("--system-prompt"), "You are Niles.");
         assert_eq!(after("--model"), "sonnet");
+        assert_eq!(after("--max-turns"), "12");
         assert!(args.contains(&"--strict-mcp-config".to_string()));
+    }
+
+    #[test]
+    fn the_background_gets_the_strongest_model() {
+        let args = arguments(&Run::background(), "s", "p", "{}");
+        let i = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(args[i + 1], "opus");
     }
 
     #[test]
@@ -465,102 +269,6 @@ mod tests {
         assert!(parse_result("Invalid API key · Please run /login").is_err());
     }
 
-    #[test]
-    fn a_token_is_withdrawn_when_the_turn_ends() {
-        let turns: Turns = Arc::default();
-        let token = TurnToken::issue(
-            &turns,
-            Grant {
-                speaker: Some("mark".into()),
-                tools: None,
-            },
-        );
-        let key = token.0.clone();
-        assert_eq!(
-            turns.lock().unwrap().get(&key).unwrap().speaker.as_deref(),
-            Some("mark")
-        );
-        drop(token);
-        assert!(turns.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn the_mcp_port_wants_a_live_token() {
-        let claude = ClaudeCode::start(Arc::new(ToolRegistry::new()))
-            .await
-            .unwrap();
-        let client = reqwest::Client::new();
-        let ping = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
-
-        let refused = client
-            .post(&claude.mcp_url)
-            .json(&ping)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
-
-        let token = TurnToken::issue(
-            &claude.turns,
-            Grant {
-                speaker: None,
-                tools: None,
-            },
-        );
-        let answered = client
-            .post(&claude.mcp_url)
-            .bearer_auth(&token.0)
-            .json(&ping)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(answered.status(), reqwest::StatusCode::OK);
-        let body: Value = answered.json().await.unwrap();
-        assert_eq!(body["result"], json!({}));
-    }
-
-    /// A background job's token sees its own tools and none of the
-    /// house's: the review must not be able to turn on a light.
-    #[tokio::test]
-    async fn a_background_grant_sees_only_its_own_tools() {
-        let mut house = ToolRegistry::new();
-        niles_tools::register_grocery_tools(
-            &mut house,
-            Arc::new(niles_groceries::GroceryStore::new()),
-            None,
-        );
-        let claude = ClaudeCode::start(Arc::new(house)).await.unwrap();
-        let skills = Arc::new(niles_skills::SkillStore::new(100_000));
-        let mut own = ToolRegistry::new();
-        niles_tools::register_background_skill_tools(&mut own, skills);
-        let token = TurnToken::issue(
-            &claude.turns,
-            Grant {
-                speaker: None,
-                tools: Some(Arc::new(own)),
-            },
-        );
-        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
-        let body: Value = reqwest::Client::new()
-            .post(&claude.mcp_url)
-            .bearer_auth(&token.0)
-            .json(&list)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let names: Vec<&str> = body["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
-        assert!(names.contains(&"view_skill"), "{names:?}");
-        assert!(!names.iter().any(|n| n.contains("grocer")), "{names:?}");
-    }
-
     /// Real Claude Code against the real MCP server and the real grocery
     /// tools. Ignored: it needs `claude` on the PATH and a token from
     /// `claude setup-token`, and spends a few tokens:
@@ -573,17 +281,21 @@ mod tests {
     #[ignore]
     async fn a_real_claude_code_adds_to_the_list() {
         let store = Arc::new(niles_groceries::GroceryStore::new());
-        let mut registry = ToolRegistry::new();
+        let mut registry = niles_tools::ToolRegistry::new();
         niles_tools::register_grocery_tools(&mut registry, store.clone(), Some("DK".into()));
-        let claude = ClaudeCode::start(Arc::new(registry)).await.unwrap();
+        let assistant = crate::assistant::Assistant::start(Arc::new(registry), None)
+            .await
+            .unwrap();
         let mut cfg = cfg();
         cfg.model = "haiku".into();
-        let token = std::env::var("CLAUDE_CODE_OAUTH_TOKEN").unwrap_or_default();
+        let chosen = crate::assistant::Chosen::ClaudeCode {
+            cfg,
+            token: std::env::var("CLAUDE_CODE_OAUTH_TOKEN").unwrap_or_default(),
+        };
 
-        let reply = claude
+        let reply = assistant
             .answer(
-                &cfg,
-                &token,
+                &chosen,
                 "You are Niles, a household assistant. Use your tools to act.",
                 &[],
                 "Add milk to the shopping list.",

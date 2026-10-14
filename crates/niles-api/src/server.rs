@@ -119,6 +119,15 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(crate::groceries::update).delete(crate::groceries::remove),
         )
         .route("/integrations", get(crate::integrations::list))
+        .route("/integrations/chatgpt", get(crate::chatgpt::status))
+        .route(
+            "/integrations/chatgpt/login",
+            post(crate::chatgpt::start).delete(crate::chatgpt::sign_out),
+        )
+        .route(
+            "/integrations/chatgpt/login/complete",
+            post(crate::chatgpt::complete),
+        )
         .route("/speakers", get(crate::speakers::list))
         .route("/music", get(crate::music::rooms))
         .route("/music/{room}", post(crate::music::control))

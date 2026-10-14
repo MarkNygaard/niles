@@ -93,7 +93,8 @@ pub struct Turn {
     /// The room a spoken turn was said in.
     #[serde(default)]
     pub room: Option<String>,
-    /// What wrote the reply when it was not Niles's own models: `claude`.
+    /// What wrote the reply when it was not Niles's own models: the
+    /// assistant, `claude` or `chatgpt`.
     #[serde(default)]
     pub by: Option<String>,
     /// The rule Niles read back and asked to save, in this turn.
@@ -143,13 +144,16 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Reply {
     pub reply: String,
-    /// `claude` when Claude Code wrote it.
+    /// The assistant that wrote it, `claude` or `chatgpt`, when one did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
-    /// Why Claude Code did not answer, when it was switched on and the
-    /// reply came from Niles's own models instead.
+    /// Why the assistant did not answer, when one was switched on and
+    /// the reply came from Niles's own models instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
+    /// Which assistant that was, so the app can name it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_from: Option<String>,
     /// The conversation it went into; absent where nothing is kept.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<i64>,
@@ -439,6 +443,7 @@ mod tests {
                 reply: format!("you said {text}"),
                 via: None,
                 fallback: None,
+                fallback_from: None,
                 conversation_id: Some(id),
             })
         }

@@ -11,6 +11,7 @@
 
 mod backend;
 mod chat;
+pub mod chatgpt;
 mod error;
 mod groq;
 mod openai;

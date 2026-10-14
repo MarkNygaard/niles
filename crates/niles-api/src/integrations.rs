@@ -108,6 +108,7 @@ fn is_added(cfg: &Config, id: &str) -> bool {
         // Switched off is still added: the card stays, with its switch,
         // its model and its token.
         "claude_code" => cfg.integrations.claude_code.is_some(),
+        "chatgpt" => cfg.integrations.chatgpt.is_some(),
         "nemlig" => cfg.integrations.nemlig.is_some(),
         "spotify" => cfg.integrations.spotify.is_some(),
         "microsoft" => cfg.integrations.microsoft.is_some(),

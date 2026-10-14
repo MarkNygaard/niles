@@ -13,7 +13,9 @@ spec:
               cpu: "250m"
             limits:
               # A Claude Code run for the app's chat peaks around 250Mi
-              # on top of Niles itself.
+              # on top of Niles itself; a pi run (ChatGPT) is a Node
+              # process of about the same size. A chat and a background
+              # review can overlap, so two of them at once still fit.
               memory: "1Gi"
               cpu: "500m"
           volumeMounts:

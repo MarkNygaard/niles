@@ -51,13 +51,16 @@ export function ChatPage() {
   });
   const [browsing, setBrowsing] = useState(false);
   // Kept here because the server does not: only a reply just sent says
-  // why Claude Code did not write it. Keyed by conversation and turn.
-  const [fallbacks, setFallbacks] = useState<Record<string, string>>({});
+  // which assistant did not write it, and why. Keyed by conversation and
+  // turn.
+  const [fallbacks, setFallbacks] = useState<
+    Record<string, Pick<ShownTurn, "fallback" | "fallback_from">>
+  >({});
 
   const send = useMutation({
     mutationFn: ({ text, to }: { text: string; to: number | null }) =>
       api.sendChat(text, to === null ? { new: true } : { conversation_id: to }),
-    onSuccess: ({ reply, via, fallback, conversation_id }, { text: said, to }) => {
+    onSuccess: ({ reply, via, fallback, fallback_from, conversation_id }, { text: said, to }) => {
       const now = new Date().toISOString();
       const turn = {
         at: now,
@@ -80,7 +83,10 @@ export function ChatPage() {
       });
       if (fallback) {
         const at = old?.turns.length ?? 0;
-        setFallbacks((f) => ({ ...f, [`${conversation_id}:${at}`]: fallback }));
+        setFallbacks((f) => ({
+          ...f,
+          [`${conversation_id}:${at}`]: { fallback, fallback_from },
+        }));
       }
       // Unless somebody went to another conversation while waiting.
       setChosen((shown) => (shown === to ? conversation_id : shown));
@@ -129,7 +135,7 @@ export function ChatPage() {
       ? []
       : (conversation.data?.turns ?? []).map((turn, i) => ({
           ...turn,
-          fallback: fallbacks[`${current}:${i}`],
+          ...fallbacks[`${current}:${i}`],
         }));
 
   return (

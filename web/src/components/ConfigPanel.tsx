@@ -330,6 +330,7 @@ export function ConfigPanel() {
   const history = useQuery({ queryKey: ["history"], queryFn: api.history });
   const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
+  const chatgpt = useQuery({ queryKey: ["chatgpt"], queryFn: api.chatgptStatus });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
   /** The keys a page sets up, each where it is used: there is no list
       of every key, so a key is never shown in two places. */
@@ -1122,6 +1123,18 @@ export function ConfigPanel() {
               (view.effective.integrations as
                 | { claude_code?: { enabled?: boolean; model?: string } }
                 | undefined)?.claude_code
+            }
+            chatgpt={
+              (view.effective.integrations as
+                | { chatgpt?: { enabled?: boolean; model?: string } }
+                | undefined)?.chatgpt
+            }
+            chatgptStatus={chatgpt.data}
+            onChatGptChanged={() => chatgpt.refetch()}
+            assistant={
+              stringAt(view.effective, "integrations.assistant") === "chatgpt"
+                ? "chatgpt"
+                : "claude_code"
             }
             nemlig={
               (view.effective.integrations as

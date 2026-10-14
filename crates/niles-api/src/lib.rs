@@ -22,6 +22,7 @@ pub mod automations;
 pub mod calendars;
 pub mod captures;
 pub mod chat;
+pub mod chatgpt;
 pub mod climate;
 pub mod config;
 #[cfg(test)]
