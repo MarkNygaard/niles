@@ -61,6 +61,8 @@ impl From<DeviceStateDto> for DeviceState {
             // was saved is not something a scene can put back, so it is
             // not carried and not re-applied.
             open: None,
+            motion: None,
+            illuminance_lux: None,
         }
     }
 }

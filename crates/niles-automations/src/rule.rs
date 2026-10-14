@@ -49,6 +49,11 @@ pub enum Trigger {
         device: DeviceId,
         open: Option<bool>,
     },
+    /// A motion sensor seeing somebody, or no longer.
+    Motion {
+        device: DeviceId,
+        detected: Option<bool>,
+    },
     /// A reading coming to lie above and/or below a value.
     Numeric {
         device: DeviceId,
@@ -83,6 +88,8 @@ pub enum Measure {
     Humidity,
     Battery,
     Brightness,
+    /// Light falling on a sensor, in lux.
+    Illuminance,
 }
 
 impl Measure {
@@ -92,6 +99,7 @@ impl Measure {
             "humidity" => Some(Measure::Humidity),
             "battery" => Some(Measure::Battery),
             "brightness" => Some(Measure::Brightness),
+            "illuminance" | "lux" | "light_level" => Some(Measure::Illuminance),
             _ => None,
         }
     }
@@ -102,6 +110,7 @@ impl Measure {
             Measure::Humidity => state.humidity_percent.map(f64::from),
             Measure::Battery => state.battery_percent.map(f64::from),
             Measure::Brightness => state.brightness.map(f64::from),
+            Measure::Illuminance => state.illuminance_lux.map(f64::from),
         }
     }
 
@@ -111,6 +120,7 @@ impl Measure {
             Measure::Humidity => "humidity",
             Measure::Battery => "battery",
             Measure::Brightness => "brightness",
+            Measure::Illuminance => "illuminance",
         }
     }
 }
@@ -139,6 +149,10 @@ pub enum Condition {
     ContactIs {
         device: DeviceId,
         open: bool,
+    },
+    MotionIs {
+        device: DeviceId,
+        detected: bool,
     },
     Numeric {
         device: DeviceId,
@@ -367,6 +381,7 @@ impl Trigger {
             self,
             Trigger::DeviceState { .. }
                 | Trigger::Contact { .. }
+                | Trigger::Motion { .. }
                 | Trigger::Numeric { .. }
                 | Trigger::Presence { .. }
         )
@@ -394,6 +409,12 @@ impl Trigger {
             {
                 let now = state.open?;
                 Some((id.to_string(), open.is_none_or(|want| want == now)))
+            }
+            (Trigger::Motion { device, detected }, Event::DeviceStateChanged { id, state })
+                if id == device =>
+            {
+                let now = state.motion?;
+                Some((id.to_string(), detected.is_none_or(|want| want == now)))
             }
             (
                 Trigger::Numeric {
@@ -424,7 +445,9 @@ impl Trigger {
             state: device.state.clone(),
         };
         match self {
-            Trigger::Contact { device, .. } | Trigger::Numeric { device, .. } => registry
+            Trigger::Contact { device, .. }
+            | Trigger::Motion { device, .. }
+            | Trigger::Numeric { device, .. } => registry
                 .get(device)
                 .and_then(|d| self.observe(&event_of(&d)))
                 .into_iter()
@@ -531,6 +554,11 @@ impl Condition {
                 .get(device)
                 .and_then(|d| d.state.open)
                 .is_some_and(|s| s == *open),
+            Condition::MotionIs { device, detected } => ctx
+                .registry
+                .get(device)
+                .and_then(|d| d.state.motion)
+                .is_some_and(|s| s == *detected),
             Condition::Numeric {
                 device,
                 measure,
@@ -569,6 +597,13 @@ impl Condition {
             }
             Condition::ContactIs { device, open } => {
                 format!("{device} was not {}", if *open { "open" } else { "closed" })
+            }
+            Condition::MotionIs { device, detected } => {
+                if *detected {
+                    format!("{device} saw no motion")
+                } else {
+                    format!("{device} saw motion")
+                }
             }
             Condition::Numeric {
                 device, measure, ..
@@ -763,6 +798,17 @@ fn parse_trigger(
             },
             hold(h)?,
         ),
+        TriggerKind::Motion {
+            device,
+            detected,
+            hold: h,
+        } => (
+            Trigger::Motion {
+                device: parse_device_id(id, device, default_source)?,
+                detected: *detected,
+            },
+            hold(h)?,
+        ),
         TriggerKind::Numeric {
             device,
             measure,
@@ -861,6 +907,10 @@ fn parse_condition(
         ConditionDto::ContactIs { device, open } => Condition::ContactIs {
             device: parse_device_id(id, device, default_source)?,
             open: *open,
+        },
+        ConditionDto::MotionIs { device, detected } => Condition::MotionIs {
+            device: parse_device_id(id, device, default_source)?,
+            detected: *detected,
         },
         ConditionDto::Numeric {
             device,
@@ -1276,6 +1326,75 @@ mod tests {
     }
 
     // ---- what triggers follow --------------------------------------
+
+    #[test]
+    fn a_motion_trigger_follows_the_sensor() {
+        let sensor = device_id("hallway", "motion");
+        let t = Trigger::Motion {
+            device: sensor.clone(),
+            detected: Some(false),
+        };
+        let seen = |motion: bool| DeviceState {
+            motion: Some(motion),
+            ..Default::default()
+        };
+        assert_eq!(
+            t.observe(&state_event(&sensor, seen(false))),
+            Some(("z2m:hallway/motion".into(), true))
+        );
+        assert_eq!(
+            t.observe(&state_event(&sensor, seen(true))),
+            Some(("z2m:hallway/motion".into(), false))
+        );
+        let lux_only = DeviceState {
+            illuminance_lux: Some(40.0),
+            ..Default::default()
+        };
+        assert_eq!(t.observe(&state_event(&sensor, lux_only)), None);
+        assert!(t.follows_state());
+    }
+
+    #[test]
+    fn lights_on_with_motion_and_off_after_a_quiet_spell_is_one_rule() {
+        let r = rule(json!({
+            "id": "hallway",
+            "triggers": [
+                { "id": "seen", "type": "motion", "device": "hallway/motion", "detected": true },
+                { "id": "quiet", "type": "motion", "device": "hallway/motion", "detected": false, "for": { "minutes": 2 } }
+            ],
+            "conditions": [{ "kind": "numeric", "device": "hallway/motion", "measure": "illuminance", "below": 30 }],
+            "actions": [lights_off()],
+        }))
+        .unwrap();
+        assert_eq!(r.triggers[1].hold, Some(Duration::from_secs(120)));
+        assert!(matches!(
+            r.conditions[0],
+            Condition::Numeric {
+                measure: Measure::Illuminance,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_motion_condition_reads_the_sensor() {
+        let registry = DeviceRegistry::new();
+        let sensor = device_id("kitchen", "motion");
+        registry.upsert(Device::new(
+            sensor.clone(),
+            DeviceState {
+                motion: Some(true),
+                ..Default::default()
+            },
+            DeviceClass::Motion,
+        ));
+        let is = |detected: bool| Condition::MotionIs {
+            device: sensor.clone(),
+            detected,
+        };
+        assert!(is(true).evaluate(&ctx(&registry, Utc::now())));
+        assert!(!is(false).evaluate(&ctx(&registry, Utc::now())));
+    }
 
     #[test]
     fn a_contact_trigger_follows_the_door() {

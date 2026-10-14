@@ -241,6 +241,8 @@ mod tests {
                 humidity_percent: Some(50.0),
                 battery_percent: Some(99),
                 open: None,
+                motion: Some(true),
+                illuminance_lux: Some(120.0),
             },
         );
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();

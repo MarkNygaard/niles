@@ -77,6 +77,8 @@ impl DeviceRegistry {
         s.humidity_percent = partial.humidity_percent.or(s.humidity_percent);
         s.battery_percent = partial.battery_percent.or(s.battery_percent);
         s.open = partial.open.or(s.open);
+        s.motion = partial.motion.or(s.motion);
+        s.illuminance_lux = partial.illuminance_lux.or(s.illuminance_lux);
         true
     }
 

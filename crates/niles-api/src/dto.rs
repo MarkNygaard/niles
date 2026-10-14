@@ -66,6 +66,7 @@ pub enum DeviceClassDto {
     /// automation editor could not tell one from a button until it had
     /// reported open or shut.
     Contact,
+    Motion,
     Sensor,
     Unknown,
 }
@@ -77,6 +78,7 @@ impl From<&DeviceClass> for DeviceClassDto {
             DeviceClass::Outlet => Self::Outlet,
             DeviceClass::Switch => Self::Switch,
             DeviceClass::Contact => Self::Contact,
+            DeviceClass::Motion => Self::Motion,
             DeviceClass::Sensor => Self::Sensor,
             DeviceClass::Unknown => Self::Unknown,
             // `DeviceClass` is `#[non_exhaustive]`; new upstream
@@ -103,6 +105,9 @@ pub struct DeviceStateDto {
     pub battery_percent: Option<u8>,
     /// A door or window: `true` is open. Absent on everything else.
     pub open: Option<bool>,
+    /// A motion sensor: `true` while it sees somebody.
+    pub motion: Option<bool>,
+    pub illuminance_lux: Option<f32>,
 }
 
 impl From<&DeviceState> for DeviceStateDto {
@@ -116,6 +121,8 @@ impl From<&DeviceState> for DeviceStateDto {
             humidity_percent: s.humidity_percent,
             battery_percent: s.battery_percent,
             open: s.open,
+            motion: s.motion,
+            illuminance_lux: s.illuminance_lux,
         }
     }
 }
