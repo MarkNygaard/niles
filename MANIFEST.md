@@ -21,7 +21,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-get-devices` | GET /devices returns the full device registry snapshot | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
-| `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#387](https://github.com/MarkNygaard/niles/pull/387) |
+| `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
@@ -49,8 +49,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
-| `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#387](https://github.com/MarkNygaard/niles/pull/387) |
-| `plugins-runtime` | Run third-party integrations as sandboxed WebAssembly components; their devices, tools and pages join the house | [#387](https://github.com/MarkNygaard/niles/pull/387) |
+| `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `plugins-runtime` | Run third-party integrations as sandboxed WebAssembly components; their devices, tools and pages join the house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 
 ## ui
 
