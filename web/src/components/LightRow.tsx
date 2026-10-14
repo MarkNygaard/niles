@@ -16,7 +16,7 @@ import {
   kelvinSwatch,
 } from "@/components/LightSwatches";
 import { PowerButton } from "@/components/PowerButton";
-import { brightnessOf, humanize, isDimmable } from "@/lib/rooms";
+import { brightnessOf, humanize, isDimmable, readingsLine } from "@/lib/rooms";
 import type { Device, SetLight } from "@/lib/api";
 
 export interface LightRowProps {
@@ -38,6 +38,7 @@ export function LightRow({ light, disabled, onSet }: LightRowProps) {
   const color = light.state.rgb ? toHex(light.state.rgb) : undefined;
   const dimmable = isDimmable(light);
   const level = brightnessOf(light);
+  const readings = readingsLine(light);
   // What the bar says while a thumb is on it. The light itself will not
   // hear about it until the drag ends, and a percentage that disagrees
   // with the bar above it is the reading nobody trusts afterwards.
@@ -68,6 +69,7 @@ export function LightRow({ light, disabled, onSet }: LightRowProps) {
                   : "Off"}
             {!dimmable && " · plug"}
             {light.source !== "z2m" && ` · ${light.source}`}
+            {readings && ` · ${readings}`}
           </div>
         </div>
 

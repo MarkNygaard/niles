@@ -346,6 +346,19 @@ export interface DeviceState {
   illuminance_lux: number | null;
   /** A blind: `0` closed, `100` fully open. */
   position: number | null;
+  /**
+   * Every other number it reports, by name: `power`, `energy`, `co2`,
+   * an electricity `price`. Partial on the event stream like the rest,
+   * so merged name by name. Absent on an older server.
+   */
+  readings?: Record<string, Reading>;
+}
+
+/** A number a device reports that has no field of its own. */
+export interface Reading {
+  value: number;
+  /** The source's own unit — `W`, `kWh`, `kr/kWh` — or `null`. */
+  unit: string | null;
 }
 
 /** A device as `GET /devices` reports it. */
@@ -462,8 +475,16 @@ export interface Duration {
   seconds?: number;
 }
 
-/** A reading a sensor or a light reports. */
-export type Measure = "temperature" | "humidity" | "battery" | "brightness" | "illuminance";
+/** A number every rule knows how to read, whatever the device. */
+export type FixedMeasure = "temperature" | "humidity" | "battery" | "brightness" | "illuminance";
+
+/**
+ * What a numeric trigger or condition watches: a fixed measure, or the
+ * name of a reading the device reports (`price`, `power`, `co2`). The
+ * `string & {}` keeps the fixed names offered by the editor's types
+ * without closing the list.
+ */
+export type Measure = FixedMeasure | (string & {});
 
 export type Day = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
