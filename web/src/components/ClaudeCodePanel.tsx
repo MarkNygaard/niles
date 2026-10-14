@@ -23,11 +23,12 @@ export const MODELS = [
 ];
 
 /**
- * Claude Code, answering the chat on the household's own subscription.
+ * Claude Code, answering on the household's own subscription.
  *
- * Only the chat: a spoken command still goes to the voice model, which
- * answers in under a second where this takes several. Without a token,
- * or if Claude Code fails, the chat falls back to that model too.
+ * The chat and new rules, spoken or typed: anything else spoken still
+ * goes to the voice model, which answers in under a second where this
+ * takes several. Without a token, or if Claude Code fails, it falls back
+ * to that model too.
  */
 export function ClaudeCodePanel({
   enabled,
@@ -42,8 +43,8 @@ export function ClaudeCodePanel({
   return (
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground text-sm">
-        Answers the chat with Claude, using Niles's own tools. Spoken commands
-        keep the faster voice model.
+        Answers the chat and new rules with Claude, using Niles's own tools.
+        Other spoken commands keep the faster voice model.
       </p>
 
       {/* Off and on without losing the token or the model: Remove is for

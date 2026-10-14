@@ -104,7 +104,7 @@ pub const GROUPS: &[GroupInfo] = &[
     GroupInfo {
         id: Group::Assistants,
         label: "Assistants & tools",
-        blurb: "For the technically minded: Claude in the chat, and work handed to Niles from Linear.",
+        blurb: "Claude or ChatGPT in the chat, on your own subscription, and work handed to Niles from Linear.",
         requirement: None,
     },
 ];
@@ -405,6 +405,27 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
+        id: "chatgpt",
+        label: "ChatGPT",
+        blurb: "ChatGPT answers the chat and handles new rules.",
+        needs: "A paid ChatGPT subscription (Plus or Pro). You sign in to ChatGPT from here; there is no key to copy.",
+        kind: Kind::Service,
+        group: Group::Assistants,
+        importance: Importance::Optional,
+        icon: "bot",
+        // The sign-in, kept by Niles and renewed by it alone.
+        secrets: &[
+            "integrations.chatgpt.access_token",
+            "integrations.chatgpt.refresh_token",
+            "integrations.chatgpt.account_id",
+            "integrations.chatgpt.expires_at",
+        ],
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
+    Known {
         id: "linear",
         label: "Linear",
         blurb: "Turn an issue into work Niles picks up.",
@@ -442,6 +463,10 @@ impl Known {
             Kind::Service if self.id == "linear" => Some("integrations.linear.api_key".into()),
             Kind::Service if self.id == "claude_code" => {
                 Some("integrations.claude_code.oauth_token".into())
+            }
+            // Not one typed in: its absence says nobody has signed in.
+            Kind::Service if self.id == "chatgpt" => {
+                Some("integrations.chatgpt.access_token".into())
             }
             // It takes two — the email as well — and its card asks for
             // both; this is the one whose absence says "not finished".
@@ -640,6 +665,12 @@ mod tests {
             owns("claude_code"),
             ["integrations.claude_code.oauth_token"]
         );
+        // All four of the sign-in, so removing it signs out for good.
+        let mut chatgpt = owns("chatgpt");
+        chatgpt.sort();
+        let mut sign_in = crate::ChatGptSignIn::KEYS.to_vec();
+        sign_in.sort();
+        assert_eq!(chatgpt, sign_in);
         assert_eq!(owns("mqtt"), ["mqtt.username", "mqtt.password"]);
     }
 
@@ -677,6 +708,20 @@ mod tests {
             );
             assert_eq!(known.secrets, [key.as_str()], "{}", known.id);
         }
+    }
+
+    #[test]
+    fn both_assistants_sit_together_before_linear() {
+        let assistants: Vec<&str> = KNOWN
+            .iter()
+            .filter(|k| k.group == Group::Assistants)
+            .map(|k| k.id)
+            .collect();
+        assert_eq!(assistants, ["claude_code", "chatgpt", "linear"]);
+        let chatgpt = find("chatgpt").expect("in the catalogue");
+        assert_eq!(chatgpt.kind, Kind::Service);
+        assert_eq!(chatgpt.importance, Importance::Optional);
+        assert!(chatgpt.needs.contains("ChatGPT subscription"));
     }
 
     #[test]

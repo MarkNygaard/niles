@@ -161,6 +161,10 @@ impl crate::Config {
             "llm.api_key" => host_of(&self.llm.base_url),
             "integrations.linear.api_key" => Some("api.linear.app".into()),
             "integrations.claude_code.oauth_token" => Some("claude.ai".into()),
+            "integrations.chatgpt.access_token"
+            | "integrations.chatgpt.refresh_token"
+            | "integrations.chatgpt.account_id"
+            | "integrations.chatgpt.expires_at" => Some("chatgpt.com".into()),
             "integrations.nemlig.username" | "integrations.nemlig.password" => {
                 Some("nemlig.com".into())
             }

@@ -56,7 +56,10 @@ pub use database::DatabaseConfig;
 pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
-pub use integrations::{ClaudeCodeConfig, IntegrationsConfig, LinearConfigDto, NemligConfig};
+pub use integrations::{
+    Assistant, ChatGptConfig, ChatGptSignIn, ClaudeCodeConfig, IntegrationsConfig, LinearConfigDto,
+    NemligConfig,
+};
 pub use lamp_plugs::LampPlugsConfig;
 pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
 pub use llm::{LlmConfig, LlmTier2Config, ReasoningEffort};

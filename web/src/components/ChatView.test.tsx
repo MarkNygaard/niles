@@ -74,6 +74,26 @@ describe("ChatView", () => {
     expect(screen.getByText(/Answered without Claude — Claude Code has no token/)).toBeInTheDocument();
   });
 
+  it("says when ChatGPT wrote a reply", () => {
+    renderChat({ turns: [turn("hi", "Good evening.", { by: "chatgpt" })] });
+    expect(screen.getByText("ChatGPT")).toBeInTheDocument();
+    expect(screen.queryByText("Claude")).toBeNull();
+  });
+
+  it("names ChatGPT when it was ChatGPT that did not answer", () => {
+    renderChat({
+      turns: [
+        turn("hi", "Good evening.", {
+          fallback: "ChatGPT is not signed in",
+          fallback_from: "chatgpt",
+        }),
+      ],
+    });
+    expect(
+      screen.getByText("Answered without ChatGPT — ChatGPT is not signed in"),
+    ).toBeInTheDocument();
+  });
+
   it("starts a new chat", () => {
     const { onNew } = renderChat({ turns: [turn("hi", "Good evening.")] });
     fireEvent.click(screen.getByRole("button", { name: "New chat" }));

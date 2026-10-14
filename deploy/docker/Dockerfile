@@ -81,6 +81,17 @@ ARG CLAUDE_CODE_VERSION=2.1.267
 RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates curl bash  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"  && install -D "$(readlink -f /root/.local/bin/claude)" /out/claude  && /out/claude --version
 
+# ---- pi ---------------------------------------------------------------
+# The same assistant on a ChatGPT subscription (`[integrations.chatgpt]`)
+# runs through pi, which is a Node program. Installed here and copied in,
+# so npm and its cache stay out of the runtime image. Pinned: pi's model
+# registry decides which ChatGPT models a subscription can reach at all
+# (gpt-6-astra needs 0.85.1), and Niles relies on its flags and its JSON
+# events. Bookworm, like the runtime, whose libstdc++ node links against.
+FROM node:22-bookworm-slim AS pi
+ARG PI_VERSION=0.85.1
+RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
+
 # ---- runtime ----------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 # ca-certificates: TLS roots for outbound HTTPS (Groq, etc.).
@@ -92,6 +103,15 @@ RUN apt-get update \
 RUN useradd --system --uid 10001 --user-group niles
 COPY --from=builder /usr/local/bin/niles /usr/local/bin/niles
 COPY --from=claude /out/claude /usr/local/bin/claude
+# node and pi, and nothing else from npm.
+COPY --from=pi /usr/local/bin/node /usr/local/bin/node
+COPY --from=pi /usr/local/lib/node_modules/@earendil-works /usr/local/lib/node_modules/@earendil-works
+RUN chmod +x /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js \
+ && ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi \
+ && pi --version
+# The extension that gives pi Niles's tools, alone in its directory: pi is
+# handed this one file with `-e` and discovers nothing else.
+COPY deploy/pi/niles.ts /usr/local/lib/niles/pi/niles.ts
 # Named explicitly rather than left to the loader: the file is installed
 # under its plain name, and ORT_DYLIB_PATH is the only thing `ort`
 # consults before falling back to a system search that would not find it.

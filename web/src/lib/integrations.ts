@@ -71,6 +71,7 @@ export interface StatusInputs {
   tado?: TadoStatus;
   linear?: { team?: string };
   claudeCode?: { enabled?: boolean };
+  chatgpt?: { enabled?: boolean };
   nemlig?: { enabled?: boolean };
   spotify?: { enabled?: boolean };
   microsoft?: { enabled?: boolean };
@@ -118,6 +119,10 @@ export function statusOf(integration: Integration, inputs: StatusInputs): Status
     case "claude_code":
       if (inputs.claudeCode?.enabled === false) return off;
       return missing(integration.secret_key) ? needs("Needs its token") : WORKING;
+    // Its key is the sign-in's access token, which only signing in writes.
+    case "chatgpt":
+      if (inputs.chatgpt?.enabled === false) return off;
+      return missing(integration.secret_key) ? needs("Not signed in") : WORKING;
     case "spotify":
     case "microsoft":
     case "google": {

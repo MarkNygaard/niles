@@ -1,7 +1,7 @@
 //! What Niles learns, in the background.
 //!
 //! Every exchange goes into a journal. When the house has been quiet for
-//! a few minutes, Claude reads what was said since the last review and
+//! a few minutes, the assistant reads what was said since the last review and
 //! decides what is worth keeping: a fact for memory, a way of doing
 //! something for a skill — or, most of the time, nothing. Once a week,
 //! after a long quiet, it tidies: merges notes that say the same thing,
@@ -44,7 +44,7 @@ const TIDY_AFTER: chrono::Duration = chrono::Duration::hours(2);
 const TIDY_RETRY: chrono::Duration = chrono::Duration::hours(6);
 const CHECK_EVERY: Duration = Duration::from_secs(60);
 /// The most exchanges kept for one review. A day of commands is a few
-/// dozen; this is a week without Claude, and then the oldest go.
+/// dozen; this is a week without an assistant, and then the oldest go.
 const MAX_JOURNAL: usize = 300;
 
 /// One exchange, as the review reads it.
@@ -277,7 +277,7 @@ fn people_section(voices: &[niles_recognition::EnrolledSpeaker]) -> String {
 
 /// The background jobs, and what they need.
 pub(crate) struct Learning {
-    pub claude: Arc<crate::claude_code::ClaudeCode>,
+    pub assistant: Arc<crate::assistant::Assistant>,
     pub settings: Arc<niles_config::ConfigStore>,
     pub journal: Arc<Journal>,
     pub memory: Option<Arc<MemoryStore>>,
@@ -308,20 +308,18 @@ impl Learning {
         }
     }
 
-    /// Claude's token, when Claude Code is switched on. Without it there
-    /// is no review: a missed review costs nothing, a careless one fills
-    /// memory that goes into every prompt.
-    fn token(&self) -> Option<String> {
-        let cfg = self.settings.current();
-        let claude = cfg
-            .integrations
-            .claude_code
-            .as_ref()
-            .filter(|c| c.enabled)?;
-        claude
-            .resolve_oauth_token()
-            .inspect_err(|e| tracing::warn!("[learning] Claude Code has no token: {e}"))
-            .ok()
+    /// The assistant to do it, when one is switched on and can run.
+    /// Without one there is no review: a missed review costs nothing, a
+    /// careless one fills memory that goes into every prompt.
+    fn chosen(&self) -> Option<crate::assistant::Chosen> {
+        match crate::assistant::choose(&self.settings.current().integrations) {
+            crate::assistant::Choice::Use(chosen) => Some(chosen),
+            crate::assistant::Choice::Unready { reason, .. } => {
+                tracing::warn!("[learning] {reason}");
+                None
+            }
+            crate::assistant::Choice::Off => None,
+        }
     }
 
     fn tz(&self) -> chrono_tz::Tz {
@@ -336,10 +334,10 @@ impl Learning {
     async fn review(&self) {
         let said = self.journal.pending();
         let enabled = self.settings.current().skills.review.enabled;
-        let token = enabled.then(|| self.token()).flatten();
-        let Some(token) = token else {
+        let chosen = enabled.then(|| self.chosen()).flatten();
+        let Some(chosen) = chosen else {
             tracing::info!(
-                "[learning] {} exchange(s) left unreviewed: the review is off, or Claude Code is",
+                "[learning] {} exchange(s) left unreviewed: the review is off, or no assistant is on",
                 said.len()
             );
             self.journal.done_through(said.len());
@@ -372,10 +370,14 @@ impl Learning {
             "{REVIEW_PROMPT}\n\n{}",
             crate::home_context(&self.settings.current().home)
         );
-        tracing::info!("[learning] reviewing {} exchange(s)", said.len());
+        tracing::info!(
+            "[learning] {} is reviewing {} exchange(s)",
+            chosen.name(),
+            said.len()
+        );
         match self
-            .claude
-            .background(&token, &system, &prompt, tools)
+            .assistant
+            .background(&chosen, &system, &prompt, tools)
             .await
         {
             Ok(summary) => tracing::info!("[learning] review: {summary}"),
@@ -406,7 +408,7 @@ impl Learning {
     }
 
     async fn tidy(&self) {
-        let (Some(skills), Some(token)) = (&self.skills, self.token()) else {
+        let (Some(skills), Some(chosen)) = (&self.skills, self.chosen()) else {
             return;
         };
         let mut prompt = String::new();
@@ -424,10 +426,10 @@ impl Learning {
             "{TIDY_PROMPT}\n\n{}",
             crate::home_context(&self.settings.current().home)
         );
-        tracing::info!("[learning] tidying memory and skills");
+        tracing::info!("[learning] {} is tidying memory and skills", chosen.name());
         match self
-            .claude
-            .background(&token, &system, &prompt, tools)
+            .assistant
+            .background(&chosen, &system, &prompt, tools)
             .await
         {
             Ok(summary) => {

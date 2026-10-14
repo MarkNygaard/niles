@@ -31,6 +31,7 @@ niles-nemlig.workspace = true
 niles-speakers.workspace = true
 niles-webos.workspace = true
 niles-integration-linear.workspace = true
+niles-llm.workspace = true
 async-trait.workspace = true
 urlencoding.workspace = true
 serde_json.workspace = true

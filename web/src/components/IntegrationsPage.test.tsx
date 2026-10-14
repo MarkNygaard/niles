@@ -159,6 +159,34 @@ const CLAUDE_TOKEN: SecretsReport = {
   ],
 };
 
+const CHATGPT: Integration = {
+  id: "chatgpt",
+  label: "ChatGPT",
+  blurb: "ChatGPT answers the chat and handles new rules.",
+  needs: "A paid ChatGPT subscription.",
+  kind: "service",
+  group: ASSISTANTS,
+  importance: "optional",
+  icon: "bot",
+  secret_keys: [
+    "integrations.chatgpt.access_token",
+    "integrations.chatgpt.refresh_token",
+    "integrations.chatgpt.account_id",
+    "integrations.chatgpt.expires_at",
+  ],
+  base_url: null,
+  serves: [],
+  added: false,
+  secret_key: "integrations.chatgpt.access_token",
+};
+
+function chatgptSignIn(source: "stored" | "unset"): SecretsReport {
+  return {
+    writable: true,
+    secrets: CHATGPT.secret_keys.map((key) => ({ key, label: key, hint: "chatgpt.com", source })),
+  };
+}
+
 const NEMLIG: Integration = {
   id: "nemlig",
   label: "nemlig.com",
@@ -442,6 +470,73 @@ describe("IntegrationsPage", () => {
   });
 });
 
+describe("IntegrationsPage assistants", () => {
+  it("switches ChatGPT on and opens it to sign in", () => {
+    const { onChange } = setup([CHATGPT], chatgptSignIn("unset"), undefined, {
+      chatgptStatus: { signed_in: false, email: null, expires_at: null, writable: true },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect ChatGPT" }));
+    expect(onChange).toHaveBeenCalledWith("integrations.chatgpt", [
+      { path: "integrations.chatgpt.enabled", value: true },
+    ]);
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeInTheDocument();
+  });
+
+  it("says ChatGPT is not signed in until it is", () => {
+    setup([{ ...CHATGPT, added: true }], chatgptSignIn("unset"));
+    expect(screen.getByText("Not signed in")).toBeInTheDocument();
+  });
+
+  it("picks ChatGPT's model", () => {
+    const { onChange } = setup([{ ...CHATGPT, added: true }], chatgptSignIn("stored"), undefined, {
+      chatgpt: { enabled: true, model: "gpt-5.6-terra" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Configure ChatGPT" }));
+    expect(screen.getByRole("radio", { name: /GPT-5.6 Terra/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /GPT-6 Astra/ }));
+    expect(onChange).toHaveBeenCalledWith("integrations.chatgpt", [
+      { path: "integrations.chatgpt.model", value: "gpt-6-astra" },
+    ]);
+  });
+
+  it("removing ChatGPT signs it out and takes the section away", async () => {
+    const clear = vi.spyOn(api, "clearSecret").mockResolvedValue(undefined);
+    const { onReset } = setup([{ ...CHATGPT, added: true }], chatgptSignIn("stored"));
+    fireEvent.click(screen.getByRole("button", { name: "Configure ChatGPT" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove ChatGPT" }));
+    await waitFor(() =>
+      expect(onReset).toHaveBeenCalledWith("integrations.chatgpt", ["integrations.chatgpt"]),
+    );
+    expect(clear.mock.calls.map(([key]) => key).sort()).toEqual([...CHATGPT.secret_keys].sort());
+  });
+
+  it("asks which answers only when both are added", () => {
+    setup([{ ...CLAUDE, added: true }, CHATGPT], CLAUDE_TOKEN);
+    expect(screen.queryByRole("radiogroup", { name: "Which assistant answers" })).toBeNull();
+  });
+
+  it("lets the household choose between the two", () => {
+    const { onChange } = setup(
+      [{ ...CLAUDE, added: true }, { ...CHATGPT, added: true }],
+      CLAUDE_TOKEN,
+      undefined,
+      { assistant: "claude_code" },
+    );
+    const choice = screen.getByRole("radiogroup", { name: "Which assistant answers" });
+    expect(within(choice).getByRole("radio", { name: "Claude" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(within(choice).getByRole("radio", { name: "ChatGPT" }));
+    expect(onChange).toHaveBeenCalledWith("integrations.assistant", [
+      { path: "integrations.assistant", value: "chatgpt" },
+    ]);
+  });
+});
+
 describe("IntegrationsPage groups", () => {
   it("lists what is set up under its group's heading, in the order given", () => {
     setup(
@@ -681,6 +776,27 @@ describe("statusOf", () => {
         },
       ).text,
     ).toBe("Needs its client ID and secret");
+  });
+});
+
+describe("statusOf ChatGPT", () => {
+  const added = { ...CHATGPT, added: true };
+
+  it("is working once signed in", () => {
+    expect(statusOf(added, { secrets: chatgptSignIn("stored") })).toEqual({
+      ok: true,
+      text: "Working",
+    });
+  });
+
+  it("is not signed in without the sign-in", () => {
+    expect(statusOf(added, { secrets: chatgptSignIn("unset") }).text).toBe("Not signed in");
+  });
+
+  it("is switched off before anything else", () => {
+    expect(
+      statusOf(added, { secrets: chatgptSignIn("unset"), chatgpt: { enabled: false } }).text,
+    ).toBe("Switched off");
   });
 });
 

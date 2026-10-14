@@ -1,6 +1,6 @@
 ---
 name: chat
-description: Chat, chatting, typing, typed, dictate, dictation, conversation, Claude.
+description: Chat, chatting, typing, typed, dictate, dictation, conversation, Claude, ChatGPT.
 version: 1.0.0
 ---
 # The app's chat
@@ -20,10 +20,14 @@ chat:
     - the microphone button dictates: recorded in the browser and written down by the same speech-to-text
       as the satellites, into the message field to check and send (not sent by itself)
     - a message is at most 2000 characters
-    - Claude Code can answer the chat instead, on the household's own subscription, when switched on under
-      Settings → Integrations (Haiku, Sonnet or Opus); it uses Niles's tools and nothing else
-    - a reply from Claude is marked "Claude"; when Claude Code fails the chat falls back to Niles's own model and says why
-    - spoken commands never go to Claude Code
+    - an assistant can answer the chat instead, on the household's own subscription, when switched on under
+      Settings → Integrations: Claude Code on a Claude subscription (Haiku, Sonnet or Opus), or ChatGPT on a
+      ChatGPT subscription (signed in from its card); it uses Niles's tools and nothing else
+    - with both set up, "Which assistant answers" under Integrations picks one; with one, that one answers
+    - a reply from an assistant is marked "Claude" or "ChatGPT"; when it fails the chat falls back to Niles's own
+      model and says which assistant failed and why
+    - spoken commands about the house's rules ("every weekday at 6:30 …") also go to the assistant, and the
+      satellite waits for it; other spoken commands keep the fast voice model
     - an automation read-back can be answered with a plain "yes" typed in the chat
   examples:
     - User (typed): "lights off" → ask which room

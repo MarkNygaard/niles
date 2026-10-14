@@ -45,6 +45,7 @@ import type { DeviceOption } from "@/components/DevicePicker";
 import { SecretField } from "@/components/SecretField";
 import { TadoPanel } from "@/components/TadoPanel";
 import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
+import { ChatGptPanel } from "@/components/ChatGptPanel";
 import { NemligPanel } from "@/components/NemligPanel";
 import { LinearPanel } from "@/components/LinearPanel";
 import { SonosPanel } from "@/components/SonosPanel";
@@ -66,6 +67,7 @@ import {
 } from "@/lib/integrations";
 import type { Status } from "@/lib/integrations";
 import type {
+  ChatGptStatus,
   Integration,
   Secret,
   SecretsReport,
@@ -89,6 +91,13 @@ export interface IntegrationsPageProps {
   linear?: { team?: string; trigger_label?: string };
   /** The Claude Code section as the config has it, if there is one. */
   claudeCode?: { enabled?: boolean; model?: string };
+  /** The ChatGPT section as the config has it, if there is one. */
+  chatgpt?: { enabled?: boolean; model?: string };
+  /** Whether ChatGPT is signed in, and as whom. */
+  chatgptStatus?: ChatGptStatus;
+  onChatGptChanged?: () => void;
+  /** Which assistant answers when both are set up: `integrations.assistant`. */
+  assistant?: Assistant;
   /** The nemlig.com section as the config has it, if there is one. */
   nemlig?: { enabled?: boolean };
   /** The Spotify section as the config has it, if there is one. */
@@ -144,6 +153,10 @@ export function IntegrationsPage({
   lightOptions,
   linear,
   claudeCode,
+  chatgpt,
+  chatgptStatus,
+  onChatGptChanged,
+  assistant,
   nemlig,
   spotify,
   microsoft,
@@ -189,6 +202,7 @@ export function IntegrationsPage({
       tado,
       linear,
       claudeCode,
+      chatgpt,
       nemlig,
       spotify,
       microsoft,
@@ -221,6 +235,10 @@ export function IntegrationsPage({
       case "claude_code":
         return onChange("integrations.claude_code", [
           { path: "integrations.claude_code.enabled", value: true },
+        ]);
+      case "chatgpt":
+        return onChange("integrations.chatgpt", [
+          { path: "integrations.chatgpt.enabled", value: true },
         ]);
       case "nemlig":
         return onChange("integrations.nemlig", [
@@ -316,6 +334,9 @@ export function IntegrationsPage({
       // keeps the token. Removing it deletes the token too.
       case "claude_code":
         return onReset("integrations.claude_code", ["integrations.claude_code"]);
+      // The sign-in went with its keys, above.
+      case "chatgpt":
+        return onReset("integrations.chatgpt", ["integrations.chatgpt"]);
       // Like Claude Code: gone from the config, and the login with it.
       case "nemlig":
         return onReset("integrations.nemlig", ["integrations.nemlig"]);
@@ -338,6 +359,12 @@ export function IntegrationsPage({
         ]);
     }
   }
+
+  // Asked only when there is a choice to make. With one assistant that
+  // one answers, and a choice of one is a setting with nothing to do.
+  const bothAssistants = ["claude_code", "chatgpt"].every((id) =>
+    added.some((i) => i.id === id),
+  );
 
   function results(which: Tab) {
     const all = which === "connected" ? added : available;
@@ -371,15 +398,27 @@ export function IntegrationsPage({
               id={`${which}-group-${group.id}`}
               label={group.label}
               footer={
-                which === "available" &&
-                group.requirement && (
-                  <Requirement
-                    text={group.requirement}
-                    providers={integrations.filter(
-                      (i) => i.group.id === group.id && i.kind === "provider",
-                    )}
-                  />
-                )
+                which === "available"
+                  ? group.requirement && (
+                      <Requirement
+                        text={group.requirement}
+                        providers={integrations.filter(
+                          (i) => i.group.id === group.id && i.kind === "provider",
+                        )}
+                      />
+                    )
+                  : group.id === "assistants" &&
+                    bothAssistants && (
+                      <AssistantChoice
+                        value={assistant ?? "claude_code"}
+                        disabled={saving}
+                        onChoose={(value) =>
+                          onChange("integrations.assistant", [
+                            { path: "integrations.assistant", value },
+                          ])
+                        }
+                      />
+                    )
               }
             >
               {[...items]
@@ -564,6 +603,29 @@ export function IntegrationsPage({
                   />
                 )}
 
+                {current.id === "chatgpt" && (
+                  <ChatGptPanel
+                    enabled={chatgpt?.enabled !== false}
+                    model={chatgpt?.model ?? "gpt-5.6-terra"}
+                    status={chatgptStatus}
+                    saving={saving}
+                    onEnabled={(enabled) =>
+                      onChange("integrations.chatgpt", [
+                        { path: "integrations.chatgpt.enabled", value: enabled },
+                      ])
+                    }
+                    onModel={(model) =>
+                      onChange("integrations.chatgpt", [
+                        { path: "integrations.chatgpt.model", value: model },
+                      ])
+                    }
+                    onChanged={() => {
+                      onSecretsChanged();
+                      onChatGptChanged?.();
+                    }}
+                  />
+                )}
+
                 {current.id === "nemlig" && (
                   <NemligPanel
                     enabled={nemlig?.enabled !== false}
@@ -745,6 +807,70 @@ export function IntegrationsPage({
 }
 
 type Tab = "connected" | "available";
+
+/** `integrations.assistant`: which one answers when both are set up. */
+export type Assistant = "claude_code" | "chatgpt";
+
+const ASSISTANTS: { id: Assistant; label: string }[] = [
+  { id: "claude_code", label: "Claude" },
+  { id: "chatgpt", label: "ChatGPT" },
+];
+
+/**
+ * Which assistant answers, under the two of them. Here rather than with
+ * the voice settings: the assistant answers the chat, new rules and the
+ * nightly review, and this is where both of them are set up.
+ */
+function AssistantChoice({
+  value,
+  disabled,
+  onChoose,
+}: {
+  value: Assistant;
+  disabled?: boolean;
+  onChoose: (value: Assistant) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 pt-1">
+      <span className="min-w-0">
+        <span id="assistant-choice" className="block text-sm font-medium">
+          Which assistant answers
+        </span>
+        <span className="text-muted-foreground block text-xs">
+          If it is switched off or not signed in, the other one answers.
+        </span>
+      </span>
+      <div
+        role="radiogroup"
+        aria-labelledby="assistant-choice"
+        className="bg-muted/60 flex gap-1 rounded-lg p-1"
+      >
+        {ASSISTANTS.map((a) => {
+          const active = a.id === value;
+          return (
+            <button
+              key={a.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={disabled}
+              onClick={() => !active && onChoose(a.id)}
+              className={cn(
+                "rounded-md px-3 py-1 text-sm transition-colors",
+                "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+                active
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {a.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const TAB_LABELS: Record<Tab, string> = {
   connected: "Connected",

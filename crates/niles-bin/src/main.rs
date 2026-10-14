@@ -53,8 +53,10 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod assistant;
 mod calendar;
 mod chat_log;
+mod chatgpt;
 mod claude_code;
 mod climate;
 mod conversation;
@@ -2319,8 +2321,8 @@ pub(crate) enum LoopOutcome {
 
 /// The tools that change a household's rules. The fast model knows an
 /// automation when it hears one — it reached for these every time the
-/// curtain reminder came up — but builds them badly, so when Claude is
-/// on, reaching for one hands the whole turn to Claude instead.
+/// curtain reminder came up — but builds them badly, so when an
+/// assistant is on, reaching for one hands the whole turn to it instead.
 const AUTOMATION_CHANGES: &[&str] = &[
     "propose_automation",
     "create_automation",
@@ -2824,7 +2826,7 @@ fn wav_duration_ms(session: &niles_wyoming::AudioSession) -> u128 {
 /// Run `work` while telling the satellite at `peer` every few seconds
 /// that an answer is still coming. It gives up after ten silent
 /// seconds, and a slow model call — seventeen seconds, once — or a turn
-/// handed to Claude Code took longer than that: the answer was made and
+/// handed to the assistant took longer than that: the answer was made and
 /// spoken to nobody.
 async fn keep_waiting<T>(
     sender: &WyomingSender,
@@ -3251,8 +3253,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     );
 
     let tools = Arc::new(tools);
-    // No app here, so no chat for Claude Code to answer.
-    let claude: Option<Arc<claude_code::ClaudeCode>> = None;
+    // No app here, so no chat for an assistant to answer.
+    let assistant: Option<Arc<assistant::Assistant>> = None;
 
     let mode_note = if args.dry_run {
         " (dry-run: nothing will be published)"
@@ -3304,7 +3306,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         weather: weather_client.clone(),
         tado: tado.clone(),
         courtesy: Arc::new(courtesy::Courtesy::default()),
-        claude: claude.clone(),
+        assistant: assistant.clone(),
         follow_ups: Arc::default(),
         automations: None,
     };
@@ -3431,10 +3433,10 @@ fn now_playing_section(lines: &[String]) -> String {
 struct ChatNote {
     /// What wrote the reply, when it was not Niles's own models.
     via: Option<&'static str>,
-    /// Why Claude Code did not, when it was meant to. Shown under the
-    /// reply: falling back silently made a broken setup look like one
-    /// that worked and was merely fast.
-    fallback: Option<String>,
+    /// Which assistant did not, when it was meant to, and why. Shown
+    /// under the reply: falling back silently made a broken setup look
+    /// like one that worked and was merely fast.
+    fallback: Option<(&'static str, String)>,
 }
 
 tokio::task_local! {
@@ -3624,7 +3626,8 @@ impl niles_api::chat::Chat for AppChat {
         Ok(niles_api::chat::Reply {
             reply,
             via: via.map(str::to_string),
-            fallback: note.fallback,
+            fallback: note.fallback.as_ref().map(|(_, why)| why.clone()),
+            fallback_from: note.fallback.map(|(from, _)| from.to_string()),
             conversation_id,
         })
     }
@@ -3833,9 +3836,10 @@ struct DispatchCtx {
     weather: Option<Arc<niles_weather::OpenMeteoClient>>,
     /// Who has been called "Sir" lately, and greeted this morning.
     courtesy: Arc<courtesy::Courtesy>,
-    /// Answers the app's chat when `[integrations.claude_code]` is on.
-    /// Absent outside `serve`, and when its MCP port could not be bound.
-    claude: Option<Arc<claude_code::ClaudeCode>>,
+    /// Claude Code or ChatGPT, whichever is switched on and chosen:
+    /// answers the app's chat and spoken turns about rules. Absent
+    /// outside `serve`, and when its MCP port could not be bound.
+    assistant: Option<Arc<assistant::Assistant>>,
     /// Questions Niles has asked through a satellite and is waiting on.
     follow_ups: Arc<follow_up::FollowUps>,
     /// For the heating by voice. The same session the dashboard and
@@ -4047,19 +4051,17 @@ async fn dispatch_tier1(
     }
     if matches!(thread, conversation::Thread::Chat(_)) {
         system_prompt.push_str(TYPED_IN_THE_APP);
-        if let Some(reply) = ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
-        {
+        if let Some(reply) = ask_assistant(ctx, peer, text, thread, speaker, &system_prompt).await {
             return Some(reply);
         }
     } else if let Some((_, proposals)) = ctx.automations.as_ref()
         && (niles_tools::automations::about_automations(text) || proposals.in_talk())
     {
-        // A rule spoken aloud goes to Claude when it is switched on: the
+        // A rule spoken aloud goes to the assistant when one is on: the
         // fast model dropped "half an hour after" and left out the
         // trigger, and five turns went by before the rule was right.
         // Slower, but the satellite is kept waiting (`keep_waiting`).
-        if let Some(reply) = ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
-        {
+        if let Some(reply) = ask_assistant(ctx, peer, text, thread, speaker, &system_prompt).await {
             if follow_up::asks(&reply) {
                 proposals.discussed();
             }
@@ -4075,11 +4077,11 @@ async fn dispatch_tier1(
         content: text.to_string(),
     });
     // A spoken rule the keyword check missed — "every weekday at 6:30
-    // turn on the bedroom light" — still reaches Claude: the fast model
-    // reaches for the automation tools, and is stopped there.
+    // turn on the bedroom light" — still reaches the assistant: the fast
+    // model reaches for the automation tools, and is stopped there.
     let hand_off: &[&str] = if matches!(thread, conversation::Thread::Room(_))
         && ctx.automations.is_some()
-        && claude_switched_on(ctx)
+        && assistant_on(ctx)
     {
         AUTOMATION_CHANGES
     } else {
@@ -4101,9 +4103,11 @@ async fn dispatch_tier1(
             Some(response)
         }
         Ok((LoopOutcome::HandOff { tool }, _)) => {
-            tracing::info!("[{peer}] the fast model reached for {tool}; \"{text}\" goes to Claude");
+            tracing::info!(
+                "[{peer}] the fast model reached for {tool}; \"{text}\" goes to the assistant"
+            );
             if let Some(reply) =
-                ask_claude_code(ctx, peer, text, thread, speaker, &system_prompt).await
+                ask_assistant(ctx, peer, text, thread, speaker, &system_prompt).await
             {
                 if follow_up::asks(&reply)
                     && let Some((_, proposals)) = ctx.automations.as_ref()
@@ -4112,7 +4116,8 @@ async fn dispatch_tier1(
                 }
                 return Some(reply);
             }
-            // Claude could not answer: the fast model does it after all.
+            // The assistant could not answer: the fast model does it
+            // after all.
             match run_tool_calling_chat_with_messages(
                 ctx.llm.as_ref(),
                 ctx.tools.as_ref(),
@@ -4185,26 +4190,25 @@ async fn dispatch_tier1(
         }
     }
 }
-/// Whether Claude Code is there and switched on, read per turn like the
-/// chat's switch.
-fn claude_switched_on(ctx: &DispatchCtx) -> bool {
-    ctx.claude.is_some()
+/// Whether an assistant is there, switched on and able to run, read per
+/// turn like the chat's switch.
+fn assistant_on(ctx: &DispatchCtx) -> bool {
+    ctx.assistant.is_some()
         && ctx.settings.as_ref().is_some_and(|s| {
-            s.current()
-                .integrations
-                .claude_code
-                .as_ref()
-                .is_some_and(|c| c.enabled)
+            matches!(
+                assistant::choose(&s.current().integrations),
+                assistant::Choice::Use(_)
+            )
         })
 }
 
-/// The chat's answer from Claude Code, when it is switched on and can
-/// give one.
+/// The answer from the assistant — Claude Code or ChatGPT — when one is
+/// switched on and can give it.
 ///
-/// `None` sends the turn on to `[llm]` as if Claude Code were not there:
-/// a subscription that has lapsed, a token that has expired or a run
+/// `None` sends the turn on to `[llm]` as if there were no assistant: a
+/// subscription that has lapsed, a sign-in that has run out or a run
 /// that timed out costs the quality of the answer, not the answer.
-async fn ask_claude_code(
+async fn ask_assistant(
     ctx: &DispatchCtx,
     peer: SocketAddr,
     text: &str,
@@ -4212,24 +4216,17 @@ async fn ask_claude_code(
     speaker: &SpeakerContext,
     system_prompt: &str,
 ) -> Option<String> {
-    let claude = ctx.claude.as_ref()?;
+    let assistant = ctx.assistant.as_ref()?;
     // Read per turn: switching it on in the app takes hold with the next
     // message, not the next restart.
-    let cfg = ctx
-        .settings
-        .as_ref()?
-        .current()
-        .integrations
-        .claude_code
-        .clone()
-        .filter(|c| c.enabled)?;
-    let token = match cfg.resolve_oauth_token() {
-        Ok(token) => token,
-        Err(e) => {
-            tracing::warn!("[{peer}] Claude Code is on but has no token ({e}); using [llm]");
-            note_chat(|n| n.fallback = Some(format!("Claude Code has no token: {e}")));
+    let chosen = match assistant::choose(&ctx.settings.as_ref()?.current().integrations) {
+        assistant::Choice::Off => return None,
+        assistant::Choice::Unready { via, reason } => {
+            tracing::warn!("[{peer}] {reason}; using [llm]");
+            note_chat(|n| n.fallback = Some((via, reason)));
             return None;
         }
+        assistant::Choice::Use(chosen) => chosen,
     };
     let slug = match speaker {
         SpeakerContext::Identified { known, .. } => known.slug.clone(),
@@ -4237,21 +4234,24 @@ async fn ask_claude_code(
     };
     let history = ctx.conversation.recent_messages(thread);
     let started = Instant::now();
-    match claude
-        .answer(&cfg, &token, system_prompt, &history, text, slug)
+    let name = chosen.name();
+    match assistant
+        .answer(&chosen, system_prompt, &history, text, slug)
         .await
     {
         Ok(reply) => {
             println!(
-                "[{peer}] \"{text}\" -> (Claude Code, {}ms) {reply}",
+                "[{peer}] \"{text}\" -> ({name}, {}ms) {reply}",
                 started.elapsed().as_millis()
             );
-            note_chat(|n| n.via = Some("claude"));
+            note_chat(|n| n.via = Some(chosen.via()));
             Some(reply)
         }
         Err(e) => {
-            tracing::warn!("[{peer}] Claude Code could not answer ({e:#}); using [llm]");
-            note_chat(|n| n.fallback = Some(format!("Claude Code could not answer: {e:#}")));
+            tracing::warn!("[{peer}] {name} could not answer ({e:#}); using [llm]");
+            note_chat(|n| {
+                n.fallback = Some((chosen.via(), format!("{name} could not answer: {e:#}")));
+            });
             None
         }
     }
@@ -6797,24 +6797,24 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
 
     let tools = Arc::new(tools);
-    // Started whether or not Claude Code is switched on: the switch is
+    // Started whether or not an assistant is switched on: the switch is
     // in the app and read per message, and a port bound only at startup
     // would leave turning it on waiting for a restart.
-    let claude = match claude_code::ClaudeCode::start(tools.clone()).await {
-        Ok(claude) => Some(Arc::new(claude)),
+    let assistant = match assistant::Assistant::start(tools.clone(), secret_store.clone()).await {
+        Ok(assistant) => Some(Arc::new(assistant)),
         Err(e) => {
-            tracing::warn!("[claude-code] unavailable: {e:#}");
+            tracing::warn!("[assistant] unavailable: {e:#}");
             None
         }
     };
 
-    // What Niles learns: Claude reviews what was said once the house is
-    // quiet, and tidies memory and skills weekly. Whether Claude Code is
-    // on is read each time, like the chat's.
+    // What Niles learns: the assistant reviews what was said once the
+    // house is quiet, and tidies memory and skills weekly. Which one, if
+    // any, is read each time, like the chat's.
     let journal = build_journal(&cfg).await;
-    let _learning = claude.clone().map(|claude| {
+    let _learning = assistant.clone().map(|assistant| {
         review::Learning {
-            claude,
+            assistant,
             settings: store.clone(),
             journal: journal.clone(),
             memory: memory_store.clone(),
@@ -6967,7 +6967,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         weather: weather_client.clone(),
         tado: tado.clone(),
         courtesy: Arc::new(courtesy::Courtesy::default()),
-        claude: claude.clone(),
+        assistant: assistant.clone(),
         follow_ups: Arc::default(),
         automations: automations.clone().map(|store| (store, proposals.clone())),
     };
@@ -8428,7 +8428,7 @@ mod chat_loop_tests {
     #[tokio::test]
     async fn a_tool_that_is_handed_off_is_not_run() {
         // "every weekday at 6:30 turn on the bedroom light": the model
-        // reaches for the rule tools, and the turn goes to Claude rather
+        // reaches for the rule tools, and the turn goes to the assistant rather
         // than having the fast model build the rule itself.
         let fake = FakeChat::new(vec![ChatResponse {
             content: None,

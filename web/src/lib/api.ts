@@ -305,6 +305,16 @@ export interface SecretsReport {
   secrets: Secret[];
 }
 
+/** Whether ChatGPT is signed in, and as whom. Never the tokens. */
+export interface ChatGptStatus {
+  signed_in: boolean;
+  email: string | null;
+  /** When the access token runs out; Niles renews it before then. */
+  expires_at: string | null;
+  /** False without a database and its secrets key: nowhere to keep one. */
+  writable: boolean;
+}
+
 export interface TadoPending {
   verification_uri: string;
   user_code: string;
@@ -666,7 +676,7 @@ export interface Turn {
   /** The satellite's room, snake_case, on a voice turn. */
   room: string | null;
   /** What wrote the reply, when it was not Niles's own models. */
-  by: "claude" | null;
+  by: AssistantId | null;
   /** Set when Niles asked for confirmation in this turn. Only the last
       turn's can still be answered. */
   proposal: Proposal | null;
@@ -680,12 +690,17 @@ export interface Conversation {
   turns: Turn[];
 }
 
+/** The assistants that can answer in Niles's place. */
+export type AssistantId = "claude" | "chatgpt";
+
 export interface SentChat {
   reply: string;
-  via?: "claude";
-  /** Why Claude Code did not answer, when it was meant to. Only on a
+  via?: AssistantId;
+  /** Why the assistant did not answer, when it was meant to. Only on a
       reply just sent, never read back from a conversation. */
   fallback?: string;
+  /** Which assistant that was. */
+  fallback_from?: AssistantId;
   /** The conversation the message landed in. */
   conversation_id: number;
 }
@@ -1013,6 +1028,18 @@ export const api = {
     request<Place[]>(`/places?q=${encodeURIComponent(q)}`),
   timezones: () => request<string[]>("/timezones"),
   tadoStatus: () => request<TadoStatus>("/presence/tado"),
+  chatgptStatus: () => request<ChatGptStatus>("/integrations/chatgpt"),
+  /** Start a sign-in: the page to sign in on. The verifier stays with Niles. */
+  chatgptSignIn: () =>
+    request<{ authorize_url: string }>("/integrations/chatgpt/login", { method: "POST" }),
+  /** Finish it with the address the sign-in landed on, or its code. */
+  chatgptFinish: (pasted: string) =>
+    request<{ email: string | null }>("/integrations/chatgpt/login/complete", {
+      method: "POST",
+      body: JSON.stringify({ pasted }),
+    }),
+  chatgptSignOut: () =>
+    request<void>("/integrations/chatgpt/login", { method: "DELETE" }),
   tadoConnect: () =>
     request<TadoPending>("/presence/tado/connect", { method: "POST" }),
   patchConfig: (patch: Record<string, unknown>) =>

@@ -4,13 +4,18 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { dictationSupported, useDictation } from "@/hooks/useDictation";
-import type { Turn } from "@/lib/api";
+import type { AssistantId, Turn } from "@/lib/api";
 import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
 
 /** A turn as the chat shows it: what the server keeps, and for a reply
-    just sent, why Claude Code did not write it. */
-export type ShownTurn = Turn & { fallback?: string };
+    just sent, which assistant did not write it and why. */
+export type ShownTurn = Turn & { fallback?: string; fallback_from?: AssistantId };
+
+export const ASSISTANT_NAMES: Record<AssistantId, string> = {
+  claude: "Claude",
+  chatgpt: "ChatGPT",
+};
 
 export interface ChatViewProps {
   turns: ShownTurn[];
@@ -171,7 +176,7 @@ export function ChatView({
             <Bubble from="you">{turn.said}</Bubble>
             {turn.via === "voice" && <Spoken room={turn.room} />}
             <Bubble from="niles">{turn.reply}</Bubble>
-            {(turn.by === "claude" || turn.fallback) && <Credit turn={turn} />}
+            {(turn.by || turn.fallback) && <Credit turn={turn} />}
             {/* Only the last turn's proposal is still open: once
                 anything follows it, it has been answered one way or
                 the other. */}
@@ -318,13 +323,16 @@ export function ChatView({
  * Who wrote a reply, when that is worth saying.
  *
  * Under the bubble rather than in it: it is about the reply, not part
- * of it. A fallback says why, because Claude Code failing quietly looked
- * exactly like Claude Code being fast.
+ * of it. A fallback says why, because an assistant failing quietly looked
+ * exactly like an assistant being fast.
  */
 function Credit({ turn }: { turn: ShownTurn }) {
+  const missed = ASSISTANT_NAMES[turn.fallback_from ?? "claude"];
   return (
     <p className="text-muted-foreground -mt-2 self-start px-1 text-[11px]">
-      {turn.by === "claude" ? "Claude" : `Answered without Claude — ${turn.fallback}`}
+      {turn.by
+        ? (ASSISTANT_NAMES[turn.by] ?? turn.by)
+        : `Answered without ${missed} — ${turn.fallback}`}
     </p>
   );
 }

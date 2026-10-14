@@ -1627,6 +1627,7 @@ dependencies = [
  "niles-db",
  "niles-groceries",
  "niles-integration-linear",
+ "niles-llm",
  "niles-memory",
  "niles-mqtt",
  "niles-nemlig",
@@ -1854,9 +1855,12 @@ name = "niles-llm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
+ "rand 0.10.2",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror",
  "tokio",
  "tracing",
