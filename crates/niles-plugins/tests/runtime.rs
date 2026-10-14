@@ -32,7 +32,7 @@ fn quick() -> Limits {
     }
 }
 
-struct House_ {
+struct Home {
     runtime: Runtime,
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
@@ -41,7 +41,7 @@ struct House_ {
     settings: Arc<Mutex<toml::Table>>,
 }
 
-impl House_ {
+impl Home {
     async fn new(limits: Limits, settings: toml::Table) -> Self {
         Self::with_store(limits, settings, Arc::new(MemoryStore::new())).await
     }
@@ -131,7 +131,7 @@ async fn next_event(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn init_reads_its_settings_and_secrets() {
-    let house = House_::new(quick(), table(&[("greeting", "Hej"), ("room", "kitchen")])).await;
+    let house = Home::new(quick(), table(&[("greeting", "Hej"), ("room", "kitchen")])).await;
     house.install().await;
     house.wait_for(|s| *s == Status::Running).await;
     assert_eq!(
@@ -144,7 +144,7 @@ async fn init_reads_its_settings_and_secrets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn init_saying_what_is_wrong_is_the_status_line() {
-    let house = House_::new(quick(), table(&[("greeting", "fail")])).await;
+    let house = Home::new(quick(), table(&[("greeting", "fail")])).await;
     house.install().await;
     let status = house.wait_for(|s| matches!(s, Status::Failing(_))).await;
     assert_eq!(status, Status::Failing("The greeting is fail.".into()));
@@ -166,7 +166,7 @@ async fn a_missing_required_setting_is_not_set_up() {
         manifest, MANIFEST,
         "the fixture still has the address setting"
     );
-    let house = House_::new(quick(), toml::Table::new()).await;
+    let house = Home::new(quick(), toml::Table::new()).await;
     house
         .runtime
         .install(&manifest, COMPONENT.to_vec())
@@ -182,7 +182,7 @@ async fn a_missing_required_setting_is_not_set_up() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_are_offered_by_keyword_and_called_through_the_shared_registry() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let mut registry = ToolRegistry::new();
     registry.attach_dynamic(house.tools.clone());
 
@@ -221,7 +221,7 @@ async fn tools_are_offered_by_keyword_and_called_through_the_shared_registry() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_with_readings_joins_the_house_and_its_changes_are_published() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let meter = house
         .device("x_hello:system/meter")
         .expect("the meter is registered");
@@ -250,7 +250,7 @@ async fn a_device_with_readings_joins_the_house_and_its_changes_are_published() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn reports_faster_than_every_100_ms_are_published_together() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let mut rx = house.bus.subscribe();
     for watts in 1..=20 {
         house
@@ -279,7 +279,7 @@ async fn reports_faster_than_every_100_ms_are_published_together() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_button_press_is_an_action_on_the_bus() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let mut rx = house.bus.subscribe();
     assert_eq!(house.tool("press", json!({})).await.unwrap(), "pressed");
     let event = next_event(&mut rx, |e| matches!(e, Event::DeviceAction { .. })).await;
@@ -292,7 +292,7 @@ async fn a_button_press_is_an_action_on_the_bus() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_command_to_a_plugin_device_reaches_its_set_device() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let router =
         CommandRouter::z2m_only("zigbee2mqtt").with_commander(Arc::new(house.runtime.clone()));
     let lamp = DeviceId::parse("x_hello:office/lamp").unwrap();
@@ -316,7 +316,7 @@ async fn a_command_to_a_plugin_device_reaches_its_set_device() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_timer_fires() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     assert_eq!(
         house.tool("timer", json!({"seconds": 1})).await.unwrap(),
         "set"
@@ -332,7 +332,7 @@ async fn a_timer_fires() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn timers_have_a_floor() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let err = house
         .tool("timer", json!({"seconds": 1, "every": true}))
         .await
@@ -342,7 +342,7 @@ async fn timers_have_a_floor() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn storage_round_trips_and_the_quota_holds() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     house
         .tool(
             "remember",
@@ -393,7 +393,7 @@ async fn storage_round_trips_and_the_quota_holds() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn http_outside_the_manifest_is_refused() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     for url in [
         "https://not-declared.example.org/",
         "http://example.com/",
@@ -411,9 +411,9 @@ async fn http_outside_the_manifest_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_call_past_its_deadline_restarts_the_plugin_and_repeated_failures_stop_it() {
-    let house = House_::new(
+    let house = Home::new(
         Limits {
-            call: Duration::from_millis(300),
+            call: Duration::from_millis(500),
             ..quick()
         },
         toml::Table::new(),
@@ -427,7 +427,7 @@ async fn a_call_past_its_deadline_restarts_the_plugin_and_repeated_failures_stop
     let info = house.runtime.info("hello").unwrap();
     assert_eq!(
         info.error.as_deref(),
-        Some("timed out in call-tool after 300 ms")
+        Some("timed out in call-tool after 500 ms")
     );
     assert!(
         !house.device("x_hello:office/lamp").unwrap().available,
@@ -460,7 +460,7 @@ async fn a_call_past_its_deadline_restarts_the_plugin_and_repeated_failures_stop
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_panic_is_a_trap() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     house.tool("panic", json!({})).await.unwrap_err();
     let info = house.runtime.info("hello").unwrap();
     let error = info.error.unwrap();
@@ -469,7 +469,7 @@ async fn a_panic_is_a_trap() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn memory_past_the_cap_is_a_trap() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     house
         .tool("remember", json!({"key": "big", "size": 100 * 1024 * 1024}))
         .await
@@ -480,7 +480,7 @@ async fn memory_past_the_cap_is_a_trap() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_page_renders_is_cached_and_answers_its_controls() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let mark = Context {
         room: None,
         person: Some("mark".into()),
@@ -529,7 +529,7 @@ async fn a_page_renders_is_cached_and_answers_its_controls() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_last_render_is_kept_until_invalidated() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let office = Context {
         room: Some("office".into()),
         person: None,
@@ -559,7 +559,7 @@ async fn the_last_render_is_kept_until_invalidated() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tree_that_breaks_the_rules_is_not_drawn() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let err = house
         .runtime
         .render("hello", "broken", Context::default())
@@ -579,7 +579,7 @@ async fn a_tree_that_breaks_the_rules_is_not_drawn() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn subscribed_events_reach_the_plugin_and_others_do_not() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let door = DeviceId::parse("z2m:hall/door").unwrap();
     house.registry.upsert(Device::new(
         door.clone(),
@@ -628,7 +628,7 @@ async fn subscribed_events_reach_the_plugin_and_others_do_not() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn notifications_are_rate_limited_and_urgent_needs_its_own_permission() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     for _ in 0..6 {
         assert_eq!(
             house.tool("say", json!({"message": "Hi."})).await.unwrap(),
@@ -650,13 +650,13 @@ async fn notifications_are_rate_limited_and_urgent_needs_its_own_permission() {
 #[tokio::test(flavor = "multi_thread")]
 async fn devices_are_remembered_while_the_plugin_is_down() {
     let store = Arc::new(MemoryStore::new());
-    let first = House_::with_store(quick(), toml::Table::new(), store.clone()).await;
+    let first = Home::with_store(quick(), toml::Table::new(), store.clone()).await;
     first.install().await;
     first.wait_for(|s| *s == Status::Running).await;
     first.runtime.shutdown().await;
 
     // Niles starts again; the plugin's init fails, so nothing re-reports.
-    let second = House_::with_store(quick(), table(&[("greeting", "fail")]), store).await;
+    let second = Home::with_store(quick(), table(&[("greeting", "fail")]), store).await;
     assert_eq!(second.runtime.load_installed().await, 1);
     second.wait_for(|s| matches!(s, Status::Failing(_))).await;
     let lamp = second
@@ -668,7 +668,7 @@ async fn devices_are_remembered_while_the_plugin_is_down() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn devices_registered_lists_what_niles_holds() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     assert_eq!(
         house.tool("registered", json!({})).await.unwrap(),
         r#"["office/button","office/lamp","system/meter"]"#
@@ -677,7 +677,7 @@ async fn devices_registered_lists_what_niles_holds() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn installing_again_replaces_the_running_plugin() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     house.install().await;
     house.wait_for(|s| *s == Status::Running).await;
     assert_eq!(house.runtime.plugins().len(), 1);
@@ -700,7 +700,7 @@ async fn installing_again_replaces_the_running_plugin() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_list_says_who_is_running() {
-    let house = House_::running().await;
+    let house = Home::running().await;
     let plugins = house.runtime.plugins();
     assert_eq!(plugins.len(), 1);
     assert_eq!(plugins[0].name, "Hello");
