@@ -120,10 +120,10 @@ export function RoomDashboard() {
         failure instanceof ApiError ? failure.message : String(failure),
       );
     },
-    // Asked again once the requests settle, so a guess that was wrong
-    // (a blind stopping short, a request half refused) does not
-    // outlive them.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["devices"] }),
+    // No refetch once the requests settle: a blind takes seconds to
+    // travel, so asking straight away reads where it was and snaps the
+    // slider back. It reports its position over the event stream as it
+    // moves, which corrects a wrong guess on its own.
   });
 
   const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });
