@@ -626,16 +626,60 @@ export interface Memory {
   forgotten: { target: MemoryTarget; text: string; at: string }[];
 }
 
-/** One message to Niles in the app, and the answer. */
-export interface Exchange {
+/** One conversation in the list: newest first, the signed-in person's
+    own. A new one starts after five minutes of quiet. */
+export interface ConversationSummary {
+  id: number;
+  /** The first thing said, shortened by the server. */
+  title: string;
+  started_at: string;
+  last_at: string;
+  turns: number;
+  /** Whether any of it was said to a satellite. */
+  spoken: boolean;
+}
+
+/** Niles reading a rule back and asking whether to save it. */
+export interface Proposal {
+  sentence: string;
+}
+
+/** One thing said to Niles, and the answer. */
+export interface Turn {
+  at: string;
   said: string;
   reply: string;
+  via: "voice" | "app";
+  /** The satellite's room, snake_case, on a voice turn. */
+  room: string | null;
   /** What wrote the reply, when it was not Niles's own models. */
+  by: "claude" | null;
+  /** Set when Niles asked for confirmation in this turn. Only the last
+      turn's can still be answered. */
+  proposal: Proposal | null;
+}
+
+export interface Conversation {
+  id: number;
+  title: string;
+  started_at: string;
+  last_at: string;
+  turns: Turn[];
+}
+
+export interface SentChat {
+  reply: string;
   via?: "claude";
   /** Why Claude Code did not answer, when it was meant to. Only on a
-      reply just sent, not on one read back from history. */
+      reply just sent, never read back from a conversation. */
   fallback?: string;
+  /** The conversation the message landed in. */
+  conversation_id: number;
 }
+
+/** Where a message goes: on with this conversation, or a new one.
+    Neither lets the server pick, by the five-minute rule. */
+export type ChatTarget = { conversation_id: number } | { new: true } | Record<string, never>;
 
 /** One thing nemlig.com sells. */
 export interface NemligProduct {
@@ -831,13 +875,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ zones }),
     }),
-  chat: () => request<Exchange[]>("/chat"),
-  sendChat: (text: string) =>
-    request<{ reply: string; via?: "claude"; fallback?: string }>("/chat", {
+  conversations: () => request<ConversationSummary[]>("/chat/conversations"),
+  conversation: (id: number) => request<Conversation>(`/chat/conversations/${id}`),
+  sendChat: (text: string, target: ChatTarget = {}) =>
+    request<SentChat>("/chat", {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...target }),
     }),
-  forgetChat: () => request<void>("/chat", { method: "DELETE" }),
+  answerProposal: (id: number, turn: number, save: boolean) =>
+    request<{ reply: string }>(`/chat/conversations/${id}/proposal`, {
+      method: "POST",
+      body: JSON.stringify({ turn, save }),
+    }),
+  deleteConversation: (id: number) =>
+    request<void>(`/chat/conversations/${id}`, { method: "DELETE" }),
   dictate: (audio: Blob) =>
     request<{ text: string }>("/chat/dictation", {
       method: "POST",

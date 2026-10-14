@@ -1,18 +1,33 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, LoaderCircle, Mic, RotateCcw, Square } from "lucide-react";
+import { ArrowUp, History, LoaderCircle, Mic, Square, SquarePen } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { dictationSupported, useDictation } from "@/hooks/useDictation";
-import type { Exchange } from "@/lib/api";
+import type { Turn } from "@/lib/api";
+import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
 
+/** A turn as the chat shows it: what the server keeps, and for a reply
+    just sent, why Claude Code did not write it. */
+export type ShownTurn = Turn & { fallback?: string };
+
 export interface ChatViewProps {
-  exchanges: Exchange[];
+  turns: ShownTurn[];
+  /** The conversation is on its way. */
+  loading?: boolean;
   /** Sent and not answered yet. */
   pending?: string;
   error?: string;
   onSend: (text: string) => void;
-  onForget: () => void;
+  /** Leave this conversation for an empty one. */
+  onNew: () => void;
+  /** Open the list of past conversations. */
+  onBrowse: () => void;
+  /** Save, or not, what the last turn proposed; `turn` is its index. */
+  onAnswer: (turn: number, save: boolean) => void;
+  /** An answer to a proposal is on its way. */
+  answering?: boolean;
   /** Words from a recording. Without it there is no microphone. */
   onDictate?: (audio: Blob) => Promise<string>;
 }
@@ -25,14 +40,19 @@ export const SUGGESTIONS = [
 ];
 
 /**
- * A conversation with Niles, typed.
+ * One conversation with Niles, spoken to a satellite or typed here, and
+ * the field to carry it on.
  */
 export function ChatView({
-  exchanges,
+  turns,
+  loading,
   pending,
   error,
   onSend,
-  onForget,
+  onNew,
+  onBrowse,
+  onAnswer,
+  answering,
   onDictate,
 }: ChatViewProps) {
   const [draft, setDraft] = useState("");
@@ -77,7 +97,7 @@ export function ChatView({
   useEffect(() => {
     const root = document.getElementById("root");
     root?.scrollTo?.({ top: root.scrollHeight });
-  }, [exchanges.length, pending]);
+  }, [turns.length, pending]);
 
   // The tab bar steps aside while the keyboard is up; see TabBar.
   useEffect(
@@ -100,7 +120,26 @@ export function ChatView({
     // 1.5rem from `sm`, the header 2.25rem, the gap under it 0.5rem on a
     // phone and 1rem from `sm`.
     <div className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]">
-      {exchanges.length === 0 && !busy ? (
+      <div className="flex justify-between gap-2">
+        <Button variant="ghost" size="sm" onClick={onBrowse}>
+          <History />
+          Conversations
+        </Button>
+        {(turns.length > 0 || busy) && (
+          <Button variant="ghost" size="sm" onClick={onNew} disabled={busy}>
+            <SquarePen />
+            New chat
+          </Button>
+        )}
+      </div>
+
+      {loading && (
+        <div className="flex flex-col gap-3" aria-label="Loading the conversation">
+          <Skeleton className="h-9 w-2/3 self-end rounded-2xl" />
+          <Skeleton className="h-16 w-3/4 rounded-2xl" />
+        </div>
+      )}
+      {!loading && turns.length === 0 && !busy && (
         <div className="flex flex-col gap-3 px-1">
           <p className="text-muted-foreground text-sm">
             Anything you would say to Niles out loud works here too.
@@ -121,24 +160,36 @@ export function ChatView({
             ))}
           </div>
         </div>
-      ) : (
-        <div className="flex justify-end">
-          <Button variant="ghost" size="sm" onClick={onForget} disabled={busy}>
-            <RotateCcw />
-            New conversation
-          </Button>
-        </div>
       )}
 
       {/* At the bottom, just above the field, the way a messages app
           has it. At the top, a short conversation was what iOS slid off
           the screen when it lifted the field above the keyboard. */}
       <ol className="mt-auto flex flex-col gap-3" aria-label="Conversation">
-        {exchanges.map((exchange, i) => (
+        {turns.map((turn, i) => (
           <li key={i} className="flex flex-col gap-3">
-            <Bubble from="you">{exchange.said}</Bubble>
-            <Bubble from="niles">{exchange.reply}</Bubble>
-            {(exchange.via || exchange.fallback) && <Credit exchange={exchange} />}
+            <Bubble from="you">{turn.said}</Bubble>
+            {turn.via === "voice" && <Spoken room={turn.room} />}
+            <Bubble from="niles">{turn.reply}</Bubble>
+            {(turn.by === "claude" || turn.fallback) && <Credit turn={turn} />}
+            {/* Only the last turn's proposal is still open: once
+                anything follows it, it has been answered one way or
+                the other. */}
+            {turn.proposal && i === turns.length - 1 && !busy && (
+              <div className="flex gap-2 self-start px-1">
+                <Button size="sm" disabled={answering} onClick={() => onAnswer(i, true)}>
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={answering}
+                  onClick={() => onAnswer(i, false)}
+                >
+                  Don't save
+                </Button>
+              </div>
+            )}
           </li>
         ))}
         {busy && (
@@ -270,12 +321,20 @@ export function ChatView({
  * of it. A fallback says why, because Claude Code failing quietly looked
  * exactly like Claude Code being fast.
  */
-function Credit({ exchange }: { exchange: Exchange }) {
+function Credit({ turn }: { turn: ShownTurn }) {
   return (
     <p className="text-muted-foreground -mt-2 self-start px-1 text-[11px]">
-      {exchange.via === "claude"
-        ? "Claude"
-        : `Answered without Claude — ${exchange.fallback}`}
+      {turn.by === "claude" ? "Claude" : `Answered without Claude — ${turn.fallback}`}
+    </p>
+  );
+}
+
+/** Said out loud to a satellite rather than typed, and in which room. */
+function Spoken({ room }: { room: string | null }) {
+  return (
+    <p className="text-muted-foreground -mt-2 flex items-center gap-1 self-end px-1 text-[11px]">
+      <Mic className="size-3" aria-hidden />
+      {room ? humanize(room) : "Spoken"}
     </p>
   );
 }

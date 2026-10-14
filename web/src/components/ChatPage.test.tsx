@@ -1,0 +1,252 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ChatPage, landingOn } from "@/components/ChatPage";
+import { ApiError, api } from "@/lib/api";
+import type { Conversation, ConversationSummary, Turn } from "@/lib/api";
+
+const MINUTE = 60_000;
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+function summary(id: number, title: string, rest: Partial<ConversationSummary> = {}) {
+  return {
+    id,
+    title,
+    started_at: ago(10 * MINUTE),
+    last_at: ago(MINUTE),
+    turns: 1,
+    spoken: false,
+    ...rest,
+  } satisfies ConversationSummary;
+}
+
+function turn(said: string, reply: string, rest: Partial<Turn> = {}): Turn {
+  return { at: ago(MINUTE), said, reply, via: "app", room: null, by: null, proposal: null, ...rest };
+}
+
+const CURTAINS = summary(42, "Make an automation that reminds me to close the curtains", {
+  last_at: ago(2 * MINUTE),
+  turns: 2,
+  spoken: true,
+});
+const MILK = summary(7, "Add milk to the list", { last_at: ago(26 * 60 * MINUTE) });
+
+const CURTAINS_TURNS: Turn[] = [
+  turn("Is anyone home?", "Only you, Sir."),
+  turn("make an automation that reminds me to close the curtains", "… Shall I save it?", {
+    via: "voice",
+    room: "living_room",
+    proposal: { sentence: 'When it is 30 minutes after sunset, say "Please close the curtains".' },
+  }),
+];
+
+function conversationOf(s: ConversationSummary, turns: Turn[]): Conversation {
+  return { id: s.id, title: s.title, started_at: s.started_at, last_at: s.last_at, turns };
+}
+
+/** `sendChat` as the server does it: the turn lands in `id`, where the
+    refetch after it will find it. */
+function reply(conversations: Record<number, Conversation>, id: number, answer: string) {
+  return async (text: string) => {
+    const old = conversations[id] ?? conversationOf(summary(id, text), []);
+    conversations[id] = { ...old, turns: [...old.turns, turn(text, answer)] };
+    return { reply: answer, conversation_id: id };
+  };
+}
+
+function show(list: ConversationSummary[], conversations: Record<number, Conversation> = {}) {
+  vi.spyOn(api, "conversations").mockResolvedValue(list);
+  vi.spyOn(api, "conversation").mockImplementation(async (id) => {
+    if (!conversations[id]) throw new ApiError("no such conversation", 404);
+    return conversations[id];
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <ChatPage />
+    </QueryClientProvider>,
+  );
+}
+
+async function openList() {
+  fireEvent.click(await screen.findByRole("button", { name: "Conversations" }));
+  return within(await screen.findByRole("dialog"));
+}
+
+const field = () => screen.getByRole("textbox", { name: "Message Niles" });
+
+function type(text: string) {
+  fireEvent.change(field(), { target: { value: text } });
+  fireEvent.keyDown(field(), { key: "Enter" });
+}
+
+describe("landingOn", () => {
+  const now = Date.parse("2026-10-14T12:00:00Z");
+  const at = (ms: number) => new Date(now - ms).toISOString();
+
+  it("opens the latest conversation while it is still going", () => {
+    expect(landingOn([summary(3, "a", { last_at: at(4 * MINUTE) })], now)).toBe(3);
+  });
+
+  it("opens a new chat after five quiet minutes", () => {
+    expect(landingOn([summary(3, "a", { last_at: at(5 * MINUTE) })], now)).toBeNull();
+  });
+
+  it("opens a new chat when there is nothing yet", () => {
+    expect(landingOn([], now)).toBeNull();
+  });
+});
+
+describe("ChatPage", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("lists past conversations, marking the spoken ones", async () => {
+    show([CURTAINS, MILK], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    const dialog = await openList();
+    const rows = within(dialog.getByRole("list", { name: "Conversations" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+
+    expect(within(rows[0]).getByText(CURTAINS.title)).toBeInTheDocument();
+    expect(within(rows[0]).getByRole("img", { name: "Said to a satellite" })).toBeInTheDocument();
+    expect(within(rows[0]).getByText(/2 minutes ago · 2 turns/)).toBeInTheDocument();
+
+    expect(within(rows[1]).getByText(MILK.title)).toBeInTheDocument();
+    expect(within(rows[1]).queryByRole("img", { name: "Said to a satellite" })).toBeNull();
+    expect(within(rows[1]).getByText(/yesterday · 1 turn/)).toBeInTheDocument();
+  });
+
+  it("opens on the latest conversation while it is still going", async () => {
+    show([CURTAINS, MILK], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    expect(await screen.findByText("Only you, Sir.")).toBeInTheDocument();
+    expect(api.conversation).toHaveBeenCalledWith(42);
+  });
+
+  it("opens a conversation from the list, with the room of each spoken turn", async () => {
+    show([MILK], { 7: conversationOf(MILK, [turn("add milk to the list", "Milk is on the list.")]) });
+    // MILK is a day old, so the tab opens on an empty chat.
+    const dialog = await openList();
+    expect(api.conversation).not.toHaveBeenCalled();
+    fireEvent.click(dialog.getByText(MILK.title));
+
+    expect(await screen.findByText("Milk is on the list.")).toBeInTheDocument();
+    expect(screen.queryByText("Living room")).toBeNull();
+  });
+
+  it("shows the room a turn was spoken in", async () => {
+    show([CURTAINS], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    expect(await screen.findByText("Living room")).toBeInTheDocument();
+    expect(screen.getAllByText(/Shall I save it\?/)).toHaveLength(1);
+  });
+
+  it("starts a new conversation from an empty chat", async () => {
+    const conversations: Record<number, Conversation> = {};
+    show([MILK], conversations);
+    const send = vi.spyOn(api, "sendChat").mockImplementation(reply(conversations, 43, "Nobody, Sir."));
+    await screen.findByRole("button", { name: "Conversations" });
+    type("Is anyone home?");
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toBe("Is anyone home?");
+    expect(send.mock.calls[0][1]).toEqual({ new: true });
+    expect(await screen.findByText("Nobody, Sir.")).toBeInTheDocument();
+  });
+
+  it("carries on the conversation on screen", async () => {
+    const conversations = { 42: conversationOf(CURTAINS, CURTAINS_TURNS) };
+    show([CURTAINS], conversations);
+    const send = vi.spyOn(api, "sendChat").mockImplementation(reply(conversations, 42, "Done."));
+    await screen.findByText("Only you, Sir.");
+
+    type("and the kitchen lights?");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][1]).toEqual({ conversation_id: 42 });
+    expect(await screen.findByText("Done.")).toBeInTheDocument();
+    expect(screen.getByText("Only you, Sir.")).toBeInTheDocument();
+  });
+
+  it("sends the next message to the conversation the last one landed in", async () => {
+    const conversations: Record<number, Conversation> = {};
+    show([], conversations);
+    const send = vi.spyOn(api, "sendChat").mockImplementation(reply(conversations, 45, "Yes, Sir."));
+    await screen.findByRole("button", { name: "Conversations" });
+
+    type("hello");
+    expect(await screen.findByText("Yes, Sir.")).toBeInTheDocument();
+    type("and again");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls[1][1]).toEqual({ conversation_id: 45 });
+  });
+
+  it("goes back to a new chat on New chat", async () => {
+    const conversations = { 42: conversationOf(CURTAINS, CURTAINS_TURNS) };
+    show([CURTAINS], conversations);
+    const send = vi.spyOn(api, "sendChat").mockImplementation(reply(conversations, 44, "Hello."));
+    await screen.findByText("Only you, Sir.");
+
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+    expect(screen.queryByText("Only you, Sir.")).toBeNull();
+    type("hello");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][1]).toEqual({ new: true });
+  });
+
+  it("answers a proposal for the turn that made it, then shows what came of it", async () => {
+    const conversations = { 42: conversationOf(CURTAINS, CURTAINS_TURNS) };
+    show([CURTAINS], conversations);
+    const answer = vi.spyOn(api, "answerProposal").mockImplementation(async () => {
+      conversations[42] = conversationOf(CURTAINS, [
+        ...CURTAINS_TURNS,
+        turn("Yes", "Saved. When it is 30 minutes after sunset…"),
+      ]);
+      return { reply: "Saved. When it is 30 minutes after sunset…" };
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+    expect(answer.mock.calls[0]).toEqual([42, 1, true]);
+
+    expect(await screen.findByText("Saved. When it is 30 minutes after sunset…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Don't save" })).toBeNull();
+  });
+
+  it("says no to a proposal", async () => {
+    show([CURTAINS], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    const answer = vi
+      .spyOn(api, "answerProposal")
+      .mockResolvedValue({ reply: "All right, I won't save it." });
+    fireEvent.click(await screen.findByRole("button", { name: "Don't save" }));
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+    expect(answer.mock.calls[0]).toEqual([42, 1, false]);
+  });
+
+  it("asks before deleting a conversation", async () => {
+    show([CURTAINS, MILK], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    const remove = vi.spyOn(api, "deleteConversation").mockResolvedValue(undefined);
+    await screen.findByText("Only you, Sir.");
+    const dialog = await openList();
+    const row = dialog.getByText(MILK.title).closest("li")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(await dialog.findByText("Delete this conversation?")).toBeInTheDocument();
+    expect(dialog.getByText(MILK.title)).toBeInTheDocument();
+
+    fireEvent.click(dialog.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    expect(remove.mock.calls[0][0]).toBe(7);
+    // The list is asked again, and the one on screen stays.
+    await waitFor(() => expect(api.conversations).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Only you, Sir.")).toBeInTheDocument();
+  });
+
+  it("keeps a conversation when the delete is called off", async () => {
+    show([MILK]);
+    const remove = vi.spyOn(api, "deleteConversation").mockResolvedValue(undefined);
+    const dialog = await openList();
+    fireEvent.click(dialog.getByRole("button", { name: "Delete" }));
+    fireEvent.click(await dialog.findByRole("button", { name: "Keep it" }));
+    expect(await dialog.findByText(MILK.title)).toBeInTheDocument();
+    expect(remove).not.toHaveBeenCalled();
+  });
+});
