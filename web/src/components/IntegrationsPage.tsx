@@ -1,22 +1,39 @@
-import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import {
+  AudioLines,
+  Bot,
+  Brain,
+  Calendar,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  ListTodo,
+  Music,
+  Network,
+  Plug,
+  Search,
+  ShoppingBasket,
+  Sparkles,
+  Speaker,
+  Thermometer,
+  Trash2,
+  Tv,
+  Wifi,
+  type LucideIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogBody,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { BrandMark } from "@/components/BrandMark";
+import { BrandMark, hasBrandMark } from "@/components/BrandMark";
 import type { DeviceOption } from "@/components/DevicePicker";
 import { SecretField } from "@/components/SecretField";
 import { TadoPanel } from "@/components/TadoPanel";
@@ -30,9 +47,17 @@ import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { MqttPanel } from "@/components/MqttPanel";
 import type { MqttSettings } from "@/components/MqttPanel";
-import { IntegrationGallery, groupsOf } from "@/components/IntegrationGallery";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import {
+  RANK,
+  groupsOf,
+  matchesQuery,
+  showsRequired,
+  statusOf,
+  uncoveredRoles,
+} from "@/lib/integrations";
+import type { Status } from "@/lib/integrations";
 import type {
   Integration,
   Secret,
@@ -89,19 +114,18 @@ export interface IntegrationsPageProps {
 }
 
 /**
- * What Niles is connected to.
+ * What Niles is connected to, and what it could be.
  *
- * A list of services rather than a stack of cards. An endpoint, a key
- * and a model are all setup detail — true, and worth nothing at a
- * glance. What this page is for is seeing which things are connected
- * and getting into the one you came to change, and both of those fit
- * on a row.
+ * Rows rather than cards. An endpoint, a key and a model are all setup
+ * detail — true, and worth nothing at a glance. What this page is for
+ * is seeing which things are connected and getting into the one you
+ * came to change, and both of those fit on a row; the rest is in the
+ * dialog a row opens.
  *
- * Only what is set up is listed; the rest is behind the add button.
- * That is the difference from the pair of text boxes this replaces,
- * where any name and any URL bought you a provider that would never
- * work. Both are under the same groups, so a thing is found in the same
- * place whether or not it is set up yet.
+ * Connected and Available are two tabs over the same groups, so a thing
+ * is found in the same place whether or not it is set up yet. Only
+ * Niles's own catalogue is offered: the pair of text boxes this replaces
+ * let any name and any URL buy a provider that would never work.
  */
 export function IntegrationsPage({
   integrations,
@@ -132,70 +156,47 @@ export function IntegrationsPage({
   mqtt,
   mqttDefaults,
 }: IntegrationsPageProps) {
-  const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<Tab | null>(null);
 
   const added = integrations.filter((i) => i.added);
+  const available = integrations.filter((i) => !i.added);
   const current = integrations.find((i) => i.id === open);
+  // Worked out rather than set once: the list arrives after the first
+  // render, and a house with nothing set up yet should land on what it
+  // can add rather than on an empty tab.
+  const tab: Tab = picked ?? (added.length > 0 ? "connected" : "available");
+  const uncovered = uncoveredRoles(integrations);
 
   function secretFor(key: string | null): Secret | undefined {
     if (!key) return undefined;
     return secrets?.secrets.find((s) => s.key === key);
   }
 
-  /**
-   * Whether it is finished, not merely added.
-   *
-   * Worth its own dot: a provider with no key is a row that looks done
-   * and answers nothing.
-   */
-  function ready(integration: Integration): boolean {
-    if (integration.id === "tado") return Boolean(tado?.authorised);
-    if (integration.id === "linear") return Boolean(linear?.team?.trim());
-    if (integration.id === "nemlig")
-      return (
-        nemlig?.enabled !== false &&
-        secretFor("integrations.nemlig.username")?.source !== "unset" &&
-        secretFor("integrations.nemlig.password")?.source !== "unset"
-      );
-    if (integration.id === "claude_code")
-      return (
-        claudeCode?.enabled !== false &&
-        secretFor(integration.secret_key)?.source !== "unset"
-      );
-    if (integration.id === "spotify")
-      return (
-        spotify?.enabled !== false &&
-        secretFor("integrations.spotify.client_id")?.source !== "unset" &&
-        secretFor("integrations.spotify.client_secret")?.source !== "unset"
-      );
-    if (integration.id === "microsoft")
-      return (
-        microsoft?.enabled !== false &&
-        secretFor("integrations.microsoft.client_id")?.source !== "unset" &&
-        secretFor("integrations.microsoft.client_secret")?.source !== "unset"
-      );
-    if (integration.id === "google")
-      return (
-        google?.enabled !== false &&
-        secretFor("integrations.google.client_id")?.source !== "unset" &&
-        secretFor("integrations.google.client_secret")?.source !== "unset"
-      );
-    if (integration.id === "lg_tv") return Boolean(tv?.paired);
-    if (integration.id === "sonos")
-      return sonos?.enabled !== false && Boolean(sonos?.host?.trim());
-    if (integration.id === "unifi")
-      return (
-        Boolean(unifiHost?.trim()) &&
-        secretFor(integration.secret_key)?.source !== "unset"
-      );
-    return secretFor(integration.secret_key)?.source !== "unset";
+  function status(integration: Integration): Status {
+    return statusOf(integration, {
+      secrets,
+      tado,
+      linear,
+      claudeCode,
+      nemlig,
+      spotify,
+      microsoft,
+      google,
+      unifiHost,
+      sonos,
+      tv,
+    });
   }
 
   function add(integration: Integration) {
-    setAdding(false);
+    // Kept on Available: someone working down the list from a new
+    // install comes back to where they were, not to the first thing
+    // they added.
+    setPicked(tab);
     // Opened straight away: adding one is never the whole job, and a
     // row that appears with a grey dot and no prompt is something you
     // have to work out you are not finished with.
@@ -331,76 +332,133 @@ export function IntegrationsPage({
     }
   }
 
-  return (
-    <div className="flex flex-col gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Connected services</CardTitle>
-          <CardDescription>
-            What Niles is connected to: the broker your lights talk through,
-            who transcribes speech, who answers a question, who knows whether
-            anyone is home.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {added.length === 0 ? (
-            <p className="text-muted-foreground text-sm">
-              Nothing yet. Start with Add integration: the ones marked
-              Required are what Niles needs to reach your lights, hear you and
-              answer.
+  function results(which: Tab) {
+    const all = which === "connected" ? added : available;
+    const found = all.filter((i) => matchesQuery(i, query));
+    const other: Tab = which === "connected" ? "available" : "connected";
+    const elsewhere = (which === "connected" ? available : added).filter((i) =>
+      matchesQuery(i, query),
+    );
+    const searching = query.trim() !== "";
+
+    return (
+      <>
+        {searching && found.length === 0 ? (
+          <p className="text-muted-foreground px-1 text-sm">
+            Nothing matches “{query.trim()}”.
+          </p>
+        ) : all.length === 0 ? (
+          // Nothing at all is the catalogue still loading, not a house
+          // with everything connected.
+          integrations.length > 0 && (
+            <p className="text-muted-foreground px-1 text-sm">
+              {which === "connected"
+                ? "Nothing connected yet. Start under Available: the ones marked Required are what Niles needs to reach your lights, hear you and answer."
+                : "Everything Niles knows is connected."}
             </p>
-          ) : (
-            groupsOf(added).map(({ group, items }) => (
-              <section
-                key={group.id}
-                aria-labelledby={`added-group-${group.id}`}
-                className="flex flex-col"
-              >
-                <h3
-                  id={`added-group-${group.id}`}
-                  className="text-muted-foreground text-xs font-medium tracking-wide uppercase"
-                >
-                  {group.label}
-                </h3>
-                <div className="divide-border/60 -mx-1 divide-y">
-                  {items.map((integration) => (
-                    <IntegrationRow
+          )
+        ) : (
+          groupsOf(found).map(({ group, items }) => (
+            <GroupList
+              key={group.id}
+              id={`${which}-group-${group.id}`}
+              label={group.label}
+              footer={
+                which === "available" &&
+                group.requirement && (
+                  <Requirement
+                    text={group.requirement}
+                    providers={integrations.filter(
+                      (i) => i.group.id === group.id && i.kind === "provider",
+                    )}
+                  />
+                )
+              }
+            >
+              {[...items]
+                .sort((a, b) => RANK[a.importance] - RANK[b.importance])
+                .map((integration) =>
+                  which === "connected" ? (
+                    <ConnectedRow
                       key={integration.id}
                       integration={integration}
-                      ready={ready(integration)}
+                      status={status(integration)}
                       disabled={saving}
                       onOpen={() => setOpen(integration.id)}
                     />
-                  ))}
-                </div>
-              </section>
-            ))
-          )}
+                  ) : (
+                    <AvailableRow
+                      key={integration.id}
+                      integration={integration}
+                      required={showsRequired(integration, uncovered)}
+                      disabled={saving}
+                      onConnect={() => add(integration)}
+                    />
+                  ),
+                )}
+            </GroupList>
+          ))
+        )}
+        {searching && elsewhere.length > 0 && (
+          // The tab is a filter too, and one search should not need two.
+          <button
+            type="button"
+            onClick={() => setPicked(other)}
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 flex items-center gap-1 self-start rounded-md px-1 text-left text-sm focus-visible:outline-none"
+          >
+            {names(elsewhere)} {elsewhere.length === 1 ? "is" : "are"} under{" "}
+            {TAB_LABELS[other]}
+            <ChevronRight aria-hidden className="size-4 shrink-0" />
+          </button>
+        )}
+      </>
+    );
+  }
 
-          <div>
-            <Button variant="outline" onClick={() => setAdding(true)}>
-              <Plus aria-hidden /> Add integration
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h2 className="font-heading text-base font-medium">Integrations</h2>
+        <p className="text-muted-foreground text-sm">
+          The services Niles works through.
+        </p>
+      </div>
+
+      <div className="relative">
+        <Search
+          aria-hidden
+          className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2"
+        />
+        <Input
+          type="search"
+          aria-label="Search integrations"
+          placeholder="Search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="pl-8"
+        />
+      </div>
+
+      <Tabs value={tab} onValueChange={(value) => setPicked(value as Tab)}>
+        <TabsList className="w-full sm:w-fit">
+          {(["connected", "available"] as const).map((value) => (
+            <TabsTrigger key={value} value={value} className="sm:px-3">
+              {TAB_LABELS[value]}{" "}
+              <span className="text-muted-foreground tabular-nums">
+                {value === "connected" ? added.length : available.length}
+              </span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="connected" className="flex flex-col gap-5 pt-2">
+          {results("connected")}
+        </TabsContent>
+        <TabsContent value="available" className="flex flex-col gap-5 pt-2">
+          {results("available")}
+        </TabsContent>
+      </Tabs>
 
       {error && <p className="text-destructive text-sm">{error}</p>}
-
-      <IntegrationGallery
-        open={adding}
-        onOpenChange={setAdding}
-        integrations={integrations}
-        disabled={saving}
-        onPick={(integration) => {
-          if (integration.added) {
-            setAdding(false);
-            setOpen(integration.id);
-          } else {
-            add(integration);
-          }
-        }}
-      />
 
       <Dialog
         open={current !== undefined}
@@ -415,13 +473,19 @@ export function IntegrationsPage({
           {current && (
             <>
               <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  <BrandMark id={current.id} label={current.label} />
-                  {current.label}
-                  {ready(current) && (
-                    <Badge variant="secondary">configured</Badge>
-                  )}
-                </DialogTitle>
+                <div className="flex min-w-0 flex-col gap-1">
+                  <DialogTitle className="flex items-center gap-2">
+                    <Logo integration={current} />
+                    {current.label}
+                    {status(current).ok && (
+                      <Badge variant="secondary">configured</Badge>
+                    )}
+                  </DialogTitle>
+                  {/* The rows show only a name, so how it works and
+                      what it takes are said here, where it is set up. */}
+                  <DialogDescription>{current.blurb}</DialogDescription>
+                  <p className="text-muted-foreground text-sm">{current.needs}</p>
+                </div>
               </DialogHeader>
               <DialogBody className="flex flex-col gap-4">
                 {current.id === "tado" && tado && (
@@ -613,8 +677,7 @@ export function IntegrationsPage({
                 {current.kind === "provider" && (
                   <>
                     <p className="text-muted-foreground text-sm">
-                      {current.blurb} Choose what it does under Speech &amp;
-                      language.
+                      Choose what it does under Speech &amp; language.
                     </p>
                     {secretFor(current.secret_key) && (
                       <SecretField
@@ -666,48 +729,193 @@ export function IntegrationsPage({
   );
 }
 
-/** One service, as a row. */
-function IntegrationRow({
+type Tab = "connected" | "available";
+
+const TAB_LABELS: Record<Tab, string> = {
+  connected: "Connected",
+  available: "Available",
+};
+
+/** "Groq", "Groq and Cerebras", "Groq, Cerebras and UniFi", "4 more". */
+function names(integrations: Integration[]): string {
+  if (integrations.length > 3) return `${integrations.length} more`;
+  const labels = integrations.map((i) => i.label);
+  if (labels.length === 1) return labels[0];
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
+/**
+ * The icon names the catalogue uses. A table of icons rather than of
+ * integrations: a new entry that reuses one needs nothing here, and one
+ * that names an icon missing from it still gets a plug.
+ */
+const ICONS: Record<string, LucideIcon> = {
+  network: Network,
+  sparkles: Sparkles,
+  "audio-lines": AudioLines,
+  brain: Brain,
+  speaker: Speaker,
+  music: Music,
+  tv: Tv,
+  wifi: Wifi,
+  thermometer: Thermometer,
+  calendar: Calendar,
+  "calendar-days": CalendarDays,
+  "shopping-basket": ShoppingBasket,
+  bot: Bot,
+  "list-todo": ListTodo,
+};
+
+/** The service's own mark; the catalogue's icon only where there is
+    none (the broker), which says more than its initial would. */
+function Logo({ integration }: { integration: Integration }) {
+  if (hasBrandMark(integration.id)) {
+    return (
+      <span data-logo="brand" className="flex shrink-0">
+        <BrandMark id={integration.id} label={integration.label} />
+      </span>
+    );
+  }
+  const Icon = ICONS[integration.icon] ?? Plug;
+  return (
+    <span data-logo="icon" className="flex shrink-0">
+      <Icon aria-hidden className="size-6" />
+    </span>
+  );
+}
+
+/** One group: its name above, its rows in one rounded block. */
+function GroupList({
+  id,
+  label,
+  footer,
+  children,
+}: {
+  id: string;
+  label: string;
+  footer?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-labelledby={id} className="flex flex-col gap-1.5">
+      <h3
+        id={id}
+        className="text-muted-foreground px-3 text-xs font-medium tracking-wide uppercase"
+      >
+        {label}
+      </h3>
+      <div className="bg-muted/50 divide-border/60 divide-y overflow-hidden rounded-2xl">
+        {children}
+      </div>
+      {footer}
+    </section>
+  );
+}
+
+/** The group's "one of these", and how far along it is. */
+function Requirement({
+  text,
+  providers,
+}: {
+  text: string;
+  providers: Integration[];
+}) {
+  return (
+    <div className="text-muted-foreground px-3 text-xs">
+      <p>{text}</p>
+      {providers.length > 0 && (
+        <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          {(["stt", "llm"] as const).map((role) => {
+            const by = providers.filter((p) => p.added && p.serves.includes(role));
+            return (
+              <li key={role} className="flex items-center gap-1">
+                {by.length > 0 && <Check aria-hidden className="text-lit size-3" />}
+                {ROLE_LABELS[role]}:{" "}
+                {by.length > 0 ? by.map((p) => p.label).join(", ") : "not yet"}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const ROLE_LABELS: Record<"stt" | "llm", string> = {
+  stt: "Speech-to-text",
+  llm: "AI",
+};
+
+/** Something not set up yet: its name, and a way to start. */
+function AvailableRow({
   integration,
-  ready,
+  required,
+  disabled,
+  onConnect,
+}: {
+  integration: Integration;
+  required: boolean;
+  disabled?: boolean;
+  onConnect: () => void;
+}) {
+  return (
+    <div className="flex min-h-12 items-center gap-3 py-2 pr-1.5 pl-3">
+      <Logo integration={integration} />
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate text-sm font-medium">{integration.label}</span>
+        {required && <Badge>Required</Badge>}
+      </span>
+      <Button
+        variant="link"
+        size="sm"
+        disabled={disabled}
+        aria-label={`Connect ${integration.label}`}
+        onClick={onConnect}
+      >
+        Connect
+      </Button>
+    </div>
+  );
+}
+
+/** Something set up: whether it works, and the way into its settings. */
+function ConnectedRow({
+  integration,
+  status,
   disabled,
   onOpen,
 }: {
   integration: Integration;
-  ready: boolean;
+  status: Status;
   disabled?: boolean;
   onOpen: () => void;
 }) {
   return (
-    <div className="flex items-center gap-3 px-1 py-2.5">
-      <span
-        aria-hidden
-        className={cn(
-          "size-2 shrink-0 rounded-full",
-          ready ? "bg-lit" : "bg-muted-foreground/40",
-        )}
-      />
-      <BrandMark id={integration.id} label={integration.label} />
+    <button
+      type="button"
+      disabled={disabled}
+      aria-label={`Configure ${integration.label}`}
+      onClick={onOpen}
+      className="hover:bg-muted focus-visible:bg-muted flex min-h-12 w-full items-center gap-3 px-3 py-2 text-left focus-visible:outline-none disabled:opacity-50"
+    >
+      <Logo integration={integration} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">
           {integration.label}
         </span>
-        {!ready && (
-          <span className="text-muted-foreground block text-xs">
-            Added, but not finished.
-          </span>
-        )}
+        <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <span
+            aria-hidden
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              status.ok ? "bg-lit" : "bg-muted-foreground/40",
+            )}
+          />
+          <span className="truncate">{status.text}</span>
+        </span>
       </span>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={disabled}
-        aria-label={`Configure ${integration.label}`}
-        onClick={onOpen}
-      >
-        Configure
-      </Button>
-    </div>
+      <ChevronRight aria-hidden className="text-muted-foreground size-4 shrink-0" />
+    </button>
   );
 }
 
