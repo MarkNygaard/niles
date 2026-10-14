@@ -385,7 +385,7 @@ fn lift_moment(rule: &mut AutomationRuleDto) {
     rule.triggers.push(TriggerDto { id: None, kind });
 }
 
-//// What the rule names that this house does not have — a misheard
+/// What the rule names that this house does not have — a misheard
 /// "office" as "offers", or a reading the device never reports.
 /// Checked here rather than in the store because the app may well save
 /// a rule for a device not yet paired.
