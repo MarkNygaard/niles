@@ -46,10 +46,10 @@ noise suppression           ► wake word (microWakeWord)        (TCP :10300)
                                                                 Tier 0 / Tier 1 → act
 ```
 
-- **XMOS side:** flash the stock Seeed **I2S DFU firmware**
-  (`respeaker_xvf3800_i2s_dfu_firmware_v1.0.x.bin`) → XVF3800 in
-  INT-Device/I2S mode (2-channel, 32-bit, 16 kHz). Stock image, no
-  custom dev.
+- **XMOS side:** Seeed's stock **`respeaker_xvf3800_i2s_master_v1.0.9_48k.bin`**
+  → XVF3800 as I2S master at 48 kHz (2-channel, 32-bit); the ESP32 is the slave
+  and decimates to 16 kHz. Stock image, no custom dev. (Until 2026-10-03 this
+  was the generic 16 kHz I2S image; the diagram below still shows that.)
 - **XIAO side:** custom Arduino/ESP-IDF firmware. Capture base is
   Seeed's I2S test sketch (AudioTools `I2SStream`/`I2SConfig`). Wake
   word is **microWakeWord** (INT8 TFLite, custom "niles" model trained

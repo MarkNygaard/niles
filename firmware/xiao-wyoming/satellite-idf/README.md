@@ -16,13 +16,16 @@ built up in de-risking stages:
 - **Stage 3 (done):** play niles' spoken reply back over the same socket.
 - **Niles calls in (done):** the satellite listens on `:10301`, so niles can
   push a timer chime or a notification to an idle satellite.
-- **Barge-in (done, 2026-09-23):** I2S runs full duplex at 16 kHz and playback
+- **Barge-in (done, 2026-09-23):** I2S runs full duplex and playback
   has its own task, so the detector keeps running while the satellite talks.
   "Niles" over a chime or an answer cuts it off and starts a new command. The
   XVF3800's echo cancellation is what makes this work: on hardware a chime
   reads ~3000 peak for its first two seconds while AEC converges, then ~400,
-  which is room level. Incoming audio at any rate is resampled to 16 kHz on
-  the device. The heartbeat's `play=1` marks seconds with the speaker on.
+  which is room level. The heartbeat's `play=1` marks seconds with the speaker on.
+- **48 kHz bus (2026-10-03):** the XVF3800 now runs Seeed's
+  `i2s_master_v1.0.9_48k` image and clocks the bus at 48 kHz as master; the
+  ESP32 is the slave, decimates the microphone to 16 kHz (31-tap low-pass) and
+  plays at 48 kHz.
 
 The wake word is a custom microWakeWord v2 model ("nyles", spelled for the TTS
 pronunciation of *Niles*) trained on microwakeword.com.
@@ -41,21 +44,35 @@ runs this firmware). Each step below says which one.
 ### 1. Put the XVF3800 in I2S mode (once per board)
 
 The reSpeaker ships with USB firmware, which doesn't send audio to the XIAO.
-Flash Seeed's **I2S firmware** (`respeaker_xvf3800_i2s_dfu_firmware_v1.0.x.bin`)
-onto it once, through the **XMOS-side port** (next to the headphone jack),
-with `dfu-util`. Seeed's guide has the download and the details:
-[reSpeaker XVF3800 with XIAO](https://wiki.seeedstudio.com/respeaker_xvf_3800_xiaozhi/).
+This firmware needs one specific Seeed image: **`respeaker_xvf3800_i2s_master_v1.0.9_48k.bin`**,
+from `xmos_firmwares/i2s/` in Seeed's
+[reSpeaker_XVF3800_USB_4MIC_ARRAY](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY)
+repository. In it the XVF3800 is the I2S **master at 48 kHz** and the XIAO the
+slave; the firmware decimates the microphone to 16 kHz itself. Seeed's other I2S
+images (the generic `i2s_dfu_firmware`, or anything at 16 kHz) don't clock the
+bus this way, and the satellite will hear nothing with them.
+
+Flash it once, through the **XMOS-side port** (next to the headphone jack),
+with `dfu-util`:
 
 ```bash
 dfu-util -l                      # should list [2886:001a] ... name="reSpeaker DFU Upgrade"
-dfu-util -R -e -a 1 -D respeaker_xvf3800_i2s_dfu_firmware_v1.0.x.bin
+dfu-util -R -e -a 1 -D respeaker_xvf3800_i2s_master_v1.0.9_48k.bin
 ```
 
-On Linux, run both with `sudo`. On Windows, if `dfu-util -l` reports
-`LIBUSB_ERROR_NOT_SUPPORTED`, use [Zadig](https://zadig.akeo.ie/) to switch the
-"reSpeaker DFU" device to the WinUSB driver and try again. If the board ever
-misbehaves after this, Seeed's safe mode recovers it: unplug it, hold **Mute**,
-plug it back in, and release when the red LED blinks.
+- On Linux, run both with `sudo`.
+- On Windows, if `dfu-util -l` reports `LIBUSB_ERROR_NOT_SUPPORTED` or lists
+  nothing, use [Zadig](https://zadig.akeo.ie/) to switch the "reSpeaker DFU"
+  device to the WinUSB driver and try again.
+- If the board doesn't show up at all (for instance because it already has
+  another I2S image), start it in **safe mode** first: unplug it, hold **Mute**,
+  plug it back in, and release when the red LED blinks. Then flash. Safe mode
+  is also how to recover a board that misbehaves later.
+
+Seeed's [XVF3800 with XIAO](https://wiki.seeedstudio.com/respeaker_xvf_3800_xiaozhi/)
+guide has more on `dfu-util`. The firmware sets the XVF3800's echo-cancellation
+profile itself at every boot (mic gain, `SYS_DELAY` −64, routes), so nothing
+else needs configuring on the XMOS side.
 
 ### 2. Tell the firmware your Wi-Fi and where Niles is
 
@@ -77,8 +94,10 @@ password stays out of the repo) and fill it in:
 
 ### 3. Build and flash
 
-Install **ESP-IDF v5.x**. The easiest way is the Espressif IDF extension for
-VS Code, which installs the toolchain for you.
+Install **ESP-IDF 6.0.1**: that's the version the working satellites are built
+with (with `esp-tflite-micro` 1.3.7, pinned in `main/idf_component.yml`). Older
+IDF releases, 5.x included, aren't tested. The easiest way is the Espressif IDF
+extension for VS Code, which installs the toolchain for you.
 
 **VS Code:** open this `satellite-idf` folder, set the target to **esp32s3**
 (status bar), then use the extension's **Build → Flash → Monitor** buttons.

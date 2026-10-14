@@ -1,5 +1,7 @@
 ## Managed component dependencies (fetched by the IDF component manager).
+## Pinned to what the working satellites are built with (ESP-IDF 6.0.1): a
+## fresh checkout should not pick up an untested esp-tflite-micro.
 dependencies:
-  espressif/esp-tflite-micro: "*"
+  espressif/esp-tflite-micro: "==1.3.7"
   idf:
-    version: ">=5.0"
+    version: ">=6.0"
