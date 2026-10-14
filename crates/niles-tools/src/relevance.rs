@@ -348,6 +348,26 @@ const GROUPS: &[Group] = &[
     },
 ];
 
+/// Whether `transcript` mentions any of `keywords`, by the same
+/// whole-word rule the built-in groups use.
+///
+/// For a plugin's tools, which are one subject signalled by the
+/// manifest's `keywords`. Unlike a built-in tool nobody classified, a
+/// plugin's are never sent "just in case": ten plugins doing that would
+/// fill the prompt for every light switched, and the author cannot see
+/// what that costs a household.
+pub fn mentions(transcript: &str, keywords: &[String]) -> bool {
+    let text = transcript.to_lowercase();
+    keywords
+        .iter()
+        .any(|k| !k.trim().is_empty() && contains_word(&text, &k.to_lowercase()))
+}
+
+/// Whether this tool is sent with every request that matched anything.
+pub fn is_core(name: &str) -> bool {
+    ALWAYS.contains(&name)
+}
+
 /// Whether this tool belongs to a subject at all.
 ///
 /// A tool nobody classified is always sent, so forgetting to add one
@@ -503,6 +523,22 @@ mod tests {
         // "wind chime" must not summon the forecast.
         assert!(!contains_word("turn on the winder", "wind"));
         assert!(contains_word("is it windy", "windy"));
+    }
+
+    #[test]
+    fn a_plugin_keyword_is_matched_as_a_whole_word_in_any_case() {
+        let keywords = vec![
+            "bus".to_string(),
+            "next bus".to_string(),
+            "Elpris".to_string(),
+        ];
+        assert!(mentions("When's the next bus?", &keywords));
+        assert!(mentions("hvad er elprisen? nej, elpris", &keywords));
+        assert!(
+            !mentions("how is business", &keywords),
+            "bus is not business"
+        );
+        assert!(!mentions("anything at all", &[]));
     }
 
     #[test]

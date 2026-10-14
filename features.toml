@@ -393,3 +393,21 @@ id = "observability-state-log"
 category = "runtime.observability"
 summary = "Structured device-state history log for every state change"
 since_pr = 71
+
+[[feature]]
+id = "plugins-runtime"
+category = "runtime.plugins"
+summary = "Run third-party integrations as sandboxed WebAssembly components; their devices, tools and pages join the house"
+since_pr = 388
+
+[[feature]]
+id = "plugins-dev-check"
+category = "runtime.plugins"
+summary = "`niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house"
+since_pr = 388
+
+[[feature]]
+id = "api-plugins"
+category = "api.read"
+summary = "GET /plugins lists installed plugins with their status and last error"
+since_pr = 388

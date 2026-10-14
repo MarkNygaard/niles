@@ -1,0 +1,57 @@
+id = "hello"
+name = "Hello"
+version = "0.1.0"
+description = "Says hello, and keeps a lamp and a meter for Niles's own tests."
+authors = ["Niles"]
+homepage = "https://github.com/MarkNygaard/niles"
+min_niles = "0.2.0"
+interface = "0.1"
+keywords = ["hello", "greet", "greeting"]
+
+[permissions]
+http = ["example.com", "*.example.net"]
+local_network = ["setting:address"]
+devices = true
+tools = true
+events = ["device_state", "presence"]
+notify = true
+ui = true
+
+[[settings]]
+key = "greeting"
+label = "Greeting"
+type = "string"
+default = "Hello"
+
+[[settings]]
+key = "room"
+label = "Room"
+type = "room"
+default = "office"
+
+[[settings]]
+key = "address"
+label = "Address"
+type = "string"
+help = "Where the pretend device is, for the HTTP tests."
+
+[[settings]]
+key = "token"
+label = "Token"
+type = "secret"
+
+[[ui.menu]]
+id = "page"
+label = "Hello"
+icon = "hand"
+
+[[ui.widgets]]
+id = "card"
+title = "Hello now"
+room = "office"
+refresh_every = 60
+
+# Draws a tree that is not a tree, which Niles must refuse.
+[[ui.widgets]]
+id = "broken"
+title = "Broken"

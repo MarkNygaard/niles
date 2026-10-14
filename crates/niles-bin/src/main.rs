@@ -66,6 +66,7 @@ mod grocery_delivery;
 mod last_target;
 mod manifest;
 mod music;
+mod plugins;
 mod profile;
 mod push;
 mod recognition;
@@ -159,6 +160,12 @@ enum Commands {
     /// Regenerate MANIFEST.md from features.toml. Use --check to
     /// verify the committed MANIFEST.md is in sync (CI mode).
     GenerateManifest(GenerateManifestArgs),
+    /// Third-party plugins: check one, or run one against a stand-in
+    /// house while writing it.
+    Plugin {
+        #[command(subcommand)]
+        action: plugins::PluginAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -332,16 +339,25 @@ async fn main() -> anyhow::Result<()> {
     // Load .env at repo root for local dev. Silently ignored if absent.
     let _ = dotenvy::dotenv();
 
+    let cli = Cli::parse();
+
     // Initialize tracing. Honors RUST_LOG; defaults to `info` for the
     // niles_* crates so dev subcommands give meaningful output.
+    // `niles plugin dev` also shows the plugin's timers firing.
+    let plugins_level = match &cli.command {
+        Commands::Plugin {
+            action: plugins::PluginAction::Dev(_),
+        } => "debug",
+        _ => "info",
+    };
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
             // The binary target is named `niles`, so its module path is
             // `niles::` — an earlier `niles_bin=` directive matched nothing
             // and silently swallowed every log line from this file.
-            EnvFilter::new(
-                "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_llm=info,niles_mqtt=info,niles_nemlig=info,niles_presence=info,niles_scheduler=info,niles_speakers=info,niles_stt=info,niles_tools=info,niles_webos=info",
-            )
+            EnvFilter::new(format!(
+                "niles=info,niles_api=info,niles_config=info,niles_db=info,niles_llm=info,niles_mqtt=info,niles_nemlig=info,niles_plugins={plugins_level},niles_presence=info,niles_scheduler=info,niles_speakers=info,niles_stt=info,niles_tools=info,niles_webos=info",
+            ))
         });
     // The same events go to stdout and to a small in-memory ring the
     // HTTP API serves. `kubectl logs` is a different tool with
@@ -359,7 +375,6 @@ async fn main() -> anyhow::Result<()> {
         .with(niles_api::logs::LogLayer::new(logs.clone()))
         .init();
 
-    let cli = Cli::parse();
     match cli.command {
         Commands::Serve(args) => serve(args).await,
         Commands::MigrateFromHa => todo!("implement `migrate-from-ha`"),
@@ -383,6 +398,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Enroll(args) => enroll(args).await,
         Commands::Lighting(args) => lighting(args).await,
         Commands::GenerateManifest(args) => generate_manifest(args),
+        Commands::Plugin { action } => plugins::run(action).await,
     }
 }
 
@@ -402,13 +418,17 @@ fn parse_wled_id(name: &str) -> Option<DeviceId> {
 
 /// Build a `CommandRouter` from config.
 fn build_command_router(cfg: &Config) -> Arc<CommandRouter> {
+    Arc::new(command_router(cfg))
+}
+
+fn command_router(cfg: &Config) -> CommandRouter {
     let wled_map: HashMap<_, _> = cfg
         .wled
         .devices
         .iter()
         .filter_map(|dev| parse_wled_id(&dev.name).map(|id| (id, dev.topic.clone())))
         .collect();
-    Arc::new(CommandRouter::new(cfg.mqtt.z2m_prefix.clone(), wled_map))
+    CommandRouter::new(cfg.mqtt.z2m_prefix.clone(), wled_map)
 }
 
 /// Spawn a `WledSource` when `[wled]` has at least one device.
@@ -4992,6 +5012,19 @@ async fn dispatch_text(
                 return Some(response::scene_empty(&name));
             }
             for entry in entries {
+                if let Some(commander) = ctx.router.commander_for(&entry.device_id, &entry.state) {
+                    let what = format!("[{peer}]");
+                    command_directly(
+                        commander,
+                        &entry.device_id,
+                        &entry.state,
+                        ctx.dry_run,
+                        &what,
+                    )
+                    .await;
+                    ctx.tracker.flag(&entry.device_id);
+                    continue;
+                }
                 let Some((topic, payload)) = ctx.router.format(&entry.device_id, &entry.state)
                 else {
                     continue;
@@ -5398,6 +5431,11 @@ async fn dispatch_to_targets(
     );
 
     for device in targets {
+        if let Some(commander) = ctx.router.commander_for(&device.id, desired) {
+            let what = format!("[{peer}]");
+            command_directly(commander, &device.id, desired, ctx.dry_run, &what).await;
+            continue;
+        }
         let Some((topic, payload)) = ctx.router.format(&device.id, desired) else {
             continue;
         };
@@ -5424,6 +5462,11 @@ async fn publish_single(
     device: &Device,
     desired: &DeviceState,
 ) {
+    if let Some(commander) = ctx.router.commander_for(&device.id, desired) {
+        let what = format!("[{peer}]");
+        command_directly(commander, &device.id, desired, ctx.dry_run, &what).await;
+        return;
+    }
     let Some((topic, payload)) = ctx.router.format(&device.id, desired) else {
         return;
     };
@@ -5684,6 +5727,32 @@ async fn build_morning_claims(cfg: &Config) -> Arc<MorningClaimTracker> {
 // Automation engine wiring
 // ------------------------------------------------------------------
 
+/// Send `desired` to a device Niles does not reach over MQTT — a
+/// plugin's — logged under `what` like the publishes beside it. True
+/// when it was taken, or would have been in a dry run.
+async fn command_directly(
+    commander: &dyn niles_mqtt::DeviceCommander,
+    id: &DeviceId,
+    desired: &DeviceState,
+    dry_run: bool,
+    what: &str,
+) -> bool {
+    if dry_run {
+        tracing::info!("{what} [dry-run] {id} {desired:?}");
+        return true;
+    }
+    match commander.command(id, desired).await {
+        Ok(()) => {
+            tracing::info!("{what} {id} {desired:?}");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("{what} {id} did not take it: {e}");
+            false
+        }
+    }
+}
+
 struct MqttDeviceSink {
     publisher: MqttPublisher,
     router: Arc<CommandRouter>,
@@ -5693,6 +5762,10 @@ struct MqttDeviceSink {
 #[async_trait::async_trait]
 impl DeviceSink for MqttDeviceSink {
     async fn set(&self, device: &DeviceId, desired: &DeviceState) {
+        if let Some(commander) = self.router.commander_for(device, desired) {
+            command_directly(commander, device, desired, self.dry_run, "[automation]").await;
+            return;
+        }
         let Some((topic, payload)) = self.router.format(device, desired) else {
             tracing::debug!("[automation] skipped set for {device}: no actionable fields");
             return;
@@ -6398,7 +6471,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let mqtt_client = connect_with_config(&cfg).await?;
     let publisher = mqtt_client.publisher();
-    let router = build_command_router(&cfg);
     let api_bind = cfg
         .api
         .socket_addr()
@@ -6435,6 +6507,24 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let bus = EventBus::default();
     let tracker = Arc::new(ManualModeTracker::new());
     let claim_tracker = build_morning_claims(&cfg).await;
+
+    // Third-party plugins. Their devices are commanded through the
+    // runtime rather than MQTT, so the router learns of it before
+    // anything that sends a command is built; their tools join the
+    // registry below, and they are started once everything they reach
+    // exists.
+    let plugin_tools = niles_tools::DynamicTools::new();
+    let plugin_runtime = plugins::start_runtime(
+        &cfg,
+        store.clone(),
+        registry.clone(),
+        bus.clone(),
+        plugin_tools.clone(),
+    );
+    let router = Arc::new(match &plugin_runtime {
+        Some(runtime) => command_router(&cfg).with_commander(Arc::new(runtime.clone())),
+        None => command_router(&cfg),
+    });
 
     // Device index: built from the registry at startup and updated
     // on DeviceAdded / DeviceRemoved so Tier 0 matchers can resolve
@@ -6553,6 +6643,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         observer_tracker.flag(&d.id);
                     }
                     for d in &targets {
+                        if let Some(commander) = observer_router.commander_for(&d.id, &desired) {
+                            command_directly(
+                                commander,
+                                &d.id,
+                                &desired,
+                                observer_dry_run,
+                                "[switch]",
+                            )
+                            .await;
+                            continue;
+                        }
                         let Some((topic, payload)) = observer_router.format(&d.id, &desired) else {
                             continue;
                         };
@@ -6795,6 +6896,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
 
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
+    tools.attach_dynamic(plugin_tools);
 
     let tools = Arc::new(tools);
     // Started whether or not an assistant is switched on: the switch is
@@ -6874,6 +6976,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_captures(captures.clone())
     .with_unifi(presence.as_ref().and_then(|p| p.unifi.clone()))
     .with_secrets(secret_store.clone())
+    .with_plugins(plugin_runtime.clone().map(|runtime| {
+        Arc::new(plugins::AppPlugins(runtime)) as Arc<dyn niles_api::plugins::Plugins>
+    }))
     .with_api_token(cfg.auth.resolve_api_token());
 
     // A deployment that mounts its secrets under names the platform
@@ -6906,6 +7011,21 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             tracing::error!("API server exited: {e}");
         }
     });
+
+    // Last, with everything they reach in place. Each compiles and starts
+    // on its own thread; one that fails shows as failing and stops
+    // nothing else.
+    let _plugin_settings = match &plugin_runtime {
+        Some(runtime) => {
+            runtime.connect_notifications(notifications.clone());
+            let started = runtime.load_installed().await;
+            if started > 0 {
+                tracing::info!("[plugins] starting {started}");
+            }
+            Some(plugins::restart_on_settings(runtime.clone(), store.clone()))
+        }
+        None => None,
+    };
 
     // Wyoming + STT + Intent dispatch
     let wyoming_sender = server.sender();
@@ -7108,6 +7228,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     timer_handle.abort();
     if let Some(h) = _presence_handle {
         h.abort();
+    }
+    if let Some(runtime) = &plugin_runtime {
+        runtime.shutdown().await;
     }
     serve_result
 }
@@ -7320,6 +7443,13 @@ async fn run_curve_tick(
         if last_published.get(&device.id) == Some(&target_state) {
             continue;
         }
+        if let Some(commander) = router.commander_for(&device.id, &target_state) {
+            let what = format!("[curve {minute_of_day}]");
+            if command_directly(commander, &device.id, &target_state, dry_run, &what).await {
+                last_published.insert(device.id.clone(), target_state);
+            }
+            continue;
+        }
         let Some((topic, payload)) = router.format_fading(&device.id, &target_state, fade) else {
             continue;
         };
@@ -7445,6 +7575,11 @@ async fn run_morning_routine_tick(
                     on: Some(true),
                     ..Default::default()
                 };
+                if let Some(commander) = router.commander_for(id, &target) {
+                    let what = format!("[routine {minute_of_day}]");
+                    command_directly(commander, id, &target, dry_run, &what).await;
+                    continue;
+                }
                 let Some((topic, payload)) = router.format(id, &target) else {
                     continue;
                 };
@@ -7473,15 +7608,22 @@ async fn run_morning_routine_tick(
                         brightness: Some(100),
                         ..Default::default()
                     };
-                    let Some((topic, payload)) = router.format(id, &target) else {
-                        continue;
-                    };
-                    if dry_run {
-                        tracing::info!("[routine {minute_of_day}] [dry-run] {topic}  {payload}");
-                    } else if let Err(e) = publisher.publish(&topic, payload.clone()).await {
-                        tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
+                    if let Some(commander) = router.commander_for(id, &target) {
+                        let what = format!("[routine {minute_of_day}]");
+                        command_directly(commander, id, &target, dry_run, &what).await;
                     } else {
-                        tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
+                        let Some((topic, payload)) = router.format(id, &target) else {
+                            continue;
+                        };
+                        if dry_run {
+                            tracing::info!(
+                                "[routine {minute_of_day}] [dry-run] {topic}  {payload}"
+                            );
+                        } else if let Err(e) = publisher.publish(&topic, payload.clone()).await {
+                            tracing::warn!("[routine {minute_of_day}] {topic} failed: {e}");
+                        } else {
+                            tracing::info!("[routine {minute_of_day}] {topic}  {payload}");
+                        }
                     }
                 }
             }
@@ -7529,6 +7671,14 @@ async fn run_morning_routine_tick(
                 brightness: Some(0),
                 ..Default::default()
             };
+            if let Some(commander) = router.commander_for(id, &target) {
+                let what = format!("[routine {minute_of_day}]");
+                if command_directly(commander, id, &target, dry_run, &what).await {
+                    claim_tracker.claim(id);
+                    just_kicked_on.insert(id.clone());
+                }
+                continue;
+            }
             let Some((topic, payload)) = router.format(id, &target) else {
                 continue;
             };
@@ -7586,6 +7736,11 @@ async fn run_morning_routine_tick(
             brightness: Some(target_brightness),
             ..Default::default()
         };
+        if let Some(commander) = router.commander_for(id, &target) {
+            let what = format!("[routine {minute_of_day}]");
+            command_directly(commander, id, &target, dry_run, &what).await;
+            continue;
+        }
         let Some((topic, payload)) = router.format_fading(id, &target, fade) else {
             continue;
         };

@@ -2,17 +2,109 @@
 
 use crate::error::{Error, Result};
 use crate::tool::Tool;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, RwLock};
 
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    dynamic: DynamicTools,
+}
+
+/// Tools that come and go while Niles runs: each plugin's, which arrive
+/// when it starts and change when it is updated or removed.
+///
+/// The rest of the registry is built once and shared behind an `Arc`, so
+/// this part is a handle of its own: whoever runs the plugins keeps a
+/// clone and replaces an owner's tools through it, and every registry it
+/// is attached to sees the change on the next request.
+#[derive(Clone, Default)]
+pub struct DynamicTools {
+    owners: Arc<RwLock<BTreeMap<String, Owned>>>,
+}
+
+struct Owned {
+    /// What a request has to mention for these tools to be sent.
+    keywords: Vec<String>,
+    tools: Vec<Arc<dyn Tool>>,
+}
+
+impl DynamicTools {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace everything `owner` offers. Its tools are sent only with a
+    /// request that mentions one of `keywords`, or with one that matched
+    /// nothing at all, when every tool goes.
+    pub fn set(&self, owner: &str, keywords: Vec<String>, tools: Vec<Arc<dyn Tool>>) {
+        self.owners
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(owner.to_string(), Owned { keywords, tools });
+    }
+
+    /// Withdraw everything `owner` offers.
+    pub fn remove(&self, owner: &str) {
+        self.owners
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(owner);
+    }
+
+    /// What `owner` currently offers, sorted by name.
+    pub fn descriptors_of(&self, owner: &str) -> Vec<crate::tool::ToolDescriptor> {
+        let owners = self.owners.read().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<crate::tool::ToolDescriptor> = owners
+            .get(owner)
+            .map(|o| o.tools.iter().map(|t| t.descriptor()).collect())
+            .unwrap_or_default();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    fn find(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        let owners = self.owners.read().unwrap_or_else(|e| e.into_inner());
+        owners
+            .values()
+            .flat_map(|o| o.tools.iter())
+            .find(|t| t.descriptor().name == name)
+            .cloned()
+    }
+
+    /// Every tool, or with `transcript` only the owners it mentions.
+    fn descriptors(&self, transcript: Option<&str>) -> Vec<niles_llm::Tool> {
+        let owners = self.owners.read().unwrap_or_else(|e| e.into_inner());
+        owners
+            .values()
+            .filter(|o| transcript.is_none_or(|t| crate::relevance::mentions(t, &o.keywords)))
+            .flat_map(|o| o.tools.iter().map(|t| t.descriptor().to_llm_tool()))
+            .collect()
+    }
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            dynamic: DynamicTools::new(),
         }
+    }
+
+    /// Offer the tools in `dynamic` from this registry too, as they are
+    /// at each request. A name that is already a built-in stays the
+    /// built-in's.
+    pub fn attach_dynamic(&mut self, dynamic: DynamicTools) {
+        self.dynamic = dynamic;
+    }
+
+    /// The tools that came from `dynamic`, minus any shadowed by a
+    /// built-in of the same name.
+    fn dynamic_tools(&self, transcript: Option<&str>) -> Vec<niles_llm::Tool> {
+        self.dynamic
+            .descriptors(transcript)
+            .into_iter()
+            .filter(|t| !self.tools.contains_key(&t.name))
+            .collect()
     }
 
     /// Register a tool. If a tool with the same name already exists,
@@ -30,6 +122,7 @@ impl ToolRegistry {
             .values()
             .map(|t| t.descriptor().to_llm_tool())
             .collect();
+        out.extend(self.dynamic_tools(None));
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
@@ -42,9 +135,11 @@ impl ToolRegistry {
     /// minute and rather more — see [`crate::relevance`], which also
     /// explains why an unclassifiable request still gets everything.
     pub fn llm_tools_for(&self, transcript: &str) -> Vec<niles_llm::Tool> {
-        let Some(wanted) = crate::relevance::relevant_tool_names(transcript) else {
+        let wanted = crate::relevance::relevant_tool_names(transcript);
+        let mentioned = self.dynamic_tools(Some(transcript));
+        if wanted.is_none() && mentioned.is_empty() {
             return self.llm_tools();
-        };
+        }
         let mut out: Vec<niles_llm::Tool> = self
             .tools
             .values()
@@ -52,10 +147,16 @@ impl ToolRegistry {
             // A tool nobody classified is a tool that still has to
             // work, so an unknown name keeps its place.
             .filter(|t| {
-                wanted.binary_search(&t.name.as_str()).is_ok()
-                    || !crate::relevance::is_grouped(&t.name)
+                let in_a_matched_group = match &wanted {
+                    Some(wanted) => wanted.binary_search(&t.name.as_str()).is_ok(),
+                    // Only a plugin's keywords matched: its tools and
+                    // the core, as a built-in subject would get.
+                    None => crate::relevance::is_core(&t.name),
+                };
+                in_a_matched_group || !crate::relevance::is_grouped(&t.name)
             })
             .collect();
+        out.extend(mentioned);
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
@@ -63,9 +164,12 @@ impl ToolRegistry {
     /// Dispatch a `ToolCall`. Returns the JSON value the tool produced;
     /// the caller wraps it in `Message::Tool { tool_call_id, content }`.
     pub async fn execute(&self, call: &niles_llm::ToolCall) -> Result<serde_json::Value> {
+        if let Some(tool) = self.tools.get(&call.name) {
+            return tool.execute(call.arguments.clone()).await;
+        }
         let tool = self
-            .tools
-            .get(&call.name)
+            .dynamic
+            .find(&call.name)
             .ok_or_else(|| Error::UnknownTool(call.name.clone()))?;
         tool.execute(call.arguments.clone()).await
     }
@@ -218,5 +322,78 @@ mod gating_tests {
     fn an_unclassifiable_request_still_gets_everything() {
         let all = registry().llm_tools().len();
         assert_eq!(registry().llm_tools_for("do the thing").len(), all);
+    }
+
+    fn with_plugin() -> (ToolRegistry, DynamicTools) {
+        let mut reg = registry();
+        let dynamic = DynamicTools::new();
+        reg.attach_dynamic(dynamic.clone());
+        dynamic.set(
+            "spotprice",
+            vec!["electricity".into(), "elpris".into()],
+            vec![Arc::new(Named("spotprice_prices"))],
+        );
+        (reg, dynamic)
+    }
+
+    fn names(tools: Vec<niles_llm::Tool>) -> Vec<String> {
+        tools.into_iter().map(|t| t.name).collect()
+    }
+
+    #[test]
+    fn a_plugin_tool_is_sent_when_its_keywords_are_said() {
+        let (reg, _) = with_plugin();
+        let sent = names(reg.llm_tools_for("when is electricity cheapest"));
+        assert!(sent.contains(&"spotprice_prices".to_string()));
+        assert!(sent.contains(&"set_device".to_string()), "with the core");
+        assert!(!sent.contains(&"get_weather".to_string()), "{sent:?}");
+    }
+
+    #[test]
+    fn a_plugin_tool_is_never_sent_just_in_case() {
+        let (reg, _) = with_plugin();
+        let sent = names(reg.llm_tools_for("what's the weather like"));
+        assert!(!sent.contains(&"spotprice_prices".to_string()));
+    }
+
+    #[test]
+    fn a_request_that_matches_nothing_gets_the_plugins_too() {
+        let (reg, _) = with_plugin();
+        let sent = names(reg.llm_tools_for("do the thing"));
+        assert!(sent.contains(&"spotprice_prices".to_string()));
+    }
+
+    #[test]
+    fn plugin_tools_change_while_the_registry_is_shared() {
+        let (reg, dynamic) = with_plugin();
+        let reg = Arc::new(reg);
+        assert!(names(reg.llm_tools()).contains(&"spotprice_prices".to_string()));
+        dynamic.remove("spotprice");
+        assert!(!names(reg.llm_tools()).contains(&"spotprice_prices".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_plugin_tool_is_called_through_the_registry() {
+        let (reg, _) = with_plugin();
+        let call = niles_llm::ToolCall {
+            id: "1".into(),
+            name: "spotprice_prices".into(),
+            arguments: serde_json::json!({}),
+        };
+        assert!(reg.execute(&call).await.is_ok());
+    }
+
+    #[test]
+    fn a_plugin_cannot_shadow_a_built_in() {
+        let mut reg = registry();
+        let dynamic = DynamicTools::new();
+        reg.attach_dynamic(dynamic.clone());
+        dynamic.set(
+            "evil",
+            vec!["x".into()],
+            vec![Arc::new(Named("set_device"))],
+        );
+        let all = names(reg.llm_tools());
+        assert_eq!(all.iter().filter(|n| *n == "set_device").count(), 1);
     }
 }

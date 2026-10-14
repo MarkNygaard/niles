@@ -56,7 +56,7 @@ pub fn register_notification_tools(
     register_list_recent_notifications_tool(reg, center);
 }
 pub use linear::{CreateTaskTool, GetTaskTool, ListTasksTool, register_linear_tools};
-pub use registry::ToolRegistry;
+pub use registry::{DynamicTools, ToolRegistry};
 pub use skill::{
     DeleteSkillTool, ListSkillsTool, MintSkillTool, PatchSkillTool, RetireSkillTool, ViewSkillTool,
     Viewed, register_background_skill_tools, register_skill_tools,

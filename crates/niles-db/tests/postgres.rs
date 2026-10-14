@@ -209,3 +209,64 @@ async fn a_conversation_is_appended_to_and_kept_for_its_person_only() {
     assert!(log.delete(&person, id).await.expect("delete"));
     assert!(log.list(&person).await.expect("list").is_empty());
 }
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its_data() {
+    let Some(backend) = backend() else {
+        return;
+    };
+    let plugins = niles_db::PostgresPlugins::new(backend.pool(), "test".into());
+    let id = format!("test{}", std::process::id());
+    plugins
+        .install(&id, "0.1.0", "id = \"x\"", None, b"\0asm one")
+        .await
+        .expect("install");
+    plugins
+        .install(&id, "0.2.0", "id = \"x\"", None, b"\0asm two")
+        .await
+        .expect("update");
+    let row = plugins
+        .enabled()
+        .await
+        .expect("enabled")
+        .into_iter()
+        .find(|p| p.id == id)
+        .expect("installed");
+    assert_eq!(row.version, "0.2.0");
+    assert_eq!(row.sha256, niles_db::hex_digest(b"\0asm two"));
+
+    assert!(plugins.set(&id, "day:2", "b", 100).await.expect("set"));
+    assert!(plugins.set(&id, "day:1", "a", 100).await.expect("set"));
+    assert_eq!(
+        plugins.keys(&id, "day:").await.expect("keys"),
+        vec!["day:1", "day:2"]
+    );
+    let big = "x".repeat(90);
+    assert!(
+        !plugins.set(&id, "big", &big, 100).await.expect("set"),
+        "over the quota"
+    );
+    assert_eq!(
+        plugins.get(&id, "day:1").await.expect("get").as_deref(),
+        Some("a")
+    );
+
+    let lamp = niles_db::PluginDeviceRow {
+        device: "office/lamp".into(),
+        class: "light".into(),
+        color_temp: true,
+        rgb: false,
+        controllable: true,
+    };
+    plugins.put_device(&id, &lamp).await.expect("device");
+    assert_eq!(plugins.devices(&id).await.expect("devices"), vec![lamp]);
+
+    sqlx::query("delete from plugins where id = $1")
+        .bind(&id)
+        .execute(&backend.pool())
+        .await
+        .expect("remove");
+    assert!(plugins.keys(&id, "").await.expect("keys").is_empty());
+    assert!(plugins.devices(&id).await.expect("devices").is_empty());
+}

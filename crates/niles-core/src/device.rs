@@ -205,6 +205,25 @@ pub struct DeviceState {
     pub readings: BTreeMap<String, Reading>,
 }
 
+impl DeviceState {
+    /// Take `partial`'s reported fields over these, field by field and
+    /// reading by reading: a `None` there leaves the value here alone.
+    pub fn merge(&mut self, partial: DeviceState) {
+        self.on = partial.on.or(self.on);
+        self.brightness = partial.brightness.or(self.brightness);
+        self.color_temp_kelvin = partial.color_temp_kelvin.or(self.color_temp_kelvin);
+        self.rgb = partial.rgb.or(self.rgb);
+        self.temperature_celsius = partial.temperature_celsius.or(self.temperature_celsius);
+        self.humidity_percent = partial.humidity_percent.or(self.humidity_percent);
+        self.battery_percent = partial.battery_percent.or(self.battery_percent);
+        self.open = partial.open.or(self.open);
+        self.motion = partial.motion.or(self.motion);
+        self.illuminance_lux = partial.illuminance_lux.or(self.illuminance_lux);
+        self.position = partial.position.or(self.position);
+        self.readings.extend(partial.readings);
+    }
+}
+
 /// One named number a device reports, with its unit when known.
 ///
 /// The unit is the source's own string — `"W"`, `"kWh"`, `"ppm"`,

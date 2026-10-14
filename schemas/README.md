@@ -10,4 +10,4 @@ Planned files:
 
 Present:
 
-- `niles-integration.wit` — the WIT package `niles:integration@0.1.0`: the interface between Niles and a third-party integration (a WebAssembly component). Specification only; see ARCHITECTURE.md, "Third-party integrations (plugins)", and the author guide in `docs/integrations/`. Check it with `wasm-tools component wit schemas/niles-integration.wit`.
+- `niles-integration.wit` — the WIT package `niles:integration@0.1.0`: the interface between Niles and a third-party integration (a WebAssembly component). Run by `crates/niles-plugins` (Niles 0.2.0); see ARCHITECTURE.md, "Third-party integrations (plugins)", and the author guide in `docs/integrations/`. Check it with `wasm-tools component wit schemas/niles-integration.wit`.

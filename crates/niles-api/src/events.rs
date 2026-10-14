@@ -40,6 +40,12 @@ pub enum WireEvent {
     DeviceRemoved {
         id: String,
     },
+    /// A plugin's page or widget has changed. The app asks for a new
+    /// render only if it has that surface open.
+    UiInvalidated {
+        plugin: String,
+        surface: String,
+    },
     Ping {
         ts: String,
     },
@@ -61,6 +67,9 @@ impl WireEvent {
                 class: (&device.class).into(),
             }),
             Event::DeviceRemoved { id } => Some(WireEvent::DeviceRemoved { id: id.to_string() }),
+            Event::UiInvalidated { plugin, surface } => {
+                Some(WireEvent::UiInvalidated { plugin, surface })
+            }
             _ => None,
         }
     }
@@ -73,6 +82,8 @@ impl WireEvent {
 ///
 /// Supports:
 /// - `device_state_changed`, `device_added`, `device_removed` events
+/// - `ui_invalidated` (`plugin`, `surface`): a plugin's page or widget
+///   has something new to show
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
 /// - Slow-consumer detection: if the cumulative number of dropped events
 ///   reaches 256, the connection is closed with `{"type":"close"}`
@@ -357,6 +368,19 @@ mod tests {
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["type"], "device_removed");
         assert_eq!(v["id"], "z2m:kitchen/old_outlet");
+    }
+
+    #[test]
+    fn a_plugin_surface_changing_reaches_the_app() {
+        let wire = WireEvent::from_event(Event::UiInvalidated {
+            plugin: "spotprice".into(),
+            surface: "electricity".into(),
+        })
+        .expect("forwarded");
+        let v = serde_json::to_value(&wire).unwrap();
+        assert_eq!(v["type"], "ui_invalidated");
+        assert_eq!(v["plugin"], "spotprice");
+        assert_eq!(v["surface"], "electricity");
     }
 
     #[test]

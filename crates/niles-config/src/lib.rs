@@ -226,6 +226,10 @@ pub fn section_reload(section: &str) -> Reload {
         "stt" => Reload::Hot,
         // Read on every wake, keep included.
         "capture" => Reload::Hot,
+        // Each plugin reads its settings when an instance starts, and a
+        // change to its table restarts it, as saving its setup panel
+        // does.
+        "plugins" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
@@ -266,6 +270,7 @@ pub const SECTIONS: &[&str] = &[
     "llm",
     "lighting",
     "automation",
+    "plugins",
 ];
 
 /// Top-level Niles configuration.
@@ -337,6 +342,15 @@ pub struct Config {
     pub lighting: LightingConfig,
     #[serde(default, rename = "automation")]
     pub automations: AutomationsConfig,
+    /// Each third-party plugin's settings, by plugin id:
+    /// `[plugins.spotprice]` with `area = "DK1"`. What the plugin's
+    /// manifest declares, as its setup panel saves them; typed and
+    /// checked against the manifest when the plugin reads them, not
+    /// here, since only the manifest knows the keys. Secret settings
+    /// are never here: they are in the secret store as
+    /// `plugins.<id>.<key>`.
+    #[serde(default)]
+    pub plugins: std::collections::BTreeMap<String, toml::Table>,
 }
 
 impl Config {
@@ -417,6 +431,17 @@ mod tests {
     use super::*;
 
     use crate::tests_support::valid_toml;
+
+    #[test]
+    fn a_plugins_settings_are_kept_by_its_id_and_change_without_a_restart() {
+        let cfg = Config::load_from_str("[plugins.spotprice]\narea = \"DK2\"\ncheap_hours = 6\n")
+            .unwrap();
+        let settings = &cfg.plugins["spotprice"];
+        assert_eq!(settings["area"].as_str(), Some("DK2"));
+        assert_eq!(settings["cheap_hours"].as_integer(), Some(6));
+        assert_eq!(section_reload("plugins"), Reload::Hot);
+        assert!(SECTIONS.contains(&"plugins"));
+    }
 
     #[test]
     fn loads_and_validates_a_full_config() {

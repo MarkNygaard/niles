@@ -1,0 +1,866 @@
+//! `niles-integration.toml`: what a plugin is, what it may reach, and
+//! what its setup panel asks for.
+//!
+//! The rules are those of `docs/integrations/manifest.md`. Parsing is
+//! strict about the shape — an unknown key is an error, because a typo
+//! in `[permissions]` would otherwise quietly take a permission away —
+//! and [`Manifest::problems`] then lists everything else wrong, all at
+//! once, so `niles plugin check` can say it in one go.
+
+use crate::error::{Error, Result};
+use serde::Deserialize;
+use std::collections::HashSet;
+
+/// The Niles this is, for `min_niles`.
+pub const NILES_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The `interface` versions this Niles runs.
+pub const INTERFACES: &[&str] = &["0.1"];
+
+/// Memory a plugin gets unless its manifest asks for more.
+pub const DEFAULT_MEMORY_MB: u32 = 64;
+/// The most a manifest may ask for.
+pub const MAX_MEMORY_MB: u32 = 256;
+
+/// At most this many tools per plugin.
+pub const MAX_TOOLS: usize = 16;
+
+/// Readings names that belong to a fixed field of the device state.
+pub const TAKEN_READINGS: &[&str] = &[
+    "temperature",
+    "humidity",
+    "battery",
+    "brightness",
+    "illuminance",
+];
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub authors: Vec<String>,
+    #[serde(default)]
+    pub homepage: Option<String>,
+    pub min_niles: String,
+    pub interface: String,
+    /// A catalogue group id. Missing or unknown means Custom, which is
+    /// why it is not checked.
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub logo: Option<String>,
+    #[serde(default)]
+    pub memory_mb: Option<u32>,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub permissions: Permissions,
+    #[serde(default)]
+    pub settings: Vec<Setting>,
+    #[serde(default)]
+    pub ui: Surfaces,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Permissions {
+    /// Host names, exact or `*.example.com`.
+    #[serde(default)]
+    pub http: Vec<String>,
+    /// IPs, host names, CIDR ranges no wider than a /24, or
+    /// `setting:<key>`.
+    #[serde(default)]
+    pub local_network: Vec<String>,
+    #[serde(default)]
+    pub devices: bool,
+    #[serde(default)]
+    pub tools: bool,
+    #[serde(default)]
+    pub events: Vec<EventPermission>,
+    #[serde(default)]
+    pub notify: Notify,
+    #[serde(default)]
+    pub ui: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventPermission {
+    DeviceState,
+    DeviceAction,
+    Presence,
+}
+
+/// `notify = true`, or `"urgent"` to speak during quiet hours too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Notify {
+    #[default]
+    No,
+    Yes,
+    Urgent,
+}
+
+impl<'de> Deserialize<'de> for Notify {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Flag(bool),
+            Word(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Flag(false) => Ok(Notify::No),
+            Raw::Flag(true) => Ok(Notify::Yes),
+            Raw::Word(w) if w == "urgent" => Ok(Notify::Urgent),
+            Raw::Word(w) => Err(serde::de::Error::custom(format!(
+                "notify is true, false or \"urgent\", not {w:?}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Setting {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub kind: SettingKind,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub help: Option<String>,
+    #[serde(default)]
+    pub default: Option<toml::Value>,
+    #[serde(default)]
+    pub options: Vec<ChoiceOption>,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingKind {
+    String,
+    Number,
+    Boolean,
+    Secret,
+    Choice,
+    Room,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChoiceOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Surfaces {
+    #[serde(default)]
+    pub menu: Vec<MenuEntry>,
+    #[serde(default)]
+    pub widgets: Vec<Widget>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MenuEntry {
+    pub id: String,
+    pub label: String,
+    pub icon: String,
+    #[serde(default)]
+    pub refresh_every: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Widget {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub room: Option<String>,
+    #[serde(default)]
+    pub refresh_every: Option<u32>,
+}
+
+/// What a setting holds, as the plugin is given it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingValue {
+    Text(String),
+    Number(f64),
+    Boolean(bool),
+}
+
+impl Manifest {
+    /// Parse `niles-integration.toml`. Only the shape is checked here;
+    /// see [`problems`](Self::problems) for the rest.
+    pub fn parse(text: &str) -> Result<Self> {
+        toml::from_str(text).map_err(|e| Error::Manifest(format!("does not parse: {e}")))
+    }
+
+    /// Parse, and refuse anything [`problems`](Self::problems) finds.
+    pub fn parse_valid(text: &str) -> Result<Self> {
+        let manifest = Self::parse(text)?;
+        let problems = manifest.problems();
+        if problems.is_empty() {
+            Ok(manifest)
+        } else {
+            Err(Error::Manifest(format!(
+                "is not valid: {}",
+                problems.join("; ")
+            )))
+        }
+    }
+
+    /// Everything wrong with this manifest, each as a sentence for its
+    /// author. Empty when there is nothing.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.check_identity(&mut out);
+        self.check_permissions(&mut out);
+        self.check_settings(&mut out);
+        self.check_surfaces(&mut out);
+        out
+    }
+
+    /// The device source this plugin's devices are kept under.
+    pub fn source(&self) -> String {
+        format!("x_{}", self.id)
+    }
+
+    pub fn memory_mb(&self) -> u32 {
+        self.memory_mb.unwrap_or(DEFAULT_MEMORY_MB)
+    }
+
+    pub fn setting(&self, key: &str) -> Option<&Setting> {
+        self.settings.iter().find(|s| s.key == key)
+    }
+
+    /// Whether `id` is one of this plugin's declared pages or widgets.
+    pub fn declares_surface(&self, id: &str) -> bool {
+        self.ui.menu.iter().any(|m| m.id == id) || self.ui.widgets.iter().any(|w| w.id == id)
+    }
+
+    /// How long a render of `surface` may be served from the cache:
+    /// its `refresh_every`, if it has one.
+    pub fn refresh_every(&self, surface: &str) -> Option<u32> {
+        self.ui
+            .menu
+            .iter()
+            .find(|m| m.id == surface)
+            .and_then(|m| m.refresh_every)
+            .or_else(|| {
+                self.ui
+                    .widgets
+                    .iter()
+                    .find(|w| w.id == surface)
+                    .and_then(|w| w.refresh_every)
+            })
+    }
+
+    /// The labels of required settings that have no value: neither one
+    /// the household entered nor a default. Until this is empty the
+    /// plugin is "Not set up" and does not start.
+    pub fn missing_required(
+        &self,
+        values: &toml::Table,
+        secret_set: impl Fn(&str) -> bool,
+    ) -> Vec<&str> {
+        self.settings
+            .iter()
+            .filter(|s| s.required)
+            .filter(|s| match s.kind {
+                SettingKind::Secret => !secret_set(&s.key),
+                _ => s.value(values).is_none(),
+            })
+            .map(|s| s.label.as_str())
+            .collect()
+    }
+
+    fn check_identity(&self, out: &mut Vec<String>) {
+        if let Err(why) = check_id(&self.id) {
+            out.push(why);
+        }
+        if self.name.trim().is_empty() {
+            out.push("name is empty".into());
+        }
+        if semver::Version::parse(&self.version).is_err() {
+            out.push(format!(
+                "version {:?} is not a semver version such as 0.1.0",
+                self.version
+            ));
+        }
+        let description = self.description.trim();
+        if description.is_empty() {
+            out.push("description is empty".into());
+        } else if description.chars().count() > 120 {
+            out.push("description is longer than 120 characters".into());
+        } else if description.contains('\n') {
+            out.push("description is more than one line".into());
+        }
+        if self.authors.is_empty() || self.authors.iter().any(|a| a.trim().is_empty()) {
+            out.push("authors must name at least one person, and none may be empty".into());
+        }
+        match semver::Version::parse(&self.min_niles) {
+            Err(_) => out.push(format!(
+                "min_niles {:?} is not a semver version such as 0.2.0",
+                self.min_niles
+            )),
+            Ok(min) => {
+                let this = semver::Version::parse(NILES_VERSION).expect("our own version");
+                if min > this {
+                    out.push(format!(
+                        "it needs Niles {min} or newer, and this is Niles {this}"
+                    ));
+                }
+            }
+        }
+        if !INTERFACES.contains(&self.interface.as_str()) {
+            out.push(format!(
+                "interface {:?} is not one this Niles runs ({})",
+                self.interface,
+                INTERFACES.join(", ")
+            ));
+        }
+        if let Some(logo) = &self.logo
+            && !logo.to_ascii_lowercase().ends_with(".svg")
+        {
+            out.push(format!("logo {logo:?} must be an SVG"));
+        }
+        if let Some(mb) = self.memory_mb
+            && !(1..=MAX_MEMORY_MB).contains(&mb)
+        {
+            out.push(format!(
+                "memory_mb is {mb}; it must be between 1 and {MAX_MEMORY_MB}"
+            ));
+        }
+        if self.keywords.iter().any(|k| k.trim().is_empty()) {
+            out.push("keywords may not be empty strings".into());
+        }
+    }
+
+    fn check_permissions(&self, out: &mut Vec<String>) {
+        let p = &self.permissions;
+        for host in &p.http {
+            if let Err(why) = crate::policy::check_host_pattern(host) {
+                out.push(format!("http: {why}"));
+            }
+        }
+        for entry in &p.local_network {
+            match entry.strip_prefix("setting:") {
+                Some(key) => match self.setting(key) {
+                    Some(s) if matches!(s.kind, SettingKind::String) => {}
+                    Some(_) => out.push(format!(
+                        "local_network: setting:{key} must name a string setting"
+                    )),
+                    None => out.push(format!(
+                        "local_network: setting:{key} names no declared setting"
+                    )),
+                },
+                None => {
+                    if let Err(why) = crate::policy::check_local_entry(entry) {
+                        out.push(format!("local_network: {why}"));
+                    }
+                }
+            }
+        }
+        if p.tools && self.keywords.is_empty() {
+            out.push(
+                "a plugin with tools needs keywords: the words that make its tools \
+                 relevant to a request"
+                    .into(),
+            );
+        }
+        let mut events = HashSet::new();
+        for kind in &p.events {
+            if !events.insert(kind) {
+                out.push(format!("events lists {kind:?} twice"));
+            }
+        }
+        let has_surfaces = !self.ui.menu.is_empty() || !self.ui.widgets.is_empty();
+        if has_surfaces && !p.ui {
+            out.push("pages and widgets need ui = true in [permissions]".into());
+        }
+    }
+
+    fn check_settings(&self, out: &mut Vec<String>) {
+        let mut keys = HashSet::new();
+        for s in &self.settings {
+            if !is_identifier(&s.key) {
+                out.push(format!("setting key {:?} must be [a-z0-9_]+", s.key));
+            }
+            if !keys.insert(s.key.as_str()) {
+                out.push(format!("setting key {:?} is declared twice", s.key));
+            }
+            if s.label.trim().is_empty() {
+                out.push(format!("setting {:?} has no label", s.key));
+            }
+            if s.kind == SettingKind::Choice && s.options.is_empty() {
+                out.push(format!("choice setting {:?} has no options", s.key));
+            }
+            if s.kind != SettingKind::Choice && !s.options.is_empty() {
+                out.push(format!(
+                    "setting {:?} has options but is not a choice",
+                    s.key
+                ));
+            }
+            if (s.min.is_some() || s.max.is_some()) && s.kind != SettingKind::Number {
+                out.push(format!(
+                    "setting {:?} has min or max but is not a number",
+                    s.key
+                ));
+            }
+            if let (Some(min), Some(max)) = (s.min, s.max)
+                && min > max
+            {
+                out.push(format!("setting {:?} has min above max", s.key));
+            }
+            if let Some(default) = &s.default {
+                if s.kind == SettingKind::Secret {
+                    out.push(format!("secret setting {:?} cannot have a default", s.key));
+                } else if let Err(why) = s.accepts(default) {
+                    out.push(format!("setting {:?}: the default {why}", s.key));
+                }
+            }
+        }
+    }
+
+    fn check_surfaces(&self, out: &mut Vec<String>) {
+        let mut ids = HashSet::new();
+        let declared = self
+            .ui
+            .menu
+            .iter()
+            .map(|m| (&m.id, m.refresh_every))
+            .chain(self.ui.widgets.iter().map(|w| (&w.id, w.refresh_every)));
+        for (id, refresh) in declared {
+            if !is_identifier(id) {
+                out.push(format!("surface id {id:?} must be [a-z0-9_]+"));
+            }
+            if !ids.insert(id.as_str()) {
+                out.push(format!("surface id {id:?} is declared twice"));
+            }
+            if refresh.is_some_and(|s| s < 10) {
+                out.push(format!(
+                    "surface {id:?}: refresh_every is at least 10 seconds"
+                ));
+            }
+        }
+        for m in &self.ui.menu {
+            if m.label.trim().is_empty() {
+                out.push(format!("menu entry {:?} has no label", m.id));
+            }
+            if !is_icon_name(&m.icon) {
+                out.push(format!(
+                    "menu entry {:?}: {:?} is not a Lucide icon name (lowercase words joined by -)",
+                    m.id, m.icon
+                ));
+            }
+        }
+        for w in &self.ui.widgets {
+            if w.title.trim().is_empty() {
+                out.push(format!("widget {:?} has no title", w.id));
+            }
+            if let Some(room) = &w.room
+                && !is_identifier(room)
+            {
+                out.push(format!(
+                    "widget {:?}: room {room:?} must be [a-z0-9_]+",
+                    w.id
+                ));
+            }
+        }
+    }
+}
+
+impl Setting {
+    /// The value the plugin sees: what is in `values`, else the default.
+    /// Never a secret's: those come through `config.secret` only.
+    pub fn value(&self, values: &toml::Table) -> Option<SettingValue> {
+        if self.kind == SettingKind::Secret {
+            return None;
+        }
+        values
+            .get(&self.key)
+            .filter(|v| self.accepts(v).is_ok())
+            .or(self.default.as_ref())
+            .and_then(|v| self.convert(v))
+    }
+
+    fn convert(&self, value: &toml::Value) -> Option<SettingValue> {
+        match (self.kind, value) {
+            (SettingKind::Number, toml::Value::Integer(n)) => Some(SettingValue::Number(*n as f64)),
+            (SettingKind::Number, toml::Value::Float(n)) => Some(SettingValue::Number(*n)),
+            (SettingKind::Boolean, toml::Value::Boolean(b)) => Some(SettingValue::Boolean(*b)),
+            (
+                SettingKind::String | SettingKind::Choice | SettingKind::Room,
+                toml::Value::String(s),
+            ) => Some(SettingValue::Text(s.clone())),
+            _ => None,
+        }
+    }
+
+    /// Whether `value` fits this setting; the error completes "the value …".
+    pub fn accepts(&self, value: &toml::Value) -> std::result::Result<(), String> {
+        match (self.kind, value) {
+            (SettingKind::Number, toml::Value::Integer(_) | toml::Value::Float(_)) => {
+                let n = value
+                    .as_float()
+                    .or_else(|| value.as_integer().map(|i| i as f64))
+                    .unwrap_or_default();
+                if self.min.is_some_and(|min| n < min) || self.max.is_some_and(|max| n > max) {
+                    return Err(format!("{n} is outside min and max"));
+                }
+                Ok(())
+            }
+            (SettingKind::Boolean, toml::Value::Boolean(_)) => Ok(()),
+            (SettingKind::String | SettingKind::Secret, toml::Value::String(_)) => Ok(()),
+            (SettingKind::Room, toml::Value::String(room)) if is_identifier(room) => Ok(()),
+            (SettingKind::Room, toml::Value::String(room)) => {
+                Err(format!("{room:?} is not a room id like living_room"))
+            }
+            (SettingKind::Choice, toml::Value::String(choice)) => {
+                if self.options.iter().any(|o| &o.value == choice) {
+                    Ok(())
+                } else {
+                    Err(format!("{choice:?} is not one of the options"))
+                }
+            }
+            (kind, other) => Err(format!(
+                "{other} is not a {}",
+                match kind {
+                    SettingKind::Number => "number",
+                    SettingKind::Boolean => "boolean",
+                    _ => "string",
+                }
+            )),
+        }
+    }
+
+    /// A value typed on a command line, as this setting would hold it.
+    pub fn parse_text(&self, text: &str) -> std::result::Result<toml::Value, String> {
+        let value = match self.kind {
+            SettingKind::Number => text
+                .parse::<f64>()
+                .map(toml::Value::Float)
+                .map_err(|_| format!("{text:?} is not a number"))?,
+            SettingKind::Boolean => text
+                .parse::<bool>()
+                .map(toml::Value::Boolean)
+                .map_err(|_| format!("{text:?} is not true or false"))?,
+            _ => toml::Value::String(text.to_string()),
+        };
+        self.accepts(&value)?;
+        Ok(value)
+    }
+}
+
+/// The rules for a plugin id, as a sentence when it breaks one.
+pub fn check_id(id: &str) -> std::result::Result<(), String> {
+    let length = id.chars().count();
+    if !(2..=32).contains(&length) {
+        return Err(format!("id {id:?} must be 2 to 32 characters"));
+    }
+    if !id.starts_with(|c: char| c.is_ascii_lowercase()) || !is_identifier(id) {
+        return Err(format!(
+            "id {id:?} must be lowercase letters, digits and _, starting with a letter"
+        ));
+    }
+    if niles_config::catalogue::find(id).is_some() {
+        return Err(format!(
+            "id {id:?} is the id of one of Niles's own integrations"
+        ));
+    }
+    Ok(())
+}
+
+/// `[a-z0-9_]+`, the rule for room, device, setting, tool and surface names.
+pub fn is_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Lucide's names are lowercase words joined by hyphens: `zap`,
+/// `battery-charging`. The list itself is the app's to know.
+fn is_icon_name(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SPOTPRICE: &str = r#"
+id = "spotprice"
+name = "Spot prices"
+version = "0.1.0"
+description = "Hear what power costs hour by hour, and let rules run things when it is cheapest."
+authors = ["Jane Doe <jane@example.com>"]
+homepage = "https://github.com/jane/niles-spotprice"
+min_niles = "0.2.0"
+interface = "0.1"
+logo = "logo.svg"
+keywords = ["electricity", "power", "strøm"]
+
+[permissions]
+http = ["api.energidataservice.dk"]
+devices = true
+tools = true
+ui = true
+
+[[settings]]
+key = "area"
+label = "Price area"
+type = "choice"
+required = true
+default = "DK1"
+options = [
+    { value = "DK1", label = "West Denmark (DK1)" },
+    { value = "DK2", label = "East Denmark (DK2)" },
+]
+
+[[settings]]
+key = "cheap_hours"
+label = "Cheap hours a day"
+type = "number"
+default = 4
+min = 1
+max = 12
+
+[[ui.menu]]
+id = "electricity"
+label = "Electricity"
+icon = "zap"
+refresh_every = 300
+"#;
+
+    fn spotprice() -> Manifest {
+        Manifest::parse(SPOTPRICE).expect("parses")
+    }
+
+    fn with(edit: &str) -> Vec<String> {
+        Manifest::parse(&format!("{SPOTPRICE}\n{edit}"))
+            .map(|m| m.problems())
+            .unwrap_or_else(|e| vec![e.to_string()])
+    }
+
+    fn replacing(from: &str, to: &str) -> Vec<String> {
+        assert!(SPOTPRICE.contains(from), "{from}");
+        Manifest::parse(&SPOTPRICE.replace(from, to))
+            .map(|m| m.problems())
+            .unwrap_or_else(|e| vec![e.to_string()])
+    }
+
+    #[test]
+    fn the_worked_example_is_valid() {
+        assert_eq!(spotprice().problems(), Vec::<String>::new());
+        assert_eq!(spotprice().source(), "x_spotprice");
+        assert_eq!(spotprice().memory_mb(), DEFAULT_MEMORY_MB);
+    }
+
+    #[test]
+    fn an_unknown_key_is_an_error_not_a_lost_permission() {
+        let problems = replacing("devices = true", "device = true");
+        assert!(problems[0].contains("unknown field"), "{problems:?}");
+    }
+
+    #[test]
+    fn ids_follow_the_rules() {
+        assert!(check_id("airgradient").is_ok());
+        assert!(check_id("a").is_err(), "too short");
+        assert!(check_id("2fast").is_err(), "starts with a digit");
+        assert!(check_id("Spot").is_err());
+        assert!(check_id("spot-price").is_err());
+        assert!(check_id(&"x".repeat(33)).is_err());
+        assert!(check_id("sonos").is_err(), "a built-in's id");
+    }
+
+    #[test]
+    fn a_newer_niles_or_another_interface_is_refused() {
+        assert!(
+            replacing(r#"min_niles = "0.2.0""#, r#"min_niles = "9.0.0""#)[0]
+                .contains("needs Niles")
+        );
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#)[0].contains("interface"));
+    }
+
+    #[test]
+    fn a_long_description_is_refused() {
+        let long = format!(r#"description = "{}""#, "x".repeat(121));
+        let problems = replacing(
+            r#"description = "Hear what power costs hour by hour, and let rules run things when it is cheapest.""#,
+            &long,
+        );
+        assert!(problems.iter().any(|p| p.contains("120")), "{problems:?}");
+    }
+
+    #[test]
+    fn tools_need_keywords() {
+        let problems = replacing(r#"keywords = ["electricity", "power", "strøm"]"#, "");
+        assert!(
+            problems.iter().any(|p| p.contains("keywords")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn memory_is_capped() {
+        let asking = |mb: u32| {
+            replacing(
+                r#"logo = "logo.svg""#,
+                &format!("logo = \"logo.svg\"\nmemory_mb = {mb}"),
+            )
+        };
+        assert!(asking(512).iter().any(|p| p.contains("memory_mb")));
+        assert!(asking(128).is_empty());
+    }
+
+    #[test]
+    fn notify_takes_a_flag_or_urgent() {
+        let m =
+            Manifest::parse(&SPOTPRICE.replace("ui = true\n", "ui = true\nnotify = \"urgent\"\n"))
+                .unwrap();
+        assert_eq!(m.permissions.notify, Notify::Urgent);
+        assert!(
+            Manifest::parse(&SPOTPRICE.replace("ui = true\n", "ui = true\nnotify = \"loud\"\n"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn settings_defaults_must_fit_their_type() {
+        assert!(
+            replacing("default = 4", r#"default = "four""#)
+                .iter()
+                .any(|p| p.contains("cheap_hours"))
+        );
+        assert!(
+            replacing(r#"default = "DK1""#, r#"default = "DK3""#)
+                .iter()
+                .any(|p| p.contains("not one of the options"))
+        );
+        assert!(
+            replacing("default = 4", "default = 40")
+                .iter()
+                .any(|p| p.contains("outside"))
+        );
+    }
+
+    #[test]
+    fn a_secret_has_no_default() {
+        let problems = with(
+            "[[settings]]\nkey = \"api_key\"\nlabel = \"API key\"\ntype = \"secret\"\ndefault = \"hunter2\"\n",
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("secret")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn setting_keys_are_unique() {
+        let problems = with("[[settings]]\nkey = \"area\"\nlabel = \"Again\"\ntype = \"string\"\n");
+        assert!(problems.iter().any(|p| p.contains("twice")), "{problems:?}");
+    }
+
+    #[test]
+    fn surfaces_need_the_ui_permission_and_good_ids() {
+        assert!(
+            replacing("ui = true\n", "")
+                .iter()
+                .any(|p| p.contains("ui = true"))
+        );
+        assert!(
+            replacing(r#"id = "electricity""#, r#"id = "Electricity""#)
+                .iter()
+                .any(|p| p.contains("surface id"))
+        );
+        assert!(
+            replacing(r#"icon = "zap""#, r#"icon = "Zap Icon""#)
+                .iter()
+                .any(|p| p.contains("Lucide"))
+        );
+        assert!(
+            replacing("refresh_every = 300", "refresh_every = 5")
+                .iter()
+                .any(|p| p.contains("at least 10"))
+        );
+    }
+
+    #[test]
+    fn local_network_settings_must_be_declared_strings() {
+        let problems = replacing(
+            r#"http = ["api.energidataservice.dk"]"#,
+            "http = [\"api.energidataservice.dk\"]\nlocal_network = [\"setting:address\", \"setting:area\"]",
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("setting:address names no")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("setting:area must name a string")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_default_answers_a_required_setting() {
+        let m = spotprice();
+        assert!(
+            m.missing_required(&toml::Table::new(), |_| false)
+                .is_empty()
+        );
+        let m = Manifest::parse(&SPOTPRICE.replace(r#"default = "DK1""#, "")).unwrap();
+        assert_eq!(
+            m.missing_required(&toml::Table::new(), |_| false),
+            vec!["Price area"]
+        );
+        let mut entered = toml::Table::new();
+        entered.insert("area".into(), "DK2".into());
+        assert!(m.missing_required(&entered, |_| false).is_empty());
+    }
+
+    #[test]
+    fn values_arrive_typed_and_a_bad_one_falls_back_to_the_default() {
+        let m = spotprice();
+        let mut values = toml::Table::new();
+        values.insert("cheap_hours".into(), toml::Value::Integer(6));
+        assert_eq!(
+            m.setting("cheap_hours").unwrap().value(&values),
+            Some(SettingValue::Number(6.0))
+        );
+        values.insert("area".into(), "nowhere".into());
+        assert_eq!(
+            m.setting("area").unwrap().value(&values),
+            Some(SettingValue::Text("DK1".into()))
+        );
+    }
+
+    #[test]
+    fn command_line_values_are_typed_by_the_manifest() {
+        let m = spotprice();
+        assert_eq!(
+            m.setting("cheap_hours").unwrap().parse_text("6"),
+            Ok(toml::Value::Float(6.0))
+        );
+        assert!(m.setting("cheap_hours").unwrap().parse_text("six").is_err());
+        assert!(m.setting("area").unwrap().parse_text("DK3").is_err());
+    }
+}

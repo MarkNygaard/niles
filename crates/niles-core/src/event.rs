@@ -54,6 +54,15 @@ pub enum Event {
         /// `TimerSet`. Used later for two-stage escalation.
         origin: std::net::SocketAddr,
     },
+    /// A plugin has something new to show on one of its pages or
+    /// widgets. Forwarded to the app, which renders the surface again
+    /// only if it is on screen.
+    UiInvalidated {
+        /// The plugin's id, e.g. `spotprice`.
+        plugin: String,
+        /// The surface id from the plugin's manifest, e.g. `electricity`.
+        surface: String,
+    },
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.

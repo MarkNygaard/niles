@@ -720,6 +720,17 @@ impl<P: Publisher> Tool for SetDevice<P> {
         let target = extract_set_state("set_device", &args)?;
         check_can_do(&device, &target, raw)?;
 
+        if let Some(commander) = self.router.commander_for(&device.id, &target) {
+            if self.dry_run {
+                tracing::info!("[dry-run] would command {} {target:?}", device.id);
+                return Ok(json!({ "ok": true, "device": device.id.to_string(), "dry_run": true }));
+            }
+            commander
+                .command(&device.id, &target)
+                .await
+                .map_err(Error::Plugin)?;
+            return Ok(json!({ "ok": true, "device": device.id.to_string() }));
+        }
         let (topic, payload) =
             self.router
                 .format(&device.id, &target)
@@ -818,6 +829,19 @@ impl<P: Publisher> Tool for SetRoom<P> {
         let mut skipped = Vec::new();
         for device in &targets {
             let id = device.id.to_string();
+            if let Some(commander) = self.router.commander_for(&device.id, &target) {
+                if self.dry_run {
+                    tracing::info!("[dry-run] would command {id} {target:?}");
+                } else if let Err(e) = commander.command(&device.id, &target).await {
+                    // Reported, like a device that cannot do it: one
+                    // that does not answer must not fail the room.
+                    tracing::warn!("{id} did not take the command: {e}");
+                    skipped.push(id);
+                    continue;
+                }
+                set.push(id);
+                continue;
+            }
             let Some((topic, payload)) = self.router.format(&device.id, &target) else {
                 // Nothing this device could act on. Reported rather
                 // than hidden, so a room that half-answers says so.
@@ -936,6 +960,18 @@ impl<P: Publisher> Tool for SetBlinds<P> {
         };
         let mut set = Vec::new();
         for blind in &blinds {
+            if let Some(commander) = self.router.commander_for(&blind.id, &target) {
+                if self.dry_run {
+                    tracing::info!("[dry-run] would command {} {target:?}", blind.id);
+                } else {
+                    commander
+                        .command(&blind.id, &target)
+                        .await
+                        .map_err(Error::Plugin)?;
+                }
+                set.push(blind.id.to_string());
+                continue;
+            }
             let Some((topic, payload)) = self.router.format(&blind.id, &target) else {
                 continue;
             };
@@ -2114,6 +2150,94 @@ mod tests {
         let topics = mock.topics.lock().await;
         assert_eq!(topics.len(), 1);
         assert_eq!(topics[0], "z2m/kitchen/ceiling_light/set");
+    }
+
+    /// Stands in for the plugin runtime: owns `x_` devices, remembers
+    /// what it was told, and has one pump that never answers.
+    #[derive(Default)]
+    struct Plugins {
+        told: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl niles_mqtt::DeviceCommander for Plugins {
+        fn handles(&self, id: &DeviceId) -> bool {
+            id.source().starts_with("x_")
+        }
+        async fn command(&self, id: &DeviceId, _: &DeviceState) -> std::result::Result<(), String> {
+            if id.name().as_str() == "pump" {
+                return Err("The pump did not answer.".into());
+            }
+            self.told.lock().unwrap().push(id.to_string());
+            Ok(())
+        }
+    }
+
+    fn with_plugin_devices() -> (
+        MockPublisher,
+        Arc<Plugins>,
+        Arc<DeviceRegistry>,
+        Arc<CommandRouter>,
+    ) {
+        let registry = fixture_registry();
+        for (id, class) in [
+            ("x_pool:garden/lamp", DeviceClass::Light),
+            ("x_pool:garden/pump", DeviceClass::Outlet),
+            ("x_pool:garden/blind", DeviceClass::Cover),
+        ] {
+            registry.upsert(Device::new(
+                DeviceId::parse(id).unwrap(),
+                DeviceState::default(),
+                class,
+            ));
+        }
+        let plugins = Arc::new(Plugins::default());
+        let router = Arc::new(CommandRouter::z2m_only("z2m").with_commander(plugins.clone()));
+        (MockPublisher::default(), plugins, registry, router)
+    }
+
+    #[tokio::test]
+    async fn set_device_reaches_a_plugins_device_through_the_plugin() {
+        let (mock, plugins, registry, router) = with_plugin_devices();
+        let tool = SetDevice::new(registry, mock.clone(), router, false);
+        let result = tool
+            .execute(json!({ "device_id": "garden/lamp", "brightness": 30 }))
+            .await
+            .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(*plugins.told.lock().unwrap(), vec!["x_pool:garden/lamp"]);
+        assert!(mock.topics.lock().await.is_empty(), "nothing on MQTT");
+
+        let err = tool
+            .execute(json!({ "device_id": "garden/pump", "on": true }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "The pump did not answer.");
+    }
+
+    #[tokio::test]
+    async fn set_room_and_set_blinds_reach_plugin_devices_too() {
+        let (mock, plugins, registry, router) = with_plugin_devices();
+        let room = SetRoom::new(registry.clone(), mock.clone(), router.clone(), false);
+        let result = room
+            .execute(json!({ "room": "garden", "on": false }))
+            .await
+            .unwrap();
+        assert_eq!(result["set"], json!(["x_pool:garden/lamp"]));
+        assert_eq!(result["skipped"], json!(["x_pool:garden/pump"]));
+
+        let blinds = SetBlinds::new(registry, mock, router, false);
+        blinds
+            .execute(json!({ "room": "garden", "position": 50 }))
+            .await
+            .unwrap();
+        assert!(
+            plugins
+                .told
+                .lock()
+                .unwrap()
+                .contains(&"x_pool:garden/blind".to_string())
+        );
     }
 
     #[tokio::test]

@@ -1,0 +1,327 @@
+//! `niles plugin check`: everything an install would refuse, said at
+//! once, so an author fixes it in one pass.
+//!
+//! The manifest against `manifest.md`; the logo against the sanitiser's
+//! rules; the component compiled and linked against the
+//! `niles:integration/plugin@0.1` world; and its tools, asked for
+//! without `init` in the same sandbox and limits a real run has, against
+//! the rules in `tools.md`.
+
+use crate::manifest::{Manifest, NILES_VERSION};
+use crate::runtime::{House, Plugin};
+use crate::store::MemoryStore;
+use niles_core::{DeviceRegistry, EventBus};
+use niles_tools::ToolDescriptor;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+pub const MAX_LOGO: usize = 32 * 1024;
+
+/// What `check` found.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub manifest: Option<Manifest>,
+    /// Each a sentence; empty when the plugin would install.
+    pub problems: Vec<String>,
+    /// What passed, for the report to show its working.
+    pub passed: Vec<String>,
+    /// The interfaces the component imports.
+    pub imports: Vec<String>,
+    /// The tools as the model would see them.
+    pub tools: Vec<ToolDescriptor>,
+}
+
+impl Report {
+    pub fn ok(&self) -> bool {
+        self.problems.is_empty()
+    }
+}
+
+/// Check a plugin: its manifest, and its component and logo if found.
+pub async fn check(manifest: &str, component: Option<Vec<u8>>, logo: Option<Vec<u8>>) -> Report {
+    let mut report = Report::default();
+    let manifest = match Manifest::parse(manifest) {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            report.problems.push(e.to_string());
+            return report;
+        }
+    };
+    let problems = manifest.problems();
+    if problems.is_empty() {
+        report.passed.push(format!(
+            "manifest: {} {} for niles:integration {} on Niles {} or newer (this is {NILES_VERSION})",
+            manifest.id, manifest.version, manifest.interface, manifest.min_niles
+        ));
+    }
+    report
+        .problems
+        .extend(problems.into_iter().map(|p| format!("manifest: {p}")));
+
+    match (&manifest.logo, logo) {
+        (None, _) => {}
+        (Some(name), None) => report.problems.push(format!(
+            "logo: the manifest names {name}, and it is not there"
+        )),
+        (Some(name), Some(svg)) => match check_logo(&svg) {
+            Ok(()) => report
+                .passed
+                .push(format!("logo: {name} passes the sanitiser")),
+            Err(why) => report.problems.push(format!("logo: {why}")),
+        },
+    }
+
+    match component {
+        None => report.problems.push(
+            "component: no .wasm found; build it with cargo build --release --target wasm32-wasip2"
+                .into(),
+        ),
+        Some(bytes) => check_component(&manifest, bytes, &mut report).await,
+    }
+    report.manifest = Some(manifest);
+    report
+}
+
+async fn check_component(manifest: &Manifest, bytes: Vec<u8>, report: &mut Report) {
+    let size = bytes.len();
+    if size > crate::runtime::MAX_COMPONENT {
+        report
+            .problems
+            .push(format!("component: {size} bytes; at most 64 MiB"));
+        return;
+    }
+    let house = Arc::new(House::new(
+        Arc::new(DeviceRegistry::new()),
+        EventBus::default(),
+        Arc::new(MemoryStore::new()),
+    ));
+    let plugin = Arc::new(Plugin::new(manifest.clone()));
+    let checked = tokio::task::spawn_blocking(move || inspect(bytes, plugin, house)).await;
+    let inspected = match checked {
+        Ok(Ok(inspected)) => inspected,
+        Ok(Err(why)) => {
+            report.problems.push(format!("component: {why}"));
+            return;
+        }
+        Err(e) => {
+            report
+                .problems
+                .push(format!("component: the check failed: {e}"));
+            return;
+        }
+    };
+    report.imports = inspected.imports;
+    report.passed.push(format!(
+        "component: {} KiB, targets niles:integration/plugin@0.1 and exports every function",
+        size / 1024
+    ));
+    let tools = match inspected.tools {
+        Ok(tools) => tools,
+        Err(why) => {
+            report.problems.push(format!("tools: {why}"));
+            return;
+        }
+    };
+    if !tools.is_empty() && !manifest.permissions.tools {
+        report.problems.push(
+            "tools: the component offers tools, and the manifest does not ask for tools = true"
+                .into(),
+        );
+    }
+    if tools.len() > crate::manifest::MAX_TOOLS {
+        report.problems.push(format!(
+            "tools: {} offered; at most {}",
+            tools.len(),
+            crate::manifest::MAX_TOOLS
+        ));
+    }
+    let mut names = std::collections::HashSet::new();
+    for tool in &tools {
+        if !names.insert(tool.name.clone()) {
+            report
+                .problems
+                .push(format!("tools: {:?} is offered twice", tool.name));
+        }
+        match crate::tools::describe(&manifest.id, tool) {
+            Ok(descriptor) => report.tools.push(descriptor),
+            Err(why) => report.problems.push(format!("tools: {why}")),
+        }
+    }
+}
+
+struct Inspected {
+    imports: Vec<String>,
+    tools: Result<Vec<crate::bindings::ToolDef>, String>,
+}
+
+fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Inspected, String> {
+    let engine = crate::runtime::engine().map_err(|e| e.to_string())?;
+    let linker = crate::runtime::linker(&engine).map_err(|e| e.to_string())?;
+    let component = wasmtime::component::Component::new(&engine, &bytes)
+        .map_err(|e| format!("is not a WebAssembly component: {}", e.root_cause()))?;
+    let mut imports = Vec::new();
+    for (name, _) in component.component_type().imports(&engine) {
+        if let Some(version) = name
+            .strip_prefix("niles:integration/")
+            .and_then(|rest| rest.split_once('@'))
+            .map(|(_, v)| v)
+            && !version.starts_with("0.1.")
+        {
+            return Err(format!(
+                "imports {name}; this Niles runs niles:integration 0.1"
+            ));
+        }
+        imports.push(name.to_string());
+    }
+    let pre = crate::worker::prepare(&engine, &linker, &bytes)?;
+
+    let ticking = engine.weak();
+    std::thread::spawn(move || {
+        while let Some(engine) = ticking.upgrade() {
+            engine.increment_epoch();
+            drop(engine);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let state = crate::host::HostState::new(
+        plugin,
+        house,
+        toml::Table::new(),
+        crate::policy::HttpPolicy::default(),
+    );
+    let mut store = wasmtime::Store::new(&engine, state);
+    store.limiter(|state| &mut state.memory);
+    let limit = crate::runtime::Limits::default().call;
+    store.set_epoch_deadline(limit.as_millis() as u64 / 100);
+    store.data_mut().deadline = Instant::now() + limit;
+    let tools = pre
+        .instantiate(&mut store)
+        .and_then(|bindings| bindings.call_tools(&mut store))
+        .map_err(|e| format!("tools() did not answer: {}", e.root_cause()));
+    Ok(Inspected { imports, tools })
+}
+
+/// What the install's sanitiser accepts: an SVG on a 24×24 view box,
+/// drawn with shapes, paths and groups, with geometry, fill, stroke and
+/// transform attributes. No script, style, image, use, foreignObject,
+/// links or external references, and at most 32 KiB.
+pub fn check_logo(svg: &[u8]) -> Result<(), String> {
+    const ELEMENTS: &[&str] = &[
+        "svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon",
+    ];
+    const ATTRIBUTES: &[&str] = &[
+        "viewBox",
+        "width",
+        "height",
+        "version",
+        "d",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "points",
+        "fill",
+        "fill-rule",
+        "fill-opacity",
+        "clip-rule",
+        "stroke",
+        "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
+        "stroke-dasharray",
+        "stroke-dashoffset",
+        "stroke-opacity",
+        "opacity",
+        "transform",
+    ];
+    if svg.len() > MAX_LOGO {
+        return Err(format!("{} bytes; at most 32 KiB", svg.len()));
+    }
+    let text = std::str::from_utf8(svg).map_err(|_| "it is not UTF-8 text".to_string())?;
+    let doc = roxmltree::Document::parse(text).map_err(|e| format!("it is not valid SVG: {e}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "svg" {
+        return Err("the root element is not <svg>".into());
+    }
+    let view_box: Vec<&str> = root
+        .attribute("viewBox")
+        .unwrap_or_default()
+        .split([' ', ','])
+        .filter(|s| !s.is_empty())
+        .collect();
+    if view_box != ["0", "0", "24", "24"] {
+        return Err("it needs viewBox=\"0 0 24 24\", like the built-in marks".into());
+    }
+    for node in doc.descendants().filter(|n| n.is_element()) {
+        let tag = node.tag_name();
+        if !ELEMENTS.contains(&tag.name())
+            || tag
+                .namespace()
+                .is_some_and(|ns| ns != "http://www.w3.org/2000/svg")
+        {
+            return Err(format!("<{}> is not allowed", tag.name()));
+        }
+        for attribute in node.attributes() {
+            if attribute.namespace().is_some() || !ATTRIBUTES.contains(&attribute.name()) {
+                return Err(format!(
+                    "the {} attribute on <{}> is not allowed",
+                    attribute.name(),
+                    tag.name()
+                ));
+            }
+            let value = attribute.value().to_ascii_lowercase();
+            if value.contains("url(") || value.contains("javascript:") {
+                return Err(format!(
+                    "the {} attribute refers to something outside the logo",
+                    attribute.name()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_worked_examples_logo_passes() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="#F5B400"/>
+</svg>"##;
+        assert_eq!(check_logo(svg), Ok(()));
+    }
+
+    #[test]
+    fn script_style_links_and_odd_sizes_are_refused() {
+        let wrap = |inner: &str| {
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">{inner}</svg>"#)
+        };
+        for bad in [
+            "<script>alert(1)</script>",
+            "<style>path{fill:red}</style>",
+            r#"<image href="https://x.example/a.png"/>"#,
+            r##"<use href="#a"/>"##,
+            r#"<path d="M0 0" onclick="x()"/>"#,
+            r#"<path d="M0 0" fill="url(https://x.example/#g)"/>"#,
+            "<foreignObject/>",
+        ] {
+            assert!(check_logo(wrap(bad).as_bytes()).is_err(), "{bad}");
+        }
+        assert!(
+            check_logo(br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"/>"#)
+                .is_err()
+        );
+        let big = wrap(&format!(r#"<path d="M0 0{}"/>"#, " L1 1".repeat(8000)));
+        assert!(check_logo(big.as_bytes()).is_err());
+    }
+}

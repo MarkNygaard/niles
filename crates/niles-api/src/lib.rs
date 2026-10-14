@@ -15,6 +15,7 @@
 //! GET  /config/history          -> recorded changes, oldest first
 //! POST /config/undo             -> walk back one change
 //! POST /webhooks/linear         -> 200 OK (Linear webhook)
+//! GET  /plugins                 -> installed plugins and how each is doing
 //! ```
 
 pub mod auth;
@@ -37,6 +38,7 @@ pub mod me;
 pub mod memory;
 pub mod music;
 pub mod places;
+pub mod plugins;
 pub mod presence;
 pub mod publish;
 pub mod scenes;
