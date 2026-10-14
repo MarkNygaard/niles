@@ -30,7 +30,7 @@ A complete example is in the [worked example](example-spotprice.md#the-manifest)
 
 The id ends up everywhere, so choose it once:
 
-- device source `x_<id>`: devices are `x_spotprice:system/cheap_power` inside Niles;
+- device source `x_<id>`: devices are `x_spotprice:system/electricity` inside Niles;
 - tool names `<id>_<tool>`: `spotprice_prices`;
 - secrets `plugins.<id>.<key>` in Niles's secret store;
 - menu entries `<id>.<entry>` in the house's `[menu]` settings.

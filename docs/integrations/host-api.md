@@ -20,9 +20,10 @@ Rules that hold for every call:
   or an update. Anything that must survive goes in [storage](#storage).
 
 In Rust, records passed to imports are borrowed when they contain strings or
-lists (`&Request`, `&Device`) and passed by value when they do not
-(`DeviceState`). wit-bindgen does not derive `Default`; keep an
-`empty_state()` helper for `DeviceState` (see the worked example).
+lists (`&Request`, `&Device`, and `&DeviceState`, whose `readings` is a list)
+and passed by value when they do not. wit-bindgen does not derive `Default`;
+keep an `empty_state()` helper for `DeviceState`, with `readings: Vec::new()`
+(see the worked example).
 
 ## Exports: what you implement
 
@@ -209,7 +210,7 @@ devices::upsert(&Device {
 let mut state = empty_state();
 state.on = Some(true);
 state.brightness = Some(60);
-devices::report_state("living_room/floor_lamp", state);
+devices::report_state("living_room/floor_lamp", &state);
 
 devices::report_action("hall/button", "single");
 devices::set_available("living_room/floor_lamp", false);
@@ -247,7 +248,9 @@ events::unsubscribe(EventKind::DeviceAction);
 ```
 
 - `DeviceState`: another device's state changed. You get its full id
-  (`z2m:office/door`), class, and only the fields that changed.
+  (`z2m:office/door`), class, and only the fields that changed — including
+  only the [readings](devices.md#readings) that changed, so a plug's `power`
+  arrives without its `energy`.
 - `DeviceAction`: a button or wall switch was pressed. `action` uses
   Zigbee2MQTT's words: `single`, `double`, `hold`, `on_press`, `up_hold`…
 - `Presence`: the house became `Home`, `Away` or `Unknown`. Never who.

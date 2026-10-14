@@ -140,7 +140,7 @@ All in `niles::integration::ui`.
 |---|---|---|
 | `Heading(String)` | | A section heading. |
 | `Text(TextBlock)` | `value`, `muted` | A paragraph. `muted` is smaller and grey, for footnotes. |
-| `Reading(Reading)` | `label`, `value`, `unit` | One value, large, with its label: the main number on a page or widget. `value` is a string, formatted by you ("1.23", "21.5"). |
+| `Reading(Reading)` | `label`, `value`, `unit` | One value, large, with its label: the main number on a page or widget. `value` is a string, formatted by you ("1.23", "21.5"). This is `ui::Reading`, for display; a device's [reading](devices.md#readings) is `types::Reading`, so name one by its module if you use both. |
 | `Badge(Badge)` | `label`, `tone` | A short pill. `tone` is `Neutral`, `Good`, `Warning` or `Bad`, in the app's colours. |
 | `Items(Vec<ListItem>)` | `title`, `detail`, `trailing` | A list: each row a title, an optional second line, and an optional value at the right end ("12 min", "1.04 kr"). |
 | `Chart(Chart)` | `kind`, `labels`, `series`, `unit` | A `Line` or `Bar` chart, one label per point and up to 4 series of up to 200 values, in the app's chart colours. `unit` labels the y axis. |

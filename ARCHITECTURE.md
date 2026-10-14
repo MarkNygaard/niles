@@ -247,7 +247,7 @@ On startup and whenever the underlying source publishes a device list update:
 1. Niles subscribes to the source's device-list topic (e.g. `zigbee2mqtt/bridge/devices` for Z2M)
 2. Parses each device's `friendly_name`
 3. Splits on `/` to extract room and device
-4. Reads the source's existing metadata to determine device type/capabilities (Z2M's `definition.exposes` array already tells you whether a device has on/off, brightness, color, temperature reading, etc. — no separate config needed)
+4. Reads the source's existing metadata to determine device type/capabilities (Z2M's `definition.exposes` array already tells you whether a device has on/off, brightness, color, temperature reading, etc. — no separate config needed). Numeric exposes with no field of their own (`power`, `energy`, `voltage`, `co2`, `pm25`) become named readings, with the unit the expose declares
 5. Builds an in-memory registry: `HashMap<RoomName, HashMap<DeviceName, DeviceInfo>>`
 6. Subscribes to per-device state topics for live updates
 
@@ -1196,7 +1196,7 @@ The full WIT is [`schemas/niles-integration.wit`](schemas/niles-integration.wit)
 
 `stop` is the shutdown hook. It is not called `shutdown` because a world-level export of that name clashes with a symbol in componentize-py's runtime, and the Python build fails.
 
-Device state uses Niles's own fields and units, as `DeviceState` in `niles-core` does: on, brightness 0–100 percent, colour temperature in kelvin, rgb, temperature in °C, humidity in percent, battery in percent, open, motion, illuminance in lux, and position 0 (shut) to 100 (open). Every field is optional and reports merge field by field, so `{on: false}` says nothing about brightness.
+Device state uses Niles's own fields and units, as `DeviceState` in `niles-core` does: on, brightness 0–100 percent, colour temperature in kelvin, rgb, temperature in °C, humidity in percent, battery in percent, open, motion, illuminance in lux, and position 0 (shut) to 100 (open). Any other number is a named **reading** with the plugin's own unit — `price` in `kr/kWh`, `power` in `W`, `co2` in `ppm` — which rules follow like a temperature. Every field is optional and reports merge field by field, readings name by name, so `{on: false}` says nothing about brightness and a `power` reading says nothing about `energy`.
 
 **Not in v0.1: local TCP and UDP, and host-managed WebSockets.** The shape is settled enough to write down:
 
@@ -1331,7 +1331,7 @@ Niles checks each plugin's repo for a newer release once a day, and on demand fr
 
 ### How a plugin joins Niles
 
-- **Devices** go into the same registry as every other source's, with the source `x_<plugin-id>`: `x_spotprice:system/cheap_power`. The `x_` prefix keeps plugin sources apart from built-in ones, and both segments follow the `DeviceId` rules in `niles-core` (`[a-z0-9_]+`). People and the model see `system/cheap_power`, as with any device; where two sources have the same `room/name`, the prefixed form tells them apart, as with WLED.
+- **Devices** go into the same registry as every other source's, with the source `x_<plugin-id>`: `x_spotprice:system/electricity`. The `x_` prefix keeps plugin sources apart from built-in ones, and both segments follow the `DeviceId` rules in `niles-core` (`[a-z0-9_]+`). People and the model see `system/electricity`, as with any device; where two sources have the same `room/name`, the prefixed form tells them apart, as with WLED.
 - From there nothing is plugin-specific. Room cards draw them by class. Lights are in "the lights", the curve and scenes; ambient settings exclude them like any other. **Rules** trigger on them and act on them: a `set_device` on a plugin device is routed to the plugin's `set-device` export. Tier 0 fast paths ("turn off the kitchen lights") include them. A plugin light on the curve gets a `set-device` once a minute, which is why those calls must be quick.
 - **Niles remembers a plugin's devices** in its own tables, not in the plugin's quota, so while a plugin is stopped its devices stay in their rooms as unavailable and rules that name them still validate. `devices.registered()` lets a plugin reconcile what Niles holds on `init`.
 - **Tools** join the [tool registry](#tools-exposed-to-the-llm) as `<plugin-id>_<name>` (`spotprice_prices`). A name that would clash with a built-in tool or another plugin's is refused at install. They are offered to the voice model (Tier 1 and 2), to the Claude and ChatGPT assistants through Niles's MCP endpoint, and listed by `niles tools list`. Tool results are data, not instructions, to the model: a plugin's text is wrapped as a tool result like any other.
@@ -1405,7 +1405,6 @@ Somebody who already runs a service with an MCP server (a home lab dashboard, a 
 - A central index of plugins, or any review of them
 - Private repos, and repos hosted anywhere but GitHub
 - Per-plugin CPU budgets beyond the per-call deadline
-- A device field for arbitrary readings (a price, CO₂), so rules could trigger on them; until then such values reach people through tools and pages
 - Reading another source's devices on demand: v0.1 has events, not a snapshot
 - `wasi:http/outgoing-handler`, so that language-native HTTP clients (`fetch` in JavaScript) would work under the same checks
 
@@ -1785,7 +1784,7 @@ The vocabulary is deliberately narrow and grows only as new needs appear:
 
 | | |
 |---|---|
-| **Triggers** | `contact` (a door or window opens / closes), `device_state` (a device turns on / off), `numeric` (a reading — temperature, humidity, battery, brightness — goes above or below a value), `device_action` (a button or dimmer press), `presence` (the house becomes occupied / unoccupied), `time` (a time of day, on chosen weekdays), `sun` (sunrise or sunset, with an offset), `timer_fired` |
+| **Triggers** | `contact` (a door or window opens / closes), `device_state` (a device turns on / off), `numeric` (a number — temperature, humidity, battery, brightness, light level, or any named reading the device reports, such as `price`, `power` or `co2` — goes above or below a value), `device_action` (a button or dimmer press), `presence` (the house becomes occupied / unoccupied), `time` (a time of day, on chosen weekdays), `sun` (sunrise or sunset, with an offset), `timer_fired` |
 | **Conditions** | `time_of_day` (a window, wrapping past midnight, on chosen weekdays), `sun` (after / before sunrise or sunset, with offsets), `device_is`, `contact_is`, `numeric` (a reading above / below a value), `presence_is` (the house occupied / unoccupied), `triggered_by` (which of the rule's triggers started this run) |
 | **Actions** | `set_device`, `set_room` (every light in a room), `notify` (spoken in a room), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
 
@@ -1982,7 +1981,7 @@ switch does. A polled page would spend a few seconds describing a room
 the person holding it can see is wrong. Frames carry only what changed,
 so they merge rather than replace — a frame saying `{on: false}`
 carries nothing about brightness, and treating that as "brightness
-cleared" would lose it.
+cleared" would lose it. Readings merge the same way, name by name.
 
 Presses are shown immediately and reconciled when the light reports.
 A command that fails rolls the row back and says why.
