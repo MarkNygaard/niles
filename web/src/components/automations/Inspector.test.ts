@@ -5,6 +5,7 @@ describe("TRIGGER_CHOICES", () => {
   it("offers every kind of trigger, by what it is called", () => {
     expect(TRIGGER_CHOICES.map((c) => c.label)).toEqual([
       "Door or window",
+      "Motion",
       "Device turns on or off",
       "A reading changes",
       "Button press",

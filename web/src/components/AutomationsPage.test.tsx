@@ -59,6 +59,39 @@ describe("AutomationsPage", () => {
     );
   });
 
+  it("lists a motion rule by what the server says of it", async () => {
+    const hallway: AutomationView = {
+      rule: {
+        id: "9a2b",
+        description: "Hallway light with motion",
+        enabled: true,
+        triggers: [
+          { id: "t1", type: "motion", device: "hallway/motion", detected: true },
+          {
+            id: "t2",
+            type: "motion",
+            device: "hallway/motion",
+            detected: false,
+            for: { minutes: 2 },
+          },
+        ],
+        conditions: [
+          { kind: "numeric", device: "hallway/motion", measure: "illuminance", below: 30 },
+        ],
+        actions: [{ do: "set_room", room: "hallway", on: true }],
+      },
+      source: "stored",
+      sentence:
+        "When the hallway motion sees motion, or when the hallway motion has seen no " +
+        "motion for 2 minutes, if the light level of the hallway motion is below 30, " +
+        "turn on the hallway lights.",
+      error: null,
+    };
+    show([hallway]);
+    expect(await screen.findByText(hallway.sentence)).toBeInTheDocument();
+    expect(screen.getByText("Hallway light with motion")).toBeInTheDocument();
+  });
+
   it("pauses a rule with its switch", async () => {
     show([stored]);
     // Never answers: what the switch shows meanwhile is the point.

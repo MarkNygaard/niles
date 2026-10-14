@@ -82,6 +82,13 @@ fn number(n: f64) -> String {
     }
 }
 
+fn measure_words(measure: &str) -> &str {
+    match measure {
+        "illuminance" | "lux" | "light_level" => "light level",
+        other => other,
+    }
+}
+
 fn bounds(above: Option<f64>, below: Option<f64>) -> String {
     match (above, below) {
         (Some(a), Some(b)) => format!("between {} and {}", number(a), number(b)),
@@ -145,6 +152,18 @@ fn trigger(t: &TriggerDto) -> String {
             (Some(false), None) => format!("{} closes", thing(device)),
             (None, None) => format!("{} opens or closes", thing(device)),
         },
+        TriggerKind::Motion {
+            device,
+            detected,
+            hold,
+        } => match (detected, held(hold)) {
+            (Some(true), Some(h)) => format!("{} has seen motion for {h}", thing(device)),
+            (Some(false), Some(h)) => format!("{} has seen no motion for {h}", thing(device)),
+            (None, Some(h)) => format!("{} has stayed as it is for {h}", thing(device)),
+            (Some(true), None) => format!("{} sees motion", thing(device)),
+            (Some(false), None) => format!("{} stops seeing motion", thing(device)),
+            (None, None) => format!("{} sees motion or stops", thing(device)),
+        },
         TriggerKind::DeviceState {
             device,
             room,
@@ -173,7 +192,7 @@ fn trigger(t: &TriggerDto) -> String {
             below,
             hold,
         } => {
-            let what = format!("the {measure} of {}", thing(device));
+            let what = format!("the {} of {}", measure_words(measure), thing(device));
             match held(hold) {
                 Some(h) => format!("{what} has been {} for {h}", bounds(*above, *below)),
                 None => format!("{what} goes {}", bounds(*above, *below)),
@@ -264,10 +283,18 @@ fn condition(condition: &ConditionDto, names: &[(String, String)]) -> String {
             above,
             below,
         } => format!(
-            "the {measure} of {} is {}",
+            "the {} of {} is {}",
+            measure_words(measure),
             thing(device),
             bounds(*above, *below)
         ),
+        ConditionDto::MotionIs { device, detected } => {
+            if *detected {
+                format!("{} sees motion", thing(device))
+            } else {
+                format!("{} sees no motion", thing(device))
+            }
+        }
         ConditionDto::PresenceIs { state } => match state.as_str() {
             "away" => "everyone is away".to_string(),
             _ => "someone is home".to_string(),
@@ -382,6 +409,24 @@ mod tests {
                 "actions": [{ "do": "set_room", "room": "office", "on": false }],
             })),
             "When the office door opens, turn off the office lights."
+        );
+    }
+
+    #[test]
+    fn says_the_motion_rule() {
+        assert_eq!(
+            said(json!({
+                "id": "r",
+                "triggers": [
+                    { "type": "motion", "device": "hallway/motion_sensor", "detected": true },
+                    { "type": "motion", "device": "hallway/motion_sensor", "detected": false, "for": { "minutes": 2 } }
+                ],
+                "conditions": [{ "kind": "numeric", "device": "hallway/motion_sensor", "measure": "illuminance", "below": 30 }],
+                "actions": [{ "do": "set_room", "room": "hallway", "on": true }],
+            })),
+            "When the hallway motion sensor sees motion, or when the hallway motion sensor has \
+             seen no motion for 2 minutes, if the light level of the hallway motion sensor is below 30, \
+             turn on the hallway lights."
         );
     }
 

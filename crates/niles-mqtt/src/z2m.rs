@@ -82,6 +82,7 @@ impl Z2mDevice {
         let mut has_outlet = false;
         let mut has_action = false;
         let mut has_contact = false;
+        let mut has_motion = false;
 
         for expose in exposes {
             if Self::expose_is_light(expose) {
@@ -96,6 +97,9 @@ impl Z2mDevice {
             if Self::expose_is_contact(expose) {
                 has_contact = true;
             }
+            if Self::expose_is_motion(expose) {
+                has_motion = true;
+            }
         }
 
         if has_outlet {
@@ -104,6 +108,8 @@ impl Z2mDevice {
             DeviceClass::Switch
         } else if has_contact {
             DeviceClass::Contact
+        } else if has_motion {
+            DeviceClass::Motion
         } else {
             DeviceClass::Sensor
         }
@@ -138,6 +144,15 @@ impl Z2mDevice {
             return true;
         }
         expose.features.iter().any(Self::expose_is_contact)
+    }
+
+    /// A motion sensor's binary: `occupancy` on a PIR sensor, `presence`
+    /// on a radar one that also sees somebody sitting still.
+    fn expose_is_motion(expose: &Z2mExpose) -> bool {
+        if matches!(expose.property.as_deref(), Some("occupancy" | "presence")) {
+            return true;
+        }
+        expose.features.iter().any(Self::expose_is_motion)
     }
 
     /// Convert into a `niles_core::Device` with a default (empty) state
@@ -192,6 +207,12 @@ pub struct Z2mState {
     pub battery: Option<f32>,
     /// `true` when the magnet is present — which is the door *shut*.
     pub contact: Option<bool>,
+    pub occupancy: Option<bool>,
+    pub presence: Option<bool>,
+    /// Lux. Zigbee2MQTT 1.x sent lux here and a raw reading in
+    /// `illuminance`; 2.x sends lux in `illuminance` and nothing here.
+    pub illuminance_lux: Option<f32>,
+    pub illuminance: Option<f32>,
 }
 
 impl Z2mState {
@@ -205,6 +226,8 @@ impl Z2mState {
             humidity_percent: self.humidity,
             battery_percent: self.battery.map(|b| b.round().clamp(0.0, 100.0) as u8),
             open: self.contact.map(|shut| !shut),
+            motion: self.occupancy.or(self.presence),
+            illuminance_lux: self.illuminance_lux.or(self.illuminance),
         }
     }
 
@@ -228,6 +251,10 @@ impl Z2mState {
             || self.humidity.is_some()
             || self.battery.is_some()
             || self.contact.is_some()
+            || self.occupancy.is_some()
+            || self.presence.is_some()
+            || self.illuminance_lux.is_some()
+            || self.illuminance.is_some()
     }
 }
 
@@ -458,6 +485,56 @@ mod tests {
             ..Default::default()
         };
         assert!(opened.has_actionable_state_field());
+    }
+
+    #[test]
+    fn a_hue_motion_sensor_is_a_motion_sensor() {
+        // What a Hue indoor sensor (9290012607) exposes.
+        let binary = |property: &str| Z2mExpose {
+            expose_type: Some("binary".into()),
+            property: Some(property.into()),
+            ..Default::default()
+        };
+        let numeric = |property: &str| Z2mExpose {
+            expose_type: Some("numeric".into()),
+            property: Some(property.into()),
+            ..Default::default()
+        };
+        let z2m = Z2mDevice {
+            ieee_address: "0x1".into(),
+            friendly_name: "hallway/motion".into(),
+            device_type: "EndDevice".into(),
+            definition: Some(Z2mDefinition {
+                exposes: vec![
+                    binary("occupancy"),
+                    numeric("illuminance"),
+                    numeric("temperature"),
+                    numeric("battery"),
+                ],
+            }),
+        };
+        assert_eq!(z2m.classify(), DeviceClass::Motion);
+        assert!(!z2m.to_device().unwrap().is_switchable());
+    }
+
+    #[test]
+    fn motion_and_light_level_are_read_and_worth_propagating() {
+        let seen: Z2mState =
+            serde_json::from_str(r#"{"occupancy":true,"illuminance":12,"linkquality":160}"#)
+                .unwrap();
+        assert!(seen.has_actionable_state_field());
+        let state = seen.to_device_state();
+        assert_eq!(state.motion, Some(true));
+        assert_eq!(state.illuminance_lux, Some(12.0));
+
+        // Zigbee2MQTT 1.x: lux in its own field, a raw reading beside it.
+        let older: Z2mState =
+            serde_json::from_str(r#"{"illuminance":15000,"illuminance_lux":31}"#).unwrap();
+        assert_eq!(older.to_device_state().illuminance_lux, Some(31.0));
+
+        // A radar sensor says `presence`.
+        let radar: Z2mState = serde_json::from_str(r#"{"presence":false}"#).unwrap();
+        assert_eq!(radar.to_device_state().motion, Some(false));
     }
 
     #[test]

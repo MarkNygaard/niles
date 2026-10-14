@@ -223,9 +223,9 @@ fn rule_schema() -> Value {
     });
     let condition = json!({
         "type": "object",
-        "description": "kind=time_of_day: after/before HH:MM (may wrap midnight), optional days. kind=sun: after and/or before sunrise|sunset, with after_offset_minutes/before_offset_minutes (after sunset + before sunrise = while it is dark). kind=device_is: a device on/off. kind=contact_is: a door open/closed. kind=numeric: a reading (measure temperature|humidity|battery|brightness) above and/or below a value. kind=presence_is: state home|away. kind=triggered_by: which of the rule's triggers (by id) started it — for a rule with several triggers doing different things.",
+        "description": "kind=time_of_day: after/before HH:MM (may wrap midnight), optional days. kind=sun: after and/or before sunrise|sunset, with after_offset_minutes/before_offset_minutes (after sunset + before sunrise = while it is dark). kind=device_is: a device on/off. kind=contact_is: a door open/closed. kind=motion_is: a motion sensor seeing somebody (detected=true) or not. kind=numeric: a reading (measure temperature|humidity|battery|brightness|illuminance — illuminance is lux; below about 30 is dim) above and/or below a value. kind=presence_is: state home|away. kind=triggered_by: which of the rule's triggers (by id) started it — for a rule with several triggers doing different things.",
         "properties": {
-            "kind": { "type": "string", "enum": ["time_of_day", "sun", "device_is", "contact_is", "numeric", "presence_is", "triggered_by"] },
+            "kind": { "type": "string", "enum": ["time_of_day", "sun", "device_is", "contact_is", "motion_is", "numeric", "presence_is", "triggered_by"] },
             "after": { "type": "string" },
             "before": { "type": "string" },
             "after_offset_minutes": { "type": "integer" },
@@ -234,7 +234,8 @@ fn rule_schema() -> Value {
             "device": device,
             "on": { "type": "boolean" },
             "open": { "type": "boolean" },
-            "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness"] },
+            "detected": { "type": "boolean" },
+            "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness", "illuminance"] },
             "above": { "type": "number" },
             "below": { "type": "number" },
             "state": { "type": "string", "enum": ["home", "away"] },
@@ -272,17 +273,18 @@ fn rule_schema() -> Value {
             "triggers": {
                 "type": "array",
                 "minItems": 1,
-                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. A moment relative to the sun ('30 minutes after sunset') is ONE sun trigger with offset_minutes 30 — not a sunset trigger with a condition, which would never hold at sunset. type=contact: a door or window opens (open=true) or closes (false). type=device_state: a device turns on/off. type=numeric: a reading goes above/below a value. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
+                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. A moment relative to the sun ('30 minutes after sunset') is ONE sun trigger with offset_minutes 30 — not a sunset trigger with a condition, which would never hold at sunset. type=contact: a door or window opens (open=true) or closes (false). type=motion: a motion sensor sees somebody (detected=true) or stops (false); lights on with motion and off again is TWO triggers — motion detected=true, and motion detected=false with `for` ('no motion for 5 minutes') — told apart by triggered_by. type=device_state: a device turns on/off. type=numeric: a reading goes above/below a value. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, motion, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
                 "items": {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
-                        "type": { "type": "string", "enum": ["contact", "device_state", "numeric", "device_action", "presence", "time", "sun", "timer_fired"] },
+                        "type": { "type": "string", "enum": ["contact", "motion", "device_state", "numeric", "device_action", "presence", "time", "sun", "timer_fired"] },
                         "device": device,
                         "room": { "type": "string" },
                         "open": { "type": "boolean" },
+                        "detected": { "type": "boolean" },
                         "on": { "type": "boolean" },
-                        "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness"] },
+                        "measure": { "type": "string", "enum": ["temperature", "humidity", "battery", "brightness", "illuminance"] },
                         "above": { "type": "number" },
                         "below": { "type": "number" },
                         "action": { "type": "string" },
@@ -387,6 +389,7 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     for trigger in &rule.triggers {
         match &trigger.kind {
             TriggerKind::Contact { device, .. }
+            | TriggerKind::Motion { device, .. }
             | TriggerKind::DeviceAction { device, .. }
             | TriggerKind::Numeric { device, .. } => devices.push(device),
             TriggerKind::DeviceState { device, room, .. } => {
@@ -401,6 +404,7 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
             match condition {
                 ConditionDto::DeviceIs { device, .. }
                 | ConditionDto::ContactIs { device, .. }
+                | ConditionDto::MotionIs { device, .. }
                 | ConditionDto::Numeric { device, .. } => devices.push(device),
                 _ => {}
             }

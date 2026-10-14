@@ -318,6 +318,8 @@ const GROUPS: &[Group] = &[
             // the bedroom light" — sent only the light tools, the model
             // turned the light on there and then.
             "every",
+            // "hallway light on with motion": a rule, said without "when".
+            "motion",
             "everyday",
             "daily",
             "nightly",

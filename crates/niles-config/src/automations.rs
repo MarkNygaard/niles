@@ -133,10 +133,20 @@ pub enum TriggerKind {
         #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
         hold: Option<DurationDto>,
     },
+    /// A motion sensor seeing somebody (`detected = true`), or nothing
+    /// any more (`false`) — with `for`, "no motion for 5 minutes".
+    Motion {
+        device: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detected: Option<bool>,
+        #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
+        hold: Option<DurationDto>,
+    },
     /// A reading going above or below a value.
     Numeric {
         device: String,
-        /// "temperature" | "humidity" | "battery" | "brightness".
+        /// "temperature" | "humidity" | "battery" | "brightness" |
+        /// "illuminance".
         measure: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         above: Option<f64>,
@@ -208,6 +218,10 @@ pub enum ConditionDto {
     ContactIs {
         device: String,
         open: bool,
+    },
+    MotionIs {
+        device: String,
+        detected: bool,
     },
     Numeric {
         device: String,

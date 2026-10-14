@@ -28,6 +28,8 @@ function light(id: string): Device {
       humidity_percent: null,
       battery_percent: null,
       open: null,
+      motion: null,
+      illuminance_lux: null,
     },
   };
 }

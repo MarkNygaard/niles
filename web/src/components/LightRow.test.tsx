@@ -22,6 +22,8 @@ function light(overrides: Partial<Device> = {}, reported: Partial<DeviceState> =
       humidity_percent: null,
       battery_percent: null,
     open: null,
+    motion: null,
+    illuminance_lux: null,
       ...reported,
     },
   };

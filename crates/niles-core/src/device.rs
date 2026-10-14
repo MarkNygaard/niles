@@ -182,6 +182,12 @@ pub struct DeviceState {
     /// field named `open` that means closed would be read wrong once
     /// and then be wrong for good.
     pub open: Option<bool>,
+    /// A motion sensor: `true` while it sees somebody. It goes back to
+    /// `false` by itself once nothing has moved for the sensor's own
+    /// timeout.
+    pub motion: Option<bool>,
+    /// Light falling on a sensor, in lux.
+    pub illuminance_lux: Option<f32>,
 }
 
 /// What a light can actually be told to do.
@@ -217,6 +223,9 @@ pub enum DeviceClass {
     /// `open`, so the distinction survives a device that has not said
     /// anything yet.
     Contact,
+    /// A motion sensor. Like a door, its own class from the metadata,
+    /// so it is one before anybody has walked past it.
+    Motion,
     Sensor,
     Unknown,
 }

@@ -29,6 +29,8 @@ function state(partial: Partial<DeviceState> = {}): DeviceState {
     humidity_percent: null,
     battery_percent: null,
     open: null,
+    motion: null,
+    illuminance_lux: null,
     ...partial,
   };
 }
@@ -163,6 +165,13 @@ describe("roomsOf", () => {
     ]);
     expect(rooms[0].temperature).toBe(21.4);
     expect(rooms[0].humidity).toBe(54);
+  });
+
+  it("says whether a motion sensor in the room sees somebody", () => {
+    const sensor = (motion: boolean) =>
+      device("z2m:kitchen/motion", { class: "motion", state: { motion } });
+    expect(roomsOf([device("z2m:kitchen/ceiling"), sensor(true)])[0].motion).toBe(true);
+    expect(roomsOf([device("z2m:kitchen/ceiling"), sensor(false)])[0].motion).toBe(false);
   });
 
   it("gives rooms and their lights a stable order", () => {

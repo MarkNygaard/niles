@@ -177,6 +177,9 @@ fn device_full(device: &niles_core::Device) -> Value {
     insert_if_some(map, "temperature_celsius", device.state.temperature_celsius);
     insert_if_some(map, "humidity_percent", device.state.humidity_percent);
     insert_if_some(map, "battery_percent", device.state.battery_percent);
+    insert_if_some(map, "open", device.state.open);
+    insert_if_some(map, "motion", device.state.motion);
+    insert_if_some(map, "illuminance_lux", device.state.illuminance_lux);
     v
 }
 
@@ -294,6 +297,7 @@ fn explain_device(device: &niles_core::Device) -> String {
         DeviceClass::Outlet => explain_outlet(&id, &device.state),
         DeviceClass::Switch => explain_switch(&id, &device.state),
         DeviceClass::Sensor => explain_sensor(&id, &device.state),
+        DeviceClass::Motion => explain_motion(&id, &device.state),
         // DeviceClass is #[non_exhaustive]; Unknown and future variants fall back to generic.
         _ => explain_unknown(&id, &device.state),
     }
@@ -365,6 +369,43 @@ fn explain_sensor(id: &str, state: &DeviceState) -> String {
         format!("{id} is a sensor but no readings have been reported yet")
     } else {
         format!("{id} is a sensor; {}", parts.join(", "))
+    }
+}
+
+fn explain_motion(id: &str, state: &DeviceState) -> String {
+    let mut parts = vec![match state.motion {
+        Some(true) => "motion now".to_string(),
+        Some(false) => "no motion".to_string(),
+        None => "nothing reported yet".to_string(),
+    }];
+    if let Some(lux) = state.illuminance_lux {
+        parts.push(format!("light level {lux:.0} lux"));
+    }
+    if let Some(t) = state.temperature_celsius {
+        parts.push(format!("temperature {t:.1}°C"));
+    }
+    if let Some(b) = state.battery_percent {
+        parts.push(format!("battery {b}%"));
+    }
+    format!("{id} is a motion sensor; {}", parts.join(", "))
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+
+    #[test]
+    fn a_motion_sensor_says_whether_anyone_is_there() {
+        let state = DeviceState {
+            motion: Some(true),
+            illuminance_lux: Some(12.4),
+            battery_percent: Some(80),
+            ..Default::default()
+        };
+        assert_eq!(
+            explain_motion("kitchen/motion", &state),
+            "kitchen/motion is a motion sensor; motion now, light level 12 lux, battery 80%"
+        );
     }
 }
 
