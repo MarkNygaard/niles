@@ -39,13 +39,6 @@ impl DeviceRegistry {
         guard.get(id).cloned()
     }
 
-    /// Merge a partial state update into an existing device.
-    ///
-    /// `Some` fields in `partial` overwrite the stored value; `None`
-    /// fields preserve it. This matches the `DeviceState` contract:
-    /// upstream reports only what changed, so a `None` means "not
-    /// reported", never "cleared". Returns `true` if the device
-    /// existed and was updated.
     /// Record whether the source can reach a device.
     ///
     /// Returns true when this changed something, so a caller can skip
@@ -63,6 +56,16 @@ impl DeviceRegistry {
         true
     }
 
+    /// Merge a partial state update into an existing device.
+    ///
+    /// `Some` fields in `partial` overwrite the stored value; `None`
+    /// fields preserve it. This matches the `DeviceState` contract:
+    /// upstream reports only what changed, so a `None` means "not
+    /// reported", never "cleared". Returns `true` if the device
+    /// existed and was updated.
+    ///
+    /// Readings merge name by name for the same reason: a payload
+    /// carrying `power` must not wipe `energy`.
     pub fn merge_state(&self, id: &DeviceId, partial: DeviceState) -> bool {
         let mut guard = self.devices.write().unwrap();
         let Some(device) = guard.get_mut(id) else {
@@ -80,6 +83,7 @@ impl DeviceRegistry {
         s.motion = partial.motion.or(s.motion);
         s.illuminance_lux = partial.illuminance_lux.or(s.illuminance_lux);
         s.position = partial.position.or(s.position);
+        s.readings.extend(partial.readings);
         true
     }
 
@@ -254,6 +258,27 @@ mod tests {
             Some([0, 255, 0]),
             "rgb must be overwritten by a new rgb"
         );
+    }
+
+    #[test]
+    fn readings_merge_name_by_name() {
+        use crate::device::Reading;
+        let registry = DeviceRegistry::new();
+        let device = make_device("kitchen", "dishwasher_plug");
+        registry.upsert(device.clone());
+
+        let reading = |name: &str, value: f64, unit: &str| DeviceState {
+            readings: [(name.to_string(), Reading::new(value, Some(unit.into())))].into(),
+            ..Default::default()
+        };
+        registry.merge_state(&device.id, reading("energy", 12.4, "kWh"));
+        registry.merge_state(&device.id, reading("power", 340.0, "W"));
+        registry.merge_state(&device.id, reading("power", 5.0, "W"));
+
+        let readings = registry.get(&device.id).unwrap().state.readings;
+        assert_eq!(readings["energy"].value, 12.4, "power must not wipe energy");
+        assert_eq!(readings["power"].value, 5.0, "a new value replaces the old");
+        assert_eq!(readings["power"].unit.as_deref(), Some("W"));
     }
 
     #[test]

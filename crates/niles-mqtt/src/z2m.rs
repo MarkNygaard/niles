@@ -11,8 +11,9 @@
 //! `serde(deny_unknown_fields)` is deliberately **not** used here —
 //! Z2M's schema evolves and we want forward compatibility.
 
-use niles_core::{Device, DeviceClass, DeviceId, DeviceState, LightCapabilities};
+use niles_core::{Device, DeviceClass, DeviceId, DeviceState, LightCapabilities, Reading};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// A single entry from `<prefix>/bridge/devices`.
 ///
@@ -54,6 +55,83 @@ pub struct Z2mExpose {
     pub property: Option<String>,
     /// Nested exposes (e.g. a light expose contains features).
     pub features: Vec<Z2mExpose>,
+    /// Z2M's access bitmask: `1` the value appears in published state,
+    /// `2` it can be set, `4` it can be asked for with `/get`.
+    pub access: Option<u8>,
+    /// A numeric expose's unit, e.g. `"W"`, `"kWh"`, `"ppm"`.
+    pub unit: Option<String>,
+}
+
+const ACCESS_PUBLISHED: u8 = 1;
+const ACCESS_SETTABLE: u8 = 2;
+
+/// Numeric properties that are published but are not readings: the
+/// ones with a field of their own on `DeviceState`, and radio noise.
+const NOT_READINGS: &[&str] = &[
+    "brightness",
+    "color_temp",
+    "temperature",
+    "humidity",
+    "battery",
+    "illuminance",
+    "illuminance_lux",
+    "position",
+    "linkquality",
+    "update",
+];
+
+/// Whether a numeric expose becomes a reading.
+///
+/// An allowlist on Z2M's own access bits, then a short denylist. It has
+/// to be *published* (or a state payload never carries it) and *not
+/// settable*: a number you can set is a knob — `occupancy_timeout`, a
+/// `*_calibration`, a thermostat setpoint — and a measurement is
+/// something you can only read. That rule alone sorts almost every
+/// expose correctly without a list of known names, so a CO₂ or a
+/// soil-moisture sensor nobody here has seen still works.
+///
+/// The denylist catches what the bits cannot: values with a fixed
+/// field already (a temperature is never a reading as well), the link
+/// quality every device publishes, and the `action_*` numbers a button
+/// sends alongside a press (`action_step_size`, `action_transition_time`),
+/// which describe the press rather than the world. The `_offset`,
+/// `_calibration` and `_timeout` suffixes are settings that a few
+/// device definitions mark read-only; they are excluded by name too.
+fn is_reading(expose: &Z2mExpose) -> bool {
+    let Some(property) = expose.property.as_deref() else {
+        return false;
+    };
+    let access = expose.access.unwrap_or(0);
+    expose.expose_type.as_deref() == Some("numeric")
+        && access & ACCESS_PUBLISHED != 0
+        && access & ACCESS_SETTABLE == 0
+        && !NOT_READINGS.contains(&property)
+        && !property.starts_with("action_")
+        && !["_offset", "_calibration", "_timeout", "_sensitivity"]
+            .iter()
+            .any(|suffix| property.ends_with(suffix))
+        && niles_core::validate_reading_name(property).is_ok()
+}
+
+/// The readings a device's exposes declare, with their units.
+///
+/// Recurses into the features of a `light`, `switch` or `climate`
+/// expose, whose properties sit at the top of the state payload like
+/// any other. Not into a feature list under an expose that has a
+/// `property` of its own — a composite like `color` or `update` —
+/// because those values arrive nested inside that property's object,
+/// not as numbers a payload could carry at the top level.
+fn collect_readings(exposes: &[Z2mExpose], into: &mut BTreeMap<String, Option<String>>) {
+    for expose in exposes {
+        if is_reading(expose)
+            && let Some(property) = &expose.property
+        {
+            into.insert(property.clone(), expose.unit.clone());
+        }
+        if expose.property.is_none() {
+            collect_readings(&expose.features, into);
+        }
+    }
 }
 
 impl Z2mDevice {
@@ -166,7 +244,18 @@ impl Z2mDevice {
     pub fn to_device(&self) -> crate::Result<Device> {
         let id = DeviceId::parse(&format!("z2m:{}", self.friendly_name))?;
         Ok(Device::new(id, DeviceState::default(), self.classify())
-            .with_capabilities(self.capabilities()))
+            .with_capabilities(self.capabilities())
+            .with_reading_units(self.reading_units()))
+    }
+
+    /// The readings this device declares and their units; see
+    /// [`is_reading`] for which numbers count.
+    pub fn reading_units(&self) -> BTreeMap<String, Option<String>> {
+        let mut units = BTreeMap::new();
+        if let Some(definition) = &self.definition {
+            collect_readings(&definition.exposes, &mut units);
+        }
+        units
     }
 
     /// What this device can be told to do, from the features Z2M
@@ -220,11 +309,19 @@ pub struct Z2mState {
     /// which a blind mounted the other way round fixes with its
     /// `invert_cover` option rather than here.
     pub position: Option<f32>,
+    /// Every other key in the payload. Only the ones the device
+    /// declared as readings are read from here; the rest — `action`,
+    /// `linkquality`, `update` — are passed over.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Z2mState {
-    pub fn to_device_state(&self) -> DeviceState {
+    /// The payload as a partial state, given the readings the device
+    /// declared at discovery (see [`Z2mDevice::reading_units`]).
+    pub fn to_device_state(&self, reading_units: &BTreeMap<String, Option<String>>) -> DeviceState {
         DeviceState {
+            readings: self.readings(reading_units),
             on: self.state.as_deref().and_then(parse_on_off),
             brightness: self.brightness.map(z2m_brightness_to_percent),
             color_temp_kelvin: self.color_temp.and_then(mireds_to_kelvin),
@@ -251,8 +348,15 @@ impl Z2mState {
     /// payloads commonly include `battery`, which means they too will
     /// pass this filter; that's deliberate (we want the dimmer's
     /// battery tracked too).
-    pub fn has_actionable_state_field(&self) -> bool {
-        self.state.is_some()
+    ///
+    /// A declared reading counts too: a plug that only says `power`
+    /// has still said something worth hearing.
+    pub fn has_actionable_state_field(
+        &self,
+        reading_units: &BTreeMap<String, Option<String>>,
+    ) -> bool {
+        !self.readings(reading_units).is_empty()
+            || self.state.is_some()
             || self.brightness.is_some()
             || self.color_temp.is_some()
             || self.temperature.is_some()
@@ -264,6 +368,22 @@ impl Z2mState {
             || self.illuminance_lux.is_some()
             || self.illuminance.is_some()
             || self.position.is_some()
+    }
+
+    /// The declared readings this payload carries a number for. A
+    /// `null` — what Z2M publishes for a value it has not read yet —
+    /// is no reading rather than a zero.
+    fn readings(
+        &self,
+        reading_units: &BTreeMap<String, Option<String>>,
+    ) -> BTreeMap<String, Reading> {
+        reading_units
+            .iter()
+            .filter_map(|(name, unit)| {
+                let value = self.other.get(name)?.as_f64()?;
+                Some((name.clone(), Reading::new(value, unit.clone())))
+            })
+            .collect()
     }
 }
 
@@ -475,13 +595,13 @@ mod tests {
             contact: Some(true),
             ..Default::default()
         };
-        assert_eq!(shut.to_device_state().open, Some(false));
+        assert_eq!(shut.to_device_state(&BTreeMap::new()).open, Some(false));
 
         let ajar = Z2mState {
             contact: Some(false),
             ..Default::default()
         };
-        assert_eq!(ajar.to_device_state().open, Some(true));
+        assert_eq!(ajar.to_device_state(&BTreeMap::new()).open, Some(true));
     }
 
     #[test]
@@ -493,7 +613,7 @@ mod tests {
             contact: Some(false),
             ..Default::default()
         };
-        assert!(opened.has_actionable_state_field());
+        assert!(opened.has_actionable_state_field(&BTreeMap::new()));
     }
 
     #[test]
@@ -528,8 +648,8 @@ mod tests {
         assert!(device.is_cover());
 
         let state: Z2mState = serde_json::from_str(r#"{"position":30,"state":"OPEN"}"#).unwrap();
-        assert!(state.has_actionable_state_field());
-        let state = state.to_device_state();
+        assert!(state.has_actionable_state_field(&BTreeMap::new()));
+        let state = state.to_device_state(&BTreeMap::new());
         assert_eq!(state.position, Some(30));
         // A blind's OPEN is not a light's ON.
         assert_eq!(state.on, None);
@@ -570,19 +690,22 @@ mod tests {
         let seen: Z2mState =
             serde_json::from_str(r#"{"occupancy":true,"illuminance":12,"linkquality":160}"#)
                 .unwrap();
-        assert!(seen.has_actionable_state_field());
-        let state = seen.to_device_state();
+        assert!(seen.has_actionable_state_field(&BTreeMap::new()));
+        let state = seen.to_device_state(&BTreeMap::new());
         assert_eq!(state.motion, Some(true));
         assert_eq!(state.illuminance_lux, Some(12.0));
 
         // Zigbee2MQTT 1.x: lux in its own field, a raw reading beside it.
         let older: Z2mState =
             serde_json::from_str(r#"{"illuminance":15000,"illuminance_lux":31}"#).unwrap();
-        assert_eq!(older.to_device_state().illuminance_lux, Some(31.0));
+        assert_eq!(
+            older.to_device_state(&BTreeMap::new()).illuminance_lux,
+            Some(31.0)
+        );
 
         // A radar sensor says `presence`.
         let radar: Z2mState = serde_json::from_str(r#"{"presence":false}"#).unwrap();
-        assert_eq!(radar.to_device_state().motion, Some(false));
+        assert_eq!(radar.to_device_state(&BTreeMap::new()).motion, Some(false));
     }
 
     #[test]
@@ -619,6 +742,7 @@ mod tests {
                     expose_type: Some("light".into()),
                     property: None,
                     features: vec![],
+                    ..Default::default()
                 }],
             }),
         };
@@ -636,6 +760,7 @@ mod tests {
                     expose_type: None,
                     property: Some("action".into()),
                     features: vec![],
+                    ..Default::default()
                 }],
             }),
         };
@@ -658,7 +783,9 @@ mod tests {
                         expose_type: Some("binary".into()),
                         property: Some("state".into()),
                         features: vec![],
+                        ..Default::default()
                     }],
+                    ..Default::default()
                 }],
             }),
         };
@@ -676,6 +803,7 @@ mod tests {
                     expose_type: Some("numeric".into()),
                     property: Some("temperature".into()),
                     features: vec![],
+                    ..Default::default()
                 }],
             }),
         };
@@ -716,11 +844,13 @@ mod tests {
                         expose_type: Some("light".into()),
                         property: None,
                         features: vec![],
+                        ..Default::default()
                     },
                     Z2mExpose {
                         expose_type: None,
                         property: Some("action".into()),
                         features: vec![],
+                        ..Default::default()
                     },
                 ],
             }),
@@ -802,7 +932,9 @@ mod tests {
                         expose_type: Some("light".into()),
                         property: None,
                         features: vec![],
+                        ..Default::default()
                     }],
+                    ..Default::default()
                 }],
             }),
         };
@@ -823,11 +955,116 @@ mod tests {
                         expose_type: Some("enum".into()),
                         property: Some("action".into()),
                         features: vec![],
+                        ..Default::default()
                     }],
+                    ..Default::default()
                 }],
             }),
         };
         assert_eq!(z2m.classify(), DeviceClass::Switch);
+    }
+
+    // ---- readings ------------------------------------------------
+
+    /// A metering plug, shaped like Zigbee2MQTT's own `bridge/devices`
+    /// for a Tuya TS011F, with an air-quality box and a motion sensor's
+    /// settings thrown in so one list covers what must be left out.
+    fn metering_plug() -> Z2mDevice {
+        let json = r#"[{
+            "ieee_address": "0x1",
+            "friendly_name": "kitchen/dishwasher",
+            "type": "Router",
+            "definition": {
+                "exposes": [
+                    {"type": "switch", "features": [
+                        {"type": "binary", "name": "state", "property": "state", "access": 7}
+                    ]},
+                    {"type": "numeric", "property": "power", "access": 5, "unit": "W"},
+                    {"type": "numeric", "property": "current", "access": 5, "unit": "A"},
+                    {"type": "numeric", "property": "voltage", "access": 5, "unit": "V"},
+                    {"type": "numeric", "property": "energy", "access": 5, "unit": "kWh"},
+                    {"type": "numeric", "property": "co2", "access": 1, "unit": "ppm"},
+                    {"type": "numeric", "property": "pm25", "access": 1, "unit": "µg/m³"},
+                    {"type": "numeric", "property": "soil_moisture", "access": 1},
+                    {"type": "numeric", "property": "temperature", "access": 1, "unit": "°C"},
+                    {"type": "numeric", "property": "battery", "access": 1, "unit": "%"},
+                    {"type": "numeric", "property": "linkquality", "access": 1, "unit": "lqi"},
+                    {"type": "numeric", "property": "occupancy_timeout", "access": 7, "unit": "s"},
+                    {"type": "numeric", "property": "temperature_calibration", "access": 2},
+                    {"type": "numeric", "property": "humidity_offset", "access": 1},
+                    {"type": "numeric", "property": "action_step_size", "access": 1},
+                    {"type": "numeric", "property": "Power_L1", "access": 1, "unit": "W"},
+                    {"type": "composite", "property": "update", "features": [
+                        {"type": "numeric", "property": "installed_version", "access": 1}
+                    ]},
+                    {"type": "enum", "property": "power_outage_memory", "access": 7}
+                ]
+            }
+        }]"#;
+        parse_device_list(json.as_bytes()).unwrap().remove(0)
+    }
+
+    #[test]
+    fn published_read_only_numbers_become_readings_with_their_units() {
+        let units = metering_plug().reading_units();
+        let names: Vec<&str> = units.keys().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            [
+                "co2",
+                "current",
+                "energy",
+                "pm25",
+                "power",
+                "soil_moisture",
+                "voltage"
+            ],
+            "settings, noise, fixed fields, composites and bad names are left out"
+        );
+        assert_eq!(units["power"].as_deref(), Some("W"));
+        assert_eq!(units["energy"].as_deref(), Some("kWh"));
+        assert_eq!(units["pm25"].as_deref(), Some("µg/m³"));
+        assert_eq!(units["soil_moisture"], None);
+    }
+
+    #[test]
+    fn the_device_remembers_its_reading_units() {
+        let device = metering_plug().to_device().unwrap();
+        assert_eq!(device.class, DeviceClass::Outlet);
+        assert_eq!(device.reading_units["power"].as_deref(), Some("W"));
+    }
+
+    #[test]
+    fn a_state_payload_carries_readings_in_their_declared_units() {
+        let units = metering_plug().reading_units();
+        let state = parse_state(
+            br#"{"state":"ON","power":340,"energy":12.4,"linkquality":80,"current":null}"#,
+        )
+        .unwrap()
+        .to_device_state(&units);
+        assert_eq!(state.on, Some(true));
+        assert_eq!(
+            state.readings["power"],
+            Reading::new(340.0, Some("W".into()))
+        );
+        assert_eq!(state.readings["energy"].value, 12.4);
+        assert!(
+            !state.readings.contains_key("current"),
+            "null is not a value"
+        );
+        assert!(!state.readings.contains_key("linkquality"));
+    }
+
+    #[test]
+    fn a_payload_with_only_a_reading_is_worth_propagating() {
+        let units = metering_plug().reading_units();
+        let power = parse_state(br#"{"power":5,"linkquality":80}"#).unwrap();
+        assert!(power.has_actionable_state_field(&units));
+        // Before bridge/devices has said what the plug is, nothing is
+        // a reading, and noise alone stays noise.
+        assert!(!power.has_actionable_state_field(&BTreeMap::new()));
+        let noise = parse_state(br#"{"linkquality":80,"action_step_size":3}"#).unwrap();
+        assert!(!noise.has_actionable_state_field(&units));
     }
 
     // ---- state parsing -------------------------------------------
@@ -841,7 +1078,7 @@ mod tests {
             "linkquality": 87
         }"#;
         let state = parse_state(json).unwrap();
-        let ds = state.to_device_state();
+        let ds = state.to_device_state(&BTreeMap::new());
         assert_eq!(ds.on, Some(true));
         assert_eq!(ds.brightness, Some(100));
         assert_eq!(ds.color_temp_kelvin, Some(4000));
@@ -856,7 +1093,7 @@ mod tests {
             "battery": 88
         }"#;
         let state = parse_state(json).unwrap();
-        let ds = state.to_device_state();
+        let ds = state.to_device_state(&BTreeMap::new());
         assert_eq!(ds.temperature_celsius, Some(21.5));
         assert_eq!(ds.humidity_percent, Some(47.2));
         assert_eq!(ds.battery_percent, Some(88));
@@ -867,7 +1104,7 @@ mod tests {
     #[test]
     fn empty_state_is_all_none() {
         let state = parse_state(b"{}").unwrap();
-        let ds = state.to_device_state();
+        let ds = state.to_device_state(&BTreeMap::new());
         assert_eq!(ds, DeviceState::default());
     }
 
@@ -875,7 +1112,7 @@ mod tests {
     fn unknown_state_string_yields_none() {
         let json = br#"{ "state": "toggle" }"#;
         let state = parse_state(json).unwrap();
-        assert_eq!(state.to_device_state().on, None);
+        assert_eq!(state.to_device_state(&BTreeMap::new()).on, None);
     }
 
     #[test]
@@ -885,14 +1122,14 @@ mod tests {
         // no tracked field is set, so the dispatch path must skip it.
         let json = br#"{"action":"on_press","linkquality":168}"#;
         let state = parse_state(json).unwrap();
-        assert!(!state.has_actionable_state_field());
+        assert!(!state.has_actionable_state_field(&BTreeMap::new()));
     }
 
     #[test]
     fn brightness_only_payload_is_actionable() {
         let json = br#"{"brightness":127}"#;
         let state = parse_state(json).unwrap();
-        assert!(state.has_actionable_state_field());
+        assert!(state.has_actionable_state_field(&BTreeMap::new()));
     }
 
     #[test]
@@ -902,7 +1139,7 @@ mod tests {
         // sensor must propagate through the dispatch path.
         let json = br#"{"battery":42}"#;
         let state = parse_state(json).unwrap();
-        assert!(state.has_actionable_state_field());
+        assert!(state.has_actionable_state_field(&BTreeMap::new()));
     }
 
     #[test]
@@ -913,7 +1150,7 @@ mod tests {
         // propagate so battery surfacing keeps working.
         let json = br#"{"action":"on_press","battery":100,"linkquality":168}"#;
         let state = parse_state(json).unwrap();
-        assert!(state.has_actionable_state_field());
+        assert!(state.has_actionable_state_field(&BTreeMap::new()));
     }
 }
 

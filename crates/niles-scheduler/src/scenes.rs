@@ -64,6 +64,7 @@ impl From<DeviceStateDto> for DeviceState {
             motion: None,
             illuminance_lux: None,
             position: None,
+            readings: BTreeMap::new(),
         }
     }
 }
@@ -189,9 +190,13 @@ impl SceneStore {
         .filter(|d| d.is_lamp(lamp_plugs))
         .map(|d| SceneEntry {
             // A plug has one thing to be told; whatever else it reports
-            // (power draw, say) is not something to put back.
+            // (power draw, say) is not something to put back. Nor is a
+            // light's: a reading is measured, never set.
             state: if d.is_light() {
-                d.state
+                DeviceState {
+                    readings: BTreeMap::new(),
+                    ..d.state
+                }
             } else {
                 DeviceState {
                     on: d.state.on,
@@ -449,6 +454,21 @@ mod tests {
         assert_eq!(entries[0].state.on, Some(true));
         assert_eq!(entries[0].state.brightness, Some(80));
         assert_eq!(entries[0].state.color_temp_kelvin, Some(2700));
+    }
+
+    #[test]
+    fn a_scene_never_carries_readings() {
+        let store = SceneStore::new();
+        let mut light = state(true, 80, 2700);
+        light.readings.insert(
+            "power".into(),
+            niles_core::Reading::new(9.5, Some("W".into())),
+        );
+        let reg = registry_with(&[("kitchen", "a", light)]);
+        store.save("evening", &reg, None, &HashSet::new());
+        let entries = store.get("evening").unwrap();
+        assert_eq!(entries[0].state.brightness, Some(80));
+        assert!(entries[0].state.readings.is_empty());
     }
 
     #[test]

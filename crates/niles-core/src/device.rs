@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 /// A normalized room name like `kitchen` or `living_room`.
@@ -189,8 +189,49 @@ pub struct DeviceState {
     /// Light falling on a sensor, in lux.
     pub illuminance_lux: Option<f32>,
     /// A blind or curtain: how far open, `0` shut and `100` all the way
-    /// open. Settable, unlike the readings above.
+    /// open. Settable, unlike the sensor fields above.
     pub position: Option<u8>,
+    /// Every other number the device reports, by name: `power`,
+    /// `energy`, `co2`, an electricity `price`.
+    ///
+    /// Only for numbers without a field of their own above — a
+    /// temperature is `temperature_celsius` and never a reading, so a
+    /// rule has one place to look. Names follow [`validate_reading_name`].
+    ///
+    /// Partial like everything else: a payload carrying `power` says
+    /// nothing about `energy`, and [`crate::DeviceRegistry::merge_state`]
+    /// merges name by name. Never commanded, never part of a scene.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub readings: BTreeMap<String, Reading>,
+}
+
+/// One named number a device reports, with its unit when known.
+///
+/// The unit is the source's own string — `"W"`, `"kWh"`, `"ppm"`,
+/// `"kr/kWh"` — passed on for display and never converted. Unlike the
+/// fixed fields, Niles has no unit of its own to promise for a number
+/// it does not know the meaning of.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reading {
+    pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+}
+
+impl Reading {
+    pub fn new(value: f64, unit: Option<String>) -> Self {
+        Self { value, unit }
+    }
+}
+
+/// What a reading name has to look like: `[a-z0-9_]+`, the same rule
+/// as rooms and devices.
+///
+/// The names end up in rules, in tool arguments the LLM writes and in
+/// the plugin interface; one character class everywhere is one thing
+/// to get right.
+pub fn validate_reading_name(name: &str) -> Result<()> {
+    validate_segment("reading", name)
 }
 
 /// What a light can actually be told to do.
@@ -244,6 +285,11 @@ pub struct Device {
     /// What the source says this device can be told to do. Defaults to
     /// nothing; a source that knows fills it in.
     pub capabilities: LightCapabilities,
+    /// The readings this device declares, each with its unit — Z2M's
+    /// numeric exposes. A state payload says `"power": 340` and nothing
+    /// more, so the unit has to be remembered from here. Empty for a
+    /// source that sends the unit with every value.
+    pub reading_units: BTreeMap<String, Option<String>>,
     /// Whether the source can currently reach it.
     ///
     /// True until told otherwise, on purpose. Z2M only publishes
@@ -263,8 +309,15 @@ impl Device {
             state,
             class,
             capabilities: LightCapabilities::default(),
+            reading_units: BTreeMap::new(),
             available: true,
         }
+    }
+
+    /// The same device, with the readings it declares.
+    pub fn with_reading_units(mut self, units: BTreeMap<String, Option<String>>) -> Self {
+        self.reading_units = units;
+        self
     }
 
     /// The same device, with what it can be told to do.
@@ -384,6 +437,40 @@ mod tests {
         assert!(RoomName::parse("é").is_err()); // non-ASCII letter
         assert!(RoomName::parse("Kitchen").is_err()); // uppercase
         assert!(RoomName::parse("kitchen light").is_err()); // space
+    }
+
+    #[test]
+    fn reading_names_follow_the_identifier_rule() {
+        assert!(validate_reading_name("co2").is_ok());
+        assert!(validate_reading_name("pm25").is_ok());
+        assert!(validate_reading_name("power_l1").is_ok());
+        assert!(validate_reading_name("").is_err());
+        assert!(validate_reading_name("Power").is_err());
+        assert!(validate_reading_name("power l1").is_err());
+    }
+
+    #[test]
+    fn readings_survive_a_round_trip_and_old_states_still_load() {
+        // History written before readings existed has no `readings` key.
+        let old: DeviceState = serde_json::from_str(r#"{"on":true}"#).unwrap();
+        assert_eq!(old.on, Some(true));
+        assert!(old.readings.is_empty());
+
+        let mut state = DeviceState::default();
+        state
+            .readings
+            .insert("power".into(), Reading::new(340.0, Some("W".into())));
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains(r#""power":{"value":340.0,"unit":"W"}"#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<DeviceState>(&json).unwrap(), state);
+        assert!(
+            !serde_json::to_string(&DeviceState::default())
+                .unwrap()
+                .contains("readings")
+        );
     }
 
     #[test]
