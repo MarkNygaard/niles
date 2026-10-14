@@ -186,8 +186,8 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "mqtt",
         label: "Zigbee & MQTT",
-        blurb: "How Niles reaches your lights. Zigbee lights and WLED strips all talk to Niles through an MQTT broker.",
-        needs: "An MQTT broker on your network, with Zigbee2MQTT connected to it.",
+        blurb: "Switch and dim your Zigbee lights and WLED strips.",
+        needs: "An MQTT broker on your network, with Zigbee2MQTT connected to it. Every light reaches Niles through it.",
         kind: Kind::Service,
         group: Group::Essentials,
         importance: Importance::Required,
@@ -201,8 +201,8 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "groq",
         label: "Groq",
-        blurb: "Turns what you say into text and works out the answer, fast enough to reply while you wait. One account does both jobs.",
-        needs: "A Groq account (there is a free tier) and an API key from console.groq.com.",
+        blurb: "Hears what you say and answers, in one account.",
+        needs: "A Groq account (there is a free tier) and an API key from console.groq.com. It both listens and answers, fast enough to reply while you wait.",
         kind: Kind::Provider,
         group: Group::Essentials,
         importance: Importance::Required,
@@ -224,8 +224,8 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "elevenlabs",
         label: "ElevenLabs",
-        blurb: "Turns what you say into text, and is the best at hearing Niles's own name. It only listens, so pair it with an AI provider.",
-        needs: "An ElevenLabs account and an API key.",
+        blurb: "Hears what you say, and is best at hearing Niles's name.",
+        needs: "An ElevenLabs account and an API key. It only listens, so pair it with Groq or Cerebras to answer.",
         kind: Kind::Provider,
         group: Group::Essentials,
         importance: Importance::Required,
@@ -239,8 +239,8 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "cerebras",
         label: "Cerebras",
-        blurb: "Works out the answer, and is the fastest way to have one said out loud. It does not listen, so pair it with Groq or ElevenLabs.",
-        needs: "A Cerebras account and an API key.",
+        blurb: "The fastest answers, said out loud while you wait.",
+        needs: "A Cerebras account and an API key. It does not listen, so pair it with Groq or ElevenLabs.",
         kind: Kind::Provider,
         group: Group::Essentials,
         importance: Importance::Required,
@@ -257,7 +257,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "sonos",
         label: "Sonos",
-        blurb: "Music and radio in each room, turned down while Niles is speaking.",
+        blurb: "Music and radio in each room, turned down while Niles speaks.",
         needs: "Sonos speakers on the same network as Niles.",
         kind: Kind::Service,
         group: Group::Music,
@@ -272,7 +272,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "spotify",
         label: "Spotify",
-        blurb: "Ask for any artist, song or album by name, and it plays on your Sonos.",
+        blurb: "Ask for any artist, song or album and hear it on Sonos.",
         needs: "Sonos, a Spotify Premium account linked in the Sonos app, and a free Spotify developer app for its two keys.",
         kind: Kind::Service,
         group: Group::Music,
@@ -290,7 +290,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "lg_tv",
         label: "LG TV",
-        blurb: "Turn the TV on and off, open apps and switch inputs by voice, and see Niles's news on the screen.",
+        blurb: "Turn it on and off, open apps and switch inputs by voice.",
         needs: "An LG TV on the same network. No LG account; you accept a prompt on the TV once.",
         kind: Kind::Service,
         group: Group::Music,
@@ -307,7 +307,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "unifi",
         label: "UniFi",
-        blurb: "Knows who is home from their phone on the Wi-Fi, the moment it is in range. Lights can follow when the house empties or someone comes back.",
+        blurb: "Knows who is home from their phone, so lights can follow.",
         needs: "A UniFi network with its console on your network, and an API key made in UniFi Network.",
         kind: Kind::Service,
         group: Group::Presence,
@@ -322,7 +322,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "tado",
         label: "tado°",
-        blurb: "Heating in each room by voice, and who is home from the thermostats that already know.",
+        blurb: "Set the heating in each room by voice.",
         needs: "tado° thermostats and the tado° account they are set up with.",
         kind: Kind::Service,
         group: Group::Presence,
@@ -338,7 +338,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "microsoft",
         label: "Microsoft calendars",
-        blurb: "Each person's Outlook and work calendars, read out for whoever asks.",
+        blurb: "Hear what is on your Outlook and work calendars.",
         needs: "A free app registration in Microsoft Entra, made once for the house. Then each person signs in from their profile.",
         kind: Kind::Service,
         group: Group::Calendars,
@@ -356,7 +356,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "google",
         label: "Google calendars",
-        blurb: "Each person's Gmail calendar, read out for whoever asks.",
+        blurb: "Hear what is on your Google calendar.",
         needs: "A free Google Cloud project with the Calendar API, made once for the house. Then each person signs in from their profile.",
         kind: Kind::Service,
         group: Group::Calendars,
@@ -374,7 +374,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "nemlig",
         label: "nemlig.com",
-        blurb: "Groceries delivered: Niles picks the product behind each item on the shopping list and fills the basket.",
+        blurb: "Turn the shopping list into a filled basket.",
         needs: "A nemlig.com account, with its email and password.",
         kind: Kind::Service,
         group: Group::Shopping,
@@ -392,7 +392,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "claude_code",
         label: "Claude Code",
-        blurb: "Answers the chat with Claude, on your Claude subscription.",
+        blurb: "Claude answers the chat and handles new rules.",
         needs: "A paid Claude subscription, and a token from running `claude setup-token` on a computer.",
         kind: Kind::Service,
         group: Group::Assistants,
@@ -407,7 +407,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "linear",
         label: "Linear",
-        blurb: "Turns an issue into work Niles picks up.",
+        blurb: "Turn an issue into work Niles picks up.",
         needs: "A Linear workspace, an API key, and the team whose issues Niles should watch.",
         kind: Kind::Service,
         group: Group::Assistants,

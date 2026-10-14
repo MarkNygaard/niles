@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { IntegrationsPage } from "@/components/IntegrationsPage";
 import type { IntegrationsPageProps } from "@/components/IntegrationsPage";
 import { api } from "@/lib/api";
+import { matchesQuery, statusOf } from "@/lib/integrations";
 import type { Integration, IntegrationGroup, SecretsReport } from "@/lib/api";
 
 const ESSENTIALS: IntegrationGroup = {
@@ -210,47 +211,75 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function openAddList() {
-  fireEvent.click(screen.getByRole("button", { name: /Add integration/ }));
+function tab(name: "Connected" | "Available") {
+  return screen.getByRole("tab", { name: new RegExp(`^${name}`) });
 }
 
-describe("IntegrationsPage", () => {
-  it("shows only what is set up", () => {
-    // The point of the catalogue: a hundred entries later this is still
-    // one row per thing you actually use.
+function search(text: string) {
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search integrations" }), {
+    target: { value: text },
+  });
+}
+
+describe("IntegrationsPage tabs", () => {
+  it("lands on Connected when something is added", () => {
     setup([{ ...GROQ, added: true }, TADO]);
-    expect(screen.getByText("Groq")).toBeInTheDocument();
+    expect(tab("Connected")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Configure Groq" })).toBeInTheDocument();
     expect(screen.queryByText("tado°")).toBeNull();
   });
 
-  it("marks an integration added without a key as unfinished", () => {
+  it("lands on Available on a new install", () => {
+    // Someone setting Niles up for the first time starts from what they
+    // can add, not from an empty list.
+    setup([GROQ, TADO]);
+    expect(tab("Available")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Connect Groq" })).toBeInTheDocument();
+  });
+
+  it("counts each side in its tab", () => {
+    setup([{ ...GROQ, added: true }, CEREBRAS, TADO]);
+    expect(tab("Connected")).toHaveAccessibleName("Connected 1");
+    expect(tab("Available")).toHaveAccessibleName("Available 2");
+  });
+
+  it("offers what is not added under Available", () => {
+    setup([{ ...GROQ, added: true }, TADO]);
+    fireEvent.click(tab("Available"));
+    expect(screen.getByRole("button", { name: "Connect tado°" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect Groq" })).toBeNull();
+  });
+
+  it("says so when everything is connected", () => {
+    setup([{ ...GROQ, added: true }]);
+    fireEvent.click(tab("Available"));
+    expect(screen.getByText("Everything Niles knows is connected.")).toBeInTheDocument();
+  });
+});
+
+describe("IntegrationsPage", () => {
+  it("says what is missing from an integration added without a key", () => {
     // A row that looks done and answers nothing is worse than one that
     // says what is left to do.
     setup([{ ...GROQ, added: true }]);
-    expect(screen.getByText(/not finished/)).toBeInTheDocument();
+    expect(screen.getByText("Needs its API key")).toBeInTheDocument();
   });
 
-  it("says nothing is left to do once the key is there", () => {
+  it("says it works once the key is there", () => {
     setup([{ ...GROQ, added: true }], {
       writable: true,
       secrets: [{ ...SECRETS.secrets[0], source: "stored" }],
     });
-    expect(screen.queryByText(/not finished/)).toBeNull();
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(screen.queryByText("Needs its API key")).toBeNull();
   });
 
-  it("offers the rest behind the add button", () => {
-    setup([{ ...GROQ, added: true }, TADO]);
-    openAddList();
-    expect(screen.getByRole("button", { name: /tado°/ })).toBeInTheDocument();
-  });
-
-  it("adds a provider without asking for its endpoint", () => {
+  it("adds a provider without asking for its endpoint, and opens it", () => {
     // Which is the whole difference from the pair of text boxes this
     // replaces: Niles already knows where Groq's API lives, and typing
     // a name and a URL let you invent a provider that cannot work.
     const { onChange } = setup([GROQ]);
-    openAddList();
-    fireEvent.click(screen.getByRole("button", { name: /Groq/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Groq" }));
     expect(onChange).toHaveBeenCalledWith("providers", [
       {
         path: "providers",
@@ -263,33 +292,32 @@ describe("IntegrationsPage", () => {
         ],
       },
     ]);
+    expect(screen.getByLabelText("groq API key")).toBeInTheDocument();
   });
 
   it("keeps the providers already added when adding another", () => {
-    const { onChange } = setup([
-      { ...GROQ, added: true },
-      {
-        ...GROQ,
-        id: "cerebras",
-        label: "Cerebras",
-        base_url: "https://api.cerebras.ai/v1",
-        serves: ["llm"],
-        added: false,
-      },
-    ]);
-    openAddList();
-    fireEvent.click(screen.getByRole("button", { name: /Cerebras/ }));
+    const { onChange } = setup([{ ...GROQ, added: true }, CEREBRAS]);
+    fireEvent.click(tab("Available"));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Cerebras" }));
     const value = onChange.mock.calls[0][1][0].value as { name: string }[];
     expect(value.map((p) => p.name)).toEqual(["groq", "cerebras"]);
   });
 
-  it("keeps the key out of the list and behind Configure", () => {
+  it("keeps the key out of the list and behind the row", () => {
     // The list answers "what is connected". A key is setup detail, and
     // true at a glance is not the same as useful at a glance.
     setup([{ ...GROQ, added: true }]);
     expect(screen.queryByLabelText("groq API key")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
     expect(screen.getByLabelText("groq API key")).toBeInTheDocument();
+  });
+
+  it("says what it does and what it takes in its dialog, once", () => {
+    setup([{ ...GROQ, added: true }]);
+    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getAllByText(GROQ.blurb)).toHaveLength(1);
+    expect(within(dialog).getByText(GROQ.needs)).toBeInTheDocument();
   });
 
   it("removes a provider by leaving it out of the list", () => {
@@ -301,21 +329,15 @@ describe("IntegrationsPage", () => {
     ]);
   });
 
-  it("says what connecting is for when nothing is", () => {
+  it("says where to start when nothing is connected", () => {
     setup([GROQ, TADO]);
-    expect(screen.getByText(/Nothing yet/)).toBeInTheDocument();
-  });
-
-  it("says so when everything is already set up", () => {
-    setup([{ ...GROQ, added: true }]);
-    openAddList();
-    expect(screen.getByText(/already set up/)).toBeInTheDocument();
+    fireEvent.click(tab("Connected"));
+    expect(screen.getByText(/Nothing connected yet/)).toBeInTheDocument();
   });
 
   it("asks for the console's address and key when UniFi is added", () => {
     const { onChange } = setup([UNIFI], UNIFI_KEY);
-    openAddList();
-    fireEvent.click(screen.getByRole("button", { name: /UniFi/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect UniFi" }));
 
     // Adding it writes nothing: an empty address is not a console.
     expect(onChange).not.toHaveBeenCalled();
@@ -325,7 +347,8 @@ describe("IntegrationsPage", () => {
 
   it("saves the address when you leave the field", () => {
     const { onChange } = setup([{ ...UNIFI, added: true }], UNIFI_KEY, "");
-    fireEvent.click(screen.getByRole("button", { name: /UniFi/ }));
+    expect(screen.getByText("Needs its address")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Configure UniFi" }));
     const field = screen.getByLabelText("Console address");
     fireEvent.change(field, { target: { value: " 192.168.1.1 " } });
     fireEvent.blur(field);
@@ -341,7 +364,7 @@ describe("IntegrationsPage", () => {
       UNIFI_KEY,
       "192.168.1.1",
     );
-    fireEvent.click(screen.getByRole("button", { name: /UniFi/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure UniFi" }));
     fireEvent.click(screen.getByRole("button", { name: /Remove UniFi/ }));
 
     expect(onChange).toHaveBeenCalledWith("presence.unifi", [
@@ -351,8 +374,7 @@ describe("IntegrationsPage", () => {
 
   it("switches Claude Code on and asks for its token", () => {
     const { onChange } = setup([CLAUDE], CLAUDE_TOKEN);
-    openAddList();
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Claude Code" }));
 
     expect(onChange).toHaveBeenCalledWith("integrations.claude_code", [
       { path: "integrations.claude_code.enabled", value: true },
@@ -363,7 +385,7 @@ describe("IntegrationsPage", () => {
 
   it("picks Claude Code's model", () => {
     const { onChange } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure Claude Code" }));
     fireEvent.click(screen.getByRole("radio", { name: /Opus/ }));
 
     expect(onChange).toHaveBeenCalledWith("integrations.claude_code", [
@@ -373,7 +395,7 @@ describe("IntegrationsPage", () => {
 
   it("switches Claude Code off without removing it", () => {
     const { onChange } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure Claude Code" }));
     fireEvent.click(screen.getByRole("switch"));
 
     expect(onChange).toHaveBeenCalledWith("integrations.claude_code", [
@@ -383,7 +405,7 @@ describe("IntegrationsPage", () => {
 
   it("removing Claude Code takes the section away", () => {
     const { onChange, onReset } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure Claude Code" }));
     fireEvent.click(screen.getByRole("button", { name: /Remove Claude Code/ }));
 
     expect(onReset).toHaveBeenCalledWith("integrations.claude_code", [
@@ -394,8 +416,7 @@ describe("IntegrationsPage", () => {
 
   it("switches nemlig.com on and asks for both halves of the login", () => {
     const { onChange } = setup([NEMLIG], NEMLIG_LOGIN);
-    openAddList();
-    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect nemlig.com" }));
     expect(onChange).toHaveBeenCalledWith("integrations.nemlig", [
       { path: "integrations.nemlig.enabled", value: true },
     ]);
@@ -405,7 +426,7 @@ describe("IntegrationsPage", () => {
 
   it("switches nemlig.com off without forgetting the login", () => {
     const { onChange, onReset } = setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
-    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     fireEvent.click(screen.getByRole("switch"));
     expect(onChange).toHaveBeenCalledWith("integrations.nemlig", [
       { path: "integrations.nemlig.enabled", value: false },
@@ -415,7 +436,7 @@ describe("IntegrationsPage", () => {
 
   it("removing nemlig.com takes the section away", () => {
     const { onReset } = setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
-    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
     expect(onReset).toHaveBeenCalledWith("integrations.nemlig", ["integrations.nemlig"]);
   });
@@ -445,6 +466,70 @@ describe("IntegrationsPage groups", () => {
     expect(
       within(screen.getByRole("region", { name: "Essentials" })).getByText("Groq"),
     ).toBeInTheDocument();
+  });
+
+  it("offers what is not added under the same groups, Essentials first", () => {
+    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO, NEMLIG, CLAUDE]);
+    const headings = screen
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(headings).toEqual([
+      "Essentials",
+      "Presence & climate",
+      "Shopping",
+      "Assistants & tools",
+    ]);
+    // The group says it is one of each, not every one of them.
+    expect(screen.getByRole("region", { name: "Essentials" })).toHaveTextContent(
+      "Niles needs one speech-to-text provider and one AI provider.",
+    );
+  });
+
+  it("shows each service's own logo, and an icon for the broker", () => {
+    setup([MQTT, GROQ, NEMLIG]);
+    const logo = (name: string) =>
+      screen
+        .getByRole("button", { name: `Connect ${name}` })
+        .parentElement?.querySelector("[data-logo]");
+    expect(logo("Groq")).toHaveAttribute("data-logo", "brand");
+    expect(logo("nemlig.com")).toHaveAttribute("data-logo", "brand");
+    expect(logo("Zigbee & MQTT")).toHaveAttribute("data-logo", "icon");
+  });
+
+  it("badges Required where it applies", () => {
+    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO]);
+    const row = (name: string) =>
+      screen.getByRole("button", { name: `Connect ${name}` }).parentElement!;
+    expect(row("Zigbee & MQTT")).toHaveTextContent("Required");
+    expect(row("Groq")).toHaveTextContent("Required");
+    expect(row("UniFi")).not.toHaveTextContent("Required");
+    expect(row("tado°")).not.toHaveTextContent("Required");
+  });
+
+  it("stops calling the other providers required once a role is covered", () => {
+    // Groq answers and transcribes, so Cerebras is a choice, not a gap.
+    setup([{ ...GROQ, added: true }, CEREBRAS]);
+    fireEvent.click(tab("Available"));
+    const cerebras = screen.getByRole("button", { name: "Connect Cerebras" }).parentElement!;
+    expect(cerebras).not.toHaveTextContent("Required");
+    expect(screen.getByRole("region", { name: "Essentials" })).toHaveTextContent(
+      "AI: Groq",
+    );
+  });
+
+  it("puts the more important ones first within a group", () => {
+    setup([TADO, UNIFI]);
+    const presence = screen.getByRole("region", { name: "Presence & climate" });
+    const names = within(presence)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"));
+    expect(names).toEqual(["Connect UniFi", "Connect tado°"]);
+  });
+
+  it("sets the broker up from its row, asking for its address first", () => {
+    setup([MQTT]);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Zigbee & MQTT" }));
+    expect(screen.getByLabelText("Broker address")).toBeInTheDocument();
   });
 
   it("sets the broker up in its own dialog, login and all", () => {
@@ -479,105 +564,116 @@ describe("IntegrationsPage groups", () => {
   });
 });
 
-describe("IntegrationsPage gallery", () => {
+describe("IntegrationsPage search", () => {
   const EVERYTHING = [MQTT, { ...GROQ, added: true }, CEREBRAS, UNIFI, TADO, NEMLIG, CLAUDE];
 
-  function gallery() {
-    openAddList();
-    return screen.getByRole("dialog", { name: "Add an integration" });
-  }
-
-  it("opens as cards under the same groups, Essentials first", () => {
+  it("narrows the tab to what matches, hiding empty groups", () => {
     setup(EVERYTHING);
-    const dialog = gallery();
-    const headings = within(dialog)
-      .getAllByRole("heading", { level: 3 })
-      .map((h) => h.textContent);
-    expect(headings).toEqual([
-      "Essentials",
-      "Presence & climate",
-      "Shopping",
-      "Assistants & tools",
-    ]);
-    // What a newcomer needs to choose: what it does, and what it takes.
-    const nemlig = within(dialog).getByRole("button", { name: /nemlig.com/ });
-    expect(nemlig).toHaveTextContent("Groceries delivered.");
-    expect(nemlig).toHaveTextContent("You need: A nemlig.com account.");
+    fireEvent.click(tab("Available"));
+    // "Who is home" is in both presence blurbs and nowhere else.
+    search("WHO IS HOME");
+    expect(screen.getByRole("button", { name: "Connect UniFi" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect tado°" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect nemlig.com" })).toBeNull();
+    expect(
+      screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
+    ).toEqual(["Presence & climate"]);
   });
 
-  it("shows each service's own logo, as the page does once it is added", () => {
-    setup([MQTT, GROQ, NEMLIG]);
-    const dialog = gallery();
-    // The card holding `name`: the nearest box around it with a logo.
-    const logo = (name: RegExp) => {
-      let node: HTMLElement | null = within(dialog).getByText(name);
-      while (node && !node.querySelector("[data-logo]")) node = node.parentElement;
-      return node?.querySelector("[data-logo]") ?? null;
-    };
-    expect(logo(/^Groq$/)).toHaveAttribute("data-logo", "brand");
-    expect(logo(/^nemlig\.com$/)).toHaveAttribute("data-logo", "brand");
-    // The broker has no logo of its own.
-    expect(logo(/^Zigbee & MQTT$/)).toHaveAttribute("data-logo", "icon");
-  });
-
-  it("marks what is already added, and opens its settings", () => {
+  it("finds by group name", () => {
     setup(EVERYTHING);
-    const groq = within(gallery()).getByRole("button", { name: /Groq/ });
-    expect(groq).toHaveTextContent("Added");
-    fireEvent.click(groq);
-    expect(screen.getByLabelText("groq API key")).toBeInTheDocument();
+    fireEvent.click(tab("Available"));
+    search("shopping");
+    expect(screen.getByRole("button", { name: "Connect nemlig.com" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect UniFi" })).toBeNull();
   });
 
-  it("badges Required and Recommended where they apply", () => {
-    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO]);
-    const dialog = gallery();
-    const card = (name: RegExp) => within(dialog).getByRole("button", { name });
-    expect(card(/Zigbee & MQTT/)).toHaveTextContent("Required");
-    expect(card(/Groq/)).toHaveTextContent("Required");
-    expect(card(/UniFi/)).toHaveTextContent("Recommended");
-    expect(card(/tado°/)).not.toHaveTextContent(/Required|Recommended/);
-    // The group says it is one of each, not every one of them.
-    expect(dialog).toHaveTextContent(
-      "Niles needs one speech-to-text provider and one AI provider.",
+  it("says when nothing matches", () => {
+    setup(EVERYTHING);
+    search("  zigbee2000 ");
+    expect(screen.getByText("Nothing matches “zigbee2000”.")).toBeInTheDocument();
+    expect(screen.queryAllByRole("region")).toHaveLength(0);
+  });
+
+  it("points to a match on the other tab", () => {
+    setup(EVERYTHING);
+    search("cerebras");
+    expect(screen.getByText("Nothing matches “cerebras”.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cerebras is under Available" }));
+    expect(tab("Available")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Connect Cerebras" })).toBeInTheDocument();
+  });
+});
+
+describe("matchesQuery", () => {
+  it("matches label, blurb and group, ignoring case", () => {
+    expect(matchesQuery(GROQ, "groq")).toBe(true);
+    expect(matchesQuery(GROQ, "LANGUAGE MODELS")).toBe(true);
+    expect(matchesQuery(GROQ, "essent")).toBe(true);
+    expect(matchesQuery(GROQ, "  ")).toBe(true);
+    expect(matchesQuery(GROQ, "thermostat")).toBe(false);
+  });
+});
+
+describe("statusOf", () => {
+  const unset = (key: string) => ({ key, label: key, source: "unset" as const });
+  const stored = (key: string) => ({ key, label: key, source: "stored" as const });
+
+  it("says a provider without its key needs one", () => {
+    const status = statusOf(
+      { ...GROQ, added: true },
+      { secrets: { writable: true, secrets: [unset("provider.groq.api_key")] } },
     );
+    expect(status).toEqual({ ok: false, text: "Needs its API key" });
   });
 
-  it("stops calling the other providers required once a role is covered", () => {
-    // Groq answers and transcribes, so Cerebras is a choice, not a gap.
-    setup([{ ...GROQ, added: true }, CEREBRAS]);
-    const cerebras = within(gallery()).getByRole("button", { name: /Cerebras/ });
-    expect(cerebras).not.toHaveTextContent("Required");
+  it("says a finished one is working", () => {
+    const status = statusOf(
+      { ...GROQ, added: true },
+      { secrets: { writable: true, secrets: [stored("provider.groq.api_key")] } },
+    );
+    expect(status).toEqual({ ok: true, text: "Working" });
   });
 
-  it("puts the more important cards first within a group", () => {
-    setup([TADO, UNIFI]);
-    const dialog = gallery();
-    const presence = within(dialog).getByRole("region", { name: "Presence & climate" });
-    const names = within(presence)
-      .getAllByRole("button")
-      .map((b) => b.textContent ?? "");
-    expect(names[0]).toMatch(/^UniFi/);
-    expect(names[1]).toMatch(/^tado°/);
+  it("says switched off before anything else is missing", () => {
+    const status = statusOf(
+      { ...NEMLIG, added: true },
+      { nemlig: { enabled: false }, secrets: NEMLIG_LOGIN },
+    );
+    expect(status).toEqual({ ok: false, text: "Switched off" });
   });
 
-  it("opens the setup flow for the card picked", () => {
-    const { onChange } = setup([UNIFI, NEMLIG], {
-      writable: true,
-      secrets: [...UNIFI_KEY.secrets, ...NEMLIG_LOGIN.secrets],
-    });
-    fireEvent.click(within(gallery()).getByRole("button", { name: /nemlig.com/ }));
-    expect(screen.queryByRole("dialog", { name: "Add an integration" })).toBeNull();
-    expect(onChange).toHaveBeenCalledWith("integrations.nemlig", [
-      { path: "integrations.nemlig.enabled", value: true },
-    ]);
-    expect(screen.getByText("nemlig.com password")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Console address")).toBeNull();
-  });
-
-  it("sets up the broker from its card, asking for its address first", () => {
-    setup([MQTT]);
-    fireEvent.click(within(gallery()).getByRole("button", { name: /Zigbee & MQTT/ }));
-    expect(screen.getByLabelText("Broker address")).toBeInTheDocument();
+  it("names what each kind is waiting for", () => {
+    expect(statusOf({ ...TADO, added: true }, {}).text).toBe("Not signed in to tado° yet");
+    expect(statusOf({ ...UNIFI, added: true }, { unifiHost: " " }).text).toBe(
+      "Needs its address",
+    );
+    expect(
+      statusOf({ ...TADO, id: "linear", label: "Linear", added: true }, { linear: { team: "" } })
+        .text,
+    ).toBe("Needs a team");
+    expect(
+      statusOf(
+        { ...TADO, id: "lg_tv", label: "LG TV", added: true },
+        {
+          tv: { configured: true, paired: false, mac: null, room: null, status: null, error: null },
+        },
+      ).text,
+    ).toBe("TV not paired yet");
+    expect(
+      statusOf(
+        { ...TADO, id: "spotify", label: "Spotify", added: true },
+        {
+          secrets: {
+            writable: true,
+            secrets: [
+              stored("integrations.spotify.client_id"),
+              unset("integrations.spotify.client_secret"),
+            ],
+          },
+        },
+      ).text,
+    ).toBe("Needs its client ID and secret");
   });
 });
 
@@ -591,7 +687,7 @@ describe("IntegrationsPage removing", () => {
         { ...NEMLIG_LOGIN.secrets[1], source: "stored" },
       ],
     });
-    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     expect(screen.getByText("Its saved keys are deleted too.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
 
@@ -626,7 +722,7 @@ describe("IntegrationsPage removing", () => {
       writable: true,
       secrets: NEMLIG_LOGIN.secrets.map((s) => ({ ...s, source: "stored" as const })),
     });
-    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
     expect(await screen.findByText("no database")).toBeInTheDocument();
     expect(onReset).not.toHaveBeenCalled();
@@ -634,7 +730,7 @@ describe("IntegrationsPage removing", () => {
 
   it("says nothing about keys when it has none saved", () => {
     setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
-    fireEvent.click(screen.getByRole("button", { name: /nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     expect(screen.queryByText(/saved keys are deleted/)).toBeNull();
   });
 });
