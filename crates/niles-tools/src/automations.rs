@@ -83,6 +83,25 @@ impl Proposals {
         self.lock().take();
     }
 
+    /// The rule read back since `since`, still waiting: what a turn
+    /// that began then asked to save.
+    pub fn offered_since(&self, since: Instant) -> Option<AutomationRuleDto> {
+        self.lock()
+            .as_ref()
+            .filter(|(_, at)| *at >= since)
+            .map(|(rule, _)| rule.clone())
+    }
+
+    /// `rule` was answered elsewhere — a button in the app — so a yes
+    /// said next is not taken for it too.
+    pub fn settled(&self, rule: &AutomationRuleDto) {
+        let mut pending = self.lock();
+        if pending.as_ref().is_some_and(|(waiting, _)| waiting == rule) {
+            pending.take();
+            self.talk_lock().take();
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<(AutomationRuleDto, Instant)>> {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -933,6 +952,28 @@ mod tests {
         assert!(!proposals.pending());
         // A misheard one is not offered.
         propose.execute(garden_door("offers")).await.unwrap();
+        assert!(!proposals.pending());
+    }
+
+    #[tokio::test]
+    async fn a_read_back_belongs_to_the_turn_it_was_made_in() {
+        let proposals = Arc::new(Proposals::new());
+        let propose = ProposeAutomation {
+            store: Arc::new(AutomationStore::new()),
+            registry: house(),
+            proposals: proposals.clone(),
+            tz: chrono_tz::Tz::UTC,
+        };
+        let before = Instant::now();
+        propose.execute(garden_door("office")).await.unwrap();
+        let after = Instant::now();
+        let rule = proposals
+            .offered_since(before)
+            .expect("offered in this turn");
+        assert!(proposals.offered_since(after).is_none());
+
+        // Answered by a button, it no longer waits for a spoken yes.
+        proposals.settled(&rule);
         assert!(!proposals.pending());
     }
 

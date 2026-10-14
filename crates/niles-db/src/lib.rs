@@ -29,6 +29,7 @@
 mod automations;
 mod calendars;
 mod captures;
+mod conversation_log;
 mod conversations;
 mod enrollments;
 mod groceries;
@@ -44,6 +45,7 @@ mod timers;
 pub use automations::PostgresAutomations;
 pub use calendars::PostgresCalendars;
 pub use captures::{Capture, PostgresCaptures};
+pub use conversation_log::{ConversationRow, KEPT_PER_PERSON, PostgresConversationLog};
 pub use conversations::PostgresConversations;
 pub use enrollments::PostgresEnrollments;
 pub use groceries::PostgresGroceries;
