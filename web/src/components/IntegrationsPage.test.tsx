@@ -565,6 +565,13 @@ describe("IntegrationsPage groups", () => {
 });
 
 describe("IntegrationsPage search", () => {
+  it("is not a box a browser fills in with a saved login", () => {
+    setup([{ ...GROQ, added: true }]);
+    const box = screen.getByRole("searchbox", { name: "Search integrations" });
+    expect(box).toHaveAttribute("autocomplete", "off");
+    expect(box).toHaveAttribute("name", "integration-search");
+  });
+
   const EVERYTHING = [MQTT, { ...GROQ, added: true }, CEREBRAS, UNIFI, TADO, NEMLIG, CLAUDE];
 
   it("narrows the tab to what matches, hiding empty groups", () => {

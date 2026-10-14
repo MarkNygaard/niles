@@ -22,6 +22,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -417,46 +424,54 @@ export function IntegrationsPage({
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h2 className="font-heading text-base font-medium">Integrations</h2>
-        <p className="text-muted-foreground text-sm">
-          The services Niles works through.
-        </p>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Integrations</CardTitle>
+          <CardDescription>The services Niles works through.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="relative">
+            <Search
+              aria-hidden
+              className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2"
+            />
+            {/* Not a login: with the setup panels' password fields on the
+                page, Chrome took this for the username box and filled in the
+                signed-in address whenever a panel closed. */}
+            <Input
+              type="search"
+              name="integration-search"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+              aria-label="Search integrations"
+              placeholder="Search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="pl-8"
+            />
+          </div>
 
-      <div className="relative">
-        <Search
-          aria-hidden
-          className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2"
-        />
-        <Input
-          type="search"
-          aria-label="Search integrations"
-          placeholder="Search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="pl-8"
-        />
-      </div>
-
-      <Tabs value={tab} onValueChange={(value) => setPicked(value as Tab)}>
-        <TabsList className="w-full sm:w-fit">
-          {(["connected", "available"] as const).map((value) => (
-            <TabsTrigger key={value} value={value} className="sm:px-3">
-              {TAB_LABELS[value]}{" "}
-              <span className="text-muted-foreground tabular-nums">
-                {value === "connected" ? added.length : available.length}
-              </span>
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        <TabsContent value="connected" className="flex flex-col gap-5 pt-2">
-          {results("connected")}
-        </TabsContent>
-        <TabsContent value="available" className="flex flex-col gap-5 pt-2">
-          {results("available")}
-        </TabsContent>
-      </Tabs>
+          <Tabs value={tab} onValueChange={(value) => setPicked(value as Tab)}>
+            <TabsList className="w-full sm:w-fit">
+              {(["connected", "available"] as const).map((value) => (
+                <TabsTrigger key={value} value={value} className="sm:px-3">
+                  {TAB_LABELS[value]}{" "}
+                  <span className="text-muted-foreground tabular-nums">
+                    {value === "connected" ? added.length : available.length}
+                  </span>
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <TabsContent value="connected" className="flex flex-col gap-5 pt-2">
+              {results("connected")}
+            </TabsContent>
+            <TabsContent value="available" className="flex flex-col gap-5 pt-2">
+              {results("available")}
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
 
       {error && <p className="text-destructive text-sm">{error}</p>}
 
@@ -908,7 +923,7 @@ function ConnectedRow({
             aria-hidden
             className={cn(
               "size-1.5 shrink-0 rounded-full",
-              status.ok ? "bg-lit" : "bg-muted-foreground/40",
+              status.ok ? "bg-ok" : "bg-muted-foreground/40",
             )}
           />
           <span className="truncate">{status.text}</span>

@@ -80,7 +80,10 @@ export function SecretField({ secret, writable, onChanged }: SecretFieldProps) {
         <div className="flex items-center gap-2">
           <Input
             type="password"
-            autoComplete="off"
+            // A key being set, never a login: "off" alone leaves Chrome
+            // pairing it with whatever text box sits nearest and filling
+            // that with a saved email.
+            autoComplete="new-password"
             aria-label={secret.label}
             placeholder={secret.source === "stored" ? "Replace it…" : "Not set"}
             value={draft}
