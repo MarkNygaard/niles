@@ -5,6 +5,13 @@ on-device wake word + **direct TCP streaming of raw PCM frames to the
 `niles-wyoming` server** (the Wyoming protocol). This is the settled
 satellite architecture for niles.
 
+> **Setting up a satellite?** The current firmware is the ESP-IDF one in
+> [`satellite-idf/`](satellite-idf/), with the wake word "Niles" on the device.
+> Its README has the step-by-step setup:
+> [Set up a satellite](satellite-idf/README.md#set-up-a-satellite). The rest of
+> this page is the design history; the Arduino sketch below is the earlier
+> wake-word-less version, kept for reference.
+
 ## Why this approach (decided 2026-06-06)
 
 The goal is low latency and high response quality. The fast pattern —
@@ -86,7 +93,7 @@ rather than guess:
 
 ---
 
-## The shipped firmware: [`niles_satellite/niles_satellite.ino`](niles_satellite/niles_satellite.ino)
+## The earlier Arduino firmware (superseded by `satellite-idf/`): [`niles_satellite/niles_satellite.ino`](niles_satellite/niles_satellite.ino)
 
 Energy-VAD **always-listen** sketch — verified end-to-end on real
 hardware (2026-06-06): speak a command → niles acts → JARVIS replies,

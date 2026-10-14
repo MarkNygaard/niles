@@ -4,7 +4,7 @@
 
 **Niles** (NYE-uls) — *Neural Intelligence, Lightweight Edge System* — is an open-source, AI-first home automation system designed to replace Home Assistant for users who want sub-second voice interactions, code/config over UI, and a voice assistant with real LLM intelligence as a first-class citizen.
 
-It runs locally on small hardware (a Linux host or Kubernetes cluster), bridges Zigbee devices via Zigbee2MQTT, and exposes a voice interface through ESPHome-based satellites with a three-tier intent pipeline: regex → fast LLM → smart LLM.
+It runs locally on small hardware (a Linux host or Kubernetes cluster), bridges Zigbee devices via Zigbee2MQTT, and exposes a voice interface through ESP32-S3 satellites (a reSpeaker XVF3800 with Niles's own firmware and an on-device "Niles" wake word) with a three-tier intent pipeline: regex → fast LLM → smart LLM.
 
 ## Documentation
 
@@ -13,6 +13,7 @@ A navigable docs site lives at [docs/](docs/). Build locally with `mdbook serve 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architectural spec: hardware, voice pipeline, lighting model, scenes, timers, integrations, permissions, deployment.
 - **[CLAUDE.md](CLAUDE.md)** — project orientation for Claude Code and other AI coding agents.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
+- **[Set up a satellite](firmware/xiao-wyoming/satellite-idf/README.md#set-up-a-satellite)** — flash a reSpeaker XVF3800 with the Niles firmware and add it to a room.
 - `MANIFEST.md` — LLM-facing capability manifest (generated; not yet present, see Phase 11).
 
 ## License
