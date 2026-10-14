@@ -582,10 +582,7 @@ impl devices::Host for HostState {
             return Ok(());
         }
         registry.merge_state(&device, partial.clone());
-        self.publish(Event::DeviceStateChanged {
-            id: device,
-            state: partial,
-        });
+        self.plugin.publish_state(device, partial, &self.house);
         Ok(())
     }
 

@@ -33,10 +33,15 @@ pub type SettingsFn = Arc<dyn Fn(&str) -> toml::Table + Send + Sync>;
 /// A plugin's secret, by plugin id and key.
 pub type SecretsFn = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 
+/// The largest component Niles will run.
+pub const MAX_COMPONENT: usize = 64 * 1024 * 1024;
+
 /// Events waiting for a plugin, at most; past that the oldest go.
 pub const EVENT_QUEUE: usize = 256;
 /// Calls to `ui.invalidate` this close together become one message.
 const COALESCE: Duration = Duration::from_millis(250);
+/// One device's state reports this close together become one event.
+pub const REPORT_INTERVAL: Duration = Duration::from_millis(100);
 const LOG_WINDOW: Duration = Duration::from_secs(10);
 const LOG_LINES: u32 = 100;
 const LOG_LINE_BYTES: usize = 2048;
@@ -328,6 +333,13 @@ impl Runtime {
     /// with the same id is replaced.
     pub async fn install(&self, manifest_text: &str, component: Vec<u8>) -> Result<()> {
         let manifest = Manifest::parse_valid(manifest_text)?;
+        if component.len() > MAX_COMPONENT {
+            return Err(Error::Component(format!(
+                "is {} MiB; at most {} MiB",
+                component.len() / (1024 * 1024),
+                MAX_COMPONENT / (1024 * 1024)
+            )));
+        }
         let engine = self.inner.engine.clone();
         let linker = self.inner.linker.clone();
         let bytes = component.clone();
@@ -660,6 +672,7 @@ pub(crate) struct Plugin {
     subscriptions: Mutex<HashMap<EventPermission, Vec<String>>>,
     renders: Mutex<HashMap<(String, Context), (Instant, Surface)>>,
     pending_invalidations: Mutex<HashSet<String>>,
+    reports: Mutex<HashMap<DeviceId, Reported>>,
     notified: Mutex<VecDeque<Instant>>,
     log_window: Mutex<LogWindow>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -668,6 +681,13 @@ pub(crate) struct Plugin {
 struct Record {
     status: Status,
     error: Option<String>,
+}
+
+/// When a device's state change was last published, and what has been
+/// reported since and not yet published.
+struct Reported {
+    at: Instant,
+    waiting: Option<DeviceState>,
 }
 
 struct LogWindow {
@@ -695,6 +715,7 @@ impl Plugin {
             subscriptions: Mutex::default(),
             renders: Mutex::default(),
             pending_invalidations: Mutex::default(),
+            reports: Mutex::default(),
             notified: Mutex::default(),
             log_window: Mutex::new(LogWindow {
                 start: Instant::now(),
@@ -842,6 +863,51 @@ impl Plugin {
 
     /// Ask open apps to draw `surface` again, a moment from now so a
     /// burst of calls is one message.
+    /// Publish a state change a plugin reported, at most once per
+    /// [`REPORT_INTERVAL`] per device: reports in between are merged and
+    /// published together when it has passed. The registry already has
+    /// each one; this only spares the bus, and everything listening to
+    /// it, a plugin that reports in a tight loop.
+    pub fn publish_state(self: &Arc<Self>, id: DeviceId, partial: DeviceState, house: &House) {
+        let now = Instant::now();
+        let mut reports = lock(&self.reports);
+        let reported = reports.entry(id.clone()).or_insert(Reported {
+            at: now.checked_sub(REPORT_INTERVAL).unwrap_or(now),
+            waiting: None,
+        });
+        if let Some(waiting) = &mut reported.waiting {
+            waiting.merge(partial);
+            return;
+        }
+        let since = now.duration_since(reported.at);
+        if since >= REPORT_INTERVAL {
+            reported.at = now;
+            drop(reports);
+            house
+                .bus
+                .publish(Event::DeviceStateChanged { id, state: partial });
+            return;
+        }
+        reported.waiting = Some(partial);
+        drop(reports);
+        let plugin = self.clone();
+        let bus = house.bus.clone();
+        house.handle.spawn(async move {
+            tokio::time::sleep(REPORT_INTERVAL - since).await;
+            let state = {
+                let mut reports = lock(&plugin.reports);
+                let Some(reported) = reports.get_mut(&id) else {
+                    return;
+                };
+                reported.at = Instant::now();
+                reported.waiting.take()
+            };
+            if let Some(state) = state {
+                bus.publish(Event::DeviceStateChanged { id, state });
+            }
+        });
+    }
+
     pub fn invalidate(self: &Arc<Self>, surface: &str, house: &House) {
         lock(&self.renders).retain(|(s, _), _| s != surface);
         if !lock(&self.pending_invalidations).insert(surface.to_string()) {

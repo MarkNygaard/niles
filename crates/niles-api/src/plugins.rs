@@ -37,6 +37,8 @@ pub struct PluginSummary {
     pub status_line: String,
     /// The last thing that went wrong, if anything has.
     pub error: Option<String>,
+    /// Events dropped because the plugin was not keeping up with them.
+    pub dropped_events: u64,
 }
 
 /// Why a surface or an action got no answer.
@@ -187,6 +189,7 @@ mod tests {
                 status: "failing".into(),
                 status_line: "Not working: timed out in on-timer after 10 s".into(),
                 error: Some("timed out in on-timer after 10 s".into()),
+                dropped_events: 0,
             }]
         }
 

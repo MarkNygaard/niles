@@ -84,7 +84,7 @@ pub async fn check(manifest: &str, component: Option<Vec<u8>>, logo: Option<Vec<
 
 async fn check_component(manifest: &Manifest, bytes: Vec<u8>, report: &mut Report) {
     let size = bytes.len();
-    if size > 64 * 1024 * 1024 {
+    if size > crate::runtime::MAX_COMPONENT {
         report
             .problems
             .push(format!("component: {size} bytes; at most 64 MiB"));

@@ -71,19 +71,7 @@ impl DeviceRegistry {
         let Some(device) = guard.get_mut(id) else {
             return false;
         };
-        let s = &mut device.state;
-        s.on = partial.on.or(s.on);
-        s.brightness = partial.brightness.or(s.brightness);
-        s.color_temp_kelvin = partial.color_temp_kelvin.or(s.color_temp_kelvin);
-        s.rgb = partial.rgb.or(s.rgb);
-        s.temperature_celsius = partial.temperature_celsius.or(s.temperature_celsius);
-        s.humidity_percent = partial.humidity_percent.or(s.humidity_percent);
-        s.battery_percent = partial.battery_percent.or(s.battery_percent);
-        s.open = partial.open.or(s.open);
-        s.motion = partial.motion.or(s.motion);
-        s.illuminance_lux = partial.illuminance_lux.or(s.illuminance_lux);
-        s.position = partial.position.or(s.position);
-        s.readings.extend(partial.readings);
+        device.state.merge(partial);
         true
     }
 

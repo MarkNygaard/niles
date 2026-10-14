@@ -571,6 +571,7 @@ impl niles_api::plugins::Plugins for AppPlugins {
                 name: p.name,
                 version: p.version,
                 error: p.error,
+                dropped_events: p.dropped_events,
             })
             .collect()
     }

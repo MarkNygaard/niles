@@ -249,6 +249,35 @@ async fn a_device_with_readings_joins_the_house_and_its_changes_are_published() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn reports_faster_than_every_100_ms_are_published_together() {
+    let house = House_::running().await;
+    let mut rx = house.bus.subscribe();
+    for watts in 1..=20 {
+        house
+            .tool("reading", json!({ "watts": watts }))
+            .await
+            .unwrap();
+    }
+    let mut published = Vec::new();
+    let until = Instant::now() + Duration::from_millis(500);
+    while let Ok(Ok(event)) =
+        tokio::time::timeout(until.saturating_duration_since(Instant::now()), rx.recv()).await
+    {
+        if let Event::DeviceStateChanged { state, .. } = event {
+            published.push(state.readings["power"].value);
+        }
+    }
+    assert_eq!(published.first(), Some(&1.0), "the first goes straight out");
+    assert_eq!(published.last(), Some(&20.0), "and the last is never lost");
+    assert!(published.len() < 20, "{published:?}");
+    assert_eq!(
+        house.device("x_hello:system/meter").unwrap().state.readings["power"].value,
+        20.0,
+        "the registry has every one"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_button_press_is_an_action_on_the_bus() {
     let house = House_::running().await;
     let mut rx = house.bus.subscribe();
