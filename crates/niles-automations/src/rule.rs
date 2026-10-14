@@ -181,6 +181,11 @@ pub enum Action {
         brightness: Option<u8>,
         kelvin: Option<u16>,
     },
+    /// One blind, or every blind in a room.
+    SetBlinds {
+        target: BlindTarget,
+        position: u8,
+    },
     Notify {
         body: String,
         room: Option<String>,
@@ -192,6 +197,12 @@ pub enum Action {
         then: Vec<Action>,
         otherwise: Vec<Action>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlindTarget {
+    Device(DeviceId),
+    Room(RoomName),
 }
 
 /// Optional filter for the `Presence` trigger and condition.
@@ -645,6 +656,13 @@ impl Action {
                 brightness,
                 kelvin,
             } => format!("set the {room} lights {}", how(on, brightness, kelvin)),
+            Action::SetBlinds { target, position } => {
+                let what = match target {
+                    BlindTarget::Device(device) => device.to_string(),
+                    BlindTarget::Room(room) => format!("the {room} blinds"),
+                };
+                format!("set {what} to {position}% open")
+            }
             Action::Notify { body, room, .. } => match room {
                 Some(room) => format!("said \"{body}\" in {room}"),
                 None => format!("said \"{body}\""),
@@ -997,6 +1015,34 @@ fn parse_action(
                 kelvin: *kelvin,
             }
         }
+        ActionDto::SetBlinds {
+            device,
+            room,
+            position,
+        } => {
+            if *position > 100 {
+                return Err(Error::Invalid {
+                    id: id.into(),
+                    reason: format!("a blind opens 0–100%, not {position}"),
+                });
+            }
+            let target = match (device, room) {
+                (Some(device), None) => {
+                    BlindTarget::Device(parse_device_id(id, device, default_source)?)
+                }
+                (None, Some(room)) => BlindTarget::Room(parse_room_name(id, room)?),
+                _ => {
+                    return Err(Error::Invalid {
+                        id: id.into(),
+                        reason: "set_blinds needs a device or a room, not both".into(),
+                    });
+                }
+            };
+            Action::SetBlinds {
+                target,
+                position: *position,
+            }
+        }
         ActionDto::Notify {
             body,
             room,
@@ -1326,6 +1372,31 @@ mod tests {
     }
 
     // ---- what triggers follow --------------------------------------
+
+    #[test]
+    fn blinds_are_set_by_room_or_one_at_a_time() {
+        let blinds = |action: serde_json::Value| {
+            rule(json!({
+                "id": "r",
+                "triggers": [{ "type": "sun", "event": "sunset" }],
+                "actions": [action],
+            }))
+        };
+        let r =
+            blinds(json!({ "do": "set_blinds", "room": "living_room", "position": 0 })).unwrap();
+        assert!(matches!(
+            &r.actions[0],
+            Action::SetBlinds {
+                target: BlindTarget::Room(_),
+                position: 0
+            }
+        ));
+        assert!(
+            blinds(json!({ "do": "set_blinds", "device": "office/blind", "position": 50 })).is_ok()
+        );
+        assert!(blinds(json!({ "do": "set_blinds", "position": 50 })).is_err());
+        assert!(blinds(json!({ "do": "set_blinds", "room": "office", "position": 150 })).is_err());
+    }
 
     #[test]
     fn a_motion_trigger_follows_the_sensor() {

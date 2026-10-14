@@ -8,7 +8,7 @@
 //! runs once at a time: a trigger firing again while a run waits out a
 //! delay replaces that run.
 
-use crate::rule::{Action, Context, Priority, Rule};
+use crate::rule::{Action, BlindTarget, Context, Priority, Rule};
 use crate::runs::{Outcome, RunLog};
 use crate::sun::Location;
 use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
@@ -374,6 +374,28 @@ impl AutomationEngine {
                         }
                         for light in &lights {
                             self.set(&rule.id, light, &desired, now).await;
+                        }
+                    }
+                    Action::SetBlinds { target, position } => {
+                        let desired = DeviceState {
+                            position: Some(*position),
+                            ..Default::default()
+                        };
+                        let blinds: Vec<DeviceId> = match target {
+                            BlindTarget::Device(device) => vec![device.clone()],
+                            BlindTarget::Room(room) => self
+                                .registry
+                                .list_room(room)
+                                .into_iter()
+                                .filter(|d| d.is_cover())
+                                .map(|d| d.id)
+                                .collect(),
+                        };
+                        if blinds.is_empty() {
+                            return Err("there are no blinds there".into());
+                        }
+                        for blind in &blinds {
+                            self.set(&rule.id, blind, &desired, now).await;
                         }
                     }
                     Action::Notify {

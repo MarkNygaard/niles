@@ -13,7 +13,7 @@ pub mod sun;
 pub use engine::{AutomationEngine, DeviceSink, Notifier};
 pub use error::{Error, Result};
 pub use presence_lights::PresenceLights;
-pub use rule::{Action, Condition, Priority, Rule, Trigger};
+pub use rule::{Action, BlindTarget, Condition, Priority, Rule, Trigger};
 pub use runs::{Outcome, Run, RunLog};
 pub use sentence::sentence;
 pub use store::{AutomationPersistence, AutomationStore};

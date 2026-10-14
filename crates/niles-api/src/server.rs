@@ -22,6 +22,10 @@ pub fn router(state: AppState) -> Router {
             get(handlers::devices_in_room).post(handlers::set_room),
         )
         .route("/rooms/{room}/{device}", post(handlers::set_device))
+        .route(
+            "/rooms/{room}/{device}/position",
+            post(handlers::set_position),
+        )
         .route("/events/stream", get(crate::events::events_stream))
         .route("/setup", get(crate::presence::setup_report))
         .route("/climate", get(crate::climate::list_zones))

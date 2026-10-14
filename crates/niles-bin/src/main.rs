@@ -4710,6 +4710,50 @@ async fn dispatch_text(
             dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::light_set(&room, on))
         }
+        Intent::BlindsSet {
+            room,
+            everywhere,
+            position,
+        } => {
+            let targets: Vec<Device> = match (&room, origin_room) {
+                _ if everywhere => ctx
+                    .registry
+                    .list_all()
+                    .into_iter()
+                    .filter(|d| d.is_cover())
+                    .collect(),
+                (Some(room), _) => match resolve_room_targets(ctx, peer, room, |d| d.is_cover()) {
+                    RoomResolve::Found(_, targets) => targets,
+                    RoomResolve::WarmingUp => return Some(response::room_warming_up()),
+                    // "the living room left blind" reads as a room called
+                    // "living room left": one blind, which the LLM finds.
+                    RoomResolve::BadName | RoomResolve::NoDevices => {
+                        return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
+                    }
+                },
+                (None, Some(here)) => ctx
+                    .registry
+                    .list_room(here)
+                    .into_iter()
+                    .filter(|d| d.is_cover())
+                    .collect(),
+                (None, None) => Vec::new(),
+            };
+            if targets.is_empty() {
+                return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
+            }
+            let desired = DeviceState {
+                position: Some(position),
+                ..Default::default()
+            };
+            dispatch_to_targets(ctx, peer, &targets, &desired).await;
+            Some(response::blinds(
+                room.as_deref(),
+                everywhere,
+                targets.len(),
+                position,
+            ))
+        }
         Intent::LightSetLast { on } => {
             let Some((spoken, targets)) = ctx.last_target.resolve(origin_room) else {
                 // Nothing recent to point at. The LLM has the

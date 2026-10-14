@@ -262,6 +262,15 @@ pub enum ActionDto {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kelvin: Option<u16>,
     },
+    /// One blind (`device`), or every blind in a room (`room`), to a
+    /// position: `0` shut, `100` open.
+    SetBlinds {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room: Option<String>,
+        position: u8,
+    },
     Notify {
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -67,6 +67,7 @@ pub enum DeviceClassDto {
     /// reported open or shut.
     Contact,
     Motion,
+    Cover,
     Sensor,
     Unknown,
 }
@@ -79,6 +80,7 @@ impl From<&DeviceClass> for DeviceClassDto {
             DeviceClass::Switch => Self::Switch,
             DeviceClass::Contact => Self::Contact,
             DeviceClass::Motion => Self::Motion,
+            DeviceClass::Cover => Self::Cover,
             DeviceClass::Sensor => Self::Sensor,
             DeviceClass::Unknown => Self::Unknown,
             // `DeviceClass` is `#[non_exhaustive]`; new upstream
@@ -108,6 +110,8 @@ pub struct DeviceStateDto {
     /// A motion sensor: `true` while it sees somebody.
     pub motion: Option<bool>,
     pub illuminance_lux: Option<f32>,
+    /// A blind: `0` shut, `100` open.
+    pub position: Option<u8>,
 }
 
 impl From<&DeviceState> for DeviceStateDto {
@@ -123,6 +127,7 @@ impl From<&DeviceState> for DeviceStateDto {
             open: s.open,
             motion: s.motion,
             illuminance_lux: s.illuminance_lux,
+            position: s.position,
         }
     }
 }

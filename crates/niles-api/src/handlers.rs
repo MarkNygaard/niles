@@ -44,6 +44,46 @@ pub struct SetDeviceBody {
     pub rgb: Option<[u8; 3]>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct PositionBody {
+    /// `0` shut, `100` open.
+    pub position: u8,
+}
+
+/// `POST /rooms/{room}/{device}/position` — a blind to a position.
+///
+/// Not part of `set_device`, whose every check is about what a light
+/// can do: a blind has no on, no brightness, and one thing to be told.
+pub async fn set_position(
+    State(state): State<AppState>,
+    Path((room, device)): Path<(String, String)>,
+    Json(body): Json<PositionBody>,
+) -> Result<StatusCode, Failure> {
+    let room = parse_room(&room)?;
+    if body.position > 100 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("position {} is out of range (0–100)", body.position),
+        ));
+    }
+    let blind = state
+        .registry
+        .list_room(&room)
+        .into_iter()
+        .find(|d| d.id.name().as_str() == device && d.is_cover())
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("no blind called {device:?} in {room}"),
+        ))?;
+    let desired = DeviceState {
+        position: Some(body.position),
+        ..Default::default()
+    };
+    let (topic, payload) = command_for(&state, &blind.id, &desired)?;
+    publish(&state, topic, payload).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
 pub async fn devices_in_room(
     State(state): State<AppState>,
     Path(room): Path<String>,

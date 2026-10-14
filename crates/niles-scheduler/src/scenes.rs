@@ -63,6 +63,7 @@ impl From<DeviceStateDto> for DeviceState {
             open: None,
             motion: None,
             illuminance_lux: None,
+            position: None,
         }
     }
 }

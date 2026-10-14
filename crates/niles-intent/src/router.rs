@@ -57,6 +57,7 @@ impl IntentRouter {
             .or_else(|| match_light_kelvin_step(&t))
             .or_else(|| match_light_kelvin_set(&t))
             .or_else(|| match_light(&t))
+            .or_else(|| match_blinds(&t))
             .or_else(|| match_back_to_normal(&t))
             .or_else(|| match_scene_save(&t))
             .or_else(|| match_scene_apply(&t))
@@ -486,6 +487,56 @@ fn match_light_set_all_in_room(t: &str) -> Option<Intent> {
     Some(Intent::LightSet {
         room: room.to_string(),
         on: state == "on",
+    })
+}
+
+// ---- Blinds ------------------------------------------------------------------
+
+const BLINDS: &str = r"(?:blinds?|curtains?|shades?|shutters?)";
+
+fn blinds_regexes() -> &'static [Regex; 2] {
+    static RE: OnceLock<[Regex; 2]> = OnceLock::new();
+    RE.get_or_init(|| {
+        [
+            // "close the living room blinds", "open the blinds in the
+            // office halfway", "lower all the shutters".
+            Regex::new(&format!(
+                r"^(?P<verb>open|close|shut|raise|lower)\s+(?P<all>all\s+)?(?:the\s+)?(?:(?P<room>.+?)\s+)?{BLINDS}(?:\s+in\s+(?:the\s+)?(?P<room2>.+?))?(?:\s+(?P<half>half\s?way))?$"
+            ))
+            .expect("blinds regex compiles"),
+            // "set the office blind to 40%", "put the blinds at 30 percent".
+            Regex::new(&format!(
+                r"^(?:set|put|open)\s+(?P<all>all\s+)?(?:the\s+)?(?:(?P<room>.+?)\s+)?{BLINDS}(?:\s+in\s+(?:the\s+)?(?P<room2>.+?))?\s+(?:to|at)\s+(?P<n>\d{{1,3}})\s*(?:%|percent)(?:\s+open)?$"
+            ))
+            .expect("blinds position regex compiles"),
+        ]
+    })
+}
+
+fn match_blinds(t: &str) -> Option<Intent> {
+    let [verb, set] = blinds_regexes();
+    let caps = verb.captures(t).or_else(|| set.captures(t))?;
+    let position = match (caps.name("n"), caps.name("half"), caps.name("verb")) {
+        (Some(n), _, _) => n.as_str().parse::<u8>().ok().filter(|n| *n <= 100)?,
+        (None, Some(_), _) => 50,
+        (None, None, Some(verb)) => match verb.as_str() {
+            "open" | "raise" => 100,
+            _ => 0,
+        },
+        (None, None, None) => return None,
+    };
+    let room = caps
+        .name("room")
+        .or_else(|| caps.name("room2"))
+        .map(|r| r.as_str().to_string());
+    // "the" is what is left when the optional article declines to match.
+    if room.as_deref() == Some("the") {
+        return None;
+    }
+    Some(Intent::BlindsSet {
+        everywhere: caps.name("all").is_some() && room.is_none(),
+        room,
+        position,
     })
 }
 
@@ -1799,6 +1850,39 @@ mod tests {
                 on: false
             })
         );
+    }
+
+    #[test]
+    fn blinds_are_opened_and_closed_by_room() {
+        let blinds = |room: Option<&str>, everywhere: bool, position: u8| {
+            Some(Intent::BlindsSet {
+                room: room.map(str::to_string),
+                everywhere,
+                position,
+            })
+        };
+        assert_eq!(
+            parse("Close the living room blinds."),
+            blinds(Some("living room"), false, 0)
+        );
+        assert_eq!(
+            parse("open the office blind"),
+            blinds(Some("office"), false, 100)
+        );
+        assert_eq!(parse("open the blinds"), blinds(None, false, 100));
+        assert_eq!(parse("lower the curtains"), blinds(None, false, 0));
+        assert_eq!(
+            parse("open the blinds in the living room halfway"),
+            blinds(Some("living room"), false, 50)
+        );
+        assert_eq!(
+            parse("set the office blind to 40%"),
+            blinds(Some("office"), false, 40)
+        );
+        assert_eq!(parse("close all the blinds"), blinds(None, true, 0));
+        assert_eq!(parse("set the blinds to 140%"), None);
+        // A rule, not a command.
+        assert_eq!(parse("close the blinds when the sun sets"), None);
     }
 
     #[test]

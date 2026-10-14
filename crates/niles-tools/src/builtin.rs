@@ -180,6 +180,7 @@ fn device_full(device: &niles_core::Device) -> Value {
     insert_if_some(map, "open", device.state.open);
     insert_if_some(map, "motion", device.state.motion);
     insert_if_some(map, "illuminance_lux", device.state.illuminance_lux);
+    insert_if_some(map, "position", device.state.position);
     v
 }
 
@@ -298,6 +299,12 @@ fn explain_device(device: &niles_core::Device) -> String {
         DeviceClass::Switch => explain_switch(&id, &device.state),
         DeviceClass::Sensor => explain_sensor(&id, &device.state),
         DeviceClass::Motion => explain_motion(&id, &device.state),
+        DeviceClass::Cover => match device.state.position {
+            Some(0) => format!("{id} is a blind; closed"),
+            Some(100) => format!("{id} is a blind; fully open"),
+            Some(p) => format!("{id} is a blind; {p}% open"),
+            None => format!("{id} is a blind but has not said where it is yet"),
+        },
         // DeviceClass is #[non_exhaustive]; Unknown and future variants fall back to generic.
         _ => explain_unknown(&id, &device.state),
     }
@@ -784,6 +791,112 @@ impl<P: Publisher> Tool for SetRoom<P> {
             out["dry_run"] = json!(true);
         }
         Ok(out)
+    }
+}
+
+// ---------- SetBlinds ----------
+
+/// Blinds, curtains and shutters: one, or every one in a room.
+///
+/// Its own tool rather than a `position` on `set_device`, whose every
+/// check is about lights — and so "close the blinds" never reaches for
+/// the light tools at all.
+pub struct SetBlinds<P: Publisher = MqttPublisher> {
+    registry: Arc<DeviceRegistry>,
+    publisher: P,
+    router: Arc<CommandRouter>,
+    dry_run: bool,
+}
+
+impl<P: Publisher> SetBlinds<P> {
+    pub fn new(
+        registry: Arc<DeviceRegistry>,
+        publisher: P,
+        router: Arc<CommandRouter>,
+        dry_run: bool,
+    ) -> Self {
+        Self {
+            registry,
+            publisher,
+            router,
+            dry_run,
+        }
+    }
+}
+
+#[async_trait]
+impl<P: Publisher> Tool for SetBlinds<P> {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "set_blinds".into(),
+            description: "Open, close or part-open blinds, curtains or shutters: one (device_id) or every one in a room (room). position 0 is closed, 100 fully open, 50 halfway.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string", "description": "One blind, e.g. 'living_room/left_blind'." },
+                    "room": { "type": "string", "description": "Every blind in the room, lower_snake, e.g. 'living_room'." },
+                    "position": { "type": "integer", "minimum": 0, "maximum": 100 }
+                },
+                "required": ["position"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let invalid = |reason: String| Error::InvalidArgs {
+            tool: "set_blinds".into(),
+            reason,
+        };
+        let position = args
+            .get("position")
+            .and_then(Value::as_u64)
+            .filter(|p| *p <= 100)
+            .ok_or_else(|| invalid("position must be 0–100".into()))? as u8;
+        let blinds: Vec<niles_core::Device> = match (
+            args.get("device_id").and_then(Value::as_str),
+            args.get("room").and_then(Value::as_str),
+        ) {
+            (Some(raw), _) => {
+                let device = resolve_device(&self.registry, "set_blinds", raw)?;
+                if !device.is_cover() {
+                    return Err(invalid(format!("{raw} is not a blind")));
+                }
+                vec![device]
+            }
+            (None, Some(raw)) => {
+                let room =
+                    RoomName::parse(raw).map_err(|_| Error::RoomNotFound { name: raw.into() })?;
+                let blinds: Vec<_> = self
+                    .registry
+                    .list_room(&room)
+                    .into_iter()
+                    .filter(|d| d.is_cover())
+                    .collect();
+                if blinds.is_empty() {
+                    return Err(invalid(format!("there are no blinds in {raw}")));
+                }
+                blinds
+            }
+            (None, None) => return Err(invalid("name a device_id or a room".into())),
+        };
+
+        let target = DeviceState {
+            position: Some(position),
+            ..Default::default()
+        };
+        let mut set = Vec::new();
+        for blind in &blinds {
+            let Some((topic, payload)) = self.router.format(&blind.id, &target) else {
+                continue;
+            };
+            if self.dry_run {
+                tracing::info!("[dry-run] would publish {topic} {payload}");
+            } else {
+                self.publisher.publish(&topic, payload.into_bytes()).await?;
+            }
+            set.push(blind.id.to_string());
+        }
+        Ok(json!({ "ok": true, "position": position, "set": set }))
     }
 }
 
@@ -1493,6 +1606,12 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
         router.clone(),
         dry_run,
     )));
+    reg.register(Box::new(SetBlinds::new(
+        registry.clone(),
+        publisher.clone(),
+        router.clone(),
+        dry_run,
+    )));
     reg.register(Box::new(SetDevice::new(
         registry, publisher, router, dry_run,
     )));
@@ -2004,6 +2123,41 @@ mod tests {
             matches!(err, Error::NotSwitchable { id, class } if id == "garage/unknown_thing" && class == DeviceClass::Unknown)
         );
         assert!(mock.topics.lock().await.is_empty());
+    }
+
+    // ---- set_blinds ----
+
+    #[tokio::test]
+    async fn the_blinds_in_a_room_go_together_and_nothing_else_moves() {
+        let registry = fixture_registry();
+        for name in ["left_blind", "right_blind"] {
+            registry.upsert(device(
+                &format!("living_room/{name}"),
+                DeviceClass::Cover,
+                DeviceState::default(),
+            ));
+        }
+        let mock = MockPublisher::default();
+        let tool = SetBlinds::new(
+            registry,
+            mock.clone(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            false,
+        );
+        let result = tool
+            .execute(json!({ "room": "living_room", "position": 0 }))
+            .await
+            .unwrap();
+        assert_eq!(result["set"].as_array().unwrap().len(), 2, "{result}");
+        let payloads = mock.payloads.lock().await;
+        assert!(payloads.iter().all(|p| p == br#"{"position":0}"#));
+
+        // A lamp is not a blind.
+        assert!(
+            tool.execute(json!({ "device_id": "living_room/floor_lamp", "position": 0 }))
+                .await
+                .is_err()
+        );
     }
 
     // ---- set_room ----
