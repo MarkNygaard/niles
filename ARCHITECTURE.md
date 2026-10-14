@@ -24,7 +24,7 @@ Home Assistant is a fantastic project, but it solves a different problem: maximu
 7. **Voice responses come from the satellite, not the room speaker.** Sonos (or any room speaker) is a tool the LLM can use, not the answer surface — keeps voice latency low while preserving full music control.
 8. **No admin UI in v1.** Configuration lives in code, config files, and naming conventions in the underlying source (Zigbee2MQTT, etc.). Adding a device means pairing it and naming it correctly upstream — Niles picks it up automatically. A UI may come later for monitoring and debugging, but it will never be required for normal use. Note: this principle applies to *routine operation*. One-time setup files (the canonical TOML config, an initial API token, Kubernetes manifests) are not "UI" and are explicitly allowed — anything you do once at install time can be text-based.
 9. **Self-documenting through voice, without sacrificing speed.** Users can ask Niles how to use Niles ("how do I save a scene?", "what can you do?"), and the system answers from a single source-of-truth capability reference that also grounds command execution. Context is loaded in tiers so common commands never pay the cost of carrying full documentation.
-10. **A personal infrastructure surface, not just home automation.** Niles controls lights and timers, but its real ambition is to be the voice surface for everything its user runs — coding workflows, calendars, email, deployments, monitoring. The architecture is built to accommodate external integrations as first-class citizens, not bolted-on plugins.
+10. **A personal infrastructure surface, not just home automation.** Niles controls lights and timers, but its real ambition is to be the voice surface for everything its user runs — coding workflows, calendars, email, deployments, monitoring. The integrations Niles ships are first-class citizens, not bolted-on plugins: crates in this repository, held to the same tests and conventions as the core. For the long tail no project can carry, third-party integrations run as sandboxed WebAssembly plugins installed from GitHub (see [Third-party integrations](#third-party-integrations-plugins)); once installed their devices, tools and pages join Niles exactly as a built-in's do, but they reach only what the household approved.
 11. **One shared home, multiple recognized people.** The house has one state (one set of devices, one lighting curve, one set of scenes). People who live there are identified by voice and can have personal references ("my calendar", "wake me up"), but they don't have per-user *preferences* for shared things. Admin users can set rules controlling who is allowed to do what.
 
 ## Hardware
@@ -1101,11 +1101,313 @@ The same pattern scales to:
 
 Each is a self-contained crate. None require core architectural changes — that's the point of the pattern.
 
+What the project will never carry in-tree — one household's inverter, a regional price feed, a niche gadget — can be written by anyone as a [third-party integration](#third-party-integrations-plugins), a sandboxed plugin installed from a GitHub repo.
+
 ### What this section does not specify
 
 - Whether Niles polls Linear for status or relies solely on webhooks (webhooks preferred; polling is the fallback)
 - How to handle Linear API-token rotation
 - Voice-fingerprint gating of who can file/trigger tasks (deferred to the upcoming "user recognition" capability — see separate section)
+
+## Third-party integrations (plugins)
+
+> **Status: specification, v0.1 of the interface.** Nothing in this section is implemented yet. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
+
+Built-in integrations are crates in this repository, and they stay that way: reviewed, tested and released with Niles. That cannot cover every household. Somebody with an inverter, a pool pump, a local bus timetable or a niche gadget with an HTTP API wants it in Niles without asking for a crate, and without forking. Home Assistant answers this with custom integrations installed from GitHub (HACS). Niles takes the same shape, installing from a GitHub repo, and adds a sandbox around the code.
+
+A third-party integration, a **plugin**, is a **WebAssembly component**: a compiled `.wasm` file that declares in its own metadata which functions it needs from its host and which it provides. Those declarations are written in **WIT**, the component model's interface language, and Niles's is the package `niles:integration@0.1.0`, world `plugin`. Niles runs plugins with **wasmtime**, using the Component Model and WASI 0.2.
+
+### Goals and non-goals
+
+Goals:
+
+- Somebody who has never touched Niles's code can write an integration in an afternoon, publish it as a GitHub release, and install it from the app by pasting the repo's URL.
+- An installed plugin is indistinguishable in use from a built-in. Its devices are in the rooms, in rules and on the dashboard, its tools are offered to the voice model and to the Claude and ChatGPT assistants, and it has a card on the Integrations page with a status line and a setup panel.
+- A plugin reaches only what its manifest declares and the household approved. A broken or hostile plugin cannot read Niles's database, another integration's secrets, the conversations, the memory, or who lives in the house.
+
+Non-goals:
+
+- **Replacing built-ins.** Anything most households want (lights, music, presence, calendars) is a built-in crate. Plugins are for the long tail.
+- **A marketplace.** There is no central index, rating or review in v0.1. A plugin is a GitHub repo somebody chose to trust. A curated list may come later; it changes nothing in this interface.
+- **Arbitrary code in the web app.** A plugin describes its pages and widgets declaratively and the app draws them with its own components. No plugin HTML or script runs in the app (see [Pages and widgets](#pages-and-widgets)).
+- **Speed-critical paths.** A plugin never sits between a spoken command and a Zigbee light. Tier 0 and Tier 1 for built-in devices are unchanged by any number of plugins.
+
+**Rejected: native Rust dylibs.** Rust has no stable ABI, so a `.so` built with one compiler version against one version of Niles's types breaks on the next of either; and a native library runs with the full rights of the Niles process, so there is no sandbox to speak of. **Rejected: a subprocess or container per plugin.** A subprocess is only sandboxed by the operating system, differently on every platform, and Niles in Kubernetes cannot start containers. A component is one portable file, its imports are the complete list of what it can touch, and memory and time limits come from the runtime.
+
+### Languages
+
+Anything that produces a WASI 0.2 component targeting the world:
+
+| Language | Toolchain | Notes |
+|---|---|---|
+| **Rust** (primary) | `wit-bindgen` with the `wasm32-wasip2` target, or `cargo-component` | The template repo and the worked example. Components around 200 KB. |
+| JavaScript | `jco componentize` (StarlingMonkey) | Build with `--disable http`, since HTTP goes through Niles's interface. Components around 12 MB. |
+| Go | TinyGo with `wit-bindgen-go` | |
+| Python | `componentize-py` | Pure Python only: libraries with C extensions do not build. Components around 19 MB, with the interpreter inside. |
+
+### The sandbox
+
+A plugin is one component instance in its own wasmtime `Store`. It has nothing but its imports, and Niles decides what each import does:
+
+- **No WASI filesystem, environment or sockets.** Toolchains import WASI 0.2 whether the code uses it or not, so Niles links it, but empty: no preopened directories, an empty environment, a socket policy that refuses every address and every name lookup, and `wasi:http/types` without `wasi:http/outgoing-handler`. Clocks and randomness work. Stdout and stderr go to the plugin's log.
+- **Network only through `niles:integration/http`.** Each request's host must match the manifest's `http` list (exact, or `*.example.com` for any subdomain), and the address it resolves to is checked again: a private, link-local or unique-local address (RFC 1918, `169.254.0.0/16`, `fc00::/7`, `fe80::/10`) is refused unless the `local_network` permission names it, and loopback (`127.0.0.0/8`, `::1`) and the cloud metadata address `169.254.169.254` are refused whatever it says. Niles connects to the address it checked, so DNS cannot be rebound between the check and the request. Every redirect hop is checked the same way. Internet hosts are `https` only; plain `http` is allowed to local-network addresses, where devices rarely have certificates.
+- **No access to Niles's own state.** There is no import for the database, the secret store, conversations, memory, people, voice embeddings or other integrations. A plugin reads its own settings and its own secrets, and its own key-value storage.
+- **One instance per plugin, calls serialised.** Niles never makes two calls into the same plugin at once and never calls a plugin while it is inside a host call, so a plugin has no locking to get right. Tool calls and `set-device` go ahead of queued timers and events, since somebody is waiting for them. Plugin calls run on their own threads, never on the async workers that carry the voice loop.
+
+### Runtime limits
+
+| | Limit | Why |
+|---|---|---|
+| Memory | 64 MiB by default. The manifest may ask for up to 256 MiB (`memory_mb`), shown at approval. | Rust plugins use a few MiB. JavaScript and Python carry an interpreter and want 128. |
+| Time per call | 10 s, enforced by epoch interruption. `init` gets 30 s, `render` 3 s, `stop` 2 s. | One instance means a slow call holds up every other. Ten seconds already makes a spoken answer feel broken. |
+| Long calls | None in v0.1. | Work that takes longer is split: start it, then pick it up from a timer. A per-call "long" flag would let one plugin block its own tools for minutes, and nothing in the long tail needs it yet. |
+| Component | 64 MiB download | |
+| Storage | 1 MiB per plugin; keys up to 256 bytes | Settings, caches and a little history, not a database. |
+| HTTP | 4 MiB response body, 5 redirects, timeout 5 s by default, never past the call's deadline | |
+| Timers | 32; `every` at least 5 s | |
+| Devices | 256 | |
+| Tools | 16; description up to 1 KiB, schema up to 8 KiB, result up to 16 KiB (cut off beyond, with a note to the model) | Each tool costs prompt tokens on every request it is sent with. |
+| Events | A queue of 256 per plugin; on overflow the oldest are dropped and counted on the card | |
+| UI | 500 nodes, 8 deep, 256 KiB per render; images 64 KiB as `data:` URIs | |
+| Notifications | 6 an hour | |
+| Logs | 100 lines per 10 s, 2 KiB each; the last 1,000 kept for the card | |
+
+Epoch interruption: a ticker advances wasmtime's epoch every 100 ms and each call is given a deadline in epochs, so a plugin stuck in a loop is stopped with a trap without Niles paying for instruction counting. Time spent waiting in a host call counts against the deadline too; a host call never outlives it.
+
+### The interface
+
+The full WIT is [`schemas/niles-integration.wit`](schemas/niles-integration.wit), commented item by item. In summary:
+
+**What Niles provides (imports):**
+
+| Interface | What it does |
+|---|---|
+| `log` | Lines at debug, info, warn and error, to Niles's log and the plugin's card. |
+| `config` | `get(key)` for the plugin's declared settings, `secret(key)` for its declared secrets. |
+| `storage` | `get`, `set`, `delete`, `list-keys(prefix)`: private string values in Postgres, namespaced to the plugin, 1 MiB quota. |
+| `http` | `send(request) -> result<response, http-error>`: one request, whole response, hosts checked against the manifest. |
+| `devices` | `upsert`, `report-state`, `report-action`, `set-available`, `remove`, `registered`: the plugin's own devices. |
+| `timers` | `every(id, seconds)`, `after(id, seconds)`, `cancel(id)`, which call the export `on-timer`. |
+| `events` | `subscribe(kind, device-patterns)`, `unsubscribe(kind)` for device-state changes, button actions and the house's presence, delivered to `on-event`. |
+| `notify` | `say(message, priority, room)`, through Niles's [notifications](#notifications-niles-speaks-unprompted): chime, routing, quiet hours, recall. |
+| `ui` | The node types for pages and widgets, and `invalidate(surface)` to ask open apps to redraw one. |
+
+**What a plugin provides (exports):** `init`, `tools`, `call-tool(name, args-json)`, `set-device(id, desired)`, `on-timer(id)`, `on-event(event)`, `render(surface, context)`, `on-action(surface, control, value, context)`, and `stop`. Every export must exist; a plugin with no tools returns an empty list, one with no pages returns an error from `render`.
+
+`stop` is the shutdown hook. It is not called `shutdown` because a world-level export of that name clashes with a symbol in componentize-py's runtime, and the Python build fails.
+
+Device state uses Niles's own fields and units, as `DeviceState` in `niles-core` does: on, brightness 0–100 percent, colour temperature in kelvin, rgb, temperature in °C, humidity in percent, battery in percent, open, motion, illuminance in lux, and position 0 (shut) to 100 (open). Every field is optional and reports merge field by field, so `{on: false}` says nothing about brightness.
+
+**Not in v0.1: local TCP and UDP, and host-managed WebSockets.** The shape is settled enough to write down:
+
+```wit
+// Draft for 0.2. Not part of niles:integration@0.1.0.
+interface sockets {
+    // Niles holds the connection, reconnects with backoff, and delivers each
+    // message to the export on-message(id, message).
+    open-websocket: func(id: string, url: string, headers: list<tuple<string, string>>) -> result<_, host-error>;
+    send-websocket: func(id: string, text: string) -> result<_, host-error>;
+    close-websocket: func(id: string);
+    // One request and one reply over TCP or UDP, to a local-network address.
+    tcp-exchange: func(host: string, port: u16, payload: list<u8>, timeout-ms: u32) -> result<list<u8>, host-error>;
+    udp-exchange: func(host: string, port: u16, payload: list<u8>, timeout-ms: u32) -> result<list<u8>, host-error>;
+}
+```
+
+They are left out because each adds something v0.1 should get right first. A WebSocket is a long-lived connection pushing messages into a plugin whose calls are serialised; the queueing, back-pressure and reconnect rules need real plugins to settle. Raw TCP and UDP widen the `local_network` permission from "talk HTTP to that address" to "speak any protocol to it", which deserves its own wording at approval. And the long tail reachable with polled HTTP is long: most cloud APIs and most local devices with an API at all. The draft above is the starting point for 0.2, not a commitment.
+
+### Pages and widgets
+
+A plugin can add to the app: a **page in the menu**, and **widgets** that sit on the front page or on a room card. Both are **declarative**. The plugin describes a surface as a tree of a few Niles components and the app draws them with its own, so a plugin page looks like every other page, follows dark mode and the phone layout, and runs no code in the browser: it cannot read the session, the cookies or anything else on the page.
+
+**Declared in the manifest**, with the `ui` permission:
+
+```toml
+[[ui.menu]]
+id = "electricity"
+label = "Electricity"
+icon = "zap"            # a Lucide icon name
+refresh_every = 300     # seconds, optional
+
+[[ui.widgets]]
+id = "price_now"
+title = "Electricity now"
+room = "kitchen"        # optional: the room card it starts on; none means the front page
+refresh_every = 300
+```
+
+A menu entry joins the [menu](#the-web-ui) like the built-in pages, as `<plugin-id>.<entry-id>` in `[menu]`'s `order`, `avatar` and `hidden`, so Settings → Menu can show, hide and move it. A widget starts where the manifest says; Settings can move it to the front page or another room card, or hide it.
+
+**Rendering.** The app asks Niles for a surface, Niles calls the export `render(surface-id, context)`, and the plugin returns a `ui-tree`. The context carries the room (for a widget on a room card) and the signed-in person's slug (`mark`) when the app knows who is looking, so a page can differ per person without the plugin learning anything else about them. `render` has 3 s and should draw from what the plugin already holds, not fetch.
+
+**The vocabulary** is small and versioned with the interface:
+
+| | Nodes |
+|---|---|
+| Layout | `stack`, `row` (a stack on a phone), `card` with an optional title |
+| Content | `heading`, `text` (optionally muted), `reading` (label, value, unit), `badge` (label, tone), `items` (a list of title, detail, trailing) |
+| Controls | `button` (id, label, style), `switch` (id, label, value), `slider` (id, min, max, step, value), `choice` (id, options, value), `text-field` (id, placeholder) |
+| Charts | `chart`: line or bar, labels and up to 4 series |
+| Images | `image`: an `https` URL on a host the `http` permission declares, which Niles fetches and serves itself so the viewer's browser never contacts that host; or a `data:` URI of at most 64 KiB. PNG, JPEG, WebP or GIF; no SVG. |
+
+WIT has no recursive types, so a tree is a flat list of nodes: node 0 is the root, and each node lists its children by index. A child's index is greater than its parent's and no node has two parents, which rules out cycles; Niles rejects a tree that breaks either rule, or that gives children to anything but `stack`, `row` and `card`.
+
+**Actions.** Using a control calls `on-action(surface-id, control-id, value, context)` with what happened: `pressed`, `toggled(bool)`, `number(f64)` when a slider is let go, `chosen(value)`, or `text(value)` when a field is submitted. The plugin answers with an optional toast ("Prices updated") and whether to render again. An `err` is shown as an error toast.
+
+**Refresh.** A surface is rendered when it is opened; after an action that asks for it; every `refresh_every` seconds while it is open (the app asks again); and when the plugin calls `ui.invalidate(surface-id)`, for instance after a timer fetched new data. An invalidation is pushed to the app as a `ui_invalidated` frame on the WebSocket at `GET /events/stream` the app already holds, so nothing polls for it, and the app renders again only if the surface is on screen. Niles keeps the last tree per surface, room and person until it is invalidated or `refresh_every` passes, so ten open phones cost one call. HTTP: `GET /plugins/{id}/ui/{surface}` and `POST /plugins/{id}/ui/{surface}/actions`.
+
+**Later: a page of its own.** Some plugins will want more than the vocabulary: a floor plan, a camera grid. A possible 0.2+ escape hatch is a separate permission for a page served from the plugin's own static assets in a sandboxed iframe on a separate origin, without the session. It is not in v0.1, and the vocabulary should grow first.
+
+### The manifest
+
+Every plugin carries `niles-integration.toml`. In outline (the author guide describes every field):
+
+```toml
+id = "spotprice"                     # [a-z0-9_], 2-32 characters, starts with a letter
+name = "Spot prices"
+version = "0.1.0"                    # semver; the release tag is v0.1.0
+description = "Hear what power costs hour by hour, and let rules run things when it is cheapest."
+authors = ["Jane Doe <jane@example.com>"]
+homepage = "https://github.com/jane/niles-spotprice"
+min_niles = "0.2.0"                  # the oldest Niles it runs on
+interface = "0.1"                    # the niles:integration version it targets
+# group = "presence"                 # a catalogue group id; missing or unknown means Custom
+logo = "logo.svg"
+memory_mb = 64
+keywords = ["electricity", "power", "price", "kwh", "cheap", "strøm", "elpris"]
+
+[permissions]
+http = ["api.energidataservice.dk"]
+local_network = []                   # IPs, host names, a /24 at widest, or "setting:<key>"
+devices = true
+tools = true
+events = []                          # "device_state", "device_action", "presence"
+notify = false                       # true, or "urgent" to speak during quiet hours
+ui = true
+
+[[settings]]
+key = "area"
+label = "Price area"
+type = "choice"                      # string | number | boolean | secret | choice | room
+required = true
+default = "DK1"
+help = "West of the Great Belt is DK1, east of it DK2."
+options = [{ value = "DK1", label = "West Denmark (DK1)" }, { value = "DK2", label = "East Denmark (DK2)" }]
+```
+
+- **The description** is one line saying what the household gets, in the voice of the built-in catalogue's blurbs ("Hear what is on your Google calendar."), not what the API is.
+- **The id** must not be a built-in catalogue id (`mqtt`, `groq`, `sonos`…) or another installed plugin's. It names the plugin's device source (`x_<id>`), tool prefix (`<id>_`), secret keys (`plugins.<id>.<key>`) and menu entries (`<id>.<entry>`).
+- **The logo** is an SVG in the release, drawn on a 24×24 view box like the built-in marks in `BrandMark.tsx`. Niles sanitises it on install (shapes, paths, groups and fills only; no script, style, link, `foreignObject` or external reference; at most 32 KiB), keeps it in its database and serves it itself, so the Integrations page never fetches a logo from somewhere else. `currentColor` follows the text colour, as ChatGPT's mark does. Without a logo the card shows the group's generic icon.
+- **Settings** generate the plugin's setup panel. `room` is a `choice` filled with the house's rooms. `secret` values go into Niles's existing encrypted secret store under `plugins.<id>.<key>`, are never shown again, and reach the plugin only through `config.secret`.
+- **`setting:<key>`** in `local_network` means "the address the user types into that setting", for devices whose address only the household knows. The approval screen says so in those words.
+
+### Where a plugin appears
+
+On the Integrations page, under **Connected** once installed and set up, and in the group its manifest names, next to the built-ins:
+
+- **Group.** `group` is one of the catalogue's group ids (`essentials`, `music`, `presence`, `calendars`, `shopping`, `assistants`). A missing or unknown id puts the plugin in a **Custom** group, shown after the built-in ones. The ids are part of the interface: Niles may add groups, and a plugin naming a group its Niles does not know yet lands in Custom rather than failing.
+- **Marked as custom.** Every plugin's row carries a small **Custom** badge. Its setup panel shows where it came from: the GitHub repo as a link, the authors, the version, the install date. When a newer release exists the panel says **Update available**, and updating shows the change in permissions first (below).
+- **Install entry.** **Add from GitHub** sits at the end of the **Available** tab, under its own heading.
+- **Status line.** Like a built-in's: "Working", "Not set up: Price area is required", "Not working: timed out in on-timer after 10 s", "Stopped after repeated failures", or "Disabled".
+
+### Install
+
+1. Under Integrations → Available, **Add from GitHub**, and paste the repo's URL (`https://github.com/jane/niles-spotprice` or `jane/niles-spotprice`).
+2. Niles asks GitHub for the repo's latest release (`GET /repos/{owner}/{repo}/releases/latest`: not drafts, not pre-releases). The release must have `niles-integration.toml` and `integration.wasm` among its assets, and `logo.svg` if the manifest names one. Its tag must be the manifest's version, with or without a `v`.
+3. Niles reads the manifest and refuses, saying why, if it is invalid, its `interface` is one this Niles does not run, its `min_niles` is newer than this Niles, or its id is taken.
+4. It shows the name, description, logo, repo, authors and version, and **the permissions in plain words** (see the author guide's [permissions](docs/integrations/permissions.md)): "Connect to api.energidataservice.dk", "Reach the device at the address you enter under Address, on your home network", "Add devices to your home", "Offer 1 tool to the assistant: prices", "Adds a page to the menu: Electricity", "Adds a card to the front page", "See every device in the house change state", "Speak through your satellites, even during quiet hours". Followed, always, by what it cannot do: "It cannot see your conversations, the people in your house, other integrations' passwords or Niles's database."
+5. On **Install**, Niles downloads `integration.wasm`, compiles it (which proves it is a component and checks its imports and exports against the world), and **pins its sha256**. Where GitHub reports an asset digest, the two must agree. The approved manifest, the logo and the component's bytes are kept in Postgres: a restart never downloads again, and an asset replaced on GitHub afterwards changes nothing that runs.
+6. The plugin appears in its group with its setup panel. Once required settings are filled in, it starts.
+
+Only public repos in v0.1; a private one needs a GitHub token, which is a later addition. Plugins need [the database](#persistence); without one, Add from GitHub says so and does nothing.
+
+### Updates
+
+Niles checks each plugin's repo for a newer release once a day, and on demand from its panel. A newer release is shown as **Update available** with its release notes; nothing updates by itself. Updating repeats the install's checks, and when the permissions differ the household approves again, shown as a difference: what is added, what is removed. A plugin may also have changed its settings; new required ones put it in "Not set up" until they are filled in. The previous version's component is kept, so an update that turns out broken can be rolled back once from the panel.
+
+### Remove and disable
+
+**Disable** stops the plugin and keeps everything: settings, secrets, storage, devices (shown as unavailable). **Remove** stops it, deletes its devices from the registry, its storage, its settings and its secrets, its menu entries and widgets, and the stored component. Rules that named its devices are kept and shown as broken on the Automations page, so the household decides what to do with them rather than finding them silently gone.
+
+### How a plugin joins Niles
+
+- **Devices** go into the same registry as every other source's, with the source `x_<plugin-id>`: `x_spotprice:system/cheap_power`. The `x_` prefix keeps plugin sources apart from built-in ones, and both segments follow the `DeviceId` rules in `niles-core` (`[a-z0-9_]+`). People and the model see `system/cheap_power`, as with any device; where two sources have the same `room/name`, the prefixed form tells them apart, as with WLED.
+- From there nothing is plugin-specific. Room cards draw them by class. Lights are in "the lights", the curve and scenes; ambient settings exclude them like any other. **Rules** trigger on them and act on them: a `set_device` on a plugin device is routed to the plugin's `set-device` export. Tier 0 fast paths ("turn off the kitchen lights") include them. A plugin light on the curve gets a `set-device` once a minute, which is why those calls must be quick.
+- **Niles remembers a plugin's devices** in its own tables, not in the plugin's quota, so while a plugin is stopped its devices stay in their rooms as unavailable and rules that name them still validate. `devices.registered()` lets a plugin reconcile what Niles holds on `init`.
+- **Tools** join the [tool registry](#tools-exposed-to-the-llm) as `<plugin-id>_<name>` (`spotprice_prices`). A name that would clash with a built-in tool or another plugin's is refused at install. They are offered to the voice model (Tier 1 and 2), to the Claude and ChatGPT assistants through Niles's MCP endpoint, and listed by `niles tools list`. Tool results are data, not instructions, to the model: a plugin's text is wrapped as a tool result like any other.
+- **Relevance.** Every tool's schema costs prompt tokens on every request it is sent with (`niles-tools/src/relevance.rs` measured one call at 3,497 tokens against a budget of 8,000 a minute). A plugin's tools form one relevance group with the manifest's `keywords`: they are sent when a request mentions one, or when nothing matched and everything is sent. A plugin with tools must declare keywords; the built-in rule that unclassified tools are always sent does not extend to plugins, because a plugin's author cannot see what that costs a household with ten of them.
+- **Capability reference.** Niles writes a short reference entry per plugin from its description and tool descriptions, so "what can the spot price thing do?" has an answer.
+- **Notifications** from `notify.say` go through `niles-notifications` with the plugin's name as their origin, so recall ("what did I miss?") says where they came from.
+
+### Storage and secrets
+
+Three Postgres tables, owned by `niles-db` and created on first use: `plugins` (the approved manifest, the repo, the version, the component's bytes and sha256, the previous version's, settings, enabled), `plugin_storage` (plugin id, key, value) and `plugin_devices` (the devices Niles holds for each). Secrets live in the existing encrypted secret store as `plugins.<id>.<key>`, the same store and key as the credentials typed into Settings; the Integrations page can say whether one is set and never what it is. Removing a plugin deletes its rows from all three, and its secrets.
+
+Storage is the plugin's to use as it likes: caches, a cursor, a token it refreshed, a little history. A write that would take the plugin over 1 MiB fails with `limit`.
+
+### Failure handling
+
+- **A trap or a timeout** (a panic, an out-of-bounds access, the memory cap, a call past its deadline) discards the instance, since its memory may be half-updated. Niles logs it, marks the plugin's devices unavailable, and starts a fresh instance with `init` after a backoff: 5 s, 30 s, 2 min, 10 min, then every 30 min. The card reads "Not working: timed out in on-timer after 10 s" or "Not working: trapped in call-tool: out of memory", with the plugin's last log lines beneath.
+- **Five restarts within an hour** stop the plugin: "Stopped after repeated failures", with a Restart button. A plugin that cannot start does not get to spend the house's CPU trying.
+- **`init` returning `err`** is a plugin telling the household what is wrong ("The address is not set"). The text is the status line; Niles tries again when the settings are saved, and every 10 minutes.
+- **While a plugin is down** its tools stay registered, and calling one returns "Spot prices is not working right now" to the model, which can say so; its pages show the status line instead of a tree. Its devices are unavailable, which rules already skip.
+- **A failing tool call** (`err` from `call-tool`) is not a plugin failure. The message goes to the model as the tool's failure. Only traps and timeouts restart the instance.
+- **Settings saved** restart the plugin: `stop`, then a fresh instance and `init`. One code path, and no plugin has to handle settings changing underneath it.
+
+### Versioning the interface
+
+The package is `niles:integration@0.1.0`, and a component records the exact version it was built against in its imports. wasmtime treats `0.1.x` versions as compatible with each other, so:
+
+- **A patch release** (0.1.1, 0.1.2) may add functions to an imported interface and add new interfaces. Older plugins keep working because they never import what they do not know. It may not change or remove anything that exists, add a case to an existing variant or enum, or add an export.
+- **A minor release** (0.2.0) may change anything. Niles runs plugins built for the previous minor version alongside the new one for at least six months, linking both worlds, and the Integrations page marks the old ones "built for an older Niles" with a link to their repo.
+- **The manifest's `interface`** lets Niles refuse an unsupported plugin before downloading it; the component's own imports are what Niles actually checks.
+- **The UI vocabulary** is part of the interface: a new node type is an addition in a patch release, and a plugin using it needs a Niles that has it, which `min_niles` says.
+
+### The trust model, honestly
+
+The sandbox limits what a plugin can **reach**. It does not make a plugin **trustworthy**. Once approved, a plugin sees everything its declared hosts and devices give it, and can do with them what their APIs allow: a plugin given an account's password can do anything that account can, and one subscribed to device state learns when the house is busy and when it is empty, and can send that to any host it declared. It can tell the model things in a tool result, and the model may believe them. It can report a device state that is not true.
+
+What the sandbox does guarantee: it cannot reach hosts or local addresses it did not declare, read any other integration's secrets, Niles's database, the conversations, the memory or the people, run code in the app, or take the house down with it (memory and time are capped, and a plugin that keeps failing is stopped).
+
+So the approval screen states plainly what is being granted, the repo is shown for anyone who wants to read the code, the component is pinned so it cannot change after approval, and an update with new permissions has to be approved again. Showing GitHub build-provenance attestations ("built by GitHub Actions from commit abc1234") at install is a natural next step; it is not in v0.1.
+
+### Developer tooling
+
+- **A template repo**, `niles-integration-template`, in Rust: a manifest, the WIT, a `lib.rs` with every export stubbed, a logo, and a GitHub Actions workflow that builds the component on a `v*` tag and attaches `niles-integration.toml`, `integration.wasm` and `logo.svg` to the release.
+- **`niles plugin dev <path-or-wasm>`** runs one plugin with logs on the terminal. **Dry run** (the default) runs it in the same sandbox against a stand-in house: devices it reports are printed, storage is a file beside it, settings come from a local `dev-settings.toml`, timers fire, and a prompt calls tools (`tool prices {"day":"tomorrow"}`), sends events, and renders pages as text. **`--live <niles-url>`** installs the file on a running Niles as a development plugin, through the API with an API token, reinstalls it whenever the file changes, and streams its log back; there it is marked "Development" on its card.
+- **`niles plugin check <path-or-repo-url>`** validates what an install would: the manifest, the tag, the logo, the component's world and version, the tools' names, descriptions and schemas, keywords present when there are tools, and the UI surfaces against the manifest. The template's workflow can run it before publishing.
+
+### Where this lives in the codebase
+
+A new crate, `niles-plugins`:
+
+- The runtime: wasmtime engine and linker, the host side of each interface, the per-plugin instance with its queue, limits and restarts
+- Install, update and remove: GitHub releases, manifest validation, hashing, logo sanitising
+- Adapters that make a running plugin a device source, a set of tools, a relevance group and a provider of UI surfaces, so the rest of Niles meets plugins through the interfaces it already has
+- The `niles plugin dev` and `niles plugin check` subcommands, wired in `niles-bin`
+
+`niles-db` gains the tables above, `niles-api` the `/plugins` routes (list, install, approve, update, settings, remove, logs, UI), and `web/` the Add from GitHub flow, the generated setup panel and the renderer for the UI vocabulary. The WIT lives at `schemas/niles-integration.wit`, the author guide in `docs/integrations/`.
+
+### Neighbouring routes
+
+Two other ways to bring things into Niles without a crate, deliberately outside this interface.
+
+#### Home Assistant MQTT discovery
+
+Many devices already announce themselves over MQTT in Home Assistant's discovery format: a retained JSON config under `homeassistant/<component>/<node>/<object>/config`, naming the state and command topics. ESPHome does it by default; Tasmota, Shelly (through scripts) and rtl_433 (through its bridge script) can. Niles could read those configs as a device source on the broker it already uses, mapping `light`, `switch`, `cover` and `binary_sensor`/`sensor` device classes onto its own classes and fields, with the room from the device's `suggested_area` or a `<room>/<device>` name. That is a no-code route for devices, complementary to plugins, and a separate piece of work: it needs no sandbox, because Niles runs no foreign code, only foreign JSON.
+
+#### MCP servers by URL
+
+Somebody who already runs a service with an MCP server (a home lab dashboard, a notes system) could add it under Integrations by URL, with an optional bearer token. Niles would act as an MCP client over Streamable HTTP, list the server's tools, and offer them under the server's name to the Claude and ChatGPT assistants, and to the voice model with keywords the household gives. Nothing runs inside Niles, so no sandbox is needed. The questions are what the server's tools do and what tool arguments Niles sends it, and both are shown when it is added. It provides tools only: no devices, no pages.
+
+### What this section does not specify
+
+- A central index of plugins, or any review of them
+- Private repos, and repos hosted anywhere but GitHub
+- Per-plugin CPU budgets beyond the per-call deadline
+- A device field for arbitrary readings (a price, CO₂), so rules could trigger on them; until then such values reach people through tools and pages
+- Reading another source's devices on demand: v0.1 has events, not a snapshot
+- `wasi:http/outgoing-handler`, so that language-native HTTP clients (`fetch` in JavaScript) would work under the same checks
 
 ## User recognition
 
@@ -2218,6 +2520,7 @@ niles/
 │   ├── niles-permissions/      # rules engine and admin concept; enforces tool access
 │   ├── niles-presence/         # presence sources, aggregation, home-state events
 │   ├── niles-automations/      # when-X-do-Y rules, voice-creatable and config-defined
+│   ├── niles-plugins/          # third-party integrations: wasmtime runtime, GitHub install, sandbox
 │   ├── niles-api/              # HTTP/WebSocket API
 │   ├── niles-config/           # config loading and validation
 │   └── niles-bin/              # main binary, wiring (produces `niles`)
@@ -2243,7 +2546,8 @@ niles/
 ├── schemas/                   # shared, language-agnostic schemas
 │   ├── wyoming-events.json
 │   ├── tool-definitions.json
-│   └── device-types.json
+│   ├── device-types.json
+│   └── niles-integration.wit  # the plugin interface (WIT), versioned
 │
 ├── examples/                  # example tools, configs, integrations
 ├── scripts/                   # dev-up, flash-satellite, migrate-from-ha
@@ -2263,6 +2567,8 @@ niles migrate-from-ha    # one-shot migration helper
 niles flash-satellite    # firmware flashing helper
 niles config validate    # config sanity check
 niles tools list         # show registered tools
+niles plugin dev <path>  # run one plugin locally, dry run or against a live Niles
+niles plugin check <path-or-repo>  # validate a plugin before publishing
 ```
 
 Rationale: single binary, single Docker image, single thing to install and update. If any subcommand grows enough to warrant its own crate, the binary still wraps it.
@@ -2477,6 +2783,9 @@ niles:
 - More device sources (Shelly, Matter, Z-Wave)
 - GPU node for fully-local STT/LLM
 - Satellite-side speaker ID (faster, more private)
+- Third-party integrations: WebAssembly plugins installed from a GitHub repo, with devices, tools, pages and widgets ([spec](#third-party-integrations-plugins), interface v0.1 in `schemas/niles-integration.wit`)
+- Home Assistant MQTT discovery as a no-code device source (ESPHome, Tasmota, Shelly, rtl_433)
+- MCP servers added by URL, their tools offered to the assistants
 
 ## What Niles is not
 
@@ -2538,6 +2847,8 @@ These are intentionally left open for the project owner / community to decide:
 - **Tiered context (A/B/C)** — Niles's strategy for assembling LLM system prompts: Tier A always loaded for fast common commands, Tier B loaded on-demand for topic-specific requests, Tier C loaded only for full-system overviews
 - **Notification** — an unprompted message Niles delivers to the user via voice, with chime + content, routed by satellite affinity and quiet-hours rules
 - **External integration** — a self-contained crate (`niles-integration-<name>`) connecting Niles to an outside service (Linear, calendar, GitHub, etc.); exposes LLM tools and publishes notification events
+- **Plugin (third-party integration)** — a WebAssembly component installed from a GitHub release, targeting the `niles:integration/plugin` world; sandboxed, it adds devices, tools, pages and widgets within the permissions its manifest declares and the household approved
+- **WIT** — the WebAssembly Component Model's interface language; `schemas/niles-integration.wit` defines what Niles provides to a plugin and what a plugin provides to Niles
 - **Last-active satellite** — the most recently-used satellite by the user; default target for notifications without other routing affinity
 - **Speaker recognition** — Niles's identification of who is speaking via voice embeddings; runs in parallel with STT, adds zero perceived latency
 - **Voice embedding** — fixed-length numerical representation of a person's voice (~192–512 floats), produced by a small neural model and stored locally for nearest-neighbor identity matching
