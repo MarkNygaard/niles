@@ -1,10 +1,12 @@
 # Worked example: spot prices
 
-> v0.1 specification. Niles cannot run this yet. The Rust below was built
-> with `cargo build --release --target wasm32-wasip2` against
+> v0.1 of the interface. The Rust below was built with `cargo build --release
+> --target wasm32-wasip2` against
 > [`niles-integration.wit`](../../schemas/niles-integration.wit) and
-> `wit-bindgen` 0.63, and the JavaScript and Python snippets were built with
-> `jco componentize` and `componentize-py`; none of it has run inside Niles.
+> `wit-bindgen` 0.63, passes `niles plugin check`, and runs under `niles plugin
+> dev` on Niles 0.2.0 against the live service. The JavaScript and Python
+> snippets were built with `jco componentize` and `componentize-py` and have
+> not been run in Niles yet.
 
 A complete, small plugin: Danish electricity spot prices from
 [Energi Data Service](https://www.energidataservice.dk/), Energinet's free open
@@ -695,24 +697,26 @@ impl Tree {
   function) and uses the service's own Danish times (`TimeDK`) for days and
   hour labels.
 
-Running it with `niles plugin dev .` and a `dev-settings.toml` of
-`area = "DK1"`:
+Running it with `niles plugin dev .` (the area defaults to DK1), on the
+evening of 14 October 2026:
 
 ```
++ device x_spotprice:system/electricity (Sensor)
+~ x_spotprice:system/electricity hour_rank=18 price=1.335013797 kr/kWh
+status: Working
+tool spotprice_prices: Danish electricity spot prices in kr per kWh, hour by hour, ...
 > tool prices {"day":"today"}
-{"area":"DK1","date":"2026-10-14","unit":"kr per kWh, spot price before tariffs and taxes","now":0.91,"hours":[{"hour":"00","kr_kwh":0.84}, ...]}
+{"area":"DK1","date":"2026-10-14","hours":[{"hour":"00","kr_kwh":0.84},{"hour":"01","kr_kwh":0.88}, ...],"now":1.34,"unit":"kr per kWh, spot price before tariffs and taxes"}
 > render electricity
 Stack
   Row
-    Reading  Now: 0.91 kr/kWh
-    Badge    Cheap now (good)
-  Card "Today, hour by hour"
+    Reading  Now: 1.34 kr/kWh
+    Badge    Not cheap (neutral)
+  Card       "Today, hour by hour"
     Chart    bar, 24 points, kr/kWh
-  Text       Spot price for DK1, before network tariffs and taxes. Fetched 3 minutes ago. (muted)
+  Text       Spot price for DK1, before network tariffs and taxes. Fetched 0 minutes ago. (muted)
   Button     refresh "Refresh now" (secondary)
 ```
-
-(Illustrative output: the dev command is part of the spec, not built yet.)
 
 ## Rules that follow it
 

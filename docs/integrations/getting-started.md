@@ -1,7 +1,8 @@
 # Getting started
 
-> v0.1 specification. The `niles plugin` commands and the install flow are not
-> built yet; the template repo will be published alongside them.
+> v0.1 of the interface. `niles plugin dev` and `niles plugin check` are
+> built (Niles 0.2.0); the install flow is not yet, and the template repo will
+> be published alongside it.
 
 From nothing to a plugin installed on a Niles, in Rust. For JavaScript and
 Python, see the snippets at the end of the [worked example](example-spotprice.md#the-same-tool-in-javascript-and-python).
@@ -128,13 +129,14 @@ niles plugin dev .
 ```
 
 This builds nothing; it reads `niles-integration.toml` and the newest
-`target/wasm32-wasip2/release/*.wasm` in the directory (or the `.wasm` you
-name), and runs it in the same sandbox and with the same limits as a real
-Niles, against a stand-in house:
+`target/wasm32-wasip2/release/*.wasm` in the directory (or `integration.wasm`
+if there is one, or the `.wasm` you name), and runs it in the same sandbox and
+with the same limits as a real Niles, against a stand-in house:
 
 - `init` runs, and log lines print as they happen;
 - devices the plugin reports print as they change;
-- storage is kept in `.niles-dev/storage.json`, so restarts keep it;
+- storage is kept in `.niles-dev/storage.json`, so restarts keep it (add
+  `.niles-dev/` to your `.gitignore`);
 - timers fire on time;
 - HTTP goes out for real, checked against your manifest's permissions, so a
   missing permission fails here exactly as it would at home.
@@ -146,16 +148,22 @@ At its prompt:
 > tool prices {"day":"tomorrow"}      call one, print the result
 > set system/lamp {"on":true}         call set-device
 > event device_state office/door {"open":true}
+> event presence away                 something happening elsewhere
 > render electricity                  draw a page as text
 > action electricity refresh          press a control
 > restart                             stop, new instance, init
 ```
 
-`niles plugin dev . --live https://niles.example.com --token $NILES_API_TOKEN`
-installs it on a running Niles instead, as a development plugin marked
-"Development" on its card, reinstalls it each time the `.wasm` changes, and
-streams its log to your terminal. Use it to try devices in real rules and tools
-by voice. The token is an API token from that Niles's Settings.
+Settings on the command line go over `dev-settings.toml`, typed by your
+manifest: `niles plugin dev . --settings area=DK2 --settings cheap_hours=6`.
+For a script or CI, `--call prices '{"day":"today"}'` and `--render
+electricity` do the same as the prompt once `init` has run, and `--dry-run`
+exits after them instead of staying up for timers and the prompt.
+
+Planned, not built yet: `niles plugin dev . --live https://niles.example.com
+--token $NILES_API_TOKEN` would install it on a running Niles instead, as a
+development plugin marked "Development" on its card, reinstall it each time the
+`.wasm` changes, and stream its log to your terminal.
 
 ## 5. Check it
 
@@ -163,10 +171,12 @@ by voice. The token is an API token from that Niles's Settings.
 niles plugin check .
 ```
 
-checks everything an install would: the manifest, the logo, that the component
-targets `niles:integration/plugin@0.1.x`, its tools' names, descriptions and
-schemas, that there are keywords if there are tools, and that its UI surfaces
-match the manifest. Fix whatever it reports before you publish.
+checks everything an install would: the manifest (including its surfaces,
+settings and permissions), the logo, that the component targets
+`niles:integration/plugin@0.1.x` and exports every function, and its tools'
+names, descriptions and schemas, asked for with `tools()` before any `init`,
+and that there are keywords if there are tools. Fix whatever it reports before
+you publish; it exits non-zero while there is anything to fix.
 
 ## 6. Release
 

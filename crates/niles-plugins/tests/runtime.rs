@@ -676,6 +676,29 @@ async fn devices_registered_lists_what_niles_holds() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn installing_again_replaces_the_running_plugin() {
+    let house = House_::running().await;
+    house.install().await;
+    house.wait_for(|s| *s == Status::Running).await;
+    assert_eq!(house.runtime.plugins().len(), 1);
+    assert_eq!(
+        house.tool("greet", json!({})).await.unwrap(),
+        "Hello, world!"
+    );
+    let mut registry = ToolRegistry::new();
+    registry.attach_dynamic(house.tools.clone());
+    let call = niles_llm::ToolCall {
+        id: "1".into(),
+        name: "hello_greet".into(),
+        arguments: json!({}),
+    };
+    assert_eq!(
+        registry.execute(&call).await.unwrap(),
+        json!("Hello, world!")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_list_says_who_is_running() {
     let house = House_::running().await;
     let plugins = house.runtime.plugins();

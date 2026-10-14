@@ -489,6 +489,7 @@ impl Runtime {
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
         if let Some(plugin) = removed {
+            self.inner.house.tools.remove(id);
             plugin.queue.stop();
             plugin.join().await;
         }
@@ -1062,8 +1063,15 @@ impl Queue {
         self.ready.notify_all();
     }
 
+    /// Queue `job`. Once the queue is stopped nothing will answer it, so
+    /// it is dropped, and with it the reply: whoever waits is told the
+    /// plugin is not working rather than waiting for ever.
     pub fn push(&self, job: Job) {
-        self.change(|p| p.jobs.push_back(job));
+        self.change(|p| {
+            if !p.stop {
+                p.jobs.push_back(job);
+            }
+        });
     }
 
     pub fn push_event(&self, event: wit::Event) {
@@ -1081,7 +1089,10 @@ impl Queue {
     }
 
     pub fn stop(&self) {
-        self.change(|p| p.stop = true);
+        self.change(|p| {
+            p.stop = true;
+            p.jobs.clear();
+        });
     }
 
     pub fn clear_events(&self) {
@@ -1182,6 +1193,26 @@ mod tests {
             queue.push_event(event());
         }
         assert_eq!(queue.dropped(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_job_for_a_stopped_plugin_is_answered_not_kept() {
+        let queue = Queue::default();
+        let (reply, answer) = oneshot::channel();
+        queue.push(Job::CallTool {
+            name: "x".into(),
+            args: "{}".into(),
+            reply,
+        });
+        queue.stop();
+        assert!(answer.await.is_err(), "dropped, so the caller hears");
+        let (reply, answer) = oneshot::channel();
+        queue.push(Job::CallTool {
+            name: "x".into(),
+            args: "{}".into(),
+            reply,
+        });
+        assert!(answer.await.is_err());
     }
 
     #[test]

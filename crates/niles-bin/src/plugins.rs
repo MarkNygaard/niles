@@ -264,7 +264,7 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
         println!(
             "Running; timers fire and changes print as they happen. Type `help` for commands, Ctrl-C to stop."
         );
-        prompt(&runtime, &id).await;
+        prompt(&runtime, &id, &registry, &bus).await;
     }
     runtime.shutdown().await;
     printer.abort();
@@ -392,11 +392,55 @@ const HELP: &str = "\
   set <room/name> <json>              call set-device, e.g. set office/lamp {\"on\":true}
   render <surface> [room]             draw a page or widget as text
   action <surface> <control> [json]   use a control; json is the value, {\"type\":\"pressed\"} if left out
+  event device_state <room/name> <json>   as if a device elsewhere changed, e.g. event device_state office/door {\"open\":true}
+  event device_action <room/name> <action>
+  event presence home|away|unknown
   status                              how the plugin is doing
   restart                             stop, a fresh instance, init
   quit                                stop it and exit";
 
-async fn prompt(runtime: &Runtime, id: &str) {
+/// Something happening elsewhere in the stand-in house, from the
+/// prompt, under the source `dev`; what was published, or why not.
+fn house_event(line: &str, registry: &DeviceRegistry, bus: &EventBus) -> Result<String, String> {
+    let (kind, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let (target, value) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+    let device = || {
+        DeviceId::parse(&format!("dev:{target}")).map_err(|_| "a device is room/name".to_string())
+    };
+    let event = match kind {
+        "device_state" => {
+            let id = device()?;
+            let state: DeviceState = serde_json::from_str(value).map_err(|e| e.to_string())?;
+            if registry.get(&id).is_none() {
+                registry.upsert(niles_core::Device::new(
+                    id.clone(),
+                    DeviceState::default(),
+                    niles_core::DeviceClass::Sensor,
+                ));
+            }
+            registry.merge_state(&id, state.clone());
+            Event::DeviceStateChanged { id, state }
+        }
+        "device_action" if !value.is_empty() => Event::DeviceAction {
+            id: device()?,
+            action: value.to_string(),
+        },
+        "presence" => Event::PresenceChanged {
+            state: match target {
+                "home" => niles_core::PresenceState::Home,
+                "away" => niles_core::PresenceState::Away,
+                "unknown" => niles_core::PresenceState::Unknown,
+                _ => return Err("presence is home, away or unknown".into()),
+            },
+        },
+        _ => return Err("event device_state|device_action|presence ...; `help` shows how".into()),
+    };
+    let described = format!("{event:?}");
+    bus.publish(event);
+    Ok(described)
+}
+
+async fn prompt(runtime: &Runtime, id: &str, registry: &DeviceRegistry, bus: &EventBus) {
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut stdin_open = true;
@@ -417,6 +461,10 @@ async fn prompt(runtime: &Runtime, id: &str) {
             "help" => println!("{HELP}"),
             "quit" | "exit" => return,
             "tools" => print_tools(runtime, id),
+            "event" => match house_event(rest, registry, bus) {
+                Ok(_) => println!("sent"),
+                Err(why) => println!("error: {why}"),
+            },
             "status" => {
                 if let Some(info) = runtime.info(id) {
                     println!("{}", info.status.line());
@@ -698,6 +746,33 @@ type = "secret"
         assert_eq!(from_wasm.dir, dir.path());
         let from_dir = locate(dir.path()).unwrap();
         assert_eq!(from_dir.component.unwrap().0, wasm);
+    }
+
+    #[tokio::test]
+    async fn the_prompt_can_make_things_happen_in_the_house() {
+        let registry = DeviceRegistry::new();
+        let bus = EventBus::default();
+        let mut events = bus.subscribe();
+        house_event(r#"device_state office/door {"open":true}"#, &registry, &bus).unwrap();
+        match events.recv().await.unwrap() {
+            Event::DeviceStateChanged { id, state } => {
+                assert_eq!(id.to_string(), "dev:office/door");
+                assert_eq!(state.open, Some(true));
+            }
+            other => panic!("{other:?}"),
+        }
+        house_event("device_action hall/button single", &registry, &bus).unwrap();
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            Event::DeviceAction { .. }
+        ));
+        house_event("presence away", &registry, &bus).unwrap();
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            Event::PresenceChanged { .. }
+        ));
+        assert!(house_event("presence sideways", &registry, &bus).is_err());
+        assert!(house_event("weather sunny", &registry, &bus).is_err());
     }
 
     #[test]

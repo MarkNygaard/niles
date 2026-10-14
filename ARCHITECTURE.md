@@ -1111,7 +1111,7 @@ What the project will never carry in-tree — one household's inverter, a region
 
 ## Third-party integrations (plugins)
 
-> **Status: specification, v0.1 of the interface.** Nothing in this section is implemented yet. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
+> **Status: v0.1 of the interface; the runtime is built (Niles 0.2.0), the install flow and the app's side are not.** Built: the runtime and its sandbox, every host interface, devices, tools, timers, events, notifications, the pages' render and action routes, loading the enabled plugins from the `plugins` table at startup, `niles plugin check` and `niles plugin dev`, and `GET /plugins`. Not yet: installing from GitHub with approval, updates, remove and disable ([Install](#install) onwards); the setup panel, the Custom group and drawing pages and widgets in the app. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
 
 Built-in integrations are crates in this repository, and they stay that way: reviewed, tested and released with Niles. That cannot cover every household. Somebody with an inverter, a pool pump, a local bus timetable or a niche gadget with an HTTP API wants it in Niles without asking for a crate, and without forking. Home Assistant answers this with custom integrations installed from GitHub (HACS). Niles takes the same shape, installing from a GitHub repo, and adds a sandbox around the code.
 
@@ -1254,7 +1254,9 @@ WIT has no recursive types, so a tree is a flat list of nodes: node 0 is the roo
 
 **Actions.** Using a control calls `on-action(surface-id, control-id, value, context)` with what happened: `pressed`, `toggled(bool)`, `number(f64)` when a slider is let go, `chosen(value)`, or `text(value)` when a field is submitted. The plugin answers with an optional toast ("Prices updated") and whether to render again. An `err` is shown as an error toast.
 
-**Refresh.** A surface is rendered when it is opened; after an action that asks for it; every `refresh_every` seconds while it is open (the app asks again); and when the plugin calls `ui.invalidate(surface-id)`, for instance after a timer fetched new data. An invalidation is pushed to the app as a `ui_invalidated` frame on the WebSocket at `GET /events/stream` the app already holds, so nothing polls for it, and the app renders again only if the surface is on screen. Niles keeps the last tree per surface, room and person until it is invalidated or `refresh_every` passes, so ten open phones cost one call. HTTP: `GET /plugins/{id}/ui/{surface}` and `POST /plugins/{id}/ui/{surface}/actions`.
+**Refresh.** A surface is rendered when it is opened; after an action that asks for it; every `refresh_every` seconds while it is open (the app asks again); and when the plugin calls `ui.invalidate(surface-id)`, for instance after a timer fetched new data. An invalidation is pushed to the app as a `ui_invalidated` frame on the WebSocket at `GET /events/stream` the app already holds (`{"type":"ui_invalidated","plugin":"spotprice","surface":"electricity"}`; calls within 250 ms are one frame), so nothing polls for it, and the app renders again only if the surface is on screen. Niles keeps the last tree per surface, room and person until it is invalidated or `refresh_every` passes, so ten open phones cost one call; an action answered with `rerender` drops it too.
+
+**HTTP.** `GET /plugins/{id}/surfaces/{surface}?room=kitchen` answers the tree as JSON, the same flat list with each node's kind as `type` (`{"nodes":[{"type":"stack","children":[1]},{"type":"reading","label":"Now","value":"1.23","unit":"kr/kWh","children":[]}]}`; `niles_plugins::ui::Surface` is the reference). `POST /plugins/{id}/surfaces/{surface}/actions/{control}` takes the value (`{"type":"pressed"}`, `{"type":"toggled","value":true}`, `{"type":"number","value":21.5}`, `{"type":"chosen","value":"DK2"}`, `{"type":"text","value":"…"}`) and answers `{"toast":…,"rerender":…}`. The person is taken from the session, never from the request. The plugin's own error is a 422 with its sentence, a plugin that is down a 503 with its status line; the app shows either in place of the surface.
 
 **Later: a page of its own.** Some plugins will want more than the vocabulary: a floor plan, a camera grid. A possible 0.2+ escape hatch is a separate permission for a page served from the plugin's own static assets in a sandboxed iframe on a separate origin, without the session. It is not in v0.1, and the vocabulary should grow first.
 
@@ -1269,7 +1271,7 @@ version = "0.1.0"                    # semver; the release tag is v0.1.0
 description = "Hear what power costs hour by hour, and let rules run things when it is cheapest."
 authors = ["Jane Doe <jane@example.com>"]
 homepage = "https://github.com/jane/niles-spotprice"
-min_niles = "0.2.0"                  # the oldest Niles it runs on
+min_niles = "0.2.0"                  # the oldest Niles it runs on; 0.2.0 is the first with plugins
 interface = "0.1"                    # the niles:integration version it targets
 # group = "presence"                 # a catalogue group id; missing or unknown means Custom
 logo = "logo.svg"
@@ -1341,7 +1343,9 @@ Niles checks each plugin's repo for a newer release once a day, and on demand fr
 
 ### Storage and secrets
 
-Three Postgres tables, owned by `niles-db` and created on first use: `plugins` (the approved manifest, the repo, the version, the component's bytes and sha256, the previous version's, settings, enabled), `plugin_storage` (plugin id, key, value) and `plugin_devices` (the devices Niles holds for each). Secrets live in the existing encrypted secret store as `plugins.<id>.<key>`, the same store and key as the credentials typed into Settings; the Integrations page can say whether one is set and never what it is. Removing a plugin deletes its rows from all three, and its secrets.
+Three Postgres tables, owned by `niles-db` and created on first use: `plugins` (the approved manifest, the repo, the version, the component's bytes and sha256, the previous version's, enabled), `plugin_storage` (plugin id, key, value) and `plugin_devices` (the devices Niles holds for each). The last two reference the first, so removing a plugin's row removes its data with it.
+
+**Settings** are not in those tables but in Niles's [runtime configuration](#runtime-configuration), as `[plugins.<id>]` (`[plugins.spotprice]` with `area = "DK1"`): the same store, history and undo as every other setting, kept in Postgres with the other overrides, and hot — a change to a plugin's table restarts that plugin, as saving its setup panel does. They are typed and checked against the manifest when the plugin reads them; a value that does not fit falls back to the default. **Secrets** live in the existing encrypted secret store as `plugins.<id>.<key>`, the same store and key as the credentials typed into Settings; the Integrations page can say whether one is set and never what it is. Removing a plugin deletes its rows from all three tables, its settings and its secrets.
 
 Storage is the plugin's to use as it likes: caches, a cursor, a token it refreshed, a little history. A write that would take the plugin over 1 MiB fails with `limit`.
 
@@ -1374,7 +1378,7 @@ So the approval screen states plainly what is being granted, the repo is shown f
 ### Developer tooling
 
 - **A template repo**, `niles-integration-template`, in Rust: a manifest, the WIT, a `lib.rs` with every export stubbed, a logo, and a GitHub Actions workflow that builds the component on a `v*` tag and attaches `niles-integration.toml`, `integration.wasm` and `logo.svg` to the release.
-- **`niles plugin dev <path-or-wasm>`** runs one plugin with logs on the terminal. **Dry run** (the default) runs it in the same sandbox against a stand-in house: devices it reports are printed, storage is a file beside it, settings come from a local `dev-settings.toml`, timers fire, and a prompt calls tools (`tool prices {"day":"tomorrow"}`), sends events, and renders pages as text. **`--live <niles-url>`** installs the file on a running Niles as a development plugin, through the API with an API token, reinstalls it whenever the file changes, and streams its log back; there it is marked "Development" on its card.
+- **`niles plugin dev <path-or-wasm>`** runs one plugin with logs on the terminal, in the same sandbox and limits against a stand-in house: devices it reports and their changes are printed, storage is a file beside it (`.niles-dev/storage.json`), settings come from a local `dev-settings.toml` and `--settings key=value`, HTTP goes out for real under the manifest's permissions, timers fire, and a prompt calls tools (`tool prices {"day":"tomorrow"}`), commands devices, sends events and renders pages as text. `--call <tool> <json>` and `--render <surface>` do the same once after `init`; `--dry-run` does them and exits instead of staying up. **Not built yet: `--live <niles-url>`**, which would install the file on a running Niles as a development plugin, through the API with an API token, reinstall it whenever the file changes, and stream its log back; there it would be marked "Development" on its card.
 - **`niles plugin check <path-or-repo-url>`** validates what an install would: the manifest, the tag, the logo, the component's world and version, the tools' names, descriptions and schemas, keywords present when there are tools, and the UI surfaces against the manifest. The template's workflow can run it before publishing.
 
 ### Where this lives in the codebase
@@ -1386,7 +1390,12 @@ A new crate, `niles-plugins`:
 - Adapters that make a running plugin a device source, a set of tools, a relevance group and a provider of UI surfaces, so the rest of Niles meets plugins through the interfaces it already has
 - The `niles plugin dev` and `niles plugin check` subcommands, wired in `niles-bin`
 
-`niles-db` gains the tables above, `niles-api` the `/plugins` routes (list, install, approve, update, settings, remove, logs, UI), and `web/` the Add from GitHub flow, the generated setup panel and the renderer for the UI vocabulary. The WIT lives at `schemas/niles-integration.wit`, the author guide in `docs/integrations/`.
+`niles-db` gains the tables above, `niles-api` the `/plugins` routes (list and UI so far; install, approve, update, settings, remove and logs to come), and `web/` the Add from GitHub flow, the generated setup panel and the renderer for the UI vocabulary. The WIT lives at `schemas/niles-integration.wit`, the author guide in `docs/integrations/`.
+
+The seams the rest of Niles meets plugins through, chosen so nothing outside `niles-plugins` knows about WebAssembly:
+
+- **Commands.** `niles_mqtt::CommandRouter` turns a desired state into a Zigbee or WLED message by the device's source. Beside it sits a `DeviceCommander`, which the plugin runtime is, owning every `x_*` source. Every path that sends a command — the app's device and room routes and scenes, the `set_device`/`set_room`/`set_blinds` tools, Tier 0, the automation engine's sink, wall switches, the curve and the morning routine — asks `commander_for` first and formats an MQTT message only when nothing else owns the device. A commander rather than a pseudo-topic through the publisher, because a plugin's `set-device` answers ("The pump did not answer.") and a publish does not.
+- **Tools.** `niles_tools::ToolRegistry` gains a dynamic section, `DynamicTools`: a shared handle the runtime replaces a plugin's tools through as it starts, restarts and goes, which every registry attached to it — the voice model's, and through it the MCP endpoint the assistants use — sees on the next request. Relevance is checked against each plugin's keywords there; a built-in's name always wins.
 
 ### Neighbouring routes
 

@@ -1,6 +1,7 @@
 # Publishing
 
-> v0.1 specification. Not implemented yet.
+> v0.1 of the interface. `niles plugin check` is built; installing a
+> release from GitHub is not yet.
 
 A plugin is published as a **GitHub release** on a public repo. There is no
 registry to sign up for: anyone with the repo's URL can install it.

@@ -1,6 +1,8 @@
 # Pages and widgets
 
-> v0.1 specification. Not implemented yet.
+> v0.1 of the interface. Niles 0.2.0 renders pages and widgets and runs
+> their actions, and `niles plugin dev` draws them as text; the app does
+> not draw them yet.
 
 A plugin can add to the Niles app:
 

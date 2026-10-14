@@ -1,7 +1,7 @@
 # Host API
 
-> v0.1 specification. Not implemented yet. The examples compile against
-> [`niles-integration.wit`](../../schemas/niles-integration.wit) with
+> v0.1 of the interface, as Niles 0.2.0 runs it. The examples compile
+> against [`niles-integration.wit`](../../schemas/niles-integration.wit) with
 > `wit-bindgen` 0.63; the WIT file is the authority.
 
 A plugin **imports** functions Niles provides and **exports** functions Niles

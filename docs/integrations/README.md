@@ -1,12 +1,14 @@
 # Writing a Niles integration
 
-> **This is the v0.1 specification, not working software.** Niles cannot run
-> plugins yet: the runtime, the "Add from GitHub" flow and the `niles plugin`
-> commands described here are designed but not built. The interface
+> **v0.1 of the interface, partly built.** Niles 0.2.0 runs plugins: the
+> sandbox, every host interface, devices, tools, timers, events, pages, and
+> the `niles plugin check` and `niles plugin dev` commands. Not built yet: the
+> "Add from GitHub" flow with its approval screen, updates, the generated
+> setup panel, and pages and widgets drawn in the app. Until then a plugin
+> runs under `niles plugin dev`, or on a Niles whose database it was put in
+> by hand. The interface
 > ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) may
-> still change before it ships. Everything here compiles against that interface
-> (the worked example was built with `wasm32-wasip2`), but nothing will load it
-> until the runtime lands.
+> still change before the install flow ships.
 
 Niles is an open-source home assistant, written in Rust, that you talk to. It
 runs the lights, music, heating and calendars of one house, and it hands

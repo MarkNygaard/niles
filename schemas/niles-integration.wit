@@ -7,7 +7,7 @@
 /// Spec: ARCHITECTURE.md, "Third-party integrations (plugins)".
 /// Author guide: docs/integrations/.
 ///
-/// Status: v0.1.0 specification. Niles does not run plugins yet.
+/// Status: v0.1.0, run by Niles 0.2.0 and later (`crates/niles-plugins`).
 ///
 /// Conventions, the same as the rest of Niles:
 /// - brightness and position are percent, 0-100 (position 0 is shut,
@@ -235,7 +235,9 @@ interface storage {
     /// The value under `key`, if any.
     get: func(key: string) -> option<string>;
 
-    /// Store `value` under `key` (at most 256 bytes), replacing what was there.
+    /// Store `value` under `key`, replacing what was there. Keys are at
+    /// most 256 bytes; all keys and values together at most 1 MiB, past
+    /// which this fails with `limit`.
     set: func(key: string, value: string) -> result<_, host-error>;
 
     /// Remove `key`. Removing a missing key is not an error.

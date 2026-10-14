@@ -1,6 +1,8 @@
 # The manifest
 
-> v0.1 specification. Not implemented yet.
+> v0.1 of the interface. Niles 0.2.0 runs it: the runtime, `niles plugin
+> check` and `niles plugin dev` are built. Not yet: installing from GitHub,
+> the setup panel, and pages and widgets drawn in the app.
 
 Every plugin has a `niles-integration.toml` at the root of its repo, attached
 to each release. Niles reads it before downloading anything else: it decides
@@ -19,7 +21,7 @@ A complete example is in the [worked example](example-spotprice.md#the-manifest)
 | `description` | yes | One line, at most 120 characters. See below. |
 | `authors` | yes | List of `"Name <email>"` or `"Name"`. |
 | `homepage` | no | Usually the repo. Linked from the setup panel. |
-| `min_niles` | yes | The oldest Niles version it runs on. The first Niles with plugins sets the floor; until it ships, use `"0.2.0"`. |
+| `min_niles` | yes | The oldest Niles version it runs on. Niles 0.2.0 is the first with plugins, so `"0.2.0"` or later. |
 | `interface` | yes | The `niles:integration` version the component targets: `"0.1"`. |
 | `group` | no | Where it sits on the Integrations page. See [Groups](#groups). |
 | `logo` | no | Path of an SVG in the release, normally `"logo.svg"`. See [Logo](#logo). |
@@ -168,6 +170,11 @@ max = 3600
 
 Saving the panel restarts the plugin: `stop`, a fresh instance, `init`. Read
 your settings in `init` and you never have to handle them changing.
+
+Niles keeps the values in its configuration as `[plugins.<id>]`, beside its
+own settings, and secrets in its encrypted secret store as
+`plugins.<id>.<key>`. Until the setup panel is built, a household enters them
+there (`PATCH /config` with `{"plugins":{"spotprice":{"area":"DK2"}}}`).
 
 ## `[[ui.menu]]` and `[[ui.widgets]]`
 
