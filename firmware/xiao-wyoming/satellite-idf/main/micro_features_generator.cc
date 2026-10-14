@@ -109,8 +109,12 @@ TfLiteStatus GenerateSingleFeature(const int16_t* audio_data,
   TfLiteTensor* output = interpreter->output(0);
   std::copy_n(audio_data, audio_data_size,
               tflite::GetTensorData<int16_t>(input));
+  // A failed run leaves the previous output in the tensor; reporting it as a
+  // feature would feed the wake-word model stale data. The caller skips the
+  // slice instead.
   if (interpreter->Invoke() != kTfLiteOk) {
     MicroPrintf("Feature generator model invocation failed");
+    return kTfLiteError;
   }
 
   std::copy_n(tflite::GetTensorData<int8_t>(output), kFeatureSize,
