@@ -50,3 +50,8 @@ id = "card"
 title = "Hello now"
 room = "office"
 refresh_every = 60
+
+# Draws a tree that is not a tree, which Niles must refuse.
+[[ui.widgets]]
+id = "broken"
+title = "Broken"

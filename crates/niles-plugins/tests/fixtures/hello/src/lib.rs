@@ -151,12 +151,11 @@ impl Guest for Hello {
                 .map_err(|e| format!("{e:?}"))
             }
             "spin" => {
+                // black_box, or the compiler works out where the loop
+                // ends and skips it.
                 let mut n: u64 = 0;
                 loop {
-                    n = n.wrapping_add(1);
-                    if n == u64::MAX {
-                        return Ok("unreachable".into());
-                    }
+                    n = std::hint::black_box(n.wrapping_add(1));
                 }
             }
             "panic" => panic!("on purpose"),

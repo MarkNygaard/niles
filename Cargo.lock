@@ -2303,6 +2303,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-db",
+ "niles-llm",
  "niles-mqtt",
  "niles-notifications",
  "niles-tools",

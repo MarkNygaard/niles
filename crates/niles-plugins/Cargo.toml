@@ -33,4 +33,5 @@ niles-tools.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+niles-llm.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
