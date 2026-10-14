@@ -7,6 +7,9 @@
 - [Voice loop](voice-loop.md)
 - [LLM tools](tools.md)
 
+# Extending
+- [Writing an integration](integrations.md)
+
 # Operations
 - [Deployment](deployment.md)
 
