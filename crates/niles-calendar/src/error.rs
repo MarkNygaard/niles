@@ -39,6 +39,13 @@ pub enum Error {
     #[error("no event {reference:?}; look the events up again first")]
     NoSuchEvent { reference: String },
 
+    #[error("no mail {reference:?}; look the mail up again first")]
+    NoSuchMail { reference: String },
+
+    /// Sending from an account whose mail is connected read only.
+    #[error("the {name} account's mail is connected read only")]
+    CannotSend { name: String },
+
     /// A question about the store, not about Microsoft.
     #[error("calendar storage: {reason}")]
     Storage { reason: String },

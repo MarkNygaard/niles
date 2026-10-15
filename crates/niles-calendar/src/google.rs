@@ -320,7 +320,7 @@ fn unreadable(what: &str) -> Error {
     }
 }
 
-async fn send(
+pub(crate) async fn send(
     http: &reqwest::Client,
     access_token: &str,
     method: reqwest::Method,

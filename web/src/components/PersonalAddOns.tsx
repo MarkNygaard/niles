@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Activity, CalendarDays, ChevronLeft, ChevronRight, Puzzle } from "lucide-react";
+import { Activity, CalendarDays, ChevronLeft, ChevronRight, Mail, Puzzle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,12 +12,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CALENDARS, CalendarsPanel } from "@/components/CalendarsPanel";
+import { MailPanel } from "@/components/MailPanel";
 import { STRAVA, StravaPanel } from "@/components/StravaPanel";
 import { api } from "@/lib/api";
 import type { CalendarsView, StravaStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-export type PersonalId = "calendars" | "strava";
+export type PersonalId = "calendars" | "mail" | "strava";
 
 export interface PersonalAddOn {
   id: PersonalId;
@@ -30,6 +31,7 @@ export interface PersonalAddOn {
 
 const ICONS: Record<PersonalId, ReactNode> = {
   calendars: <CalendarDays aria-hidden className="size-6" />,
+  mail: <Mail aria-hidden className="size-6" />,
   strava: <Activity aria-hidden className="size-6" />,
 };
 
@@ -54,6 +56,19 @@ export function personalAddOns(
         "Read by Niles only when it hears you, or when you ask here. Nobody else can ask for yours.",
       added: names.length > 0,
       status: { ok: true, text: names.join(", ") },
+    });
+    // Mail, like calendars, is read only for the voice it belongs to.
+    const mail = (calendars?.connections ?? []).filter((c) => c.mail);
+    out.push({
+      id: "mail",
+      label: "Mail",
+      description:
+        "Read by Niles only when it hears you, or when you ask here. A mail it writes waits for you to send it.",
+      added: mail.length > 0,
+      status: {
+        ok: true,
+        text: mail.map((c) => (c.mail === "send" ? `${c.name} (can send)` : c.name)).join(", "),
+      },
     });
   }
   out.push({
@@ -81,6 +96,7 @@ function stravaStatus(s?: StravaStatus): { ok: boolean; text: string } {
 export function returningTo(search: string): PersonalId | null {
   const query = new URLSearchParams(search);
   if (query.has("calendar") || query.has("calendar_error")) return "calendars";
+  if (query.has("mail") || query.has("mail_error")) return "mail";
   if (query.has("strava") || query.has("strava_error")) return "strava";
   return null;
 }
@@ -154,6 +170,7 @@ export function PersonalAddOns({ hasVoice }: { hasVoice: boolean }) {
               </DialogHeader>
               <DialogBody>
                 {current.id === "calendars" && <CalendarsPanel />}
+                {current.id === "mail" && <MailPanel />}
                 {current.id === "strava" && <StravaPanel />}
               </DialogBody>
             </>

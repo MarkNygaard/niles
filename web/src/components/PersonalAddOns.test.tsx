@@ -45,12 +45,26 @@ function page(hasVoice = true) {
 }
 
 describe("personalAddOns", () => {
-  it("leaves calendars out for somebody Niles cannot hear", () => {
+  it("leaves calendars and mail out for somebody Niles cannot hear", () => {
     expect(personalAddOns(false, ONE_CALENDAR, NO_STRAVA).map((a) => a.id)).toEqual(["strava"]);
     expect(personalAddOns(true, ONE_CALENDAR, NO_STRAVA).map((a) => a.id)).toEqual([
       "calendars",
+      "mail",
       "strava",
     ]);
+  });
+
+  it("counts one account's calendar and mail separately", () => {
+    const both: CalendarsView = {
+      ...ONE_CALENDAR,
+      connections: [{ ...ONE_CALENDAR.connections[0], mail: "send" }],
+    };
+    const [calendars, mail] = personalAddOns(true, both, NO_STRAVA);
+    expect(calendars.added).toBe(true);
+    expect(mail.added).toBe(true);
+    expect(mail.status.text).toBe("Private (can send)");
+    const [, none] = personalAddOns(true, ONE_CALENDAR, NO_STRAVA);
+    expect(none.added).toBe(false);
   });
 
   it("counts Strava as added once there is an app, connected or not", () => {
@@ -81,6 +95,8 @@ describe("returningTo", () => {
     expect(returningTo("?calendar=connected&name=Work")).toBe("calendars");
     expect(returningTo("?calendar_error=denied")).toBe("calendars");
     expect(returningTo("?strava=connected")).toBe("strava");
+    expect(returningTo("?mail=connected&name=Private")).toBe("mail");
+    expect(returningTo("?mail_error=denied")).toBe("mail");
     expect(returningTo("")).toBeNull();
   });
 });

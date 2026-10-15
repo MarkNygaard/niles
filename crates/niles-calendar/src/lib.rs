@@ -8,9 +8,12 @@
 
 pub mod caldav;
 pub mod error;
+pub mod gmail;
 pub mod google;
 pub mod graph;
+pub mod graph_mail;
 pub mod ics;
+pub mod mail;
 pub mod model;
 pub mod service;
 pub mod store;
@@ -19,5 +22,5 @@ pub use error::{Error, Result};
 pub use google::GoogleApp;
 pub use graph::{MicrosoftApp, Tokens};
 pub use model::{Access, Connection, Event, MailAccess, NewEvent, Provider, Services};
-pub use service::{Apps, Backend, Calendars, Change, Listed, Made, Network};
+pub use service::{Apps, Backend, Calendars, Change, Listed, Made, MailListed, MailRead, Network};
 pub use store::{ConnectionStore, MemoryConnections};

@@ -8,6 +8,7 @@ use crate::caldav::{self, Login};
 use crate::error::{Error, Result};
 use crate::google::{self, GoogleApp};
 use crate::graph::{self, MicrosoftApp, Tokens};
+use crate::mail::{Draft, Message, Search, Summary};
 use crate::model::{Access, Connection, Event, NewEvent, Provider, Services};
 use crate::store::ConnectionStore;
 use async_trait::async_trait;
@@ -15,6 +16,9 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use chrono_tz::Tz;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+mod mail;
+pub use mail::{MailListed, MailRead};
 
 /// The household's app registrations, read from the config per use. A
 /// provider left out is switched off.
@@ -60,6 +64,39 @@ pub trait Backend: Send + Sync {
         tz: Tz,
     ) -> Result<Event>;
     async fn delete(&self, connection: &Connection, auth: &Auth, event: &Event) -> Result<()>;
+
+    /// Mail. Unsupported until a provider answers it.
+    async fn mail_search(
+        &self,
+        _connection: &Connection,
+        _auth: &Auth,
+        _search: &Search,
+    ) -> Result<Vec<Summary>> {
+        Err(no_mail())
+    }
+    async fn mail_read(
+        &self,
+        _connection: &Connection,
+        _auth: &Auth,
+        _id: &str,
+    ) -> Result<Message> {
+        Err(no_mail())
+    }
+    async fn mail_send(
+        &self,
+        _connection: &Connection,
+        _auth: &Auth,
+        _draft: &Draft,
+        _reply: Option<&Message>,
+    ) -> Result<()> {
+        Err(no_mail())
+    }
+}
+
+fn no_mail() -> Error {
+    Error::Invalid {
+        reason: "mail from this kind of account is not supported yet".into(),
+    }
 }
 
 /// The providers themselves.
@@ -127,6 +164,56 @@ impl Backend for Network {
 
     async fn discover_icloud(&self, login: &Login) -> Result<String> {
         caldav::discover(&self.http, login).await
+    }
+
+    async fn mail_search(
+        &self,
+        connection: &Connection,
+        auth: &Auth,
+        search: &Search,
+    ) -> Result<Vec<Summary>> {
+        match (connection.provider, auth) {
+            (Provider::Microsoft, Auth::Bearer(token)) => {
+                crate::graph_mail::search(&self.http, token, search).await
+            }
+            (Provider::Google, Auth::Bearer(token)) => {
+                crate::gmail::search(&self.http, token, search).await
+            }
+            _ => Err(no_mail()),
+        }
+    }
+
+    async fn mail_read(&self, connection: &Connection, auth: &Auth, id: &str) -> Result<Message> {
+        match (connection.provider, auth) {
+            (Provider::Microsoft, Auth::Bearer(token)) => {
+                crate::graph_mail::read(&self.http, token, id).await
+            }
+            (Provider::Google, Auth::Bearer(token)) => {
+                crate::gmail::read(&self.http, token, id).await
+            }
+            _ => Err(no_mail()),
+        }
+    }
+
+    async fn mail_send(
+        &self,
+        connection: &Connection,
+        auth: &Auth,
+        draft: &Draft,
+        reply: Option<&Message>,
+    ) -> Result<()> {
+        match (connection.provider, auth) {
+            (Provider::Microsoft, Auth::Bearer(token)) => match reply {
+                Some(original) => {
+                    crate::graph_mail::reply(&self.http, token, &original.id, draft).await
+                }
+                None => crate::graph_mail::send_new(&self.http, token, draft).await,
+            },
+            (Provider::Google, Auth::Bearer(token)) => {
+                crate::gmail::send_mail(&self.http, token, &connection.account, draft, reply).await
+            }
+            _ => Err(no_mail()),
+        }
     }
 
     async fn events(
@@ -244,6 +331,8 @@ pub struct Calendars {
     tokens: tokio::sync::Mutex<HashMap<String, (String, DateTime<Utc>)>>,
     /// The events each person was last shown, by reference.
     known: Mutex<HashMap<String, Vec<Known>>>,
+    /// The mail each person was last shown, by reference.
+    known_mail: Mutex<HashMap<String, Vec<mail::KnownMail>>>,
 }
 
 impl Calendars {
@@ -253,6 +342,7 @@ impl Calendars {
             backend,
             tokens: tokio::sync::Mutex::new(HashMap::new()),
             known: Mutex::new(HashMap::new()),
+            known_mail: Mutex::new(HashMap::new()),
         }
     }
 
@@ -649,6 +739,56 @@ mod tests {
 
     #[async_trait]
     impl Backend for Fake {
+        async fn mail_search(
+            &self,
+            connection: &Connection,
+            _auth: &Auth,
+            _search: &crate::mail::Search,
+        ) -> Result<Vec<crate::mail::Summary>> {
+            // The private account's mail is the newer.
+            let hour = if connection.name == "Private" { 9 } else { 8 };
+            Ok(vec![crate::mail::Summary {
+                id: format!("{}-1", connection.id),
+                from: "Jakob <jakob@example.com>".into(),
+                subject: format!("To {}", connection.name),
+                received: format!("2026-10-15T{hour:02}:00:00Z").parse().unwrap(),
+                unread: true,
+                excerpt: "Kaffe?".into(),
+            }])
+        }
+
+        async fn mail_read(
+            &self,
+            connection: &Connection,
+            _auth: &Auth,
+            id: &str,
+        ) -> Result<crate::mail::Message> {
+            Ok(crate::mail::Message {
+                id: id.into(),
+                subject: format!("To {}", connection.name),
+                text: "Kaffe?".into(),
+                ..crate::mail::Message::default()
+            })
+        }
+
+        async fn mail_send(
+            &self,
+            _connection: &Connection,
+            auth: &Auth,
+            draft: &crate::mail::Draft,
+            reply: Option<&crate::mail::Message>,
+        ) -> Result<()> {
+            self.writes.lock().unwrap().push(format!(
+                "send {} via {}{}",
+                draft.subject,
+                who(auth),
+                reply
+                    .map(|r| format!(" in reply to {}", r.id))
+                    .unwrap_or_default()
+            ));
+            Ok(())
+        }
+
         async fn refresh(&self, _apps: &Apps, connection: &Connection) -> Result<Tokens> {
             if connection.credential == "revoked" {
                 return Err(Error::Reconnect {
@@ -1133,6 +1273,128 @@ mod tests {
             .unwrap();
         assert!(gone.is_none());
         assert_eq!(store.list("majse").await.unwrap().len(), 1);
+    }
+
+    /// Mark's two accounts, now serving mail too: Private can send,
+    /// Work only reads.
+    async fn with_mail() -> (Calendars, Arc<Fake>) {
+        let (calendars, fake, store) = household().await;
+        for (id, access) in [
+            ("p", crate::model::MailAccess::Send),
+            ("w", crate::model::MailAccess::Read),
+        ] {
+            let mut account = store
+                .list("mark")
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|c| c.id == id)
+                .unwrap();
+            account.mail = Some(access);
+            store.save(&account).await.unwrap();
+        }
+        (calendars, fake)
+    }
+
+    fn search() -> crate::mail::Search {
+        crate::mail::Search {
+            limit: 10,
+            ..crate::mail::Search::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_every_mail_account_of_the_person_asking_and_no_one_else() {
+        let (calendars, _) = with_mail().await;
+        let (listed, problems) = calendars
+            .mail_search(&apps(), "mark", &search())
+            .await
+            .unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+        let subjects: Vec<&str> = listed.iter().map(|l| l.summary.subject.as_str()).collect();
+        assert_eq!(subjects, ["To Private", "To Work"], "newest first");
+        assert_eq!(listed[0].reference, "m1");
+        let read = calendars.mail_read(&apps(), "mark", "m2").await.unwrap();
+        assert_eq!(read.account, "Work");
+        // Majse's Gmail serves no mail, and Mark's references are not hers.
+        let (hers, _) = calendars
+            .mail_search(&apps(), "majse", &search())
+            .await
+            .unwrap();
+        assert!(hers.is_empty());
+        assert!(matches!(
+            calendars.mail_read(&apps(), "majse", "m1").await,
+            Err(Error::NoSuchMail { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn sends_only_from_an_account_that_may() {
+        let (calendars, fake) = with_mail().await;
+        // The only one that can send is chosen without asking.
+        let from = calendars.mail_sender("mark", None, None).await.unwrap();
+        assert_eq!(from.name, "Private");
+        // Work reads only, by name or as the account replied from.
+        assert!(matches!(
+            calendars.mail_sender("mark", Some("work"), None).await,
+            Err(Error::CannotSend { .. })
+        ));
+        calendars
+            .mail_search(&apps(), "mark", &search())
+            .await
+            .unwrap();
+        assert!(matches!(
+            calendars.mail_sender("mark", None, Some("m2")).await,
+            Err(Error::CannotSend { .. })
+        ));
+        let draft = crate::mail::Draft {
+            to: vec!["jakob@example.com".into()],
+            subject: "Re: To Private".into(),
+            body: "Ja tak".into(),
+            ..crate::mail::Draft::default()
+        };
+        let original = calendars
+            .mail_original(&apps(), "mark", "m1")
+            .await
+            .unwrap();
+        calendars
+            .mail_send(&apps(), "mark", "p", &draft, Some(&original))
+            .await
+            .unwrap();
+        assert!(matches!(
+            calendars
+                .mail_send(&apps(), "mark", "w", &draft, None)
+                .await,
+            Err(Error::CannotSend { .. })
+        ));
+        let writes = fake.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert!(
+            writes[0].starts_with("send Re: To Private via "),
+            "{writes:?}"
+        );
+        assert!(writes[0].ends_with("in reply to p-1"), "{writes:?}");
+    }
+
+    #[tokio::test]
+    async fn asks_which_account_when_more_than_one_can_send() {
+        let (calendars, _, store) = household().await;
+        for id in ["p", "w"] {
+            let mut account = store
+                .list("mark")
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|c| c.id == id)
+                .unwrap();
+            account.mail = Some(crate::model::MailAccess::Send);
+            store.save(&account).await.unwrap();
+        }
+        let err = calendars.mail_sender("mark", None, None).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "which account should it go from: Private or Work?"
+        );
     }
 
     const CALENDAR_READ: Services = Services {

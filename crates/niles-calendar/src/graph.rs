@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const AUTHORITY: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";
-const GRAPH: &str = "https://graph.microsoft.com/v1.0";
+pub(crate) const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 
 /// The household's app registration, as one request needs it. Built
 /// from the config on every use, so new keys take hold without a
@@ -380,11 +380,11 @@ pub fn read_event(value: &Value, tz: Tz) -> Option<Event> {
     })
 }
 
-async fn get(http: &reqwest::Client, access_token: &str, url: &str) -> Result<Value> {
+pub(crate) async fn get(http: &reqwest::Client, access_token: &str, url: &str) -> Result<Value> {
     send(http, access_token, reqwest::Method::GET, url, None).await
 }
 
-async fn send(
+pub(crate) async fn send(
     http: &reqwest::Client,
     access_token: &str,
     method: reqwest::Method,

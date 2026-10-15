@@ -63,6 +63,7 @@ mod courtesy;
 mod follow_up;
 mod grocery_delivery;
 mod last_target;
+mod mail;
 mod manifest;
 mod music;
 mod plugins;
@@ -4125,7 +4126,11 @@ async fn handle_transcript(
                 room: room.as_ref().map(|r| r.as_str().to_string()),
                 by: None,
                 proposal: proposal_since(ctx, started),
-                approval: None,
+                // A mail asked for aloud waits in the app, under the
+                // turn that asked for it.
+                approval: ctx
+                    .approvals
+                    .for_turn(&chat_log::person(Some(slug), ""), started),
             };
             let (log, person) = (log.clone(), chat_log::person(Some(slug), ""));
             tokio::spawn(async move { log.record_spoken(&person, &turn).await });
@@ -7031,7 +7036,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         );
     }
     if let (Some(calendars), Ok(tz)) = (&calendars, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
-        calendar::register(&mut tools, calendars.clone(), store.clone(), tz);
+        let shared = calendar::register(&mut tools, calendars.clone(), store.clone(), tz);
+        mail::register(&mut tools, shared, approvals.clone());
     }
     let strava = build_strava(&cfg);
     if let (Some(strava), Ok(tz)) = (&strava, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
