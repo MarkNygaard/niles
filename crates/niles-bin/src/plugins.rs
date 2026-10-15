@@ -679,8 +679,9 @@ pub(crate) fn restart_on_settings(
 }
 
 /// What a removed plugin leaves elsewhere: its settings under
-/// `[plugins.<id>]` in the config store, and its secrets under
-/// `plugins.<id>.*` in the secret store.
+/// `[plugins.<id>]` and its pages and widgets under `[menu]` in the
+/// config store, and its secrets under `plugins.<id>.*` in the secret
+/// store.
 pub(crate) struct Forget {
     pub settings: Arc<niles_config::ConfigStore>,
     pub secrets: Option<Arc<niles_db::PostgresSecrets>>,
@@ -689,10 +690,20 @@ pub(crate) struct Forget {
 #[async_trait::async_trait]
 impl niles_plugins::Leftovers for Forget {
     async fn forget(&self, id: &str) -> Result<(), String> {
+        let (menu, widgets) = self.settings.current().menu.forget_plugin(id);
+        let mut patch = toml::Table::new();
+        if !menu.is_empty() {
+            patch.insert("menu".into(), toml::Value::Table(menu));
+        }
+        let mut resets = vec![format!("plugins.{id}")];
+        if widgets {
+            resets.push(format!("menu.widgets.{id}"));
+        }
+        // One revision, so one undo brings all of it back.
         self.settings
-            .reset(&format!("plugins.{id}"), niles_config::ChangeSource::Api)
+            .apply_and_reset(&patch, &resets, niles_config::ChangeSource::Api)
             .await
-            .map_err(|e| format!("its settings: {e}"))?;
+            .map_err(|e| format!("its settings and menu entries: {e}"))?;
         let Some(secrets) = &self.secrets else {
             return Ok(());
         };
@@ -754,6 +765,49 @@ fn summary(listed: niles_plugins::Listed) -> niles_api::plugins::PluginSummary {
             added: u.added,
             removed: u.removed,
         }),
+        settings: listed
+            .settings
+            .into_iter()
+            .map(|s| niles_api::plugins::PluginSetting {
+                key: s.key,
+                label: s.label,
+                kind: s.kind.to_string(),
+                required: s.required,
+                help: s.help,
+                default: s.default,
+                options: s
+                    .options
+                    .into_iter()
+                    .map(|(value, label)| niles_api::plugins::PluginOption { value, label })
+                    .collect(),
+                min: s.min,
+                max: s.max,
+                value: s.value,
+                set: s.set,
+            })
+            .collect(),
+        menu: listed
+            .menu
+            .into_iter()
+            .map(|m| niles_api::plugins::PluginPage {
+                id: m.id,
+                label: m.label,
+                icon: m.icon,
+                refresh_every: m.refresh_every,
+            })
+            .collect(),
+        widgets: listed
+            .widgets
+            .into_iter()
+            .map(|w| niles_api::plugins::PluginWidget {
+                id: w.id,
+                title: w.title,
+                room: w.room,
+                refresh_every: w.refresh_every,
+            })
+            .collect(),
+        interface: listed.interface,
+        older_interface: listed.older_interface,
     }
 }
 
@@ -892,6 +946,49 @@ impl niles_api::plugins::Plugins for AppPlugins {
 
     async fn logo(&self, id: &str) -> Result<Option<String>, PluginFailure> {
         self.0.logo(id).await.map_err(refused)
+    }
+
+    async fn log(&self, id: &str) -> Result<Vec<niles_api::plugins::PluginLogLine>, PluginFailure> {
+        if !self.0.list().await.iter().any(|p| p.id == id) {
+            return Err(PluginFailure::NotFound(format!(
+                "There is no plugin called {id}."
+            )));
+        }
+        Ok(self
+            .0
+            .runtime()
+            .log(id)
+            .into_iter()
+            .map(|line| niles_api::plugins::PluginLogLine {
+                at: line.at,
+                level: match line.level {
+                    niles_plugins::log::Level::Debug => "debug",
+                    niles_plugins::log::Level::Info => "info",
+                    niles_plugins::log::Level::Warn => "warn",
+                    niles_plugins::log::Level::Error => "error",
+                }
+                .to_string(),
+                message: line.message,
+                niles: line.niles,
+            })
+            .collect())
+    }
+
+    async fn image(
+        &self,
+        id: &str,
+        src: &str,
+    ) -> Result<niles_api::plugins::PluginImage, PluginFailure> {
+        use niles_plugins::images::ImageError;
+        match self.0.runtime().image(id, src).await {
+            Ok(image) => Ok(niles_api::plugins::PluginImage {
+                mime: image.mime.to_string(),
+                bytes: image.bytes,
+            }),
+            Err(ImageError::NotAllowed(why)) => Err(PluginFailure::BadRequest(why)),
+            Err(ImageError::NotFound(why)) => Err(PluginFailure::NotFound(why)),
+            Err(ImageError::Upstream(why)) => Err(PluginFailure::Upstream(why)),
+        }
     }
 
     async fn secret_settings(&self) -> Vec<(String, String)> {
@@ -1053,6 +1150,34 @@ type = "secret"
         assert!(!now.plugins.contains_key("hello"));
         assert_eq!(now.plugins["spotprice"]["area"].as_str(), Some("DK2"));
         forget.forget("never_installed").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn removing_a_plugin_takes_its_pages_and_widgets_out_of_the_menu() {
+        use niles_plugins::Leftovers;
+        let settings =
+            Arc::new(niles_config::ConfigStore::from_str_in_memory("").expect("an empty config"));
+        let patch: toml::Table = toml::from_str(
+            "[menu]\norder = [\"chat\", \"hello.page\", \"spotprice.electricity\"]\n\
+             hidden = [\"hello.other\"]\n\
+             [menu.widgets.hello]\ncard = \"front\"\n\
+             [menu.widgets.spotprice]\nnow = \"room:kitchen\"\n",
+        )
+        .unwrap();
+        settings
+            .apply(&patch, niles_config::ChangeSource::Api)
+            .await
+            .unwrap();
+        let forget = Forget {
+            settings: settings.clone(),
+            secrets: None,
+        };
+        forget.forget("hello").await.unwrap();
+        let menu = &settings.current().menu;
+        assert_eq!(menu.order, ["chat", "spotprice.electricity"]);
+        assert!(menu.hidden.is_empty());
+        assert!(!menu.widgets.contains_key("hello"));
+        assert_eq!(menu.widgets["spotprice"]["now"], "room:kitchen");
     }
 
     /// What the setup panel will do: write `[plugins.<id>]` through

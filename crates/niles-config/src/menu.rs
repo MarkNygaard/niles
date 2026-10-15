@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// The menu entries that can be moved. Home and My profile are not
 /// among them: Home is the main navigation's first entry and My profile
@@ -16,6 +16,12 @@ pub const MOVABLE: &[&str] = &[
     "automations",
     "skills",
 ];
+
+/// Where a plugin's widget goes, as `[menu.widgets.<plugin>]` writes it.
+pub const WIDGET_ON_FRONT_PAGE: &str = "front";
+pub const WIDGET_HIDDEN: &str = "hidden";
+/// Before a room id: `"room:kitchen"`.
+pub const WIDGET_IN_ROOM: &str = "room:";
 
 /// When the Media entry is in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -37,6 +43,12 @@ pub enum MediaShown {
 /// An entry neither list names goes to the main navigation, after the
 /// arranged ones — a page added in a later version has to show up
 /// somewhere. Only `hidden` hides.
+///
+/// A plugin's page is an entry like the built-in ones, as
+/// `<plugin-id>.<page-id>` (`spotprice.electricity`). This section cannot
+/// know which plugins are installed, so any entry of that shape is
+/// accepted; the app shows only those of installed plugins, and removing
+/// a plugin takes its entries out ([`MenuConfig::forget_plugin`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MenuConfig {
@@ -53,6 +65,11 @@ pub struct MenuConfig {
     /// When the Media entry shows.
     #[serde(default)]
     pub media: MediaShown,
+    /// Where plugins' widgets go, when not where their manifests start
+    /// them: by plugin id, then widget id, `"front"` for the front page,
+    /// `"room:<id>"` for a room's card, or `"hidden"`.
+    #[serde(default)]
+    pub widgets: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 fn default_avatar() -> Vec<String> {
@@ -66,6 +83,7 @@ impl Default for MenuConfig {
             avatar: default_avatar(),
             hidden: Vec::new(),
             media: MediaShown::default(),
+            widgets: BTreeMap::new(),
         }
     }
 }
@@ -88,19 +106,89 @@ impl MenuConfig {
                 return Err(invalid("Settings cannot be hidden".into()));
             }
         }
+        for (plugin, widgets) in &self.widgets {
+            if !is_plugin_id(plugin) {
+                return Err(invalid(format!(
+                    "widgets: {plugin:?} is not a plugin id like spotprice"
+                )));
+            }
+            for (widget, place) in widgets {
+                if !is_identifier(widget) {
+                    return Err(invalid(format!(
+                        "widgets.{plugin}: {widget:?} is not a widget id like price_now"
+                    )));
+                }
+                let room = place.strip_prefix(WIDGET_IN_ROOM);
+                let fits = place == WIDGET_ON_FRONT_PAGE
+                    || place == WIDGET_HIDDEN
+                    || room.is_some_and(is_identifier);
+                if !fits {
+                    return Err(invalid(format!(
+                        "widgets.{plugin}.{widget} is {place:?}; it is \"front\", \"hidden\" or \
+                         \"room:<room id>\""
+                    )));
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// What removing plugin `id` takes out of this section: the lists
+    /// without its pages, for those that had any, as a patch for
+    /// `[menu]`, and whether it had widgets placed (which the caller
+    /// drops by resetting `menu.widgets.<id>`).
+    pub fn forget_plugin(&self, id: &str) -> (toml::Table, bool) {
+        let prefix = format!("{id}.");
+        let mut patch = toml::Table::new();
+        for (key, list) in [
+            ("order", &self.order),
+            ("avatar", &self.avatar),
+            ("hidden", &self.hidden),
+        ] {
+            if list.iter().any(|e| e.starts_with(&prefix)) {
+                let kept = list
+                    .iter()
+                    .filter(|e| !e.starts_with(&prefix))
+                    .map(|e| toml::Value::String(e.clone()))
+                    .collect();
+                patch.insert(key.into(), toml::Value::Array(kept));
+            }
+        }
+        (patch, self.widgets.contains_key(id))
     }
 }
 
 fn known(entry: &str) -> Result<()> {
-    if MOVABLE.contains(&entry) {
+    if MOVABLE.contains(&entry) || is_plugin_entry(entry) {
         Ok(())
     } else {
         Err(invalid(format!(
-            "{entry:?} is not a menu entry that can be moved or hidden (expected one of {})",
+            "{entry:?} is not a menu entry that can be moved or hidden (expected one of {}, \
+             or a plugin's page as <plugin-id>.<page-id>)",
             MOVABLE.join(", ")
         )))
     }
+}
+
+/// `spotprice.electricity`: a plugin's id, a dot, and its page's id.
+fn is_plugin_entry(entry: &str) -> bool {
+    entry
+        .split_once('.')
+        .is_some_and(|(plugin, page)| is_plugin_id(plugin) && is_identifier(page))
+}
+
+/// The manifest's rule for a plugin id: `[a-z0-9_]`, 2 to 32
+/// characters, starting with a letter.
+fn is_plugin_id(id: &str) -> bool {
+    (2..=32).contains(&id.len())
+        && id.starts_with(|c: char| c.is_ascii_lowercase())
+        && is_identifier(id)
+}
+
+fn is_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 fn invalid(reason: String) -> Error {
@@ -120,6 +208,7 @@ mod tests {
             avatar: default_avatar(),
             hidden: hidden.iter().map(|s| s.to_string()).collect(),
             media: MediaShown::Playing,
+            widgets: BTreeMap::new(),
         }
     }
 
@@ -177,6 +266,69 @@ hidden = [\"groceries\"]",
     fn settings_cannot_be_hidden() {
         let err = menu(&[], &["settings"]).validate().unwrap_err();
         assert!(err.to_string().contains("Settings"), "{err}");
+    }
+
+    #[test]
+    fn a_plugins_page_is_an_entry_like_the_others() {
+        assert!(
+            menu(
+                &["chat", "spotprice.electricity"],
+                &["spotprice.electricity"]
+            )
+            .validate()
+            .is_ok()
+        );
+        for wrong in [
+            "spotprice",
+            "Spot.prices",
+            "x.page",
+            "spotprice.",
+            ".page",
+            "a.b.c",
+        ] {
+            assert!(menu(&[wrong], &[]).validate().is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn a_widget_goes_to_the_front_page_a_room_or_nowhere() {
+        let read = |text: &str| toml::from_str::<MenuConfig>(text).unwrap().validate();
+        assert!(
+            read(
+                "[widgets.spotprice]\nprice_now = \"front\"\nchart = \"room:kitchen\"\nold = \"hidden\""
+            )
+            .is_ok()
+        );
+        assert!(read("[widgets.spotprice]\nprice_now = \"kitchen\"").is_err());
+        assert!(read("[widgets.spotprice]\nprice_now = \"room:Kitchen\"").is_err());
+        assert!(read("[widgets.Spot]\nprice_now = \"front\"").is_err());
+    }
+
+    #[test]
+    fn forgetting_a_plugin_takes_out_its_pages_and_only_its() {
+        let mut config = menu(
+            &["chat", "spotprice.electricity", "spotprice2.page"],
+            &["spotprice.history"],
+        );
+        config.widgets.insert(
+            "spotprice".into(),
+            BTreeMap::from([("now".into(), "front".into())]),
+        );
+        let (patch, widgets) = config.forget_plugin("spotprice");
+        assert_eq!(
+            patch["order"],
+            toml::Value::Array(vec!["chat".into(), "spotprice2.page".into()])
+        );
+        assert_eq!(patch["hidden"], toml::Value::Array(Vec::new()));
+        assert!(
+            !patch.contains_key("avatar"),
+            "untouched lists are not written"
+        );
+        assert!(widgets);
+
+        let (patch, widgets) = menu(&["chat"], &[]).forget_plugin("spotprice");
+        assert!(patch.is_empty());
+        assert!(!widgets);
     }
 
     #[test]

@@ -126,10 +126,15 @@ api_key_env = "GROQ_API_KEY"
 
 # The app's menu: which entries sit between Home and Me, in what order,
 # and which are left out. Home and Me always stay first and last. A
-# hidden entry's page still works. Arranged under Settings → Menu.
+# hidden entry's page still works. Arranged under Settings → Menu. A
+# plugin's page is an entry too, as <plugin-id>.<page-id>; its widgets
+# start where its manifest says and move from its panel on the
+# Integrations page: "front", "room:<room>" or "hidden".
 # [menu]
-# order = ["chat", "groceries"]
+# order = ["chat", "groceries", "spotprice.electricity"]
 # hidden = ["groceries"]
+# [menu.widgets.spotprice]
+# price_now = "room:kitchen"
 
 # Lights that should sit out the adaptive curve — a TV backlight, a shelf
 # strip — and hold a fixed warm, dim setting instead. List them here; set
