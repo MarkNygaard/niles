@@ -29,7 +29,15 @@ import { ClimatePanel } from "@/components/ClimatePanel";
 import { RoomWidgets } from "@/components/PluginWidgets";
 import type { PlacedWidget } from "@/lib/plugins";
 import { HEAT_INK, heatSheet, heatTop } from "@/lib/heat";
-import { hasRoomSwitch, humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
+import {
+  blindsSummary,
+  hasRoomSwitch,
+  humid,
+  measured,
+  roomSummary,
+  roomToggle,
+  subtitle,
+} from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, RoomMusic, SetLight, TvInfo, TvVolumeChange } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -85,17 +93,20 @@ export interface RoomCardProps {
  * because nothing smaller survives this background.
  */
 /**
- * The two ways into a room, along the bottom of its card.
+ * The ways into a room, along the bottom of its card: up to three.
  *
- * No rules and no fill: the card is one object, and three lines across
- * it turned a tile into a small table. What is left is a pair of marks
+ * No rules and no fill: the card is one object, and lines across it
+ * turned a tile into a small table. What is left is a row of marks
  * pressed into the colour — half-strength white, which is about where
  * an icon stops looking applied to the card and starts looking part of
  * it, while still holding its shape at this size. The hover wash is
  * what says they can be pressed.
  */
 const FOOT = [
-  "flex flex-1 items-center justify-center px-3 py-2.5 text-white/50 transition-colors",
+  // `min-w-0` and the narrower padding below `sm` so three still split
+  // the card evenly at two cards to the narrowest phone's row, where
+  // three at `px-3` came to more than the card is wide.
+  "flex min-w-0 flex-1 items-center justify-center px-2 py-2.5 text-white/50 transition-colors sm:px-3",
   "hover:bg-white/10 hover:text-white",
   "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:-outline-offset-2 focus-visible:outline-none",
 ].join(" ");
@@ -149,7 +160,12 @@ export function RoomCard({
   const toggle = roomToggle(room);
   const switchable = hasRoomSwitch(room);
   const hasZone = room.zone !== undefined && onSetZone !== undefined;
-  const [open, setOpen] = useState<"lights" | "heating" | null>(null);
+  // Blinds get a button of their own beside the lights. In a room with
+  // no lights the room's one sheet is theirs, under their button, as it
+  // always was.
+  const blindsOnly = room.lights.length === 0 && room.blinds.length > 0;
+  const blindsApart = room.lights.length > 0 && room.blinds.length > 0;
+  const [open, setOpen] = useState<"lights" | "blinds" | "heating" | null>(null);
   /**
    * What the heating sheet is coloured, following the dial as it moves.
    *
@@ -171,8 +187,13 @@ export function RoomCard({
   // DialogHeader and DrawerHeader disagree — one is a row with a
   // divider, the other a centred column — and the panel is the same
   // panel either way, so the chrome is written once here and only the
-  // parts that carry the accessible name are swapped.
-  const contents = (
+  // parts that carry the accessible name are swapped. The lights and
+  // the blinds share it.
+  const chrome = (
+    description: string,
+    power: React.ReactNode,
+    body: React.ReactNode,
+  ) => (
     <>
       <div className="border-border flex items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
@@ -182,27 +203,18 @@ export function RoomCard({
                 {room.label}
               </DrawerTitle>
               <DrawerDescription className="text-muted-foreground text-sm">
-                {roomSummary(room)}
+                {description}
               </DrawerDescription>
             </>
           ) : (
             <>
               <DialogTitle>{room.label}</DialogTitle>
-              <DialogDescription>
-                {roomSummary(room)}
-              </DialogDescription>
+              <DialogDescription>{description}</DialogDescription>
             </>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {switchable && (
-            <PowerButton
-              on={lit}
-              label={`All lights in ${room.label}`}
-              disabled={disabled}
-              onToggle={() => onSetRoom(toggle)}
-            />
-          )}
+          {power}
           {/* No close button on the drawer: it is dismissed by swiping
               it away, which is the gesture the handle is advertising. */}
           {!phone && (
@@ -216,58 +228,111 @@ export function RoomCard({
         </div>
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
-        {tv && (
-          // A room with a Sonos hears the TV through it: its volume is
-          // the Sonos's, as it is by voice.
-          <TvRow
-            tv={tv.info}
-            busy={tv.busy}
-            onPower={tv.onPower}
-            onVolume={music ? undefined : tv.onVolume}
-          />
-        )}
-        {room.lights.map((light) => (
-          <LightRow
-            key={light.id}
-            light={light}
-            disabled={disabled}
-            onSet={(body) => onSetLight(light, body)}
-          />
-        ))}
-        {/* After the lights and never among them: the lights are what
-            the room's switch moves, and a blind is not one of them. */}
-        {room.blinds.length > 1 && (
-          <AllBlinds
-            room={room.label}
-            disabled={disabled}
-            onSet={(position) => onSetBlinds(room.blinds, position)}
-          />
-        )}
-        {room.blinds.map((blind) => (
-          <BlindRow
-            key={blind.id}
-            blind={blind}
-            disabled={disabled}
-            onSet={(position) => onSetBlinds([blind], position)}
-          />
-        ))}
-        {room.meters.map((meter) => (
-          <MeterRow key={meter.id} device={meter} />
-        ))}
-        <RoomWidgets widgets={widgets} />
-        {/* Named rather than simply gone. A control that publishes to
-            something not listening looks broken, but a light that
-            vanishes when its battery dies is one nobody notices has
-            died. */}
-        {room.unreachable.length > 0 && (
-          <p className="text-muted-foreground py-3 text-xs">
-            {room.unreachable.join(", ")}{" "}
-            {room.unreachable.length === 1 ? "is" : "are"} not answering.
-          </p>
-        )}
+        {body}
       </div>
     </>
   );
+
+  const blindRows = (
+    <>
+      {room.blinds.length > 1 && (
+        <AllBlinds
+          room={room.label}
+          disabled={disabled}
+          onSet={(position) => onSetBlinds(room.blinds, position)}
+        />
+      )}
+      {room.blinds.map((blind) => (
+        <BlindRow
+          key={blind.id}
+          blind={blind}
+          disabled={disabled}
+          onSet={(position) => onSetBlinds([blind], position)}
+        />
+      ))}
+    </>
+  );
+
+  const contents = chrome(
+    roomSummary(room),
+    switchable && (
+      <PowerButton
+        on={lit}
+        label={`All lights in ${room.label}`}
+        disabled={disabled}
+        onToggle={() => onSetRoom(toggle)}
+      />
+    ),
+    <>
+      {tv && (
+        // A room with a Sonos hears the TV through it: its volume is
+        // the Sonos's, as it is by voice.
+        <TvRow
+          tv={tv.info}
+          busy={tv.busy}
+          onPower={tv.onPower}
+          onVolume={music ? undefined : tv.onVolume}
+        />
+      )}
+      {room.lights.map((light) => (
+        <LightRow
+          key={light.id}
+          light={light}
+          disabled={disabled}
+          onSet={(body) => onSetLight(light, body)}
+        />
+      ))}
+      {/* After the lights and never among them: the lights are what
+          the room's switch moves, and a blind is not one of them. Not
+          here at all when the blinds have a button and a sheet of
+          their own: the same slider in two places is one too many. */}
+      {!blindsApart && blindRows}
+      {room.meters.map((meter) => (
+        <MeterRow key={meter.id} device={meter} />
+      ))}
+      <RoomWidgets widgets={widgets} />
+      {/* Named rather than simply gone. A control that publishes to
+          something not listening looks broken, but a light that
+          vanishes when its battery dies is one nobody notices has
+          died. */}
+      {room.unreachable.length > 0 && (
+        <p className="text-muted-foreground py-3 text-xs">
+          {room.unreachable.join(", ")}{" "}
+          {room.unreachable.length === 1 ? "is" : "are"} not answering.
+        </p>
+      )}
+    </>,
+  );
+
+  /** A sheet of the room's: a drawer in a hand, a dialog on a desk. */
+  const sheet = (which: "lights" | "blinds", inside: React.ReactNode) =>
+    phone ? (
+      <Drawer
+        open={open === which}
+        onOpenChange={(next: boolean) => {
+          if (!next) setOpen(null);
+        }}
+        showSwipeHandle
+      >
+        {/* Square across the top. It is already flush to the bottom
+            and both sides — the rounded corners are the component's
+            default and belong to a sheet that floats, which this one
+            does not. Overridden here rather than in the component, so
+            `shadcn add drawer` can still update it cleanly. */}
+        <DrawerContent className="data-[swipe-direction=down]:rounded-t-none">
+          {inside}
+        </DrawerContent>
+      </Drawer>
+    ) : (
+      <Dialog
+        open={open === which}
+        onOpenChange={(next: boolean) => {
+          if (!next) setOpen(null);
+        }}
+      >
+        <DialogContent>{inside}</DialogContent>
+      </Dialog>
+    );
 
   /**
    * Heating, as a sheet rather than a drawer.
@@ -398,7 +463,7 @@ export function RoomCard({
           aria-label={
             switchable
               ? `${room.label}, ${roomSummary(room)}. Turn all ${toggle.on ? "on" : "off"}.`
-              : `${room.label}, ${roomSummary(room)}. Show its blinds.`
+              : `${room.label}, ${roomSummary(room)}. Show its ${blindsOnly ? "blinds" : "lights"}.`
           }
           onClick={() => (switchable ? onSetRoom(toggle) : setOpen("lights"))}
           className={cn(
@@ -485,10 +550,12 @@ export function RoomCard({
           </span>
         </button>
 
-        {/* Two, so the common one costs nothing. Lights are adjusted
-            many times a day and heating rarely, and a single button
-            labelled for lights is one nobody finds the thermostat
-            behind. */}
+        {/* One for each thing the room has, up to three, so the common
+            one costs nothing. Lights are adjusted many times a day,
+            blinds daily and heating rarely, and a single button
+            labelled for lights is one nobody finds the blinds or the
+            thermostat behind. Lights first because they are pressed
+            most; in a room without any, the blinds take their place. */}
         {/* Drawn rather than written. Two words and two chevrons took a
             fifth of the card to say what a bulb and a flame say at a
             glance, and the card's own colour and reading are what that
@@ -497,17 +564,28 @@ export function RoomCard({
         <div className="flex">
           <button
             type="button"
-            aria-label={`${switchable ? "Lights" : "Blinds"} in ${room.label}`}
-            title={switchable ? "Lights" : "Blinds"}
+            aria-label={`${blindsOnly ? "Blinds" : "Lights"} in ${room.label}`}
+            title={blindsOnly ? "Blinds" : "Lights"}
             onClick={() => setOpen("lights")}
             className={FOOT}
           >
-            {switchable ? (
-              <BulbOutlineGlyph className="size-6" />
-            ) : (
+            {blindsOnly ? (
               <Blinds aria-hidden className="size-6" />
+            ) : (
+              <BulbOutlineGlyph className="size-6" />
             )}
           </button>
+          {blindsApart && (
+            <button
+              type="button"
+              aria-label={`Blinds in ${room.label}`}
+              title="Blinds"
+              onClick={() => setOpen("blinds")}
+              className={FOOT}
+            >
+              <Blinds aria-hidden className="size-6" />
+            </button>
+          )}
           {hasZone && (
             <button
               type="button"
@@ -527,33 +605,9 @@ export function RoomCard({
 
       {heatingSheet}
 
-      {phone ? (
-        <Drawer
-          open={open === "lights"}
-          onOpenChange={(next: boolean) => {
-            if (!next) setOpen(null);
-          }}
-          showSwipeHandle
-        >
-          {/* Square across the top. It is already flush to the bottom
-              and both sides — the rounded corners are the component's
-              default and belong to a sheet that floats, which this one
-              does not. Overridden here rather than in the component, so
-              `shadcn add drawer` can still update it cleanly. */}
-          <DrawerContent className="data-[swipe-direction=down]:rounded-t-none">
-            {contents}
-          </DrawerContent>
-        </Drawer>
-      ) : (
-        <Dialog
-          open={open === "lights"}
-          onOpenChange={(next: boolean) => {
-            if (!next) setOpen(null);
-          }}
-        >
-          <DialogContent>{contents}</DialogContent>
-        </Dialog>
-      )}
+      {sheet("lights", contents)}
+      {blindsApart &&
+        sheet("blinds", chrome(blindsSummary(room.blinds), null, blindRows))}
     </>
   );
 }

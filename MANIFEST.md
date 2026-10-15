@@ -85,7 +85,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-plugins` | Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `ui-tv-volume` | The TV row has volume down and up, a slider and mute while it is on, where the TV is the speaker; POST /tv/volume | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
+| `ui-room-card-blinds` | A room card with lights and blinds has separate Lights and Blinds buttons beside Heating, each opening its own sheet | [#404](https://github.com/MarkNygaard/niles/pull/404) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
+| `ui-room-hidden` | Hide a room from the dashboard's grid in Settings → Rooms; voice, rules, the API and the house's counts still reach it | [#404](https://github.com/MarkNygaard/niles/pull/404) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |

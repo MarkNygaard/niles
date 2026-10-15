@@ -44,7 +44,7 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
       {
         id: "rooms",
         label: "Rooms",
-        hint: "The order they sit in on the front page",
+        hint: "Which the front page shows, and in what order",
         icon: LayoutGrid,
       },
       {

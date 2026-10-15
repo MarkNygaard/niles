@@ -45,7 +45,7 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import type { Person } from "@/components/PeopleCard";
 import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
-import { ApiError, api, patchForAll, roomOrder, valueAt } from "@/lib/api";
+import { ApiError, api, patchForAll, roomOrder, roomsHidden, valueAt } from "@/lib/api";
 import { mediaShownOf, menuLayout } from "@/lib/menu";
 import { pluginPages } from "@/lib/plugins";
 import { roomsOf } from "@/lib/rooms";
@@ -893,11 +893,18 @@ export function ConfigPanel() {
               climate.data ?? [],
               roomOrder(view.effective),
             )}
+            hidden={roomsHidden(view.effective)}
             disabled={save.isPending}
             onChange={(order) =>
               save.mutate({
                 row: "rooms.order",
                 entries: [{ path: "rooms.order", value: order }],
+              })
+            }
+            onHiddenChange={(hidden) =>
+              save.mutate({
+                row: "rooms.hidden",
+                entries: [{ path: "rooms.hidden", value: hidden }],
               })
             }
           />

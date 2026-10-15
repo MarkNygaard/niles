@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { RoomCard } from "@/components/RoomCard";
 import { roomsOf } from "@/lib/rooms";
-import type { Device, DeviceState, RoomMusic } from "@/lib/api";
+import type { Device, DeviceState, RoomMusic, Zone } from "@/lib/api";
 
 function state(partial: Partial<DeviceState> = {}): DeviceState {
   return {
@@ -148,8 +148,8 @@ describe("RoomCard", () => {
   });
 
   describe("the TV's volume", () => {
-    function withTv(music?: RoomMusic) {
-      const [room] = roomsOf([light("ceiling", true)]);
+    function withTv(music?: RoomMusic, devices: Device[] = [light("ceiling", true)]) {
+      const [room] = roomsOf(devices);
       render(
         <RoomCard
           room={room}
@@ -185,6 +185,15 @@ describe("RoomCard", () => {
       expect(screen.getByText("Netflix")).toBeInTheDocument();
       expect(screen.queryByRole("slider", { name: "TV volume" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Mute the TV" })).toBeNull();
+    });
+
+    it("stays with the lights in a room whose blinds have a sheet of their own", () => {
+      withTv(undefined, [light("ceiling", true), blind("blind", 0)]);
+      expect(screen.getByRole("slider", { name: "TV volume" })).toBeInTheDocument();
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
+      expect(screen.getByRole("slider", { name: "Blind position" })).toBeInTheDocument();
+      expect(screen.queryByRole("slider", { name: "TV volume" })).toBeNull();
     });
   });
 
@@ -289,8 +298,9 @@ describe("RoomCard with blinds", () => {
 
   it("gives each blind its own row, apart from the lights", () => {
     setup([light("ceiling", true), blind("blind", 40)]);
-    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
-    expect(screen.getByText("40% open")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
+    // Twice: the sheet's summary of one blind is that blind's state.
+    expect(screen.getAllByText("40% open")).toHaveLength(2);
     expect(screen.getByRole("slider", { name: "Blind position" })).toBeInTheDocument();
     // The blind has no power button: it is not one of the lights.
     expect(screen.queryByRole("button", { name: /^Blind —/ })).toBeNull();
@@ -298,7 +308,7 @@ describe("RoomCard with blinds", () => {
 
   it("opens and closes one blind", () => {
     const { onSetBlinds } = setup([light("ceiling", true), blind("blind", 0)]);
-    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
     fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
     expect(onSetBlinds).toHaveBeenLastCalledWith([expect.objectContaining({ name: "blind" })], 100);
     fireEvent.click(screen.getByRole("button", { name: "Close Blind" }));
@@ -311,7 +321,7 @@ describe("RoomCard with blinds", () => {
       blind("left_blind", 0),
       blind("right_blind", 0),
     ]);
-    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
     fireEvent.click(screen.getByRole("button", { name: "Open all blinds in Kitchen" }));
     expect(onSetBlinds).toHaveBeenCalledWith(
       [
@@ -324,7 +334,7 @@ describe("RoomCard with blinds", () => {
 
   it("has no open-all for a single blind", () => {
     setup([light("ceiling", true), blind("blind", 0)]);
-    fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
     expect(screen.queryByRole("button", { name: /all blinds/ })).toBeNull();
   });
 
@@ -333,5 +343,111 @@ describe("RoomCard with blinds", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Kitchen, Closed/ }));
     expect(onSetRoom).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Open Blind" })).toBeInTheDocument();
+  });
+});
+
+function zone(): Zone {
+  return {
+    id: 1,
+    name: "Kitchen",
+    room: "kitchen",
+    temperature: 21,
+    humidity: null,
+    target: 21,
+    on: true,
+    overridden: false,
+    reachable: true,
+    until: null,
+    placed_by: "paired",
+  };
+}
+
+/** The card for these devices, with heating when `heated`. */
+function card(devices: Device[], heated = false) {
+  const onSetBlinds = vi.fn();
+  const [room] = roomsOf(devices, heated ? [zone()] : []);
+  render(
+    <RoomCard
+      room={room}
+      onSetRoom={vi.fn()}
+      onSetLight={vi.fn()}
+      onSetBlinds={onSetBlinds}
+      onSetZone={heated ? vi.fn() : undefined}
+    />,
+  );
+  return { onSetBlinds };
+}
+
+/** The footer's buttons, by their titles, left to right. */
+function footer(): string[] {
+  return screen
+    .getAllByRole("button", { name: / in Kitchen$/ })
+    .map((b) => b.getAttribute("title") ?? "");
+}
+
+describe("RoomCard footer", () => {
+  it.each([
+    ["lights only", [light("ceiling", true)], false, ["Lights"]],
+    ["blinds only", [blind("blind", 0)], false, ["Blinds"]],
+    ["lights and blinds", [light("ceiling", true), blind("blind", 0)], false, ["Lights", "Blinds"]],
+    ["lights and heating", [light("ceiling", true)], true, ["Lights", "Heating"]],
+    ["blinds and heating", [blind("blind", 0)], true, ["Blinds", "Heating"]],
+    [
+      "lights, blinds and heating",
+      [light("ceiling", true), blind("blind", 0)],
+      true,
+      ["Lights", "Blinds", "Heating"],
+    ],
+  ])("has a button for each thing in a room with %s", (_, devices, heated, buttons) => {
+    card(devices, heated);
+    expect(footer()).toEqual(buttons);
+  });
+
+  it("opens a sheet of only the blinds from the Blinds button", () => {
+    const { onSetBlinds } = card([
+      light("ceiling", true),
+      blind("left_blind", 0),
+      blind("right_blind", 100),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
+    const sheet = screen.getByRole("dialog");
+    expect(sheet).toHaveTextContent("1 of 2 blinds open");
+    expect(screen.getAllByRole("slider", { name: / blind position$/ })).toHaveLength(2);
+    // The blinds' sheet, not the room's: no lights and no switch for them.
+    expect(screen.queryByRole("button", { name: /^Ceiling/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^All lights in Kitchen/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open all blinds in Kitchen" }));
+    expect(onSetBlinds).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ name: "left_blind" }),
+        expect.objectContaining({ name: "right_blind" }),
+      ],
+      100,
+    );
+  });
+
+  it("opens the blinds as a drawer on a phone", () => {
+    onAPhone();
+    card([light("ceiling", true), blind("blind", 40)]);
+    fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
+    expect(screen.getByRole("slider", { name: "Blind position" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+  });
+
+  it("leaves the blinds out of the lights when they have a button of their own", () => {
+    card([light("ceiling", true), blind("left_blind", 0), blind("right_blind", 0)]);
+    fireEvent.click(screen.getByRole("button", { name: "Lights in Kitchen" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.queryByRole("slider", { name: / blind position$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /all blinds/ })).toBeNull();
+  });
+
+  it("keeps the blinds in the one sheet of a room that has only blinds", () => {
+    card([blind("left_blind", 0), blind("right_blind", 0)]);
+    fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
+    expect(screen.getAllByRole("slider", { name: / blind position$/ })).toHaveLength(2);
+    expect(
+      screen.getByRole("button", { name: "Open all blinds in Kitchen" }),
+    ).toBeInTheDocument();
   });
 });

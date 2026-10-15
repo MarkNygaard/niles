@@ -101,12 +101,82 @@ describe("RoomDashboard", () => {
       .mockReturnValue(new Promise<null>(() => {}));
 
     renderDashboard();
-    fireEvent.click(await screen.findByRole("button", { name: "Lights in Kitchen" }));
-    expect(screen.getByText("Closed")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Blinds in Kitchen" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Closed");
     fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
 
     await waitFor(() => expect(setPosition).toHaveBeenCalledWith("kitchen", "blind", 100));
     expect(await screen.findByText("Open", { selector: "div" })).toBeInTheDocument();
+  });
+});
+
+describe("RoomDashboard with hidden rooms", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  function hiding(hidden: string[]) {
+    vi.spyOn(api, "getConfig").mockResolvedValue({
+      effective: { rooms: { hidden } },
+      overrides: {},
+      sections: [],
+      persistent: true,
+    });
+  }
+
+  it("leaves a hidden room off the grid", async () => {
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([
+      light("z2m:kitchen/bulb_1"),
+      light("z2m:garage/bulb_1"),
+    ]);
+    hiding(["garage"]);
+
+    renderDashboard();
+
+    expect(await screen.findByText("Kitchen")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Garage")).toBeNull());
+  });
+
+  it("still counts a hidden room's lights in the house bar", async () => {
+    // Hiding is about the grid. "Turn everything off" still reaches
+    // the garage, so the bar has to say its light is on.
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([
+      light("z2m:kitchen/bulb_1"),
+      light("z2m:garage/bulb_1"),
+    ]);
+    hiding(["garage"]);
+
+    renderDashboard();
+
+    expect(await screen.findByText("Kitchen")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Garage")).toBeNull());
+    expect(screen.getByRole("button", { name: /^The whole house, All 2 on/ })).toBeInTheDocument();
+  });
+
+  it("points to Settings when every room is hidden", async () => {
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1")]);
+    hiding(["kitchen"]);
+
+    renderDashboard();
+
+    expect(await screen.findByText(/Every room is hidden/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Settings → Rooms/ })).toHaveAttribute(
+      "href",
+      "#/me/settings/rooms",
+    );
+    expect(screen.queryByText("Kitchen")).toBeNull();
+  });
+
+  it("has no such note while a room is showing", async () => {
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1")]);
+    hiding([]);
+
+    renderDashboard();
+
+    expect(await screen.findByText("Kitchen")).toBeInTheDocument();
+    expect(screen.queryByText(/Every room is hidden/)).toBeNull();
   });
 });
 
@@ -163,5 +233,30 @@ describe("RoomDashboard with plugins' widgets", () => {
     expect(await screen.findByRole("region", { name: "Kitchen price" })).toBeInTheDocument();
     expect(await screen.findByText("drawn kitchen_price")).toBeInTheDocument();
     expect(surface).toHaveBeenCalledWith("spotprice", "kitchen_price", "kitchen");
+  });
+
+  it("keeps a hidden room's widget in that room rather than the front page", async () => {
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([
+      light("z2m:kitchen/bulb_1"),
+      light("z2m:office/bulb_1"),
+    ]);
+    vi.spyOn(api, "plugins").mockResolvedValue([plugin]);
+    vi.spyOn(api, "getConfig").mockResolvedValue({
+      effective: { rooms: { hidden: ["kitchen"] } },
+      overrides: {},
+      sections: [],
+      persistent: true,
+    });
+    vi.spyOn(api, "surface").mockImplementation(async (_p, id) => ({
+      nodes: [{ type: "text", value: `drawn ${id}`, muted: false, children: [] }],
+    }));
+
+    renderDashboard();
+
+    expect(await screen.findByText("Electricity now")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Kitchen")).toBeNull());
+    expect(screen.getByText("Office")).toBeInTheDocument();
+    expect(screen.queryByText("Kitchen price")).toBeNull();
   });
 });

@@ -179,6 +179,20 @@ export function roomsOf(
 }
 
 /**
+ * The rooms the dashboard's grid draws: all of them but the hidden.
+ *
+ * Only the grid. The house bar and the boost button are given every
+ * room, because they act on every room — "turn everything off" reaches
+ * a hidden room's lights too, and a count that left them out would say
+ * "nothing on" about a house that is not dark. Hiding a room is about
+ * the front page being tidy, not about pretending it is off.
+ */
+export function onTheGrid(rooms: Room[], hidden: string[]): Room[] {
+  const away = new Set(hidden);
+  return rooms.filter((room) => !away.has(room.name));
+}
+
+/**
  * The open doors and windows in a set of devices.
  *
  * Which of the two it is comes from the *name*, and only because being

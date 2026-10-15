@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, EyeOff } from "lucide-react";
 import { RoomCard } from "@/components/RoomCard";
 import type { SetZone } from "@/components/RoomCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
-import { ApiError, api, roomOrder } from "@/lib/api";
+import { ApiError, api, roomOrder, roomsHidden } from "@/lib/api";
 import type { Device, SetLight, TvInfo, TvVolumeChange } from "@/lib/api";
 import { afterChange, tvVolume, withTvVolume } from "@/components/TvRow";
 import { BoostButton } from "@/components/BoostButton";
@@ -19,6 +19,7 @@ import {
   boostEndsAt,
   boosted,
   houseToggle,
+  onTheGrid,
   optimistic,
   roomsOf,
   targets,
@@ -206,10 +207,11 @@ export function RoomDashboard() {
   });
 
 
-  // Only for the order the cards sit in, which is why nothing here
-  // waits on it: rooms in the alphabet for the half-second before it
-  // lands is a page that arranges itself, not a page that is missing
-  // something. The key is the one Settings writes and invalidates.
+  // Only for the order the cards sit in and which are hidden, which is
+  // why nothing here waits on it: rooms in the alphabet for the
+  // half-second before it lands is a page that arranges itself, not a
+  // page that is missing something. The key is the one Settings writes
+  // and invalidates.
   const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
   // For the plugins' widgets. A 501 is a Niles without plugins: no
   // widgets, and nothing to ask again.
@@ -274,11 +276,14 @@ export function RoomDashboard() {
   // boost started on a phone is one this page can end, and one that
   // expired while nobody was looking is one it has already forgotten.
   const running = boosted(climate.data ?? []);
+  // Every room, hidden or not: a widget placed in a hidden room stays
+  // placed there rather than turning up on the front page instead.
   const widgets = placeWidgets(
     plugins.data ?? [],
     config.data?.effective,
     rooms.map((room) => room.name),
   );
+  const grid = onTheGrid(rooms, roomsHidden(config.data?.effective));
   if (rooms.length === 0) {
     return (
       <Notice>
@@ -336,8 +341,9 @@ export function RoomDashboard() {
           ))}
         </div>
       )}
+      {grid.length === 0 && <AllHidden />}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-        {rooms.map((room) => (
+        {grid.map((room) => (
           <RoomCard
             key={room.name}
             room={room}
@@ -383,6 +389,26 @@ function Notice({ children }: { children: React.ReactNode }) {
     <div className="bg-muted/60 flex items-center gap-2 rounded-md px-3 py-2 text-sm">
       <AlertTriangle className="size-4 shrink-0" />
       <span>{children}</span>
+    </div>
+  );
+}
+
+/**
+ * Every room hidden. Not a warning: it is what somebody asked for, and
+ * the page only has to say where the rooms went and how to get them
+ * back.
+ */
+function AllHidden() {
+  return (
+    <div className="text-muted-foreground flex flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-10 text-center text-sm">
+      <EyeOff aria-hidden className="size-5" />
+      <p>Every room is hidden from the dashboard.</p>
+      <a
+        href="#/me/settings/rooms"
+        className="text-foreground underline underline-offset-4"
+      >
+        Show them in Settings → Rooms
+      </a>
     </div>
   );
 }
