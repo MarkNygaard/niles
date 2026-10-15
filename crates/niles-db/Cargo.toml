@@ -24,8 +24,11 @@ chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 sha2.workspace = true
+niles-training.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
+chrono-tz.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 niles-config.workspace = true
 toml.workspace = true

@@ -25,11 +25,9 @@ pub(crate) struct ChatLog {
 
 /// Whose conversations these are. The voice an address is linked to,
 /// when it is, so a spoken turn and a typed one meet in the same chat.
+/// The training data is kept under the same key.
 pub(crate) fn person(speaker: Option<&str>, email: &str) -> String {
-    match speaker {
-        Some(slug) => format!("person:{slug}"),
-        None => format!("email:{email}"),
-    }
+    niles_training::person_key(speaker, email)
 }
 
 impl ChatLog {

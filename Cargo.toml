@@ -105,3 +105,4 @@ niles-presence = { path = "crates/niles-presence" }
 niles-automations = { path = "crates/niles-automations" }
 niles-integration-linear = { path = "crates/niles-integration-linear" }
 niles-plugins = { path = "crates/niles-plugins" }
+niles-training = { path = "crates/niles-training" }

@@ -187,6 +187,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me", get(crate::me::get).put(crate::me::update))
         .route("/me/phone", delete(crate::me::forget_phone))
+        .route("/me/training", get(crate::training::overview))
+        .route(
+            "/me/training/key",
+            post(crate::training::make_key).delete(crate::training::revoke_key),
+        )
+        .route("/training/ingest", post(crate::training::ingest))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))
         .route("/presence/tado", get(crate::presence::tado_status))

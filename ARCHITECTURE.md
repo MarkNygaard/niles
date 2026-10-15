@@ -1904,6 +1904,77 @@ When several rules fire on the same event they run in the order they were create
 
 Anyone in the household may make, pause or remove a rule; the read-back confirmation and the page are the guard against a misheard one. When `niles-permissions` lands, creating and removing rules is the first candidate to become admin-only.
 
+## Training (per person)
+
+A coach for one person's running, starting with somebody training for a half marathon on a Garmin watch and a Garmin Index S2 scale, with an iPhone. The end state: Niles drafts a training plan with them and keeps it on their profile, matches each run to the plan as it arrives, reviews the week in the background and adjusts what is coming, and answers "what's my run today?" by voice and on a Training page.
+
+### Phases
+
+1. **Data in** (built): workouts, resting heart rate, HRV, sleep, weight and body fat arrive from the phone and are kept per person. The assistant answers questions about them: "how was my week?", "how far did I run on Sunday?".
+2. **The plan**: drafted with the assistant in conversation, saved to the person, shown on a Training page.
+3. **Tracking**: each run is matched to the planned session it fulfils. A weekly background review (the review that already runs when the house is quiet) compares plan with what happened, using recovery signals, and proposes changes.
+4. **Watch sync**, later: planned sessions sent to the watch as structured workouts.
+
+### Where the data comes from
+
+Garmin has no API for an individual: the Connect developer programme is for businesses. The unofficial login that libraries such as garminconnect used broke in March 2026 behind Cloudflare, and intervals.icu, the usual go-between, may not pass Garmin data on through its own API. So the route is the phone:
+
+**Garmin Connect → Apple Health → Health Auto Export → `POST /training/ingest`**
+
+Garmin Connect writes workouts, heart rate, sleep and the scale's weighings to Apple Health (Connected Apps → Apple Health). The Health Auto Export iOS app reads Apple Health and posts it as JSON on a schedule with its REST API automation. Nothing here is Garmin-specific: any watch or scale that writes to Apple Health arrives the same way. The cost is iOS: the automation runs when the phone is unlocked, so data arrives within the hour rather than at once.
+
+### Who it belongs to
+
+Training data is personal. It is kept under the same person key as the chat history: `person:{slug}` when the person's sign-in is linked to a voice, otherwise `email:{address}`. That way the voice and the app reach the same data. It is visible only to that person, and to the assistant acting for them:
+
+- The tools read whoever is asking: the recognised voice, or in the app's chat the person signed in. Never a name in an argument. An unrecognised voice has no training data, and the assistant says so.
+- The profile card shows only the signed-in person's own counts.
+- No route lists anybody else's.
+
+### The ingest key
+
+Each person makes their own key on their profile page ("Training: connect your iPhone"). Its rules:
+
+- **Made:** 32 random bytes, as hex, by the server.
+- **Shown:** once, when made, to be copied into Health Auto Export.
+- **Kept:** as a SHA-256 hash. That is enough for a random key: there is nothing for a dictionary to guess. The stored hash is compared in constant time.
+- **Replaced or revoked** from the same card. The old key stops working with that response; the data already sent is kept.
+- **What it opens:** `POST /training/ingest`, for that person, and nothing else. The route is outside the sign-in gate because it authenticates itself, as the GitHub callback and the Linear webhook do. Anywhere else the key is a stranger's bearer token and gets `401`.
+
+The key is checked before the body is read. A body may be up to 10 MiB, since a first sync can carry months; past that the answer is `413`. Each person's phone may post 120 times a minute, which stops a loop without rationing a batched first sync.
+
+### The data
+
+Units are canonical whatever the phone sends: metres, seconds, kilograms, beats per minute, milliseconds, kilocalories. Health Auto Export's units are the person's choice in the app (km or mi, kg or lb, kcal or kJ). Both of its workout export versions are read: v1, and v2, the current one.
+
+- `training_activities`: one row per workout.
+  - Columns: person, source, external id, started at, type (run, walk, ride, strength, other), the name as Apple Health gave it ("Indoor Run"), distance, duration, moving time, average and maximum heart rate, elevation gain, active energy, and the workout as it arrived (raw JSON, kept for later phases: heart-rate samples, route).
+  - Unique per (person, source, external id). The external id is Health Auto Export's workout id; v1 has none, so it is a hash of the start time and the workout's name.
+- `training_wellness`: one row per (person, day).
+  - Columns: resting heart rate, HRV (SDNN, ms), sleep (seconds asleep, the night dated by the morning woken up in), weight, body fat (percent).
+  - Each post merges into the day: a field it does not carry keeps what was there.
+  - The day is the one the phone wrote, which is the house's day while at home. A reading taken abroad stays on the day it was taken there.
+- `training_keys`: one row per person. Holds the key's hash, when it was made, and when data last arrived.
+
+Ingest is idempotent. Health Auto Export re-sends overlapping days on every run, so saving is an upsert that writes nothing when nothing changed. `POST /training/ingest` answers with what it did: `{activities: {added, updated}, wellness_days, wellness: {added, updated}, ignored_metrics, unreadable}`. A metric that is not training data is named in `ignored_metrics`, not refused. One reading that cannot be read is counted in `unreadable` and does not cost the rest.
+
+### Asking about it
+
+Three tools, in a relevance group of their own (run, pace, sleep, HRV, weight…):
+
+- `training_activities {from?, to?, type?}`: the workouts.
+- `training_wellness {from?, to?}`: the days.
+- `training_summary {period | from, to}`: runs, distance, longest run, average pace, all workouts, and resting heart rate, HRV and sleep against the same span before, plus the weight change.
+
+The sums are worked out in code, not by the model. Distances and paces come back in the house's units.
+
+### Where it lives
+
+- `niles-training`: the Health Auto Export parser, the model, the store trait with an in-memory store for tests, the summary.
+- `niles-db`: the Postgres store, which creates its tables on first use. Training is on whenever there is a database; the phone sending data is the switch.
+- `niles-api`: the ingest route and `/me/training`.
+- `niles-bin`: the tools.
+
 ## Runtime configuration
 
 "Code/config over UI" is a statement about *structure*, not about every
@@ -2264,6 +2335,8 @@ can always restore it.
   this.
 - `/webhooks/linear`, which authenticates itself with an HMAC over the
   body. A cookie would mean nothing to Linear.
+- `POST /training/ingest`, which authenticates itself with the person's
+  own training key and opens nothing else (see Training (per person)).
 - Wyoming and MQTT, which are not HTTP. **Only the HTTP API gains a
   login**, and if Niles is ever exposed, only that port goes out.
 
@@ -2650,6 +2723,7 @@ niles/
 │   ├── niles-presence/         # presence sources, aggregation, home-state events
 │   ├── niles-automations/      # when-X-do-Y rules, voice-creatable and config-defined
 │   ├── niles-plugins/          # third-party integrations: wasmtime runtime, GitHub install, sandbox
+│   ├── niles-training/         # per-person training data: Health Auto Export parser, store, summary
 │   ├── niles-api/              # HTTP/WebSocket API
 │   ├── niles-config/           # config loading and validation
 │   └── niles-bin/              # main binary, wiring (produces `niles`)

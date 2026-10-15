@@ -2396,6 +2396,7 @@ dependencies = [
  "niles-scheduler",
  "niles-skills",
  "niles-speakers",
+ "niles-training",
  "niles-webos",
  "rand 0.10.2",
  "reqwest",
@@ -2466,6 +2467,7 @@ dependencies = [
  "niles-speakers",
  "niles-stt",
  "niles-tools",
+ "niles-training",
  "niles-tts",
  "niles-weather",
  "niles-webos",
@@ -2550,12 +2552,15 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
+ "chrono-tz",
  "niles-calendar",
  "niles-config",
  "niles-presence",
  "niles-recognition",
+ "niles-training",
  "rand 0.10.2",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
  "sqlx",
  "tokio",
@@ -2857,6 +2862,20 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "niles-training"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

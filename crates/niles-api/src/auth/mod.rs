@@ -45,6 +45,9 @@ fn is_exempt(path: &str) -> bool {
         // Signed with an HMAC over its own body. A cookie would mean
         // nothing to Linear.
         | "/webhooks/linear"
+        // A person's training key, which a phone's export app sends and
+        // which opens this route and nothing else.
+        | "/training/ingest"
     )
 }
 
@@ -246,6 +249,7 @@ mod tests {
             "/auth/github/callback",
             "/auth/signout",
             "/webhooks/linear",
+            "/training/ingest",
         ] {
             assert!(is_exempt(path), "{path} must answer before the gate");
         }
@@ -262,6 +266,9 @@ mod tests {
             "/config/undo",
             "/logs",
             "/events/stream",
+            "/me/training",
+            "/me/training/key",
+            "/training/ingest/extra",
         ] {
             assert!(!is_exempt(path), "{path} must not be exempt");
         }

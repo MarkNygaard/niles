@@ -74,6 +74,7 @@ mod ringer;
 mod satellites;
 mod speak;
 mod speakers;
+mod training;
 mod tv;
 mod vocabulary;
 
@@ -3621,10 +3622,15 @@ impl niles_api::chat::Chat for AppChat {
         let started = Instant::now();
         let (reply, note) = CHAT_NOTE
             .scope(std::cell::RefCell::default(), async {
-                let reply = profile::SPEAKER
+                // And the training tools read whoever is signed in, voice
+                // or not, by the key their chat is kept under.
+                let reply = training::CHAT_PERSON
                     .scope(
-                        slug,
-                        dispatch_text(ctx, APP_PEER, text, &thread, &known, None, true),
+                        person.clone(),
+                        profile::SPEAKER.scope(
+                            slug,
+                            dispatch_text(ctx, APP_PEER, text, &thread, &known, None, true),
+                        ),
                     )
                     .await;
                 (reply, CHAT_NOTE.with(|note| note.take()))
@@ -6244,6 +6250,18 @@ fn build_calendars(cfg: &Config) -> Option<Arc<niles_calendar::Calendars>> {
     }
 }
 
+/// Each person's training data. On whenever there is a database: the
+/// phone that sends it is the switch.
+fn build_training(cfg: &Config) -> Option<Arc<dyn niles_training::TrainingStore>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    Some(Arc::new(niles_db::PostgresTraining::new(
+        backend.pool(),
+        backend.describe_target(),
+    )))
+}
+
 /// Where kept wake audio goes, when there is a database.
 ///
 /// Built whether or not capture is switched on: the switch lives in
@@ -6867,6 +6885,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if let (Some(calendars), Ok(tz)) = (&calendars, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         calendar::register(&mut tools, calendars.clone(), store.clone(), tz);
     }
+    let training = build_training(&cfg);
+    if let (Some(training), Ok(tz)) = (&training, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
+        let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;
+        training::register(&mut tools, training.clone(), tz, imperial);
+    }
     if let Some(groceries) = &groceries {
         niles_tools::register_grocery_tools(
             &mut tools,
@@ -7097,6 +7120,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_memory(memory_store.clone())
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
+    .with_training(training.clone())
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
     .with_chat(Some(Arc::new(AppChat {

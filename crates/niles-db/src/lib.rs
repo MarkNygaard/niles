@@ -43,6 +43,7 @@ mod secrets;
 mod skills;
 mod tado_tokens;
 mod timers;
+mod training;
 pub use automations::PostgresAutomations;
 pub use calendars::PostgresCalendars;
 pub use captures::{Capture, PostgresCaptures};
@@ -62,6 +63,7 @@ pub use secrets::{PostgresSecrets, Sealer};
 pub use skills::PostgresSkills;
 pub use tado_tokens::PostgresTadoTokens;
 pub use timers::PostgresTimers;
+pub use training::PostgresTraining;
 
 use async_trait::async_trait;
 use niles_config::{OverrideBackend, Revision, StoredState};

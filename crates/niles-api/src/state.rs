@@ -90,6 +90,10 @@ pub struct AppState {
     pub nemlig: Option<Arc<niles_nemlig::NemligClient>>,
     /// The third-party plugins, when the binary runs them.
     pub plugins: Option<Arc<dyn crate::plugins::Plugins>>,
+    /// Each person's training data, when there is a database for it.
+    pub training: Option<Arc<dyn niles_training::TrainingStore>>,
+    /// Recent posts to `/training/ingest`, per person.
+    pub training_limits: Arc<crate::training::Limits>,
 }
 
 impl AppState {
@@ -122,6 +126,8 @@ impl AppState {
             chat: None,
             nemlig: None,
             plugins: None,
+            training: None,
+            training_limits: Arc::default(),
             music: None,
             tado: None,
             voices: None,
@@ -214,6 +220,14 @@ impl AppState {
 
     pub fn with_plugins(mut self, plugins: Option<Arc<dyn crate::plugins::Plugins>>) -> Self {
         self.plugins = plugins;
+        self
+    }
+
+    pub fn with_training(
+        mut self,
+        training: Option<Arc<dyn niles_training::TrainingStore>>,
+    ) -> Self {
+        self.training = training;
         self
     }
 

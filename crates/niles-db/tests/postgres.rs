@@ -304,3 +304,48 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
     assert!(plugins.keys(&id, "").await.expect("keys").is_empty());
     assert!(plugins.devices(&id).await.expect("devices").is_empty());
 }
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn training_saved_twice_is_saved_once() {
+    use niles_training::TrainingStore;
+    let Some(backend) = backend() else {
+        return;
+    };
+    let store = niles_db::PostgresTraining::new(backend.pool(), backend.describe_target());
+    let person = format!("email:test-{}@example.com", std::process::id());
+    let body = serde_json::from_str(include_str!(
+        "../../niles-training/fixtures/hae-v2-metric.json"
+    ))
+    .unwrap();
+    let batch = niles_training::hae::parse(&body, &chrono_tz::UTC).unwrap();
+
+    let first = store
+        .save_activities(&person, &batch.activities)
+        .await
+        .expect("save");
+    store
+        .save_wellness(&person, &batch.wellness)
+        .await
+        .expect("save");
+    assert_eq!(first.added, 1);
+    let again = store
+        .save_activities(&person, &batch.activities)
+        .await
+        .expect("save again");
+    let days = store
+        .save_wellness(&person, &batch.wellness)
+        .await
+        .expect("save again");
+    assert_eq!((again.added, again.updated), (0, 0));
+    assert_eq!((days.added, days.updated), (0, 0));
+
+    let hash = niles_training::hash_key("a key");
+    store.set_key(&person, &hash).await.expect("key");
+    assert_eq!(
+        store.person_for_key(&hash).await.expect("find"),
+        Some(person.clone())
+    );
+    assert!(store.revoke_key(&person).await.expect("revoke"));
+    assert_eq!(store.person_for_key(&hash).await.expect("find"), None);
+}

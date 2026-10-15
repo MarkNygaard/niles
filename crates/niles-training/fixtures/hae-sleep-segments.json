@@ -1,0 +1,18 @@
+{
+  "data": {
+    "metrics": [
+      {
+        "name": "sleep_analysis",
+        "units": "hr",
+        "data": [
+          { "startDate": "2026-10-13 23:00:00 +0200", "endDate": "2026-10-13 23:15:00 +0200", "qty": 0.25, "value": "In Bed", "source": "Majse’s Forerunner 265" },
+          { "startDate": "2026-10-13 23:15:00 +0200", "endDate": "2026-10-14 02:15:00 +0200", "qty": 3.0, "value": "Core", "source": "Majse’s Forerunner 265" },
+          { "startDate": "2026-10-14 02:15:00 +0200", "endDate": "2026-10-14 03:15:00 +0200", "qty": 1.0, "value": "Deep", "source": "Majse’s Forerunner 265" },
+          { "startDate": "2026-10-14 03:15:00 +0200", "endDate": "2026-10-14 03:30:00 +0200", "qty": 0.25, "value": "Awake", "source": "Majse’s Forerunner 265" },
+          { "startDate": "2026-10-14 03:30:00 +0200", "endDate": "2026-10-14 05:00:00 +0200", "qty": 1.5, "value": "REM", "source": "Majse’s Forerunner 265" },
+          { "startDate": "2026-10-13 23:40:00 +0200", "endDate": "2026-10-14 04:40:00 +0200", "qty": 5.0, "value": "Asleep", "source": "Majse’s iPhone" }
+        ]
+      }
+    ]
+  }
+}
