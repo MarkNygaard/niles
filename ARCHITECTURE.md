@@ -1089,7 +1089,7 @@ Some things Niles must not do on the model's word alone: send a mail, or call a 
 
 **How long it waits.** An approval answered by voice lapses after five minutes. A card in the app waits an hour, so a mail asked for in the kitchen can be sent from the phone later. Either lapses with its conversation.
 
-**What is kept.** The pending approval, its preview and its outcome are part of the conversation, in its history, as the messages around it are.
+**What is kept.** The card, its preview and its outcome are part of the conversation, in its history, as the messages around it are. The held call itself, the tool and its arguments, is kept in memory only: a restart lapses every approval still waiting, and its card says so.
 
 ### Accounts
 

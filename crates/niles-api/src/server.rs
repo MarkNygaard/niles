@@ -51,6 +51,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::chat::answer),
         )
         .route(
+            "/chat/conversations/{id}/approvals/{approval}",
+            post(crate::chat::decide),
+        )
+        .route(
             "/chat/dictation",
             post(crate::chat::dictation).layer(axum::extract::DefaultBodyLimit::max(
                 crate::chat::MAX_DICTATION_BYTES,

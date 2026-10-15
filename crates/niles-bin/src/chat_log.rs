@@ -7,7 +7,7 @@
 //! the voice was recognised: what an unknown voice said belongs to no
 //! one's chat.
 
-use niles_api::chat::{Conversation, Summary, Turn, Where};
+use niles_api::chat::{ApprovalCard, Conversation, Summary, Turn, Where};
 use niles_db::PostgresConversationLog;
 
 /// How long a conversation waits for its next turn.
@@ -130,6 +130,32 @@ impl ChatLog {
 
     pub(crate) async fn delete(&self, person: &str, id: i64) -> Result<bool, String> {
         self.table.delete(person, id).await
+    }
+
+    /// Put an answered card back where it was asked, saying what became
+    /// of it.
+    pub(crate) async fn update_approval(
+        &self,
+        person: &str,
+        id: i64,
+        card: &ApprovalCard,
+    ) -> Result<(), String> {
+        let _order = self.order.lock().await;
+        let Some(conversation) = self.conversation(person, id).await? else {
+            return Err("no such conversation".into());
+        };
+        let Some(turn) = conversation
+            .turns
+            .iter()
+            .position(|t| t.approval.as_ref().is_some_and(|a| a.id == card.id))
+        else {
+            return Err(format!("no approval {} in conversation {id}", card.id));
+        };
+        let json = serde_json::to_string(card).map_err(|e| e.to_string())?;
+        self.table
+            .set_turn_field(person, id, turn, "approval", &json)
+            .await
+            .map(|_| ())
     }
 }
 

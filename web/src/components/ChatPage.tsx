@@ -5,7 +5,7 @@ import type { ShownTurn } from "@/components/ChatView";
 import { ConversationList } from "@/components/ConversationList";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import type { Conversation, ConversationSummary } from "@/lib/api";
+import type { Conversation, ConversationSummary, Decision } from "@/lib/api";
 
 export const CHAT = ["chat"];
 const LIST = [...CHAT, "conversations"];
@@ -105,6 +105,14 @@ export function ChatPage() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: CHAT }),
   });
 
+  const decide = useMutation({
+    mutationFn: ({ id, approval, decision }: { id: number; approval: string; decision: Decision }) =>
+      api.decideApproval(id, approval, decision),
+    // Refetched either way: a 409 means it lapsed or was answered
+    // elsewhere, and the card should say so.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: CHAT }),
+  });
+
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteConversation(id),
     onSuccess: async (_, id) => {
@@ -144,12 +152,21 @@ export function ChatPage() {
         turns={turns}
         loading={current !== null && conversation.isLoading}
         pending={send.isPending && send.variables.to === current ? send.variables.text : undefined}
-        error={send.error?.message ?? answer.error?.message ?? conversation.error?.message}
+        error={
+          send.error?.message ??
+          answer.error?.message ??
+          decide.error?.message ??
+          conversation.error?.message
+        }
         onSend={(text) => send.mutate({ text, to: current })}
         onNew={startNew}
         onBrowse={() => setBrowsing(true)}
         onAnswer={(turn, save) => current !== null && answer.mutate({ id: current, turn, save })}
         answering={answer.isPending}
+        onDecide={(approval, decision) =>
+          current !== null && decide.mutate({ id: current, approval, decision })
+        }
+        deciding={decide.isPending}
         onDictate={async (audio) => (await api.dictate(audio)).text}
       />
       <ConversationList

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, History, LoaderCircle, Mic, Square, SquarePen } from "lucide-react";
+import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { dictationSupported, useDictation } from "@/hooks/useDictation";
-import type { AssistantId, Turn } from "@/lib/api";
+import type { AssistantId, Decision, Turn } from "@/lib/api";
 import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
 
@@ -33,6 +34,10 @@ export interface ChatViewProps {
   onAnswer: (turn: number, save: boolean) => void;
   /** An answer to a proposal is on its way. */
   answering?: boolean;
+  /** Allow or deny what an approval card holds. */
+  onDecide?: (approval: string, decision: Decision) => void;
+  /** A decision is on its way. */
+  deciding?: boolean;
   /** Words from a recording. Without it there is no microphone. */
   onDictate?: (audio: Blob) => Promise<string>;
 }
@@ -58,6 +63,8 @@ export function ChatView({
   onBrowse,
   onAnswer,
   answering,
+  onDecide,
+  deciding,
   onDictate,
 }: ChatViewProps) {
   const [draft, setDraft] = useState("");
@@ -177,6 +184,13 @@ export function ChatView({
             {turn.via === "voice" && <Spoken room={turn.room} />}
             <Bubble from="niles">{turn.reply}</Bubble>
             {(turn.by || turn.fallback) && <Credit turn={turn} />}
+            {turn.approval && (
+              <ApprovalCard
+                card={turn.approval}
+                deciding={deciding}
+                onDecide={(decision) => turn.approval && onDecide?.(turn.approval.id, decision)}
+              />
+            )}
             {/* Only the last turn's proposal is still open: once
                 anything follows it, it has been answered one way or
                 the other. */}

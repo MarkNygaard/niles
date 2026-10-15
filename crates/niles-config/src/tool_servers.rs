@@ -45,6 +45,8 @@ pub struct ToolServerConfig {
 pub enum ToolMode {
     #[default]
     On,
+    /// Called, and held for a person's yes before it runs.
+    Ask,
     Off,
 }
 
@@ -148,10 +150,12 @@ mod tests {
 
     #[test]
     fn a_tool_not_listed_is_on() {
-        let s =
-            server("url = \"https://mcp.linear.app/mcp\"\ntools = { delete_issue = \"off\" }\n");
+        let s = server(
+            "url = \"https://mcp.linear.app/mcp\"\ntools = { delete_issue = \"off\", create_issue = \"ask\" }\n",
+        );
         assert_eq!(s.mode("list_issues"), ToolMode::On);
         assert_eq!(s.mode("delete_issue"), ToolMode::Off);
+        assert_eq!(s.mode("create_issue"), ToolMode::Ask);
     }
 
     #[test]

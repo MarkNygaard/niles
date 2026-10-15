@@ -985,6 +985,31 @@ export interface Turn {
   /** Set when Niles asked for confirmation in this turn. Only the last
       turn's can still be answered. */
   proposal: Proposal | null;
+  /** What this turn left waiting for a yes. */
+  approval?: ApprovalCard | null;
+}
+
+export type ApprovalStatus = "pending" | "allowed" | "denied" | "lapsed" | "failed";
+
+/** Allow once, Allow for this conversation, or Deny. */
+export type Decision = "once" | "conversation" | "deny";
+
+/**
+ * Something Niles holds for the person's yes. Mirrors `ApprovalCard` in
+ * crates/niles-api/src/chat.rs.
+ */
+export interface ApprovalCard {
+  id: string;
+  title: string;
+  subtitle: string;
+  /** A brand mark's id, or "mail". */
+  icon: string | null;
+  fields: { label: string; value: string }[];
+  /** A long text shown in full: a mail's body. */
+  body: string | null;
+  allow_conversation: boolean;
+  status: ApprovalStatus;
+  outcome: string | null;
 }
 
 export interface Conversation {
@@ -1244,6 +1269,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ turn, save }),
     }),
+  decideApproval: (id: number, approval: string, decision: Decision) =>
+    request<{ reply: string }>(
+      `/chat/conversations/${id}/approvals/${encodeURIComponent(approval)}`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    ),
   deleteConversation: (id: number) =>
     request<void>(`/chat/conversations/${id}`, { method: "DELETE" }),
   dictate: (audio: Blob) =>
