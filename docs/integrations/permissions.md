@@ -1,9 +1,9 @@
 # Permissions
 
 > v0.1 of the interface. Niles 0.2.0 runs it and installs it from GitHub:
-> the runtime, `niles plugin check`, `niles plugin dev`, and Add from GitHub
-> with its approval screen, updates, rollback, turning off and removing. Not
-> yet: the generated setup panel, and pages and widgets drawn in the app.
+> the runtime, `niles plugin check`, `niles plugin dev`, Add from GitHub with
+> its approval screen, updates, rollback, turning off and removing, and in the
+> app the generated setup panel, the plugin's log, and its pages and widgets.
 
 A plugin declares in `[permissions]` what it needs to reach. Before install,
 Niles shows the household each permission **in plain words** and installs

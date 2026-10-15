@@ -21,6 +21,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-get-devices` | GET /devices returns the full device registry snapshot | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
+| `api-plugin-log-image` | GET /plugins/{id}/log for a plugin's last lines, and /plugins/{id}/image for its pages' pictures, fetched by Niles | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
@@ -62,6 +63,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `ui-plugin-setup` | A plugin's panel: a setup form generated from its manifest's settings, its log, and where its widgets go | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `ui-plugins` | Integrations page: Add from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |

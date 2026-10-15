@@ -1,17 +1,17 @@
 # Writing a Niles integration
 
-> **v0.1 of the interface, mostly built.** Niles 0.2.0 runs plugins (the
-> sandbox, every host interface, devices, tools, timers, events, pages) and
-> installs them: **Add from GitHub** with its approval screen, update checks,
-> updates that show what changes in permissions and roll back by themselves
-> if the new version fails, turning off and removing, and the
-> `niles plugin check` and `niles plugin dev` commands. Not built yet: the
-> generated setup panel (until it is, settings are set through
-> `PATCH /config` under `plugins.<id>` and secrets through
-> `PUT /secrets/plugins.<id>.<key>`), and pages and widgets drawn in the app.
-> The interface
-> ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) may
-> still change before those ship.
+> **v0.1 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
+> every host interface, devices, tools, timers, events, pages) and installs
+> them: **Add from GitHub** with its approval screen, update checks, updates
+> that show what changes in permissions and roll back by themselves if the new
+> version fails, turning off and removing, and the `niles plugin check` and
+> `niles plugin dev` commands. The app draws everything a plugin declares: its
+> setup panel generated from the manifest's settings, its log, its pages in
+> the menu and its widgets on the front page and the rooms. Not built yet:
+> `niles plugin dev --live`, which would run a plugin on a running Niles. The
+> interface
+> ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) is
+> v0.1; see [versioning](publishing.md) for what may change.
 
 Niles is an open-source home assistant, written in Rust, that you talk to. It
 runs the lights, music, heating and calendars of one house, and it hands
@@ -74,10 +74,13 @@ Once installed, a plugin sits on the app's Integrations page among the
 built-ins, in the group its manifest names (Music & TV, Presence & climate…),
 or under **Custom** if it names none. Its row carries a **Custom** badge, and
 its panel shows your repo, version, authors and install date, a status line
-("Working", "Not working: …", "Off", "Update available: v0.2.0"), and the
-buttons to turn it off, check for updates, update, roll back and remove it.
-The settings form generated from your manifest, and its log, come next.
-People find **Add from GitHub** at the end of the Available tab.
+("Working", "Not set up: needs API key", "Not working: …", "Off", "Update
+available: v0.2.0"), the settings form generated from your manifest, where
+each of your widgets goes, the last lines of its log (yours, and what Niles
+noted about it), and the buttons to turn it off, check for updates, update,
+roll back and remove it. Your pages join the menu, where the household shows,
+hides and moves them in Settings → Menu like the built-in ones. People find
+**Add from GitHub** at the end of the Available tab.
 
 ## Capabilities at a glance
 

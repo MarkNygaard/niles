@@ -88,7 +88,7 @@ export function destinationOf(
   id: MenuEntry,
   pages: PluginPageEntry[] = [],
 ): Destination | undefined {
-  if (id in DESTINATIONS) return DESTINATIONS[id as BuiltinEntry];
+  if (Object.hasOwn(DESTINATIONS, id)) return DESTINATIONS[id as BuiltinEntry];
   const page = pages.find((p) => p.id === id);
   if (!page) return undefined;
   const route = pageHref(page).slice(1);

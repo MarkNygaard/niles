@@ -1,9 +1,9 @@
 # Getting started
 
-> v0.1 of the interface. `niles plugin dev`, `niles plugin check` and
-> installing from GitHub are built (Niles 0.2.0). Not yet: the generated
-> setup panel (step 7 says what to do meanwhile), and the template repo,
-> which will be published alongside it.
+> v0.1 of the interface. `niles plugin dev`, `niles plugin check`,
+> installing from GitHub, and the plugin's setup panel, log, pages and widgets
+> in the app are built (Niles 0.2.0). Not yet: `niles plugin dev --live`, and
+> the template repo, which will be published alongside it.
 
 From nothing to a plugin installed on a Niles, in Rust. For JavaScript and
 Python, see the snippets at the end of the [worked example](example-spotprice.md#the-same-tool-in-javascript-and-python).
@@ -164,7 +164,8 @@ exits after them instead of staying up for timers and the prompt.
 Planned, not built yet: `niles plugin dev . --live https://niles.example.com
 --token $NILES_API_TOKEN` would install it on a running Niles instead, as a
 development plugin marked "Development" on its card, reinstall it each time the
-`.wasm` changes, and stream its log to your terminal.
+`.wasm` changes, and stream its log to your terminal. Until then, try it in the
+app by releasing it and installing it (steps 6 and 7).
 
 ## 5. Check it
 
@@ -202,12 +203,20 @@ Niles downloads your latest release, runs every check `niles plugin check`
 runs, and shows the name, authors, repo, version, description, logo and the
 permissions in plain words, with the settings it will ask for. **Install**
 installs exactly the files that preview downloaded, and the plugin starts. It
-is on the Connected tab with a status line; its panel has your repo, the
-version and install date, and buttons to turn it off, check for updates, roll
-back an update and remove it.
+is on the Connected tab, in its group with a **Custom** badge and a status
+line; its panel has your repo, the version and install date, the settings form
+generated from your manifest, where each widget goes, the last lines of its
+log, and buttons to turn it off, check for updates, roll back an update and
+remove it.
 
-Until the generated settings form is in the app, set settings through the
-config API, which restarts the plugin with them:
+Fill in the settings and press **Save**: the plugin restarts with them, and the
+status line says how that went ("Not set up: needs API key" until every
+required setting has a value). Secret settings are saved one at a time, each in
+its own field. Your pages are in the menu, and your widgets on the front page
+or their room; open one to see it drawn.
+
+A script can do the same through the config API, which restarts the plugin
+with the new values:
 
 ```sh
 curl -X PATCH https://niles.example.com/config \
@@ -217,6 +226,7 @@ curl -X PATCH https://niles.example.com/config \
 
 and secret settings through `PUT /secrets/plugins.<id>.<key>` with
 `{"value": "…"}`, which accepts only keys your manifest declares as `secret`.
+The log is at `GET /plugins/<id>/log`.
 
 A preview is kept for 15 minutes. Installing needs Niles's database; without
 one the preview says so. The same flow is reachable without the app:

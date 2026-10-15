@@ -248,6 +248,9 @@ export function PluginPanel({
         secrets={secrets}
         onSaved={() => {
           onChanged();
+          // The restart a save causes lands a moment later; ask again
+          // then, so the status says how the new settings went.
+          setTimeout(onChanged, 2_000);
           onSecretsChanged?.();
         }}
       />

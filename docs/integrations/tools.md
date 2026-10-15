@@ -1,9 +1,9 @@
 # Tools
 
 > v0.1 of the interface. Niles 0.2.0 runs it and installs it from GitHub:
-> the runtime, `niles plugin check`, `niles plugin dev`, and Add from GitHub
-> with its approval screen, updates, rollback, turning off and removing. Not
-> yet: the generated setup panel, and pages and widgets drawn in the app.
+> the runtime, `niles plugin check`, `niles plugin dev`, Add from GitHub with
+> its approval screen, updates, rollback, turning off and removing, and in the
+> app the generated setup panel, the plugin's log, and its pages and widgets.
 
 A tool is a function the AI can decide to call. Niles offers your tools to its
 voice model, which answers spoken requests, and to the Claude and ChatGPT
