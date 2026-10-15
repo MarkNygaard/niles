@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConfigPanel, musicByRoom, satellitesAt, sonosAt } from "@/components/ConfigPanel";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 /**
  * The panel owns which queries go stale after a write, and nothing
@@ -137,6 +137,32 @@ describe("ConfigPanel", () => {
     await waitFor(() =>
       expect(vi.mocked(api.secrets).mock.calls.length).toBeGreaterThan(before),
     );
+  });
+
+  it("does not call recognition off because the file never says it is on", async () => {
+    // On by default when the image carries the model, so the file is
+    // silent on exactly the installs where it runs. Reading the file
+    // told every one of them it was not set up.
+    stubHouse();
+    vi.spyOn(api, "voices").mockResolvedValue([]);
+    renderPanel();
+
+    await open(/People/);
+    expect(await screen.findByText(/Nobody yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/not set up to recognise voices/i)).toBeNull();
+  });
+
+  it("calls recognition off when the server says so", async () => {
+    stubHouse();
+    vi.spyOn(api, "voices").mockRejectedValue(
+      new ApiError("speaker recognition is not configured", 501),
+    );
+    renderPanel();
+
+    await open(/People/);
+    expect(
+      await screen.findByText(/not set up to recognise voices/i),
+    ).toBeInTheDocument();
   });
 });
 
