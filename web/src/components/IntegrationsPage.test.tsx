@@ -573,6 +573,8 @@ describe("IntegrationsPage groups", () => {
       "Presence & climate",
       "Shopping",
       "Assistants & tools",
+      // Last, under a heading of its own.
+      "From GitHub",
     ]);
     // The group says it is one of each, not every one of them.
     expect(screen.getByRole("region", { name: "Essentials" })).toHaveTextContent(
@@ -679,7 +681,7 @@ describe("IntegrationsPage search", () => {
     expect(screen.queryByRole("button", { name: "Connect nemlig.com" })).toBeNull();
     expect(
       screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
-    ).toEqual(["Presence & climate"]);
+    ).toEqual(["Presence & climate", "From GitHub"]);
   });
 
   it("finds by group name", () => {

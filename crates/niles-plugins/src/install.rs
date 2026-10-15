@@ -850,11 +850,11 @@ impl Installer {
                  be pinned, not compared."
             ));
         }
-        let missing = manifest.missing_required(&toml::Table::new(), |_| false);
-        if !missing.is_empty() {
+        let unset = manifest.missing_required(&toml::Table::new(), |_| false);
+        if !unset.is_empty() {
             warnings.push(format!(
                 "It starts once these are filled in: {}.",
-                missing.join(", ")
+                unset.join(", ")
             ));
         }
         if manifest

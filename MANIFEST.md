@@ -22,6 +22,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
@@ -50,7 +51,10 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
 | `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `plugins-disable-remove` | Turn a plugin off and keep its data, or remove it with its devices, storage, settings and secrets | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `plugins-install` | Install a plugin from a GitHub release after a preview of its permissions; exactly the previewed files run | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `plugins-runtime` | Run third-party integrations as sandboxed WebAssembly components; their devices, tools and pages join the house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `plugins-update-rollback` | Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 
 ## ui
 
@@ -58,6 +62,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `ui-plugins` | Integrations page: Add from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 

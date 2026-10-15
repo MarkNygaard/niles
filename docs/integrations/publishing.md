@@ -1,7 +1,8 @@
 # Publishing
 
-> v0.1 of the interface. `niles plugin check` is built; installing a
-> release from GitHub is not yet.
+> v0.1 of the interface. `niles plugin check` and installing, updating and
+> rolling back from GitHub releases are built (Niles 0.2.0), as described
+> here.
 
 A plugin is published as a **GitHub release** on a public repo. There is no
 registry to sign up for: anyone with the repo's URL can install it.
@@ -9,13 +10,18 @@ registry to sign up for: anyone with the repo's URL can install it.
 ## Release layout
 
 The release Niles installs is the repo's **latest release**: not a draft, not
-marked pre-release. Its assets must include:
+marked pre-release. (Somebody can install another by pasting its address,
+`https://github.com/you/your-repo/releases/tag/v0.2.0`.) Its assets must
+include:
 
 | Asset | Required | What it is |
 |---|---|---|
-| `niles-integration.toml` | yes | The [manifest](manifest.md). Its `version` is the release tag, with or without a `v`. |
+| `niles-integration.toml` | yes | The [manifest](manifest.md), at most 64 KiB. Its `version` is the release tag, with or without a `v`. |
 | `integration.wasm` | yes | The component, at most 64 MiB. |
-| `logo.svg` | if the manifest names one | The logo, at most 32 KiB. |
+| `logo.svg` | if the manifest names one | The logo, at most 32 KiB. The asset is found by the file name of the manifest's `logo`, so `logo = "assets/logo.svg"` is the asset `logo.svg`. |
+
+Each cap holds whatever GitHub reports as the asset's size: a download is cut
+off at it.
 
 Other assets are ignored. The release notes (the release's body) are shown to
 the household when they are offered the update, so write them for people:
@@ -97,15 +103,22 @@ the old one, with none of its settings, secrets or storage.
 
 ## How updates reach people
 
-- Niles checks each installed plugin's repo for a newer release once a day,
-  and when someone presses **Check for updates** on its panel.
-- A newer release shows as **Update available**, with its version and release
-  notes. Nothing updates by itself.
-- Updating runs the same checks as an install. If the permissions changed, the
-  household sees the difference (added, removed) and approves again. New
-  required settings put the plugin in "Not set up" until they are filled in.
-- The previous version is kept, so a broken update can be rolled back once
-  from the panel.
+- Niles asks each installed plugin's repo for its releases every 6 hours,
+  first 2 minutes after it starts, and when someone presses **Check for
+  updates** on its panel.
+- The newest release whose tag is a higher semver version than the installed
+  one shows as **Update available**, with its version, release notes and the
+  change in permissions (what is added, what is removed). A pre-release is
+  offered only to someone already on a pre-release, so mark betas as
+  pre-releases on GitHub. Nothing updates by itself.
+- Updating downloads the release and runs the same checks as an install, and
+  the household sees the difference before they confirm. New required
+  settings put the plugin in "Not set up" until they are filled in.
+- The previous version is kept. If the new one traps, times out or will not
+  load within 10 minutes of the update, Niles puts the previous one back by
+  itself and says so on the panel; `init` returning an error does not count,
+  since that is your plugin saying what is wrong. The household can also roll
+  back by hand, once.
 
 Storage and settings carry across updates. If your stored data's shape
 changes, read the old shape too, or keep a version number in storage and
@@ -113,10 +126,12 @@ migrate in `init`.
 
 ## Pinning: why a release cannot change under people
 
-When a plugin is installed or updated, Niles downloads `integration.wasm`,
-computes its sha256 and keeps the bytes in its own database. Where GitHub
-reports a digest for the asset, the two must agree. From then on Niles runs
-that copy. Replacing an asset on an existing release changes nothing for
+When somebody previews an install or an update, Niles downloads your
+assets, computes their sha256 and holds them for 15 minutes. Where GitHub
+reports a digest for an asset, the two must agree. Installing takes exactly
+those bytes, checked against the sha256 the preview showed, and keeps them in
+Niles's own database; nothing is downloaded again, at install or at any
+restart after. Replacing an asset on an existing release changes nothing for
 anyone who installed it; publish a new release instead.
 
 ## Which Niles versions you support
@@ -130,7 +145,10 @@ anyone who installed it; publish a new release instead.
 - `min_niles` is the oldest Niles your plugin needs: raise it when you use a
   function or UI node added in a later 0.1.x.
 
-## Private repos
+## Private repos, and GitHub's limit
 
 Not in v0.1. Installing from a private repo needs a GitHub token in Niles,
-which is planned but not specified.
+which is planned but not specified. Without a token GitHub allows 60 API
+requests an hour from one address: a preview takes one or two, an update check
+one per plugin. When the limit is reached Niles says so, with the time it
+resets.
