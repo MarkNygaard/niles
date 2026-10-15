@@ -421,8 +421,23 @@ export interface TvInfo {
   mac: string | null;
   room: string | null;
   /** Absent before pairing, or when the TV could not be asked. */
-  status: { on: boolean; app: string | null } | null;
+  status: {
+    on: boolean;
+    app: string | null;
+    /** The TV's own speakers, `0..=100`: only while it is on and says. */
+    volume?: number;
+    muted?: boolean;
+  } | null;
   error: string | null;
+}
+
+/** One change to the TV's own speakers. */
+export type TvVolumeChange = { volume: number } | { delta: number } | { mute: boolean };
+
+/** The TV's own speakers after a change. */
+export interface TvVolume {
+  volume: number;
+  muted: boolean;
 }
 
 /** The Sonos household as a speaker described it just now. */
@@ -1301,6 +1316,8 @@ export const api = {
   pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),
   tvPower: (on: boolean) =>
     request<void>("/tv/power", { method: "POST", body: JSON.stringify({ on }) }),
+  tvVolume: (change: TvVolumeChange) =>
+    request<TvVolume>("/tv/volume", { method: "POST", body: JSON.stringify(change) }),
   voices: () => request<Voice[]>("/voices"),
   me: () => request<Me>("/me"),
   updateMe: (update: MeUpdate) =>

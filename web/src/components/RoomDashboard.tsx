@@ -6,7 +6,8 @@ import type { SetZone } from "@/components/RoomCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api, roomOrder } from "@/lib/api";
-import type { Device, SetLight } from "@/lib/api";
+import type { Device, SetLight, TvInfo, TvVolumeChange } from "@/lib/api";
+import { afterChange, tvVolume, withTvVolume } from "@/components/TvRow";
 import { BoostButton } from "@/components/BoostButton";
 import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
 import { HouseBar } from "@/components/HouseBar";
@@ -149,6 +150,26 @@ export function RoomDashboard() {
     // A TV takes a few seconds to come on; ask again once it has.
     onSettled: () =>
       setTimeout(() => queryClient.invalidateQueries({ queryKey: ["tv"] }), 4_000),
+  });
+  // Drawn at once, and corrected by what the TV answers: a TV takes a
+  // moment, and a slider that waits for it feels broken.
+  const tvSound = useMutation({
+    mutationFn: (change: TvVolumeChange) => api.tvVolume(change),
+    onMutate: async (change) => {
+      await queryClient.cancelQueries({ queryKey: ["tv"] });
+      queryClient.setQueryData<TvInfo>(["tv"], (tv) => {
+        const now = tvVolume(tv);
+        return now ? withTvVolume(tv, afterChange(now, change)) : tv;
+      });
+    },
+    onSuccess: (after) => {
+      setError(null);
+      queryClient.setQueryData<TvInfo>(["tv"], (tv) => withTvVolume(tv, after));
+    },
+    onError: (failure) => {
+      setError(failure instanceof ApiError ? failure.message : String(failure));
+      queryClient.invalidateQueries({ queryKey: ["tv"] });
+    },
   });
   // What each room's Sonos plays. Asks the speakers, so not every
   // second; a press refreshes it at once.
@@ -328,6 +349,7 @@ export function RoomDashboard() {
                     info: tv.data,
                     busy: tvPower.isPending,
                     onPower: (on) => tvPower.mutate(on),
+                    onVolume: (change) => tvSound.mutate(change),
                   }
                 : undefined
             }
