@@ -22,6 +22,7 @@ pub mod error;
 pub mod github;
 mod host;
 pub mod http;
+mod human;
 pub mod images;
 pub mod install;
 pub mod log;

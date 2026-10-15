@@ -148,8 +148,28 @@ anyone who installed it; publish a new release instead.
 
 | Interface | Niles | What changed |
 |---|---|---|
-| 0.2 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |
+| 0.2.1 | 0.2.1 | `config.time-zone` and `devices.set-room-light`. Any device class may `report-action`. Nothing 0.2.0 had changed. |
+| 0.2.0 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |
 | 0.1 | 0.2.0 | The first. |
+
+How a patch version stays compatible, both ways:
+
+- **Patch versions only add functions or interfaces.** Nothing a component
+  already imports changes: no record, variant or signature. The WIT's
+  package version says the patch (`niles:integration@0.2.1`); the manifest's
+  `interface` says only `"0.2"`.
+- **A component built against an older patch runs unchanged.** It imports
+  `niles:integration/devices@0.2.0`; Niles defines `devices@0.2.1`, and the
+  WebAssembly linker (wasmtime's) treats versions that differ only in the
+  patch of a `0.x` as the same interface, so it links. The types are then
+  checked function by function, for the functions the component imports
+  only, and those have not changed. Niles's tests load a component built
+  against 0.2.0 (`relay.wasm`) to hold it to that.
+- **A component built against a newer patch needs a Niles that has it.**
+  Built against 0.2.1 and calling `config.time-zone`, it fails to load on a
+  Niles that only has 0.2.0, naming the function it is missing. Raise
+  `min_niles` to the first Niles with the patch, so the household is told
+  before they install it rather than after.
 
 Niles runs plugins built for the previous interface beside the current one
 for at least six months, and their panel says "Built for an older Niles".

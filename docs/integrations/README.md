@@ -11,7 +11,8 @@
 > `niles plugin dev --live`, which would run a plugin on a running Niles. The
 > interface
 > ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) is
-> v0.2, which is v0.1 plus MQTT; Niles still runs plugins built for 0.1. See
+> v0.2.1: v0.1 plus MQTT, and in 0.2.1 the house's time zone and lights
+> kept out of their room's. Niles still runs plugins built for 0.2.0 and 0.1. See
 > [versioning](publishing.md#interface-versions) for what may change.
 
 Niles is an open-source home assistant, written in Rust, that you talk to. It
@@ -33,7 +34,7 @@ installs it by pasting your repo's URL into the app.
 - **WIT** (WebAssembly Interface Type) is the language those declarations are
   written in. Niles's is one file,
   [`niles-integration.wit`](../../schemas/niles-integration.wit): package
-  `niles:integration@0.2.0`, world `plugin`. A *world* is the full contract,
+  `niles:integration@0.2.1`, world `plugin`. A *world* is the full contract,
   what you import and what you export. You do not write WIT; you read it, and a
   bindings generator turns it into types and functions in your language.
 - **`cargo-component`** and **`wit-bindgen`** are the Rust tools that do that
@@ -92,12 +93,15 @@ hides and moves them in Settings → Menu like the built-in ones. People find
 | You want to | Use | Permission | Guide |
 |---|---|---|---|
 | Read your settings and secrets | `config.get`, `config.secret` | none | [manifest](manifest.md#settings) |
+| Know the house's time zone | `config.time-zone` (0.2.1) | none | [host API](host-api.md#config) |
 | Keep data between restarts | `storage` (1 MiB) | none | [host API](host-api.md#storage) |
 | Call an API on the internet | `http.send` | `http = ["api.example.com"]` | [host API](host-api.md#http) |
 | Call a device on the LAN | `http.send` | `local_network = ["setting:address"]` | [permissions](permissions.md#local_network) |
 | Run something every N seconds | `timers.every` → `on-timer` | none | [host API](host-api.md#timers) |
 | Add lights, plugs, sensors, covers | `devices.upsert`, `report-state` | `devices = true` | [devices](devices.md) |
 | Be switched by voice and rules | export `set-device` | `devices = true` | [devices](devices.md#controllable-devices) |
+| Start rules when something happens on a device | `devices.report-action` | `devices = true` | [devices](devices.md#actions) |
+| Keep a light out of its room's lights | `devices.set-room-light` (0.2.1) | `devices = true` | [devices](devices.md#lights-and-the-room) |
 | Answer questions, do things on request | exports `tools`, `call-tool` | `tools = true` | [tools](tools.md) |
 | Add a page to the menu | `[[ui.menu]]`, exports `render`, `on-action` | `ui = true` | [UI](ui.md) |
 | Add a widget to the front page or a room card | `[[ui.widgets]]`, same exports | `ui = true` | [UI](ui.md) |

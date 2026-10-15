@@ -250,10 +250,20 @@ pub struct MenuEntry {
 pub struct Widget {
     pub id: String,
     pub title: String,
+    /// The room it starts in: a room's name, or `setting:<key>` for the
+    /// room a `room` setting holds. None, or that setting unset, is the
+    /// front page.
     #[serde(default)]
     pub room: Option<String>,
     #[serde(default)]
     pub refresh_every: Option<u32>,
+}
+
+impl Widget {
+    /// The `room` setting that places it, when `room` is `setting:<key>`.
+    pub fn room_setting(&self) -> Option<&str> {
+        self.room.as_deref()?.strip_prefix("setting:")
+    }
 }
 
 /// What a setting holds, as the plugin is given it.
@@ -307,6 +317,19 @@ impl Manifest {
 
     pub fn setting(&self, key: &str) -> Option<&Setting> {
         self.settings.iter().find(|s| s.key == key)
+    }
+
+    /// The room `widget` starts in with these settings: its `room`, or
+    /// the one its `setting:` names. None is the front page, which is
+    /// also where it is while that setting is empty.
+    pub fn widget_room(&self, widget: &Widget, values: &toml::Table) -> Option<String> {
+        let Some(key) = widget.room_setting() else {
+            return widget.room.clone();
+        };
+        match self.setting(key)?.value(values)? {
+            SettingValue::Text(room) if !room.is_empty() => Some(room),
+            _ => None,
+        }
     }
 
     /// Whether `id` is one of this plugin's declared pages or widgets.
@@ -576,11 +599,21 @@ impl Manifest {
             if w.title.trim().is_empty() {
                 out.push(format!("widget {:?} has no title", w.id));
             }
-            if let Some(room) = &w.room
+            if let Some(key) = w.room_setting() {
+                if self
+                    .setting(key)
+                    .is_none_or(|s| s.kind != SettingKind::Room)
+                {
+                    out.push(format!(
+                        "widget {:?}: room \"setting:{key}\" must name a setting of type room",
+                        w.id
+                    ));
+                }
+            } else if let Some(room) = &w.room
                 && !is_identifier(room)
             {
                 out.push(format!(
-                    "widget {:?}: room {room:?} must be [a-z0-9_]+",
+                    "widget {:?}: room {room:?} must be [a-z0-9_]+, or setting:<key> for a room setting",
                     w.id
                 ));
             }
@@ -769,6 +802,63 @@ refresh_every = 300
         Manifest::parse(&SPOTPRICE.replace(from, to))
             .map(|m| m.problems())
             .unwrap_or_else(|e| vec![e.to_string()])
+    }
+
+    const ROOM_WIDGET: &str = r#"
+[[settings]]
+key = "room"
+label = "Room"
+type = "room"
+
+[[ui.widgets]]
+id = "now"
+title = "Now"
+room = "setting:room"
+"#;
+
+    #[test]
+    fn a_widget_can_start_in_the_room_a_setting_names() {
+        assert_eq!(with(ROOM_WIDGET), Vec::<String>::new());
+        let manifest = Manifest::parse(&format!("{SPOTPRICE}\n{ROOM_WIDGET}")).unwrap();
+        let widget = &manifest.ui.widgets[0];
+        let mut values = toml::Table::new();
+        assert_eq!(
+            manifest.widget_room(widget, &values),
+            None,
+            "the front page"
+        );
+        values.insert("room".into(), "office".into());
+        assert_eq!(
+            manifest.widget_room(widget, &values).as_deref(),
+            Some("office")
+        );
+        values.insert("room".into(), "".into());
+        assert_eq!(manifest.widget_room(widget, &values), None);
+
+        let fixed = Widget {
+            room: Some("hallway".into()),
+            ..widget.clone()
+        };
+        assert_eq!(
+            manifest.widget_room(&fixed, &values).as_deref(),
+            Some("hallway")
+        );
+    }
+
+    #[test]
+    fn a_widget_room_setting_must_be_a_declared_room_setting() {
+        let undeclared = with(&ROOM_WIDGET.replace("setting:room", "setting:place"));
+        assert!(
+            undeclared.iter().any(|p| p.contains("setting:place")),
+            "{undeclared:?}"
+        );
+        let not_a_room = with(&ROOM_WIDGET.replace("setting:room", "setting:area"));
+        assert!(
+            not_a_room.iter().any(|p| p.contains("of type room")),
+            "{not_a_room:?}"
+        );
+        let bad = with(&ROOM_WIDGET.replace("setting:room", "Office!"));
+        assert!(bad.iter().any(|p| p.contains("[a-z0-9_]+")), "{bad:?}");
     }
 
     #[test]

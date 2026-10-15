@@ -36,8 +36,8 @@ pub(crate) struct CheckArgs {
 #[derive(Args)]
 pub(crate) struct DevArgs {
     /// The plugin's directory (with niles-integration.toml), or its .wasm.
-    /// From a directory, the newest target/wasm32-wasip2/release/*.wasm
-    /// is run, or integration.wasm if there is one.
+    /// From a directory, the newer of integration.wasm and the newest
+    /// target/wasm32-wasip2/release/*.wasm is run.
     path: PathBuf,
     /// A setting for this run, as key=value. Repeatable. Over
     /// dev-settings.toml, which is read from the plugin's directory.
@@ -53,6 +53,61 @@ pub(crate) struct DevArgs {
     /// After init, draw a page or widget as text.
     #[arg(long, value_name = "SURFACE")]
     render: Option<String>,
+    /// Before --call and --render, wait this many seconds after init.
+    /// Without it, a plugin with MQTT brokers is waited for until a
+    /// connection reports its first status (at most 10 s), and a second
+    /// more for the messages the broker kept.
+    #[arg(long, value_name = "SECS")]
+    wait: Option<u64>,
+    /// Let the plugin reach this machine where a setting's address names
+    /// it (127.0.0.1, ::1, localhost), over HTTP and MQTT, so a fake
+    /// device can run beside it. Only here: an installed plugin never can.
+    #[arg(long)]
+    allow_loopback: bool,
+    /// The house's time zone, as config.time-zone gives it: an IANA name
+    /// such as Europe/Copenhagen. This machine's, by default.
+    #[arg(long, value_name = "IANA")]
+    time_zone: Option<String>,
+}
+
+/// How long `dev` waits for a plugin's first MQTT status before --call
+/// and --render, and then for the retained messages after it.
+const MQTT_FIRST_STATUS: Duration = Duration::from_secs(10);
+const RETAINED_GRACE: Duration = Duration::from_secs(1);
+
+/// What `dev` waits for between init and --call / --render.
+#[derive(Debug, PartialEq)]
+enum Wait {
+    Nothing,
+    For(Duration),
+    /// The first MQTT status, then [`RETAINED_GRACE`].
+    Mqtt,
+}
+
+fn wait_plan(args: &DevArgs, manifest: &Manifest) -> Wait {
+    if args.call.is_none() && args.render.is_none() {
+        return Wait::Nothing;
+    }
+    match args.wait {
+        Some(0) => Wait::Nothing,
+        Some(secs) => Wait::For(Duration::from_secs(secs)),
+        None if manifest.permissions.mqtt.is_empty() => Wait::Nothing,
+        None => Wait::Mqtt,
+    }
+}
+
+/// The zone `config.time-zone` answers in `dev`: the flag's, else this
+/// machine's, else UTC.
+fn dev_time_zone(flag: Option<&str>) -> anyhow::Result<String> {
+    if let Some(zone) = flag {
+        zone.parse::<chrono_tz::Tz>()
+            .map_err(|_| anyhow::anyhow!("--time-zone {zone:?} is not an IANA zone"))?;
+        return Ok(zone.to_string());
+    }
+    Ok(iana_time_zone::get_timezone()
+        .ok()
+        .filter(|zone| zone.parse::<chrono_tz::Tz>().is_ok())
+        .unwrap_or_else(|| "UTC".to_string()))
 }
 
 pub(crate) async fn run(action: PluginAction) -> anyhow::Result<()> {
@@ -67,13 +122,17 @@ struct Found {
     dir: PathBuf,
     manifest: String,
     component: Option<(PathBuf, Vec<u8>)>,
+    /// Which of two components was taken, when there were two.
+    chose: Option<String>,
 }
 
 fn locate(path: &Path) -> anyhow::Result<Found> {
+    let mut chose = None;
     let (dir, wasm) = if path.is_dir() {
-        let wasm = Some(path.join("integration.wasm"))
-            .filter(|p| p.is_file())
-            .or_else(|| newest_wasm(&path.join("target").join("wasm32-wasip2").join("release")));
+        let wasm = pick_wasm(path).map(|(wasm, why)| {
+            chose = why;
+            wasm
+        });
         (path.to_path_buf(), wasm)
     } else if path.extension().is_some_and(|e| e == "wasm") {
         let dir = path
@@ -109,7 +168,34 @@ fn locate(path: &Path) -> anyhow::Result<Found> {
         dir,
         manifest,
         component,
+        chose,
     })
+}
+
+/// The component in a plugin's directory: `integration.wasm` or the
+/// newest build under `target/wasm32-wasip2/release`, whichever was
+/// written last, with a line saying so when there are both. A stale
+/// integration.wasm left from the last release build used to win over
+/// the build just made, and the change being tested was not running.
+fn pick_wasm(dir: &Path) -> Option<(PathBuf, Option<String>)> {
+    let packaged = Some(dir.join("integration.wasm")).filter(|p| p.is_file());
+    let built = newest_wasm(&dir.join("target").join("wasm32-wasip2").join("release"));
+    let (packaged, built) = match (packaged, built) {
+        (Some(packaged), Some(built)) => (packaged, built),
+        (packaged, built) => return packaged.or(built).map(|wasm| (wasm, None)),
+    };
+    let modified = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
+    let (newer, older) = if modified(&built) > modified(&packaged) {
+        (built, packaged)
+    } else {
+        (packaged, built)
+    };
+    let why = format!(
+        "using {}, which is newer than {}",
+        newer.display(),
+        older.display()
+    );
+    Some((newer, Some(why)))
 }
 
 fn newest_wasm(dir: &Path) -> Option<PathBuf> {
@@ -133,6 +219,9 @@ async fn check(args: CheckArgs) -> anyhow::Result<()> {
         .ok()
         .and_then(|m| m.logo)
         .and_then(|logo| std::fs::read(found.dir.join(logo)).ok());
+    if let Some(chose) = &found.chose {
+        println!("{chose}");
+    }
     if let Some((path, _)) = &found.component {
         println!("Checking {}", path.display());
     } else {
@@ -295,19 +384,35 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
         }
         bail!("fix the manifest first; `niles plugin check` says the same");
     }
+    if let Some(chose) = &found.chose {
+        println!("{chose}");
+    }
     let (path, component) = found
         .component
         .context("no .wasm found; build it with cargo build --release --target wasm32-wasip2")?;
     let (values, secrets) = dev_settings(&found.dir, &manifest, &args.settings)?;
+    let time_zone = dev_time_zone(args.time_zone.as_deref())?;
+    let wait = wait_plan(&args, &manifest);
 
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::new(1024);
     let storage = found.dir.join(".niles-dev").join("storage.json");
     let store: Arc<dyn PluginStore> = Arc::new(MemoryStore::in_file(storage.clone()));
-    let house = House::new(registry.clone(), bus.clone(), store)
+    let (heard, mut first_status) = tokio::sync::watch::channel(false);
+    let mut house = House::new(registry.clone(), bus.clone(), store)
         .with_settings(Arc::new(move |_| values.clone()))
         .with_secrets(Arc::new(move |_, key| secrets.get(key).cloned()))
-        .with_mqtt_watch(Arc::new(|trace| println!("{trace}")));
+        .with_time_zone(Arc::new(move || time_zone.clone()))
+        .with_mqtt_watch(Arc::new(move |trace| {
+            println!("{trace}");
+            if matches!(trace, niles_plugins::mqtt::Trace::Status { .. }) {
+                heard.send_replace(true);
+            }
+        }));
+    if args.allow_loopback {
+        println!("loopback: this machine is reachable where a setting names it");
+        house = house.allowing_loopback();
+    }
     let runtime = Runtime::new(house, Limits::default())?;
     let printer = spawn_printer(bus.subscribe(), registry.clone());
 
@@ -323,6 +428,28 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
     let status = settled(&runtime, &id).await;
     println!("status: {}", status.line());
     print_tools(&runtime, &id);
+    if status == Status::Running {
+        match wait {
+            Wait::Nothing => {}
+            Wait::For(time) => {
+                println!("waiting {} s", time.as_secs());
+                tokio::time::sleep(time).await;
+            }
+            Wait::Mqtt => {
+                let heard =
+                    tokio::time::timeout(MQTT_FIRST_STATUS, first_status.wait_for(|heard| *heard))
+                        .await;
+                if heard.is_ok() {
+                    tokio::time::sleep(RETAINED_GRACE).await;
+                } else {
+                    println!(
+                        "no MQTT status within {} s; going on (--wait sets the time)",
+                        MQTT_FIRST_STATUS.as_secs()
+                    );
+                }
+            }
+        }
+    }
 
     if let Some(call) = &args.call {
         let [tool, json] = call.as_slice() else {
@@ -635,8 +762,10 @@ pub(crate) fn start_runtime(
     tools: niles_tools::DynamicTools,
 ) -> Option<(Runtime, bool)> {
     let (store, database) = plugin_store(cfg);
+    let config = settings.clone();
     let house = House::new(registry, bus, store)
         .with_tools(tools)
+        .with_time_zone(Arc::new(move || config.current().home.timezone.clone()))
         .with_settings(Arc::new(move |id| {
             settings
                 .current()
@@ -1038,6 +1167,94 @@ key = "api_key"
 label = "API key"
 type = "secret"
 "#;
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        dev: DevArgs,
+    }
+
+    fn dev_args(args: &[&str]) -> DevArgs {
+        use clap::Parser as _;
+        Cli::try_parse_from(["dev", "."].iter().chain(args))
+            .unwrap()
+            .dev
+    }
+
+    #[test]
+    fn dev_waits_for_mqtt_only_when_something_is_asked_of_a_plugin_that_has_it() {
+        let plain = Manifest::parse(MANIFEST).unwrap();
+        let mqtt = Manifest::parse(&MANIFEST.replace(
+            "[[settings]]\nkey = \"area\"",
+            "[permissions]\nmqtt = [{ name = \"b\", host = \"broker.lan\", tls = \"none\" }]\n\n[[settings]]\nkey = \"area\"",
+        ).replace("interface = \"0.1\"", "interface = \"0.2\""))
+        .unwrap();
+        assert!(!mqtt.permissions.mqtt.is_empty());
+
+        let render = dev_args(&["--render", "page"]);
+        assert_eq!(wait_plan(&render, &mqtt), Wait::Mqtt);
+        assert_eq!(wait_plan(&render, &plain), Wait::Nothing);
+        assert_eq!(wait_plan(&dev_args(&[]), &mqtt), Wait::Nothing);
+        assert_eq!(
+            wait_plan(&dev_args(&["--call", "t", "{}", "--wait", "5"]), &plain),
+            Wait::For(Duration::from_secs(5))
+        );
+        assert_eq!(
+            wait_plan(&dev_args(&["--render", "page", "--wait", "0"]), &mqtt),
+            Wait::Nothing
+        );
+    }
+
+    #[test]
+    fn loopback_is_a_dev_flag_and_off_unless_asked() {
+        assert!(!dev_args(&[]).allow_loopback);
+        assert!(dev_args(&["--allow-loopback"]).allow_loopback);
+    }
+
+    #[test]
+    fn the_dev_time_zone_is_the_flags_else_this_machines() {
+        assert_eq!(
+            dev_time_zone(Some("Europe/Copenhagen")).unwrap(),
+            "Europe/Copenhagen"
+        );
+        assert!(dev_time_zone(Some("Mars/Olympus")).is_err());
+        let local = dev_time_zone(None).unwrap();
+        assert!(local.parse::<chrono_tz::Tz>().is_ok(), "{local}");
+    }
+
+    #[test]
+    fn the_newer_of_the_packaged_and_the_built_component_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let release = dir
+            .path()
+            .join("target")
+            .join("wasm32-wasip2")
+            .join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let packaged = dir.path().join("integration.wasm");
+        let built = release.join("plugin.wasm");
+        let write = |path: &Path, age: u64| {
+            std::fs::write(path, b"\0asm").unwrap();
+            let when = std::time::SystemTime::now() - Duration::from_secs(age);
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        };
+
+        write(&packaged, 60);
+        assert_eq!(pick_wasm(dir.path()).unwrap(), (packaged.clone(), None));
+
+        write(&built, 10);
+        let (chosen, why) = pick_wasm(dir.path()).unwrap();
+        assert_eq!(chosen, built);
+        assert!(why.unwrap().contains("newer than"));
+
+        write(&packaged, 1);
+        assert_eq!(pick_wasm(dir.path()).unwrap().0, packaged);
+    }
 
     #[test]
     fn dev_settings_come_from_the_file_and_the_flags_typed_by_the_manifest() {

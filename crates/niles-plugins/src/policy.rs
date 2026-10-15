@@ -29,6 +29,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 pub struct HttpPolicy {
     hosts: Vec<String>,
     local: Vec<Local>,
+    /// See [`HttpPolicy::allowing_loopback`].
+    loopback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +38,9 @@ enum Local {
     Addr(IpAddr),
     Net(IpAddr, u8),
     Name(String),
+    /// A `setting:` address that names this machine. Reached only under
+    /// `niles plugin dev --allow-loopback`, and otherwise nothing.
+    Loopback,
 }
 
 /// A URL that passed the first check, and what it passed as.
@@ -69,7 +74,20 @@ impl HttpPolicy {
                 .map(|h| h.trim().to_ascii_lowercase())
                 .collect(),
             local,
+            loopback: false,
         }
+    }
+
+    /// Let a `setting:` address that names this machine (`127.0.0.1`,
+    /// `::1`, `localhost`) through, for a fake device under `niles plugin
+    /// dev --allow-loopback`. Only the dev command sets it.
+    pub(crate) fn allowing_loopback(mut self) -> Self {
+        self.loopback = true;
+        self
+    }
+
+    fn reaches_loopback(&self) -> bool {
+        self.loopback && self.local.contains(&Local::Loopback)
     }
 
     /// Whether the manifest lets the plugin reach anything at all.
@@ -101,6 +119,16 @@ impl HttpPolicy {
             Some(url::Host::Ipv6(ip)) => (ip.to_string(), Some(IpAddr::V6(ip))),
             None => return Err("the URL has no host".into()),
         };
+        let this_machine =
+            host == "localhost" || literal.is_some_and(|ip| canonical(ip).is_loopback());
+        if this_machine && self.reaches_loopback() {
+            return Ok(Admitted {
+                host,
+                https,
+                internet: false,
+                local_name: true,
+            });
+        }
         if let Some(why) = literal.and_then(|ip| never(canonical(ip))) {
             return Err(format!("{host} is {why}, which no plugin may reach"));
         }
@@ -133,6 +161,9 @@ impl HttpPolicy {
     pub fn allows(&self, admitted: &Admitted, ip: IpAddr) -> Result<(), String> {
         let ip = canonical(ip);
         let host = &admitted.host;
+        if ip.is_loopback() && !admitted.internet && self.reaches_loopback() {
+            return Ok(());
+        }
         if let Some(why) = never(ip) {
             return Err(format!("{host} is {ip}, {why}, which no plugin may reach"));
         }
@@ -161,7 +192,7 @@ impl HttpPolicy {
         self.local.iter().any(|l| match l {
             Local::Addr(a) => canonical(*a) == ip,
             Local::Net(base, prefix) => in_net(ip, *base, *prefix),
-            Local::Name(_) => false,
+            Local::Name(_) | Local::Loopback => false,
         })
     }
 }
@@ -257,8 +288,14 @@ fn setting_host(value: &str) -> &str {
 /// What the household typed into a `setting:` address, as a local entry.
 fn parse_setting_address(value: &str) -> Option<Local> {
     let host = setting_host(value);
+    if host.eq_ignore_ascii_case("localhost") {
+        return Some(Local::Loopback);
+    }
     if let Ok(ip) = host.parse::<IpAddr>() {
         let ip = canonical(ip);
+        if ip.is_loopback() {
+            return Some(Local::Loopback);
+        }
         return (never(ip).is_none() && is_local(ip)).then_some(Local::Addr(ip));
     }
     check_host_name(host)
@@ -303,7 +340,6 @@ pub struct MqttPolicy {
     brokers: Vec<MqttBroker>,
     /// The `setting:` values, by key.
     entered: HashMap<String, String>,
-    #[cfg(test)]
     loopback: bool,
 }
 
@@ -318,14 +354,12 @@ impl MqttPolicy {
         Self {
             brokers: permissions.mqtt.clone(),
             entered,
-            #[cfg(test)]
             loopback: false,
         }
     }
 
-    /// Let brokers on this machine through, for the tests' broker. Never
-    /// compiled into Niles itself.
-    #[cfg(test)]
+    /// Let brokers on this machine through: the tests' broker, and a fake
+    /// device under `niles plugin dev --allow-loopback`. Only those set it.
     pub(crate) fn allowing_loopback(mut self) -> Self {
         self.loopback = true;
         self
@@ -355,7 +389,7 @@ impl MqttPolicy {
             ),
         };
         let literal = host.parse::<IpAddr>().ok();
-        if literal.is_none() {
+        if literal.is_none() && !(self.loopback && host == "localhost") {
             check_host_name(&host).map_err(|why| format!("{host:?}: {why}"))?;
         }
         let reach = match broker.tls {
@@ -369,7 +403,6 @@ impl MqttPolicy {
             port: broker.port(),
             tls: broker.tls,
             reach,
-            #[cfg(test)]
             loopback: self.loopback,
         };
         if let Some(ip) = literal {
@@ -403,7 +436,6 @@ pub struct MqttTarget {
     pub port: u16,
     pub tls: TlsMode,
     reach: Reach,
-    #[cfg(test)]
     loopback: bool,
 }
 
@@ -420,7 +452,6 @@ impl MqttTarget {
     pub fn allows(&self, ip: IpAddr) -> Result<(), String> {
         let ip = canonical(ip);
         let host = &self.host;
-        #[cfg(test)]
         if self.loopback && ip.is_loopback() {
             return Ok(());
         }
@@ -777,8 +808,46 @@ mod tests {
         assert!(loopback.target("b").unwrap().is_err());
         assert!(
             loopback.allowing_loopback().target("b").unwrap().is_ok(),
-            "only the tests' override lets it through"
+            "only the dev override lets it through"
         );
+        let localhost = MqttPolicy::new(&permissions, |_| Some("localhost".into()));
+        assert!(localhost.target("b").unwrap().is_err());
+        assert!(localhost.allowing_loopback().target("b").unwrap().is_ok());
+    }
+
+    #[test]
+    fn a_setting_that_names_this_machine_is_reached_only_when_dev_allows_it() {
+        for address in ["127.0.0.1:8080", "localhost", "[::1]:8080"] {
+            let p = policy(&[], &["setting:address"], Some(address));
+            assert!(
+                p.admit(&url("http://127.0.0.1:8080/")).is_err(),
+                "{address}"
+            );
+            assert!(
+                p.admit(&url("http://localhost:8080/")).is_err(),
+                "{address}"
+            );
+
+            let dev = p.allowing_loopback();
+            let ok = dev.admit(&url("http://127.0.0.1:8080/status")).unwrap();
+            assert!(dev.allows(&ok, ip("127.0.0.1")).is_ok(), "{address}");
+            let ok = dev.admit(&url("http://localhost:8080/status")).unwrap();
+            assert!(dev.allows(&ok, ip("::1")).is_ok(), "{address}");
+            assert!(dev.admit(&url("http://192.168.1.51/")).is_err());
+        }
+    }
+
+    #[test]
+    fn dev_loopback_reaches_nothing_the_manifest_does_not_point_at() {
+        // A plugin with only internet hosts, or a setting naming a real
+        // device, gains nothing on this machine from the dev flag.
+        let internet = policy(&["api.example.com"], &[], None).allowing_loopback();
+        assert!(internet.admit(&url("http://127.0.0.1/")).is_err());
+        let ok = internet.admit(&url("https://api.example.com/")).unwrap();
+        assert!(internet.allows(&ok, ip("127.0.0.1")).is_err());
+
+        let device = policy(&[], &["setting:address"], Some("192.168.1.50")).allowing_loopback();
+        assert!(device.admit(&url("http://127.0.0.1/")).is_err());
     }
 
     #[test]

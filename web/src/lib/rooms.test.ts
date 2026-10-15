@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   brightnessOf,
+  hasRoomSwitch,
+  isRoomLight,
   mergeReported,
   optimistic,
   roomSummary,
@@ -236,6 +238,41 @@ describe("roomSummary", () => {
   it("says so plainly when all or none are", () => {
     expect(summarise(false, false)).toBe("2 lights, all off");
     expect(summarise(true, true)).toBe("All 2 on");
+  });
+});
+
+describe("a light kept out of its room", () => {
+  // A 3D printer's chamber light: the server says `lamp: false`, as it
+  // does for a plug that is not a lamp.
+  const chamber = device("x_bambulab:office/chamber_light", {
+    lamp: false,
+    state: { on: true },
+  });
+  const lamp = device("z2m:office/lamp", { state: { on: false } });
+
+  it("is on the card but not counted, and the room reads as off", () => {
+    const [room] = roomsOf([lamp, chamber]);
+    expect(room.lights.map((l) => l.name)).toEqual(["chamber_light", "lamp"]);
+    expect(room.switched).toBe(1);
+    expect(room.on).toBe(0);
+    expect(roomSummary(room)).toBe("Off");
+    expect(roomToggle(room)).toEqual({ on: true });
+    expect(isRoomLight(chamber)).toBe(false);
+    expect(isRoomLight(lamp)).toBe(true);
+  });
+
+  it("is not moved by the room's switch or the house's", () => {
+    expect(targets(chamber, { scope: "room", room: "office" })).toBe(false);
+    expect(targets(chamber, { scope: "house" })).toBe(false);
+    expect(targets(chamber, { scope: "light", light: chamber })).toBe(true);
+  });
+
+  it("leaves a room with nothing else without a room switch, saying what it does", () => {
+    const [room] = roomsOf([chamber]);
+    expect(hasRoomSwitch(room)).toBe(false);
+    expect(roomSummary(room)).toBe("On");
+    expect(houseSummary([room])).toBe("Nothing on, 0 lights");
+    expect(hasRoomSwitch(roomsOf([lamp, chamber])[0])).toBe(true);
   });
 });
 

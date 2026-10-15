@@ -56,6 +56,42 @@ fn words(slug: &str) -> String {
     slug.replace('_', " ")
 }
 
+/// Whether an action is a press, hold or turn of a button, in
+/// Zigbee2MQTT's vocabulary. A rule sentence has no device class to go
+/// on, and actions come from any device now: "the printer is pressed
+/// (finished)" is what treating every action as a press sounded like.
+fn is_press(action: &str) -> bool {
+    const PRESSES: &[&str] = &[
+        "single",
+        "double",
+        "triple",
+        "quadruple",
+        "many",
+        "hold",
+        "release",
+        "long",
+        "toggle",
+        "on",
+        "off",
+        "shake",
+        "tap",
+        "slide",
+        "flip90",
+        "flip180",
+    ];
+    const PARTS: &[&str] = &["press", "hold", "release", "click", "rotate", "brightness"];
+    let action = action.to_ascii_lowercase();
+    PRESSES.contains(&action.as_str()) || PARTS.iter().any(|p| action.contains(p))
+}
+
+/// Whether a device's name says it is something to press, for a rule
+/// that takes any of its actions.
+fn looks_like_a_button(device: &str) -> bool {
+    const NAMES: &[&str] = &["switch", "button", "remote", "dimmer", "knob", "cube"];
+    let name = device.rsplit('/').next().unwrap_or(device);
+    NAMES.iter().any(|n| name.contains(n))
+}
+
 /// Each trigger's id and how it is said: by its place, as the app
 /// shows it — the id is the app's and the model's, not a person's.
 fn trigger_names(triggers: &[TriggerDto]) -> Vec<(String, String)> {
@@ -210,8 +246,12 @@ fn trigger(t: &TriggerDto) -> String {
             }
         }
         TriggerKind::DeviceAction { device, action } => match action {
-            Some(action) => format!("{} is pressed ({action})", thing(device)),
-            None => format!("{} is pressed", thing(device)),
+            Some(action) if is_press(action) => {
+                format!("{} is pressed ({})", thing(device), words(action))
+            }
+            Some(action) => format!("{} reports {}", thing(device), words(action)),
+            None if looks_like_a_button(device) => format!("{} is pressed", thing(device)),
+            None => format!("{} reports anything", thing(device)),
         },
         TriggerKind::TimerFired { name } => match name {
             Some(name) => format!("the {name} timer goes off"),
@@ -436,6 +476,50 @@ mod tests {
                 "actions": [{ "do": "set_room", "room": "office", "on": false }],
             })),
             "When the office door opens, turn off the office lights."
+        );
+    }
+
+    fn when_action(device: &str, action: Option<&str>) -> String {
+        let mut trigger = json!({ "type": "device_action", "device": device });
+        if let Some(action) = action {
+            trigger["action"] = json!(action);
+        }
+        said(json!({
+            "id": "r",
+            "triggers": [trigger],
+            "actions": [{ "do": "set_room", "room": "office", "on": false }],
+        }))
+    }
+
+    #[test]
+    fn a_button_is_pressed() {
+        assert_eq!(
+            when_action("office/switch", Some("single")),
+            "When the office switch is pressed (single), turn off the office lights."
+        );
+        assert_eq!(
+            when_action("hallway/remote", Some("up_hold")),
+            "When the hallway remote is pressed (up hold), turn off the office lights."
+        );
+        assert_eq!(
+            when_action("office/wall_switch", None),
+            "When the office wall switch is pressed, turn off the office lights."
+        );
+    }
+
+    #[test]
+    fn any_other_device_reports_its_action() {
+        assert_eq!(
+            when_action("x_bambulab:office/printer", Some("finished")),
+            "When the office printer reports finished, turn off the office lights."
+        );
+        assert_eq!(
+            when_action("office/printer", Some("print_failed")),
+            "When the office printer reports print failed, turn off the office lights."
+        );
+        assert_eq!(
+            when_action("office/printer", None),
+            "When the office printer reports anything, turn off the office lights."
         );
     }
 

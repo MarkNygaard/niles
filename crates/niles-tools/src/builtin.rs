@@ -815,7 +815,9 @@ impl<P: Publisher> Tool for SetRoom<P> {
             .registry
             .list_room(&room)
             .into_iter()
-            .filter(|d| can_do(d, &target))
+            // A light its source keeps out of the room's (a printer's
+            // chamber light) is only ever switched by name.
+            .filter(|d| d.room_light && can_do(d, &target))
             .collect();
 
         if targets.is_empty() {
@@ -2238,6 +2240,33 @@ mod tests {
                 .unwrap()
                 .contains(&"x_pool:garden/blind".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn set_room_leaves_a_light_kept_out_of_the_room_and_set_device_still_reaches_it() {
+        let (mock, plugins, registry, router) = with_plugin_devices();
+        let id = DeviceId::parse("x_pool:garden/lamp").unwrap();
+        let mut lamp = registry.get(&id).unwrap();
+        lamp.room_light = false;
+        registry.upsert(lamp);
+
+        let room = SetRoom::new(registry.clone(), mock.clone(), router.clone(), false);
+        let result = room
+            .execute(json!({ "room": "garden", "on": false }))
+            .await
+            .unwrap();
+        assert!(
+            !result["set"].to_string().contains("garden/lamp"),
+            "{result}"
+        );
+        assert!(plugins.told.lock().unwrap().is_empty());
+
+        let device = SetDevice::new(registry, mock, router, false);
+        device
+            .execute(json!({ "device_id": "garden/lamp", "on": false }))
+            .await
+            .unwrap();
+        assert_eq!(*plugins.told.lock().unwrap(), vec!["x_pool:garden/lamp"]);
     }
 
     #[tokio::test]

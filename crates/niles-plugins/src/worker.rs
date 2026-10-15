@@ -344,14 +344,12 @@ impl Worker {
             SettingValue::Text(text) => Some(text),
             _ => None,
         };
-        let policy = HttpPolicy::new(&manifest.permissions, text);
-        let mqtt = MqttPolicy::new(&manifest.permissions, text);
-        #[cfg(test)]
-        let mqtt = if self.limits.mqtt_loopback {
-            mqtt.allowing_loopback()
-        } else {
-            mqtt
-        };
+        let mut policy = HttpPolicy::new(&manifest.permissions, text);
+        let mut mqtt = MqttPolicy::new(&manifest.permissions, text);
+        if self.house.loopback {
+            policy = policy.allowing_loopback();
+            mqtt = mqtt.allowing_loopback();
+        }
         let state = HostState::new(
             self.plugin.clone(),
             self.house.clone(),

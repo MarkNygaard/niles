@@ -593,9 +593,16 @@ export interface Device {
   available?: boolean;
   /**
    * One of the house's lights: a light, or a plug listed as having a
-   * lamp on it. Absent on an older server, where every plug was one.
+   * lamp on it. False for a light its plugin keeps out of its room's
+   * lights, such as a printer's chamber light. Absent on an older
+   * server, where every plug and every light was one.
    */
   lamp?: boolean;
+  /**
+   * Whether it reports actions: a switch, or anything that has reported
+   * one. Absent on an older server, where only switches did.
+   */
+  actions?: boolean;
 }
 
 /** What a light can be told. Every field is optional; at least one is required. */

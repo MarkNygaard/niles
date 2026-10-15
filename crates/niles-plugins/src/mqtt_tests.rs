@@ -4,7 +4,7 @@
 //!
 //! Here rather than in `tests/` because the broker is on loopback, which
 //! the policy refuses, and the override for that exists only in the
-//! crate's own test build ([`Limits::mqtt_loopback`]).
+//! test's [`House::allowing_loopback`].
 
 use crate::manifest::Manifest;
 use crate::policy::MqttPolicy;
@@ -220,12 +220,9 @@ impl Home {
             }))
             .with_secrets(Arc::new(|id, key| {
                 (id == "relay" && key == "password").then(|| PASSWORD.to_string())
-            }));
-        let limits = Limits {
-            mqtt_loopback: true,
-            ..Limits::default()
-        };
-        let runtime = Runtime::new(house, limits).expect("the runtime starts");
+            }))
+            .allowing_loopback();
+        let runtime = Runtime::new(house, Limits::default()).expect("the runtime starts");
         Self { runtime, registry }
     }
 
@@ -360,6 +357,26 @@ async fn a_dropped_connection_comes_back_and_subscribes_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_refused_connection_is_said_plainly_and_the_os_words_are_kept_for_debugging() {
+    let home = Home::new(Arc::new(MemoryStore::new()), "127.0.0.1", "plain").await;
+    let nobody = free_port();
+    home.install_relay(nobody, free_port()).await;
+    let told = home.told(1).await;
+    assert_eq!(
+        told,
+        [format!(
+            "disconnected: could not connect to 127.0.0.1:{nobody}: connection refused"
+        )]
+    );
+    let log = home.runtime.log("relay");
+    assert!(
+        log.iter()
+            .any(|l| l.level == crate::log::Level::Debug && l.message.starts_with("MQTT plain: ")),
+        "{log:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_refused_password_stops_the_trying() {
     // rumqttd hangs up on a wrong password; Mosquitto and the printers
     // answer CONNACK with a refusal, as this stand-in does.
@@ -379,10 +396,7 @@ async fn a_refused_password_stops_the_trying() {
     });
     let home = Home::new(Arc::new(MemoryStore::new()), "127.0.0.1", "plain").await;
     home.install_relay(port, free_port()).await;
-    assert_eq!(
-        home.told(1).await,
-        ["failed: the broker refused the username or password"]
-    );
+    assert_eq!(home.told(1).await, ["failed: wrong username or password"]);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(attempts.load(Ordering::SeqCst), 1, "no second try");
 }

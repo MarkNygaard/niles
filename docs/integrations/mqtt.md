@@ -133,6 +133,20 @@ fn on_mqtt_status(conn: u32, status: ConnectionStatus) {
   which restarts the plugin anyway).
 - **`certificate-changed(change)`**: see below.
 
+A wrong username or password is `failed` only when the broker says so, with
+a refusal in its CONNACK, as Mosquitto and printers do. Some brokers just
+close the connection instead. Niles cannot tell that from a broker going
+away, so it is `disconnected` ("the broker closed the connection before
+accepting it; some brokers do that for a wrong username or password"), and
+Niles keeps trying with backoff. If a connection never gets past that, the
+credentials are the first thing to check.
+
+`why` is a short sentence for a person, worth showing as it is: "could not
+connect to 192.168.1.40:8883: connection refused", "TLS with 192.168.1.40:
+certificate problem: it has expired", "wrong username or password". The
+words of the TLS library or the operating system behind it go to the
+plugin's log at debug level.
+
 Each status is also written to the plugin's log ("MQTT printer: connected to
 192.168.1.40 (192.168.1.40:8883)"), so the household sees it on the panel
 without your help.
@@ -223,8 +237,9 @@ reports on `device/<serial>/report` and takes commands, JSON, on
 `device/<serial>/request`. This is a sketch of the parts that touch MQTT, not
 a finished plugin.
 
-The manifest asks for the address, the serial and the access code, and for
-one broker at the address, trusted on first use:
+The manifest asks for the address, the serial, the access code and the room
+the printer stands in, and for one broker at the address, trusted on first
+use. Its widget starts in that room:
 
 ```toml
 interface = "0.2"
@@ -256,10 +271,31 @@ type = "secret"
 required = true
 help = "Under Settings → Network on the printer's screen."
 
+[[settings]]
+key = "room"
+label = "Room"
+type = "room"
+required = true
+help = "Where the printer stands. Its devices join this room."
+
 [[ui.menu]]
 id = "printer"
 label = "Printer"
 icon = "printer"
+
+[[ui.widgets]]
+id = "printer_now"
+title = "Printer"
+room = "setting:room"
+```
+
+The devices take their ids from the room setting rather than a room written
+into the plugin:
+
+```rust
+fn printer_id() -> String {
+    format!("{}/printer", text("room").unwrap_or_else(|| "workshop".into()))
+}
 ```
 
 `init` connects and subscribes to the reports. Not `latest-only`: many
@@ -305,15 +341,15 @@ fn on_mqtt_status(conn: u32, status: ConnectionStatus) {
                 Qos::AtMostOnce,
                 false,
             );
-            let _ = devices::set_available("office/printer", true);
+            let _ = devices::set_available(&printer_id(), true);
         }
         ConnectionStatus::CertificateChanged(change) => {
             STATE.with(|s| s.borrow_mut().changed = Some(change.presented));
-            let _ = devices::set_available("office/printer", false);
+            let _ = devices::set_available(&printer_id(), false);
             ui::invalidate("printer");
         }
         _ => {
-            let _ = devices::set_available("office/printer", false);
+            let _ = devices::set_available(&printer_id(), false);
         }
     }
 }
@@ -335,7 +371,17 @@ fn on_action(surface: String, control: String, _: ActionValue, _: RenderContext)
 
 Each report is merged into what the plugin knows and reported as readings:
 `nozzle` and `bed` in °C, `progress` in %, `remaining` in min, so rules can
-follow them ("when the print is done, say so in the office").
+follow them. When a print ends, the printer reports it as an
+[action](devices.md#actions), which rules can start on ("when the office
+printer reports finished, say so in the office"):
+
+```rust
+devices::report_action(&printer_id(), "finished").map_err(|e| format!("{e:?}"))?;
+```
+
+The chamber light is a `light` the plugin keeps out of the room's lights
+with [`set_room_light`](devices.md#lights-and-the-room), so "turn off the
+office lights" mid-print leaves it on.
 
 Things worth knowing for a printer like this:
 
@@ -378,3 +424,18 @@ mqtt 1 < device/01S00A000000000/report {"print":{"nozzle_temper":24.6,"bed_tempe
 
 The pin is kept in `.niles-dev/storage.json` beside the plugin; delete the
 `.niles/mqtt-pin/` entry there to trust the device afresh.
+
+With `--call` or `--render`, `dev` waits for the first connection to report
+a status (at most 10 s), and then a second more for the messages the broker
+kept, so the tool or page sees the device's state. `--wait 5` waits five
+seconds instead, and `--wait 0` not at all.
+
+A fake device on your own machine, a script that plays the printer's broker,
+is on loopback, which no plugin may reach. `--allow-loopback` lets this run
+reach it, where a setting's address is `127.0.0.1`, `::1` or `localhost`:
+
+```sh
+niles plugin dev . --allow-loopback --settings address=127.0.0.1 --render printer
+```
+
+Only `dev` has the flag; an installed plugin can never reach loopback.

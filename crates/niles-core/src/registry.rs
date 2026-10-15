@@ -22,9 +22,29 @@ impl DeviceRegistry {
     }
 
     /// Insert or replace a device.
-    pub fn upsert(&self, device: Device) {
+    ///
+    /// Having reported an action survives the replacement: it is a fact
+    /// about the device, and sources re-describe their devices on every
+    /// reconnect without knowing it.
+    pub fn upsert(&self, mut device: Device) {
         let mut guard = self.devices.write().unwrap();
+        if let Some(existing) = guard.get(&device.id) {
+            device.reports_actions |= existing.reports_actions;
+        }
         guard.insert(device.id.clone(), device);
+    }
+
+    /// Note that a device reported an action. Returns true when it had
+    /// not before, so a source that remembers it knows to.
+    pub fn note_action(&self, id: &DeviceId) -> bool {
+        let mut guard = self.devices.write().unwrap();
+        match guard.get_mut(id) {
+            Some(device) if !device.reports_actions => {
+                device.reports_actions = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Remove a device. Returns the removed entry if any.
@@ -139,6 +159,18 @@ mod tests {
 
         let retrieved = registry.get(&device.id).unwrap();
         assert_eq!(retrieved.state.on, Some(true));
+    }
+
+    #[test]
+    fn an_action_is_noted_once_and_survives_the_device_being_described_again() {
+        let registry = DeviceRegistry::new();
+        let device = make_device("office", "printer");
+        registry.upsert(device.clone());
+        assert!(registry.note_action(&device.id));
+        assert!(!registry.note_action(&device.id), "already known");
+        registry.upsert(device.clone());
+        assert!(registry.get(&device.id).unwrap().reports_actions);
+        assert!(!registry.note_action(&make_device("office", "gone").id));
     }
 
     #[test]

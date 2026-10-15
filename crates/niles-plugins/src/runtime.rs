@@ -16,7 +16,7 @@ use crate::manifest::{EventPermission, Manifest};
 use crate::store::{KnownDevice, Package, PluginStore};
 use crate::ui::{ActionOutcome, ActionValue, Context, Surface};
 use async_trait::async_trait;
-use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState};
+use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState};
 use niles_mqtt::DeviceCommander;
 use niles_notifications::NotificationCenter;
 use niles_tools::DynamicTools;
@@ -35,6 +35,9 @@ pub type SettingsFn = Arc<dyn Fn(&str) -> toml::Table + Send + Sync>;
 pub type SecretsFn = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 /// Told what happens on every plugin's MQTT connections.
 pub type MqttWatch = Arc<dyn Fn(&crate::mqtt::Trace) + Send + Sync>;
+/// The house's time zone, an IANA name, read each time a plugin asks:
+/// it can change while plugins run.
+pub type TimeZoneFn = Arc<dyn Fn() -> String + Send + Sync>;
 
 /// The largest component Niles will run.
 pub const MAX_COMPONENT: usize = 64 * 1024 * 1024;
@@ -68,10 +71,6 @@ pub struct Limits {
     /// How often the engine's epoch advances: the resolution of every
     /// deadline above.
     pub tick: Duration,
-    /// Let MQTT connect to this machine, where the tests' broker is.
-    /// Only in the crate's own tests; Niles never has it.
-    #[cfg(test)]
-    pub(crate) mqtt_loopback: bool,
 }
 
 impl Default for Limits {
@@ -91,8 +90,6 @@ impl Default for Limits {
             restarts_per_hour: 5,
             init_retry: Duration::from_secs(10 * 60),
             tick: Duration::from_millis(100),
-            #[cfg(test)]
-            mqtt_loopback: false,
         }
     }
 }
@@ -107,6 +104,9 @@ pub struct House {
     pub(crate) settings: SettingsFn,
     pub(crate) secrets: SecretsFn,
     pub(crate) mqtt_watch: Option<MqttWatch>,
+    pub(crate) time_zone: TimeZoneFn,
+    /// See [`House::allowing_loopback`].
+    pub(crate) loopback: bool,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -122,6 +122,8 @@ impl House {
             settings: Arc::new(|_| toml::Table::new()),
             secrets: Arc::new(|_, _| None),
             mqtt_watch: None,
+            time_zone: Arc::new(|| "UTC".to_string()),
+            loopback: false,
             handle: tokio::runtime::Handle::current(),
         }
     }
@@ -140,6 +142,22 @@ impl House {
 
     pub fn with_secrets(mut self, secrets: SecretsFn) -> Self {
         self.secrets = secrets;
+        self
+    }
+
+    /// Let plugins reach this machine where a `setting:` address names it
+    /// (`127.0.0.1`, `::1`, `localhost`), over HTTP and MQTT: a fake
+    /// device beside the plugin under `niles plugin dev
+    /// --allow-loopback`. Never for `serve`, where loopback is Niles
+    /// itself and whatever else runs beside it.
+    pub fn allowing_loopback(mut self) -> Self {
+        self.loopback = true;
+        self
+    }
+
+    /// What `config.time-zone` answers. UTC until this is set.
+    pub fn with_time_zone(mut self, time_zone: TimeZoneFn) -> Self {
+        self.time_zone = time_zone;
         self
     }
 
@@ -717,8 +735,7 @@ impl Inner {
                 continue;
             };
             if self.house.registry.get(&id).is_none() {
-                let mut remembered = Device::new(id.clone(), DeviceState::default(), device.class)
-                    .with_capabilities(device.light);
+                let mut remembered = device.device(id.clone(), DeviceState::default());
                 remembered.available = false;
                 self.house.registry.upsert(remembered.clone());
                 self.house

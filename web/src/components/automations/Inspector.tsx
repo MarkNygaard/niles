@@ -334,16 +334,16 @@ function TriggerFields({
       return (
         <>
           <DeviceField
-            label="Button or dimmer"
+            label="Button or device"
             kind="device_action"
             value={value.device}
             devices={devices}
             onChange={(device) => onChange({ ...value, device: device ?? "" })}
           />
-          <Field label="Press">
+          <Field label="Action">
             <Input
-              aria-label="Press"
-              placeholder="Any press, or e.g. on_press"
+              aria-label="Action"
+              placeholder="Any action, or e.g. on_press or finished"
               value={value.action ?? ""}
               onChange={(e) => onChange({ ...value, action: e.target.value.trim() || undefined })}
             />
