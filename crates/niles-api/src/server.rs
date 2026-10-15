@@ -1379,6 +1379,37 @@ devices = [\"living_room/corner_lamp\"]
     }
 
     #[tokio::test]
+    async fn a_light_its_plugin_keeps_out_of_the_room_is_not_switched_with_it() {
+        let mock = Arc::new(MockPublisher::default());
+        let commander = Arc::new(Commander::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_light("office", "lamp"));
+        let mut chamber = plugin_light("office", "chamber_light");
+        chamber.room_light = false;
+        registry.upsert(chamber);
+        let router = CommandRouter::z2m_only("zigbee2mqtt").with_commander(commander.clone());
+
+        let app = app_routing(registry.clone(), mock.clone(), router.clone());
+        let (status, body) = post(app, "/rooms/office", serde_json::json!({"on": false})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_eq!(body["lights"], 1);
+        let app = app_routing(registry.clone(), mock.clone(), router.clone());
+        let (status, _) = post(app, "/lights", serde_json::json!({"on": false})).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(commander.told.lock().unwrap().is_empty());
+
+        let app = app_routing(registry, mock, router);
+        let (status, _) = post(
+            app,
+            "/rooms/office/x_hue:chamber_light",
+            serde_json::json!({"on": false}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "still switched by name");
+        assert_eq!(commander.told.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn posting_to_a_room_with_no_lights_returns_not_found() {
         let mock = Arc::new(MockPublisher::default());
         let registry = Arc::new(DeviceRegistry::new());

@@ -261,6 +261,18 @@ describe("summary", () => {
         value: { type: "device_action", device: "office/go", action: "on_press" },
       }),
     ).toBe("Office go: on press");
+    expect(
+      of({
+        role: "trigger",
+        value: { type: "device_action", device: "x_bambulab:office/printer", action: "finished" },
+      }),
+    ).toBe("Office printer reports finished");
+    expect(
+      of({ role: "trigger", value: { type: "device_action", device: "x_bambulab:office/printer" } }),
+    ).toBe("Office printer reports anything");
+    expect(
+      of({ role: "trigger", value: { type: "device_action", device: "office/wall_switch" } }),
+    ).toBe("Office wall switch is pressed");
     expect(of({ role: "trigger", value: { type: "timer_fired" } })).toBe("Any timer goes off");
     expect(of({ role: "trigger", value: { type: "presence", state: "home" } })).toBe(
       "Somebody comes home",
@@ -461,6 +473,7 @@ describe("deviceLabel", () => {
   it("says a device the way it is named", () => {
     expect(deviceLabel("office/desk_lamp")).toBe("Office desk lamp");
     expect(deviceLabel("living_room/tv")).toBe("Living room tv");
+    expect(deviceLabel("x_bambulab:office/printer")).toBe("Office printer");
   });
 });
 
@@ -477,13 +490,22 @@ describe("deviceChoices", () => {
     expect(values("set_device")).toEqual([
       "kitchen/kettle",
       "living_room/lamp",
-      "living_room/tv",
+      "wled:living_room/tv",
       "office/desk_lamp",
     ]);
   });
 
-  it("offers what is left for a button", () => {
-    expect(values("device_action")).toEqual(["office/go", "office/sensor"]);
+  it("offers switches and whatever has reported an action for an action", () => {
+    const house = [
+      ...devices,
+      device("z2m:office/wall_switch", "switch"),
+      { ...device("x_bambulab:office/printer", "sensor"), actions: true },
+      device("x_bambulab:office/nozzle", "sensor", { temperature_celsius: 220 }),
+    ];
+    expect(deviceChoices(house, "device_action").map((c) => c.value)).toEqual([
+      "x_bambulab:office/printer",
+      "office/wall_switch",
+    ]);
   });
 
   it("offers what reports the reading for a numeric step", () => {
@@ -492,7 +514,7 @@ describe("deviceChoices", () => {
     );
     expect(deviceChoices(devices, "numeric", undefined, "brightness").map((c) => c.value)).toEqual([
       "living_room/lamp",
-      "living_room/tv",
+      "wled:living_room/tv",
       "office/desk_lamp",
     ]);
   });

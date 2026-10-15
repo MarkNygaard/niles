@@ -458,7 +458,8 @@ export function addAction<R extends Draft>(
 }
 
 /** `office/door` → "Office door": a device the way it is said. */
-export function deviceLabel(device: string): string {
+export function deviceLabel(named: string): string {
+  const device = named.slice(named.indexOf(":") + 1);
   const slash = device.indexOf("/");
   if (slash === -1) return humanize(device);
   const room = device.slice(0, slash);
@@ -466,10 +467,12 @@ export function deviceLabel(device: string): string {
   return `${humanize(room)} ${name}`;
 }
 
-/** `z2m:office/door` → `office/door`: rules name devices without the
-    source, which Niles fills in. */
+/** `z2m:office/door` → `office/door`: rules name Zigbee devices without
+    the source, which Niles fills in. Any other source has to be named,
+    or a rule about `wled:living_room/tv` or a plugin's printer would be
+    about a Zigbee device that does not exist. */
 export function ruleDeviceName(device: Device): string {
-  return device.id.slice(device.id.indexOf(":") + 1);
+  return device.id.startsWith("z2m:") ? device.id.slice("z2m:".length) : device.id;
 }
 
 function device(name: string | undefined, missing: string): string {
@@ -675,8 +678,10 @@ function triggerText(t: Trigger): string {
       return t.for ? `${what} has been ${where} for ${durationText(t.for)}` : `${what} ${where}`;
     }
     case "device_action": {
-      const what = device(t.device, "A button");
-      return t.action ? `${what}: ${t.action.replace(/_/g, " ")}` : `${what} is pressed`;
+      const what = device(t.device, "A device");
+      if (!t.action) return looksLikeAButton(t.device) ? `${what} is pressed` : `${what} reports anything`;
+      const words = t.action.replace(/_/g, " ");
+      return isPress(t.action) ? `${what}: ${words}` : `${what} reports ${words}`;
     }
     case "timer_fired":
       return t.name ? `The ${t.name} timer goes off` : "Any timer goes off";
@@ -819,8 +824,39 @@ export function triggerChoices(triggers: Trigger[]): Choice[] {
   );
 }
 
+/**
+ * Whether an action is a press, hold or turn of a button, in
+ * Zigbee2MQTT's words. Any device can report actions now, and "Office
+ * printer: finished" read as if somebody had pressed it. The server's
+ * sentence makes the same call.
+ */
+export function isPress(action: string): boolean {
+  const presses = [
+    "single", "double", "triple", "quadruple", "many", "hold", "release", "long",
+    "toggle", "on", "off", "shake", "tap", "slide", "flip90", "flip180",
+  ];
+  const parts = ["press", "hold", "release", "click", "rotate", "brightness"];
+  const a = action.toLowerCase();
+  return presses.includes(a) || parts.some((p) => a.includes(p));
+}
+
+/** Whether a device's name says it is something to press. */
+function looksLikeAButton(device: string | undefined): boolean {
+  const name = device?.split("/").pop() ?? "";
+  return ["switch", "button", "remote", "dimmer", "knob", "cube"].some((n) => name.includes(n));
+}
+
+/**
+ * Whether a device reports actions, so a rule can start on one: a
+ * switch or button, or anything that has reported an action — a
+ * plugin's printer saying `finished`.
+ */
+export function reportsActions(device: Device): boolean {
+  return device.class === "switch" || device.actions === true;
+}
+
 /** What a device picker for this kind of step offers. */
-type Use = "contact" | "motion" | "switchable" | "button" | "reading" | "blind";
+type Use = "contact" | "motion" | "switchable" | "actions" | "reading" | "blind";
 
 const USE: Partial<Record<StepKind, Use>> = {
   contact: "contact",
@@ -831,7 +867,7 @@ const USE: Partial<Record<StepKind, Use>> = {
   device_is: "switchable",
   set_device: "switchable",
   set_blinds: "blind",
-  device_action: "button",
+  device_action: "actions",
   numeric: "reading",
 };
 
@@ -878,12 +914,8 @@ function fits(device: Device, use: Use, measure?: Measure): boolean {
       Object.keys(device.state.readings ?? {}).length > 0
     );
   }
-  const switchable = ["light", "outlet", "switch"].includes(device.class);
-  if (use === "switchable") return switchable;
-  // A remote or a dimmer has no class of its own: it is whatever is
-  // left once lights, plugs, doors, motion sensors and blinds are taken
-  // out.
-  return !switchable && !isContact(device) && !isMotion(device) && !isBlind(device);
+  if (use === "actions") return reportsActions(device);
+  return ["light", "outlet", "switch"].includes(device.class);
 }
 
 export interface Choice {

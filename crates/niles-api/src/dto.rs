@@ -31,9 +31,13 @@ pub struct DeviceDto {
     /// that never switched it on must not lose its dashboard.
     pub available: bool,
     /// Whether it is one of the house's lights — a light, or a plug
-    /// listed in `[lamp_plugs]`. The dashboard shows these, and its room
-    /// and house switches act on exactly these.
+    /// listed in `[lamp_plugs]` — and not one its source keeps out of
+    /// its room's lights. The room and house switches act on exactly
+    /// these.
     pub lamp: bool,
+    /// Whether it reports actions: a switch, or anything that has
+    /// reported one. What the rule editor offers for "when … reports".
+    pub actions: bool,
 }
 
 impl DeviceDto {
@@ -49,6 +53,7 @@ impl DeviceDto {
             supports_color_temp: d.capabilities.color_temp,
             available: d.available,
             lamp: d.is_lamp(lamp_plugs),
+            actions: d.has_actions(),
         }
     }
 }

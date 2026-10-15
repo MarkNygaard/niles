@@ -237,7 +237,7 @@ fn trigger(t: &TriggerDto) -> String {
             }
             Some(action) => format!("{} reports {}", thing(device), words(action)),
             None if looks_like_a_button(device) => format!("{} is pressed", thing(device)),
-            None => format!("{} reports an event", thing(device)),
+            None => format!("{} reports anything", thing(device)),
         },
         TriggerKind::TimerFired { name } => match name {
             Some(name) => format!("the {name} timer goes off"),
@@ -505,7 +505,7 @@ mod tests {
         );
         assert_eq!(
             when_action("office/printer", None),
-            "When the office printer reports an event, turn off the office lights."
+            "When the office printer reports anything, turn off the office lights."
         );
     }
 

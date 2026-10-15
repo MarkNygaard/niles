@@ -29,7 +29,7 @@ import { ClimatePanel } from "@/components/ClimatePanel";
 import { RoomWidgets } from "@/components/PluginWidgets";
 import type { PlacedWidget } from "@/lib/plugins";
 import { HEAT_INK, heatSheet, heatTop } from "@/lib/heat";
-import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
+import { hasRoomSwitch, humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, RoomMusic, SetLight, TvInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -142,9 +142,7 @@ export function RoomCard({
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
-  // A room with blinds and no lights has nothing for the card to
-  // switch, so pressing it opens the room instead.
-  const switchable = room.lights.length > 0 || room.blinds.length === 0;
+  const switchable = hasRoomSwitch(room);
   const hasZone = room.zone !== undefined && onSetZone !== undefined;
   const [open, setOpen] = useState<"lights" | "heating" | null>(null);
   /**
