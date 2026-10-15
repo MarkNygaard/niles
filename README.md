@@ -6,11 +6,13 @@
 
 It runs locally on small hardware (a Linux host or Kubernetes cluster), bridges Zigbee devices via Zigbee2MQTT, and exposes a voice interface through ESP32-S3 satellites (a reSpeaker XVF3800 with Niles's own firmware and an on-device "Niles" wake word) with a three-tier intent pipeline: regex → fast LLM → smart LLM.
 
+It is set up from its own app. Settings keeps the base system — the broker your lights are reached through, and who hears and who thinks (ElevenLabs and Cerebras by default) — apart from the add-ons: optional extras such as Sonos, tado°, calendars and the Claude or ChatGPT assistants, and third-party add-ons installed from GitHub.
+
 ## Documentation
 
 A navigable docs site lives at [docs/](docs/). Build locally with `mdbook serve docs` and browse at <http://localhost:3000>.
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architectural spec: hardware, voice pipeline, lighting model, scenes, timers, integrations, permissions, deployment.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architectural spec: hardware, voice pipeline, lighting model, scenes, timers, add-ons, permissions, deployment.
 - **[CLAUDE.md](CLAUDE.md)** — project orientation for Claude Code and other AI coding agents.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
 - **[Set up a satellite](firmware/xiao-wyoming/satellite-idf/README.md#set-up-a-satellite)** — flash a reSpeaker XVF3800 with the Niles firmware and add it to a room.

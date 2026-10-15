@@ -122,7 +122,7 @@ The household is shown:
 > - Adds a page to the menu: Electricity
 >
 > It cannot see your conversations, the people in your house, other
-> integrations' passwords or Niles's database.
+> add-ons' passwords or Niles's database.
 
 ## `logo.svg`
 

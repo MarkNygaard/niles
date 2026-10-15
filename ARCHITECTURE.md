@@ -24,7 +24,7 @@ Home Assistant is a fantastic project, but it solves a different problem: maximu
 7. **Voice responses come from the satellite, not the room speaker.** Sonos (or any room speaker) is a tool the LLM can use, not the answer surface — keeps voice latency low while preserving full music control.
 8. **No admin UI in v1.** Configuration lives in code, config files, and naming conventions in the underlying source (Zigbee2MQTT, etc.). Adding a device means pairing it and naming it correctly upstream — Niles picks it up automatically. A UI may come later for monitoring and debugging, but it will never be required for normal use. Note: this principle applies to *routine operation*. One-time setup files (the canonical TOML config, an initial API token, Kubernetes manifests) are not "UI" and are explicitly allowed — anything you do once at install time can be text-based.
 9. **Self-documenting through voice, without sacrificing speed.** Users can ask Niles how to use Niles ("how do I save a scene?", "what can you do?"), and the system answers from a single source-of-truth capability reference that also grounds command execution. Context is loaded in tiers so common commands never pay the cost of carrying full documentation.
-10. **A personal infrastructure surface, not just home automation.** Niles controls lights and timers, but its real ambition is to be the voice surface for everything its user runs — coding workflows, calendars, email, deployments, monitoring. The integrations Niles ships are first-class citizens, not bolted-on plugins: crates in this repository, held to the same tests and conventions as the core. For the long tail no project can carry, third-party integrations run as sandboxed WebAssembly plugins installed from GitHub (see [Third-party integrations](#third-party-integrations-plugins)); once installed their devices, tools and pages join Niles exactly as a built-in's do, but they reach only what the household approved.
+10. **A personal infrastructure surface, not just home automation.** Niles controls lights and timers, but its real ambition is to be the voice surface for everything its user runs — coding workflows, calendars, email, deployments, monitoring. The integrations Niles ships are first-class citizens, not bolted-on plugins: crates in this repository, held to the same tests and conventions as the core. For the long tail no project can carry, third-party add-ons run as sandboxed WebAssembly plugins installed from GitHub (see [Third-party add-ons](#third-party-add-ons-plugins)); once installed their devices, tools and pages join Niles exactly as a built-in's do, but they reach only what the household approved.
 11. **One shared home, multiple recognized people.** The house has one state (one set of devices, one lighting curve, one set of scenes). People who live there are identified by voice and can have personal references ("my calendar", "wake me up"), but they don't have per-user *preferences* for shared things. Admin users can set rules controlling who is allowed to do what.
 
 ## Hardware
@@ -111,10 +111,10 @@ Home Assistant is a fantastic project, but it solves a different problem: maximu
 
 [4] Niles service receives stream
        Tags with room, session_id, timestamp
-       Forwards chunks to Groq Whisper Turbo as they arrive
+       Sends the utterance to ElevenLabs Scribe when it ends
        ↓
 
-[5] Groq Whisper Turbo returns text (~200ms)
+[5] ElevenLabs Scribe returns text (~200–400ms)
        e.g. "turn off the kitchen light"
        ↓
 
@@ -139,7 +139,7 @@ Everything else falls through to Tier 1.
 When the regex router doesn't match, the request goes to a fast LLM:
 
 ```
-[6b] Tier 1 LLM (e.g. Groq GPT-OSS 20B, ~300–500ms)
+[6b] Tier 1 LLM (e.g. Cerebras GPT-OSS 120B, ~300–500ms)
        Tools available:
          - get_device_state, set_device, list_devices_in_room
          - control_room_speaker, set_reminder
@@ -168,19 +168,21 @@ These are the current recommendations; the system should be provider-agnostic so
 
 | Stage | Recommended | Why | Approx latency | Approx cost |
 |---|---|---|---|---|
-| STT | Groq Whisper Large v3 Turbo | Fastest hosted Whisper, EU endpoint | ~200ms | ~$0.04 / hour audio |
-| Tier 1 LLM | Groq GPT-OSS 20B | ~885 t/s, ~770ms TTFT, tool calling | ~600–800ms | ~$0.13 / 1M blended |
+| STT | ElevenLabs Scribe v2 | Hears "Niles" as a key term and spells it right; per-word confidence | ~200–400ms | Paid, per hour of audio |
+| Tier 1 LLM | Cerebras GPT-OSS 120B | ~3000 t/s, tool calling, a free tier | ~300–500ms | Free tier, then per token |
 | Tier 2 LLM | Claude Sonnet 4.6 | Best quality-to-speed for hard reasoning | ~2–3s | Standard Anthropic pricing |
 | TTS | Piper (self-hosted) | Free, ~100ms first audio, decent voices | ~100ms | Free |
 | TTS upgrade option | ElevenLabs Flash v2.5 or Cartesia Sonic | Better quality, ~75–90ms first audio | ~75–90ms | Paid |
 
-**Tier 1 alternative — Cerebras GPT-OSS 120B:** a larger model that is also faster (~3000 t/s), and a free tier with 90K TPM against Groq's 8K. The free tier caps requests at 5/minute rather than tokens, so it rewards a turn that asks for a room in one call instead of one call per device.
+These are also what a new install defaults to: with no provider named, hearing is ElevenLabs and thinking is Cerebras, and Settings → System → Voice & AI asks for their keys. Cerebras's free tier caps requests at 5/minute rather than tokens, so it rewards a turn that asks for a room in one call instead of one call per device.
+
+**Groq was removed.** It served both speech and language on one account until the house moved to ElevenLabs (which hears Niles's name) and Cerebras (faster, with a far larger free tier). A stored configuration that still declares it, or points a role at it, loads: the row is dropped, the role goes back to its default provider and model, the escalation tier is switched off if it named it, the setup page says so until somebody chooses again, and the orphaned `provider.groq.api_key` is deleted from the secret store at startup.
 
 **All-Anthropic alternative:** Claude Haiku 4.5 as Tier 1 (~690ms TTFT, ~95 t/s, excellent tool calling), Sonnet 4.6 as Tier 2.
 
-**Fully-local alternative** (requires GPU node): whisper.cpp `base.en` or `distil-small.en` for STT, Llama 3.1 8B locally for Tier 1, escalate to a hosted Tier 2 only when needed.
+**Fully-local alternative** (requires GPU node): whisper.cpp `base.en` or `distil-small.en` for STT, through a role's own `base_url` (any OpenAI-compatible transcription endpoint), Llama 3.1 8B locally for Tier 1, escalate to a hosted Tier 2 only when needed.
 
-**EU licensing note:** Meta's Llama 4 multimodal weights are not licensed to entities domiciled in the EU (text-only via hosted APIs like Groq is fine). Document this clearly in the README so users know.
+**EU licensing note:** Meta's Llama 4 multimodal weights are not licensed to entities domiciled in the EU (text-only via hosted APIs is fine). Document this clearly in the README so users know.
 
 ## Device naming convention (the no-UI strategy)
 
@@ -631,7 +633,7 @@ The same principle generalizes. Niles is the voice surface over existing systems
 
 ### Finding the speakers, and which room each is in
 
-Sonos is an integration like the others: switched on and off under Integrations, and configured by the address of **any one** speaker. Automatic discovery (SSDP) is a multicast on the local network, and it does not reach a service running in a cluster network. One speaker is enough, because every Sonos can describe the whole household: its rooms, the speakers in each, and their current addresses.
+Sonos is an add-on like the others: switched on and off under Settings → Add-ons, and configured by the address of **any one** speaker. Automatic discovery (SSDP) is a multicast on the local network, and it does not reach a service running in a cluster network. One speaker is enough, because every Sonos can describe the whole household: its rooms, the speakers in each, and their current addresses.
 
 - **A speaker is remembered by its Sonos identity, not its address.** Addresses come from DHCP and change. The household layout is read again from the speaker, so a new address is simply followed.
 - **One row per Sonos room.** A home-theatre set (soundbar, rear speakers, sub) or a stereo pair is one Sonos room and plays as one. Niles never addresses the speakers inside it separately.
@@ -1070,7 +1072,7 @@ A person may connect several, of any kind; each is one connection, with a name t
 
 **What is stored.** Per connection: the person, its provider, its name, the account's address, its access, and its credential — a refresh token, or iCloud's app-specific password — encrypted with the same key as the credentials typed into the app, in a `calendar_connections` table. Disconnecting deletes the row and its credential. Access tokens are kept in memory only.
 
-**The household's app registrations.** Microsoft and Google each need one, made once by whoever runs Niles, with its client ID and secret entered under Settings → Integrations:
+**The household's app registrations.** Microsoft and Google each need one, made once by whoever runs Niles, with its client ID and secret entered under Settings → Add-ons:
 
 - *Microsoft:* the Entra admin center, "accounts in any organizational directory and personal Microsoft accounts", the redirect above. A work tenant may still refuse a person's consent to an outside app; that is the employer's call, and the profile says so when Microsoft refuses.
 - *Google:* a Google Cloud project with the Calendar API enabled and a web OAuth client with the redirect above. The app must be **published** rather than left in testing, where Google expires its sign-ins after seven days; unverified, it shows "Google hasn't verified this app" on the way in, which is expected for a household's own app.
@@ -1109,7 +1111,7 @@ What the project will never carry in-tree — one household's inverter, a region
 - How to handle Linear API-token rotation
 - Voice-fingerprint gating of who can file/trigger tasks (deferred to the upcoming "user recognition" capability — see separate section)
 
-## Third-party integrations (plugins)
+## Third-party add-ons (plugins)
 
 > **Status: v0.2.1 of the interface (v0.1 plus [MQTT](#mqtt), and in 0.2.1 the house's time zone and lights kept out of their room's), with v0.2.0 and v0.1 plugins still run beside it; built (Niles 0.2.0).** Built: the runtime and its sandbox, every host interface, devices, tools, timers, events, notifications, the pages' render and action routes, loading the enabled plugins from the `plugins` table at startup, `niles plugin check` (a directory, a `.wasm` or a GitHub repo) and `niles plugin dev`; installing from GitHub with the approval screen, update checks, updates with the permission difference and automatic rollback, turning off and removing ([Install](#install) onwards), with their routes; and in the app, a plugin's row with its Custom badge in its group, its panel with the generated setup panel, its log and where its widgets go, its pages in the menu, its widgets on the front page and the rooms, and the image fetch behind their pictures. Not yet: `niles plugin dev --live`. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
 
@@ -1122,7 +1124,7 @@ A third-party integration, a **plugin**, is a **WebAssembly component**: a compi
 Goals:
 
 - Somebody who has never touched Niles's code can write an integration in an afternoon, publish it as a GitHub release, and install it from the app by pasting the repo's URL.
-- An installed plugin is indistinguishable in use from a built-in. Its devices are in the rooms, in rules and on the dashboard, its tools are offered to the voice model and to the Claude and ChatGPT assistants, and it has a card on the Integrations page with a status line and a setup panel.
+- An installed plugin is indistinguishable in use from a built-in. Its devices are in the rooms, in rules and on the dashboard, its tools are offered to the voice model and to the Claude and ChatGPT assistants, and it has a card on the Add-ons page with a status line and a setup panel.
 - A plugin reaches only what its manifest declares and the household approved. A broken or hostile plugin cannot read Niles's database, another integration's secrets, the conversations, the memory, or who lives in the house.
 
 Non-goals:
@@ -1264,7 +1266,7 @@ room = "kitchen"        # optional: the room card it starts on, or "setting:<key
 refresh_every = 300
 ```
 
-A menu entry joins the [menu](#the-web-ui) like the built-in pages, as `<plugin-id>.<entry-id>` in `[menu]`'s `order`, `avatar` and `hidden`, so Settings → Menu can show, hide and move it; an entry not yet arranged goes to the end of the main navigation, as a new built-in page does. `[menu]` cannot know what is installed, so it accepts any entry of that shape, and the app shows only the installed, enabled plugins' entries. Selecting one opens `#/plugins/<plugin-id>/<entry-id>`, titled with its label and drawn with its Lucide icon (fetched in a chunk of its own the first time a plugin page is in the menu; a name Lucide lacks draws a puzzle piece). A widget starts where the manifest says; the plugin's panel on the Integrations page can move it to the front page or another room, or hide it, written as `[menu.widgets.<plugin-id>]` with `<widget-id> = "front"`, `"room:<room>"` or `"hidden"`. On the front page a widget is a card titled with its `title`; on a room it is drawn where the room opens, under its lights, because a room's tile is itself the room's light switch and has no room for more. A room the house does not have puts a widget on the front page, still rendered for that room. A plugin that is turned off takes its pages and widgets out of the app; one that is down keeps them, and each says "Not available right now" with the status line beneath.
+A menu entry joins the [menu](#the-web-ui) like the built-in pages, as `<plugin-id>.<entry-id>` in `[menu]`'s `order`, `avatar` and `hidden`, so Settings → Menu can show, hide and move it; an entry not yet arranged goes to the end of the main navigation, as a new built-in page does. `[menu]` cannot know what is installed, so it accepts any entry of that shape, and the app shows only the installed, enabled plugins' entries. Selecting one opens `#/plugins/<plugin-id>/<entry-id>`, titled with its label and drawn with its Lucide icon (fetched in a chunk of its own the first time a plugin page is in the menu; a name Lucide lacks draws a puzzle piece). A widget starts where the manifest says; the plugin's panel on the Add-ons page can move it to the front page or another room, or hide it, written as `[menu.widgets.<plugin-id>]` with `<widget-id> = "front"`, `"room:<room>"` or `"hidden"`. On the front page a widget is a card titled with its `title`; on a room it is drawn where the room opens, under its lights, because a room's tile is itself the room's light switch and has no room for more. A room the house does not have puts a widget on the front page, still rendered for that room. A plugin that is turned off takes its pages and widgets out of the app; one that is down keeps them, and each says "Not available right now" with the status line beneath.
 
 **Rendering.** The app asks Niles for a surface, Niles calls the export `render(surface-id, context)`, and the plugin returns a `ui-tree`. The context carries the room (for a widget on a room card) and the signed-in person's slug (`mark`) when the app knows who is looking, so a page can differ per person without the plugin learning anything else about them. `render` has 3 s and should draw from what the plugin already holds, not fetch.
 
@@ -1331,16 +1333,16 @@ options = [{ value = "DK1", label = "West Denmark (DK1)" }, { value = "DK2", lab
 ```
 
 - **The description** is one line saying what the household gets, in the voice of the built-in catalogue's blurbs ("Hear what is on your Google calendar."), not what the API is.
-- **The id** must not be a built-in catalogue id (`mqtt`, `groq`, `sonos`…) or another installed plugin's. It names the plugin's device source (`x_<id>`), tool prefix (`<id>_`), secret keys (`plugins.<id>.<key>`) and menu entries (`<id>.<entry>`).
-- **The logo** is an SVG in the release, drawn on a 24×24 view box like the built-in marks in `BrandMark.tsx`. Niles sanitises it on install (shapes, paths, groups and fills only; no script, style, link, `foreignObject` or external reference; at most 32 KiB): an allowlist refuses anything else with a reason, and the SVG is then written out again from the parse, element by allowed element and attribute by allowed attribute, so the stored copy holds nothing the allowlist does not name. Niles keeps that copy in its database and serves it itself from `GET /plugins/{id}/logo`, with a content security policy that allows nothing to run or load, so the Integrations page never fetches a logo from somewhere else. The app draws it inline, so `currentColor` follows the text colour, as ChatGPT's mark does, in both themes: it fetches the text and rebuilds it as React elements from the same allowlist (`web/src/lib/svg.tsx`), never as markup, so nothing in it can run even if the server's sanitiser ever let something through; anything outside the list draws the generic mark instead. Without a logo the card shows the group's generic icon.
+- **The id** must not be a built-in catalogue id (`mqtt`, `cerebras`, `sonos`…) or another installed plugin's. It names the plugin's device source (`x_<id>`), tool prefix (`<id>_`), secret keys (`plugins.<id>.<key>`) and menu entries (`<id>.<entry>`).
+- **The logo** is an SVG in the release, drawn on a 24×24 view box like the built-in marks in `BrandMark.tsx`. Niles sanitises it on install (shapes, paths, groups and fills only; no script, style, link, `foreignObject` or external reference; at most 32 KiB): an allowlist refuses anything else with a reason, and the SVG is then written out again from the parse, element by allowed element and attribute by allowed attribute, so the stored copy holds nothing the allowlist does not name. Niles keeps that copy in its database and serves it itself from `GET /plugins/{id}/logo`, with a content security policy that allows nothing to run or load, so the Add-ons page never fetches a logo from somewhere else. The app draws it inline, so `currentColor` follows the text colour, as ChatGPT's mark does, in both themes: it fetches the text and rebuilds it as React elements from the same allowlist (`web/src/lib/svg.tsx`), never as markup, so nothing in it can run even if the server's sanitiser ever let something through; anything outside the list draws the generic mark instead. Without a logo the card shows the group's generic icon.
 - **Settings** generate the plugin's setup panel. `room` is a `choice` filled with the house's rooms. `secret` values go into Niles's existing encrypted secret store under `plugins.<id>.<key>`, are never shown again, and reach the plugin only through `config.secret`. `GET /plugins` carries each setting as the manifest declares it, with what the household entered (never a secret's value) and whether it is set; the panel draws a text box, a switch, a select or a password box per type, marks the required ones, writes help under each and the default beside it rather than into it, and saves what changed with one `PATCH /config` (an emptied field as `null`, back to its default) and each secret on its own through `PUT /secrets`. Until every required setting has a value it reads "Not set up: needs API key".
 - **`setting:<key>`** in `local_network` means "the address the user types into that setting", for devices whose address only the household knows. The approval screen says so in those words.
 
 ### Where a plugin appears
 
-On the Integrations page, under **Connected** once installed and set up, and in the group its manifest names, next to the built-ins:
+On the Add-ons page, under **Connected** once installed and set up, and in the group its manifest names, next to the built-ins:
 
-- **Group.** `group` is one of the catalogue's group ids (`essentials`, `music`, `presence`, `calendars`, `shopping`, `assistants`). A missing or unknown id puts the plugin in a **Custom** group, shown after the built-in ones. The ids are part of the interface: Niles may add groups, and a plugin naming a group its Niles does not know yet lands in Custom rather than failing.
+- **Group.** `group` is one of the catalogue's add-on group ids (`music`, `presence`, `calendars`, `shopping`, `assistants`). A missing or unknown id puts the plugin in a **Custom** group, shown after the built-in ones. The base system is not a group a plugin can name: `essentials`, which used to hold the broker and the providers, now lands in Custom like any other unknown id. The ids are part of the interface: Niles may add groups, and a plugin naming a group its Niles does not know yet lands in Custom rather than failing.
 - **Marked as custom.** Every plugin's row carries a small **Custom** badge. Its setup panel shows where it came from: the GitHub repo as a link, the authors, the version, the install date. When a newer release exists the panel says **Update available**, and updating shows the change in permissions first (below). A plugin built for an older interface than the newest this Niles runs says so on its panel ("Built for an older Niles"), with a link to its repo.
 - **Its log.** The panel shows the plugin's last lines, newest first, with their levels and times, asked for again every 5 s while it is open (`GET /plugins/{id}/log`). The runtime keeps the last 1,000 per plugin in memory, by plugin id rather than by instance, so the lines that explain a crash outlast the restart it caused and an update or rollback: what the plugin logged through `log` and its stdout and stderr, within the rate limit, and what Niles noted about it, each status change ("Working", "Not set up: …", "Not working: trapped in on-timer: …", "Stopped after repeated failures: …") and how many lines the rate limit dropped. Removing the plugin drops its log; a restart of Niles starts it empty.
 - **Install entry.** **Add from GitHub** sits at the end of the **Available** tab, under its own heading.
@@ -1350,7 +1352,7 @@ On the Integrations page, under **Connected** once installed and set up, and in 
 
 Two steps, so that what is installed is exactly what the household saw.
 
-1. Under Integrations → Available, **Add from GitHub**, and paste the repo's address: `https://github.com/jane/niles-spotprice` (with `.git`, a trailing slash, or `/releases/tag/v0.2.0` for that release), or `jane/niles-spotprice`.
+1. Under Settings → Add-ons → Available, **Add-on from GitHub**, and paste the repo's address: `https://github.com/jane/niles-spotprice` (with `.git`, a trailing slash, or `/releases/tag/v0.2.0` for that release), or `jane/niles-spotprice`.
 2. **Preview** (`POST /plugins/install/preview` with `{"repo": …, "tag"?: …}`). Niles asks GitHub's REST API, without a token, for the repo's latest release (`GET /repos/{owner}/{repo}/releases/latest`: not drafts, not pre-releases), or for the tag the address or the request names. The release must have `niles-integration.toml` and `integration.wasm` among its assets, and the logo the manifest names (by its file name). Its tag must be the manifest's version, with or without a `v`. No release, no public repo, and GitHub's limit of 60 requests an hour without a token are each said in a sentence.
 3. Niles reads the manifest first (at most 64 KiB) and refuses, saying why, if it is invalid, its `interface` is one this Niles does not run, or its `min_niles` is newer than this Niles, before fetching anything else. Then it downloads the component (at most 64 MiB) and the logo (at most 32 KiB), refusing either past its cap whether GitHub's reported size, the `Content-Length` or the bytes as they arrive say so; compares each download with the sha256 GitHub reports for it, where it reports one; and runs everything `niles plugin check` runs, including compiling the component against the world. It refuses what would clash with the house: an id already installed, a tool whose name is one of Niles's own or another plugin's, and devices already in the registry under its source `x_<id>`.
 4. It shows the name, description, logo, repo, authors, version and group, and **the permissions in plain words** (see the author guide's [permissions](docs/integrations/permissions.md)): "Connect to api.energidataservice.dk", "Reach the device at the address you enter under Address, on your home network", "Add devices to your home", "Offer 1 tool to the assistant: prices", "Adds a page to the menu: Electricity", "Adds a card to the front page: Electricity now", "See every device in your home change: lights, doors, motion", "Speak through your satellites, even during quiet hours". Followed, always, by what it cannot do: "It cannot see your conversations, the people in your house, other integrations' passwords or Niles's database." Then the settings it will ask for, and warnings: no logo of its own, no checksum from GitHub to compare with, required settings to fill in before it starts, a whole range of home-network addresses.
@@ -1385,7 +1387,7 @@ The version an update replaces is kept. For **10 minutes** after an update the n
 
 Three Postgres tables, owned by `niles-db` and created on first use: `plugins` (the approved manifest and its sha256, the repo, the release's tag and page, the version, the component's bytes and sha256, the sanitised logo, the same for the previous version, enabled, the newer release the last update check found, and the notice about an automatic rollback), `plugin_storage` (plugin id, key, value) and `plugin_devices` (the devices Niles holds for each). The last two reference the first, so removing a plugin's row removes its data with it.
 
-**Settings** are not in those tables but in Niles's [runtime configuration](#runtime-configuration), as `[plugins.<id>]` (`[plugins.spotprice]` with `area = "DK1"`): the same store, history and undo as every other setting, kept in Postgres with the other overrides, and hot — a change to a plugin's table restarts that plugin, as saving its setup panel does. They are typed and checked against the manifest when the plugin reads them; a value that does not fit falls back to the default. **Secrets** live in the existing encrypted secret store as `plugins.<id>.<key>`, the same store and key as the credentials typed into Settings; the Integrations page can say whether one is set and never what it is. `PUT` and `DELETE /secrets/plugins.<id>.<key>` accept a key only when that plugin's manifest declares it as a `secret` setting, `GET /secrets` lists each declared one, and saving or clearing one restarts the plugin, as a settings change does. Removing a plugin deletes its rows from all three tables, its settings and its secrets.
+**Settings** are not in those tables but in Niles's [runtime configuration](#runtime-configuration), as `[plugins.<id>]` (`[plugins.spotprice]` with `area = "DK1"`): the same store, history and undo as every other setting, kept in Postgres with the other overrides, and hot — a change to a plugin's table restarts that plugin, as saving its setup panel does. They are typed and checked against the manifest when the plugin reads them; a value that does not fit falls back to the default. **Secrets** live in the existing encrypted secret store as `plugins.<id>.<key>`, the same store and key as the credentials typed into Settings; the Add-ons page can say whether one is set and never what it is. `PUT` and `DELETE /secrets/plugins.<id>.<key>` accept a key only when that plugin's manifest declares it as a `secret` setting, `GET /secrets` lists each declared one, and saving or clearing one restarts the plugin, as a settings change does. Removing a plugin deletes its rows from all three tables, its settings and its secrets.
 
 Storage is the plugin's to use as it likes: caches, a cursor, a token it refreshed, a little history. A write that would take the plugin over 1 MiB fails with `limit`.
 
@@ -1403,7 +1405,7 @@ Storage is the plugin's to use as it likes: caches, a cursor, a token it refresh
 The package is `niles:integration@0.2.1`, and a component records the exact version it was built against in its imports. wasmtime treats `0.2.x` versions as compatible with each other: a linker that defines `niles:integration/devices@0.2.1` satisfies a component importing `devices@0.2.0`, and the types are then checked function by function for what the component imports. So:
 
 - **A patch release** (0.1.1, 0.1.2) may add functions to an imported interface and add new interfaces. Older plugins keep working because they never import what they do not know. It may not change or remove anything that exists, add a case to an existing variant or enum, or add an export.
-- **A minor release** (0.2.0) may change anything. Niles runs plugins built for the previous minor version alongside the new one for at least six months, linking both worlds, and the Integrations page marks the old ones "built for an older Niles" with a link to their repo.
+- **A minor release** (0.2.0) may change anything. Niles runs plugins built for the previous minor version alongside the new one for at least six months, linking both worlds, and the Add-ons page marks the old ones "built for an older Niles" with a link to their repo.
 - **The manifest's `interface`** lets Niles refuse an unsupported plugin before downloading it; the component's own imports are what Niles actually checks, and the two must agree: a component whose imports say 0.2 (or that exports `on-mqtt-message`) under a manifest that says 0.1, or the reverse, is refused at check and install.
 
 **0.2** is the first minor release: 0.1 plus the `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Adding exports changes the world, so a 0.1 component could not be linked as 0.2; 0.2 is therefore a new package version, and Niles links both. The WIT is two files: `schemas/niles-integration.wit` is 0.2, complete, the file authors copy (so bindings stay `niles::integration::*` from version to version); `schemas/niles-integration-0.1.wit` is 0.1, frozen as it shipped. Every interface the two share is identical in both, under its own package version. In the runtime (`crates/niles-plugins/src/bindings.rs`) each world has its own `bindgen!`, and the 0.2 one is told (`with`) to use the 0.1 bindings' modules for every shared interface instead of generating its own: one Rust type per WIT type and one `Host` trait per interface, implemented once, and the same argument types for the exports of both worlds. Only `mqtt` is generated for 0.2, and, since 0.2.1, `config` and `devices`, whose 0.2 `Host` traits hand the functions 0.1 has to the 0.1 implementation and add the new ones (their types still come from the shared `types`). The linker defines each shared interface under both names, `niles:integration/log@0.1.0` and `…@0.2.1`, with the same host functions behind them, through the per-interface `add_to_linker_instance` bindgen generates (wasmtime type-checks structurally at link time, and the types are the same), plus `mqtt`, `config` and `devices` at `@0.2.1`. A component built against 0.2.0 links to the 0.2.1 definitions through wasmtime's semver matching; `crates/niles-plugins/tests/interface.rs` loads one (`relay.wasm`, kept built against 0.2.0) to hold that. A component is prepared as one world or the other by its manifest's `interface`, and a small enum dispatches each export call to the right bindings; a 0.1 plugin has no MQTT to deliver. `niles plugin check` reports which world a component targets, and the "built for an older Niles" note now marks 0.1 plugins.
@@ -1451,7 +1453,7 @@ Many devices already announce themselves over MQTT in Home Assistant's discovery
 
 #### MCP servers by URL
 
-Somebody who already runs a service with an MCP server (a home lab dashboard, a notes system) could add it under Integrations by URL, with an optional bearer token. Niles would act as an MCP client over Streamable HTTP, list the server's tools, and offer them under the server's name to the Claude and ChatGPT assistants, and to the voice model with keywords the household gives. Nothing runs inside Niles, so no sandbox is needed. The questions are what the server's tools do and what tool arguments Niles sends it, and both are shown when it is added. It provides tools only: no devices, no pages.
+Somebody who already runs a service with an MCP server (a home lab dashboard, a notes system) could add it under Add-ons by URL, with an optional bearer token. Niles would act as an MCP client over Streamable HTTP, list the server's tools, and offer them under the server's name to the Claude and ChatGPT assistants, and to the voice model with keywords the household gives. Nothing runs inside Niles, so no sandbox is needed. The questions are what the server's tools do and what tool arguments Niles sends it, and both are shown when it is added. It provides tools only: no devices, no pages.
 
 ### What this section does not specify
 
@@ -1556,7 +1558,7 @@ If the speaker is unknown and a personal reference is used, Niles prompts for id
 
 Voice fingerprints are biometric data. Niles is deliberate about handling:
 
-- **Stored on your own infrastructure only.** Embeddings live in the cluster Postgres (as `vector` columns via pgvecto.rs). They are never sent to Groq, Anthropic, or any cloud provider. Whisper receives audio for transcription, but Whisper does not do speaker ID.
+- **Stored on your own infrastructure only.** Embeddings live in the cluster Postgres (as `vector` columns via pgvecto.rs). They are never sent to ElevenLabs, Cerebras, Anthropic, or any cloud provider. Whisper receives audio for transcription, but Whisper does not do speaker ID.
 - **Easy to delete.** "Niles, forget me" wipes that user's embeddings and identity entirely.
 - **Opt-in.** Niles works for anonymous users — they just don't get personalized features.
 - **No silent identification.** Niles only attempts to identify people who have been introduced. Random visitors who never give a name remain "unknown speaker."
@@ -1976,13 +1978,68 @@ no-UI rule stated under [device naming](#device-naming-convention-the-no-ui-stra
 rather than an exception to it.
 
 **Settings** is [Runtime configuration](#runtime-configuration): the
-curve, ambient behaviour, the revision history, and an undo.
+curve, ambient behaviour, the revision history, and an undo — laid out
+as below.
 
 **Automations** is the household's [rules](#automations), each drawn
 as a flow from its trigger to its actions, and made or changed there as
 well as by voice.
 
 Who may open either is [Signing in](#signing-in).
+
+### Settings: the house, the system, and add-ons
+
+Settings is grouped by what somebody is looking for, not by the config
+file:
+
+```
+Settings
+├─ The house   Home · Rooms · Menu · Lighting · People · Memory · Satellites · Speakers
+├─ System
+│   ├─ Devices     the MQTT broker (Zigbee2MQTT, WLED): host, port, prefix, client id, login
+│   └─ Voice & AI  Hearing:   provider, API key, model
+│                  Thinking:  provider, API key, model, reasoning effort
+│                  Speaking:  Piper
+│                  Assistant: Niles's own model, Claude or ChatGPT
+├─ Add-ons     Connected / Available, search, add-on from GitHub
+│              Music & TV · Presence & climate · Calendars · Shopping · Assistants & tools · Custom
+└─ Advanced    History
+```
+
+**System is what Niles cannot work without**, set up by the job each
+part does. The broker is how every light is reached; hearing and
+thinking are roles, each served by one provider. Picking a provider for
+a role *is* setting it up: its API key field sits beside it, and the
+one save declares the provider (`[[providers]]`), points the role at it
+and keeps the key. Only providers that serve the role are offered —
+Cerebras cannot hear, ElevenLabs cannot think. On a new install each
+System page leads with the `GET /setup` gaps it answers ("Niles can't
+reach any lights yet", "Niles can't hear yet: choose and set up a
+hearing provider"), and the list beside counts them.
+
+The **assistant** is chosen here too, because the choice includes
+Niles's own model, which is not an add-on: `integrations.assistant` is
+`claude_code`, `chatgpt` or `none`. `none` means neither answers even
+when one is set up — the fast model handles the chat and rules, and the
+review and tidy-up do not run — and every gate (the chat, a spoken rule,
+the fast model's hand-off, the background review) asks the same
+`choose()`, so it holds everywhere. Claude Code and ChatGPT themselves
+(token, sign-in, model) are set up under Add-ons, in Assistants & tools.
+
+**Add-ons are the optional extras**, Niles's own and third-party ones
+alike, with the base system left out. The catalogue (`GET
+/integrations`) marks each entry `system: true` or not, so the page
+needs no list of its own; the system entries are in a group of their own,
+`System`, that is not one of the add-on groups and so cannot be claimed
+by a plugin.
+
+The word changed on the surface only. Plugins depend on the technical
+names, so they stay: the WIT package `niles:integration`, the manifest
+`niles-integration.toml`, the component `integration.wasm`, the routes
+`/integrations` and `/plugins/…`, the config keys `integrations.*`, and
+the author guide under `docs/integrations/`. The settings sections are in
+the address — `#/me/settings/voice` — and the old ids redirect:
+`integrations` to `addons`, `language` to `voice`.
 
 ### Why a control surface at all
 
@@ -2343,7 +2400,8 @@ services:
     volumes:
       - ./niles-config.toml:/etc/niles/config.toml:ro
     environment:
-      GROQ_API_KEY: ${GROQ_API_KEY}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       TADO_API_TOKEN: ${TADO_API_TOKEN}
       NILES_DB_USERNAME: ${NILES_DB_USERNAME}
@@ -2361,7 +2419,8 @@ services:
 Plus a `.env` file (gitignored) with the actual secret values:
 
 ```
-GROQ_API_KEY=gsk_...
+ELEVENLABS_API_KEY=sk_...
+CEREBRAS_API_KEY=csk-...
 ANTHROPIC_API_KEY=sk-ant-...
 TADO_API_TOKEN=...
 NILES_DB_USERNAME=niles
@@ -2405,7 +2464,8 @@ kind: Secret
 metadata:
   name: niles-secrets
 stringData:
-  GROQ_API_KEY: gsk_...
+  ELEVENLABS_API_KEY: sk_...
+  CEREBRAS_API_KEY: csk-...
   ANTHROPIC_API_KEY: sk-ant-...
   TADO_API_TOKEN: ...
 ```
@@ -2463,7 +2523,7 @@ The AI:
 
 1. Reads the manifest (which the user provided as context)
 2. Identifies relevant features (lighting, scenes, music control)
-3. Asks clarifying questions (do they have a voice satellite? Tado? Groq account?)
+3. Asks clarifying questions (do they have a voice satellite? Tado? ElevenLabs and Cerebras accounts?)
 4. Generates a tailored Niles config TOML and Docker Compose file
 5. Walks the user through deploying it
 
@@ -2500,7 +2560,7 @@ Humans should read README.md instead.
 - A Zigbee2MQTT instance with devices named per `<room>/<device>` convention
 - An MQTT broker (Mosquitto bundled)
 - At least one ESPHome voice satellite
-- Groq API key for STT and Tier 1 LLM
+- An ElevenLabs API key for hearing (STT) and a Cerebras API key for thinking (Tier 1 LLM), typed into Settings → System → Voice & AI
   - Alternative: self-hosted Whisper + local LLM (requires GPU)
 
 ## Feature Modules
@@ -2726,13 +2786,13 @@ niles:
 ### Phase 3: Tier 0 + Tier 1 voice loop (1–2 weekends)
 - Wyoming protocol server in `niles-wyoming`
 - Flash the satellite with ESPHome + Wyoming firmware
-- Groq Whisper streaming integration
+- Speech-to-text client (a hosted Whisper at the time; ElevenLabs Scribe now)
 - Regex intent router with 10–20 common commands
 - Piper TTS pod on k8s
 - Verify: "I can say a command and it executes quickly"
 
 ### Phase 4: LLM tier + timers + capability reference (2 weekends)
-- Groq client with tool calling
+- LLM client with tool calling (OpenAI-compatible; Cerebras by default now)
 - `niles-capabilities` crate loading reference files at startup
 - Tiered context architecture: Tier A always, Tier B on-demand via topic detection, Tier C for overviews
 - Topic detection added to `niles-intent` (keyword sets per topic)
@@ -2836,7 +2896,7 @@ niles:
 - More device sources (Shelly, Matter, Z-Wave)
 - GPU node for fully-local STT/LLM
 - Satellite-side speaker ID (faster, more private)
-- Third-party integrations: WebAssembly plugins installed from a GitHub repo, with devices, tools, pages and widgets ([spec](#third-party-integrations-plugins), interface v0.2, with MQTT, in `schemas/niles-integration.wit`)
+- Third-party add-ons: WebAssembly plugins installed from a GitHub repo, with devices, tools, pages and widgets ([spec](#third-party-add-ons-plugins), interface v0.2, with MQTT, in `schemas/niles-integration.wit`)
 - Home Assistant MQTT discovery as a no-code device source (ESPHome, Tasmota, Shelly, rtl_433)
 - MCP servers added by URL, their tools offered to the assistants
 
@@ -2865,8 +2925,8 @@ To keep scope honest:
 
 | Service | Used for | Cost (typical household) | Latency |
 |---|---|---|---|
-| Groq Whisper Large v3 Turbo | STT | ~$0.04 / month | ~200ms |
-| Groq GPT-OSS 20B | Tier 1 LLM | ~$1–2 / month | ~600–800ms |
+| ElevenLabs Scribe v2 | STT | a few dollars / month | ~200–400ms |
+| Cerebras GPT-OSS 120B | Tier 1 LLM | free tier, then ~$1–2 / month | ~300–500ms |
 | Anthropic Sonnet 4.6 | Tier 2 LLM | ~$1–3 / month | ~2–3s |
 | Piper TTS (self-hosted) | Voice synthesis | Free | ~100ms first audio |
 

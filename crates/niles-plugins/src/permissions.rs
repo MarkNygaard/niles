@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 /// Always said last, whatever the plugin asks for.
 pub const CANNOT: &str = "It cannot see your conversations, the people in your house, \
-     other integrations' passwords or Niles's database.";
+     other add-ons' passwords or Niles's database.";
 
 /// One thing a plugin may do.
 #[derive(Debug, Clone, PartialEq, Eq)]

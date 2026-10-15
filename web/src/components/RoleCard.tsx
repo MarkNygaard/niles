@@ -214,9 +214,13 @@ export function RoleCard({
   const models = modelsOf(usable, role);
   const initialProvider = startingProvider(usable, role, current, Boolean(fallbackHost));
   // An unset model under a provider is that provider's first: shown as
-  // chosen, so typing only a key is enough to save.
+  // chosen, so typing only a key is enough to save. So is a model that
+  // was chosen for a provider Niles no longer ships — Groq's, under a
+  // role that fell back — since Niles is not running it either.
+  const modelIsTheProviders = !current || current === initialProvider;
   const initialModel =
-    model || (initialProvider ? modelForProvider(models, initialProvider) : "");
+    (modelIsTheProviders && model) ||
+    (initialProvider ? modelForProvider(models, initialProvider) : "");
 
   const [provider, setProvider] = useState(initialProvider);
   const [draft, setDraft] = useState(initialModel);

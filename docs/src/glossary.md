@@ -4,7 +4,7 @@
 Deterministic regex router that catches ~80 % of common commands in sub-100 ms. No LLM involved.
 
 ## Tier 1
-Fast LLM (Groq) with the tool registry. Handles ~19 % of commands needing light reasoning within ~1 s.
+Fast LLM (Cerebras, by default) with the tool registry. Handles ~19 % of commands needing light reasoning within ~1 s.
 
 ## Tier 2
 Smart LLM (OpenAI) escalation for the ~1 % of requests that exceed Tier 1's reasoning depth. Invoked via the `escalate_to_tier2` tool.

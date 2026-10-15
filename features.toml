@@ -439,7 +439,7 @@ since_pr = 390
 [[feature]]
 id = "ui-plugins"
 category = "ui.integrations"
-summary = "Integrations page: Add from GitHub, and a panel per plugin to turn it off, update, roll back or remove it"
+summary = "Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it"
 since_pr = 390
 
 [[feature]]
@@ -513,3 +513,33 @@ id = "plugins-plain-errors"
 category = "runtime.plugins"
 summary = "Plugins' MQTT and HTTP failures read as plain reasons, such as connection refused or wrong username or password"
 since_pr = 393
+
+[[feature]]
+id = "ui-settings-system"
+category = "ui.settings"
+summary = "Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons"
+since_pr = 9999
+
+[[feature]]
+id = "ui-voice-roles"
+category = "ui.settings"
+summary = "Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it"
+since_pr = 9999
+
+[[feature]]
+id = "ui-setup-checklist"
+category = "ui.settings"
+summary = "On a new install each System page leads with what it still needs, and the settings list counts it"
+since_pr = 9999
+
+[[feature]]
+id = "assistant-none"
+category = "runtime.assistant"
+summary = "Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background"
+since_pr = 9999
+
+[[feature]]
+id = "providers-default-elevenlabs-cerebras"
+category = "runtime.providers"
+summary = "A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so"
+since_pr = 9999

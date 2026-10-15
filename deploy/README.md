@@ -24,8 +24,11 @@ kubectl create secret generic niles-secrets \
   --namespace niles \
   --from-literal=mqtt-username='your-mqtt-user' \
   --from-literal=mqtt-password='your-mqtt-pass' \
-  --from-literal=groq-api-key='your-groq-key' \
   --from-literal=openai-api-key='your-openai-key'
+
+# The hearing and thinking providers' keys (ElevenLabs and Cerebras by
+# default) are not here: they are typed into the app, under Settings →
+# System → Voice & AI, and kept encrypted in the database.
 
 # Signing in (optional — Niles runs happily without it).
 #
@@ -84,7 +87,6 @@ kubectl create secret generic niles-secrets \
   --namespace niles-dev \
   --from-literal=mqtt-username='your-mqtt-user' \
   --from-literal=mqtt-password='your-mqtt-pass' \
-  --from-literal=groq-api-key='your-groq-key' \
   --from-literal=openai-api-key='your-openai-key'
 ```
 

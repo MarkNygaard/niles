@@ -58,7 +58,7 @@ const PREVIEW: PluginPreview = {
     "Adds a page to the menu: Electricity",
   ],
   cannot:
-    "It cannot see your conversations, the people in your house, other integrations' passwords or Niles's database.",
+    "It cannot see your conversations, the people in your house, other add-ons' passwords or Niles's database.",
   tools: [{ name: "prices", description: "Prices by the hour." }],
   settings: [
     { key: "area", label: "Price area", type: "choice", required: true, help: null },

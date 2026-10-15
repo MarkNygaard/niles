@@ -715,9 +715,7 @@ pub fn check_id(id: &str) -> std::result::Result<(), String> {
         ));
     }
     if niles_config::catalogue::find(id).is_some() {
-        return Err(format!(
-            "id {id:?} is the id of one of Niles's own integrations"
-        ));
+        return Err(format!("id {id:?} is the id of one of Niles's own add-ons"));
     }
     Ok(())
 }

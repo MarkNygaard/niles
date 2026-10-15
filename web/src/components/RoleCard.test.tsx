@@ -213,6 +213,21 @@ describe("RoleCard", () => {
     });
   });
 
+  it("puts a role that fell back from Groq on the default's own model", () => {
+    // The stored model was Groq's, which ElevenLabs does not serve and
+    // Niles is not running; saving it under ElevenLabs would break
+    // hearing the moment the key went in.
+    const { onSave } = setup("stt", { current: "groq", model: "whisper-large-v3-turbo" });
+    expect(radio("ElevenLabs")).toHaveAttribute("aria-checked", "true");
+    fireEvent.change(screen.getByLabelText("ElevenLabs API key"), {
+      target: { value: "el-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "elevenlabs", model: "scribe_v2" }),
+    );
+  });
+
   it("does not ask for a key that comes from the environment", () => {
     setup("stt", {
       secrets: {

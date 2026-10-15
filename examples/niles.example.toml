@@ -39,15 +39,17 @@ bind_address = "0.0.0.0:8080"
 bind_address = "0.0.0.0:10300"
 
 [stt]
-# Speech-to-text provider. The API key itself lives in the env var
-# named here (GROQ_API_KEY in .env for local dev, or a k8s Secret in
-# cluster deploy) — never in this file.
-api_key_env = "GROQ_API_KEY"
+# Hearing: speech-to-text. Picked, with its key, in the app under
+# Settings → System → Voice & AI; nothing here is needed. With no
+# provider named, it is ElevenLabs Scribe, and the key is the one saved
+# beside it in the app (or the env var named here — never the key itself).
+# api_key_env     = "ELEVENLABS_API_KEY"
 # Optional overrides (defaults shown):
-# base_url        = "https://api.groq.com/openai/v1"
-# model           = "whisper-large-v3-turbo"
+# model           = "scribe_v2"
 # language        = "en"     # ISO-639-1; omit to auto-detect
 # timeout_seconds = 30
+# A Whisper server of your own, OpenAI-compatible, instead of a provider:
+# base_url        = "http://whisper.local:8000/v1"
 
 [tts]
 # Text-to-speech provider. Piper runs in-cluster, so no API key —
@@ -59,15 +61,15 @@ api_key_env = "GROQ_API_KEY"
 # timeout_seconds = 30
 
 [llm]
-# Tier 1 LLM provider (Groq GPT-OSS by default). The API key itself
-# lives in the env var named here (GROQ_API_KEY in .env for local
-# dev, or a k8s Secret in cluster deploy) — never in this file.
-# Independent of [stt]'s api_key_env so providers can be split.
-api_key_env = "GROQ_API_KEY"
+# Thinking: the Tier 1 LLM. Picked, with its key and how hard it
+# thinks, in the app under Settings → System → Voice & AI. With no
+# provider named, it is Cerebras, and the key is the one saved beside
+# it in the app (or the env var named here — never the key itself).
+# api_key_env      = "CEREBRAS_API_KEY"
 # Optional overrides (defaults shown):
-# base_url        = "https://api.groq.com/openai/v1"
-# model           = "openai/gpt-oss-20b"
-# timeout_seconds = 30
+# model            = "gpt-oss-120b"
+# reasoning_effort = "low"     # unset leaves it to the provider
+# timeout_seconds  = 30
 
 # Optional satellite → room mapping. Each entry maps a satellite's
 # LAN IP to a canonical room name. Niles uses this to tell the LLM
@@ -116,7 +118,7 @@ api_key_env = "GROQ_API_KEY"
 # room = "living_room"
 # name = "Living Room"
 
-# An LG webOS TV. Paired from Settings → Integrations → LG TV, which
+# An LG webOS TV. Paired from Settings → Add-ons → LG TV, which
 # shows a prompt on the screen to accept with the remote and fills in
 # the MAC address for waking it. Turning it on needs "Turn on via Wi-Fi"
 # on the TV, and a router that lets the wake packet reach its network.
@@ -129,7 +131,7 @@ api_key_env = "GROQ_API_KEY"
 # hidden entry's page still works. Arranged under Settings → Menu. A
 # plugin's page is an entry too, as <plugin-id>.<page-id>; its widgets
 # start where its manifest says and move from its panel on the
-# Integrations page: "front", "room:<room>" or "hidden".
+# Add-ons page: "front", "room:<room>" or "hidden".
 # [menu]
 # order = ["chat", "groceries", "spotprice.electricity"]
 # hidden = ["groceries"]
