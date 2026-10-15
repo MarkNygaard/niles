@@ -15,6 +15,7 @@ A navigable docs site lives at [docs/](docs/). Build locally with `mdbook serve 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architectural spec: hardware, voice pipeline, lighting model, scenes, timers, add-ons, permissions, deployment.
 - **[CLAUDE.md](CLAUDE.md)** — project orientation for Claude Code and other AI coding agents.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
+- **[Naming your devices](docs/src/naming.md)** — how to name things in Zigbee2MQTT so Niles finds them, and what to call them.
 - **[Set up a satellite](firmware/xiao-wyoming/satellite-idf/README.md#set-up-a-satellite)** — flash a reSpeaker XVF3800 with the Niles firmware and add it to a room.
 - `MANIFEST.md` — LLM-facing capability manifest (generated; not yet present, see Phase 11).
 
