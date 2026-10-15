@@ -92,7 +92,7 @@ pub(crate) struct GroupIndex {
     /// left out at the door, members and all: it can never be a device,
     /// so hiding its bulbs behind it would leave them unreachable.
     groups: Vec<Z2mGroup>,
-    /// Every device in the last device list, keyed by ieee address, as
+    /// Every device in the last device list, with its ieee address, as
     /// it would go into the registry. Kept whole rather than as ids
     /// because a group that loses a member, or goes away altogether, has
     /// to hand its bulbs back, and the device list that described them

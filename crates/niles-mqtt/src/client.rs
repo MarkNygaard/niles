@@ -361,8 +361,8 @@ mod tests {
     // The reconnect tests below grew out of an outside review, which
     // found the replay deadlocking on its own request channel once more
     // than 32 topics were remembered (its capacity). 32 is the control,
-    // 33 the first count that hung, and 200 is a house of WLED strips
-    // at three topics each.
+    // 33 the first count that hung, and 200 is some 66 WLED strips at
+    // three topics each.
 
     /// Read one MQTT packet: the fixed-header byte and the body.
     async fn read_packet(socket: &mut tokio::net::TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
@@ -394,23 +394,17 @@ mod tests {
     }
 
     /// Read SUBSCRIBE packets, acknowledging each, until `want`
-    /// distinct topics have arrived or `stop_after` packets have, and
-    /// return every topic in the order it came — repeats included, so a
-    /// caller can tell a replay that ran twice. Fails on anything other
-    /// than a SUBSCRIBE: nothing else should be on the wire.
-    async fn take_subscriptions(
-        socket: &mut tokio::net::TcpStream,
-        want: usize,
-        stop_after: usize,
-    ) -> Vec<String> {
+    /// distinct topics have arrived, and return every topic in the
+    /// order it came — repeats included, so a caller can tell a replay
+    /// that ran twice. Fails on anything other than a SUBSCRIBE: nothing
+    /// else should be on the wire.
+    async fn take_subscriptions(socket: &mut tokio::net::TcpStream, want: usize) -> Vec<String> {
         use tokio::io::AsyncWriteExt;
         let mut topics = Vec::new();
         let mut distinct = std::collections::BTreeSet::new();
-        let mut packets = 0;
-        while distinct.len() < want && packets < stop_after {
+        while distinct.len() < want {
             let (header, body) = read_packet(socket).await.unwrap();
             assert_eq!(header, 0x82, "expected SUBSCRIBE, got {header:#x}");
-            packets += 1;
             let mut at = 2;
             let mut granted = 0u8;
             while at < body.len() {
@@ -448,7 +442,7 @@ mod tests {
         let broker = tokio::spawn(async move {
             drop(accept_session(&listener).await);
             let mut socket = accept_session(&listener).await;
-            take_subscriptions(&mut socket, count, usize::MAX).await
+            take_subscriptions(&mut socket, count).await
         });
         let opts = RmqOptions::new("niles-test-replay", addr.ip().to_string(), addr.port());
         let (client, event_loop) = AsyncClient::new(opts, 32);
@@ -493,7 +487,7 @@ mod tests {
             drop(accept_session(&listener).await);
             drop(accept_session(&listener).await);
             let mut socket = accept_session(&listener).await;
-            take_subscriptions(&mut socket, count, usize::MAX).await
+            take_subscriptions(&mut socket, count).await
         });
         let opts = RmqOptions::new("niles-test-replay", addr.ip().to_string(), addr.port());
         let (client, event_loop) = AsyncClient::new(opts, 32);
