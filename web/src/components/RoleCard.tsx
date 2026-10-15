@@ -279,7 +279,12 @@ export function RoleCard({
           <div
             role="radiogroup"
             aria-label={`${title} provider`}
-            className="bg-muted/60 flex w-fit flex-wrap gap-1 rounded-lg p-1"
+            // A tray of choices — unless there is only one, when a tray
+            // around it reads as a box inside a box.
+            className={cn(
+              "flex w-fit flex-wrap gap-1",
+              usable.length > 1 && "bg-muted/60 rounded-lg p-1",
+            )}
           >
             {usable.map((p) => {
               const active = p.id === provider;
@@ -294,9 +299,11 @@ export function RoleCard({
                   className={cn(
                     "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors",
                     "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
-                    active
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
+                    usable.length === 1
+                      ? "text-foreground px-0 font-medium"
+                      : active
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <BrandMark id={p.id} label={p.label} className="size-4" />
