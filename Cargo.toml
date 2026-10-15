@@ -85,6 +85,7 @@ niles-groceries = { path = "crates/niles-groceries" }
 niles-nemlig = { path = "crates/niles-nemlig" }
 niles-speakers = { path = "crates/niles-speakers" }
 niles-webos = { path = "crates/niles-webos" }
+niles-tls = { path = "crates/niles-tls" }
 niles-wyoming = { path = "crates/niles-wyoming" }
 niles-stt = { path = "crates/niles-stt" }
 niles-tts = { path = "crates/niles-tts" }

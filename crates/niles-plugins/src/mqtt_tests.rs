@@ -109,50 +109,12 @@ fn certificate(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf, String) {
     (cert, key, fingerprint)
 }
 
-/// The same certificate as X.509 v1: no `[0] version`, no extensions —
-/// what a Bambu Lab printer presents. Its signature no longer matches,
-/// which trusting a device never checks; the key is what matters, and
-/// the handshake still proves the device holds it.
-fn version_1(certificate: &[u8]) -> Vec<u8> {
-    fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
-        let mut out = vec![tag];
-        let len = contents.len();
-        if len < 0x80 {
-            out.push(len as u8);
-        } else {
-            let bytes: Vec<u8> = len
-                .to_be_bytes()
-                .into_iter()
-                .skip_while(|b| *b == 0)
-                .collect();
-            out.push(0x80 | bytes.len() as u8);
-            out.extend(bytes);
-        }
-        out.extend_from_slice(contents);
-        out
-    }
-    let (_, cert, _) = crate::mqtt::der(certificate).unwrap();
-    let (_, tbs, after_tbs) = crate::mqtt::der(cert).unwrap();
-    let mut fields = Vec::new();
-    let mut rest = tbs;
-    while !rest.is_empty() {
-        let (tag, _, next) = crate::mqtt::der(rest).unwrap();
-        if tag != 0xA0 && tag != 0xA3 {
-            fields.extend_from_slice(&rest[..rest.len() - next.len()]);
-        }
-        rest = next;
-    }
-    let mut body = tlv(0x30, &fields);
-    body.extend_from_slice(after_tbs);
-    tlv(0x30, &body)
-}
-
 /// [`certificate`], served as X.509 v1.
 fn version_1_certificate(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf, String) {
     use base64::Engine;
     let made =
         rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).expect("a certificate");
-    let der = version_1(made.cert.der());
+    let der = niles_tls::as_version_1(made.cert.der());
     let base64 = base64::engine::general_purpose::STANDARD.encode(&der);
     let lines: Vec<&str> = base64
         .as_bytes()
@@ -178,26 +140,6 @@ fn version_1_certificate(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf,
     std::fs::write(&key, made.signing_key.serialize_pem()).unwrap();
     let fingerprint = crate::mqtt::fingerprint(&der.into()).unwrap();
     (cert, key, fingerprint)
-}
-
-#[test]
-fn a_version_1_certificate_has_the_same_key_as_its_version_3_self() {
-    let made =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).expect("a certificate");
-    let v1 = version_1(made.cert.der());
-    assert_ne!(v1.as_slice(), made.cert.der().as_ref());
-    assert_eq!(
-        crate::mqtt::fingerprint(&v1.into()).unwrap(),
-        crate::mqtt::fingerprint(made.cert.der()).unwrap()
-    );
-}
-
-#[test]
-fn something_that_is_not_a_certificate_is_said_plainly() {
-    assert_eq!(
-        crate::mqtt::fingerprint(&vec![0x30, 0x03, 0x02, 0x01].into()).unwrap_err(),
-        "the certificate cannot be read"
-    );
 }
 
 /// A TCP relay in front of the broker, whose connections can be cut,

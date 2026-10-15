@@ -1,0 +1,23 @@
+[package]
+name = "niles-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Devices sign their own certificates, so their handshakes are checked
+# against the key alone; ring, the provider the rest already builds.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
+sha2.workspace = true
+
+[features]
+# `as_version_1`, for tests that need a device's v1 certificate.
+test-support = []
+
+[dev-dependencies]
+rcgen = "0.14"

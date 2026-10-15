@@ -195,6 +195,10 @@ impl Session {
 
 /// TLS that accepts the TV's own certificate. Signatures are still
 /// checked; only who issued the certificate is not, because nobody did.
+///
+/// Checked against the key alone, whatever the certificate's version:
+/// an older TV (an OLED55B7V, 2017) presents X.509 v1, which webpki will
+/// not read, and was refused before it ever got to pair.
 fn trusting_client() -> rustls::ClientConfig {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     rustls::ClientConfig::builder_with_provider(provider.clone())
@@ -226,11 +230,12 @@ impl ServerCertVerifier for SelfSigned {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
+        niles_tls::signed_by_key(
             message,
             cert,
             dss,
             &self.0.signature_verification_algorithms,
+            niles_tls::Tls::V12,
         )
     }
 
@@ -240,11 +245,12 @@ impl ServerCertVerifier for SelfSigned {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
+        niles_tls::signed_by_key(
             message,
             cert,
             dss,
             &self.0.signature_verification_algorithms,
+            niles_tls::Tls::V13,
         )
     }
 
@@ -256,6 +262,67 @@ impl ServerCertVerifier for SelfSigned {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A TLS server on loopback presenting an X.509 v1 certificate, as
+    /// an older TV does, and a handshake with it as Niles would make.
+    async fn handshake_with_a_version_1_tv(version: &'static rustls::SupportedProtocolVersion) {
+        let made = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+        let cert = CertificateDer::from(niles_tls::as_version_1(made.cert.der()));
+        let key =
+            rustls::pki_types::PrivateKeyDer::try_from(made.signing_key.serialize_der()).unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        // Handed over as a resolver: `with_single_cert` checks the key
+        // against the certificate with the same parser that refuses v1.
+        let signing = provider.key_provider.load_private_key(key).unwrap();
+        let certified = Arc::new(rustls::sign::CertifiedKey::new(vec![cert], signing));
+        let server = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[version])
+            .unwrap()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(Always(certified)));
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let served = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            acceptor.accept(tcp).await.map(|_| ())
+        });
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(trusting_client()));
+        let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+        let name = ServerName::try_from("127.0.0.1").unwrap();
+        connector
+            .connect(name, tcp)
+            .await
+            .expect("a TV with a v1 certificate is trusted");
+        served
+            .await
+            .unwrap()
+            .expect("the TV's side of the handshake");
+    }
+
+    #[derive(Debug)]
+    struct Always(Arc<rustls::sign::CertifiedKey>);
+
+    impl rustls::server::ResolvesServerCert for Always {
+        fn resolve(
+            &self,
+            _hello: rustls::server::ClientHello<'_>,
+        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+            Some(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_older_tv_with_a_version_1_certificate_connects_over_tls_1_2() {
+        // An OLED55B7V (2017) was refused with UnsupportedCertVersion.
+        handshake_with_a_version_1_tv(&rustls::version::TLS12).await;
+    }
+
+    #[tokio::test]
+    async fn a_tv_with_a_version_1_certificate_connects_over_tls_1_3() {
+        handshake_with_a_version_1_tv(&rustls::version::TLS13).await;
+    }
 
     #[test]
     fn registers_with_a_key_once_it_has_one() {
