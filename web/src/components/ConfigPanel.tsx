@@ -37,6 +37,7 @@ import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
 import type { MqttSettings } from "@/components/MqttPanel";
 import { MemoryCard } from "@/components/MemoryCard";
+import { ApiAccessCard } from "@/components/ApiAccessCard";
 import { MenuCard } from "@/components/MenuCard";
 import { RoomOrderCard } from "@/components/RoomOrderCard";
 import { SatellitesCard } from "@/components/SatellitesCard";
@@ -980,16 +981,13 @@ export function ConfigPanel() {
               <CardTitle>Signing in</CardTitle>
               <CardDescription>
                 The GitHub app the sign-in button uses, from github.com under
-                Settings, Developer settings, OAuth Apps. The token is for
-                scripts and terminals that read Niles without a browser; leave
-                it empty if nothing does.
+                Settings, Developer settings, OAuth Apps.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
               {secretFields([
                 "auth.github_client_id",
                 "auth.github_client_secret",
-                "auth.api_token",
               ])}
             </CardContent>
           </Card>
@@ -1205,6 +1203,10 @@ export function ConfigPanel() {
             onSecretsChanged={() => secrets.refetch()}
             onTadoChanged={() => tado.refetch()}
           />
+        </TabsContent>
+
+        <TabsContent value="api">
+          <ApiAccessCard />
         </TabsContent>
 
         <TabsContent value="history">
