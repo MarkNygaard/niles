@@ -1,7 +1,8 @@
-import { DESTINATIONS, HOME } from "@/lib/destinations";
+import { HOME, destinationOf } from "@/lib/destinations";
 import type { Destination } from "@/lib/destinations";
 import { AVATAR_UNLESS_PLACED, MOVABLE } from "@/lib/menu";
 import type { MenuItem } from "@/lib/menu";
+import type { PluginPageEntry } from "@/lib/plugins";
 import { cn } from "@/lib/utils";
 
 export interface TabBarProps {
@@ -9,6 +10,8 @@ export interface TabBarProps {
   route: string;
   /** The main navigation after Home, from `menuLayout`. */
   menu?: MenuItem[];
+  /** The plugins' pages, for the entries that are theirs. */
+  pages?: PluginPageEntry[];
 }
 
 const UNARRANGED: MenuItem[] = MOVABLE.filter(
@@ -26,10 +29,12 @@ const UNARRANGED: MenuItem[] = MOVABLE.filter(
  * comes first; the rest is what Settings → Menu put here. You — your
  * profile, the look of the app — are in the avatar menu in the corner.
  */
-export function TabBar({ route, menu = UNARRANGED }: TabBarProps) {
+export function TabBar({ route, menu = UNARRANGED, pages = [] }: TabBarProps) {
   const tabs: Destination[] = [
     HOME,
-    ...menu.filter((item) => !item.hidden).map((item) => DESTINATIONS[item.id]),
+    ...menu
+      .filter((item) => !item.hidden)
+      .flatMap((item) => destinationOf(item.id, pages) ?? []),
   ];
 
   return (

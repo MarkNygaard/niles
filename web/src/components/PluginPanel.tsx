@@ -1,10 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronRight, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { PluginLog } from "@/components/PluginLog";
 import { PluginLogo, PluginPreviewView, shortRepo } from "@/components/PluginPreview";
+import { PluginSettings } from "@/components/PluginSettings";
 import { api } from "@/lib/api";
-import type { PluginPreview, PluginSummary } from "@/lib/api";
+import type { PluginPreview, PluginSummary, SecretsReport } from "@/lib/api";
 import type { Status } from "@/lib/integrations";
+import { setupLine, widgetPlace, widgetPlaceOptions } from "@/lib/plugins";
 import { cn } from "@/lib/utils";
 
 /** An installed plugin on the Connected tab, laid out like a built-in's row. */
@@ -27,9 +38,16 @@ export function PluginRow({
       onClick={onOpen}
       className="hover:bg-muted focus-visible:bg-muted flex min-h-12 w-full items-center gap-3 px-3 py-2 text-left focus-visible:outline-none disabled:opacity-50"
     >
-      <PluginLogo src={plugin.logo} />
+      <PluginLogo plugin={plugin} />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{plugin.name}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium">{plugin.name}</span>
+          {/* Every plugin says it is one: somebody else's code, chosen
+              by this house, not a part of Niles. */}
+          <Badge variant="outline" className="text-muted-foreground h-4 px-1.5 text-[10px]">
+            Custom
+          </Badge>
+        </span>
         <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
           <span
             aria-hidden
@@ -56,18 +74,31 @@ function day(iso: string | null): string | null {
 }
 
 /**
- * An installed plugin's panel: where it came from, and switching it
- * off, updating, rolling back and removing it. Its settings form is a
- * section to come above the actions; the actions do not depend on it.
+ * An installed plugin's panel: where it came from, its settings, where
+ * its widgets go, its log, and switching it off, updating, rolling back
+ * and removing it.
  */
 export function PluginPanel({
   plugin,
+  rooms = [],
+  secrets,
+  effective,
   onChanged,
+  onSecretsChanged,
+  onPlaceWidget,
   onRemoved,
 }: {
   plugin: PluginSummary;
+  /** The house's rooms, for a room setting and a widget's place. */
+  rooms?: string[];
+  secrets?: SecretsReport;
+  /** The config as it is, for where each widget is now. */
+  effective?: unknown;
   /** Something changed; ask for the list again. */
   onChanged: () => void;
+  onSecretsChanged?: () => void;
+  /** Put a widget on the front page, a room, or nowhere: `[menu.widgets]`. */
+  onPlaceWidget?: (widget: string, place: string) => void;
   onRemoved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -90,6 +121,14 @@ export function PluginPanel({
   }
 
   const installed = day(plugin.installed_at);
+
+  // A save restarts it; ask again until it has settled, so the panel
+  // says how the new settings went rather than "Starting".
+  useEffect(() => {
+    if (plugin.status !== "starting") return;
+    const again = setTimeout(onChanged, 1_500);
+    return () => clearTimeout(again);
+  }, [plugin.status, plugin.status_line, onChanged]);
 
   if (update) {
     return (
@@ -125,7 +164,7 @@ export function PluginPanel({
     <div className="flex flex-col gap-4 text-sm">
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
         <dt className="text-muted-foreground">Status</dt>
-        <dd>{plugin.status_line}</dd>
+        <dd>{setupLine(plugin)}</dd>
         {plugin.repo && (
           <>
             <dt className="text-muted-foreground">From</dt>
@@ -156,6 +195,24 @@ export function PluginPanel({
           </>
         )}
       </dl>
+      {plugin.older_interface && (
+        <p className="text-muted-foreground">
+          Built for an older Niles. It works, and a newer release may be on{" "}
+          {plugin.repo ? (
+            <a
+              href={plugin.repo}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2"
+            >
+              its page
+            </a>
+          ) : (
+            "its page"
+          )}
+          .
+        </p>
+      )}
       {/* What the status line leaves out: why it stopped, or that an
           update was rolled back while it went on working. */}
       {plugin.error && !plugin.status_line.includes(plugin.error) && (
@@ -182,6 +239,54 @@ export function PluginPanel({
             </Button>
           </div>
         </div>
+      )}
+
+      <PluginSettings
+        key={`${plugin.id}-${plugin.updated_at}`}
+        plugin={plugin}
+        rooms={rooms}
+        secrets={secrets}
+        onSaved={() => {
+          onChanged();
+          onSecretsChanged?.();
+        }}
+      />
+
+      {plugin.widgets.length > 0 && (
+        <section aria-label="Widgets" className="flex flex-col gap-2">
+          <h3 className="text-sm font-medium">Widgets</h3>
+          {plugin.widgets.map((widget) => {
+            const options = widgetPlaceOptions(rooms);
+            const place = widgetPlace(plugin.id, widget, effective);
+            // A room the house does not have is the front page, as the
+            // dashboard draws it.
+            const shown = options.some((o) => o.value === place) ? place : "front";
+            return (
+              <div key={widget.id} className="flex items-center justify-between gap-3">
+                <span className="min-w-0 truncate">{widget.title}</span>
+                <Select
+                  items={options}
+                  value={shown}
+                  disabled={busy || !onPlaceWidget}
+                  onValueChange={(next: string | null) => {
+                    if (next) onPlaceWidget?.(widget.id, next);
+                  }}
+                >
+                  <SelectTrigger aria-label={`Where ${widget.title} goes`} className="h-8 w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {options.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            );
+          })}
+        </section>
       )}
 
       <div className="flex flex-wrap gap-2">
@@ -237,13 +342,15 @@ export function PluginPanel({
         </p>
       )}
 
+      <PluginLog plugin={plugin.id} />
+
       <div className="flex flex-col gap-2 border-t pt-3">
         {confirmRemove ? (
           <>
             {/* Said before the click: none of it comes back. */}
             <p>
-              Remove {plugin.name}? Its devices leave your rooms, and its settings, saved keys
-              and stored data are deleted. Rules that use its devices are kept, and show as
+              Remove {plugin.name}? Its devices leave your rooms, its pages and widgets go,
+              and its settings, saved keys and stored data are deleted. Rules that use its devices are kept, and show as
               broken.
             </p>
             <div className="flex gap-2">

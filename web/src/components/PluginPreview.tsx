@@ -1,18 +1,48 @@
+import { useQuery } from "@tanstack/react-query";
 import { Puzzle } from "lucide-react";
-import type { PluginPreview } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { PluginPreview, PluginSummary } from "@/lib/api";
+import { svgToReact } from "@/lib/svg";
 
 /**
  * A plugin's mark: its own logo, or the generic one.
  *
- * Drawn as an image, never inlined into the page: the server rewrote
- * the SVG from an allowlist, and an `<img>` runs nothing even if that
- * ever let something through. `src` is the served logo
- * (`/plugins/{id}/logo`) or, before install, the SVG the preview
+ * Drawn inline, so its `currentColor` is the text colour around it, in
+ * dark mode too, like the built-in marks. Never inlined as markup: the
+ * SVG Niles sanitised on install is fetched as text and rebuilt by
+ * `svgToReact` from the same allowlist, as React elements, so nothing
+ * in it can run. Anything outside that list draws the generic mark.
+ *
+ * Give it the installed `plugin` (its logo is fetched from
+ * `/plugins/{id}/logo`), or, before install, the `svg` the preview
  * carries.
  */
-export function PluginLogo({ src, svg }: { src?: string | null; svg?: string | null }) {
-  const url = src ?? (svg ? `data:image/svg+xml;utf8,${encodeURIComponent(svg)}` : null);
-  if (!url) {
+export function PluginLogo({
+  plugin,
+  svg,
+}: {
+  plugin?: Pick<PluginSummary, "id" | "logo" | "updated_at">;
+  svg?: string | null;
+}) {
+  if (plugin?.logo) return <InstalledLogo plugin={plugin} />;
+  return <LogoMark svg={svg ?? null} />;
+}
+
+function InstalledLogo({ plugin }: { plugin: Pick<PluginSummary, "id" | "updated_at"> }) {
+  // Keyed by when it was last updated: an update can bring a new logo,
+  // and nothing else changes it.
+  const logo = useQuery({
+    queryKey: ["plugin-logo", plugin.id, plugin.updated_at],
+    queryFn: () => api.pluginLogo(plugin.id),
+    staleTime: Infinity,
+    retry: false,
+  });
+  return <LogoMark svg={logo.data ?? null} />;
+}
+
+function LogoMark({ svg }: { svg: string | null }) {
+  const drawn = svg ? svgToReact(svg, "size-6") : null;
+  if (!drawn) {
     return (
       <span data-logo="generic" className="flex shrink-0">
         <Puzzle aria-hidden className="size-6" />
@@ -21,7 +51,7 @@ export function PluginLogo({ src, svg }: { src?: string | null; svg?: string | n
   }
   return (
     <span data-logo="plugin" className="flex shrink-0">
-      <img src={url} alt="" className="size-6" />
+      {drawn}
     </span>
   );
 }

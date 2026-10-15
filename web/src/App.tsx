@@ -8,6 +8,7 @@ import { GroceriesPage } from "@/components/GroceriesPage";
 import { MediaPage, somethingPlays } from "@/components/MediaPage";
 import { AvatarMenu } from "@/components/AvatarMenu";
 import { MyProfile } from "@/components/MyProfile";
+import { PluginPageView } from "@/components/PluginPageView";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { SignIn } from "@/components/SignIn";
 import { SkillsPage } from "@/components/SkillsPage";
@@ -15,6 +16,8 @@ import { TabBar } from "@/components/TabBar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { menuLayout } from "@/lib/menu";
+import { pageRoute, pluginPages } from "@/lib/plugins";
+import type { PluginPageEntry } from "@/lib/plugins";
 import { useRoute } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -86,6 +89,14 @@ export function App() {
     retry: false,
     refetchInterval: 60_000,
   });
+  // The plugins' pages join the menu. A 501 is a Niles that runs no
+  // plugins, which is a fine answer and not worth asking again.
+  const plugins = useQuery({
+    queryKey: ["plugins"],
+    queryFn: api.plugins,
+    enabled: !auth.isLoading && !refused,
+    retry: false,
+  });
 
   // A new page starts at its top. `#root` is what scrolls, not the
   // document — see globals.css.
@@ -112,10 +123,15 @@ export function App() {
 
   const email = auth.data?.signed_in_as ?? undefined;
   const avatarUrl = auth.data?.avatar_url ?? undefined;
-  const screen = screenFor(route);
+  const pages = pluginPages(plugins.data ?? []);
+  const screen = screenFor(route, pages);
   const layout = config.isPending
     ? undefined
-    : menuLayout(config.data?.effective, somethingPlays(music.data, tv.data?.status?.on));
+    : menuLayout(
+        config.data?.effective,
+        somethingPlays(music.data, tv.data?.status?.on),
+        pages.map((p) => p.id),
+      );
 
   return (
     // The bottom padding on a phone is the tab bar's height, so the last
@@ -159,11 +175,12 @@ export function App() {
         )}
         {/* Nothing after Home until the arrangement is known: an entry
             somebody hid should not flash up on every load. */}
-        <TabBar route={screen.at} menu={layout?.main ?? []} />
+        <TabBar route={screen.at} menu={layout?.main ?? []} pages={pages} />
         <AvatarMenu
           email={email}
           avatarUrl={avatarUrl}
           items={layout?.avatar ?? []}
+          pages={pages}
           theme={theme}
           onTheme={setTheme}
         />
@@ -174,7 +191,7 @@ export function App() {
   );
 }
 
-function screenFor(route: string): Screen {
+function screenFor(route: string, pages: PluginPageEntry[]): Screen {
   switch (route) {
     case "/groceries":
       return { at: route, title: "Groceries", body: <GroceriesPage /> };
@@ -208,6 +225,17 @@ function screenFor(route: string): Screen {
       title: "Automation",
       parent: "#/automations",
       body: editor(decodeURIComponent(rule[1])),
+    };
+  }
+  // A plugin's page, by its route even before the plugins are listed,
+  // so a refresh lands on it rather than on the house.
+  const page = pageRoute(route);
+  if (page) {
+    const entry = pages.find((p) => p.plugin === page.plugin && p.page === page.page);
+    return {
+      at: route,
+      title: entry?.label ?? "",
+      body: <PluginPageView plugin={page.plugin} page={page.page} />,
     };
   }
   // Anything unknown is the house: an old bookmark or a mistyped hash

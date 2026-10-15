@@ -138,6 +138,135 @@ export interface PluginSummary {
   /** What a rollback goes back to, when there is something. */
   previous_version: string | null;
   update: PluginUpdate | null;
+  /** What its setup panel asks for, and what each holds now. */
+  settings: PluginSetting[];
+  /** Its pages, which join the menu as `<id>.<page>`. */
+  menu: PluginPage[];
+  /** Its cards for the front page and the rooms. */
+  widgets: PluginWidget[];
+  /** The `niles:integration` version it was built for. */
+  interface: string;
+  /** Built for an older interface than the newest this Niles runs. */
+  older_interface: boolean;
+}
+
+export type SettingType = "string" | "number" | "boolean" | "secret" | "choice" | "room";
+
+/** One of a plugin's settings, as its manifest declares it. */
+export interface PluginSetting {
+  key: string;
+  label: string;
+  type: SettingType;
+  required: boolean;
+  help: string | null;
+  default: string | number | boolean | null;
+  options: { value: string; label: string }[];
+  min: number | null;
+  max: number | null;
+  /** What the household entered; never a secret's. */
+  value: string | number | boolean | null;
+  /** Entered, or for a secret, stored. A default does not count. */
+  set: boolean;
+}
+
+export interface PluginPage {
+  id: string;
+  label: string;
+  /** A Lucide icon name, `zap`. */
+  icon: string;
+  refresh_every: number | null;
+}
+
+export interface PluginWidget {
+  id: string;
+  title: string;
+  /** The room it starts on; none for the front page. */
+  room: string | null;
+  refresh_every: number | null;
+}
+
+export interface PluginLogLine {
+  at: string;
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  /** Said by Niles about the plugin, not by the plugin. */
+  niles: boolean;
+}
+
+/**
+ * A plugin's page or widget: a flat list of nodes, the root first,
+ * each naming its children by index. Mirrors `niles_plugins::ui::Surface`.
+ */
+export interface Surface {
+  nodes: UiNode[];
+}
+
+export type Tone = "neutral" | "good" | "warning" | "bad";
+
+export type UiNode = { children: number[] } & (
+  | { type: "stack" }
+  | { type: "row" }
+  | { type: "card"; title: string | null }
+  | { type: "heading"; text: string }
+  | { type: "text"; value: string; muted: boolean }
+  | { type: "reading"; label: string; value: string; unit: string | null }
+  | { type: "badge"; label: string; tone: Tone }
+  | {
+      type: "items";
+      items: { title: string; detail: string | null; trailing: string | null }[];
+    }
+  | {
+      type: "button";
+      id: string;
+      label: string;
+      style: "primary" | "secondary" | "destructive";
+    }
+  | { type: "switch"; id: string; label: string; value: boolean }
+  | {
+      type: "slider";
+      id: string;
+      label: string;
+      min: number;
+      max: number;
+      step: number;
+      value: number;
+      unit: string | null;
+    }
+  | {
+      type: "choice";
+      id: string;
+      label: string;
+      options: { value: string; label: string }[];
+      value: string | null;
+    }
+  | {
+      type: "text_field";
+      id: string;
+      label: string;
+      placeholder: string | null;
+      value: string | null;
+    }
+  | {
+      type: "chart";
+      kind: "line" | "bar";
+      labels: string[];
+      series: { name: string; values: number[] }[];
+      unit: string | null;
+    }
+  | { type: "image"; src: string; alt: string }
+);
+
+/** What somebody did to a control, as the plugin's `on_action` gets it. */
+export type ActionValue =
+  | { type: "pressed" }
+  | { type: "toggled"; value: boolean }
+  | { type: "number"; value: number }
+  | { type: "chosen"; value: string }
+  | { type: "text"; value: string };
+
+export interface ActionOutcome {
+  toast: string | null;
+  rerender: boolean;
 }
 
 export interface PluginUpdate {
@@ -1098,6 +1227,33 @@ export const api = {
     ),
   removePlugin: (id: string) =>
     request<void>(`/plugins/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  pluginLog: (id: string) =>
+    request<PluginLogLine[]>(`/plugins/${encodeURIComponent(id)}/log`),
+  /** The logo as text, to be drawn inline by `PluginLogo`. */
+  pluginLogo: async (id: string): Promise<string> => {
+    const response = await fetch(`/plugins/${encodeURIComponent(id)}/logo`);
+    if (!response.ok) throw new ApiError("no logo", response.status);
+    return response.text();
+  },
+  surface: (plugin: string, surface: string, room?: string | null) =>
+    request<Surface>(
+      `/plugins/${encodeURIComponent(plugin)}/surfaces/${encodeURIComponent(surface)}${
+        room ? `?room=${encodeURIComponent(room)}` : ""
+      }`,
+    ),
+  act: (
+    plugin: string,
+    surface: string,
+    control: string,
+    value: ActionValue,
+    room?: string | null,
+  ) =>
+    request<ActionOutcome>(
+      `/plugins/${encodeURIComponent(plugin)}/surfaces/${encodeURIComponent(
+        surface,
+      )}/actions/${encodeURIComponent(control)}${room ? `?room=${encodeURIComponent(room)}` : ""}`,
+      { method: "POST", body: JSON.stringify(value) },
+    ),
   speakers: () => request<SpeakersReport>("/speakers"),
   tv: () => request<TvInfo>("/tv"),
   music: () => request<RoomMusic[]>("/music"),
