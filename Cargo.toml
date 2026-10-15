@@ -106,3 +106,24 @@ niles-automations = { path = "crates/niles-automations" }
 niles-integration-linear = { path = "crates/niles-integration-linear" }
 niles-plugins = { path = "crates/niles-plugins" }
 niles-training = { path = "crates/niles-training" }
+
+# Every niles-plugins test compiles a component with Cranelift, and an
+# unoptimised Cranelift made those tests most of CI's `cargo test`.
+# Optimising the compiler, not our code, keeps debug builds debuggable.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+
+[profile.dev.package.regalloc2]
+opt-level = 3
+
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+
+[profile.dev.package.wasmparser]
+opt-level = 3
