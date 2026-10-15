@@ -592,3 +592,16 @@ id = "ui-media-without-sonos"
 category = "ui.integrations"
 summary = "Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one"
 since_pr = 408
+
+[[feature]]
+id = "tv-wake-connected-interface"
+category = "voice.media"
+summary = "Turning on the LG TV wakes the interface it is connected by, and every other MAC it reported too"
+phrasings = ["turn on the TV"]
+since_pr = 9999
+
+[[feature]]
+id = "ui-tv-wake-mac"
+category = "ui.integrations"
+summary = "TV panel: the wake MAC, detected or set by hand and kept through pairing; power-on says when the TV did not answer"
+since_pr = 9999
