@@ -67,7 +67,8 @@ export function TvPanel({
   return (
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground text-sm">
-        “Turn on the TV”, “put on Netflix on the TV”, “switch the TV to HDMI 2” —
+        “Turn on the TV”, “put on Netflix on the TV”, “switch the TV to HDMI 2”,
+        “turn the TV up” —
         and Niles's announcements in the corner of the screen while it is on.
         Straight to the TV on your network; no LG account.
       </p>

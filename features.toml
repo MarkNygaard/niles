@@ -543,3 +543,22 @@ id = "providers-default-elevenlabs-cerebras"
 category = "runtime.providers"
 summary = "A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so"
 since_pr = 394
+
+[[feature]]
+id = "tv-volume"
+category = "voice.media"
+summary = "The LG TV's own speakers by voice, and a room's volume on its TV when the room has no Sonos"
+phrasings = ["set the TV volume to 20", "turn the TV up", "mute the TV", "volume up in the living room"]
+since_pr = 403
+
+[[feature]]
+id = "tool-tv-volume"
+category = "llm.tools"
+summary = "tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos"
+since_pr = 403
+
+[[feature]]
+id = "ui-tv-volume"
+category = "ui.integrations"
+summary = "The TV row has volume down and up, a slider and mute while it is on, where the TV is the speaker; POST /tv/volume"
+since_pr = 403

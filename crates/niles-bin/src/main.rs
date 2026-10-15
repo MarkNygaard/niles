@@ -37,6 +37,7 @@ use niles_stt::{
 };
 use niles_tools::{LookUpCapability, ToolRegistry};
 use niles_tts::{PiperClient, PiperConfig};
+use niles_webos::VolumeChange;
 use niles_wyoming::{SessionTracker, WyomingSender, WyomingServer};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -3259,8 +3260,8 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
-    music::register(&mut tools, music.clone());
     let tv = Arc::new(tv::TvControl::new(store.clone()));
+    music::register(&mut tools, music.clone(), tv.clone());
     tv::register(&mut tools, tv.clone());
 
     // Notification center
@@ -5161,6 +5162,18 @@ async fn dispatch_text(
         Intent::TvOpen { app } => Some(ctx.tv.open(&app).await.unwrap_or_else(|e| e)),
         Intent::TvInput { input } => Some(ctx.tv.input(&input).await.unwrap_or_else(|e| e)),
         Intent::TvPlayback { play } => Some(ctx.tv.playback(play).await.unwrap_or_else(|e| e)),
+        Intent::TvVolumeSet { percent } => {
+            Some(tv_volume(ctx, peer, VolumeChange::To(percent)).await)
+        }
+        Intent::TvVolumeStep { delta } => Some(tv_volume(ctx, peer, VolumeChange::By(delta)).await),
+        // A Sonos has no mute to give, so muting the TV is always the TV:
+        // one behind a soundbar passes it on over HDMI.
+        Intent::TvMute { mute } => Some(
+            ctx.tv
+                .volume(VolumeChange::Mute(mute))
+                .await
+                .unwrap_or_else(|e| e),
+        ),
         Intent::PlayRadio { station, room } => {
             let target = match music_room(room.as_deref(), origin_room) {
                 Ok(r) => r,
@@ -5237,55 +5250,11 @@ async fn dispatch_text(
             response::media_previous(&room),
             "previous",
         ),
-        Intent::MediaVolumeSet { room, percent } => media_result_to_response(
-            peer,
-            &room,
-            media_dispatch(ctx, &room, Reach::Every, move |c| async move {
-                c.set_volume(percent).await
-            })
-            .await,
-            response::media_volume(&room, percent),
-            "volume set",
-        ),
+        Intent::MediaVolumeSet { room, percent } => {
+            Some(room_volume_set(ctx, peer, &room, percent).await)
+        }
         Intent::MediaVolumeStep { room, delta } => {
-            let canonical = match intent_room_to_canonical(&room) {
-                Ok(r) => r,
-                Err(reason) => {
-                    tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
-                    return Some(response::room_not_found(&room));
-                }
-            };
-            let players = ctx.speakers.in_room(&canonical).await;
-            if players.is_empty() {
-                tracing::info!("[{peer}] no speaker in {canonical}");
-                return Some(response::no_speaker_in_room(canonical.as_str()));
-            }
-            // Each by the same step from where it is: a speaker at the
-            // back set quieter than the front stays quieter.
-            let mut said = None;
-            for player in &players {
-                let current = match player.client.get_volume().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
-                        return Some(response::speaker_unreachable(canonical.as_str()));
-                    }
-                };
-                let new = (current as i16 + delta).clamp(0, 100) as u8;
-                if let Err(e) = player.client.set_volume(new).await {
-                    tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
-                    return Some(response::speaker_unreachable(canonical.as_str()));
-                }
-                println!(
-                    "[{peer}] media volume step on {} in {canonical}: {current} -> {new}",
-                    player.sonos.name
-                );
-                said.get_or_insert(new);
-            }
-            Some(response::media_volume(
-                canonical.as_str(),
-                said.unwrap_or_default(),
-            ))
+            Some(room_volume_step(ctx, peer, &room, delta).await)
         }
         Intent::TimerSet { duration, name } => {
             let id = ctx.timers.set(duration, name.clone(), peer, Utc::now());
@@ -5552,6 +5521,106 @@ fn music_reply(outcome: music::Outcome, room: &RoomName) -> Option<String> {
             response::music_failed(room.as_str())
         }
     })
+}
+
+/// "Set the kitchen volume to 30%": the room's Sonos, or the TV when
+/// that is all the room has.
+async fn room_volume_set(ctx: &DispatchCtx, peer: SocketAddr, room: &str, percent: u8) -> String {
+    if let Some(said) = tv_room_volume(ctx, peer, room, VolumeChange::To(percent)).await {
+        return said;
+    }
+    media_result_to_response(
+        peer,
+        room,
+        media_dispatch(ctx, room, Reach::Every, move |c| async move {
+            c.set_volume(percent).await
+        })
+        .await,
+        response::media_volume(room, percent),
+        "volume set",
+    )
+    .unwrap_or_default()
+}
+
+/// "Kitchen volume up": each of the room's Sonos by a step, or the TV
+/// when that is all the room has.
+async fn room_volume_step(ctx: &DispatchCtx, peer: SocketAddr, room: &str, delta: i16) -> String {
+    let canonical = match intent_room_to_canonical(room) {
+        Ok(r) => r,
+        Err(reason) => {
+            tracing::warn!("[{peer}] room {room:?} is not a valid registry name: {reason}");
+            return response::room_not_found(room);
+        }
+    };
+    let players = ctx.speakers.in_room(&canonical).await;
+    if players.is_empty() {
+        if let Some(said) = tv_room_volume(ctx, peer, room, VolumeChange::By(delta)).await {
+            return said;
+        }
+        tracing::info!("[{peer}] no speaker in {canonical}");
+        return response::no_speaker_in_room(canonical.as_str());
+    }
+    // Each by the same step from where it is: a speaker at the
+    // back set quieter than the front stays quieter.
+    let mut said = None;
+    for player in &players {
+        let current = match player.client.get_volume().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
+                return response::speaker_unreachable(canonical.as_str());
+            }
+        };
+        let new = (current as i16 + delta).clamp(0, 100) as u8;
+        if let Err(e) = player.client.set_volume(new).await {
+            tracing::warn!("[{peer}] speaker unreachable in {canonical}: {e}");
+            return response::speaker_unreachable(canonical.as_str());
+        }
+        println!(
+            "[{peer}] media volume step on {} in {canonical}: {current} -> {new}",
+            player.sonos.name
+        );
+        said.get_or_insert(new);
+    }
+    response::media_volume(canonical.as_str(), said.unwrap_or_default())
+}
+
+/// The room's volume on its TV, when the TV stands there and the room
+/// has no Sonos. `None` leaves it to the speakers, or to "no speaker".
+async fn tv_room_volume(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    room: &str,
+    change: VolumeChange,
+) -> Option<String> {
+    let canonical = intent_room_to_canonical(room).ok()?;
+    let has_speakers = !ctx.speakers.in_room(&canonical).await.is_empty();
+    let result = ctx.tv.room_volume(&canonical, has_speakers, change).await?;
+    tracing::info!("[{peer}] {change:?} in {canonical} on the TV: {result:?}");
+    Some(match result {
+        Ok(after) => tv::said(change, after),
+        Err(say) => say,
+    })
+}
+
+/// "Turn the TV up": the TV's sound, which is the Sonos in its room
+/// when it has one — the user's own soundbar — and otherwise the TV's
+/// own speakers.
+async fn tv_volume(ctx: &DispatchCtx, peer: SocketAddr, change: VolumeChange) -> String {
+    if let Some(room) = ctx.tv.room()
+        && !ctx.speakers.in_room(&room).await.is_empty()
+    {
+        match change {
+            VolumeChange::To(percent) => {
+                return room_volume_set(ctx, peer, room.as_str(), percent).await;
+            }
+            VolumeChange::By(delta) => {
+                return room_volume_step(ctx, peer, room.as_str(), delta).await;
+            }
+            VolumeChange::Mute(_) => {}
+        }
+    }
+    ctx.tv.volume(change).await.unwrap_or_else(|e| e)
 }
 
 #[derive(Debug)]
@@ -6862,8 +6931,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
-    music::register(&mut tools, music.clone());
     let tv = Arc::new(tv::TvControl::new(store.clone()));
+    music::register(&mut tools, music.clone(), tv.clone());
     tv::register(&mut tools, tv.clone());
     let _vocabulary = vocabulary::spawn_refresh(
         whisper.vocabulary(),

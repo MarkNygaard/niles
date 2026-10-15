@@ -31,7 +31,7 @@ import type { PlacedWidget } from "@/lib/plugins";
 import { HEAT_INK, heatSheet, heatTop } from "@/lib/heat";
 import { hasRoomSwitch, humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
-import type { Device, RoomMusic, SetLight, TvInfo } from "@/lib/api";
+import type { Device, RoomMusic, SetLight, TvInfo, TvVolumeChange } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export interface RoomCardProps {
@@ -44,7 +44,12 @@ export interface RoomCardProps {
   /** Absent when this instance has no tado connection. */
   onSetZone?: (body: SetZone) => void;
   /** The TV, in the room it stands in. */
-  tv?: { info: TvInfo; busy?: boolean; onPower: (on: boolean) => void };
+  tv?: {
+    info: TvInfo;
+    busy?: boolean;
+    onPower: (on: boolean) => void;
+    onVolume?: (change: TvVolumeChange) => void;
+  };
   /** The room's Sonos, when it has one: marked on the card while it
       plays. Its controls are on the Media page. */
   music?: RoomMusic;
@@ -211,7 +216,16 @@ export function RoomCard({
         </div>
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
-        {tv && <TvRow tv={tv.info} busy={tv.busy} onPower={tv.onPower} />}
+        {tv && (
+          // A room with a Sonos hears the TV through it: its volume is
+          // the Sonos's, as it is by voice.
+          <TvRow
+            tv={tv.info}
+            busy={tv.busy}
+            onPower={tv.onPower}
+            onVolume={music ? undefined : tv.onVolume}
+          />
+        )}
         {room.lights.map((light) => (
           <LightRow
             key={light.id}

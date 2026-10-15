@@ -167,6 +167,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tv", get(crate::tv::get))
         .route("/tv/pair", post(crate::tv::pair))
         .route("/tv/power", post(crate::tv::power))
+        .route("/tv/volume", post(crate::tv::volume))
         .route(
             "/captures",
             get(crate::captures::list).delete(crate::captures::clear),

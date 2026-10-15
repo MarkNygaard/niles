@@ -201,6 +201,22 @@ pub enum Intent {
         play: bool,
     },
 
+    /// "set the TV volume to 20": the TV's sound, which is the Sonos
+    /// in its room when it has one.
+    TvVolumeSet {
+        percent: u8,
+    },
+
+    /// "turn the TV up" / "TV volume down".
+    TvVolumeStep {
+        delta: i16,
+    },
+
+    /// "mute the TV" / "unmute the TV".
+    TvMute {
+        mute: bool,
+    },
+
     /// "stop the music" with no room: the music where it was said, the
     /// whole group it plays in — or, nothing playing there, the music
     /// playing anywhere else. The TV is not the music.
