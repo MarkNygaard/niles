@@ -59,6 +59,10 @@ pub struct Group {
 pub struct MediaView {
     pub groups: Vec<Group>,
     pub idle: Vec<Speaker>,
+    /// Whether Spotify can be searched and started from here: its add-on
+    /// is added, switched on and has its keys. Without it the page offers
+    /// no Spotify Play button, which could only fail.
+    pub spotify: bool,
 }
 
 /// Something to start playing, offered in the Media page's picker.

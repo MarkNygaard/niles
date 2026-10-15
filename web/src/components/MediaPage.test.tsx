@@ -38,6 +38,7 @@ const view: MediaView = {
     group("radio", "RINCON_MOVE", [move]),
   ],
   idle: [back],
+  spotify: true,
 };
 
 describe("MediaPage", () => {
@@ -89,6 +90,12 @@ describe("MediaPage", () => {
     ]);
   });
 
+  it("offers no Spotify start without its add-on", () => {
+    expect(
+      destinations({ ...view, spotify: false }, "RINCON_CLOSET").map((d) => d.label),
+    ).not.toContain("Start Spotify");
+  });
+
   it("lists every speaker by name", () => {
     expect(everySpeaker(view).map((s) => s.name)).toEqual([
       "Kitchen",
@@ -127,6 +134,21 @@ const tvOn: TvInfo = {
 
 describe("the Media page", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("has no Spotify card without its add-on, unless Sonos already plays it", async () => {
+    // Nothing from Spotify playing: no card at all.
+    const quiet: MediaView = { groups: [group("radio", "RINCON_MOVE", [move])], idle: [back, bar, closet], spotify: false };
+    page(quiet, tvOn);
+    expect(await screen.findByRole("region", { name: "Radio" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Spotify" })).toBeNull();
+  });
+
+  it("shows Spotify started from Sonos's own app, but no Play, without the add-on", async () => {
+    page({ ...view, spotify: false }, tvOn);
+    const spotify = await screen.findByRole("region", { name: "Spotify" });
+    expect(within(spotify).getByText("Walk In Closet")).toBeInTheDocument();
+    expect(within(spotify).queryByRole("button", { name: /^Play$/ })).toBeNull();
+  });
 
   it("keeps the radio and Spotify for a house with Sonos", async () => {
     page(view, tvOn);
