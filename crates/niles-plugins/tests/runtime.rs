@@ -735,3 +735,40 @@ async fn check_refuses_what_is_not_a_component() {
         report.problems
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_log_keeps_what_the_plugin_said_and_what_happened_to_it() {
+    let house = Home::running().await;
+    house.tool("panic", json!({})).await.unwrap_err();
+    house.wait_for(|s| *s == Status::Running).await;
+
+    let lines = house.runtime.log("hello");
+    let said = |text: &str, niles: bool| {
+        lines
+            .iter()
+            .any(|l| l.message.contains(text) && l.niles == niles)
+    };
+    assert!(
+        said("starting with", false),
+        "the plugin's own line: {lines:?}"
+    );
+    assert!(said("Working", true), "{lines:?}");
+    assert!(said("Not working: trapped in call-tool", true), "{lines:?}");
+    let failing = lines
+        .iter()
+        .find(|l| l.message.starts_with("Not working"))
+        .unwrap();
+    assert_eq!(failing.level, niles_plugins::log::Level::Error);
+    // A restart keeps the lines that explain it.
+    assert!(
+        lines
+            .iter()
+            .filter(|l| l.message.contains("starting with"))
+            .count()
+            >= 2,
+        "{lines:?}"
+    );
+
+    house.runtime.remove("hello").await.unwrap();
+    assert!(house.runtime.log("hello").is_empty(), "removed with it");
+}

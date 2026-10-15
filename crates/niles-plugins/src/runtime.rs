@@ -11,6 +11,7 @@
 use crate::bindings::niles::integration::types as wit;
 use crate::error::{Error, Result};
 use crate::host::{HostState, class_to_wit, state_to_wit};
+use crate::log::{Level, PluginLog};
 use crate::manifest::{EventPermission, Manifest};
 use crate::store::{KnownDevice, Package, PluginStore};
 use crate::ui::{ActionOutcome, ActionValue, Context, Surface};
@@ -221,6 +222,10 @@ struct Inner {
     house: Arc<House>,
     limits: Arc<Limits>,
     plugins: RwLock<BTreeMap<String, Arc<Plugin>>>,
+    /// Each plugin's log, by id: it outlives the instance and the
+    /// version that wrote it.
+    logs: Mutex<HashMap<String, Arc<PluginLog>>>,
+    images: crate::images::Images,
 }
 
 impl Drop for Inner {
@@ -293,6 +298,8 @@ impl Runtime {
             house: Arc::new(house),
             limits: Arc::new(limits),
             plugins: RwLock::new(BTreeMap::new()),
+            logs: Mutex::default(),
+            images: Default::default(),
         });
         spawn_forwarder(Arc::downgrade(&inner));
         Ok(Self { inner })
@@ -449,6 +456,8 @@ impl Runtime {
             return Err(Error::UnknownPlugin(id.to_string()));
         }
         self.remove_running(id).await;
+        lock(&self.inner.logs).remove(id);
+        self.inner.images.forget(id);
         self.inner.house.tools.remove(id);
         let source = format!("x_{id}");
         for device in self.inner.house.registry.list_all() {
@@ -482,7 +491,8 @@ impl Runtime {
         if self.inner.plugins_read().contains_key(&id) {
             return Err(Error::AlreadyRunning(id));
         }
-        let plugin = Arc::new(Plugin::new(manifest));
+        let log = self.inner.log_of(&id);
+        let plugin = Arc::new(Plugin::with_log(manifest, log));
         self.inner.remember_devices(&plugin).await;
         self.inner
             .plugins
@@ -532,6 +542,43 @@ impl Runtime {
 
     pub fn info(&self, id: &str) -> Option<PluginInfo> {
         self.inner.plugin(id).ok().map(|p| p.info())
+    }
+
+    /// The plugin's last log lines, oldest first; empty for one that has
+    /// written nothing since Niles started.
+    pub fn log(&self, id: &str) -> Vec<crate::log::Line> {
+        lock(&self.inner.logs)
+            .get(id)
+            .map(|log| log.lines())
+            .unwrap_or_default()
+    }
+
+    /// A picture on one of a running plugin's pages, fetched by Niles
+    /// (see [`crate::images`]).
+    pub async fn image(
+        &self,
+        id: &str,
+        src: &str,
+    ) -> std::result::Result<crate::images::Image, crate::images::ImageError> {
+        let manifest = self.manifest(id).ok_or_else(|| {
+            crate::images::ImageError::NotFound(format!("No plugin {id} is running."))
+        })?;
+        self.inner.images.get(&manifest, src).await
+    }
+
+    /// The manifest of a running plugin.
+    pub fn manifest(&self, id: &str) -> Option<Manifest> {
+        self.inner.plugin(id).ok().map(|p| p.manifest.clone())
+    }
+
+    /// What the household entered for a plugin's settings.
+    pub fn settings_of(&self, id: &str) -> toml::Table {
+        (self.inner.house.settings)(id)
+    }
+
+    /// Whether a plugin's secret has a value.
+    pub fn secret_is_set(&self, id: &str, key: &str) -> bool {
+        (self.inner.house.secrets)(id, key).is_some()
     }
 
     /// The tools a plugin offers right now, as the model sees them.
@@ -617,6 +664,10 @@ impl Runtime {
 impl Inner {
     fn plugins_read(&self) -> RwLockReadGuard<'_, BTreeMap<String, Arc<Plugin>>> {
         self.plugins.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn log_of(&self, id: &str) -> Arc<PluginLog> {
+        lock(&self.logs).entry(id.to_string()).or_default().clone()
     }
 
     fn plugin(&self, id: &str) -> Result<Arc<Plugin>> {
@@ -794,6 +845,7 @@ pub(crate) struct Plugin {
     reports: Mutex<HashMap<DeviceId, Reported>>,
     notified: Mutex<VecDeque<Instant>>,
     log_window: Mutex<LogWindow>,
+    log: Arc<PluginLog>,
     failures: std::sync::atomic::AtomicU64,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -822,6 +874,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Plugin {
     pub(crate) fn new(manifest: Manifest) -> Self {
+        Self::with_log(manifest, Arc::default())
+    }
+
+    fn with_log(manifest: Manifest, log: Arc<PluginLog>) -> Self {
         Self {
             id: manifest.id.clone(),
             source: manifest.source(),
@@ -842,6 +898,7 @@ impl Plugin {
                 lines: 0,
                 dropped: 0,
             }),
+            log,
             failures: Default::default(),
             thread: Mutex::default(),
         }
@@ -872,6 +929,18 @@ impl Plugin {
 
     pub fn set_status(&self, status: Status) {
         let mut record = lock(&self.record);
+        if record.status != status {
+            let level = match &status {
+                Status::Starting | Status::Running => Level::Info,
+                Status::NotSetUp(_) => Level::Warn,
+                Status::Failing(_) | Status::Stopped(_) => Level::Error,
+            };
+            let line = match &status {
+                Status::Stopped(why) => format!("Stopped after repeated failures: {why}"),
+                other => other.line(),
+            };
+            self.log.push(level, &line, true);
+        }
         match &status {
             Status::Failing(why) | Status::Stopped(why) | Status::NotSetUp(why) => {
                 record.error = Some(why.clone());
@@ -957,11 +1026,9 @@ impl Plugin {
             let mut window = lock(&self.log_window);
             if window.start.elapsed() >= LOG_WINDOW {
                 if window.dropped > 0 {
-                    tracing::warn!(
-                        plugin = %self.id,
-                        "{} log lines over the limit were not kept",
-                        window.dropped
-                    );
+                    let note = format!("{} log lines over the limit were not kept", window.dropped);
+                    tracing::warn!(plugin = %self.id, "{note}");
+                    self.log.push(crate::log::Level::Warn, &note, true);
                 }
                 *window = LogWindow {
                     start: Instant::now(),
@@ -980,6 +1047,7 @@ impl Plugin {
             cut -= 1;
         }
         let message = &message[..cut];
+        self.log.push(level.into(), message, false);
         let id = &self.id;
         match level {
             Level::Debug => tracing::debug!(plugin = %id, "{message}"),

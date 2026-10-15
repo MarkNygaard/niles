@@ -8,7 +8,7 @@
 //! once, so `niles plugin check` can say it in one go.
 
 use crate::error::{Error, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// The Niles this is, for `min_niles`.
@@ -170,7 +170,7 @@ pub struct Surfaces {
     pub widgets: Vec<Widget>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MenuEntry {
     pub id: String,
@@ -180,7 +180,7 @@ pub struct MenuEntry {
     pub refresh_every: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Widget {
     pub id: String,

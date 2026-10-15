@@ -7,8 +7,9 @@
 //!   release's tag and page), the component's bytes and sha256, the
 //!   manifest's sha256, the sanitised logo, the version before it (kept
 //!   for one rollback), whether it is enabled, and the newer release the
-//!   last update check found. A restart never downloads anything: what
-//!   was approved is what runs.
+//!   last update check found, and the notice about the last automatic
+//!   rollback. A restart never downloads anything: what was approved is
+//!   what runs.
 //! - `plugin_storage`: the plugin's own key-value store, 1 MiB each.
 //! - `plugin_devices`: the devices it registered, so they stay in their
 //!   rooms, unavailable, while the plugin is stopped, and the rules that
@@ -46,6 +47,9 @@ alter table plugins add column if not exists previous_release_url text;
 alter table plugins add column if not exists previous_manifest_sha256 text;
 alter table plugins add column if not exists previous_logo text;
 alter table plugins add column if not exists update_available text;
+-- Added with the plugin's panel in the app: an update that failed and
+-- was rolled back, said until the next update or rollback by hand.
+alter table plugins add column if not exists notice text;
 create table if not exists plugin_storage (
     plugin_id text not null references plugins (id) on delete cascade,
     key       text not null,
@@ -107,6 +111,8 @@ pub struct PluginMeta {
     pub previous_version: Option<String>,
     /// What the last update check found, as its caller wrote it.
     pub update_available: Option<String>,
+    /// Why the version before came back, after an update failed.
+    pub notice: Option<String>,
 }
 
 /// A device Niles holds for a plugin.
@@ -173,15 +179,10 @@ impl PostgresPlugins {
     /// Every installed plugin, enabled or not, oldest install first.
     pub async fn all(&self) -> Result<Vec<PluginMeta>, String> {
         self.ensure_schema().await?;
-        let rows = sqlx::query(
-            "select id, manifest, version, repo, release_tag, release_url, sha256,
-                    manifest_sha256, logo is not null as has_logo, enabled,
-                    installed_at, updated_at, previous_version, update_available
-             from plugins order by installed_at, id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| self.storage(e))?;
+        let rows = sqlx::query(ALL)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| self.storage(e))?;
         Ok(rows
             .iter()
             .map(|r| PluginMeta {
@@ -199,6 +200,7 @@ impl PostgresPlugins {
                 updated_at: r.get("updated_at"),
                 previous_version: r.get("previous_version"),
                 update_available: r.get("update_available"),
+                notice: r.get("notice"),
             })
             .collect())
     }
@@ -224,46 +226,21 @@ impl PostgresPlugins {
     /// the manifest or the component; the caller has.
     pub async fn install(&self, plugin: &PluginInstall<'_>) -> Result<(), String> {
         self.ensure_schema().await?;
-        sqlx::query(
-            "insert into plugins (id, manifest, repo, version, component, sha256,
-                                  manifest_sha256, logo, release_tag, release_url)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             on conflict (id) do update set
-                 previous_version = plugins.version,
-                 previous_manifest = plugins.manifest,
-                 previous_component = plugins.component,
-                 previous_sha256 = plugins.sha256,
-                 previous_manifest_sha256 = plugins.manifest_sha256,
-                 previous_logo = plugins.logo,
-                 previous_release_tag = plugins.release_tag,
-                 previous_release_url = plugins.release_url,
-                 manifest = excluded.manifest,
-                 repo = excluded.repo,
-                 version = excluded.version,
-                 component = excluded.component,
-                 sha256 = excluded.sha256,
-                 manifest_sha256 = excluded.manifest_sha256,
-                 logo = excluded.logo,
-                 release_tag = excluded.release_tag,
-                 release_url = excluded.release_url,
-                 update_available = null,
-                 enabled = true,
-                 updated_at = now()",
-        )
-        .bind(plugin.id)
-        .bind(plugin.manifest)
-        .bind(plugin.repo)
-        .bind(plugin.version)
-        .bind(plugin.component)
-        .bind(hex_digest(plugin.component))
-        .bind(hex_digest(plugin.manifest.as_bytes()))
-        .bind(plugin.logo)
-        .bind(plugin.release_tag)
-        .bind(plugin.release_url)
-        .execute(&self.pool)
-        .await
-        .map(|_| ())
-        .map_err(|e| self.storage(e))
+        sqlx::query(INSTALL)
+            .bind(plugin.id)
+            .bind(plugin.manifest)
+            .bind(plugin.repo)
+            .bind(plugin.version)
+            .bind(plugin.component)
+            .bind(hex_digest(plugin.component))
+            .bind(hex_digest(plugin.manifest.as_bytes()))
+            .bind(plugin.logo)
+            .bind(plugin.release_tag)
+            .bind(plugin.release_url)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| self.storage(e))
     }
 
     /// Put the previous version back in place of the current one, which
@@ -271,33 +248,11 @@ impl PostgresPlugins {
     /// previous version.
     pub async fn roll_back(&self, id: &str) -> Result<Option<PluginRow>, String> {
         self.ensure_schema().await?;
-        let row = sqlx::query(
-            "update plugins set
-                 version = previous_version,
-                 manifest = previous_manifest,
-                 component = previous_component,
-                 sha256 = previous_sha256,
-                 manifest_sha256 = previous_manifest_sha256,
-                 logo = previous_logo,
-                 release_tag = previous_release_tag,
-                 release_url = previous_release_url,
-                 previous_version = null,
-                 previous_manifest = null,
-                 previous_component = null,
-                 previous_sha256 = null,
-                 previous_manifest_sha256 = null,
-                 previous_logo = null,
-                 previous_release_tag = null,
-                 previous_release_url = null,
-                 update_available = null,
-                 updated_at = now()
-             where id = $1 and previous_component is not null
-             returning id, manifest, version, component, sha256",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| self.storage(e))?;
+        let row = sqlx::query(ROLL_BACK)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| self.storage(e))?;
         Ok(row.as_ref().map(plugin_row))
     }
 
@@ -319,6 +274,18 @@ impl PostgresPlugins {
         sqlx::query("update plugins set update_available = $2 where id = $1")
             .bind(id)
             .bind(update)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| self.storage(e))
+    }
+
+    /// Say what happened to the plugin, or forget it.
+    pub async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String> {
+        self.ensure_schema().await?;
+        sqlx::query(SET_NOTICE)
+            .bind(id)
+            .bind(notice)
             .execute(&self.pool)
             .await
             .map(|_| ())
@@ -470,6 +437,62 @@ impl PostgresPlugins {
     }
 }
 
+const INSTALL: &str = "insert into plugins (id, manifest, repo, version, component, sha256,
+                                  manifest_sha256, logo, release_tag, release_url)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             on conflict (id) do update set
+                 previous_version = plugins.version,
+                 previous_manifest = plugins.manifest,
+                 previous_component = plugins.component,
+                 previous_sha256 = plugins.sha256,
+                 previous_manifest_sha256 = plugins.manifest_sha256,
+                 previous_logo = plugins.logo,
+                 previous_release_tag = plugins.release_tag,
+                 previous_release_url = plugins.release_url,
+                 manifest = excluded.manifest,
+                 repo = excluded.repo,
+                 version = excluded.version,
+                 component = excluded.component,
+                 sha256 = excluded.sha256,
+                 manifest_sha256 = excluded.manifest_sha256,
+                 logo = excluded.logo,
+                 release_tag = excluded.release_tag,
+                 release_url = excluded.release_url,
+                 update_available = null,
+                 notice = null,
+                 enabled = true,
+                 updated_at = now()";
+
+const ROLL_BACK: &str = "update plugins set
+                 version = previous_version,
+                 manifest = previous_manifest,
+                 component = previous_component,
+                 sha256 = previous_sha256,
+                 manifest_sha256 = previous_manifest_sha256,
+                 logo = previous_logo,
+                 release_tag = previous_release_tag,
+                 release_url = previous_release_url,
+                 previous_version = null,
+                 previous_manifest = null,
+                 previous_component = null,
+                 previous_sha256 = null,
+                 previous_manifest_sha256 = null,
+                 previous_logo = null,
+                 previous_release_tag = null,
+                 previous_release_url = null,
+                 update_available = null,
+                 notice = null,
+                 updated_at = now()
+             where id = $1 and previous_component is not null
+             returning id, manifest, version, component, sha256";
+
+const ALL: &str = "select id, manifest, version, repo, release_tag, release_url, sha256,
+                    manifest_sha256, logo is not null as has_logo, enabled,
+                    installed_at, updated_at, previous_version, update_available, notice
+             from plugins order by installed_at, id";
+
+const SET_NOTICE: &str = "update plugins set notice = $2 where id = $1";
+
 fn plugin_row(r: &sqlx::postgres::PgRow) -> PluginRow {
     PluginRow {
         id: r.get("id"),
@@ -491,6 +514,21 @@ pub fn hex_digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_notice_has_a_column_and_is_listed() {
+        assert!(SCHEMA.contains("add column if not exists notice text"));
+        assert!(ALL.contains("notice"));
+        assert!(SET_NOTICE.contains("set notice = $2 where id = $1"));
+    }
+
+    #[test]
+    fn an_update_and_a_rollback_forget_the_notice() {
+        // An automatic rollback writes its notice after the rollback,
+        // so the rollback clearing it only clears an older one.
+        assert!(INSTALL.contains("notice = null"), "{INSTALL}");
+        assert!(ROLL_BACK.contains("notice = null"), "{ROLL_BACK}");
+    }
 
     #[test]
     fn the_digest_is_lowercase_hex_sha256() {
