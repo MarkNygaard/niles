@@ -4,7 +4,7 @@ import { AddOnsPage } from "@/components/AddOnsPage";
 import type { AddOnsPageProps } from "@/components/AddOnsPage";
 import { api } from "@/lib/api";
 import { matchesQuery, statusOf } from "@/lib/integrations";
-import type { Integration, IntegrationGroup, SecretsReport } from "@/lib/api";
+import type { Integration, IntegrationGroup, SecretsReport, ToolServer } from "@/lib/api";
 
 const SYSTEM: IntegrationGroup = {
   id: "system",
@@ -189,8 +189,8 @@ const LINEAR: Integration = {
   blurb: "Tasks.",
   needs: "A Linear API key.",
   icon: "list-todo",
-  secret_keys: ["integrations.linear.api_key"],
-  secret_key: "integrations.linear.api_key",
+  secret_keys: ["tool_servers.linear.api_key"],
+  secret_key: "tool_servers.linear.api_key",
 };
 
 function setup(
@@ -403,6 +403,25 @@ describe("AddOnsPage", () => {
       "integrations.claude_code",
     ]);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("connects Linear to Linear's own MCP server and asks for its key", () => {
+    const { onChange } = setup([LINEAR], {
+      writable: true,
+      secrets: [{ key: "tool_servers.linear.api_key", label: "Linear API key", source: "unset" }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect Linear" }));
+    expect(onChange).toHaveBeenCalledWith("tool_servers.linear", [
+      {
+        path: "tool_servers.linear",
+        value: {
+          url: "https://mcp.linear.app/mcp",
+          name: "Linear",
+          keywords: ["linear", "issue", "issues", "task", "tasks", "ticket", "tickets"],
+        },
+      },
+    ]);
+    expect(screen.getByText("Linear API key")).toBeTruthy();
   });
 
   it("switches nemlig.com on and asks for both halves of the login", () => {
@@ -640,19 +659,6 @@ describe("statusOf", () => {
     expect(statusOf({ ...TADO, added: true }, {}).text).toBe("Not signed in to tado° yet");
     expect(statusOf(UNIFI_ADDED, { unifiHost: " " }).text).toBe("Needs its address");
     expect(
-      statusOf({ ...TADO, id: "linear", label: "Linear", added: true }, { linear: { team: "" } })
-        .text,
-    ).toBe("Needs a team");
-    expect(
-      statusOf(
-        { ...LINEAR, added: true },
-        {
-          linear: { team: "test" },
-          secrets: { writable: true, secrets: [unset("integrations.linear.api_key")] },
-        },
-      ).text,
-    ).toBe("Needs its API key");
-    expect(
       statusOf(
         { ...TADO, id: "lg_tv", label: "LG TV", added: true },
         {
@@ -674,6 +680,46 @@ describe("statusOf", () => {
         },
       ).text,
     ).toBe("Needs its client ID and secret");
+  });
+});
+
+describe("statusOf Linear", () => {
+  const key = (source: "stored" | "unset") => ({
+    writable: true,
+    secrets: [{ key: "tool_servers.linear.api_key", label: "Linear API key", source }],
+  });
+  const server = (status: ToolServer["status"], message: string | null = null): ToolServer => ({
+    id: "linear",
+    status,
+    message,
+    tools: [],
+  });
+  const added = { ...LINEAR, added: true };
+
+  it("is working only once Linear has answered", () => {
+    // A key that is merely there said Working for "test".
+    expect(statusOf(added, { secrets: key("stored"), toolServers: [server("connecting")] }).text).toBe(
+      "Connecting…",
+    );
+    expect(statusOf(added, { secrets: key("stored"), toolServers: [server("working")] })).toEqual({
+      ok: true,
+      text: "Working",
+    });
+  });
+
+  it("says why Linear refused", () => {
+    expect(
+      statusOf(added, {
+        secrets: key("stored"),
+        toolServers: [server("failed", "401: the key was refused")],
+      }).text,
+    ).toBe("401: the key was refused");
+  });
+
+  it("asks for a key before anything else", () => {
+    expect(statusOf(added, { secrets: key("unset"), toolServers: [server("needs_key")] }).text).toBe(
+      "Needs its API key",
+    );
   });
 });
 
@@ -727,13 +773,13 @@ describe("AddOnsPage removing", () => {
     const { onReset } = setup([{ ...LINEAR, added: true }], {
       writable: true,
       secrets: [
-        { key: "integrations.linear.api_key", label: "Linear API key", source: "stored" },
+        { key: "tool_servers.linear.api_key", label: "Linear API key", source: "stored" },
       ],
     });
     fireEvent.click(screen.getByRole("button", { name: "Configure Linear" }));
     fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
     await waitFor(() =>
-      expect(onReset).toHaveBeenCalledWith("integrations.linear", ["integrations.linear"]),
+      expect(onReset).toHaveBeenCalledWith("tool_servers.linear", ["tool_servers.linear"]),
     );
   });
 

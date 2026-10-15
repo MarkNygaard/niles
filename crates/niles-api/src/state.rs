@@ -90,6 +90,8 @@ pub struct AppState {
     pub nemlig: Option<Arc<niles_nemlig::NemligClient>>,
     /// The third-party plugins, when the binary runs them.
     pub plugins: Option<Arc<dyn crate::plugins::Plugins>>,
+    /// The remote MCP servers whose tools the model is offered.
+    pub tool_servers: Option<Arc<dyn crate::tool_servers::ToolServers>>,
     /// Each person's Strava and the workouts it brings. Absent without
     /// a database and its secrets key: an app secret and its tokens are
     /// not kept anywhere unsealed.
@@ -128,6 +130,7 @@ impl AppState {
             chat: None,
             nemlig: None,
             plugins: None,
+            tool_servers: None,
             strava: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             music: None,
@@ -222,6 +225,14 @@ impl AppState {
 
     pub fn with_plugins(mut self, plugins: Option<Arc<dyn crate::plugins::Plugins>>) -> Self {
         self.plugins = plugins;
+        self
+    }
+
+    pub fn with_tool_servers(
+        mut self,
+        servers: Option<Arc<dyn crate::tool_servers::ToolServers>>,
+    ) -> Self {
+        self.tool_servers = servers;
         self
     }
 

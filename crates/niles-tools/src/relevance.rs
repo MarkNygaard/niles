@@ -147,12 +147,6 @@ const GROUPS: &[Group] = &[
     },
     Group {
         keywords: &[
-            "task", "tasks", "todo", "to-do", "issue", "issues", "ticket", "linear",
-        ],
-        tools: &["create_task", "get_task", "list_tasks"],
-    },
-    Group {
-        keywords: &[
             "skill",
             "skills",
             "routine",

@@ -127,6 +127,11 @@ impl Config {
                         "The escalation tier was set to {provider}, which Niles no longer supports, so it is off."
                     ),
                 }),
+                Retired::Linear => gaps.push(Gap {
+                    path: "tool_servers.linear",
+                    severity: Severity::Degraded,
+                    consequence: "Linear now works through its own tools, and was set up the old way. Add it again under Add-ons, with an API key.".into(),
+                }),
                 // Nothing to answer: the row could serve nothing.
                 Retired::Provider(_) => {}
             }

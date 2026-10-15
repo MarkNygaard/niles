@@ -50,8 +50,9 @@ pub enum Error {
     #[error("web search error: {0}")]
     WebSearch(String),
 
-    #[error("linear error: {0}")]
-    Linear(String),
+    /// A remote tool server's tool failed, in the server's words.
+    #[error("{0}")]
+    Remote(String),
 
     /// A plugin's tool failed, in words the plugin wrote for the person
     /// who asked: "The bus service is not answering."

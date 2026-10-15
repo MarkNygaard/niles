@@ -77,7 +77,6 @@ const KNOWN: &[(&str, &str)] = &[
     ("auth.github_client_id", "GitHub OAuth client ID"),
     ("auth.github_client_secret", "GitHub OAuth client secret"),
     ("auth.session_secret", "Session signing secret"),
-    ("integrations.linear.api_key", "Linear API key"),
     (
         "integrations.claude_code.oauth_token",
         "Claude Code token, from `claude setup-token`",
@@ -203,6 +202,30 @@ pub async fn list_secrets(State(state): State<AppState>) -> Json<SecretsReport> 
         },
     }));
 
+    // Each tool server's key: Linear's always, since its add-on is
+    // listed whether or not it has been added, and every other one that
+    // is configured.
+    if let Some(cfg) = cfg.as_ref() {
+        let mut ids: Vec<&str> = cfg.tool_servers.keys().map(String::as_str).collect();
+        if !ids.contains(&"linear") {
+            ids.push("linear");
+        }
+        secrets.extend(ids.into_iter().map(|id| {
+            let key = niles_config::tool_servers::secret_key(id);
+            let name = cfg
+                .tool_servers
+                .get(id)
+                .map(|s| s.display_name(id).to_string())
+                .unwrap_or_else(|| "Linear".into());
+            SecretDto {
+                label: format!("{name} API key"),
+                hint: cfg.secret_hint(&key),
+                source: cfg.secret_source(&key),
+                key,
+            }
+        }));
+    }
+
     // Each installed plugin's declared secrets: only ever stored, since
     // no environment variable is named for them.
     if let Some(plugins) = state.plugins.as_ref() {
@@ -257,6 +280,7 @@ pub async fn set_secret(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not save it: {e}")))?;
     reload(&state).await;
     restart_its_plugin(&state, &key);
+    reconnect_its_server(&state, &key);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -273,6 +297,7 @@ pub async fn clear_secret(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not clear it: {e}")))?;
     reload(&state).await;
     restart_its_plugin(&state, &key);
+    reconnect_its_server(&state, &key);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -292,6 +317,17 @@ async fn known(state: &AppState, key: &str) -> Result<String, Failure> {
         known.kind == catalogue::Kind::Provider && known.secret_key().as_deref() == Some(key)
     });
     if a_provider {
+        return Ok(key.to_string());
+    }
+    // A tool server's key: Linear's before its table exists, since the
+    // add-on may save the key first; any other once it is configured.
+    if let Some(id) = niles_config::tool_servers::server_of_secret(key)
+        && (id == "linear"
+            || state
+                .config
+                .as_ref()
+                .is_some_and(|c| c.current().tool_servers.contains_key(id)))
+    {
         return Ok(key.to_string());
     }
     if key.starts_with("plugins.")
@@ -319,6 +355,16 @@ fn restart_its_plugin(state: &AppState, key: &str) {
         .map(|(id, _)| id);
     if let (Some(id), Some(plugins)) = (plugin, state.plugins.as_ref()) {
         plugins.restart(id);
+    }
+}
+
+/// A server is connected with its key, so a new key connects it again.
+fn reconnect_its_server(state: &AppState, key: &str) {
+    if let (Some(id), Some(servers)) = (
+        niles_config::tool_servers::server_of_secret(key),
+        state.tool_servers.as_ref(),
+    ) {
+        servers.refresh(id);
     }
 }
 

@@ -1026,7 +1026,7 @@ Notification content is concise; the result location comes first, URLs go to the
 Linear's tools come from **Linear's own MCP server**, as a [remote tool server](#remote-tool-servers-mcp), not from a client Niles maintains. Linear keeps those tools current (issues, comments, projects, labels, cycles, documents and more), so Niles carries no GraphQL client for them.
 
 - **Connection.** `https://mcp.linear.app/mcp`, with a personal Linear API key as the Bearer token. The key is typed into the add-on and stored encrypted like every other key.
-- **The harness contract** is written into the server's **notes**, which the model is given alongside the tools. Linear's notes come prefilled with: "A coding task goes to the team *niles*, in *Todo*, with the label *AI Eligible*: the ai-harness picks those up." The household edits the notes in the add-on. Niles no longer resolves the team, the label and the state itself.
+- **The harness contract** is written into the server's **notes**, which the model is given alongside the tools. The household writes the notes in the add-on: "A coding task goes to the team *niles*, in *Todo*, with the label *AI Eligible*: the ai-harness picks those up." They start empty, with that sentence as the example, since the team and the label are each household's own. Niles no longer resolves the team, the label and the state itself.
 - **Completion notifications** stay Niles's own. `niles-integration-linear` keeps only the webhook (`/webhooks/linear`, HMAC-verified), which turns a state change or a linked PR into a notification. MCP has no way for a server to push to Niles.
 
 **Resolving natural language:**
@@ -2766,7 +2766,8 @@ niles/
 │   ├── niles-capabilities/     # capability reference files for self-documentation
 │   ├── niles-scheduler/        # time-driven behaviors (lighting curve, routines, timers)
 │   ├── niles-notifications/    # unprompted speech: routing, chimes, quiet hours, recall
-│   ├── niles-integration-linear/ # Linear task integration (first integration); ai-harness runs AI-eligible tasks
+│   ├── niles-integration-linear/ # Linear's webhook: issue changes become notifications
+│   ├── niles-mcp/              # MCP client for remote tool servers (Linear's tools)
 │   ├── niles-recognition/      # speaker identification via voice embeddings
 │   ├── niles-permissions/      # rules engine and admin concept; enforces tool access
 │   ├── niles-presence/         # presence sources, aggregation, home-state events
@@ -3008,6 +3009,7 @@ niles:
 - Default rule: only known users can file AI-eligible tasks
 - Verify: voice "add a task: …" files a Linear issue the harness picks up and turns into a PR; "did it get a PR?" reports status
 - Note: niles does NOT talk to the harness directly — Linear (label + column) is the whole contract. Archon is dropped.
+- Superseded: the three tools and the GraphQL client were replaced by Linear's own MCP server, as a [remote tool server](#remote-tool-servers-mcp).
 
 ### Phase 11: LLM-facing documentation and deployment polish (1 weekend)
 - `features.toml` canonical feature catalog at repo root

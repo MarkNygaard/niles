@@ -2453,9 +2453,9 @@ dependencies = [
  "niles-db",
  "niles-groceries",
  "niles-history",
- "niles-integration-linear",
  "niles-intent",
  "niles-llm",
+ "niles-mcp",
  "niles-memory",
  "niles-mqtt",
  "niles-nemlig",
@@ -2483,6 +2483,7 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
@@ -2598,17 +2599,12 @@ dependencies = [
 name = "niles-integration-linear"
 version = "0.2.1"
 dependencies = [
- "async-trait",
  "hex",
  "hmac 0.13.0",
- "parking_lot",
- "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2630,6 +2626,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "niles-mcp"
+version = "0.2.1"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -2844,7 +2853,6 @@ dependencies = [
  "niles-core",
  "niles-groceries",
  "niles-history",
- "niles-integration-linear",
  "niles-llm",
  "niles-memory",
  "niles-mqtt",

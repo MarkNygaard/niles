@@ -74,6 +74,7 @@ mod ringer;
 mod satellites;
 mod speak;
 mod speakers;
+mod tool_servers;
 mod training;
 mod tv;
 mod vocabulary;
@@ -1264,7 +1265,6 @@ fn build_tool_registry(
     weather_client: Option<Arc<niles_weather::OpenMeteoClient>>,
     websearch_client: Option<Arc<niles_websearch::SearXngClient>>,
     websearch_default_num_results: u8,
-    linear_client: Option<Arc<niles_integration_linear::LinearClient>>,
     presence: Option<Arc<PresenceAggregator>>,
     home: &niles_config::HomeConfig,
     dry_run: bool,
@@ -1294,9 +1294,6 @@ fn build_tool_registry(
     }
     if let Some(client) = websearch_client {
         niles_tools::register_web_search_tool(&mut tools, client, websearch_default_num_results);
-    }
-    if let Some(client) = linear_client {
-        niles_tools::register_linear_tools(&mut tools, client);
     }
     if let Some(agg) = presence {
         niles_tools::register_presence_tools(&mut tools, agg);
@@ -2017,33 +2014,6 @@ fn build_websearch_client(
         .map(Arc::new)
 }
 
-fn build_linear_client(
-    cfg: &niles_config::IntegrationsConfig,
-) -> Option<Arc<niles_integration_linear::LinearClient>> {
-    let linear = cfg.linear.as_ref()?;
-    if linear.team.trim().is_empty() {
-        tracing::warn!("Linear integration disabled: no team set");
-        return None;
-    }
-    let api_key = linear
-        .resolve_api_key()
-        .inspect_err(|e| tracing::warn!("Linear integration disabled: {e}"))
-        .ok()?;
-    let config = niles_integration_linear::LinearConfig {
-        api_key,
-        team: linear.team.clone(),
-        trigger_label: linear.trigger_label.clone(),
-        todo_state: linear.todo_state.clone(),
-        request_timeout: Duration::from_secs(linear.timeout_seconds),
-    };
-    niles_integration_linear::LinearClient::new(config)
-        .inspect_err(|e| {
-            tracing::warn!("Failed to build Linear client: {e}; linear tools disabled")
-        })
-        .ok()
-        .map(Arc::new)
-}
-
 fn spawn_skill_curator(
     store: Arc<SkillStore>,
     curator_cfg: niles_config::SkillsCuratorConfig,
@@ -2560,7 +2530,6 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let skill_store = build_skill_store(&cfg).await;
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
-    let linear_client = build_linear_client(&cfg.integrations);
     // Kept separately from the poll loop: the connection has to exist
     // for Settings to authorise it even when nothing polls it yet.
     let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
@@ -2587,7 +2556,6 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
-        linear_client.clone(),
         presence_agg,
         &cfg.home,
         false,
@@ -3185,7 +3153,6 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     let skill_store = build_skill_store(&cfg).await;
     let weather_client = build_weather_client();
     let websearch_client = build_websearch_client(&cfg.web_search);
-    let linear_client = build_linear_client(&cfg.integrations);
     // Kept separately from the poll loop: the connection has to exist
     // for Settings to authorise it even when nothing polls it yet.
     let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
@@ -3212,7 +3179,6 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
-        linear_client.clone(),
         presence_agg.clone(),
         &cfg.home,
         args.dry_run,
@@ -4093,6 +4059,12 @@ async fn dispatch_tier1(
     );
     let mut system_prompt = system_prompt;
     system_prompt.push_str(&now_playing_section(&ctx.music.now_playing().await));
+    // What the household wrote about a tool server's tools, with the
+    // tools themselves: where a coding task goes, which team is theirs.
+    for note in ctx.tools.notes_for(text) {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&note);
+    }
     if !matches!(thread, conversation::Thread::Chat(_)) {
         system_prompt.push_str(HEARD_NOT_READ);
     }
@@ -6664,6 +6636,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         bus.clone(),
         plugin_tools.clone(),
     );
+    // Remote tool servers put their tools beside the plugins'. After the
+    // secrets are loaded, since each connects with its key.
+    let tool_servers = tool_servers::ToolServers::start(store.clone(), plugin_tools.clone());
     let plugin_database = plugin_host.as_ref().is_some_and(|(_, database)| *database);
     let plugin_runtime = plugin_host.map(|(runtime, _)| runtime);
     let router = Arc::new(match &plugin_runtime {
@@ -6851,7 +6826,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .clone()
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
     let websearch_client = build_websearch_client(&cfg.web_search);
-    let linear_client = build_linear_client(&cfg.integrations);
     // Kept separately from the poll loop: the connection has to exist
     // for Settings to authorise it even when nothing polls it yet.
     let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
@@ -6878,7 +6852,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         weather_client.clone(),
         websearch_client.clone(),
         cfg.web_search.default_num_results,
-        linear_client.clone(),
         presence_agg.clone(),
         &cfg.home,
         args.dry_run,
@@ -7156,7 +7129,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     )
     .with_plugins(plugin_installer.clone().map(|installer| {
         Arc::new(plugins::AppPlugins(installer)) as Arc<dyn niles_api::plugins::Plugins>
-    }));
+    }))
+    .with_tool_servers(Some(
+        Arc::new(tool_servers::AppToolServers(tool_servers.clone()))
+            as Arc<dyn niles_api::tool_servers::ToolServers>,
+    ));
 
     // A deployment that mounts its secrets under names the platform
     // silently drops leaves `[auth]` naming variables that do not

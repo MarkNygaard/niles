@@ -432,13 +432,13 @@ pub const KNOWN: &[Known] = &[
     Known {
         id: "linear",
         label: "Linear",
-        blurb: "Turn an issue into work Niles picks up.",
-        needs: "A Linear workspace, an API key, and the team whose issues Niles should watch.",
+        blurb: "Issues, projects and comments, through Linear's own tools.",
+        needs: "A Linear workspace and a personal API key.",
         kind: Kind::Service,
         group: Group::Assistants,
         importance: Importance::Optional,
         icon: "list-todo",
-        secrets: &["integrations.linear.api_key"],
+        secrets: &["tool_servers.linear.api_key"],
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -464,7 +464,7 @@ impl Known {
         match self.kind {
             Kind::Provider => Some(format!("provider.{}.api_key", self.id)),
             // tado has tokens rather than a key, and fetches them itself.
-            Kind::Service if self.id == "linear" => Some("integrations.linear.api_key".into()),
+            Kind::Service if self.id == "linear" => Some("tool_servers.linear.api_key".into()),
             Kind::Service if self.id == "claude_code" => {
                 Some("integrations.claude_code.oauth_token".into())
             }
@@ -698,7 +698,7 @@ mod tests {
         }
         assert_eq!(owns("lg_tv"), ["tv.client_key"]);
         assert_eq!(owns("unifi"), ["presence.unifi.api_key"]);
-        assert_eq!(owns("linear"), ["integrations.linear.api_key"]);
+        assert_eq!(owns("linear"), ["tool_servers.linear.api_key"]);
         assert_eq!(
             owns("claude_code"),
             ["integrations.claude_code.oauth_token"]

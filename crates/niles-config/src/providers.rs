@@ -139,6 +139,10 @@ pub enum Retired {
     /// The escalation tier named a provider that is not declared. It is
     /// switched off rather than sent to OpenAI with a key nobody gave.
     Tier2(String),
+    /// `[integrations.linear]`, from before Linear's tools came from
+    /// Linear's own MCP server. Dropped: Linear is added again as a
+    /// tool server, with its own key.
+    Linear,
 }
 
 impl crate::Config {
@@ -194,6 +198,9 @@ impl crate::Config {
         {
             self.llm.tier2 = None;
             retired.push(Retired::Tier2(provider));
+        }
+        if self.integrations.linear.take().is_some() {
+            retired.push(Retired::Linear);
         }
         self.retired = retired;
     }

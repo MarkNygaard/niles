@@ -124,7 +124,7 @@ fn models_of(known: &Known) -> std::collections::BTreeMap<String, Vec<String>> {
 fn is_added(cfg: &Config, id: &str) -> bool {
     match id {
         "tado" => cfg.presence.tado.is_some(),
-        "linear" => cfg.integrations.linear.is_some(),
+        "linear" => cfg.tool_servers.contains_key("linear"),
         // Switched off is still added: the card stays, with its switch,
         // its model and its token.
         "claude_code" => cfg.integrations.claude_code.is_some(),
@@ -214,12 +214,19 @@ enabled = true
         ));
         assert!(!is_added(&cfg(""), "tado"));
         assert!(is_added(
+            &cfg("[tool_servers.linear]
+url = \"https://mcp.linear.app/mcp\"
+"),
+            "linear"
+        ));
+        assert!(!is_added(&cfg(""), "linear"));
+        // The section from before Linear was a tool server is retired.
+        assert!(!is_added(
             &cfg("[integrations.linear]
 team = \"niles\"
 "),
             "linear"
         ));
-        assert!(!is_added(&cfg(""), "linear"));
     }
 
     #[test]
