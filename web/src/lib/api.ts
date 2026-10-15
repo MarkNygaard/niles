@@ -418,7 +418,12 @@ export interface IcloudConnect {
 export interface TvInfo {
   configured: boolean;
   paired: boolean;
+  /** The MAC it is woken by first. */
   mac: string | null;
+  /** "detected" at pairing, or "hand": typed, and kept through a pairing again. */
+  mac_source?: "detected" | "hand" | null;
+  /** The MAC pairing chose, when the one set by hand is another. */
+  detected_mac?: string | null;
   room: string | null;
   /** Absent before pairing, or when the TV could not be asked. */
   status: {
@@ -435,6 +440,16 @@ export interface TvInfo {
 
 /** One change to the TV's own speakers. */
 export type TvVolumeChange = { volume: number } | { delta: number } | { mute: boolean };
+
+/**
+ * What came of the power button. Waking it is `on` only once the TV
+ * answered; otherwise `message` says the signal went out and where to
+ * look.
+ */
+export interface TvPowered {
+  on: boolean;
+  message?: string;
+}
 
 /** The TV's own speakers after a change. */
 export interface TvVolume {
@@ -1333,7 +1348,7 @@ export const api = {
   /** Shows the prompt on the TV and waits up to a minute for it. */
   pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),
   tvPower: (on: boolean) =>
-    request<void>("/tv/power", { method: "POST", body: JSON.stringify({ on }) }),
+    request<TvPowered>("/tv/power", { method: "POST", body: JSON.stringify({ on }) }),
   tvVolume: (change: TvVolumeChange) =>
     request<TvVolume>("/tv/volume", { method: "POST", body: JSON.stringify(change) }),
   voices: () => request<Voice[]>("/voices"),

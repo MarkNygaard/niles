@@ -17,7 +17,7 @@ pub struct TvDto {
     pub configured: bool,
     /// Paired: Niles has the key the TV issued.
     pub paired: bool,
-    /// The address it will be woken with, once known.
+    /// The address it will be woken with first, once known.
     pub mac: Option<String>,
     /// Where `mac` came from: "detected" at pairing, or "hand": typed,
     /// and kept through a pairing again.
@@ -54,7 +54,8 @@ pub async fn get(State(state): State<AppState>) -> Json<TvDto> {
         _ => (None, None),
     };
     let present = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
-    let mac = present(&tv.mac);
+    // A cleared `mac` is woken by what pairing found.
+    let mac = present(&tv.mac).or_else(|| tv.detected_mac().map(str::to_string));
     let by_hand = tv.mac_set_by_hand();
     Json(TvDto {
         configured: tv.is_configured(),
@@ -535,6 +536,12 @@ mod tests {
         .await;
         assert_eq!(by_hand["mac_source"], "hand");
         assert_eq!(by_hand["detected_mac"], WIFI);
+        let cleared = get_tv(&format!(
+            "{unpaired}mac = \"\"\ndetected_macs = [\"{WIFI}\", \"{WIRED}\"]\n"
+        ))
+        .await;
+        assert_eq!(cleared["mac"], WIFI);
+        assert_eq!(cleared["mac_source"], "detected");
         let none = get_tv(unpaired).await;
         assert_eq!(none["mac"], serde_json::Value::Null);
         assert_eq!(none["mac_source"], serde_json::Value::Null);

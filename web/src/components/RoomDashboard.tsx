@@ -148,6 +148,10 @@ export function RoomDashboard() {
   });
   const tvPower = useMutation({
     mutationFn: api.tvPower,
+    // A wake-up the TV did not answer says where to look.
+    onSuccess: (powered) => setError(powered?.message ?? null),
+    onError: (failure) =>
+      setError(failure instanceof ApiError ? failure.message : String(failure)),
     // A TV takes a few seconds to come on; ask again once it has.
     onSettled: () =>
       setTimeout(() => queryClient.invalidateQueries({ queryKey: ["tv"] }), 4_000),

@@ -31,7 +31,17 @@ export function pairingLine(tv?: TvInfo): string {
   if (!tv?.configured) return "Give the TV's address, then pair it.";
   if (!tv.paired) return "Not paired yet.";
   if (!tv.mac) return "Paired. Its MAC address is not known, so Niles cannot turn it on.";
-  return `Paired. Woken by ${tv.mac}.`;
+  return "Paired.";
+}
+
+/** Where the wake MAC came from. */
+export function macLine(tv?: TvInfo): string {
+  if (!tv?.mac) return "Found when the TV is paired, or type the one in its network settings.";
+  if (tv.mac_source === "hand") {
+    const reported = tv.detected_mac ? ` The TV reported ${tv.detected_mac}.` : "";
+    return `Set by hand, and kept when the TV is paired again.${reported} Clear it to use what the TV reports.`;
+  }
+  return "Detected from the TV when it was paired.";
 }
 
 /**
@@ -126,6 +136,20 @@ export function TvPanel({
         )}
         {problem && <p className="text-destructive text-sm">{problem}</p>}
       </div>
+
+      {tv?.configured && (
+        <div className="flex flex-col gap-1">
+          <CommitField
+            label="Wake MAC"
+            value={tv.mac ?? ""}
+            placeholder="a8:23:fe:01:02:03"
+            allowEmpty
+            disabled={saving}
+            onCommit={(value) => onChange([{ path: "tv.mac", value }])}
+          />
+          <span className="text-muted-foreground text-xs">{macLine(tv)}</span>
+        </div>
+      )}
 
       <label className="flex items-center justify-between gap-4">
         <span className="min-w-0">
