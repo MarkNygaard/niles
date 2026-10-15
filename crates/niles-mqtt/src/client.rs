@@ -251,6 +251,36 @@ impl MqttPublisher {
 const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 
+/// A subscription replay running beside the eventloop, cancelled when
+/// this is dropped.
+///
+/// The replay cannot run inline: every `subscribe` waits for room in
+/// rumqttc's bounded request channel, and the only thing that empties
+/// that channel is the task polling the eventloop. Inline, the 33rd
+/// topic waited on its own task forever. Out here it waits on the
+/// eventloop instead, which keeps the backpressure and loses the
+/// deadlock.
+struct Replay(JoinHandle<()>);
+
+impl Replay {
+    fn start(client: AsyncClient, topics: Vec<String>) -> Self {
+        Self(tokio::spawn(async move {
+            for topic in topics {
+                match client.subscribe(&topic, QoS::AtLeastOnce).await {
+                    Ok(()) => debug!("resubscribed to {topic}"),
+                    Err(e) => warn!("failed to resubscribe to {topic}: {e}"),
+                }
+            }
+        }))
+    }
+}
+
+impl Drop for Replay {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Background task that pumps the rumqttc `EventLoop`. After the
 /// first successful `ConnAck`, this runs forever — runtime errors
 /// are logged and retried with exponential backoff (capped). Initial
@@ -265,6 +295,11 @@ async fn pump_events(
 ) {
     let mut ever_connected = false;
     let mut backoff = RECONNECT_INITIAL_BACKOFF;
+    // At most one replay, and only for the connection it was started
+    // for. A replay outliving its connection would keep feeding the
+    // channel while the next one starts its own, and the broker would
+    // see the overlap as a second round of subscriptions.
+    let mut replay: Option<Replay> = None;
 
     let reason = loop {
         match event_loop.poll().await {
@@ -278,12 +313,7 @@ async fn pump_events(
                     // poorly when multiple overlapping patterns are in
                     // play (silently wedges message delivery).
                     let to_replay: Vec<String> = subscriptions.lock().unwrap().clone();
-                    for topic in to_replay {
-                        match client.subscribe(&topic, QoS::AtLeastOnce).await {
-                            Ok(()) => debug!("resubscribed to {topic}"),
-                            Err(e) => warn!("failed to resubscribe to {topic}: {e}"),
-                        }
-                    }
+                    replay.replace(Replay::start(client.clone(), to_replay));
                 } else {
                     info!("MQTT connected");
                 }
@@ -309,6 +339,12 @@ async fn pump_events(
                     // forever on `BadUserNamePassword`.
                     break DisconnectReason::Error(e.to_string());
                 }
+                // rumqttc has just moved whatever was queued into its
+                // pending list, which a clean session discards on
+                // reconnect. Stopping the replay now keeps it from
+                // refilling the channel during the backoff with
+                // subscriptions meant for a connection that is gone.
+                replay.take();
                 warn!("MQTT disconnected: {e}; reconnecting in {backoff:?}");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
@@ -321,6 +357,156 @@ async fn pump_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The reconnect tests below grew out of an outside review, which
+    // found the replay deadlocking on its own request channel once more
+    // than 32 topics were remembered (its capacity). 32 is the control,
+    // 33 the first count that hung, and 200 is a house of WLED strips
+    // at three topics each.
+
+    /// Read one MQTT packet: the fixed-header byte and the body.
+    async fn read_packet(socket: &mut tokio::net::TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
+        use tokio::io::AsyncReadExt;
+        let header = socket.read_u8().await?;
+        let mut len = 0usize;
+        let mut multiplier = 1usize;
+        loop {
+            let byte = socket.read_u8().await?;
+            len += usize::from(byte & 127) * multiplier;
+            if byte & 128 == 0 {
+                break;
+            }
+            multiplier *= 128;
+        }
+        let mut body = vec![0u8; len];
+        socket.read_exact(&mut body).await?;
+        Ok((header, body))
+    }
+
+    /// Take a connection's CONNECT and accept it.
+    async fn accept_session(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
+        use tokio::io::AsyncWriteExt;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (header, _) = read_packet(&mut socket).await.unwrap();
+        assert_eq!(header, 0x10, "expected CONNECT");
+        socket.write_all(&[0x20, 0x02, 0x00, 0x00]).await.unwrap();
+        socket
+    }
+
+    /// Read SUBSCRIBE packets, acknowledging each, until `want`
+    /// distinct topics have arrived or `stop_after` packets have, and
+    /// return every topic in the order it came — repeats included, so a
+    /// caller can tell a replay that ran twice. Fails on anything other
+    /// than a SUBSCRIBE: nothing else should be on the wire.
+    async fn take_subscriptions(
+        socket: &mut tokio::net::TcpStream,
+        want: usize,
+        stop_after: usize,
+    ) -> Vec<String> {
+        use tokio::io::AsyncWriteExt;
+        let mut topics = Vec::new();
+        let mut distinct = std::collections::BTreeSet::new();
+        let mut packets = 0;
+        while distinct.len() < want && packets < stop_after {
+            let (header, body) = read_packet(socket).await.unwrap();
+            assert_eq!(header, 0x82, "expected SUBSCRIBE, got {header:#x}");
+            packets += 1;
+            let mut at = 2;
+            let mut granted = 0u8;
+            while at < body.len() {
+                let len = usize::from(u16::from_be_bytes([body[at], body[at + 1]]));
+                let topic = std::str::from_utf8(&body[at + 2..at + 2 + len]).unwrap();
+                topics.push(topic.to_string());
+                distinct.insert(topic.to_string());
+                at += 2 + len + 1;
+                granted += 1;
+            }
+            let mut suback = vec![0x90, 2 + granted, body[0], body[1]];
+            suback.extend(std::iter::repeat_n(0x01, usize::from(granted)));
+            socket.write_all(&suback).await.unwrap();
+        }
+        topics
+    }
+
+    fn remembered(count: usize) -> (Arc<Mutex<Vec<String>>>, Vec<String>) {
+        let topics: Vec<String> = (0..count).map(|i| format!("replay/{i}")).collect();
+        (Arc::new(Mutex::new(topics.clone())), topics)
+    }
+
+    /// Every remembered topic, each exactly once.
+    fn assert_replayed_once(mut received: Vec<String>, mut expected: Vec<String>) {
+        received.sort();
+        expected.sort();
+        assert_eq!(received, expected);
+    }
+
+    /// Connect once, drop the connection, and check the reconnect
+    /// subscribes to every remembered topic.
+    async fn reconnect_replays_every_subscription(count: usize) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let broker = tokio::spawn(async move {
+            drop(accept_session(&listener).await);
+            let mut socket = accept_session(&listener).await;
+            take_subscriptions(&mut socket, count, usize::MAX).await
+        });
+        let opts = RmqOptions::new("niles-test-replay", addr.ip().to_string(), addr.port());
+        let (client, event_loop) = AsyncClient::new(opts, 32);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (disc_tx, _disc_rx) = oneshot::channel();
+        let (subscriptions, expected) = remembered(count);
+        let pump = tokio::spawn(pump_events(event_loop, client, tx, subscriptions, disc_tx));
+        let result = tokio::time::timeout(Duration::from_secs(10), broker).await;
+        pump.abort();
+        let _ = pump.await;
+        let received = result
+            .unwrap_or_else(|_| panic!("reconnect replay of {count} topics stalled"))
+            .unwrap();
+        assert_replayed_once(received, expected);
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_subscriptions_that_fill_the_request_queue() {
+        reconnect_replays_every_subscription(32).await;
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_more_subscriptions_than_the_request_queue_holds() {
+        reconnect_replays_every_subscription(33).await;
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_hundreds_of_subscriptions() {
+        reconnect_replays_every_subscription(200).await;
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_in_the_middle_of_a_replay_starts_it_again() {
+        // The second connection closes as soon as it is accepted, with
+        // the replay for it barely started. The third has to get every
+        // topic once: not the leftovers of the second's replay, and not
+        // those leftovers followed by a fresh round.
+        let count = 100;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let broker = tokio::spawn(async move {
+            drop(accept_session(&listener).await);
+            drop(accept_session(&listener).await);
+            let mut socket = accept_session(&listener).await;
+            take_subscriptions(&mut socket, count, usize::MAX).await
+        });
+        let opts = RmqOptions::new("niles-test-replay", addr.ip().to_string(), addr.port());
+        let (client, event_loop) = AsyncClient::new(opts, 32);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (disc_tx, _disc_rx) = oneshot::channel();
+        let (subscriptions, expected) = remembered(count);
+        let pump = tokio::spawn(pump_events(event_loop, client, tx, subscriptions, disc_tx));
+        let result = tokio::time::timeout(Duration::from_secs(15), broker).await;
+        pump.abort();
+        let _ = pump.await;
+        let received = result.expect("replay stalled after the reconnect").unwrap();
+        assert_replayed_once(received, expected);
+    }
 
     #[test]
     fn options_builder_sets_credentials() {
