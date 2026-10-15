@@ -86,14 +86,14 @@ export function VoicePage({
         <CardHeader>
           <CardTitle>Hearing</CardTitle>
           <CardDescription>
-            Turns what a satellite heard into words.
+            Turns what a satellite heard into words. Pick who listens, and
+            give it its key.
           </CardDescription>
         </CardHeader>
         <CardContent className="divide-border flex flex-col gap-5 divide-y">
           <RoleCard
             role="stt"
             title="Hearing"
-            description="Pick who listens, and give it its key."
             providers={providers}
             current={stt.provider}
             model={stt.model ?? ""}
@@ -129,14 +129,14 @@ export function VoicePage({
         <CardHeader>
           <CardTitle>Thinking</CardTitle>
           <CardDescription>
-            Answers anything a pattern cannot, while you wait.
+            Answers anything a pattern cannot, while you wait. Pick who
+            answers, give it its key, and say how hard it thinks.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <RoleCard
             role="llm"
             title="Thinking"
-            description="Pick who answers, give it its key, and say how hard it thinks."
             providers={providers}
             current={llm.provider}
             model={llm.model ?? ""}

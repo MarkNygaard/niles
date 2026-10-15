@@ -95,7 +95,6 @@ function setup(
     <RoleCard
       role={role}
       title={role === "stt" ? "Hearing" : "Thinking"}
-      description="…"
       providers={[ELEVENLABS, CEREBRAS, OTHER, BROKER]}
       model=""
       secrets={KEYS}

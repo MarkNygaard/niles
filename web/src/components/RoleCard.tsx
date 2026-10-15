@@ -27,8 +27,9 @@ export interface RoleChange {
 
 export interface RoleCardProps {
   role: Role;
+  /** Names its controls for screen readers ("Hearing provider"); the
+      heading on screen is the card's. */
   title: string;
-  description: string;
   /** The providers Niles ships, from the catalogue. Only the ones that
       do this job are offered. */
   providers: Integration[];
@@ -199,7 +200,6 @@ export function startingProvider(
 export function RoleCard({
   role,
   title,
-  description,
   providers,
   current,
   model,
@@ -265,11 +265,6 @@ export function RoleCard({
 
   return (
     <div className="flex flex-col gap-3">
-      <div>
-        <h3 className="text-sm font-medium">{title}</h3>
-        <p className="text-muted-foreground text-xs">{description}</p>
-      </div>
-
       {usable.length === 0 ? (
         <p className="text-muted-foreground text-sm">
           Niles has no provider for this yet.
