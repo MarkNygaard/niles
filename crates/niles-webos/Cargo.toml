@@ -13,6 +13,7 @@ futures-util.workspace = true
 # The TV's certificate is its own, signed by nobody, so this crate needs
 # rustls directly to say so; ring, the provider the rest already builds.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+niles-tls.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
@@ -21,4 +22,8 @@ tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+# A TLS server presenting an older TV's X.509 v1 certificate.
+niles-tls = { workspace = true, features = ["test-support"] }
+rcgen = "0.14"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }

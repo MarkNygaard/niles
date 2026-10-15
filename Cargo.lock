@@ -2706,6 +2706,7 @@ dependencies = [
  "niles-llm",
  "niles-mqtt",
  "niles-notifications",
+ "niles-tls",
  "niles-tools",
  "rand 0.10.2",
  "rcgen",
@@ -2714,7 +2715,6 @@ dependencies = [
  "rumqttc",
  "rumqttd",
  "rustls 0.23.40",
- "rustls-webpki 0.103.13",
  "semver",
  "serde",
  "serde_json",
@@ -2816,6 +2816,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "niles-tls"
+version = "0.2.1"
+dependencies = [
+ "rcgen",
+ "rustls 0.23.40",
+ "rustls-webpki 0.103.13",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "niles-tools"
 version = "0.2.1"
 dependencies = [
@@ -2880,11 +2890,14 @@ name = "niles-webos"
 version = "0.2.1"
 dependencies = [
  "futures-util",
+ "niles-tls",
+ "rcgen",
  "rustls 0.23.40",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tokio-tungstenite 0.30.0",
  "tracing",
 ]

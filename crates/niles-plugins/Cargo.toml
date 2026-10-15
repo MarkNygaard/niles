@@ -39,9 +39,10 @@ futures-util.workspace = true
 tokio-util = { version = "0.7", features = ["codec"] }
 # A trust-device broker's certificate is its own, signed by nobody, so
 # this crate needs rustls directly to say so; ring, the provider the rest
-# already builds. webpki reads the public key Niles pins.
+# already builds. niles-tls reads the key Niles pins, whatever the
+# certificate's version.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
+niles-tls.workspace = true
 webpki-roots = "1"
 sha2.workspace = true
 
@@ -53,5 +54,6 @@ wiremock = "0.6"
 # A real broker for the MQTT tests, with a certificate made on the spot.
 rumqttd = { version = "0.20", default-features = false, features = ["use-rustls"] }
 rcgen = "0.14"
+niles-tls = { workspace = true, features = ["test-support"] }
 # PEM for the v1 certificate the tests build by hand.
 base64.workspace = true
