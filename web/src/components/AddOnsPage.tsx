@@ -546,7 +546,7 @@ export function AddOnsPage({
           if (!next) setOpenPlugin(null);
         }}
       >
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:w-[calc(100vw-2rem)] sm:max-w-2xl">
           {currentPlugin && (
             <>
               <DialogHeader>
@@ -594,7 +594,7 @@ export function AddOnsPage({
           }
         }}
       >
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:w-[calc(100vw-2rem)] sm:max-w-2xl">
           {current && (
             <>
               <DialogHeader>
