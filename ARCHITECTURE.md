@@ -1023,29 +1023,46 @@ Notification content is concise; the result location comes first, URLs go to the
 
 **Integration shape:**
 
-The `niles-integration-linear` crate:
+Linear's tools come from **Linear's own MCP server**, as a [remote tool server](#remote-tool-servers-mcp), not from a client Niles maintains. Linear keeps those tools current (issues, comments, projects, labels, cycles, documents and more), so Niles carries no GraphQL client for them.
 
-- Talks to **Linear's GraphQL API** with an API token (env var; never leaves the central Niles service).
-- Resolves the configured team, the trigger **label** ("AI Eligible"), and the initial **state** ("Todo") by name at startup, so config stays human-readable.
-- Exposes LLM tools:
-  - `create_task(title, description)` — files an issue in the team, in "Todo", with "AI Eligible" (so the harness runs it). Returns the issue identifier/URL.
-  - `list_tasks(status?)` — open tasks and their states.
-  - `get_task(id)` — one issue's state plus its linked PR, if any.
-- (Later) subscribes to Linear webhooks to publish notification events on state changes / PR-linked, for the completion chimes above.
-
-**Configuration:**
-
-```toml
-[integrations.linear]
-api_key_env = "LINEAR_API_KEY"
-team        = "niles"          # team key or name
-trigger_label = "AI Eligible"  # label the harness watches for
-todo_state    = "Todo"         # column new tasks land in
-```
+- **Connection.** `https://mcp.linear.app/mcp`, with a personal Linear API key as the Bearer token. The key is typed into the add-on and stored encrypted like every other key.
+- **The harness contract** is written into the server's **notes**, which the model is given alongside the tools. Linear's notes come prefilled with: "A coding task goes to the team *niles*, in *Todo*, with the label *AI Eligible*: the ai-harness picks those up." The household edits the notes in the add-on. Niles no longer resolves the team, the label and the state itself.
+- **Completion notifications** stay Niles's own. `niles-integration-linear` keeps only the webhook (`/webhooks/linear`, HMAC-verified), which turns a state change or a linked PR into a notification. MCP has no way for a server to push to Niles.
 
 **Resolving natural language:**
 
-The LLM maps a casual spoken request to a clean issue title + brief — well within GPT-OSS 20B's range, no Tier 2 needed. It does not need to know workflow names or the harness at all; "make it AI-eligible in Todo" is the whole contract.
+The model maps a casual spoken request to a clean issue title and brief. It does not need to know workflow names or the harness. The notes say where a coding task goes, and that is the whole contract.
+
+### Remote tool servers (MCP)
+
+A service that runs its own **MCP server** brings its own tools. Niles connects to the server as an MCP client, lists its tools, and offers them to the model next to Niles's own. Linear is the first. The same add-on takes any server that speaks MCP over Streamable HTTP and accepts a Bearer token (GitHub, Notion, Sentry, and others).
+
+**Adding one.** Under Settings → Add-ons, a remote tool server is an add-on with an address, a key and a name. Linear is listed by name with its address filled in. "Another MCP server" takes any address. On save, Niles connects (`initialize`, then `tools/list`), and the add-on shows the tools it found. It says **Working** only once that has succeeded. Otherwise it shows the server's own error ("401: the key was refused"). A server added, changed or removed takes effect without a restart.
+
+**Each tool, one of three:**
+
+| | The model can… |
+|---|---|
+| **On** (the default) | call it, and it runs |
+| **Ask first** | call it, and it runs only once a person says yes |
+| **Off** | not see it at all |
+
+Every tool starts **On**: the model does what it is told. The list shows what the server says about each tool, read-only or destructive (MCP's `readOnlyHint` and `destructiveHint`), so a household can see which to set to Ask first. A tool the server adds later arrives On, and the add-on says how many are new.
+
+**Ask first.** The call does not run. Niles holds it as a **pending approval**: the tool, its arguments, who asked and where. The model is told only that the action is waiting for a yes, and it asks the person in one sentence ("Shall I file 'WLED presets' in Linear?"). The model never decides the answer. Niles decides it, from what the person does:
+
+- **By voice**, the satellite keeps listening for the reply, as it does after any question. A yes runs the held call, a no drops it, and anything else leaves it waiting.
+- **In the app's chat**, the reply shows as a card under the question, with **Allow once**, **Allow for this conversation** and **Deny**. "For this conversation" means that tool runs without asking for the rest of that conversation.
+
+Niles runs the held call itself, with the arguments it held. What runs is what was shown, whatever the model says next. A pending approval lapses with its conversation, or after five minutes.
+
+**Which tools a request gets.** A server's tools go out only with a request that mentions one of its keywords, as a [plugin's](#third-party-add-ons-plugins) do. The add-on sets the keywords; Linear's start as *linear*, *issue*, *task* and *ticket*. Tool names are prefixed with the server's id (`linear__create_issue`), so two servers cannot collide with each other or with Niles's own tools.
+
+**Who answers.** When the fast model reaches for a server's tool and Claude Code or ChatGPT is switched on, the turn goes to the assistant, as a spoken automation does. Filing a well-written issue is worth a few seconds. A per-server switch, **Let the assistant handle these**, on by default, turns this off for a server whose tools are quick lookups. The assistant reaches the same tools through Niles's own MCP server, so Ask first and Off hold for it too.
+
+**What leaves the house.** A call sends its arguments to that server, and its result goes to the model in the request that writes the answer, as any tool result does. The key never leaves Niles.
+
+**Not in v1:** OAuth sign-in to a server (a key covers Linear and most others); a server that pushes tool-list changes (the list is refreshed on save, on start, and with the add-on's Refresh button); MCP resources and prompts (tools only); per-person servers (a server belongs to the house).
 
 ### Calendars
 
@@ -1107,7 +1124,6 @@ What the project will never carry in-tree — one household's inverter, a region
 
 ### What this section does not specify
 
-- Whether Niles polls Linear for status or relies solely on webhooks (webhooks preferred; polling is the fallback)
 - How to handle Linear API-token rotation
 - Voice-fingerprint gating of who can file/trigger tasks (deferred to the upcoming "user recognition" capability — see separate section)
 
