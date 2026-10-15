@@ -15,7 +15,7 @@
 use crate::client::{Message, MqttClient};
 use crate::error::Result;
 use crate::z2m::{Z2mGroup, parse_device_list, parse_group_list, parse_state};
-use niles_core::{DeviceId, DeviceRegistry, Event, EventBus, LightCapabilities};
+use niles_core::{Device, DeviceId, DeviceRegistry, Event, EventBus, LightCapabilities};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, warn};
@@ -88,92 +88,116 @@ impl Z2mSource {
 /// whenever either changes.
 #[derive(Default)]
 pub(crate) struct GroupIndex {
+    /// The groups Niles can use. One whose name is not `room/name` is
+    /// left out at the door, members and all: it can never be a device,
+    /// so hiding its bulbs behind it would leave them unreachable.
     groups: Vec<Z2mGroup>,
-    /// ieee address → the id that device was given.
-    ids: HashMap<String, DeviceId>,
-    /// ieee address → what it can be told, for the union a group takes.
-    caps: HashMap<String, LightCapabilities>,
+    /// Every device in the last device list, with its ieee address, as
+    /// it would go into the registry. Kept whole rather than as ids
+    /// because a group that loses a member, or goes away altogether, has
+    /// to hand its bulbs back, and the device list that described them
+    /// may not be published again for hours.
+    devices: Vec<(String, Device)>,
 }
 
 impl GroupIndex {
-    /// The ieee addresses that belong to some group, and so belong to
-    /// no room list of their own.
-    fn members(&self) -> HashSet<&str> {
-        self.groups
+    /// Everything the two lists say should be in the registry: each
+    /// device not in a group, and each group in their place.
+    ///
+    /// Groups go in after the devices, so a group that shares a name
+    /// with a device is the one that stays.
+    fn projection(&self) -> Vec<Device> {
+        let caps: HashMap<&str, LightCapabilities> = self
+            .devices
             .iter()
-            .flat_map(|g| g.members.iter())
-            .map(|m| m.ieee_address.as_str())
-            .collect()
-    }
-
-    /// The ids the groups themselves occupy.
-    fn group_ids(&self) -> Vec<DeviceId> {
-        self.groups
+            .map(|(ieee, device)| (ieee.as_str(), device.capabilities))
+            .collect();
+        let mut hidden: HashSet<&str> = HashSet::new();
+        let mut groups = Vec::new();
+        for group in &self.groups {
+            // The union of what the members can do. A group holding one
+            // colour bulb and one white one can be told a colour; the
+            // white one ignores it, exactly as it would if you sent it by
+            // hand.
+            let capabilities = group
+                .members
+                .iter()
+                .filter_map(|m| caps.get(m.ieee_address.as_str()))
+                .fold(LightCapabilities::default(), |acc, c| LightCapabilities {
+                    color_temp: acc.color_temp || c.color_temp,
+                    rgb: acc.rgb || c.rgb,
+                });
+            let Ok(device) = group.to_device(capabilities) else {
+                continue;
+            };
+            hidden.extend(group.members.iter().map(|m| m.ieee_address.as_str()));
+            groups.push(device);
+        }
+        self.devices
             .iter()
-            .filter_map(|g| DeviceId::parse(&format!("z2m:{}", g.friendly_name)).ok())
+            .filter(|(ieee, _)| !hidden.contains(ieee.as_str()))
+            .map(|(_, device)| device.clone())
+            .chain(groups)
             .collect()
     }
 }
 
-/// Put the groups into the registry and take their members out.
+/// Make the registry's Z2M devices match what the two lists say.
 ///
-/// Both halves matter. A group that is not a device cannot be switched,
-/// and members left beside it would mean the curve driving the group
-/// and each bulb separately — three commands where one will do, and the
-/// bulbs and the group taking turns to overwrite each other.
-fn apply_groups(index: &GroupIndex, registry: &DeviceRegistry, bus: &EventBus) -> Vec<DeviceId> {
+/// Groups stand in for their members. A group that is not a device
+/// cannot be switched, and members left beside it would mean the curve
+/// driving the group and each bulb separately: three commands where
+/// one will do, and the bulbs and the group taking turns to overwrite
+/// each other. So a member is never in the registry while its group is,
+/// and comes back the moment it leaves the group or the group goes.
+///
+/// Rebuilt whole from both lists rather than patched by whichever
+/// changed, so a group that is renamed, emptied or deleted leaves
+/// nothing behind. Returns the devices whose state nobody has told us
+/// yet, so the caller can ask Z2M for it.
+fn reconcile(index: &GroupIndex, registry: &DeviceRegistry, bus: &EventBus) -> Vec<DeviceId> {
+    let wanted = index.projection();
+    let wanted_ids: HashSet<DeviceId> = wanted.iter().map(|d| d.id.clone()).collect();
     let mut ask_state = Vec::new();
-    for group in &index.groups {
-        // The union of what the members can do. A group holding one
-        // colour bulb and one white one can be told a colour; the white
-        // one ignores it, exactly as it would if you sent it by hand.
-        let capabilities = group
-            .members
-            .iter()
-            .filter_map(|m| index.caps.get(&m.ieee_address))
-            .fold(LightCapabilities::default(), |acc, c| LightCapabilities {
-                color_temp: acc.color_temp || c.color_temp,
-                rgb: acc.rgb || c.rgb,
-            });
 
-        let mut device = match group.to_device(capabilities) {
-            Ok(device) => device,
-            Err(e) => {
-                // A group named without a room — `table` rather than
-                // `living_room/table`. Worth saying: it will never
-                // appear, and nothing else would explain why.
-                warn!("group {:?} is not a usable name: {e}", group.friendly_name);
-                continue;
-            }
-        };
-
+    for mut device in wanted {
+        // The lists describe what a device *is*, not what it is doing,
+        // and Z2M republishes them on every reconnect and every pairing
+        // change. Overwriting the entry wholesale forgot what every
+        // light was doing, and the curve then skipped them all until
+        // each was physically toggled. Whether Z2M can reach it is the
+        // same kind of news, and only availability messages carry it.
         let existing = registry.get(&device.id);
         if let Some(known) = &existing {
             device.state = known.state.clone();
+            device.available = known.available;
         }
         registry.upsert(device.clone());
         if existing.is_none() {
-            debug!("discovered group {}", device.id);
+            debug!("discovered {}", device.id);
             bus.publish(Event::DeviceAdded {
                 device: device.clone(),
             });
         }
-        if device.state.on.is_none() {
+        // Nothing has told us what this one is doing yet. Ask, rather
+        // than wait for someone to walk over and flip it.
+        if device.state.on.is_none() && device.is_switchable() {
             ask_state.push(device.id);
         }
     }
 
-    // Members go, so the group is the only way to reach them. Idempotent
-    // by construction: `remove` answers `None` for one already gone, and
-    // a second pass says nothing.
-    for ieee in index.members() {
-        let Some(id) = index.ids.get(ieee) else {
-            continue;
-        };
-        if registry.remove(id).is_some() {
-            debug!("{id} is in a group; hidden behind it");
-            bus.publish(Event::DeviceRemoved { id: id.clone() });
-        }
+    // Only devices whose id.source() is ours (`"z2m"`), so other sources
+    // (WLED, plugins, ...) are left alone.
+    let to_remove: Vec<DeviceId> = registry
+        .list_all()
+        .into_iter()
+        .filter(|d| d.id.source() == "z2m" && !wanted_ids.contains(&d.id))
+        .map(|d| d.id)
+        .collect();
+    for id in to_remove {
+        registry.remove(&id);
+        debug!("removed {id}");
+        bus.publish(Event::DeviceRemoved { id });
     }
 
     ask_state
@@ -193,9 +217,28 @@ pub(crate) fn handle_group_list(
             return Vec::new();
         }
     };
+    let groups = groups
+        .into_iter()
+        .filter(
+            |group| match group.to_device(LightCapabilities::default()) {
+                Ok(_) => true,
+                Err(e) => {
+                    // A group named without a room: `table` rather than
+                    // `living_room/table`. Worth saying, because it will
+                    // never appear and nothing else would explain why. Its
+                    // bulbs stay as they are, one by one.
+                    warn!(
+                        "group {:?} is not a usable name, so its members stay separate: {e}",
+                        group.friendly_name
+                    );
+                    false
+                }
+            },
+        )
+        .collect();
     let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
     index.groups = groups;
-    apply_groups(&index, registry, bus)
+    reconcile(&index, registry, bus)
 }
 
 /// Ask Z2M what a device is currently doing.
@@ -307,68 +350,13 @@ pub(crate) fn handle_device_list(
         }
     };
 
-    let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
-    // What each ieee address is called and can do, which is the half of
-    // a group that only this list knows. Recorded for every device,
-    // including the ones about to be hidden — a group's capabilities are
-    // its members', so they have to survive the hiding.
-    index.ids.clear();
-    index.caps.clear();
-    for z2m in &devices {
-        if let Ok(device) = z2m.to_device() {
-            index.ids.insert(z2m.ieee_address.clone(), device.id);
-            index
-                .caps
-                .insert(z2m.ieee_address.clone(), z2m.capabilities());
-        }
-    }
-    let hidden = index.members();
-
-    // Build the new set of IDs we want present.
-    let mut new_ids: HashSet<DeviceId> = HashSet::new();
-    let mut ask_state: Vec<DeviceId> = Vec::new();
-    // The groups belong here too. They arrive on their own topic and so
-    // are absent from this list — without them the sweep below would
-    // remove every group on each reconnect and `apply_groups` would put
-    // them straight back, which is a remove and an add on the bus every
-    // time Z2M so much as reconnects.
-    new_ids.extend(index.group_ids());
+    let mut known = Vec::new();
     for z2m in &devices {
         if !z2m.is_user_device() {
             continue;
         }
-        // A device in a group is reached through the group. Skipped
-        // rather than added and then removed, so a house that has had
-        // groups since startup never sees the pair of events at all.
-        if hidden.contains(z2m.ieee_address.as_str()) {
-            continue;
-        }
         match z2m.to_device() {
-            Ok(mut device) => {
-                new_ids.insert(device.id.clone());
-                // `to_device` carries no state — it describes what the
-                // device *is*, not what it is doing. Z2M republishes
-                // this list on every reconnect and every pairing
-                // change, so overwriting the entry wholesale forgot
-                // what every light was doing, and the curve then
-                // skipped them all until each was physically toggled.
-                let existing = registry.get(&device.id);
-                if let Some(known) = &existing {
-                    device.state = known.state.clone();
-                }
-                registry.upsert(device.clone());
-                if existing.is_none() {
-                    debug!("discovered {}", device.id);
-                    bus.publish(Event::DeviceAdded {
-                        device: device.clone(),
-                    });
-                }
-                // Nothing has told us what this one is doing yet. Ask,
-                // rather than wait for someone to walk over and flip it.
-                if device.state.on.is_none() && device.is_switchable() {
-                    ask_state.push(device.id);
-                }
-            }
+            Ok(device) => known.push((z2m.ieee_address.clone(), device)),
             Err(e) => {
                 warn!(
                     "skipping Z2M device with friendly_name {:?}: {e}",
@@ -378,25 +366,9 @@ pub(crate) fn handle_device_list(
         }
     }
 
-    // Remove devices that disappeared from the source. We only touch
-    // devices whose id.source() matches us (`"z2m"`) so other sources
-    // (Shelly, Matter, …) aren't affected when they exist.
-    let to_remove: Vec<DeviceId> = registry
-        .list_all()
-        .into_iter()
-        .filter(|d| d.id.source() == "z2m" && !new_ids.contains(&d.id))
-        .map(|d| d.id)
-        .collect();
-    for id in to_remove {
-        registry.remove(&id);
-        debug!("removed {}", id);
-        bus.publish(Event::DeviceRemoved { id });
-    }
-
-    // The device list is half the answer; put the groups back on top of
-    // it. Cheap when there are none.
-    ask_state.extend(apply_groups(&index, registry, bus));
-    ask_state
+    let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
+    index.devices = known;
+    reconcile(&index, registry, bus)
 }
 
 /// Maximum action-payload size we'll accept. Z2M action strings are
@@ -654,6 +626,271 @@ mod tests {
         ]}
     ]"#;
 
+    /// The two bridge lists arrive independently, and on a reconnect
+    /// which comes first is a coin toss. Every group change below is
+    /// checked from both starting points.
+    #[derive(Clone, Copy, Debug)]
+    enum Order {
+        DevicesFirst,
+        GroupsFirst,
+    }
+
+    const ORDERS: [Order; 2] = [Order::DevicesFirst, Order::GroupsFirst];
+
+    fn deliver(
+        order: Order,
+        groups: &[u8],
+        registry: &DeviceRegistry,
+        bus: &EventBus,
+        index: &Mutex<GroupIndex>,
+    ) {
+        match order {
+            Order::DevicesFirst => {
+                handle_device_list(BULBS, registry, bus, index);
+                handle_group_list(groups, registry, bus, index);
+            }
+            Order::GroupsFirst => {
+                handle_group_list(groups, registry, bus, index);
+                handle_device_list(BULBS, registry, bus, index);
+            }
+        }
+    }
+
+    /// What the bus said about the registry: `+id` for each addition,
+    /// `-id` for each removal, sorted.
+    fn changes(events: Vec<Event>) -> Vec<String> {
+        let mut out: Vec<String> = events
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::DeviceAdded { device } => Some(format!("+{}", device.id)),
+                Event::DeviceRemoved { id } => Some(format!("-{id}")),
+                _ => None,
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Start from [`BULBS`] and `before`, delivered in `order`, then
+    /// publish `after` as the new group list. Answers the registry
+    /// afterwards, what the bus said about the change, and which devices
+    /// the change asked Z2M about.
+    fn change_groups(
+        order: Order,
+        before: &[u8],
+        after: &[u8],
+    ) -> (Vec<String>, Vec<String>, Vec<DeviceId>, Arc<DeviceRegistry>) {
+        let (registry, bus, mut rx) = fixtures();
+        let index = Mutex::default();
+        deliver(order, before, &registry, &bus, &index);
+        drain(&mut rx);
+        let ask = handle_group_list(after, &registry, &bus, &index);
+        (ids(&registry), changes(drain(&mut rx)), ask, registry)
+    }
+
+    // Deletion and an unusably named group were found by an outside
+    // review: the group outlived its deletion with its bulbs still
+    // hidden, and `table` hid both bulbs while never appearing itself.
+    // The rest cover the other ways a group list can change.
+
+    #[test]
+    fn deleting_a_group_removes_it_and_brings_its_members_back() {
+        for order in ORDERS {
+            let (ids, changes, ask, _) = change_groups(order, GROUP, b"[]");
+            assert_eq!(
+                ids,
+                [
+                    "z2m:living_room/bulb_1",
+                    "z2m:living_room/bulb_2",
+                    "z2m:office/lamp"
+                ],
+                "{order:?}"
+            );
+            assert_eq!(
+                changes,
+                [
+                    "+z2m:living_room/bulb_1",
+                    "+z2m:living_room/bulb_2",
+                    "-z2m:living_room/table"
+                ],
+                "{order:?}"
+            );
+            // Hidden, nothing kept track of what they were doing; back,
+            // they have to be asked like any light Niles has just met.
+            for bulb in ["z2m:living_room/bulb_1", "z2m:living_room/bulb_2"] {
+                assert!(
+                    ask.contains(&DeviceId::parse(bulb).unwrap()),
+                    "{order:?}: {bulb} not asked"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn renaming_a_group_replaces_it_and_keeps_its_members_hidden() {
+        let renamed = br#"[
+            {"id":1,"friendly_name":"living_room/dining","members":[
+                {"ieee_address":"0xaa","endpoint":11},
+                {"ieee_address":"0xbb","endpoint":11}
+            ]}
+        ]"#;
+        for order in ORDERS {
+            let (ids, changes, _, _) = change_groups(order, GROUP, renamed);
+            assert_eq!(
+                ids,
+                ["z2m:living_room/dining", "z2m:office/lamp"],
+                "{order:?}"
+            );
+            assert_eq!(
+                changes,
+                ["+z2m:living_room/dining", "-z2m:living_room/table"],
+                "{order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_leaving_a_group_comes_back_and_the_group_loses_what_it_brought() {
+        let smaller = br#"[
+            {"id":1,"friendly_name":"living_room/table","members":[
+                {"ieee_address":"0xaa","endpoint":11}
+            ]}
+        ]"#;
+        for order in ORDERS {
+            let (ids, changes, _, registry) = change_groups(order, GROUP, smaller);
+            assert_eq!(
+                ids,
+                [
+                    "z2m:living_room/bulb_2",
+                    "z2m:living_room/table",
+                    "z2m:office/lamp"
+                ],
+                "{order:?}"
+            );
+            assert_eq!(changes, ["+z2m:living_room/bulb_2"], "{order:?}");
+            // bulb_2 was the colour one; without it the group is white.
+            let group = registry
+                .get(&DeviceId::parse("z2m:living_room/table").unwrap())
+                .unwrap();
+            assert!(group.capabilities.color_temp, "{order:?}");
+            assert!(!group.capabilities.rgb, "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_member_joining_a_group_stands_down() {
+        let larger = br#"[
+            {"id":1,"friendly_name":"living_room/table","members":[
+                {"ieee_address":"0xaa","endpoint":11},
+                {"ieee_address":"0xbb","endpoint":11},
+                {"ieee_address":"0xcc","endpoint":11}
+            ]}
+        ]"#;
+        for order in ORDERS {
+            let (ids, changes, _, _) = change_groups(order, GROUP, larger);
+            assert_eq!(ids, ["z2m:living_room/table"], "{order:?}");
+            assert_eq!(changes, ["-z2m:office/lamp"], "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_group_niles_cannot_use_leaves_its_members_alone() {
+        // Z2M lets a group be called anything. Plenty of houses have
+        // flat names like `table`, which can never be a Niles device;
+        // hiding its bulbs behind it would leave them unreachable.
+        let flat = br#"[{"id":1,"friendly_name":"table","members":[
+            {"ieee_address":"0xaa","endpoint":11},
+            {"ieee_address":"0xbb","endpoint":11}
+        ]}]"#;
+        for order in ORDERS {
+            let (registry, bus, mut rx) = fixtures();
+            let index = Mutex::default();
+            deliver(order, flat, &registry, &bus, &index);
+            assert_eq!(
+                ids(&registry),
+                [
+                    "z2m:living_room/bulb_1",
+                    "z2m:living_room/bulb_2",
+                    "z2m:office/lamp"
+                ],
+                "{order:?}"
+            );
+            assert_eq!(
+                changes(drain(&mut rx)),
+                [
+                    "+z2m:living_room/bulb_1",
+                    "+z2m:living_room/bulb_2",
+                    "+z2m:office/lamp"
+                ],
+                "{order:?}: a member must never be added and then taken away"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_usable_group_hides_its_members() {
+        let mixed = br#"[
+            {"id":1,"friendly_name":"table","members":[
+                {"ieee_address":"0xaa","endpoint":11},
+                {"ieee_address":"0xcc","endpoint":11}
+            ]},
+            {"id":2,"friendly_name":"living_room/corner","members":[
+                {"ieee_address":"0xbb","endpoint":11}
+            ]}
+        ]"#;
+        for order in ORDERS {
+            let (registry, bus, _rx) = fixtures();
+            let index = Mutex::default();
+            deliver(order, mixed, &registry, &bus, &index);
+            assert_eq!(
+                ids(&registry),
+                [
+                    "z2m:living_room/bulb_1",
+                    "z2m:living_room/corner",
+                    "z2m:office/lamp"
+                ],
+                "{order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn renaming_a_group_to_something_unusable_brings_its_members_back() {
+        let flat = br#"[{"id":1,"friendly_name":"table","members":[
+            {"ieee_address":"0xaa","endpoint":11},
+            {"ieee_address":"0xbb","endpoint":11}
+        ]}]"#;
+        for order in ORDERS {
+            let (ids, changes, _, _) = change_groups(order, GROUP, flat);
+            assert_eq!(
+                ids,
+                [
+                    "z2m:living_room/bulb_1",
+                    "z2m:living_room/bulb_2",
+                    "z2m:office/lamp"
+                ],
+                "{order:?}"
+            );
+            assert_eq!(
+                changes,
+                [
+                    "+z2m:living_room/bulb_1",
+                    "+z2m:living_room/bulb_2",
+                    "-z2m:living_room/table"
+                ],
+                "{order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_group_list_refresh_says_nothing() {
+        for order in ORDERS {
+            let (_, changes, _, _) = change_groups(order, GROUP, GROUP);
+            assert!(changes.is_empty(), "{order:?}: {changes:?}");
+        }
+    }
+
     fn ids(registry: &DeviceRegistry) -> Vec<String> {
         let mut out: Vec<String> = registry
             .list_all()
@@ -790,6 +1027,24 @@ mod tests {
         assert_eq!(after.state.on, Some(true), "state survives the refresh");
         assert!(after.state.brightness.is_some());
         assert!(after.state.color_temp_kelvin.is_some());
+    }
+
+    #[test]
+    fn a_device_list_refresh_keeps_whether_a_device_is_reachable() {
+        // Only an availability message says a device has gone quiet. A
+        // device list republished for some unrelated pairing says
+        // nothing about it, and must not mark it reachable again.
+        let (registry, bus, _rx) = fixtures();
+        let index = Mutex::default();
+        let id = DeviceId::parse("z2m:office/lamp").unwrap();
+        handle_device_list(BULBS, &registry, &bus, &index);
+        handle_availability("office", "lamp", b"offline", &registry, &bus);
+        assert!(!registry.get(&id).unwrap().available);
+
+        handle_device_list(BULBS, &registry, &bus, &index);
+        assert!(!registry.get(&id).unwrap().available, "after a device list");
+        handle_group_list(GROUP, &registry, &bus, &index);
+        assert!(!registry.get(&id).unwrap().available, "after a group list");
     }
 
     #[test]
