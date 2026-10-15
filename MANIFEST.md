@@ -47,7 +47,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `tool-scene-control` | Apply or delete saved scenes via structured tool calls | [#43](https://github.com/MarkNygaard/niles/pull/43) |
 | `tool-sonos-transport` | Control Sonos speaker transport state via the speakers subsystem | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `tool-timer` | Set, cancel, and list timers via structured tool calls | [#3](https://github.com/MarkNygaard/niles/pull/3) |
-| `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tool-weather` | Fetch current weather and forecast via Open-Meteo | [#81](https://github.com/MarkNygaard/niles/pull/81) |
 | `tool-web-search` | Search the web via SearXNG and return summarized results | [#83](https://github.com/MarkNygaard/niles/pull/83) |
 
@@ -83,7 +83,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `ui-plugin-setup` | A plugin's panel: a setup form generated from its manifest's settings, its log, and where its widgets go | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `ui-plugins` | Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#390](https://github.com/MarkNygaard/niles/pull/390) |
-| `ui-tv-volume` | The TV row has volume down and up, a slider and mute while it is on, where the TV is the speaker; POST /tv/volume | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `ui-tv-volume` | The TV row has volume down and up, a slider and mute while it is on, where the TV is the speaker; POST /tv/volume | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
@@ -108,7 +108,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `media-play-pause` | Play or pause media playback on the active speaker | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-set` | Set the speaker volume to a specific level | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-step` | Raise or lower the speaker volume by one step | [#65](https://github.com/MarkNygaard/niles/pull/65) |
-| `tv-volume` | The LG TV's own speakers by voice, and a room's volume on its TV when the room has no Sonos | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `tv-volume` | The LG TV's own speakers by voice, and a room's volume on its TV when the room has no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `memory-add` | Append a note to the user's persistent memory | [#77](https://github.com/MarkNygaard/niles/pull/77) |
 | `memory-remove` | Remove a note from the user's persistent memory | [#77](https://github.com/MarkNygaard/niles/pull/77) |
 | `memory-replace` | Replace an existing memory entry | [#77](https://github.com/MarkNygaard/niles/pull/77) |
