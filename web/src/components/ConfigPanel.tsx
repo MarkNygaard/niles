@@ -378,7 +378,7 @@ export function ConfigPanel() {
   });
   // Answers 501 when recognition is off, which is a fine answer and not
   // worth retrying at: an empty list then stands for "nobody", and the
-  // card says separately that recognition is not running.
+  // 501 is how the card knows to say that recognition is not running.
   const voices = useQuery({
     queryKey: ["voices"],
     queryFn: api.voices,
@@ -1025,9 +1025,12 @@ export function ConfigPanel() {
                 (view.effective.recognition as { known_voices_only?: boolean } | undefined)
                   ?.known_voices_only === true
               }
+              // Asked of the server, not read from the file: recognition
+              // is on by default when the image carries the model, so
+              // the file says nothing on exactly the installs where it
+              // is running.
               recognitionOn={
-                (view.effective.recognition as { enabled?: boolean } | undefined)
-                  ?.enabled === true
+                !(voices.error instanceof ApiError && voices.error.status === 501)
               }
               saving={save.isPending || forget.isPending || rename.isPending}
               onChange={(value) =>

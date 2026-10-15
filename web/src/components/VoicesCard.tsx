@@ -75,7 +75,7 @@ export function VoicesCard({
       <CardHeader>
         <CardTitle>Voices</CardTitle>
         <CardDescription>
-          Niles learns a voice when someone says “I am ” and their name. A
+          Niles learns a voice when someone says “I am” and their name. A
           satellite listens to a whole room, so this decides whether it
           answers one it has never heard before.
         </CardDescription>
@@ -87,7 +87,7 @@ export function VoicesCard({
           <div className="flex flex-col gap-2 border-b pb-3">
             {voices.length === 0 ? (
               <p className="text-muted-foreground text-sm">
-                Nobody yet. Say “my name is ” and your name to a satellite,
+                Nobody yet. Say “my name is” and your name to a satellite,
                 three or four times, from where you usually speak.
               </p>
             ) : (
@@ -154,7 +154,7 @@ export function VoicesCard({
         {/* The chicken-and-egg, said before it is hit rather than after. */}
         {knownVoicesOnly && (
           <p className="text-muted-foreground border-t pt-3 text-xs">
-            To add somebody, switch this off, have them say “I am ” and their
+            To add somebody, switch this off, have them say “I am” and their
             name to a satellite a few times, then switch it back on.
           </p>
         )}
