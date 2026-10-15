@@ -2548,7 +2548,7 @@ version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "niles-calendar",
  "niles-config",
@@ -2618,7 +2618,7 @@ name = "niles-llm"
 version = "0.2.1"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "rand 0.10.2",
  "reqwest",
  "serde",
@@ -2696,7 +2696,7 @@ name = "niles-plugins"
 version = "0.2.1"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "futures-util",
