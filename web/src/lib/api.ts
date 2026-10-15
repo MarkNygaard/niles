@@ -1540,6 +1540,16 @@ export function roomOrder(effective: unknown): string[] {
   return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
 }
 
+/**
+ * The rooms left off the dashboard's grid, as `[rooms] hidden` holds
+ * them. Read the same way as the order and for the same reason: a
+ * missing or malformed entry hides nothing.
+ */
+export function roomsHidden(effective: unknown): string[] {
+  const value = valueAt(effective, "rooms.hidden");
+  return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
+}
+
 /** Read a dotted path out of a nested object. */
 export function valueAt(root: unknown, path: string): unknown {
   return path

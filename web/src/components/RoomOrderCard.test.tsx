@@ -24,7 +24,7 @@ describe("moved", () => {
 
 describe("RoomOrderCard", () => {
   it("lists the rooms in the order they are given, numbered", () => {
-    render(<RoomOrderCard rooms={ROOMS} onChange={vi.fn()} />);
+    render(<RoomOrderCard rooms={ROOMS} onChange={vi.fn()} onHiddenChange={vi.fn()} />);
     const rows = screen.getAllByRole("listitem").map((li) => li.textContent);
     expect(rows).toEqual(["Bedroom1", "Kitchen2", "Living room3"]);
   });
@@ -33,7 +33,7 @@ describe("RoomOrderCard", () => {
     // The grip is the same control for a thumb and for a keyboard, so
     // arranging the list never needs a pointer.
     const onChange = vi.fn();
-    render(<RoomOrderCard rooms={ROOMS} onChange={onChange} />);
+    render(<RoomOrderCard rooms={ROOMS} onChange={onChange} onHiddenChange={vi.fn()} />);
     fireEvent.keyDown(screen.getByRole("button", { name: "Move Living room" }), {
       key: "ArrowUp",
     });
@@ -43,7 +43,7 @@ describe("RoomOrderCard", () => {
   it("saves once, when the row is put down", () => {
     const onChange = vi.fn();
     const { container } = render(
-      <RoomOrderCard rooms={ROOMS} onChange={onChange} />,
+      <RoomOrderCard rooms={ROOMS} onChange={onChange} onHiddenChange={vi.fn()} />,
     );
     const list = container.querySelector("ul")!;
     // jsdom has no layout, so the list is told how tall it is: three
@@ -66,7 +66,7 @@ describe("RoomOrderCard", () => {
   it("saves nothing when a row is picked up and put back", () => {
     const onChange = vi.fn();
     const grip = (() => {
-      render(<RoomOrderCard rooms={ROOMS} onChange={onChange} />);
+      render(<RoomOrderCard rooms={ROOMS} onChange={onChange} onHiddenChange={vi.fn()} />);
       const found = screen.getByRole("button", { name: "Move Kitchen" });
       found.setPointerCapture = () => {};
       return found;
@@ -77,8 +77,61 @@ describe("RoomOrderCard", () => {
   });
 
   it("says so when there are no rooms rather than showing an empty list", () => {
-    render(<RoomOrderCard rooms={[]} onChange={vi.fn()} />);
+    render(<RoomOrderCard rooms={[]} onChange={vi.fn()} onHiddenChange={vi.fn()} />);
     expect(screen.getByText(/No rooms yet/)).toBeInTheDocument();
     expect(screen.queryByRole("listitem")).toBeNull();
+  });
+
+  it("shows every room on the dashboard until one is hidden", () => {
+    render(<RoomOrderCard rooms={ROOMS} onChange={vi.fn()} onHiddenChange={vi.fn()} />);
+    for (const room of ["Bedroom", "Kitchen", "Living room"]) {
+      expect(screen.getByRole("switch", { name: `Show ${room} on the dashboard` })).toBeChecked();
+    }
+  });
+
+  it("hides a room by switching it off, keeping the ones already hidden", () => {
+    const onHiddenChange = vi.fn();
+    render(
+      <RoomOrderCard
+        rooms={ROOMS}
+        hidden={["bedroom"]}
+        onChange={vi.fn()}
+        onHiddenChange={onHiddenChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("switch", { name: "Show Kitchen on the dashboard" }));
+    expect(onHiddenChange).toHaveBeenCalledWith(["bedroom", "kitchen"]);
+  });
+
+  it("keeps a hidden room in the list, faded, so it can be shown again", () => {
+    const onHiddenChange = vi.fn();
+    render(
+      <RoomOrderCard
+        rooms={ROOMS}
+        hidden={["kitchen"]}
+        onChange={vi.fn()}
+        onHiddenChange={onHiddenChange}
+      />,
+    );
+    expect(screen.getByText("Kitchen")).toHaveClass("text-muted-foreground");
+    expect(screen.getByText("Bedroom")).not.toHaveClass("text-muted-foreground");
+    const toggle = screen.getByRole("switch", { name: "Show Kitchen on the dashboard" });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    expect(onHiddenChange).toHaveBeenCalledWith([]);
+  });
+
+  it("still moves a hidden room", () => {
+    const onChange = vi.fn();
+    render(
+      <RoomOrderCard
+        rooms={ROOMS}
+        hidden={["kitchen"]}
+        onChange={onChange}
+        onHiddenChange={vi.fn()}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole("button", { name: "Move Kitchen" }), { key: "ArrowUp" });
+    expect(onChange).toHaveBeenCalledWith(["kitchen", "bedroom", "living_room"]);
   });
 });

@@ -10,6 +10,7 @@ import {
   houseSummary,
   houseToggle,
   roomsOf,
+  onTheGrid,
   openingsOf,
   subtitle,
   targets,
@@ -718,6 +719,28 @@ describe("the order rooms come out in", () => {
       "bedroom",
       "living_room",
     ]);
+  });
+});
+
+describe("rooms hidden from the grid", () => {
+  const house = [
+    device("z2m:office/lamp", { state: { on: true } }),
+    device("z2m:garage/lamp", { state: { on: true } }),
+    device("z2m:kitchen/lamp", { state: { on: false } }),
+  ];
+
+  it("leaves the hidden ones out and keeps the order of the rest", () => {
+    const rooms = roomsOf(house, [], ["office", "garage", "kitchen"]);
+    expect(onTheGrid(rooms, ["garage"]).map((r) => r.name)).toEqual(["office", "kitchen"]);
+  });
+
+  it("hides nothing for a room that does not exist", () => {
+    // A room hidden and then emptied stays in the list harmlessly.
+    expect(onTheGrid(roomsOf(house), ["attic"])).toHaveLength(3);
+  });
+
+  it("can hide every room", () => {
+    expect(onTheGrid(roomsOf(house), ["office", "garage", "kitchen"])).toEqual([]);
   });
 });
 

@@ -308,6 +308,41 @@ describe("ConfigPanel, the settings that left the ConfigMap", () => {
     );
   });
 
+  it("hides a room from the dashboard through the config save", async () => {
+    const { patch } = stubHouse();
+    vi.mocked(api.devices).mockResolvedValue([
+      {
+        id: "z2m:kitchen/bulb",
+        source: "z2m",
+        room: "kitchen",
+        name: "bulb",
+        class: "light",
+        supports_rgb: false,
+        supports_color_temp: false,
+        state: {
+          on: false,
+          brightness: null,
+          color_temp_kelvin: null,
+          rgb: null,
+          temperature_celsius: null,
+          humidity_percent: null,
+          battery_percent: null,
+          open: null,
+          motion: null,
+          illuminance_lux: null,
+          position: null,
+        },
+      },
+    ]);
+    renderPanel();
+    await open(/^Rooms/);
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "Show Kitchen on the dashboard" }),
+    );
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    expect(patch.mock.calls[0][0]).toEqual({ rooms: { hidden: ["kitchen"] } });
+  });
+
   it("draws an edited colour point on the chart before it is saved", async () => {
     stubHouse();
     renderPanel();

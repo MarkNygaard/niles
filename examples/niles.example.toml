@@ -103,9 +103,11 @@ bind_address = "0.0.0.0:10300"
 # alphabet, which is what the page sorts by otherwise. Rooms left out keep
 # the alphabet and follow the ones listed, so a newly paired room appears
 # at the end rather than not at all. Easier set by dragging the list in
-# Settings than typed here.
+# Settings than typed here. `hidden` leaves rooms off the dashboard's grid
+# only: voice, rules and the API still reach them.
 # [rooms]
 # order = ["living_room", "kitchen", "office"]
+# hidden = ["garage"]
 
 # Sonos. One speaker's address is enough: each of them describes the
 # whole household. Rooms are placed by Sonos's own id, which stays with
