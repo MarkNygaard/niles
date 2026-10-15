@@ -103,7 +103,7 @@ export function VoicePage({
             saving={saving}
             onSave={(change) => onSaveRole("stt", change)}
           />
-          <label className="flex items-center justify-between gap-4 pt-5">
+          <label className="flex items-center justify-between gap-4 pb-5">
             <span className="min-w-0">
               <span className="block text-sm font-medium">
                 Only when it hears its name
