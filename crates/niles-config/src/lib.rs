@@ -36,6 +36,7 @@ pub mod skills;
 pub mod speakers;
 pub mod store;
 pub mod stt;
+pub mod tool_servers;
 pub mod tts;
 pub mod tv;
 pub mod unifi;
@@ -57,8 +58,7 @@ pub use error::{Error, Result};
 pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
 pub use integrations::{
-    Assistant, ChatGptConfig, ChatGptSignIn, ClaudeCodeConfig, IntegrationsConfig, LinearConfigDto,
-    NemligConfig,
+    Assistant, ChatGptConfig, ChatGptSignIn, ClaudeCodeConfig, IntegrationsConfig, NemligConfig,
 };
 pub use lamp_plugs::LampPlugsConfig;
 pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
@@ -80,6 +80,7 @@ pub use speakers::{SonosSpeaker, SpeakersConfig};
 use std::path::Path;
 pub use store::{Applied, Change, ChangeSource, ConfigStore, LoadOutcome, Revision, SectionChange};
 pub use stt::{NoiseGate, SttConfig};
+pub use tool_servers::{ToolMode, ToolServerConfig};
 pub use tts::TtsConfig;
 pub use tv::TvConfig;
 pub use unifi::UnifiConfig;
@@ -230,6 +231,9 @@ pub fn section_reload(section: &str) -> Reload {
         // change to its table restarts it, as saving its setup panel
         // does.
         "plugins" => Reload::Hot,
+        // Watched by whoever holds the connections, which connects,
+        // disconnects or re-reads a server's tools as its table changes.
+        "tool_servers" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
@@ -271,6 +275,7 @@ pub const SECTIONS: &[&str] = &[
     "lighting",
     "automation",
     "plugins",
+    "tool_servers",
 ];
 
 /// Top-level Niles configuration.
@@ -351,6 +356,10 @@ pub struct Config {
     /// `plugins.<id>.<key>`.
     #[serde(default)]
     pub plugins: std::collections::BTreeMap<String, toml::Table>,
+    /// Remote MCP servers whose tools the model is offered, by id:
+    /// `[tool_servers.linear]`.
+    #[serde(default)]
+    pub tool_servers: std::collections::BTreeMap<String, ToolServerConfig>,
     /// What the config named that Niles no longer has, and was dropped
     /// or set back to its default as it loaded. Never written by anybody:
     /// see [`Config::settle`].
@@ -428,6 +437,7 @@ impl Config {
             let _ = routine.to_morning_routine_config()?;
         }
         self.automations.validate()?;
+        tool_servers::validate(&self.tool_servers)?;
         Ok(())
     }
 }
@@ -2233,73 +2243,56 @@ actions = [{{ do = "notify", body = "hi" }}]
         assert!(cfg.integrations.linear.is_none());
     }
     #[test]
-    fn integrations_linear_section_parses() {
+    fn a_stored_linear_section_still_loads_and_is_retired() {
+        // An install that set Linear up before it became a tool server
+        // keeps its overrides: refusing the section would refuse every
+        // other setting stored beside it.
         let toml = format!(
-            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"NILES\"\n",
+            "{}
+[integrations.linear]
+api_key_env = \"LINEAR_API_KEY\"
+team = \"NILES\"
+",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
         cfg.validate().unwrap();
-        let linear = cfg.integrations.linear.as_ref().unwrap();
-        assert_eq!(linear.api_key_env, "LINEAR_API_KEY");
-        assert_eq!(linear.team, "NILES");
-        assert_eq!(linear.trigger_label, "AI Eligible");
-        assert_eq!(linear.todo_state, "Todo");
-        assert_eq!(linear.timeout_seconds, 15);
+        assert!(cfg.integrations.linear.is_none());
+        assert!(cfg.retired.contains(&Retired::Linear));
     }
     #[test]
-    fn integrations_linear_needs_no_api_key_env() {
-        // It used to be required, which left the Settings page unable to
-        // set Linear up at all: a key typed into the app has no variable
-        // name, and naming one that does not exist to get past the check
-        // would put a lie in the config file.
+    fn tool_servers_are_read_by_id_and_change_without_a_restart() {
         let toml = format!(
-            "{}\n[integrations.linear]\nteam = \"NILES\"\n",
+            "{}
+[tool_servers.linear]
+url = \"https://mcp.linear.app/mcp\"
+tools = {{ delete_issue = \"off\" }}
+",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
-        cfg.validate().expect("valid without one");
-        assert_eq!(cfg.integrations.linear.expect("present").api_key_env, "");
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.tool_servers["linear"].mode("delete_issue"),
+            ToolMode::Off
+        );
+        assert_eq!(section_reload("tool_servers"), Reload::Hot);
+        assert!(SECTIONS.contains(&"tool_servers"));
     }
     #[test]
-    fn integrations_linear_empty_team_is_added_but_unfinished() {
-        // What adding Linear in the app writes. Refusing it meant the
-        // add-on could not be added from the app at all.
+    fn a_tool_server_id_with_the_separator_is_refused() {
         let toml = format!(
-            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"\"\n",
+            "{}
+[tool_servers.a__b]
+url = \"https://example.com/mcp\"
+",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
-        cfg.validate().expect("valid without a team");
-    }
-    #[test]
-    fn integrations_linear_timeout_zero_rejected() {
-        let toml = format!(
-            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"NILES\"\ntimeout_seconds = 0\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
         assert!(matches!(
-            err,
+            cfg.validate().unwrap_err(),
             Error::InvalidSection {
-                section: "integrations.linear",
-                ..
-            }
-        ));
-    }
-    #[test]
-    fn integrations_linear_timeout_too_large_rejected() {
-        let toml = format!(
-            "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"NILES\"\ntimeout_seconds = 121\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "integrations.linear",
+                section: "tool_servers",
                 ..
             }
         ));

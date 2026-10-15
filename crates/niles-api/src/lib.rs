@@ -50,6 +50,7 @@ pub mod server;
 pub mod skills;
 pub mod speakers;
 pub mod state;
+pub mod tool_servers;
 pub mod training;
 pub mod tv;
 pub mod voices;

@@ -119,6 +119,11 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(crate::groceries::update).delete(crate::groceries::remove),
         )
         .route("/integrations", get(crate::integrations::list))
+        .route("/tool-servers", get(crate::tool_servers::list))
+        .route(
+            "/tool-servers/{id}/refresh",
+            post(crate::tool_servers::refresh),
+        )
         .route("/plugins", get(crate::plugins::list))
         .route("/plugins/install/preview", post(crate::plugins::preview))
         .route("/plugins/install", post(crate::plugins::install))

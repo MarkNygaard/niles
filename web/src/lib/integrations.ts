@@ -5,8 +5,15 @@ import type {
   PluginSummary,
   SecretsReport,
   TadoStatus,
+  ToolServer,
   TvInfo,
 } from "@/lib/api";
+
+/** Where Linear's own MCP server is. */
+export const LINEAR_URL = "https://mcp.linear.app/mcp";
+
+/** What a request has to mention for Linear's tools to go with it. */
+export const LINEAR_KEYWORDS = ["linear", "issue", "issues", "task", "tasks", "ticket", "tickets"];
 
 export const RANK: Record<Importance, number> = {
   required: 0,
@@ -56,7 +63,7 @@ export function matchesQuery(integration: Integration, query: string): boolean {
 export interface StatusInputs {
   secrets?: SecretsReport;
   tado?: TadoStatus;
-  linear?: { team?: string };
+  toolServers?: ToolServer[];
   claudeCode?: { enabled?: boolean };
   chatgpt?: { enabled?: boolean };
   nemlig?: { enabled?: boolean };
@@ -96,10 +103,16 @@ export function statusOf(integration: Integration, inputs: StatusInputs): Status
   switch (integration.id) {
     case "tado":
       return inputs.tado?.authorised ? WORKING : needs("Not signed in to tado° yet");
-    // Present, not proven: nothing asks Linear whether the key works.
-    case "linear":
-      if (!inputs.linear?.team?.trim()) return needs("Needs a team");
-      return missing(integration.secret_key) ? needs("Needs its API key") : WORKING;
+    // Working only once Linear has answered with its tools: a key that
+    // is merely present proved nothing.
+    case "linear": {
+      if (missing(integration.secret_key)) return needs("Needs its API key");
+      const server = inputs.toolServers?.find((s) => s.id === "linear");
+      if (!server || server.status === "connecting") return needs("Connecting…");
+      if (server.status === "needs_key") return needs("Needs its API key");
+      if (server.status === "failed") return needs(server.message ?? "Not connected");
+      return WORKING;
+    }
     case "nemlig":
       if (inputs.nemlig?.enabled === false) return off;
       return missing("integrations.nemlig.username", "integrations.nemlig.password")

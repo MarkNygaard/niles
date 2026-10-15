@@ -98,16 +98,15 @@ impl crate::Config {
     /// config that decides it — and because a second copy of this list
     /// is a second thing to forget to update.
     pub fn secret_env_var(&self, key: &str) -> Option<String> {
+        if let Some(id) = crate::tool_servers::server_of_secret(key) {
+            let named = self.tool_servers.get(id)?.api_key_env.clone();
+            return (!named.trim().is_empty()).then_some(named);
+        }
         let named = match key {
             "mqtt.username" => Some(self.mqtt.username_env.clone()),
             "mqtt.password" => Some(self.mqtt.password_env.clone()),
             "stt.api_key" => Some(self.stt.api_key_env.clone()),
             "llm.api_key" => Some(self.llm.api_key_env.clone()),
-            "integrations.linear.api_key" => self
-                .integrations
-                .linear
-                .as_ref()
-                .map(|l| l.api_key_env.clone()),
             "integrations.claude_code.oauth_token" => self
                 .integrations
                 .claude_code
@@ -171,6 +170,9 @@ impl crate::Config {
     /// somewhere else. The host is read from the same config the
     /// request goes to, so it cannot disagree.
     pub fn secret_hint(&self, key: &str) -> Option<String> {
+        if let Some(id) = crate::tool_servers::server_of_secret(key) {
+            return host_of(&self.tool_servers.get(id)?.url);
+        }
         match key {
             "mqtt.username" | "mqtt.password" => (!self.mqtt.host.trim().is_empty())
                 .then(|| format!("{}:{}", self.mqtt.host, self.mqtt.port)),
@@ -184,7 +186,6 @@ impl crate::Config {
                 self.llm.provider.as_deref(),
                 self.llm.base_url.as_deref(),
             )?),
-            "integrations.linear.api_key" => Some("api.linear.app".into()),
             "integrations.claude_code.oauth_token" => Some("claude.ai".into()),
             "integrations.chatgpt.access_token"
             | "integrations.chatgpt.refresh_token"

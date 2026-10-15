@@ -98,6 +98,28 @@ export interface Integration {
   secret_key: string | null;
 }
 
+/** One tool a remote tool server offers. Mirrors `RemoteToolView`. */
+export interface RemoteTool {
+  /** The server's name for it, which its setting is keyed by. */
+  name: string;
+  title: string | null;
+  description: string;
+  read_only: boolean;
+  destructive: boolean;
+}
+
+/**
+ * A remote MCP server and what it offers.
+ *
+ * Mirrors `ToolServerView` in crates/niles-api/src/tool_servers.rs.
+ */
+export interface ToolServer {
+  id: string;
+  status: "connecting" | "working" | "needs_key" | "failed";
+  message: string | null;
+  tools: RemoteTool[];
+}
+
 /**
  * A third-party add-on installed from GitHub.
  *
@@ -1266,6 +1288,9 @@ export const api = {
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
   plugins: () => request<PluginSummary[]>("/plugins"),
+  toolServers: () => request<ToolServer[]>("/tool-servers"),
+  refreshToolServer: (id: string) =>
+    request<void>(`/tool-servers/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
   previewPlugin: (repo: string) =>
     request<PluginPreview>("/plugins/install/preview", {
       method: "POST",

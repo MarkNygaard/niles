@@ -13,7 +13,6 @@ pub mod datetime;
 pub mod error;
 pub mod escalate;
 pub mod groceries;
-pub mod linear;
 pub mod list_recent_notifications;
 pub mod mcp;
 pub mod nemlig;
@@ -55,7 +54,6 @@ pub fn register_notification_tools(
     register_announce_tool(reg, center.clone());
     register_list_recent_notifications_tool(reg, center);
 }
-pub use linear::{CreateTaskTool, GetTaskTool, ListTasksTool, register_linear_tools};
 pub use registry::{DynamicTools, ToolRegistry};
 pub use skill::{
     DeleteSkillTool, ListSkillsTool, MintSkillTool, PatchSkillTool, RetireSkillTool, ViewSkillTool,

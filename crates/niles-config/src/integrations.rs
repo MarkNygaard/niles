@@ -3,18 +3,6 @@
 use crate::error::{Error, Result};
 use serde::Deserialize;
 
-fn default_timeout_seconds() -> u64 {
-    15
-}
-
-fn default_trigger_label() -> String {
-    "AI Eligible".into()
-}
-
-fn default_todo_state() -> String {
-    "Todo".into()
-}
-
 fn default_true() -> bool {
     true
 }
@@ -37,8 +25,11 @@ fn default_chatgpt_model() -> String {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntegrationsConfig {
+    /// Retired: Linear is a [tool server](crate::tool_servers) now.
+    /// Still read so a stored override that has it loads rather than
+    /// being refused whole, then dropped as the config settles.
     #[serde(default)]
-    pub linear: Option<LinearConfigDto>,
+    pub linear: Option<toml::Table>,
     #[serde(default)]
     pub claude_code: Option<ClaudeCodeConfig>,
     #[serde(default)]
@@ -360,32 +351,8 @@ impl ChatGptSignIn {
     }
 }
 
-/// `[integrations.linear]` section.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LinearConfigDto {
-    /// The variable holding the key, when it comes from one.
-    ///
-    /// Optional now that a credential can be stored instead: naming no
-    /// variable means Niles looks in its own store, and says so clearly
-    /// if it is not there either. Requiring a name here made the
-    /// Settings page unable to set up Linear at all.
-    #[serde(default)]
-    pub api_key_env: String,
-    pub team: String,
-    #[serde(default = "default_trigger_label")]
-    pub trigger_label: String,
-    #[serde(default = "default_todo_state")]
-    pub todo_state: String,
-    #[serde(default = "default_timeout_seconds")]
-    pub timeout_seconds: u64,
-}
-
 impl IntegrationsConfig {
     pub fn validate(&self) -> Result<()> {
-        if let Some(linear) = &self.linear {
-            linear.validate()?;
-        }
         if let Some(claude) = &self.claude_code {
             claude.validate()?;
         }
@@ -393,42 +360,6 @@ impl IntegrationsConfig {
             chatgpt.validate()?;
         }
         Ok(())
-    }
-}
-
-impl LinearConfigDto {
-    /// An empty team is allowed: it is what adding Linear in the app
-    /// writes, before anybody has typed one, and refusing it left the
-    /// add-on unable to be added at all. Without a team the tools are
-    /// not registered, and the add-on says it needs one.
-    pub fn validate(&self) -> Result<()> {
-        if self.trigger_label.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "integrations.linear",
-                reason: "trigger_label must not be empty".into(),
-            });
-        }
-        if self.todo_state.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "integrations.linear",
-                reason: "todo_state must not be empty".into(),
-            });
-        }
-        if self.timeout_seconds == 0 || self.timeout_seconds > 120 {
-            return Err(Error::InvalidSection {
-                section: "integrations.linear",
-                reason: "timeout_seconds must be between 1 and 120".into(),
-            });
-        }
-        Ok(())
-    }
-
-    pub fn resolve_api_key(&self) -> Result<String> {
-        crate::env::require_secret(
-            "integrations.linear",
-            "integrations.linear.api_key",
-            &self.api_key_env,
-        )
     }
 }
 

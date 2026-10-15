@@ -1,15 +1,13 @@
-//! niles-integration-linear — Linear task-tracker integration.
+//! niles-integration-linear — Linear's webhook, which turns a change to
+//! an issue into a notification.
+//!
+//! Linear's tools are not here: they come from Linear's own MCP server,
+//! as a tool server (see `niles-mcp`).
 
-pub mod client;
 pub mod error;
-pub mod model;
-pub mod transport;
 pub mod webhook;
 
-pub use client::{LinearClient, LinearConfig};
 pub use error::{Error, Result};
-pub use model::{TaskDetail, TaskRef, TaskSummary};
-pub use transport::{HttpTransport, LinearTransport};
 pub use webhook::{
     WebhookNotification, WebhookPayload, notification_for, parse_webhook, verify_signature,
 };

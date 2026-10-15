@@ -25,6 +25,8 @@ pub struct DynamicTools {
 struct Owned {
     /// What a request has to mention for these tools to be sent.
     keywords: Vec<String>,
+    /// What the model is told about these tools, when they are sent.
+    notes: Option<String>,
     tools: Vec<Arc<dyn Tool>>,
 }
 
@@ -37,10 +39,29 @@ impl DynamicTools {
     /// request that mentions one of `keywords`, or with one that matched
     /// nothing at all, when every tool goes.
     pub fn set(&self, owner: &str, keywords: Vec<String>, tools: Vec<Arc<dyn Tool>>) {
+        self.set_with_notes(owner, keywords, None, tools);
+    }
+
+    /// [`Self::set`], with words for the model that go wherever these
+    /// tools do: see [`ToolRegistry::notes_for`].
+    pub fn set_with_notes(
+        &self,
+        owner: &str,
+        keywords: Vec<String>,
+        notes: Option<String>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) {
         self.owners
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(owner.to_string(), Owned { keywords, tools });
+            .insert(
+                owner.to_string(),
+                Owned {
+                    keywords,
+                    notes,
+                    tools,
+                },
+            );
     }
 
     /// Withdraw everything `owner` offers.
@@ -82,6 +103,17 @@ impl DynamicTools {
             .flat_map(|o| o.tools.iter())
             .find(|t| t.descriptor().name == name)
             .cloned()
+    }
+
+    /// The notes of every owner, or with `transcript` only of the owners
+    /// it mentions.
+    fn notes(&self, transcript: Option<&str>) -> Vec<String> {
+        let owners = self.owners.read().unwrap_or_else(|e| e.into_inner());
+        owners
+            .values()
+            .filter(|o| transcript.is_none_or(|t| crate::relevance::mentions(t, &o.keywords)))
+            .filter_map(|o| o.notes.clone())
+            .collect()
     }
 
     /// Every tool, or with `transcript` only the owners it mentions.
@@ -180,6 +212,18 @@ impl ToolRegistry {
         out.extend(mentioned);
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
+    }
+
+    /// The notes that go with the tools [`Self::llm_tools_for`] sends for
+    /// `transcript`: the mentioned owners', or everybody's when the
+    /// request matched nothing and every tool goes.
+    pub fn notes_for(&self, transcript: &str) -> Vec<String> {
+        let mentioned = self.dynamic.notes(Some(transcript));
+        let any_owner = !self.dynamic_tools(Some(transcript)).is_empty();
+        if crate::relevance::relevant_tool_names(transcript).is_none() && !any_owner {
+            return self.dynamic.notes(None);
+        }
+        mentioned
     }
 
     /// Dispatch a `ToolCall`. Returns the JSON value the tool produced;
@@ -375,6 +419,24 @@ mod gating_tests {
         let (reg, _) = with_plugin();
         let sent = names(reg.llm_tools_for("what's the weather like"));
         assert!(!sent.contains(&"spotprice_prices".to_string()));
+    }
+
+    #[test]
+    fn notes_go_where_their_tools_go() {
+        let (reg, dynamic) = with_plugin();
+        dynamic.set_with_notes(
+            "linear",
+            vec!["linear".into()],
+            Some("Coding tasks go to Todo.".into()),
+            vec![Arc::new(Named("linear__create_issue"))],
+        );
+        assert_eq!(
+            reg.notes_for("file this in linear"),
+            ["Coding tasks go to Todo."]
+        );
+        assert!(reg.notes_for("what's the weather like").is_empty());
+        // Nothing matched, so every tool is sent, and its notes with it.
+        assert_eq!(reg.notes_for("do the thing"), ["Coding tasks go to Todo."]);
     }
 
     #[test]

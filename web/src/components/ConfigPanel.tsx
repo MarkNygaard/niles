@@ -376,6 +376,19 @@ export function ConfigPanel() {
     queryFn: api.plugins,
     retry: false,
   });
+  // Asked again every couple of seconds while one is connecting, so its
+  // tools appear without anybody having to reopen the card.
+  const toolServers = useQuery({
+    queryKey: ["tool-servers"],
+    queryFn: api.toolServers,
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.some((s) => s.status === "connecting") ? 2_000 : false,
+  });
+  // A new key or a change to its section connects a server again, a
+  // moment after the save that caused it.
+  const recheckToolServers = () =>
+    setTimeout(() => queryClient.invalidateQueries({ queryKey: ["tool-servers"] }), 500);
   // Answers 501 when recognition is off, which is a fine answer and not
   // worth retrying at: an empty list then stands for "nobody", and the
   // 501 is how the card knows to say that recognition is not running.
@@ -468,6 +481,7 @@ export function ConfigPanel() {
     ]) {
       queryClient.invalidateQueries({ queryKey: [key] });
     }
+    recheckToolServers();
   }
 
   const save = useMutation({
@@ -1149,10 +1163,12 @@ export function ConfigPanel() {
             }}
             lightOptions={lights}
             linear={
-              (view.effective.integrations as
-                | { linear?: { team?: string; trigger_label?: string } }
+              (view.effective.tool_servers as
+                | { linear?: { notes?: string; tools?: Record<string, "on" | "off"> } }
                 | undefined)?.linear
             }
+            toolServers={toolServers.data}
+            onToolServersChanged={() => toolServers.refetch()}
             claudeCode={
               (view.effective.integrations as
                 | { claude_code?: { enabled?: boolean; model?: string } }
@@ -1205,7 +1221,10 @@ export function ConfigPanel() {
             error={rowError ? rowError.message : undefined}
             onChange={(row, entries) => save.mutate({ row, entries })}
             onReset={(row, paths) => reset.mutate({ row, paths })}
-            onSecretsChanged={() => secrets.refetch()}
+            onSecretsChanged={() => {
+              secrets.refetch();
+              recheckToolServers();
+            }}
             onTadoChanged={() => tado.refetch()}
           />
         </TabsContent>

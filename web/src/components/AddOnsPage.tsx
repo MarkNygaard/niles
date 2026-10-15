@@ -41,7 +41,8 @@ import { TadoPanel } from "@/components/TadoPanel";
 import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { ChatGptPanel } from "@/components/ChatGptPanel";
 import { NemligPanel } from "@/components/NemligPanel";
-import { LinearPanel } from "@/components/LinearPanel";
+import { ToolServerPanel } from "@/components/ToolServerPanel";
+import type { ToolMode } from "@/components/ToolServerPanel";
 import { SonosPanel } from "@/components/SonosPanel";
 import { CalendarAppPanel, redirectUri } from "@/components/CalendarAppPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
@@ -53,6 +54,8 @@ import { PluginLogo } from "@/components/PluginPreview";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import {
+  LINEAR_KEYWORDS,
+  LINEAR_URL,
   RANK,
   groupsOf,
   matchesQuery,
@@ -71,6 +74,7 @@ import type {
   SecretsReport,
   SpeakersReport,
   TadoStatus,
+  ToolServer,
   TvInfo,
   Zone,
 } from "@/lib/api";
@@ -86,8 +90,12 @@ export interface AddOnsPageProps {
   /** What presence does to the lights, and the lights to choose from. */
   presenceLights?: { offWhenAway: boolean; onWhenHome: string[] };
   lightOptions?: DeviceOption[];
-  /** The Linear section as the config has it, if there is one. */
-  linear?: { team?: string; trigger_label?: string };
+  /** Linear's tool-server section as the config has it, if added. */
+  linear?: { notes?: string; tools?: Record<string, ToolMode> };
+  /** The remote tool servers, as Niles is connected to them. */
+  toolServers?: ToolServer[];
+  /** Something about a tool server changed: ask for them again. */
+  onToolServersChanged?: () => void;
   /** The Claude Code section as the config has it, if there is one. */
   claudeCode?: { enabled?: boolean; model?: string };
   /** The ChatGPT section as the config has it, if there is one. */
@@ -155,6 +163,8 @@ export function AddOnsPage({
   presenceLights,
   lightOptions,
   linear,
+  toolServers,
+  onToolServersChanged,
   claudeCode,
   chatgpt,
   chatgptStatus,
@@ -207,7 +217,7 @@ export function AddOnsPage({
     return statusOf(integration, {
       secrets,
       tado,
-      linear,
+      toolServers,
       claudeCode,
       chatgpt,
       nemlig,
@@ -236,8 +246,11 @@ export function AddOnsPage({
           { path: "presence.tado", value: {} },
         ]);
       case "linear":
-        return onChange("integrations.linear", [
-          { path: "integrations.linear", value: { team: "" } },
+        return onChange("tool_servers.linear", [
+          {
+            path: "tool_servers.linear",
+            value: { url: LINEAR_URL, name: "Linear", keywords: LINEAR_KEYWORDS },
+          },
         ]);
       case "claude_code":
         return onChange("integrations.claude_code", [
@@ -335,7 +348,7 @@ export function AddOnsPage({
       case "spotify":
         return onReset("integrations.spotify", ["integrations.spotify"]);
       case "linear":
-        return onReset("integrations.linear", ["integrations.linear"]);
+        return onReset("tool_servers.linear", ["tool_servers.linear"]);
       // The app's keys are deleted; everyone's own connections stay in
       // the database for when it comes back with new ones.
       case "microsoft":
@@ -642,16 +655,18 @@ export function AddOnsPage({
                 )}
 
                 {current.id === "linear" && (
-                  <LinearPanel
-                    team={linear?.team ?? ""}
-                    triggerLabel={linear?.trigger_label ?? ""}
+                  <ToolServerPanel
+                    id="linear"
+                    server={toolServers?.find((t) => t.id === "linear")}
+                    modes={linear?.tools ?? {}}
+                    notes={linear?.notes ?? ""}
+                    notesPlaceholder="For example: a coding task goes to the team Niles, in Todo, with the label AI Eligible."
                     secret={secretFor(current.secret_key)}
                     writable={secrets?.writable ?? false}
                     saving={saving}
-                    onChange={(entries) =>
-                      onChange("integrations.linear", entries)
-                    }
+                    onChange={(entries) => onChange("tool_servers.linear", entries)}
                     onSecretsChanged={onSecretsChanged}
+                    onRefreshed={() => onToolServersChanged?.()}
                   />
                 )}
 
