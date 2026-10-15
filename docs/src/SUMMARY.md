@@ -2,6 +2,9 @@
 
 [Introduction](intro.md)
 
+# Setting up
+- [Naming your devices](naming.md)
+
 # Architecture
 - [Overall architecture](architecture.md)
 - [Voice loop](voice-loop.md)

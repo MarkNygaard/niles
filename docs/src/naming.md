@@ -1,0 +1,100 @@
+# Naming your devices
+
+Niles has no screen where you add rooms or devices. It reads the names you
+give your devices in Zigbee2MQTT, and those names *are* the house: the room,
+what the device is called, and what you say to reach it. Name things well
+once and Niles picks up every new device on its own.
+
+## The rule
+
+Every device is named `room/device`:
+
+```
+kitchen/ceiling
+living_room/floor_lamp
+hallway/motion
+office/blind
+```
+
+- **Lowercase** letters, digits and `_` only.
+- **`_` for spaces**: `living_room`, not `living room`, `Living Room` or `living-room`.
+- **One `/`**: everything before it is the room, everything after it is the device.
+
+A device whose name breaks the rule is **ignored**, not guessed at. Niles's
+log says `skipping Z2M device with friendly_name "Kitchen Ceiling"`, and
+the device doesn't appear anywhere until it's renamed. A brand-new pairing
+named after its address (`0x680ae2fffe7ac3e5`) is ignored the same way.
+
+## Choosing the names
+
+**Rooms** are what you say. `living_room` is "the living room", `kitchen` is
+"the kitchen". Use the same spelling for every device in a room;
+`living_room` and `livingroom` are two different rooms to Niles.
+
+**Devices** are what you'd call them out loud, *without* the room. Niles
+puts the room in front when it speaks, so `kitchen/ceiling` is "the kitchen
+ceiling", and `kitchen/kitchen_ceiling_light` would be said clumsily. Keep
+them short and tell similar ones apart:
+
+| Device | Good names |
+|---|---|
+| Ceiling light | `kitchen/ceiling`, `bedroom/ceiling` |
+| Lamp | `living_room/floor_lamp`, `office/desk_lamp` |
+| LED strip, under-cabinet light | `kitchen/counter` |
+| Smart plug | `kitchen/coffee_machine`, `living_room/tv_plug` |
+| Motion sensor | `hallway/motion`, `kitchen/motion` |
+| Door or window sensor | `office/door`, `kitchen/window` |
+| Blind or curtain | `office/blind`, `living_room/left_blind`, `living_room/right_blind` |
+| Button or remote | `bedroom/button`, `office/dimmer` |
+| Temperature sensor | `bathroom/thermometer` |
+
+Niles works out *what* a device is from what Zigbee2MQTT says it can do,
+not from its name. A door sensor called `office/garden` is still a door,
+and a lamp doesn't have to be called "lamp". The name is only for people.
+
+## Things that aren't in a room
+
+Repeaters and the like have to go somewhere. Put them in a room of their
+own, such as `system/repeater`, and hide that room from the dashboard in
+**Settings → Rooms**. Niles ignores a repeater anyway: it has nothing to
+switch.
+
+## Groups
+
+A Zigbee2MQTT group follows the same rule: `living_room/ceiling` for a group
+of the living room's ceiling bulbs. Niles then shows and switches the
+**group** as one light, and hides the bulbs in it, so "turn on the living
+room ceiling" is one command to the group rather than one per bulb.
+
+A group whose name breaks the rule (a flat `table`, say) is ignored, and
+its bulbs stay as they are, each on its own.
+
+## Lamps on plugs
+
+A lamp plugged into a smart plug is, to Niles, a plug: it's switched only
+when you name it. To make it one of "the lights", so room switches,
+scenes and "turn off all the lights" include it, pick it under **Settings →
+Lighting → Lamps on plugs**.
+
+## Renaming
+
+Rename a device in Zigbee2MQTT's own web page (open the device and use its
+rename button) and Niles follows within seconds. Two things to know:
+
+- **Rules use the name.** A rule made for `office/door` stops matching if
+  the door becomes `study/door`, so rename before you make rules, or open
+  the rule afterwards and pick the device again.
+- **Still running Home Assistant on the same Zigbee2MQTT?** Tick "Update
+  Home Assistant entity ID" when renaming so Home Assistant follows too.
+
+## Devices that don't come from Zigbee2MQTT
+
+- **WLED strips** are named in Niles's own settings, with the same `room/device` rule.
+- **Add-ons from GitHub** name their own devices and usually ask which room in their settings; the Bambu Lab add-on, for example, puts `office/printer` in the room you pick.
+- **The LG TV and the Sonos speakers** are placed in a room in their own settings.
+
+## Quick check
+
+After renaming, the device should appear in its room on the dashboard
+within a few seconds. If it doesn't, the log will say why. Search it for
+`skipping Z2M device` and the name you used.
