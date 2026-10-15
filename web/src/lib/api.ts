@@ -528,6 +528,21 @@ export interface SecretsReport {
   secrets: Secret[];
 }
 
+/**
+ * The API key, for a signed-in person to copy into a script.
+ *
+ * The one secret that can be read back, because copying it is its
+ * whole point. `token` comes only with a key Niles keeps; one set by
+ * the environment is never shown, and `env_var` says where it is.
+ */
+export interface ApiToken {
+  source: "stored" | "environment" | "none";
+  token?: string;
+  env_var?: string;
+  /** False without a database and its secrets key: nowhere to keep one. */
+  writable: boolean;
+}
+
 /** Whether ChatGPT is signed in, and as whom. Never the tokens. */
 export interface ChatGptStatus {
   signed_in: boolean;
@@ -1378,6 +1393,11 @@ export const api = {
    * cannot itself require being signed in.
    */
   authStatus: () => request<AuthStatus>("/auth/status"),
+
+  apiToken: () => request<ApiToken>("/auth/api-token"),
+  /** A new key; the old one stops working with this answer. */
+  rotateApiToken: () =>
+    request<ApiToken>("/auth/api-token/rotate", { method: "POST" }),
 
   /**
    * Set one light.

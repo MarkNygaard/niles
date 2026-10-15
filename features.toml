@@ -574,3 +574,15 @@ id = "ui-tv-volume"
 category = "ui.integrations"
 summary = "The TV row has volume down and up, a slider and mute while it is on, where the TV is the speaker; POST /tv/volume"
 since_pr = 403
+
+[[feature]]
+id = "auth-api-key-made"
+category = "ui.access"
+summary = "Niles makes its own API key on a start with a database, and a new one works at once with no restart"
+since_pr = 405
+
+[[feature]]
+id = "ui-api-access"
+category = "ui.settings"
+summary = "Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only"
+since_pr = 405

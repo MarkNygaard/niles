@@ -6570,6 +6570,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 tracing::info!("[secrets] {n} loaded from the database");
                 forget_retired_provider_keys(secrets, &retired).await;
                 ensure_session_key(&cfg, secrets).await;
+                niles_api::api_token::ensure(&cfg, secrets.as_ref()).await;
             }
             // Not fatal: an install whose credentials are all env vars
             // does not need these, and refusing to start would make a
@@ -7106,11 +7107,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_voices(voices.clone())
     .with_captures(captures.clone())
     .with_unifi(presence.as_ref().and_then(|p| p.unifi.clone()))
-    .with_secrets(secret_store.clone())
+    .with_secrets(
+        secret_store
+            .clone()
+            .map(|s| s as Arc<dyn niles_api::SecretStore>),
+    )
     .with_plugins(plugin_installer.clone().map(|installer| {
         Arc::new(plugins::AppPlugins(installer)) as Arc<dyn niles_api::plugins::Plugins>
-    }))
-    .with_api_token(cfg.auth.resolve_api_token());
+    }));
 
     // A deployment that mounts its secrets under names the platform
     // silently drops leaves `[auth]` naming variables that do not

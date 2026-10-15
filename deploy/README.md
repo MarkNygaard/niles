@@ -52,14 +52,16 @@ kubectl create secret generic niles-secrets \
 # which is also the only way to revoke a single lost phone without
 # removing its owner from the allowlist.
 #
-# api-token is for reading the API from a terminal. It is not subject to
-# the allowlist, so it is also the way back in if the list is emptied.
+# api-token is optional. With a database Niles makes its own API key and
+# keeps it; copy it from Settings → API access. Set one here only if the
+# deployment should own it, and name the variable in [auth] api_token_env.
+# It is not subject to the allowlist, so it is also the way back in if
+# the list is emptied.
 kubectl create secret generic niles-secrets \
   --namespace niles --dry-run=client -o yaml \
   --from-literal=github-client-id='Ov23li...' \
   --from-literal=github-client-secret='...' \
   --from-literal=session-secret="$(openssl rand -base64 48)" \
-  --from-literal=api-token="$(openssl rand -base64 32)" \
   | kubectl apply -f -
 
 # Production data PVC (adjust storageClassName and size to your cluster)

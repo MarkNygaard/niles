@@ -95,7 +95,7 @@ describe("ConfigPanel", () => {
     );
   });
 
-  it("sets the sign-in keys on People, and never shows the session key", async () => {
+  it("sets the sign-in keys on People, and leaves the API key to its own page", async () => {
     stubHouse();
     const secret = (key: string, label: string) => ({
       key,
@@ -117,7 +117,9 @@ describe("ConfigPanel", () => {
 
     await open(/People/);
     expect(await screen.findByLabelText("GitHub OAuth client secret")).toBeInTheDocument();
-    expect(screen.getByLabelText("API token")).toBeInTheDocument();
+    // Under Advanced → API access now, where it can be shown and replaced.
+    expect(screen.queryByLabelText("API token")).toBeNull();
+    expect(screen.queryByText(/openssl/)).toBeNull();
     // Made by Niles itself; nobody needs to see it.
     expect(screen.queryByLabelText("Session signing secret")).toBeNull();
   });

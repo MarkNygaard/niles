@@ -31,6 +31,8 @@ data:
     # github_client_id_env = "NILES_GITHUB_CLIENT_ID"
     # github_client_secret_env = "NILES_GITHUB_CLIENT_SECRET"
     # session_secret_env = "NILES_SESSION_SECRET"
+    # Optional: Niles makes an API key and keeps it (Settings → API
+    # access). Name a variable only to set the key from the deployment.
     # api_token_env = "NILES_API_TOKEN"
     # allowed = [{ email = "you@example.com", speaker = "you" }]
 

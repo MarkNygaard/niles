@@ -37,6 +37,10 @@ pub struct AuthConfig {
     /// The operator's bearer token, for callers that are not browsers.
     /// Not subject to the allowlist, because it is not a person — and
     /// the way back in if the list is ever emptied.
+    ///
+    /// Optional: with a database Niles makes one and keeps it, and it
+    /// is shown and replaced under Settings → API access. Naming a
+    /// variable here is for a deployment that wants to set it itself.
     pub api_token_env: Option<String>,
     #[serde(default)]
     pub allowed: Vec<AllowedPerson>,
@@ -152,11 +156,14 @@ impl AuthConfig {
         )
     }
 
-    /// The operator's token, or `None` when none is configured.
+    /// The operator's token, or `None` when there is none.
     ///
-    /// Unlike the others this is not an error when absent: a household
-    /// that never reads `/logs` from a terminal needs no token, and
-    /// demanding one would be a setting for its own sake.
+    /// Unlike the others this is not an error when absent: without a
+    /// database there is nowhere to keep the one Niles would make, and
+    /// a household that never calls the API from a script needs none.
+    ///
+    /// Read per request by the gate rather than once, so a key replaced
+    /// in Settings stops working at once.
     pub fn resolve_api_token(&self) -> Option<String> {
         let var = self.api_token_env.as_deref().unwrap_or("");
         crate::env::require_secret("auth", "auth.api_token", var).ok()
