@@ -1143,10 +1143,56 @@ fn tv_playback(caps: &regex::Captures<'_>) -> Option<Intent> {
     })
 }
 
+fn tv_volume_set(caps: &regex::Captures<'_>) -> Option<Intent> {
+    let percent: u8 = caps.name("n")?.as_str().parse().ok()?;
+    (percent <= 100).then_some(Intent::TvVolumeSet { percent })
+}
+
+/// The same step as a room's speakers take.
+fn tv_volume_step(caps: &regex::Captures<'_>) -> Option<Intent> {
+    let up = matches!(caps.name("dir")?.as_str(), "up" | "louder");
+    Some(Intent::TvVolumeStep {
+        delta: if up {
+            SPEAKER_VOLUME_STEP
+        } else {
+            -SPEAKER_VOLUME_STEP
+        },
+    })
+}
+
+fn tv_mute(caps: &regex::Captures<'_>) -> Option<Intent> {
+    Some(Intent::TvMute {
+        mute: caps.name("verb")?.as_str() == "mute",
+    })
+}
+
 fn tv_rules() -> &'static [TvRule] {
     static RE: OnceLock<Vec<TvRule>> = OnceLock::new();
     RE.get_or_init(|| {
-        let rules: [(String, MakeIntent); 6] = [
+        const LEVEL: &str = r"(?P<n>\d+)\s*(?:%|percent)?";
+        let rules: [(String, MakeIntent); 16] = [
+            (
+                format!(r"^(?:set|turn|put)\s+{TV}(?:'s)?\s+volume\s+(?:up\s+|down\s+)?to\s+{LEVEL}$"),
+                tv_volume_set,
+            ),
+            (
+                format!(r"^set\s+(?:the\s+)?volume\s+(?:on|of)\s+{TV}\s+to\s+{LEVEL}$"),
+                tv_volume_set,
+            ),
+            (format!(r"^{TV}(?:'s)?\s+volume\s+(?:to\s+)?{LEVEL}$"), tv_volume_set),
+            (format!(r"^turn\s+{TV}\s+(?:up|down)\s+to\s+{LEVEL}$"), tv_volume_set),
+            (
+                format!(r"^turn\s+(?P<dir>up|down)\s+{TV}(?:'s)?(?:\s+volume)?$"),
+                tv_volume_step,
+            ),
+            (
+                format!(r"^turn\s+{TV}(?:'s)?(?:\s+volume)?\s+(?P<dir>up|down)$"),
+                tv_volume_step,
+            ),
+            (format!(r"^{TV}(?:'s)?\s+volume\s+(?P<dir>up|down)$"), tv_volume_step),
+            (format!(r"^volume\s+(?P<dir>up|down)\s+on\s+{TV}$"), tv_volume_step),
+            (format!(r"^make\s+{TV}\s+(?P<dir>louder|quieter|softer)$"), tv_volume_step),
+            (format!(r"^(?P<verb>mute|unmute)\s+{TV}$"), tv_mute),
             (format!(r"^(?:turn|switch)\s+(?P<state>on|off)\s+{TV}$"), tv_power),
             (format!(r"^(?:turn|switch)\s+{TV}\s+(?P<state>on|off)$"), tv_power),
             (format!(r"^{TV}\s+(?P<state>on|off)$"), tv_power),
@@ -3780,6 +3826,84 @@ mod context_tests {
             router.parse("resume the tv"),
             Some(Intent::TvPlayback { play: true })
         );
+    }
+
+    #[test]
+    fn the_tv_volume_is_set() {
+        for said in [
+            "set the tv volume to 20",
+            "set the tv volume to 20%",
+            "set the tv's volume to 20 percent",
+            "turn the tv volume to 20",
+            "turn the tv volume down to 20",
+            "tv volume to 20",
+            "the tv volume 20",
+            "set the volume on the tv to 20",
+            "turn the tv down to 20",
+            "can you set the TV volume to 20, please",
+        ] {
+            assert_eq!(
+                IntentRouter::new().parse(said),
+                Some(Intent::TvVolumeSet { percent: 20 }),
+                "{said}"
+            );
+        }
+        assert_eq!(IntentRouter::new().parse("set the tv volume to 150"), None);
+    }
+
+    #[test]
+    fn the_tv_is_turned_up_and_down_by_a_speaker_step() {
+        for (said, delta) in [
+            ("turn the tv up", 10),
+            ("turn up the tv", 10),
+            ("turn the tv volume down", -10),
+            ("turn down the tv volume", -10),
+            ("tv volume up", 10),
+            ("volume down on the tv", -10),
+            ("make the television louder", 10),
+            ("make the tv quieter", -10),
+        ] {
+            assert_eq!(
+                IntentRouter::new().parse(said),
+                Some(Intent::TvVolumeStep { delta }),
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tv_is_muted_and_unmuted() {
+        assert_eq!(
+            IntentRouter::new().parse("mute the tv"),
+            Some(Intent::TvMute { mute: true })
+        );
+        assert_eq!(
+            IntentRouter::new().parse("Unmute the TV."),
+            Some(Intent::TvMute { mute: false })
+        );
+    }
+
+    #[test]
+    fn a_room_volume_is_still_the_room() {
+        // The TV's words must not take the speakers' sentences.
+        assert_eq!(
+            IntentRouter::new().parse("volume up in the living room"),
+            Some(Intent::MediaVolumeStep {
+                room: "living room".into(),
+                delta: 10
+            })
+        );
+        assert_eq!(
+            IntentRouter::new().parse("set the living room volume to 30%"),
+            Some(Intent::MediaVolumeSet {
+                room: "living room".into(),
+                percent: 30
+            })
+        );
+        assert!(!matches!(
+            IntentRouter::new().parse("turn up the tv light"),
+            Some(Intent::TvVolumeStep { .. })
+        ));
     }
 
     #[test]

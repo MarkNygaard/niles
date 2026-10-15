@@ -1033,7 +1033,9 @@ fn title_in(metadata: &str) -> Option<String> {
 
 // ---- Tools ------------------------------------------------------------------
 
+use crate::tv::TvControl;
 use niles_tools::{Error as ToolError, Result as ToolResult, Tool, ToolDescriptor, ToolRegistry};
+use niles_webos::VolumeChange;
 use serde_json::{Value, json};
 
 fn room_arg(tool: &str, args: &Value, key: &str) -> ToolResult<Option<RoomName>> {
@@ -1223,6 +1225,8 @@ impl Tool for PlayElsewhere {
 /// One of the plain controls: pause, resume, skip, volume.
 struct Control {
     music: Arc<Music>,
+    /// For a room whose only sound is its TV.
+    tv: Arc<TvControl>,
     name: &'static str,
     description: &'static str,
     extra: Value,
@@ -1283,14 +1287,29 @@ impl Tool for Control {
                     .get("change")
                     .and_then(Value::as_i64)
                     .map(|c| c.clamp(-100, 100) as i16);
-                self.music.volume(&room, level, step).await
+                let outcome = self.music.volume(&room, level, step).await;
+                let change = level.map(VolumeChange::To).or(step.map(VolumeChange::By));
+                if matches!(outcome, Outcome::NoSpeaker)
+                    && let Some(change) = change
+                    && let Some(on_tv) = self.tv.room_volume(&room, false, change).await
+                {
+                    return Ok(match on_tv {
+                        Ok(after) => json!({
+                            "room": room.as_str().replace('_', " "),
+                            "tv_volume": after.volume,
+                            "tv_muted": after.muted,
+                        }),
+                        Err(e) => json!({ "error": e }),
+                    });
+                }
+                outcome
             }
         };
         Ok(reported(outcome, Some(&room)))
     }
 }
 
-pub fn register(reg: &mut ToolRegistry, music: Arc<Music>) {
+pub fn register(reg: &mut ToolRegistry, music: Arc<Music>, tv: Arc<TvControl>) {
     reg.register(Box::new(PlayRadio(music.clone())));
     reg.register(Box::new(PlayMusic(music.clone())));
     reg.register(Box::new(PlayElsewhere(music.clone())));
@@ -1316,7 +1335,8 @@ pub fn register(reg: &mut ToolRegistry, music: Arc<Music>) {
         (
             "music_volume",
             "The Sonos volume in a room: set a level (0-100), or change it by a step \
-             (+10 louder, -10 quieter). Every speaker in the room moves together.",
+             (+10 louder, -10 quieter). Every speaker in the room moves together. A room \
+             with no Sonos but the TV turns the TV's own speakers instead.",
             json!({
                 "level": { "type": "integer", "minimum": 0, "maximum": 100 },
                 "change": { "type": "integer", "minimum": -100, "maximum": 100 }
@@ -1326,6 +1346,7 @@ pub fn register(reg: &mut ToolRegistry, music: Arc<Music>) {
     for (name, description, extra) in controls {
         reg.register(Box::new(Control {
             music: music.clone(),
+            tv: tv.clone(),
             name,
             description,
             extra,
@@ -1944,6 +1965,63 @@ room = "kitchen"
         for ip in ["10.0.0.2", "10.0.0.6"] {
             assert!(house.did(ip, "SetVolume", "DesiredVolume"), "{ip}");
         }
+    }
+
+    /// The volume tool, with a paired TV standing in `tv_room`. Nothing
+    /// listens on loopback for the TV, which is how one that is off looks.
+    async fn volume_tool(house: &House, tv_room: &str) -> Control {
+        unsafe { std::env::set_var("NILES_TEST_MUSIC_TV_KEY", "key") };
+        let tv = TvControl::new(Arc::new(
+            ConfigStore::from_str_in_memory(&format!(
+                "[tv]\nhost = \"127.0.0.1\"\nroom = \"{tv_room}\"\n\
+                 client_key_env = \"NILES_TEST_MUSIC_TV_KEY\"\n"
+            ))
+            .unwrap(),
+        ));
+        Control {
+            music: Arc::new(music(house).await),
+            tv: Arc::new(tv),
+            name: "music_volume",
+            description: "",
+            extra: json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_room_with_sonos_and_the_tv_turns_the_sonos() {
+        let house = House::new();
+        let answer = volume_tool(&house, "kitchen")
+            .await
+            .execute(json!({ "room": "kitchen", "level": 20 }))
+            .await
+            .unwrap();
+        assert_eq!(answer["volume_percent"], 20, "{answer}");
+        assert!(house.did("10.0.0.4", "SetVolume", "<DesiredVolume>20<"));
+    }
+
+    #[tokio::test]
+    async fn a_room_with_only_the_tv_turns_the_tv() {
+        let house = House::new();
+        let answer = volume_tool(&house, "office")
+            .await
+            .execute(json!({ "room": "office", "change": 10 }))
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({ "error": "The TV is off." }));
+    }
+
+    #[tokio::test]
+    async fn a_room_with_neither_has_no_speaker() {
+        let house = House::new();
+        let answer = volume_tool(&house, "office")
+            .await
+            .execute(json!({ "room": "bedroom", "level": 20 }))
+            .await
+            .unwrap();
+        assert_eq!(
+            answer,
+            json!({ "error": "there is no speaker in the bedroom" })
+        );
     }
 
     #[tokio::test]

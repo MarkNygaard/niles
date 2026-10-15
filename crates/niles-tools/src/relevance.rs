@@ -61,12 +61,16 @@ const GROUPS: &[Group] = &[
             "hbo",
             "prime",
             "channel",
+            // Only the TV mutes: a Sonos has no mute to give.
+            "mute",
+            "unmute",
         ],
         tools: &[
             "tv_power",
             "tv_open_app",
             "tv_input",
             "tv_playback",
+            "tv_volume",
             "tv_message",
             "tv_status",
         ],
@@ -446,6 +450,17 @@ mod tests {
             !names.contains(&"list_timers"),
             "an unrelated subject stays off the wire"
         );
+    }
+
+    #[test]
+    fn the_tv_volume_is_reached_by_the_tv_and_by_muting() {
+        let names = relevant_tool_names("turn the telly down a bit").expect("matched");
+        assert!(names.contains(&"tv_volume"));
+        let names = relevant_tool_names("mute it").expect("matched");
+        assert!(names.contains(&"tv_volume"));
+        // "Louder" in a room with only a TV: music_volume turns the TV.
+        let names = relevant_tool_names("louder please").expect("matched");
+        assert!(names.contains(&"music_volume"));
     }
 
     #[test]
