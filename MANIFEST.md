@@ -27,7 +27,6 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
-| `training-ingest` | POST /training/ingest: a person's Health Auto Export workouts, sleep, HRV and weight, by their own key, idempotently | [#410](https://github.com/MarkNygaard/niles/pull/410) |
 
 ## automations
 
@@ -73,6 +72,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `plugins-time-zone` | Plugins on interface 0.2.1 are told the house's time zone; 0.2.0 plugins run unchanged | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `plugins-update-rollback` | Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `providers-default-elevenlabs-cerebras` | A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so | [#394](https://github.com/MarkNygaard/niles/pull/394) |
+| `training-strava-sync` | Each person's own Strava: 180 days on connect, then a poll every 15 minutes within Strava's rate limits | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 
 ## ui
 
@@ -95,7 +95,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
-| `ui-training-connect` | My profile → Training: the URL, a key shown once with copy, replace, revoke, setup steps and last data | [#410](https://github.com/MarkNygaard/niles/pull/410) |
+| `ui-strava-connect` | My profile → Strava: set up your own Strava app, save its keys, connect, last sync, Sync now, disconnect | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 
 ## voice
@@ -135,7 +135,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `timer-cancel` | Cancel an active timer by name or duration | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `timer-list` | List all currently active timers | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `timer-set` | Set a timer for a given duration | [#3](https://github.com/MarkNygaard/niles/pull/3) |
-| `voice-training-questions` | Ask about your own runs, sleep, heart rate and weight by voice or chat, and have a week or month added up | [#410](https://github.com/MarkNygaard/niles/pull/410) |
+| `voice-training-questions` | Ask about your own runs and workouts from your Strava by voice or chat, and have a week or month added up | [#410](https://github.com/MarkNygaard/niles/pull/410) |
 
 ### `tier-two-escalation` — example phrasings
 
@@ -304,4 +304,4 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 - how was my week
 - how far did I run on Sunday
-- how did I sleep last night
+- what was my pace on my last run

@@ -1124,14 +1124,28 @@ export interface Me {
   phone: string | null;
 }
 
-/** What has arrived from the person's phone, and whether a key is in use. */
-export interface TrainingOverview {
-  /** When the key in use was made; null with none. */
-  key_made_at: string | null;
-  last_received_at: string | null;
-  runs: number;
+/** The signed-in person's own Strava. Whether a secret is kept, never
+    the secret; never a token. */
+export interface StravaStatus {
+  /** Their Strava API app's Client ID; null until they save one. */
+  client_id: string | null;
+  secret_set: boolean;
+  connected: boolean;
+  /** The athlete's name on Strava, while connected. */
+  athlete: string | null;
+  last_sync: string | null;
+  last_error: string | null;
+  syncing: boolean;
+  /** Stopped for Strava's request limits; carries on after this. */
+  paused_until: string | null;
   activities: number;
-  wellness_days: number;
+  runs: number;
+}
+
+/** A blank secret keeps the saved one, for the same Client ID. */
+export interface StravaAppUpdate {
+  client_id: string;
+  client_secret?: string;
 }
 
 /** Each field: absent leaves it, empty clears it. */
@@ -1368,11 +1382,14 @@ export const api = {
   updateMe: (update: MeUpdate) =>
     request<void>("/me", { method: "PUT", body: JSON.stringify(update) }),
   unpairPhone: () => request<void>("/me/phone", { method: "DELETE" }),
-  training: () => request<TrainingOverview>("/me/training"),
-  /** The key, this once: Niles keeps only its hash. Replaces any old one. */
-  makeTrainingKey: () =>
-    request<{ key: string }>("/me/training/key", { method: "POST" }),
-  revokeTrainingKey: () => request<void>("/me/training/key", { method: "DELETE" }),
+  strava: () => request<StravaStatus>("/me/strava"),
+  saveStravaApp: (app: StravaAppUpdate) =>
+    request<StravaStatus>("/me/strava/app", { method: "PUT", body: JSON.stringify(app) }),
+  /** The app and its connection, revoked at Strava first. */
+  removeStravaApp: () => request<void>("/me/strava", { method: "DELETE" }),
+  syncStrava: () => request<{ started: boolean }>("/me/strava/sync", { method: "POST" }),
+  disconnectStrava: () =>
+    request<{ revoked_at_strava: boolean }>("/me/strava/connection", { method: "DELETE" }),
   deviceStatus: () => request<DeviceView>("/presence/device"),
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),

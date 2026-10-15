@@ -1906,74 +1906,109 @@ Anyone in the household may make, pause or remove a rule; the read-back confirma
 
 ## Training (per person)
 
-A coach for one person's running, starting with somebody training for a half marathon on a Garmin watch and a Garmin Index S2 scale, with an iPhone. The end state: Niles drafts a training plan with them and keeps it on their profile, matches each run to the plan as it arrives, reviews the week in the background and adjusts what is coming, and answers "what's my run today?" by voice and on a Training page.
+A coach for one person's running, starting with somebody training for a half marathon on a Garmin watch. The end state: Niles drafts a training plan with them and keeps it on their profile, matches each run to the plan as it arrives, reviews the week in the background and adjusts what is coming, and answers "what's my run today?" by voice and on a Training page.
 
 ### Phases
 
-1. **Data in** (built): workouts, resting heart rate, HRV, sleep, weight and body fat arrive from the phone and are kept per person. The assistant answers questions about them: "how was my week?", "how far did I run on Sunday?".
+1. **Data in** (built): each person's workouts arrive from their own Strava and are kept per person. The assistant answers questions about them: "how was my week?", "how far did I run on Sunday?".
 2. **The plan**: drafted with the assistant in conversation, saved to the person, shown on a Training page.
-3. **Tracking**: each run is matched to the planned session it fulfils. A weekly background review (the review that already runs when the house is quiet) compares plan with what happened, using recovery signals, and proposes changes.
+3. **Tracking**: each run is matched to the planned session it fulfils. A weekly background review (the review that already runs when the house is quiet) compares plan with what happened and proposes changes.
 4. **Watch sync**, later: planned sessions sent to the watch as structured workouts.
 
 ### Where the data comes from
 
-Garmin has no API for an individual: the Connect developer programme is for businesses. The unofficial login that libraries such as garminconnect used broke in March 2026 behind Cloudflare, and intervals.icu, the usual go-between, may not pass Garmin data on through its own API. So the route is the phone:
+**Garmin Connect → Strava → Niles**, each person with their own Strava.
 
-**Garmin Connect → Apple Health → Health Auto Export → `POST /training/ingest`**
+- **Not Garmin directly.** Garmin has no API for an individual: the Connect developer programme is for businesses. The unofficial login that libraries such as garminconnect used broke in March 2026 behind Cloudflare.
+- **Not Apple Health.** HealthKit has no web API; only an app on the phone can read it. The first version of this used the Health Auto Export iOS app to post Apple Health to Niles, but that app's REST automation is paid, and it ran only while the phone was unlocked.
+- **Strava** has a web API, and Garmin Connect uploads every workout to it on its own (Connected Apps → Strava). Any watch that syncs to Strava arrives the same way.
 
-Garmin Connect writes workouts, heart rate, sleep and the scale's weighings to Apple Health (Connected Apps → Apple Health). The Health Auto Export iOS app reads Apple Health and posts it as JSON on a schedule with its REST API automation. Nothing here is Garmin-specific: any watch or scale that writes to Apple Health arrives the same way. The cost is iOS: the automation runs when the phone is unlocked, so data arrives within the hour rather than at once.
+What Strava gives is **activities only**: no sleep, HRV, resting heart rate or weight. Those can come back with a future source. Until then the assistant says they are not there rather than guessing.
+
+### Each person's own Strava app
+
+A new Strava API app has an athlete capacity of one, its owner, until Strava reviews it for more. So there are no house-wide Strava credentials: **each person makes their own app** at strava.com/settings/api and enters its Client ID and Client Secret on their own profile (My profile → Strava). The card walks through it:
+
+1. Create an app on strava.com/settings/api.
+2. Set its Authorization Callback Domain to this Niles's host name, which the card shows.
+3. Copy the Client ID and Client Secret into the card and save.
+4. Connect Strava.
+
+The secret is sealed in the database with the same key and cipher as the secrets store (AES-256-GCM, `nonce || ciphertext`; see Runtime configuration). It is never sent back: the card is told only whether one is saved. The Client ID cannot change while connected, because the tokens belong to the app. Saving the same Client ID with the secret left blank keeps the saved secret.
+
+### Connecting
+
+Strava's OAuth2 authorization code flow, made safe on the way back the way the calendars' sign-in is: a single-use `state`, and a cookie (`niles_strava`, scoped to `/me/strava`) binding it to the browser that started. The person signed in when it comes back must be the person who started it, or nothing is kept.
+
+- `GET /me/strava/start` sends the browser to `https://www.strava.com/oauth/authorize` with the person's Client ID, `scope=activity:read_all` (private activities too), and `redirect_uri` = `https://<this host>/me/strava/callback`. Strava checks only that the redirect is on the app's callback domain.
+- `GET /me/strava/callback` refuses a scope that does not reach activities (the person can untick it on Strava's consent screen). It exchanges the code at `POST https://www.strava.com/oauth/token` and keeps the tokens and the athlete's name. Then the backfill starts in the background, and the browser lands back on the profile, which says how it went.
+
+Both routes, like every `/me/strava` route, are behind the sign-in gate and act for the person signed in.
+
+### Tokens
+
+- Access tokens last six hours. A sync refreshes the token first when it has under an hour left, because Strava returns a new one only then.
+- A refresh may return a new refresh token, and the old one stops working at once. Both are kept, sealed, before the new access token is used.
+- One sync per person runs at a time, so two refreshes never race for the same refresh token.
+- A refused refresh token or a 401 means the person revoked Niles on strava.com. The tokens are forgotten, the poll stops asking, and the card says to connect again.
+- **Disconnect** revokes at Strava, then forgets the tokens. It calls `POST https://www.strava.com/oauth/revoke` with HTTP Basic (the app's Client ID and Secret) and the refresh token. This replaces `/oauth/deauthorize`, which Strava retires in June 2027.
+  - The tokens are forgotten even when Strava cannot be reached. The card then says to finish at strava.com/settings/apps.
+  - The app's credentials stay until the person removes them. The workouts stay.
+
+### Syncing
+
+- **On connect**: a backfill of the last 180 days.
+- **Then**: a poll every 15 minutes for every connected person, and **Sync now** on the card, which runs the same sync.
+- **Listing:** a sync lists `GET /api/v3/athlete/activities?after=…&per_page=200`, page by page. `after` is the newest kept workout's start, less three days. The overlap catches a watch that syncs a day late, putting an older workout on Strava after a newer one, and one page holds it at no extra cost. The whole list is read before anything is fetched in detail.
+- **Details:** each activity not already kept is fetched with `GET /api/v3/activities/{id}`, oldest first, and saved as it comes. A sync cut short resumes from the newest kept.
+- **Rate limits** are per app, so per person. By default they are 200 requests per 15 minutes and 2,000 a day overall, and 100 and 1,000 for reads.
+  - Every answer reports them in `X-RateLimit-Limit`/`-Usage` and `X-ReadRateLimit-Limit`/`-Usage`, each as "15-minute,daily".
+  - A sync stops with three requests to spare in either window, and pauses that person until the window turns. That is the next quarter hour (Strava's windows start at :00, :15, :30 and :45), or midnight UTC for the daily limit.
+  - A 429 pauses the same way.
+  - A 180-day backfill of more than about 95 activities therefore takes more than one window.
+- **No webhooks.** A webhook needs Niles reachable from the internet, and a subscription per app: with one app per person, that is a public callback per person. A poll every 15 minutes does as well. The cost: an activity edited or deleted on Strava after it was fetched keeps the version Niles fetched.
 
 ### Who it belongs to
 
 Training data is personal. It is kept under the same person key as the chat history: `person:{slug}` when the person's sign-in is linked to a voice, otherwise `email:{address}`. That way the voice and the app reach the same data. It is visible only to that person, and to the assistant acting for them:
 
 - The tools read whoever is asking: the recognised voice, or in the app's chat the person signed in. Never a name in an argument. An unrecognised voice has no training data, and the assistant says so.
-- The profile card shows only the signed-in person's own counts.
-- No route lists anybody else's.
-
-### The ingest key
-
-Each person makes their own key on their profile page ("Training: connect your iPhone"). Its rules:
-
-- **Made:** 32 random bytes, as hex, by the server.
-- **Shown:** once, when made, to be copied into Health Auto Export.
-- **Kept:** as a SHA-256 hash. That is enough for a random key: there is nothing for a dictionary to guess. The stored hash is compared in constant time.
-- **Replaced or revoked** from the same card. The old key stops working with that response; the data already sent is kept.
-- **What it opens:** `POST /training/ingest`, for that person, and nothing else. The route is outside the sign-in gate because it authenticates itself, as the GitHub callback and the Linear webhook do. Anywhere else the key is a stranger's bearer token and gets `401`.
-
-The key is checked before the body is read. A body may be up to 10 MiB, since a first sync can carry months; past that the answer is `413`. Each person's phone may post 120 times a minute, which stops a loop without rationing a batched first sync.
+- The card shows only the signed-in person's own Strava and counts.
+- No route lists anybody else's, or takes a person to act for.
 
 ### The data
 
-Units are canonical whatever the phone sends: metres, seconds, kilograms, beats per minute, milliseconds, kilocalories. Health Auto Export's units are the person's choice in the app (km or mi, kg or lb, kcal or kJ). Both of its workout export versions are read: v1, and v2, the current one.
+Strava's units are canonical already: metres, seconds, beats per minute, kilocalories.
 
 - `training_activities`: one row per workout.
-  - Columns: person, source, external id, started at, type (run, walk, ride, strength, other), the name as Apple Health gave it ("Indoor Run"), distance, duration, moving time, average and maximum heart rate, elevation gain, active energy, and the workout as it arrived (raw JSON, kept for later phases: heart-rate samples, route).
-  - Unique per (person, source, external id). The external id is Health Auto Export's workout id; v1 has none, so it is a hash of the start time and the workout's name.
-- `training_wellness`: one row per (person, day).
-  - Columns: resting heart rate, HRV (SDNN, ms), sleep (seconds asleep, the night dated by the morning woken up in), weight, body fat (percent).
-  - Each post merges into the day: a field it does not carry keeps what was there.
-  - The day is the one the phone wrote, which is the house's day while at home. A reading taken abroad stays on the day it was taken there.
-- `training_keys`: one row per person. Holds the key's hash, when it was made, and when data last arrived.
+  - Columns: person, source (`strava`), external id (Strava's activity id), started at, type, the name as the person gave it ("Morning Run"), distance, duration (elapsed), moving time, average and maximum heart rate, elevation gain, calories, and the detailed activity as it arrived. The raw JSON keeps the kilometre splits (`splits_metric`) and the route for later phases.
+  - The type comes from Strava's `sport_type`:
+    - run: Run, TrailRun, VirtualRun
+    - walk: Walk, Hike
+    - ride: Ride and its kinds (MountainBikeRide, GravelRide, EBikeRide, VirtualRide…)
+    - strength: WeightTraining, Crossfit
+    - other: the rest
+  - A distance or calories of 0 is kept as none.
+  - Unique per (person, source, external id). Saving is an upsert that writes nothing when nothing changed.
+- `training_strava`: one row per person. Holds the Client ID, the sealed client secret, the sealed access and refresh tokens, when the access token expires, the athlete's id and name, the last sync that got through, and why the last one did not.
 
-Ingest is idempotent. Health Auto Export re-sends overlapping days on every run, so saving is an upsert that writes nothing when nothing changed. `POST /training/ingest` answers with what it did: `{activities: {added, updated}, wellness_days, wellness: {added, updated}, ignored_metrics, unreadable}`. A metric that is not training data is named in `ignored_metrics`, not refused. One reading that cannot be read is counted in `unreadable` and does not cost the rest.
+The tables of the iPhone route (`training_keys`, `training_wellness`) are dropped when the store first starts.
 
 ### Asking about it
 
-Three tools, in a relevance group of their own (run, pace, sleep, HRV, weight…):
+Two tools, in a relevance group of their own (run, pace, workout, ride, Strava…):
 
 - `training_activities {from?, to?, type?}`: the workouts.
-- `training_wellness {from?, to?}`: the days.
-- `training_summary {period | from, to}`: runs, distance, longest run, average pace, all workouts, and resting heart rate, HRV and sleep against the same span before, plus the weight change.
+- `training_summary {period | from, to}`: runs, distance, longest run, average pace and all workouts.
 
 The sums are worked out in code, not by the model. Distances and paces come back in the house's units.
 
 ### Where it lives
 
-- `niles-training`: the Health Auto Export parser, the model, the store trait with an in-memory store for tests, the summary.
-- `niles-db`: the Postgres store, which creates its tables on first use. Training is on whenever there is a database; the phone sending data is the switch.
-- `niles-api`: the ingest route and `/me/training`.
-- `niles-bin`: the tools.
+- `niles-training`: the model, the store trait with an in-memory store for tests, the summary, Strava's API (`strava`), and the sync and poll (`Strava`).
+- `niles-db`: the Postgres store, which creates its tables on first use. Strava is on whenever there is a database and its secrets key; a person connecting is the switch.
+- `niles-api`: `/me/strava`: status, the app, connect, callback, sync now, disconnect.
+- `niles-bin`: the tools, and the poll.
 
 ## Runtime configuration
 
@@ -2335,8 +2370,6 @@ can always restore it.
   this.
 - `/webhooks/linear`, which authenticates itself with an HMAC over the
   body. A cookie would mean nothing to Linear.
-- `POST /training/ingest`, which authenticates itself with the person's
-  own training key and opens nothing else (see Training (per person)).
 - Wyoming and MQTT, which are not HTTP. **Only the HTTP API gains a
   login**, and if Niles is ever exposed, only that port goes out.
 
@@ -2723,7 +2756,7 @@ niles/
 │   ├── niles-presence/         # presence sources, aggregation, home-state events
 │   ├── niles-automations/      # when-X-do-Y rules, voice-creatable and config-defined
 │   ├── niles-plugins/          # third-party integrations: wasmtime runtime, GitHub install, sandbox
-│   ├── niles-training/         # per-person training data: Health Auto Export parser, store, summary
+│   ├── niles-training/         # per-person training data: Strava sync, store, summary
 │   ├── niles-api/              # HTTP/WebSocket API
 │   ├── niles-config/           # config loading and validation
 │   └── niles-bin/              # main binary, wiring (produces `niles`)
