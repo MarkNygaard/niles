@@ -586,3 +586,9 @@ id = "ui-api-access"
 category = "ui.settings"
 summary = "Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only"
 since_pr = 405
+
+[[feature]]
+id = "ui-media-without-sonos"
+category = "ui.integrations"
+summary = "Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one"
+since_pr = 9999
