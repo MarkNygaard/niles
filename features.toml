@@ -482,34 +482,34 @@ since_pr = 392
 id = "plugins-room-light"
 category = "runtime.plugins"
 summary = "A plugin can keep a light out of its room's lights, so room commands, scenes, presence and the curve leave it alone"
-since_pr = 9999
+since_pr = 393
 
 [[feature]]
 id = "plugins-time-zone"
 category = "runtime.plugins"
 summary = "Plugins on interface 0.2.1 are told the house's time zone; 0.2.0 plugins run unchanged"
-since_pr = 9999
+since_pr = 393
 
 [[feature]]
 id = "automations-any-device-action"
 category = "automations"
 summary = "Any device that reports an action, such as a printer finishing, can start a rule, and the editor offers it"
-since_pr = 9999
+since_pr = 393
 
 [[feature]]
 id = "plugins-widget-room-setting"
 category = "ui.integrations"
 summary = "A plugin's widget can start in the room one of its settings names, and moves when the setting changes"
-since_pr = 9999
+since_pr = 393
 
 [[feature]]
 id = "plugins-dev-loopback-wait"
 category = "runtime.plugins"
 summary = "`niles plugin dev` waits for MQTT before --call, runs the newer build, and reaches a fake device with --allow-loopback"
-since_pr = 9999
+since_pr = 393
 
 [[feature]]
 id = "plugins-plain-errors"
 category = "runtime.plugins"
 summary = "Plugins' MQTT and HTTP failures read as plain reasons, such as connection refused or wrong username or password"
-since_pr = 9999
+since_pr = 393
