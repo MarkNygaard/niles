@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 
 type Failure = (StatusCode, String);
 
-/// One installed plugin, for the Integrations page.
+/// One installed plugin, for the Add-ons page.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PluginSummary {
     pub id: String,
@@ -58,7 +58,7 @@ pub struct PluginSummary {
     pub description: String,
     pub authors: Vec<String>,
     pub homepage: Option<String>,
-    /// Where it appears on the Integrations page: a catalogue group, or
+    /// Where it appears on the Add-ons page: a catalogue group, or
     /// `custom`.
     pub group: PluginGroup,
     /// `starting`, `running`, `not_set_up`, `failing`, `stopped` or
@@ -437,7 +437,7 @@ pub async fn remove(
 
 /// `GET /plugins/{id}/logo`
 ///
-/// Served by Niles itself, so the Integrations page never fetches a
+/// Served by Niles itself, so the Add-ons page never fetches a
 /// logo from anywhere else. The SVG was rewritten from an allowlist at
 /// install; the headers are a second wall, in case a browser is ever
 /// pointed at it directly: no scripts, nothing loaded, not sniffed as

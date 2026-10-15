@@ -49,7 +49,7 @@ declared `room` setting.
   does not have draws a puzzle piece.
 - **Widgets** start where the manifest says: a room's card, or the front page.
   The household can move one to another room or the front page, or hide it,
-  from the plugin's panel on the Integrations page. A `room` the house does not
+  from the plugin's panel on the Add-ons page. A `room` the house does not
   have puts it on the front page. On the front page a widget is a card titled
   with its `title`; on a room it is drawn where the room opens, under its
   lights, since the room's tile itself is a switch.

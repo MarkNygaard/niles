@@ -17,17 +17,15 @@ bind_address = "0.0.0.0:8080"
 [wyoming]
 bind_address = "0.0.0.0:10300"
 
+# Who hears and who thinks — ElevenLabs and Cerebras by default — and
+# their API keys are set up in the app, under Settings → System → Voice & AI.
 [stt]
-api_key_env = "GROQ_API_KEY"
-# Pin Whisper to English so it can't drift into other scripts on quiet
-# audio. Drop/adjust for a non-English household.
+# Pin the transcriber to English so it can't drift into other scripts on
+# quiet audio. Drop/adjust for a non-English household.
 language = "en"
 
 [tts]
 base_url = "http://piper.home-automation.svc.cluster.local:5000"
-
-[llm]
-api_key_env = "GROQ_API_KEY"
 
 [lighting]
 morning_start = "05:45"

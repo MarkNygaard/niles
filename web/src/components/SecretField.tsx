@@ -25,7 +25,7 @@ export interface SecretFieldProps {
  * quietly move where it lives.
  *
  * Its own component because every page that sets something up has its
- * keys beside it: an integration's card, the broker's login, sign-in.
+ * keys beside it: an add-on's card, the broker's login, sign-in.
  */
 export function SecretField({ secret, writable, onChanged }: SecretFieldProps) {
   const [draft, setDraft] = useState("");

@@ -6,9 +6,9 @@ Niles processes every voice command through a tiered pipeline that trades latenc
 
 Tier 0 is a deterministic regex router that catches roughly 80 % of common household commands in sub-100 milliseconds. It matches literal patterns such as "turn on the kitchen light" or "set a timer for five minutes" without touching an LLM. Because it is stateless and runs locally, it is the default path for speed-critical interactions.
 
-## Tier 1 — Groq LLM with tool registry
+## Tier 1 — fast LLM with tool registry
 
-When Tier 0 misses, the request falls through to Tier 1: a fast LLM (Groq) armed with the tool registry. This tier handles roughly 19 % of commands that need light reasoning — parsing intent, selecting tools, and filling parameters — while staying within a ~1-second budget. The tool registry exposes every device command, scene, timer, and skill as a structured call, so the LLM does not guess; it picks.
+When Tier 0 misses, the request falls through to Tier 1: a fast LLM (Cerebras, by default) armed with the tool registry. This tier handles roughly 19 % of commands that need light reasoning — parsing intent, selecting tools, and filling parameters — while staying within a ~1-second budget. The tool registry exposes every device command, scene, timer, and skill as a structured call, so the LLM does not guess; it picks.
 
 ## Tier 2 — OpenAI escalation
 

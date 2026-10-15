@@ -9,6 +9,7 @@
 //! start, because a Niles that will not boot cannot be told the answer.
 
 use crate::Config;
+use crate::providers::Retired;
 use serde::Serialize;
 
 /// How much a gap costs.
@@ -30,7 +31,7 @@ pub struct Gap {
     pub severity: Severity,
     /// What does not work, in the terms of somebody using the house
     /// rather than the terms of the config file.
-    pub consequence: &'static str,
+    pub consequence: String,
 }
 
 impl Config {
@@ -46,7 +47,8 @@ impl Config {
             gaps.push(Gap {
                 path: "mqtt.host",
                 severity: Severity::Blocking,
-                consequence: "Niles cannot reach any lights: it has no broker to talk to.",
+                consequence: "Niles can't reach any lights yet: it has no broker to talk to."
+                    .into(),
             });
         }
 
@@ -57,26 +59,37 @@ impl Config {
         // one — which is the same mistake `/secrets` made, in a second
         // place, and looks worse here because it is the first thing on
         // the page.
+        let label = |provider: Option<&str>| {
+            provider
+                .and_then(crate::catalogue::find)
+                .map_or("Its endpoint", |known| known.label)
+        };
         for (key, severity, consequence) in [
             (
                 "mqtt.username",
                 Severity::Blocking,
-                "The broker will refuse the connection without a username.",
+                "The broker will refuse the connection without a username.".to_string(),
             ),
             (
                 "mqtt.password",
                 Severity::Blocking,
-                "The broker will refuse the connection without a password.",
+                "The broker will refuse the connection without a password.".to_string(),
             ),
             (
                 "llm.api_key",
                 Severity::Degraded,
-                "Anything a regex cannot answer goes unanswered.",
+                format!(
+                    "Niles can't think yet: choose and set up a thinking provider. {} needs an API key.",
+                    label(self.llm.provider_in_use())
+                ),
             ),
             (
                 "stt.api_key",
                 Severity::Degraded,
-                "Speech cannot be transcribed, so voice does nothing.",
+                format!(
+                    "Niles can't hear yet: choose and set up a hearing provider. {} needs an API key.",
+                    label(self.stt.provider_in_use())
+                ),
             ),
         ] {
             if self.secret_source(key) == crate::Source::Unset {
@@ -88,6 +101,37 @@ impl Config {
             }
         }
 
+        // Said until somebody chooses again: the house still works, on
+        // a provider nobody picked.
+        for retired in &self.retired {
+            match retired {
+                Retired::Role { section, provider } => {
+                    let (path, job, role) = if *section == "stt" {
+                        ("stt.provider", "Hearing", crate::Role::Stt)
+                    } else {
+                        ("llm.provider", "Thinking", crate::Role::Llm)
+                    };
+                    gaps.push(Gap {
+                        path,
+                        severity: Severity::Degraded,
+                        consequence: format!(
+                            "{job} was set to {provider}, which Niles no longer supports, so it is using {} for now. Choose a provider to keep it.",
+                            crate::catalogue::default_provider(role).label
+                        ),
+                    });
+                }
+                Retired::Tier2(provider) => gaps.push(Gap {
+                    path: "llm.tier2",
+                    severity: Severity::Degraded,
+                    consequence: format!(
+                        "The escalation tier was set to {provider}, which Niles no longer supports, so it is off."
+                    ),
+                }),
+                // Nothing to answer: the row could serve nothing.
+                Retired::Provider(_) => {}
+            }
+        }
+
         // UTC is the default because guessing a zone would put the
         // curve an hour out and look deliberate. Left as UTC, the curve
         // runs to the wrong clock — which is worth saying out loud.
@@ -95,14 +139,14 @@ impl Config {
             gaps.push(Gap {
                 path: "home.timezone",
                 severity: Severity::Degraded,
-                consequence: "The curve and the morning routine run on UTC, not your clock.",
+                consequence: "The curve and the morning routine run on UTC, not your clock.".into(),
             });
         }
         if self.home.latitude == 0.0 && self.home.longitude == 0.0 {
             gaps.push(Gap {
                 path: "home.latitude",
                 severity: Severity::Degraded,
-                consequence: "Weather answers are for the Gulf of Guinea.",
+                consequence: "Weather answers are for the Gulf of Guinea.".into(),
             });
         }
 
@@ -184,20 +228,27 @@ host = \"broker\"
         let _guard = crate::secrets::TEST_GUARD.lock();
         // One level further along: the key belongs to the provider, and
         // the role has none of its own.
-        crate::secrets::load(std::collections::HashMap::from([(
-            "provider.groq.api_key".to_string(),
-            "key".to_string(),
-        )]));
+        crate::secrets::load(std::collections::HashMap::from([
+            ("provider.elevenlabs.api_key".to_string(), "key".to_string()),
+            ("provider.cerebras.api_key".to_string(), "key".to_string()),
+        ]));
         let cfg = Config::load_from_str(concat!(
             "[[providers]]
-name = \"groq\"
+name = \"elevenlabs\"
 ",
-            "base_url = \"https://api.groq.com/openai/v1\"
+            "base_url = \"https://api.elevenlabs.io/v1\"
+serves = [\"stt\"]
+",
+            "[[providers]]
+name = \"cerebras\"
+",
+            "base_url = \"https://api.cerebras.ai/v1\"
+serves = [\"llm\"]
 ",
             "[stt]
-provider = \"groq\"
+provider = \"elevenlabs\"
 [llm]
-provider = \"groq\"
+provider = \"cerebras\"
 ",
         ))
         .unwrap();
@@ -245,5 +296,81 @@ provider = \"groq\"
         );
         let cfg = Config::load_from_str(toml).unwrap();
         assert!(cfg.is_set_up(), "{:?}", cfg.setup_gaps());
+    }
+
+    #[test]
+    fn a_new_install_is_told_which_accounts_it_needs() {
+        let _guard = crate::secrets::TEST_GUARD.lock();
+        crate::secrets::load(std::collections::HashMap::new());
+        let gaps = Config::load_from_str("").unwrap().setup_gaps();
+        let said = |path: &str| {
+            gaps.iter()
+                .find(|g| g.path == path)
+                .map(|g| g.consequence.clone())
+                .unwrap_or_default()
+        };
+        assert!(said("mqtt.host").contains("can't reach any lights"));
+        assert!(said("stt.api_key").contains("can't hear yet"));
+        assert!(said("stt.api_key").contains("ElevenLabs"));
+        assert!(said("llm.api_key").contains("can't think yet"));
+        assert!(said("llm.api_key").contains("Cerebras"));
+    }
+
+    #[test]
+    fn a_key_for_the_default_provider_answers_the_gap() {
+        let _guard = crate::secrets::TEST_GUARD.lock();
+        // Typed into Voice & AI beside the provider, before anybody has
+        // declared it: the role is already using it, so it counts.
+        crate::secrets::load(std::collections::HashMap::from([
+            ("provider.elevenlabs.api_key".to_string(), "key".to_string()),
+            ("provider.cerebras.api_key".to_string(), "key".to_string()),
+        ]));
+        let paths: Vec<_> = Config::load_from_str("")
+            .unwrap()
+            .setup_gaps()
+            .iter()
+            .map(|g| g.path)
+            .collect();
+        assert!(!paths.contains(&"stt.api_key"), "{paths:?}");
+        assert!(!paths.contains(&"llm.api_key"), "{paths:?}");
+        crate::secrets::load(std::collections::HashMap::new());
+    }
+
+    #[test]
+    fn a_role_that_fell_back_from_groq_says_so_until_somebody_chooses() {
+        let cfg = Config::load_from_str(concat!(
+            "[[providers]]
+name = \"groq\"
+",
+            "base_url = \"https://api.groq.com/openai/v1\"
+",
+            "[stt]
+provider = \"groq\"
+",
+            "[llm.tier2]
+provider = \"groq\"
+",
+        ))
+        .unwrap();
+        let gaps = cfg.setup_gaps();
+        let hearing = gaps
+            .iter()
+            .find(|g| g.path == "stt.provider")
+            .expect("said");
+        assert!(
+            hearing.consequence.contains("groq"),
+            "{}",
+            hearing.consequence
+        );
+        assert!(
+            hearing.consequence.contains("ElevenLabs"),
+            "{}",
+            hearing.consequence
+        );
+        assert!(gaps.iter().any(|g| g.path == "llm.tier2"), "{gaps:?}");
+        assert!(
+            !gaps.iter().any(|g| g.path == "llm.provider"),
+            "thinking never named it: {gaps:?}"
+        );
     }
 }

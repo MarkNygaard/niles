@@ -33,20 +33,6 @@ export interface ConfigView {
 }
 
 /**
- * What a device is reporting.
- *
- * Every field is nullable and null means "not reported", which is not
- * the same as off or zero — a lamp that has never been heard from has
- * `on: null`, and the UI shows that as unknown rather than off.
- */
-export interface Provider {
-  name: string;
-  base_url: string;
-  /** Which roles it can serve. Empty means anything. */
-  serves?: ("stt" | "llm")[];
-}
-
-/**
  * One WLED strip, as `[[wled.devices]]` has it.
  *
  * `rgb` and `white_balance` are optional here because the config file
@@ -91,6 +77,12 @@ export interface Integration {
       appears. */
   group: IntegrationGroup;
   importance: Importance;
+  /** Part of the base system — the broker, the providers that hear and
+      think — set up under Settings → System rather than offered as an
+      add-on. */
+  system: boolean;
+  /** The roles that use it when they name no provider. */
+  default_for: ("stt" | "llm")[];
   /** A Lucide icon name. */
   icon: string;
   /** Every key it keeps; removing it deletes the stored ones. */
@@ -107,7 +99,7 @@ export interface Integration {
 }
 
 /**
- * A third-party integration installed from GitHub.
+ * A third-party add-on installed from GitHub.
  *
  * Mirrors `PluginSummary` in crates/niles-api/src/plugins.rs.
  */

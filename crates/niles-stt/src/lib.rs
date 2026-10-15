@@ -1,7 +1,7 @@
 //! Speech-to-text adapter layer.
 //!
 //! Two providers: anything that speaks the OpenAI transcription API
-//! (Groq's Whisper, by default) through [`WhisperClient`], and
+//! (a Whisper server of the house's own) through [`WhisperClient`], and
 //! ElevenLabs Scribe through [`ScribeClient`]. [`SttClient`] is the one
 //! the rest of Niles holds.
 

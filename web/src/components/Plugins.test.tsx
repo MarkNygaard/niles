@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { IntegrationsPage } from "@/components/IntegrationsPage";
+import { AddOnsPage } from "@/components/AddOnsPage";
 import { api } from "@/lib/api";
 import { pluginStatusOf } from "@/lib/integrations";
 import type { PluginPreview, PluginSetting, PluginSummary, SecretsReport } from "@/lib/api";
@@ -58,7 +58,7 @@ const PREVIEW: PluginPreview = {
     "Adds a page to the menu: Electricity",
   ],
   cannot:
-    "It cannot see your conversations, the people in your house, other integrations' passwords or Niles's database.",
+    "It cannot see your conversations, the people in your house, other add-ons' passwords or Niles's database.",
   tools: [{ name: "prices", description: "Prices by the hour." }],
   settings: [
     { key: "area", label: "Price area", type: "choice", required: true, help: null },
@@ -81,7 +81,7 @@ function setup(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <IntegrationsPage
+      <AddOnsPage
         integrations={[]}
         plugins={plugins}
         onPluginsChanged={onPluginsChanged}
@@ -107,10 +107,10 @@ afterEach(() => {
 
 function openAdd() {
   fireEvent.click(screen.getByRole("tab", { name: /^Available/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Add from GitHub" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add-on from GitHub" }));
 }
 
-describe("Add from GitHub", () => {
+describe("Add-on from GitHub", () => {
   it("sits at the end of Available under its own heading", () => {
     setup();
     expect(screen.getByRole("tab", { name: /^Available/ })).toHaveAttribute(
@@ -118,7 +118,7 @@ describe("Add from GitHub", () => {
       "true",
     );
     const section = screen.getByRole("region", { name: "From GitHub" });
-    expect(within(section).getByRole("button", { name: "Add from GitHub" })).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Add-on from GitHub" })).toBeInTheDocument();
   });
 
   it("previews the release with its permissions, then installs what it showed", async () => {
@@ -283,7 +283,7 @@ describe("installed plugins on Connected", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Roll back to v0.0.9" }));
     await waitFor(() => expect(back).toHaveBeenCalledWith("spotprice"));
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Spot prices" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove add-on" }));
     expect(remove).not.toHaveBeenCalled();
     expect(within(dialog).getByText(/Its devices leave your rooms/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));

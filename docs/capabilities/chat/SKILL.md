@@ -20,10 +20,11 @@ chat:
     - the microphone button dictates: recorded in the browser and written down by the same speech-to-text
       as the satellites, into the message field to check and send (not sent by itself)
     - a message is at most 2000 characters
-    - an assistant can answer the chat instead, on the household's own subscription, when switched on under
-      Settings → Integrations: Claude Code on a Claude subscription (Haiku, Sonnet or Opus), or ChatGPT on a
+    - an assistant can answer the chat instead, on the household's own subscription, once set up under
+      Settings → Add-ons: Claude Code on a Claude subscription (Haiku, Sonnet or Opus), or ChatGPT on a
       ChatGPT subscription (signed in from its card); it uses Niles's tools and nothing else
-    - with both set up, "Which assistant answers" under Integrations picks one; with one, that one answers
+    - "Which assistant answers" is under Settings → Voice & AI: Niles's own model, Claude or ChatGPT; with
+      Niles's own model chosen neither assistant answers, and nothing runs in the background
     - a reply from an assistant is marked "Claude" or "ChatGPT"; when it fails the chat falls back to Niles's own
       model and says which assistant failed and why
     - spoken commands about the house's rules ("every weekday at 6:30 …") also go to the assistant, and the

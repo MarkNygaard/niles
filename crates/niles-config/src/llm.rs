@@ -12,20 +12,22 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
-    /// Name of the env var holding the provider API key
-    /// (e.g. `"GROQ_API_KEY"`).
     /// Which `[[providers]]` entry serves this role.
     ///
-    /// When set, its endpoint and key are used and the two fields
-    /// below are ignored. When absent, they are read as before — which
-    /// is what every config written before providers existed does.
+    /// When set, its endpoint and key are used and `base_url` is
+    /// ignored. When absent, the role's own `base_url` is used if it has
+    /// one, and otherwise the role's default provider, Cerebras.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Name of the env var holding the API key (e.g.
+    /// `"CEREBRAS_API_KEY"`), when it comes from the environment rather
+    /// than from the app.
     #[serde(default)]
     pub api_key_env: String,
-    /// Provider base URL. Defaults to Groq's hosted endpoint.
-    #[serde(default = "default_base_url")]
-    pub base_url: String,
+    /// An OpenAI-compatible endpoint of the role's own. Absent means the
+    /// provider.
+    #[serde(default)]
+    pub base_url: Option<String>,
     /// Model identifier passed to the provider.
     #[serde(default = "default_model")]
     pub model: String,
@@ -50,15 +52,14 @@ pub struct LlmConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmTier2Config {
-    /// Name of the env var holding the Tier 2 provider API key
-    /// (e.g. `"OPENAI_API_KEY"`).
     /// Which `[[providers]]` entry serves this role.
     ///
-    /// When set, its endpoint and key are used and the two fields
-    /// below are ignored. When absent, they are read as before — which
-    /// is what every config written before providers existed does.
+    /// When set, its endpoint and key are used and `base_url` is
+    /// ignored. When absent, `base_url` is.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Name of the env var holding the Tier 2 API key (e.g.
+    /// `"OPENAI_API_KEY"`).
     #[serde(default)]
     pub api_key_env: String,
     /// Provider base URL. Defaults to OpenAI's hosted endpoint.
@@ -74,10 +75,6 @@ pub struct LlmTier2Config {
     /// exists because something was hard is the one that can afford it.
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
-}
-
-fn default_base_url() -> String {
-    crate::catalogue::default_base_url().into()
 }
 
 // From the catalogue, so the shipped default and the model offered
@@ -99,28 +96,29 @@ fn default_timeout_secs() -> u64 {
     30
 }
 
+// The key is not checked: an unnamed key is *unset*, not wrong, and
+// `Config::setup_gaps` reports it. Refusing to load here would mean a
+// Niles nobody has given a key to cannot start far enough to be given
+// one.
 fn validate_llm_fields(
     section: &'static str,
-    api_key_env: &str,
-    base_url: &str,
+    base_url: Option<&str>,
     model: &str,
     timeout_seconds: u64,
 ) -> Result<()> {
-    // An unnamed key is *unset*, not wrong, and `Config::setup_gaps`
-    // reports it. Refusing to load here would mean a Niles nobody has
-    // given a key to cannot start far enough to be given one.
-    let _ = api_key_env;
-    if base_url.trim().is_empty() {
-        return Err(Error::InvalidSection {
-            section,
-            reason: "base_url must not be empty".into(),
-        });
-    }
-    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-        return Err(Error::InvalidSection {
-            section,
-            reason: format!("base_url '{base_url}' must start with http:// or https://"),
-        });
+    if let Some(base_url) = base_url {
+        if base_url.trim().is_empty() {
+            return Err(Error::InvalidSection {
+                section,
+                reason: "base_url must not be empty".into(),
+            });
+        }
+        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+            return Err(Error::InvalidSection {
+                section,
+                reason: format!("base_url '{base_url}' must start with http:// or https://"),
+            });
+        }
     }
     if model.trim().is_empty() {
         return Err(Error::InvalidSection {
@@ -152,11 +150,20 @@ impl Default for LlmConfig {
 }
 
 impl LlmConfig {
+    /// The provider this role is served by: the one it names, or its
+    /// default when it names none and has no endpoint of its own.
+    pub fn provider_in_use(&self) -> Option<&str> {
+        match (&self.provider, &self.base_url) {
+            (Some(name), _) => Some(name),
+            (None, Some(_)) => None,
+            (None, None) => Some(crate::catalogue::default_provider(crate::Role::Llm).id),
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_llm_fields(
             "llm",
-            &self.api_key_env,
-            &self.base_url,
+            self.base_url.as_deref(),
             &self.model,
             self.timeout_seconds,
         )?;
@@ -177,8 +184,7 @@ impl LlmTier2Config {
     pub fn validate(&self) -> Result<()> {
         validate_llm_fields(
             "llm.tier2",
-            &self.api_key_env,
-            &self.base_url,
+            Some(&self.base_url),
             &self.model,
             self.timeout_seconds,
         )

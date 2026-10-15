@@ -63,7 +63,7 @@ export const DESTINATIONS: Record<BuiltinEntry, Destination> = {
     href: "#/me/settings",
     label: "Settings",
     icon: <SlidersHorizontal />,
-    owns: (r) => r === "/me/settings",
+    owns: (r) => r === "/me/settings" || r.startsWith("/me/settings/"),
   },
   automations: {
     href: "#/automations",

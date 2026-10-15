@@ -97,9 +97,11 @@ on top of it.
 
 `serve` runs the full stack, but with no satellite connected the Wyoming
 voice server just sits idle — the lighting curve, room light-switches, and
-morning routine all run regardless. `serve` does require `GROQ_API_KEY` to
-start (it builds the LLM client eagerly); the TTS/STT URLs are only exercised
-once a satellite speaks, so their values don't matter until then.
+morning routine all run regardless. `serve` does need a key for the thinking
+provider (Cerebras, by default) to start, because it builds the LLM client
+eagerly: set one in the app under Settings → System → Voice & AI, or name an
+environment variable with `api_key_env`. The hearing provider is only used
+once a satellite speaks.
 
 ### Sample config — circadian + switches + morning (no voice yet)
 
@@ -120,12 +122,13 @@ password_env = "NILES_MQTT_PASSWORD"
 [api]
 bind_address = "0.0.0.0:8080"
 
-# Needed for serve to start even while voice is idle.
+# Needed for serve to start even while voice is idle, unless the keys
+# are set in the app instead.
 [stt]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "ELEVENLABS_API_KEY"
 language = "en"
 [llm]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "CEREBRAS_API_KEY"
 
 # WLED strips are declared in config (not MQTT-discovered). Each entry's
 # `topic` is that strip's base MQTT topic. Required for the curve + switches

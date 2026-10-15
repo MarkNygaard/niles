@@ -2,10 +2,15 @@
 //!
 //! Not a config section — a list of facts about the outside world that
 //! belong to the code rather than to anybody's file. Whether Niles can
-//! use Groq is decided by the client it ships with; where Groq's API
-//! lives has exactly one answer; and which models it serves is
+//! use Cerebras is decided by the client it ships with; where Cerebras's
+//! API lives has exactly one answer; and which models it serves is
 //! something a person should pick from rather than be asked to
 //! remember.
+//!
+//! Two kinds of entry share the list. The base system — the broker the
+//! lights are reached through, and the providers that hear and think —
+//! is in [`Group::System`] and is set up under Settings → System, by the
+//! job it does. Everything else is an add-on, under one of [`GROUPS`].
 //!
 //! Keeping the list here rather than in the API crate means the shipped
 //! defaults can read from it. `[stt]` with nothing in it has to name a
@@ -27,14 +32,19 @@ pub enum Kind {
     Service,
 }
 
-/// Where it sits on the Integrations page.
+/// Where it sits: in the base system, or under a heading on the
+/// Add-ons page.
 ///
 /// By what it does for the house rather than by how it is set up: a
 /// newcomer looks for "music", not for "OAuth service".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Group {
-    Essentials,
+    /// What Niles is: the broker and the providers that hear and think.
+    /// Not one of [`GROUPS`], so the Add-ons page never shows it and a
+    /// plugin cannot put itself in it — a plugin naming it lands in
+    /// Custom like any group Niles does not offer.
+    System,
     Music,
     Presence,
     Calendars,
@@ -66,17 +76,19 @@ pub struct GroupInfo {
     pub requirement: Option<&'static str>,
 }
 
-/// The groups, in the order the page shows them. Essentials first, so
-/// a new install can work down the page.
+/// The base system, which Settings → System sets up by job rather than
+/// as a list.
+pub const SYSTEM: GroupInfo = GroupInfo {
+    id: Group::System,
+    label: "System",
+    blurb: "What Niles needs to reach your lights, hear what you say and answer.",
+    requirement: Some(
+        "Niles needs one hearing provider and one thinking provider: ElevenLabs hears, Cerebras thinks.",
+    ),
+};
+
+/// The add-on groups, in the order the Add-ons page shows them.
 pub const GROUPS: &[GroupInfo] = &[
-    GroupInfo {
-        id: Group::Essentials,
-        label: "Essentials",
-        blurb: "What Niles needs to reach your lights, hear what you say and answer.",
-        requirement: Some(
-            "Niles needs one speech-to-text provider and one AI provider. Groq does both on one account.",
-        ),
-    },
     GroupInfo {
         id: Group::Music,
         label: "Music & TV",
@@ -111,18 +123,25 @@ pub const GROUPS: &[GroupInfo] = &[
 
 impl Group {
     pub fn info(self) -> &'static GroupInfo {
+        if self == Group::System {
+            return &SYSTEM;
+        }
         GROUPS
             .iter()
             .find(|g| g.id == self)
-            .expect("every group is in GROUPS")
+            .expect("every add-on group is in GROUPS")
     }
 
-    /// Where it comes on the page.
+    /// Where it comes in the catalogue: the system first, then the
+    /// add-on groups in page order.
     pub fn position(self) -> usize {
-        GROUPS
+        if self == Group::System {
+            return 0;
+        }
+        1 + GROUPS
             .iter()
             .position(|g| g.id == self)
-            .expect("every group is in GROUPS")
+            .expect("every add-on group is in GROUPS")
     }
 }
 
@@ -174,11 +193,19 @@ pub struct Known {
     pub models: &'static [(Role, &'static str)],
 }
 
-/// The provider the shipped defaults point at.
+/// The provider a role uses when it names none and has no endpoint of
+/// its own.
 ///
-/// `[stt]` and `[llm]` have to default to *something*, and this is what
-/// they have always defaulted to.
-pub const DEFAULT_PROVIDER: &str = "groq";
+/// Per role, because no one account does both jobs well: ElevenLabs
+/// hears Niles's name best and does nothing else, and Cerebras answers
+/// fastest and cannot listen.
+pub fn default_provider(role: Role) -> &'static Known {
+    let id = match role {
+        Role::Stt => "elevenlabs",
+        Role::Llm => "cerebras",
+    };
+    find(id).expect("the default providers are in the catalogue")
+}
 
 /// In the order the page shows them: by group, and within a group the
 /// way a new install should work down it.
@@ -189,7 +216,7 @@ pub const KNOWN: &[Known] = &[
         blurb: "Switch and dim your Zigbee lights and WLED strips.",
         needs: "An MQTT broker on your network, with Zigbee2MQTT connected to it. Every light reaches Niles through it.",
         kind: Kind::Service,
-        group: Group::Essentials,
+        group: Group::System,
         importance: Importance::Required,
         icon: "network",
         secrets: &["mqtt.username", "mqtt.password"],
@@ -199,35 +226,12 @@ pub const KNOWN: &[Known] = &[
         models: &[],
     },
     Known {
-        id: "groq",
-        label: "Groq",
-        blurb: "Hears what you say and answers, in one account.",
-        needs: "A Groq account (there is a free tier) and an API key from console.groq.com. It both listens and answers, fast enough to reply while you wait.",
-        kind: Kind::Provider,
-        group: Group::Essentials,
-        importance: Importance::Required,
-        icon: "sparkles",
-        secrets: &["provider.groq.api_key"],
-        base_url: Some("https://api.groq.com/openai/v1"),
-        serves: &[Role::Stt, Role::Llm],
-        api: Api::OpenAi,
-        models: &[
-            (Role::Stt, "whisper-large-v3-turbo"),
-            (Role::Stt, "whisper-large-v3"),
-            (Role::Stt, "distil-whisper-large-v3-en"),
-            (Role::Llm, "openai/gpt-oss-20b"),
-            (Role::Llm, "openai/gpt-oss-120b"),
-            (Role::Llm, "llama-3.3-70b-versatile"),
-            (Role::Llm, "llama-3.1-8b-instant"),
-        ],
-    },
-    Known {
         id: "elevenlabs",
         label: "ElevenLabs",
         blurb: "Hears what you say, and is best at hearing Niles's name.",
-        needs: "An ElevenLabs account and an API key. It only listens, so pair it with Groq or Cerebras to answer.",
+        needs: "An ElevenLabs account and an API key from elevenlabs.io. It only listens, so Cerebras does the thinking.",
         kind: Kind::Provider,
-        group: Group::Essentials,
+        group: Group::System,
         importance: Importance::Required,
         icon: "audio-lines",
         secrets: &["provider.elevenlabs.api_key"],
@@ -240,9 +244,9 @@ pub const KNOWN: &[Known] = &[
         id: "cerebras",
         label: "Cerebras",
         blurb: "The fastest answers, said out loud while you wait.",
-        needs: "A Cerebras account and an API key. It does not listen, so pair it with Groq or ElevenLabs.",
+        needs: "A Cerebras account (there is a free tier) and an API key from cloud.cerebras.ai. It does not listen, so ElevenLabs does the hearing.",
         kind: Kind::Provider,
-        group: Group::Essentials,
+        group: Group::System,
         importance: Importance::Required,
         icon: "brain",
         secrets: &["provider.cerebras.api_key"],
@@ -489,21 +493,21 @@ impl Known {
 
 /// The model the shipped config uses for a role.
 ///
-/// Panics only if the catalogue is inconsistent with itself — the
-/// default provider missing, or serving a role it lists no model for —
-/// which the tests below rule out at build time rather than leaving to
-/// a first start.
+/// Panics only if the catalogue is inconsistent with itself — a default
+/// provider listing no model for its role — which the tests below rule
+/// out at build time rather than leaving to a first start.
 pub fn default_model(role: Role) -> &'static str {
-    find(DEFAULT_PROVIDER)
-        .and_then(|known| known.models_for(role).next())
-        .expect("the default provider serves every role the shipped config has")
+    default_provider(role)
+        .models_for(role)
+        .next()
+        .expect("a default provider offers a model for its role")
 }
 
 /// The endpoint the shipped config points a role at.
-pub fn default_base_url() -> &'static str {
-    find(DEFAULT_PROVIDER)
-        .and_then(|known| known.base_url)
-        .expect("the default provider is a provider, so it has an endpoint")
+pub fn default_base_url(role: Role) -> &'static str {
+    default_provider(role)
+        .base_url
+        .expect("a default provider is a provider, so it has an endpoint")
 }
 
 #[cfg(test)]
@@ -529,10 +533,25 @@ mod tests {
     }
 
     #[test]
-    fn the_default_provider_exists_and_is_one() {
-        let known = find(DEFAULT_PROVIDER).expect("in the catalogue");
-        assert_eq!(known.kind, Kind::Provider);
-        assert!(known.base_url.is_some());
+    fn each_role_defaults_to_a_provider_that_serves_it() {
+        // ElevenLabs hears and Cerebras thinks. A default that did not
+        // serve its role would send a new install's first request to an
+        // endpoint that does not exist.
+        for role in [Role::Stt, Role::Llm] {
+            let known = default_provider(role);
+            assert_eq!(known.kind, Kind::Provider);
+            assert!(known.base_url.is_some());
+            assert!(known.serves.contains(&role), "{} for {role:?}", known.id);
+        }
+        assert_eq!(default_provider(Role::Stt).id, "elevenlabs");
+        assert_eq!(default_provider(Role::Llm).id, "cerebras");
+    }
+
+    #[test]
+    fn groq_is_gone() {
+        // Removed on purpose; stored configs that still name it are
+        // cleaned up at load (see `Config::settle`).
+        assert!(find("groq").is_none());
     }
 
     #[test]
@@ -571,18 +590,37 @@ mod tests {
             .filter(|k| k.importance == Importance::Required)
             .map(|k| k.id)
             .collect();
-        assert_eq!(required, ["mqtt", "groq", "elevenlabs", "cerebras"]);
+        assert_eq!(required, ["mqtt", "elevenlabs", "cerebras"]);
         for known in KNOWN.iter().filter(|k| k.kind == Kind::Provider) {
             assert_eq!(known.importance, Importance::Required, "{}", known.id);
-            assert_eq!(known.group, Group::Essentials, "{}", known.id);
+            assert_eq!(known.group, Group::System, "{}", known.id);
         }
     }
 
     #[test]
-    fn a_group_of_required_providers_says_one_of_each_is_enough() {
-        let requirement = Group::Essentials.info().requirement.expect("said");
-        assert!(requirement.contains("one speech-to-text"));
-        assert!(requirement.contains("one AI provider"));
+    fn the_system_is_the_broker_and_the_providers_and_nothing_else() {
+        // Everything else is an add-on: optional, and on the Add-ons page.
+        let system: Vec<&str> = KNOWN
+            .iter()
+            .filter(|k| k.group == Group::System)
+            .map(|k| k.id)
+            .collect();
+        assert_eq!(system, ["mqtt", "elevenlabs", "cerebras"]);
+    }
+
+    #[test]
+    fn the_system_is_not_an_add_on_group() {
+        // A plugin picks its group from GROUPS; being able to name the
+        // system would put it beside the broker.
+        assert!(GROUPS.iter().all(|g| g.id != Group::System));
+        assert_eq!(Group::System.info().label, "System");
+    }
+
+    #[test]
+    fn the_system_says_one_of_each_role_is_enough() {
+        let requirement = Group::System.info().requirement.expect("said");
+        assert!(requirement.contains("one hearing provider"));
+        assert!(requirement.contains("one thinking provider"));
     }
 
     #[test]
@@ -610,7 +648,7 @@ mod tests {
     #[test]
     fn every_group_is_listed_once_and_used() {
         for (i, group) in GROUPS.iter().enumerate() {
-            assert_eq!(group.id.position(), i, "{:?} listed twice", group.id);
+            assert_eq!(group.id.position(), i + 1, "{:?} listed twice", group.id);
             assert!(
                 KNOWN.iter().any(|k| k.group == group.id),
                 "{:?} has nothing in it",
@@ -625,12 +663,12 @@ mod tests {
         // the catalogue's order is the page's order.
         let positions: Vec<usize> = KNOWN.iter().map(|k| k.group.position()).collect();
         assert!(positions.is_sorted(), "{positions:?}");
-        assert_eq!(KNOWN[0].group, Group::Essentials);
+        assert_eq!(KNOWN[0].group, Group::System);
     }
 
     #[test]
     fn the_key_that_says_finished_is_one_it_owns() {
-        // Removing an integration deletes what it owns; a key it reads
+        // Removing an add-on deletes what it owns; a key it reads
         // but does not own would be left behind with nothing showing it.
         for known in KNOWN {
             if let Some(key) = known.secret_key() {
@@ -676,8 +714,10 @@ mod tests {
 
     #[test]
     fn the_first_model_for_a_role_is_the_default() {
-        assert_eq!(default_model(Role::Stt), "whisper-large-v3-turbo");
-        assert_eq!(default_model(Role::Llm), "openai/gpt-oss-20b");
+        assert_eq!(default_model(Role::Stt), "scribe_v2");
+        assert_eq!(default_model(Role::Llm), "gpt-oss-120b");
+        assert_eq!(default_base_url(Role::Stt), "https://api.elevenlabs.io/v1");
+        assert_eq!(default_base_url(Role::Llm), "https://api.cerebras.ai/v1");
     }
 
     #[test]
@@ -694,7 +734,7 @@ mod tests {
 
     #[test]
     fn every_provider_has_somewhere_to_keep_a_key() {
-        // The Integrations card shows a key field when there is a place
+        // The Voice & AI page shows a key field when there is a place
         // to put it, and the route that saves one accepts only keys
         // Niles reads. A provider without this is one the page offers
         // and nobody can finish setting up.

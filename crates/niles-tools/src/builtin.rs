@@ -2380,7 +2380,7 @@ mod tests {
     async fn a_room_goes_off_in_one_call() {
         // One call, not one per device. Seven `set_device` calls with
         // the whole conversation re-sent each time is what put the
-        // turn over Groq's tokens-per-minute limit.
+        // turn over the provider's tokens-per-minute limit.
         let (mock, tool) = set_room_setup(false);
         let args = json!({ "room": "living_room", "on": false });
         let result = tool.execute(args).await.unwrap();

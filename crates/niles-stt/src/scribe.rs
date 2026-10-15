@@ -8,7 +8,7 @@
 //! Chosen for the two things Whisper does worst in a living room. It
 //! mishears the wake word it is handed at the start of every command —
 //! Myles, Charles, Nines — and Scribe takes key terms to listen for. And
-//! Groq's Whisper reports no confidence at all, where Scribe reports a
+//! hosted Whisper reports little confidence at all, where Scribe reports a
 //! log-probability for every word.
 
 use crate::error::{Error, Result};

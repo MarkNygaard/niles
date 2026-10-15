@@ -20,7 +20,7 @@ export interface AddPluginDialogProps {
 }
 
 /**
- * Add from GitHub: a repo's address, then what its latest release would
+ * Add-on from GitHub: a repo's address, then what its latest release would
  * do, then Install.
  *
  * Two requests, so what is installed is what was on the screen: the
@@ -73,9 +73,9 @@ export function AddPluginDialog({ open, onOpenChange, onInstalled }: AddPluginDi
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <div className="flex min-w-0 flex-col gap-1">
-            <DialogTitle>Add from GitHub</DialogTitle>
+            <DialogTitle>Add-on from GitHub</DialogTitle>
             <DialogDescription>
-              An integration somebody published as a release on GitHub. It runs walled off
+              A third-party add-on somebody published as a release on GitHub. It runs walled off
               from the rest of Niles, with only what you agree to here.
             </DialogDescription>
           </div>

@@ -843,7 +843,7 @@ impl DeviceCommander for Runtime {
         let plugin = self
             .inner
             .by_source(id.source())
-            .ok_or_else(|| format!("The {spoken}'s integration is not installed."))?;
+            .ok_or_else(|| format!("The {spoken}'s add-on is not installed."))?;
         let known =
             plugin.devices().get(id).cloned().ok_or_else(|| {
                 format!("{} has no device called {spoken}.", plugin.manifest.name)

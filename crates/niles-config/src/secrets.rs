@@ -55,6 +55,23 @@ pub fn is_loaded() -> bool {
     STORED.read().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
+/// The stored keys that belong to a provider Niles no longer ships.
+///
+/// `provider.groq.api_key`, in a house that set Groq up before it was
+/// removed. Nothing reads it and no page shows it, and a key nobody can
+/// see is one nobody thinks to revoke — so it is deleted rather than
+/// kept "just in case".
+pub fn retired_provider_keys<'a>(keys: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    keys.into_iter()
+        .filter(|key| {
+            key.strip_prefix("provider.")
+                .and_then(|rest| rest.strip_suffix(".api_key"))
+                .is_some_and(|name| crate::catalogue::find(name).is_none())
+        })
+        .cloned()
+        .collect()
+}
+
 /// Where a credential is actually coming from.
 ///
 /// Resolved in the same order [`require_secret`](crate::env) uses, so
@@ -157,8 +174,16 @@ impl crate::Config {
         match key {
             "mqtt.username" | "mqtt.password" => (!self.mqtt.host.trim().is_empty())
                 .then(|| format!("{}:{}", self.mqtt.host, self.mqtt.port)),
-            "stt.api_key" => host_of(&self.stt.base_url),
-            "llm.api_key" => host_of(&self.llm.base_url),
+            "stt.api_key" => host_of(&self.base_url_for(
+                crate::Role::Stt,
+                self.stt.provider.as_deref(),
+                self.stt.base_url.as_deref(),
+            )?),
+            "llm.api_key" => host_of(&self.base_url_for(
+                crate::Role::Llm,
+                self.llm.provider.as_deref(),
+                self.llm.base_url.as_deref(),
+            )?),
             "integrations.linear.api_key" => Some("api.linear.app".into()),
             "integrations.claude_code.oauth_token" => Some("claude.ai".into()),
             "integrations.chatgpt.access_token"
@@ -199,9 +224,9 @@ impl crate::Config {
         if get(key).is_some() {
             return Source::Stored;
         }
-        // A role pointing at a provider is served by that provider's
-        // key. Without this the page reports speech-to-text as having
-        // no key while it is happily using Groq's — the same mistake as
+        // A role served by a provider is served by that provider's key.
+        // Without this the page reports speech-to-text as having no key
+        // while it is happily using the provider's — the same mistake as
         // reading the `*_env` name instead of the value, one level
         // further along.
         if let Some(provider) = self.provider_for(key)
@@ -213,14 +238,14 @@ impl crate::Config {
     }
 
     /// The provider key a role's credential falls through to, if the
-    /// role names one.
+    /// role is served by a provider — the one it names, or its default.
     fn provider_for(&self, key: &str) -> Option<String> {
-        let named = match key {
-            "stt.api_key" => self.stt.provider.as_deref(),
-            "llm.api_key" => self.llm.provider.as_deref(),
+        let provider = match key {
+            "stt.api_key" => self.stt.provider_in_use(),
+            "llm.api_key" => self.llm.provider_in_use(),
             _ => None,
         }?;
-        crate::providers::find(&self.providers, named).map(|p| p.secret_key())
+        Some(format!("provider.{provider}.api_key"))
     }
 }
 
@@ -333,15 +358,15 @@ api_key_env = \"NILES_TEST_SOURCE_WINS\"
     #[test]
     fn a_key_says_where_it_is_used() {
         // The label cannot: "LLM API key" is true of every provider,
-        // and which one it must come from is decided by `base_url`.
+        // and which one it must come from is decided by the role.
         let cfg = crate::Config::load_from_str("").expect("valid");
         assert_eq!(
             cfg.secret_hint("llm.api_key").as_deref(),
-            Some("api.groq.com")
+            Some("api.cerebras.ai")
         );
         assert_eq!(
             cfg.secret_hint("stt.api_key").as_deref(),
-            Some("api.groq.com")
+            Some("api.elevenlabs.io")
         );
     }
 
@@ -379,5 +404,19 @@ base_url = \"https://api.openai.com/v1\"
         assert_eq!(get("test.only.gone"), None);
         assert_eq!(get("test.only.kept").as_deref(), Some("new"));
         load(HashMap::new());
+    }
+
+    #[test]
+    fn a_retired_providers_key_is_marked_for_deletion() {
+        let stored: Vec<String> = [
+            "provider.groq.api_key",
+            "provider.cerebras.api_key",
+            "provider.elevenlabs.api_key",
+            "mqtt.password",
+            "plugins.groq.api_key",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(retired_provider_keys(&stored), ["provider.groq.api_key"]);
     }
 }

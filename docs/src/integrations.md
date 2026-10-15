@@ -1,9 +1,9 @@
-# Writing an integration
+# Writing an add-on
 
 > The plugin interface is at v0.2 (v0.1 plus MQTT), and Niles 0.2.0 runs and
 > installs plugins.
 
-Third-party integrations are WebAssembly components installed from a GitHub
+Third-party add-ons are WebAssembly components installed from a GitHub
 release. They add devices, tools for the assistant, and pages and widgets in
 the app, inside a sandbox that reaches only what the household approved.
 
@@ -23,5 +23,5 @@ The guide for authors lives beside this site, in `docs/integrations/`:
 
 The interface itself is
 [`schemas/niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit),
-and the design is in the architecture spec under "Third-party integrations
+and the design is in the architecture spec under "Third-party add-ons
 (plugins)".

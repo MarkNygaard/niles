@@ -94,7 +94,7 @@ RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
 
 # ---- runtime ----------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
-# ca-certificates: TLS roots for outbound HTTPS (Groq, etc.).
+# ca-certificates: TLS roots for outbound HTTPS (ElevenLabs, Cerebras, etc.).
 # chrono-tz bundles the IANA database, so no tzdata package is needed for
 # `home.timezone` resolution.
 RUN apt-get update \

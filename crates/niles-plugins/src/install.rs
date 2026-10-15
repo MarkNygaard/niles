@@ -126,7 +126,7 @@ pub trait Leftovers: Send + Sync {
     async fn forget(&self, id: &str) -> Result<(), String>;
 }
 
-/// A catalogue group, as the Integrations page heads it.
+/// A catalogue group, as the Add-ons page heads it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Group {
     pub id: String,
@@ -212,7 +212,7 @@ pub struct SettingPreview {
     pub help: Option<String>,
 }
 
-/// One installed plugin, as the Integrations page lists it.
+/// One installed plugin, as the Add-ons page lists it.
 #[derive(Debug, Clone)]
 pub struct Listed {
     pub id: String,

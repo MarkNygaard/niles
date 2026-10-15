@@ -11,20 +11,22 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SttConfig {
-    /// Name of the env var holding the provider API key
-    /// (e.g. `"GROQ_API_KEY"`).
     /// Which `[[providers]]` entry serves this role.
     ///
-    /// When set, its endpoint and key are used and the two fields
-    /// below are ignored. When absent, they are read as before — which
-    /// is what every config written before providers existed does.
+    /// When set, its endpoint and key are used and `base_url` is
+    /// ignored. When absent, the role's own `base_url` is used if it has
+    /// one, and otherwise the role's default provider, ElevenLabs.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Name of the env var holding the API key (e.g.
+    /// `"ELEVENLABS_API_KEY"`), when it comes from the environment
+    /// rather than from the app.
     #[serde(default)]
     pub api_key_env: String,
-    /// Provider base URL. Defaults to Groq's hosted endpoint.
-    #[serde(default = "default_base_url")]
-    pub base_url: String,
+    /// An OpenAI-compatible transcription endpoint of the role's own —
+    /// a Whisper server in the house, say. Absent means the provider.
+    #[serde(default)]
+    pub base_url: Option<String>,
     /// Model identifier passed to the provider.
     #[serde(default = "default_model")]
     pub model: String,
@@ -66,8 +68,8 @@ pub struct SttConfig {
 /// rule about sentence shape separates an invented "thank you" from a
 /// real one. These two numbers do.
 ///
-/// Both have to be damning **where both are reported**. Groq's Whisper
-/// returns `no_speech_prob = 0.0` for every segment, including ones
+/// Both have to be damning **where both are reported**. Hosted Whisper
+/// has returned `no_speech_prob = 0.0` for every segment, including ones
 /// whose entire transcript is "." — so requiring it made this unable
 /// to fire at all. A provider that says nothing has not said the audio
 /// was speech, and its silence must not veto the other half.
@@ -79,7 +81,7 @@ pub struct NoiseGate {
     #[serde(default)]
     pub enabled: bool,
     /// Drop above this, where the provider reports it. Ignored when it
-    /// is flat zero, which is what Groq returns.
+    /// is flat zero, which is what a provider that does not measure it returns.
     #[serde(default = "default_no_speech_prob")]
     pub no_speech_prob: f64,
     /// And below this.
@@ -117,8 +119,8 @@ impl NoiseGate {
             return false;
         }
         // A provider that reports nothing has not said the audio was
-        // speech, so its silence must not veto the other half. Groq
-        // returns 0.0 for every segment — including ones whose whole
+        // speech, so its silence must not veto the other half. Hosted Whisper
+        // has returned 0.0 for every segment — including ones whose whole
         // transcript is "." — so requiring both meant this could never
         // fire, which is how it sat switched off looking like a
         // working feature.
@@ -149,10 +151,6 @@ impl NoiseGate {
     }
 }
 
-fn default_base_url() -> String {
-    crate::catalogue::default_base_url().into()
-}
-
 // From the catalogue, so the shipped default and the model offered
 // in the dropdown are the same string by construction rather than
 // because somebody remembered to change both.
@@ -177,23 +175,27 @@ impl Default for SttConfig {
 }
 
 impl SttConfig {
-    pub fn validate(&self) -> Result<()> {
-        if self.base_url.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "stt",
-                reason: "base_url must not be empty".into(),
-            });
+    /// The provider this role is served by: the one it names, or its
+    /// default when it names none and has no endpoint of its own.
+    pub fn provider_in_use(&self) -> Option<&str> {
+        match (&self.provider, &self.base_url) {
+            (Some(name), _) => Some(name),
+            (None, Some(_)) => None,
+            (None, None) => Some(crate::catalogue::default_provider(crate::Role::Stt).id),
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
         // Fail fast on the obvious typo (`htps://...`) at startup
         // rather than on first transcription. Skips a full URL-parse
         // dep — reqwest catches anything subtler.
-        if !self.base_url.starts_with("http://") && !self.base_url.starts_with("https://") {
+        if let Some(base_url) = &self.base_url
+            && !base_url.starts_with("http://")
+            && !base_url.starts_with("https://")
+        {
             return Err(Error::InvalidSection {
                 section: "stt",
-                reason: format!(
-                    "base_url '{}' must start with http:// or https://",
-                    self.base_url
-                ),
+                reason: format!("base_url '{base_url}' must start with http:// or https://"),
             });
         }
         if self.model.trim().is_empty() {
@@ -238,7 +240,7 @@ mod noise_gate_tests {
         }
     }
 
-    /// A door closing, as Groq actually reports one: `no_speech_prob`
+    /// A door closing, as hosted Whisper reported one: `no_speech_prob`
     /// flat zero — it reports that for everything — and a logprob that
     /// says the words were invented.
     const DOOR: (f64, f64) = (0.0, -1.6);
@@ -277,7 +279,7 @@ mod noise_gate_tests {
 
     #[test]
     fn a_flat_zero_does_not_veto_the_other_half() {
-        // The bug this replaced. Groq returns 0.0 for every segment,
+        // The bug this replaced. Hosted Whisper returned 0.0 for every segment,
         // including ones whose whole transcript is "." — so requiring
         // it meant the gate could never fire, and sat switched off
         // looking like a working feature.

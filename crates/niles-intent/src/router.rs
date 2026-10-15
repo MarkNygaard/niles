@@ -160,7 +160,7 @@ pub(crate) fn normalize(s: &str) -> String {
 ///
 /// Every Tier 0 pattern is anchored at both ends, so "can you turn off
 /// the living room lights" missed all of them and went to the LLM —
-/// where the same request costs a round trip to Groq, several hundred
+/// where the same request costs a round trip to the provider, several hundred
 /// milliseconds and a slice of a rate limit, to arrive at what a regex
 /// already knew. Two courteous words should not change which tier
 /// answers.

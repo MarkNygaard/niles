@@ -9,6 +9,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use niles_config::catalogue;
 
 type Failure = (StatusCode, String);
 
@@ -88,7 +89,7 @@ pub struct SecretDto {
     /// from its name.
     pub key: String,
     pub label: String,
-    /// What it is used against — `api.groq.com`, the broker's
+    /// What it is used against — `api.cerebras.ai`, the broker's
     /// host:port. Absent for Niles's own secrets, which are used
     /// against nothing.
     pub hint: Option<String>,
@@ -121,24 +122,28 @@ pub struct SetSecret {
 pub async fn list_secrets(State(state): State<AppState>) -> Json<SecretsReport> {
     let cfg = state.config.as_ref().map(|c| c.current());
 
-    // A row per configured provider, alongside the fixed ones. The
-    // list has to include what is *not* set yet, which rules out
-    // reading it from the store — but which providers exist is a
-    // config question, and the answer changes when somebody adds one.
-    let mut secrets: Vec<SecretDto> = cfg
-        .as_ref()
-        .map(|cfg| {
-            cfg.providers
-                .iter()
-                .map(|p| SecretDto {
-                    key: p.secret_key(),
-                    label: format!("{} API key", p.name),
-                    hint: Some(host_of(&p.base_url).unwrap_or_else(|| p.base_url.clone())),
-                    source: cfg.secret_source(&p.secret_key()),
-                })
-                .collect()
+    // A row per provider Niles ships, alongside the fixed ones — added
+    // or not, because Voice & AI shows the key field beside whichever
+    // provider is picked, before the save that declares it.
+    let mut secrets: Vec<SecretDto> = catalogue::KNOWN
+        .iter()
+        .filter(|known| known.kind == catalogue::Kind::Provider)
+        .filter_map(|known| {
+            let key = known.secret_key()?;
+            Some(SecretDto {
+                label: format!("{} API key", known.label),
+                hint: known.base_url.and_then(host_of),
+                source: match cfg.as_ref() {
+                    Some(cfg) => cfg.secret_source(&key),
+                    None if niles_config::secrets::get(&key).is_some() => {
+                        niles_config::Source::Stored
+                    }
+                    None => niles_config::Source::Unset,
+                },
+                key,
+            })
         })
-        .unwrap_or_default();
+        .collect();
 
     secrets.extend(KNOWN.iter().map(|(key, label)| SecretDto {
         key: (*key).to_string(),
@@ -229,20 +234,21 @@ pub async fn clear_secret(
 }
 
 /// Only keys Niles actually reads: the fixed ones, a key for each
-/// provider the config declares, and each installed plugin's declared
-/// secrets (`plugins.<id>.<key>`). A typo must not fill the table with
-/// secrets nothing will look for — including `provider.typo.api_key`,
-/// which would look plausible and never be read.
+/// provider it ships, and each installed plugin's declared secrets
+/// (`plugins.<id>.<key>`). A typo must not fill the table with secrets
+/// nothing will look for — including `provider.typo.api_key`, which
+/// would look plausible and never be read.
 async fn known(state: &AppState, key: &str) -> Result<String, Failure> {
     if KNOWN.iter().any(|(k, _)| *k == key) {
         return Ok(key.to_string());
     }
-    let declared = state
-        .config
-        .as_ref()
-        .map(|c| c.current())
-        .is_some_and(|cfg| cfg.providers.iter().any(|p| p.secret_key() == key));
-    if declared {
+    // Any provider in the catalogue, declared or not: the key is typed
+    // in beside the provider as it is picked, and the save that
+    // declares it comes after.
+    let a_provider = catalogue::KNOWN.iter().any(|known| {
+        known.kind == catalogue::Kind::Provider && known.secret_key().as_deref() == Some(key)
+    });
+    if a_provider {
         return Ok(key.to_string());
     }
     if key.starts_with("plugins.")
@@ -350,5 +356,39 @@ mod tests {
             .expect("listed");
         assert_eq!(secret["label"], "Spot prices: API key");
         assert_eq!(secret["source"], "unset");
+    }
+
+    #[tokio::test]
+    async fn a_shipped_providers_key_is_accepted_before_it_is_declared_and_groqs_is_not() {
+        let app = || crate::router(state(Arc::default()));
+        // Typed in beside the provider as it is picked; the save that
+        // declares it comes after.
+        for shipped in ["provider.elevenlabs.api_key", "provider.cerebras.api_key"] {
+            let (status, body) = send(app(), put(shipped)).await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{shipped}: {body}");
+        }
+        let (status, _) = send(app(), put("provider.groq.api_key")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn every_shipped_provider_has_a_key_row() {
+        let (_, body) = send(
+            crate::router(state(Arc::default())),
+            Request::get("/secrets").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let report: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let keys: Vec<&str> = report["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["key"].as_str())
+            .filter(|k| k.starts_with("provider."))
+            .collect();
+        assert_eq!(
+            keys,
+            ["provider.elevenlabs.api_key", "provider.cerebras.api_key"]
+        );
     }
 }

@@ -37,7 +37,7 @@ plugin to copy from.
 
 ```
 niles-integration.toml       # the manifest: id, name, settings, permissions
-logo.svg                     # 24x24 mark shown on the Integrations page
+logo.svg                     # 24x24 mark shown on the Add-ons page
 wit/niles-integration.wit    # the interface, copied from Niles (0.2.1)
 src/lib.rs                   # every export stubbed out
 Cargo.toml                   # crate-type = ["cdylib"], wit-bindgen
@@ -237,7 +237,7 @@ in [publishing](publishing.md).
 
 ## 7. Install
 
-In the Niles app: Integrations → Available → **Add from GitHub** (at the end of
+In the Niles app: Settings → Add-ons → Available → **Add-on from GitHub** (at the end of
 the page), paste `https://github.com/you/your-repo` and press **Preview**.
 Niles downloads your latest release, runs every check `niles plugin check`
 runs, and shows the name, authors, repo, version, description, logo and the

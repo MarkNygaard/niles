@@ -2,7 +2,7 @@
 
 > Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
 > installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
-> dev`, Add from GitHub with its approval screen, updates, rollback, turning
+> dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
 > off and removing, and in the app the generated setup panel, the plugin's
 > log, and its pages and widgets.
 
@@ -18,14 +18,14 @@ A complete example is in the [worked example](example-spotprice.md#the-manifest)
 | Field | Required | What it is |
 |---|---|---|
 | `id` | yes | `[a-z0-9_]`, 2–32 characters, starting with a letter. Never changes once published. |
-| `name` | yes | What the Integrations page calls it: "Spot prices". |
+| `name` | yes | What the Add-ons page calls it: "Spot prices". |
 | `version` | yes | Semver, `0.1.0`. The release tag must be the same, with or without a leading `v`. |
 | `description` | yes | One line, at most 120 characters. See below. |
 | `authors` | yes | List of `"Name <email>"` or `"Name"`. |
 | `homepage` | no | Usually the repo. Linked from the setup panel. |
 | `min_niles` | yes | The oldest Niles version it runs on. Niles 0.2.0 is the first with plugins, so `"0.2.0"` or later. |
 | `interface` | yes | The `niles:integration` version the component targets: `"0.2"`, or `"0.1"` for a plugin built before MQTT. It must match the WIT the component was built with. |
-| `group` | no | Where it sits on the Integrations page. See [Groups](#groups). |
+| `group` | no | Where it sits on the Add-ons page. See [Groups](#groups). |
 | `logo` | no | Path of an SVG in the release, normally `"logo.svg"`. See [Logo](#logo). |
 | `memory_mb` | no | Memory cap, 64 by default, at most 256. JavaScript and Python plugins want 128. |
 | `keywords` | if it has tools | Words that make its tools relevant to a request. See [tools](tools.md#relevance-keywords). |
@@ -39,8 +39,8 @@ The id ends up everywhere, so choose it once:
 - secrets `plugins.<id>.<key>` in Niles's secret store;
 - menu entries `<id>.<entry>` in the house's `[menu]` settings.
 
-It must not be the id of a built-in integration (`mqtt`, `groq`, `elevenlabs`,
-`cerebras`, `sonos`, `spotify`, `lg_tv`, `unifi`, `tado`, `microsoft`, `google`,
+It must not be the id of anything built in (`mqtt`, `elevenlabs`, `cerebras`,
+`sonos`, `spotify`, `lg_tv`, `unifi`, `tado`, `microsoft`, `google`,
 `nemlig`, `claude_code`, `chatgpt`, `linear`, and any added later) or of another
 plugin already installed. Prefer the product's name, short: `airgradient`, `easee`,
 `rejseplanen`.
@@ -59,13 +59,12 @@ cheapest." Not: "Integration with the Energi Data Service DayAheadPrices API."
 
 ### Groups
 
-The Integrations page has two tabs, **Connected** and **Available**, each
-grouped by what an integration does for the house. `group` is one of the
-built-in group ids:
+The Add-ons page (Settings → Add-ons) has two tabs, **Connected** and
+**Available**, each grouped by what an add-on does for the house. `group` is
+one of the built-in group ids:
 
 | `group` | Shown as | For |
 |---|---|---|
-| `essentials` | Essentials | What Niles needs to reach lights, hear and answer |
 | `music` | Music & TV | Speakers, music, the television |
 | `presence` | Presence & climate | Who is home, heating, air |
 | `calendars` | Calendars | Calendars |
@@ -77,9 +76,15 @@ built-in groups. These ids are part of the interface: Niles may add groups
 later, and a plugin naming a group its Niles does not know yet lands in Custom
 rather than failing, so naming a newer group is safe.
 
+There is no group for what Niles needs to work at all — the broker and the
+providers that hear and think. Those are the base system, set up under
+Settings → System rather than listed with the add-ons, and a plugin cannot put
+itself there: `essentials`, the group that used to hold them, now lands in
+Custom like any other id Niles does not offer.
+
 Wherever it sits, a plugin's row carries a **Custom** badge, and its setup panel
 shows where it came from: your repo (linked), authors, version and install date.
-**Add from GitHub** is at the end of the Available tab under its own heading.
+**Add-on from GitHub** is at the end of the Available tab under its own heading.
 
 ### Logo
 

@@ -4,17 +4,16 @@ import { cn } from "@/lib/utils";
  * Brand marks, as single paths on a 24-square.
  *
  * Inlined rather than pulled from a package: a handful of glyphs is
- * less than a dependency, and an integration list that fetches logos from
+ * less than a dependency, and an add-on list that fetches logos from
  * somewhere else is a list that renders blank when that somewhere is
  * unreachable — which for a house is most of the reasons you would be
  * looking at this page.
  *
  * Paths from Simple Icons (CC0), Sonos's wordmark included — ChatGPT's
  * is OpenAI's knot, from Simple Icons 11, before the set dropped it — UniFi's is
- * Ubiquiti's U, which is the mark UniFi carries. Groq, Cerebras and
- * nemlig.com are in no public set: Groq's and nemlig's come from their
- * own favicons, Cerebras's from the logo on their site, without the rest
- * of the word. The marks remain their owners' trademarks; they are here
+ * Ubiquiti's U, which is the mark UniFi carries. Cerebras and nemlig.com
+ * are in no public set: nemlig's comes from its own favicon, Cerebras's
+ * from the logo on their site, without the rest of the word. The marks remain their owners' trademarks; they are here
  * to identify the service, which is what a trademark is for.
  *
  * Copy a path whole. The one that was here for tado stopped two thirds
@@ -126,29 +125,6 @@ function NemligMark({ className }: { className?: string }) {
 }
 
 /**
- * Groq's mark, which has its own colours.
- *
- * Their favicon as they publish it — a silhouette would be a different
- * logo, not a smaller one. It is why this file cannot simply be a
- * table of paths: some of them are pictures.
- */
-function GroqMark({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 33 33"
-      className={cn("size-6 shrink-0", className)}
-    >
-      <path fill="#F43E01" d="M.54.39h32v32h-32z" />
-      <path
-        fill="#fff"
-        d="m18.445 4.406-9.468 13.74 7.341.665-1.69 9.578 9.469-13.74-7.342-.664 1.69-9.579Z"
-      />
-    </svg>
-  );
-}
-
-/**
  * The logo, or a letter when there is no logo to use.
  *
  * The letter is still here for a service nobody has a mark for, and it
@@ -157,7 +133,7 @@ function GroqMark({ className }: { className?: string }) {
  * inventing one rather than showing it.
  */
 /** The marks drawn as their own components rather than one path. */
-const DRAWN = new Set(["groq", "cerebras", "nemlig", "microsoft"]);
+const DRAWN = new Set(["cerebras", "nemlig", "microsoft"]);
 
 /** Whether `id` has a real mark here, rather than the initial in a dot. */
 export function hasBrandMark(id: string): boolean {
@@ -165,7 +141,6 @@ export function hasBrandMark(id: string): boolean {
 }
 
 export function BrandMark({ id, label, className }: BrandMarkProps) {
-  if (id === "groq") return <GroqMark className={className} />;
   if (id === "cerebras") return <CerebrasMark className={className} />;
   if (id === "nemlig") return <NemligMark className={className} />;
   if (id === "microsoft") return <MicrosoftMark className={className} />;

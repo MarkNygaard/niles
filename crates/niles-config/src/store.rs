@@ -700,7 +700,8 @@ fn layer(base: &toml::Table, overrides: &toml::Table) -> Result<Config> {
 }
 
 fn deserialize_validated(table: &toml::Table) -> Result<Config> {
-    let config: Config = table.clone().try_into()?;
+    let mut config: Config = table.clone().try_into()?;
+    config.settle();
     config.validate()?;
     Ok(config)
 }

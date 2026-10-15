@@ -2,7 +2,7 @@
 
 > Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
 > installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
-> dev`, Add from GitHub with its approval screen, updates, rollback, turning
+> dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
 > off and removing, and in the app the generated setup panel, the plugin's
 > log, and its pages and widgets.
 

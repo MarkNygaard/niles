@@ -486,21 +486,20 @@ fn keys(state: &AppState, provider: Provider) -> Result<(String, String), String
             .microsoft
             .as_ref()
             .filter(|m| m.enabled)
-            .ok_or("Microsoft calendars are not switched on under Settings → Integrations")?
+            .ok_or("Microsoft calendars are not switched on under Settings → Add-ons")?
             .resolve_credentials()
             .map_err(|_| {
-                "the Microsoft app's client ID and secret are missing under Settings → Integrations"
+                "the Microsoft app's client ID and secret are missing under Settings → Add-ons"
                     .to_string()
             }),
         Provider::Google => integrations
             .google
             .as_ref()
             .filter(|g| g.enabled)
-            .ok_or("Google calendars are not switched on under Settings → Integrations")?
+            .ok_or("Google calendars are not switched on under Settings → Add-ons")?
             .resolve_credentials()
             .map_err(|_| {
-                "the Google client ID and secret are missing under Settings → Integrations"
-                    .to_string()
+                "the Google client ID and secret are missing under Settings → Add-ons".to_string()
             }),
         Provider::Icloud => Err("iCloud has no app keys".into()),
     }

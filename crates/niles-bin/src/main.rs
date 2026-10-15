@@ -14,10 +14,7 @@ use niles_history::{
     CommandEntry, CommandReader, CommandWriter, StateEntry, StateReader, StateWriter,
 };
 use niles_intent::{DeviceIndex, Intent, IntentRouter, RouterContext};
-use niles_llm::{
-    ChatRequest, ChatResponse, GroqClient, GroqConfig, Message, OpenAiClient, OpenAiConfig,
-    ToolChoice,
-};
+use niles_llm::{ChatRequest, ChatResponse, Message, OpenAiClient, OpenAiConfig, ToolChoice};
 use niles_memory::MemoryStore;
 use niles_mqtt::{
     CommandRouter, MqttClient, MqttOptions, MqttPublisher, WledSource, Z2mSource,
@@ -124,14 +121,14 @@ enum Commands {
     /// connected satellites (dev tool — no STT / TTS yet).
     WyomingTap(WyomingTapArgs),
     /// Transcribe an audio file via the configured STT provider
-    /// (Groq Whisper). The file is uploaded as-is — supported
-    /// formats are WAV, MP3, FLAC, OGG, M4A, etc.
+    /// (ElevenLabs Scribe by default). The file is uploaded as-is —
+    /// supported formats are WAV, MP3, FLAC, OGG, M4A, etc.
     Transcribe(TranscribeArgs),
     /// Synthesize speech via the configured TTS provider (Piper).
     /// Writes the resulting WAV to the path given by `--out`.
     Synthesize(SynthesizeArgs),
-    /// One-shot chat with the configured Tier 1 LLM (Groq GPT-OSS by
-    /// default). Sends `prompt` as a single user message with no tools
+    /// One-shot chat with the configured Tier 1 LLM (Cerebras
+    /// gpt-oss-120b by default). Sends `prompt` as a single user message with no tools
     /// and prints the model's reply to stdout. Manual-verification
     /// path — voice loop integration comes in a later PR.
     Chat(ChatArgs),
@@ -750,19 +747,18 @@ fn stt_settings(cfg: &Config) -> anyhow::Result<SttSettings> {
         .endpoint_for(
             niles_config::Role::Stt,
             cfg.stt.provider.as_deref(),
-            &cfg.stt.base_url,
+            cfg.stt.base_url.as_deref(),
             &cfg.stt.api_key_env,
             "stt",
         )
         .context("resolving where speech-to-text should go")?;
     // Which client depends on the API the provider speaks, as the
-    // catalogue records it. A provider not in the catalogue, or a config
-    // from before providers existed, speaks the OpenAI shape, as every
-    // provider did until ElevenLabs.
+    // catalogue records it. A role on an endpoint of its own speaks the
+    // OpenAI shape: a Whisper server, as every provider was until
+    // ElevenLabs.
     let api = cfg
         .stt
-        .provider
-        .as_deref()
+        .provider_in_use()
         .and_then(niles_config::catalogue::find)
         .map_or(niles_config::catalogue::Api::OpenAi, |known| known.api);
     Ok(SttSettings {
@@ -876,26 +872,36 @@ impl LiveStt {
     }
 }
 
-/// Build a `GroqClient` from the `[llm]` section of an already-
-/// validated config, resolving the API key from the environment.
-fn build_groq_client(cfg: &Config) -> anyhow::Result<GroqClient> {
+/// Build the Tier 1 client from the `[llm]` section of an already-
+/// validated config, resolving its key.
+fn build_llm_client(cfg: &Config) -> anyhow::Result<OpenAiClient> {
     let endpoint = cfg
         .endpoint_for(
             niles_config::Role::Llm,
             cfg.llm.provider.as_deref(),
-            &cfg.llm.base_url,
+            cfg.llm.base_url.as_deref(),
             &cfg.llm.api_key_env,
             "llm",
         )
         .context("resolving where the language model should go")?;
-    let groq_cfg = GroqConfig {
+    OpenAiClient::new(OpenAiConfig {
         api_key: endpoint.api_key,
         base_url: endpoint.base_url,
         model: cfg.llm.model.clone(),
         reasoning_effort: cfg.llm.reasoning_effort,
         request_timeout: Duration::from_secs(cfg.llm.timeout_seconds),
-    };
-    GroqClient::new(groq_cfg).context("building Groq HTTP client")
+    })
+    .context("building the language model's HTTP client")
+}
+
+/// Where speech-to-text requests go, for the line printed at startup.
+fn stt_base_url(cfg: &Config) -> String {
+    cfg.base_url_for(
+        niles_config::Role::Stt,
+        cfg.stt.provider.as_deref(),
+        cfg.stt.base_url.as_deref(),
+    )
+    .unwrap_or_default()
 }
 
 /// Build an OpenAI client for Tier 2, or `None` when `[llm.tier2]` is absent.
@@ -910,7 +916,7 @@ fn build_tier2_client(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ChatProvide
         .endpoint_for(
             niles_config::Role::Llm,
             tier2_cfg.provider.as_deref(),
-            &tier2_cfg.base_url,
+            Some(&tier2_cfg.base_url),
             &tier2_cfg.api_key_env,
             "llm.tier2",
         )
@@ -2154,7 +2160,7 @@ async fn transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
         "Transcribing {} ({} bytes) via {} ({}) ...",
         args.audio.display(),
         audio.len(),
-        cfg.stt.base_url,
+        stt_base_url(&cfg),
         cfg.stt.model
     );
     let transcript = client
@@ -2309,7 +2315,7 @@ call view_skill to read its full body.";
 
 /// A minimal abstraction over the chat-completions endpoint so the
 /// tool-calling loop is testable without spinning up an HTTP server.
-/// `GroqClient` is the only real implementor; tests use a fake.
+/// `OpenAiClient` is the only real implementor; tests use a fake.
 #[async_trait::async_trait]
 pub(crate) trait ChatProvider: Send + Sync {
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse>;
@@ -2580,8 +2586,17 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         &cfg.home,
         false,
     );
-    let client = build_groq_client(&cfg)?;
-    eprintln!("Chatting via {} ({}) ...", cfg.llm.base_url, cfg.llm.model);
+    let client = build_llm_client(&cfg)?;
+    eprintln!(
+        "Chatting via {} ({}) ...",
+        cfg.base_url_for(
+            niles_config::Role::Llm,
+            cfg.llm.provider.as_deref(),
+            cfg.llm.base_url.as_deref(),
+        )
+        .unwrap_or_default(),
+        cfg.llm.model
+    );
 
     let user_mem = memory_store
         .as_ref()
@@ -2656,7 +2671,8 @@ async fn voice_tap(args: VoiceTapArgs) -> anyhow::Result<()> {
 
     eprintln!(
         "Wyoming server listening on tcp://{bind}\nTranscribing each utterance via {} ({}). Press Ctrl-C to exit.\n",
-        cfg.stt.base_url, cfg.stt.model
+        stt_base_url(&cfg),
+        cfg.stt.model
     );
 
     let server_handle = tokio::spawn(server.run());
@@ -3152,7 +3168,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // needed here: the first transcript arrives many seconds after
     // startup (wake-word + speech + STT round-trip), so Z2M has plenty
     // of time to populate before any tool call hits the registry.
-    let llm = Arc::new(build_groq_client(&cfg)?);
+    let llm = Arc::new(build_llm_client(&cfg)?);
     let capability_loader = build_capability_loader();
     let capability_index = capability_loader
         .as_deref()
@@ -3284,7 +3300,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     eprintln!(
         "Wyoming server listening on tcp://{bind}\nZ2M source running on {prefix}/+/+; STT via {stt_url} ({model}).\nMatched intents trigger MQTT publish{mode}. Press Ctrl-C to exit.\n",
         prefix = cfg.mqtt.z2m_prefix,
-        stt_url = cfg.stt.base_url,
+        stt_url = stt_base_url(&cfg),
         model = cfg.stt.model,
         mode = mode_note,
     );
@@ -3816,7 +3832,7 @@ struct DispatchCtx {
     music: Arc<music::Music>,
     tv: Arc<tv::TvControl>,
     hush: Arc<speak::Hush>,
-    llm: Arc<GroqClient>,
+    llm: Arc<OpenAiClient>,
     tier2: Option<Arc<dyn ChatProvider>>,
     identifier: Option<Arc<dyn SpeakerIdentifier>>,
     tools: Arc<ToolRegistry>,
@@ -4527,8 +4543,8 @@ async fn dispatch_transcript(
     let text = strip_wake_word(text);
 
     // `transcribe_session` already trims, so an empty `text` here means
-    // Whisper returned nothing for a silent/noise session. Don't burn
-    // a Groq round-trip on it — Tier 0 wouldn't match either.
+    // the transcriber returned nothing for a silent/noise session. Don't
+    // burn an LLM round-trip on it — Tier 0 wouldn't match either.
     if text.is_empty() {
         tracing::debug!("[{peer}] empty transcript, skipping dispatch");
         return None;
@@ -6091,6 +6107,23 @@ fn build_secret_store(cfg: &Config) -> Option<Arc<niles_db::PostgresSecrets>> {
     }
 }
 
+/// Delete the keys of providers Niles no longer ships, once, at startup.
+async fn forget_retired_provider_keys(secrets: &niles_db::PostgresSecrets, keys: &[String]) {
+    if keys.is_empty() {
+        return;
+    }
+    for key in keys {
+        match secrets.clear(key).await {
+            Ok(()) => tracing::info!("[secrets] deleted {key}: Niles no longer has that provider"),
+            Err(e) => tracing::warn!("[secrets] could not delete {key}: {e}"),
+        }
+    }
+    match secrets.load_all().await {
+        Ok(values) => niles_config::secrets::load(values),
+        Err(e) => tracing::error!("[secrets] deleted, but reloading failed: {e}"),
+    }
+}
+
 /// The key the sign-in cookie is signed with, made once and kept sealed
 /// when nobody has set one. It is a random string nobody needs to know,
 /// and asking the household to invent it was the last thing the
@@ -6449,6 +6482,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
 
     let cfg = store.current();
+    for retired in &cfg.retired {
+        tracing::warn!("config names something Niles no longer has: {retired:?}");
+    }
 
     // Before the broker, because the broker password may be one of
     // these. Everything that reads a credential goes through
@@ -6460,8 +6496,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         match secrets.load_all().await {
             Ok(values) => {
                 let n = values.len();
+                let retired = niles_config::secrets::retired_provider_keys(values.keys());
                 niles_config::secrets::load(values);
                 tracing::info!("[secrets] {n} loaded from the database");
+                forget_retired_provider_keys(secrets, &retired).await;
                 ensure_session_key(&cfg, secrets).await;
             }
             // Not fatal: an install whose credentials are all env vars
@@ -6686,7 +6724,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // No Z2M warm-up needed here: tool calls only fire after a
     // transcript arrives, by which point Z2M has had seconds to
     // populate. See voice_dispatch for the same reasoning.
-    let llm = Arc::new(build_groq_client(&cfg)?);
+    let llm = Arc::new(build_llm_client(&cfg)?);
     let timers = build_timer_store(&cfg).await;
     let scenes = build_scene_store(&cfg).await;
     let groceries = build_grocery_store(&cfg).await;
@@ -7065,7 +7103,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
          Wyoming: tcp://{wyoming_bind}\n  STT:     {stt_url} ({model})\n  \
          Curve:   tick every {tick}s in {tz}{mode}\nPress Ctrl-C to exit.\n",
         prefix = cfg.mqtt.z2m_prefix,
-        stt_url = cfg.stt.base_url,
+        stt_url = stt_base_url(&cfg),
         model = cfg.stt.model,
         tick = args.tick_seconds.max(1),
         mode = mode_note,
@@ -10228,12 +10266,12 @@ bind_address = "0.0.0.0:8080"
 bind_address = "0.0.0.0:10300"
 
 [stt]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "ELEVENLABS_API_KEY"
 
 [tts]
 
 [llm]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "CEREBRAS_API_KEY"
 
 [lighting]
 morning_start = "05:45"

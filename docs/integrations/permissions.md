@@ -2,7 +2,7 @@
 
 > Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
 > installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
-> dev`, Add from GitHub with its approval screen, updates, rollback, turning
+> dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
 > off and removing, and in the app the generated setup panel, the plugin's
 > log, and its pages and widgets.
 
@@ -29,11 +29,11 @@ Without asking, every plugin can log, read its own settings and secrets, keep
 1 MiB in its own storage, set timers, read the clock and get random numbers.
 
 No plugin, whatever it asks for, can read Niles's database, other
-integrations' secrets, conversations, memory, voice data or the people in the
+add-ons' secrets, conversations, memory, voice data or the people in the
 house; open files, sockets or environment variables; or run code in the app.
 Its network is HTTP and MQTT, to what the manifest names.
 The approval screen always ends with that sentence: "It cannot see your
-conversations, the people in your house, other integrations' passwords or
+conversations, the people in your house, other add-ons' passwords or
 Niles's database."
 
 ## The permissions

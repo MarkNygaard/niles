@@ -2,7 +2,7 @@
 //!
 //! Every tool's schema goes on the wire on every LLM call, whether or
 //! not the request could possibly use it. With thirty-odd registered
-//! that is most of the prompt — measured against Groq, a single call
+//! that is most of the prompt — measured against a hosted model, a single call
 //! was 3 497 tokens of an 8 000-per-minute budget, so one question
 //! that needed a tool round trip consumed most of a minute.
 //!
