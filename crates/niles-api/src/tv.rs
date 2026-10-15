@@ -5,8 +5,9 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use niles_config::ChangeSource;
+use niles_config::{ChangeSource, TvConfig};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 type Failure = (StatusCode, String);
 
@@ -16,8 +17,13 @@ pub struct TvDto {
     pub configured: bool,
     /// Paired: Niles has the key the TV issued.
     pub paired: bool,
-    /// The address it will be woken with, once known.
+    /// The address it will be woken with first, once known.
     pub mac: Option<String>,
+    /// Where `mac` came from: "detected" at pairing, or "hand": typed,
+    /// and kept through a pairing again.
+    pub mac_source: Option<&'static str>,
+    /// The MAC pairing chose, when it is not `mac`.
+    pub detected_mac: Option<String>,
     pub room: Option<String>,
     /// Absent when it is not paired, or could not be asked.
     pub status: Option<niles_webos::Status>,
@@ -31,6 +37,8 @@ pub async fn get(State(state): State<AppState>) -> Json<TvDto> {
             configured: false,
             paired: false,
             mac: None,
+            mac_source: None,
+            detected_mac: None,
             room: None,
             status: None,
             error: None,
@@ -46,10 +54,17 @@ pub async fn get(State(state): State<AppState>) -> Json<TvDto> {
         _ => (None, None),
     };
     let present = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
+    // A cleared `mac` is woken by what pairing found.
+    let mac = present(&tv.mac).or_else(|| tv.detected_mac().map(str::to_string));
+    let by_hand = tv.mac_set_by_hand();
     Json(TvDto {
         configured: tv.is_configured(),
         paired: key.is_some(),
-        mac: present(&tv.mac),
+        mac_source: mac
+            .as_ref()
+            .map(|_| if by_hand { "hand" } else { "detected" }),
+        detected_mac: tv.detected_mac().filter(|_| by_hand).map(str::to_string),
+        mac,
         room: present(&tv.room),
         status,
         error,
@@ -63,9 +78,9 @@ pub struct Paired {
 
 /// `POST /tv/pair` — the TV shows a prompt, somebody accepts it with the
 /// remote, and the key it issues is kept as a credential. Its MAC
-/// address is read while connected and written to `[tv]`, so waking it
-/// needs nothing typed. Answers when the prompt is accepted, or after a
-/// minute of nobody accepting it.
+/// addresses are read while connected and written to `[tv]`, so waking
+/// it needs nothing typed, and a MAC somebody did type stays. Answers
+/// when the prompt is accepted, or after a minute of nobody accepting it.
 pub async fn pair(State(state): State<AppState>) -> Result<Json<Paired>, Failure> {
     let store = state.config.as_ref().ok_or((
         StatusCode::NOT_IMPLEMENTED,
@@ -90,26 +105,46 @@ pub async fn pair(State(state): State<AppState>) -> Result<Json<Paired>, Failure
     })?;
     crate::secrets::reload(&state).await;
 
-    let mac = match niles_webos::Tv::new(&host, &key).mac_address().await {
-        Ok(mac) => mac,
+    let macs = match niles_webos::Tv::new(&host, &key).macs().await {
+        Ok(macs) => macs,
         Err(e) => {
             tracing::warn!("[tv] paired, but its MAC address could not be read: {e}");
             None
         }
     };
-    if let Some(mac) = &mac {
-        let mut tv = toml::Table::new();
-        tv.insert("mac".into(), toml::Value::String(mac.clone()));
-        let mut patch = toml::Table::new();
-        patch.insert("tv".into(), toml::Value::Table(tv));
-        store.apply(&patch, ChangeSource::Api).await.map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("could not keep the MAC: {e}"),
-            )
-        })?;
+    if let Some(macs) = &macs {
+        store
+            .apply(&pairing_patch(&store.current().tv, macs), ChangeSource::Api)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("could not keep the MAC: {e}"),
+                )
+            })?;
     }
+    let mac = Some(store.current().tv.mac.trim().to_string()).filter(|m| !m.is_empty());
     Ok(Json(Paired { mac }))
+}
+
+/// What a pairing writes to `[tv]`: every MAC the TV reported, and the
+/// chosen one as `mac` unless the `mac` there was set by hand.
+fn pairing_patch(tv: &TvConfig, macs: &niles_webos::Macs) -> toml::Table {
+    let mut section = toml::Table::new();
+    let all = macs.all.iter().cloned().map(toml::Value::String).collect();
+    section.insert("detected_macs".into(), toml::Value::Array(all));
+    if tv.mac_set_by_hand() {
+        tracing::info!(
+            "[tv] keeping the wake MAC {} that was set by hand; the TV is connected by {}",
+            tv.mac.trim(),
+            macs.chosen
+        );
+    } else {
+        section.insert("mac".into(), toml::Value::String(macs.chosen.clone()));
+    }
+    let mut patch = toml::Table::new();
+    patch.insert("tv".into(), toml::Value::Table(section));
+    patch
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,11 +152,25 @@ pub struct Power {
     pub on: bool,
 }
 
-/// `POST /tv/power` — `{"on": true}` wakes it, `{"on": false}` turns it off.
+/// What came of a press of the power button.
+#[derive(Debug, Serialize)]
+pub struct PowerDto {
+    /// Whether the TV answered as on: after a wake-up, only once it has.
+    pub on: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Said when the wake-up went out and the TV did not answer in time.
+pub const NO_ANSWER: &str = "Sent the wake signal, but the TV hasn't answered: check the wake MAC under Settings → Add-ons → LG TV.";
+
+/// `POST /tv/power` — `{"on": true}` wakes it, `{"on": false}` turns it
+/// off. Waking answers 200 once the TV says it is on, and 202 with a
+/// message when the wake-up went out and the TV did not answer in time.
 pub async fn power(
     State(state): State<AppState>,
     Json(body): Json<Power>,
-) -> Result<StatusCode, Failure> {
+) -> Result<(StatusCode, Json<PowerDto>), Failure> {
     let cfg = state
         .config
         .as_ref()
@@ -133,25 +182,73 @@ pub async fn power(
     }
     let failed = |e: niles_webos::Error| (StatusCode::BAD_GATEWAY, e.to_string());
     if body.on {
-        if tv.mac.trim().is_empty() {
+        let macs = tv.wake_macs();
+        if macs.is_empty() {
             return Err((
                 StatusCode::CONFLICT,
                 "the TV's MAC address is not known; pair it again".to_string(),
             ));
         }
-        niles_webos::wake(tv.host.trim(), tv.mac.trim())
-            .await
-            .map_err(failed)?;
-    } else {
-        let key = tv
+        let paired = tv
             .resolve_client_key()
-            .map_err(|_| (StatusCode::CONFLICT, "the TV is not paired".to_string()))?;
-        niles_webos::Tv::new(tv.host.trim(), key)
-            .turn_off()
-            .await
-            .map_err(failed)?;
+            .ok()
+            .map(|key| niles_webos::Tv::new(tv.host.trim(), key));
+        return turn_on(tv.host.trim(), &macs, paired, niles_webos::WAKING).await;
     }
-    Ok(StatusCode::NO_CONTENT)
+    let key = tv
+        .resolve_client_key()
+        .map_err(|_| (StatusCode::CONFLICT, "the TV is not paired".to_string()))?;
+    niles_webos::Tv::new(tv.host.trim(), key)
+        .turn_off()
+        .await
+        .map_err(failed)?;
+    Ok((
+        StatusCode::OK,
+        Json(PowerDto {
+            on: false,
+            message: None,
+        }),
+    ))
+}
+
+/// Send the wake-up, then wait up to `within` for the TV to say it is
+/// on. Without a pairing there is nobody to ask.
+async fn turn_on(
+    host: &str,
+    macs: &[String],
+    tv: Option<niles_webos::Tv>,
+    within: Duration,
+) -> Result<(StatusCode, Json<PowerDto>), Failure> {
+    niles_webos::wake(host, macs)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let unconfirmed = |message: &str| {
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(PowerDto {
+                on: false,
+                message: Some(message.to_string()),
+            }),
+        ))
+    };
+    let Some(tv) = tv else {
+        return unconfirmed("Sent the wake signal. Pair the TV for Niles to see it come on.");
+    };
+    if tv.came_on(within).await {
+        return Ok((
+            StatusCode::OK,
+            Json(PowerDto {
+                on: true,
+                message: None,
+            }),
+        ));
+    }
+    tracing::warn!(
+        "[tv] sent the wake signal for {}, but the TV did not answer within {}s",
+        macs.join(", "),
+        within.as_secs()
+    );
+    unconfirmed(NO_ANSWER)
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,5 +418,147 @@ mod tests {
     async fn a_level_out_of_range_is_refused_before_the_tv_is_asked() {
         let (status, _) = post_volume(app(None), json!({ "volume": 150 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    const WIRED: &str = "64:e4:a5:6c:ab:b4";
+    const WIFI: &str = "84:90:0a:63:a9:94";
+
+    fn on_wifi() -> niles_webos::Macs {
+        niles_webos::Macs {
+            chosen: WIFI.into(),
+            all: vec![WIFI.into(), WIRED.into()],
+        }
+    }
+
+    fn store(tv: &str) -> ConfigStore {
+        let toml = format!(
+            "{}\n[tv]\nhost = \"192.168.4.170\"\n{tv}",
+            crate::config_tests::base_toml()
+        );
+        ConfigStore::from_str_in_memory(&toml).expect("fixture is valid")
+    }
+
+    async fn paired_again(store: &ConfigStore, macs: &niles_webos::Macs) {
+        store
+            .apply(&pairing_patch(&store.current().tv, macs), ChangeSource::Api)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pairing_keeps_the_chosen_mac_and_waking_uses_it() {
+        let store = store("");
+        paired_again(&store, &on_wifi()).await;
+        let tv = &store.current().tv;
+        assert_eq!(tv.mac, WIFI);
+        assert_eq!(tv.detected_macs, [WIFI, WIRED]);
+        assert!(!tv.mac_set_by_hand());
+        assert_eq!(tv.wake_macs(), [WIFI, WIRED]);
+    }
+
+    #[tokio::test]
+    async fn pairing_again_replaces_a_mac_it_detected() {
+        // Detected as wired before; the TV has since moved to Wi-Fi.
+        let store = store(&format!(
+            "mac = \"{WIRED}\"\ndetected_macs = [\"{WIRED}\", \"{WIFI}\"]"
+        ));
+        paired_again(&store, &on_wifi()).await;
+        assert_eq!(store.current().tv.mac, WIFI);
+    }
+
+    #[tokio::test]
+    async fn pairing_again_keeps_a_mac_set_by_hand() {
+        let store = store(&format!(
+            "mac = \"A8:23:FE:01:02:03\"\ndetected_macs = [\"{WIRED}\"]"
+        ));
+        paired_again(&store, &on_wifi()).await;
+        let tv = &store.current().tv;
+        assert_eq!(tv.mac, "A8:23:FE:01:02:03");
+        assert_eq!(tv.detected_macs, [WIFI, WIRED]);
+        assert_eq!(tv.wake_macs(), ["A8:23:FE:01:02:03", WIFI, WIRED]);
+    }
+
+    async fn power_on(
+        tv: Option<niles_webos::Tv>,
+        within: Duration,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, Json(body)) = turn_on("127.0.0.1", &[WIFI.to_string()], tv, within)
+            .await
+            .unwrap();
+        (status, serde_json::to_value(body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_tv_that_comes_on_is_said_to_be_on() {
+        use niles_webos::fake::{WebOs, fake_tv};
+        let fake = fake_tv(WebOs::Newer("Active"), 0, "").await;
+        let (status, body) = power_on(Some(fake.tv()), Duration::from_secs(5)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "on": true }));
+    }
+
+    #[tokio::test]
+    async fn a_tv_that_does_not_answer_in_time_says_where_to_look() {
+        use niles_webos::fake::{WebOs, fake_tv};
+        let fake = fake_tv(WebOs::Newer("Active Standby"), 0, "").await;
+        let (status, body) = power_on(Some(fake.tv()), Duration::from_millis(1500)).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body, json!({ "on": false, "message": NO_ANSWER }));
+    }
+
+    #[tokio::test]
+    async fn an_unpaired_tv_is_woken_without_waiting_on_it() {
+        let (status, body) = power_on(None, Duration::from_secs(30)).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(body["message"].as_str().unwrap().contains("Pair the TV"));
+    }
+
+    async fn get_tv(tv: &str) -> serde_json::Value {
+        let request = Request::builder().uri("/tv").body(Body::empty()).unwrap();
+        let response = app(Some(tv)).oneshot(request).await.unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_tv_says_whether_its_mac_was_detected_or_set_by_hand() {
+        let unpaired = "[tv]\nhost = \"127.0.0.1\"\nclient_key_env = \"NILES_TEST_API_TV_UNSET\"\n";
+        let detected = get_tv(&format!(
+            "{unpaired}mac = \"{WIFI}\"\ndetected_macs = [\"{WIFI}\", \"{WIRED}\"]\n"
+        ))
+        .await;
+        assert_eq!(detected["mac"], WIFI);
+        assert_eq!(detected["mac_source"], "detected");
+        assert_eq!(detected["detected_mac"], serde_json::Value::Null);
+        let by_hand = get_tv(&format!(
+            "{unpaired}mac = \"{WIRED}\"\ndetected_macs = [\"{WIFI}\", \"{WIRED}\"]\n"
+        ))
+        .await;
+        assert_eq!(by_hand["mac_source"], "hand");
+        assert_eq!(by_hand["detected_mac"], WIFI);
+        let cleared = get_tv(&format!(
+            "{unpaired}mac = \"\"\ndetected_macs = [\"{WIFI}\", \"{WIRED}\"]\n"
+        ))
+        .await;
+        assert_eq!(cleared["mac"], WIFI);
+        assert_eq!(cleared["mac_source"], "detected");
+        let none = get_tv(unpaired).await;
+        assert_eq!(none["mac"], serde_json::Value::Null);
+        assert_eq!(none["mac_source"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn waking_needs_a_mac() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tv/power")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "on": true }).to_string()))
+            .unwrap();
+        let response = app(Some("[tv]\nhost = \"127.0.0.1\"\n"))
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 }

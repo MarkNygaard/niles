@@ -84,13 +84,28 @@ impl TvControl {
             if !cfg.tv.is_configured() {
                 return Err("There's no TV set up.".into());
             }
-            let mac = cfg.tv.mac.trim();
-            if mac.is_empty() {
+            let macs = cfg.tv.wake_macs();
+            if macs.is_empty() {
                 return Err("I don't know the TV's MAC address, so I can't wake it.".into());
             }
-            niles_webos::wake(cfg.tv.host.trim(), mac)
+            niles_webos::wake(cfg.tv.host.trim(), &macs)
                 .await
                 .map_err(|e| e.to_string())?;
+            // Said before the TV has answered: a reply that waited out a
+            // TV's boot would be later than the TV. Whether it came on
+            // goes in the log, where a wrong wake MAC is found.
+            if let Ok(tv) = self.tv() {
+                tokio::spawn(async move {
+                    if !tv.came_on(niles_webos::WAKING).await {
+                        tracing::warn!(
+                            "[tv] sent the wake signal for {}, but the TV did not answer \
+                             within {}s: check the wake MAC under Settings → Add-ons → LG TV",
+                            macs.join(", "),
+                            niles_webos::WAKING.as_secs()
+                        );
+                    }
+                });
+            }
             return Ok("Turning on the TV.".into());
         }
         self.tv()?.turn_off().await.map_err(|e| e.to_string())?;

@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::session::{PORT, Session};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::net::IpAddr;
 use std::time::Duration;
 
 /// How long the pairing prompt waits for somebody with the remote.
@@ -65,11 +66,36 @@ pub enum VolumeChange {
     Mute(bool),
 }
 
-const POWER_STATE: &str = "com.webos.service.tvpower/power/getPowerState";
-const FOREGROUND_APP: &str = "com.webos.applicationManager/getForegroundAppInfo";
-const GET_VOLUME: &str = "audio/getVolume";
-const SET_VOLUME: &str = "audio/setVolume";
-const SET_MUTE: &str = "audio/setMute";
+pub(crate) const POWER_STATE: &str = "com.webos.service.tvpower/power/getPowerState";
+pub(crate) const FOREGROUND_APP: &str = "com.webos.applicationManager/getForegroundAppInfo";
+pub(crate) const GET_VOLUME: &str = "audio/getVolume";
+pub(crate) const SET_VOLUME: &str = "audio/setVolume";
+pub(crate) const SET_MUTE: &str = "audio/setMute";
+/// A MAC per interface, whether or not it has a link:
+/// `{"wiredInfo": {"macAddress": "…"}, "wifiInfo": {"macAddress": "…"}, "p2pInfo": …}`.
+pub(crate) const CONNECTION_INFO: &str = "com.webos.service.connectionmanager/getinfo";
+/// Which interface has a link, and its address, but no MACs:
+/// `{"wired": {"state": "disconnected"}, "wifi": {"state": "connected",
+/// "ipAddress": "192.168.1.50", …}}`. Lowercase on the wire: a 2023 TV
+/// answers `getStatus` with a 404.
+pub(crate) const CONNECTION_STATUS: &str = "com.webos.service.connectionmanager/getstatus";
+
+/// How long a TV gets to answer after the wake-up is sent. An OLED42C3
+/// took about 4 s from standby; an older TV without Quick Start+ boots
+/// slower. Long enough for both, short enough to wait on in the app.
+pub const WAKING: Duration = Duration::from_secs(10);
+/// Between asks while it wakes.
+const WAKING_STEP: Duration = Duration::from_secs(1);
+
+/// The TV's MAC addresses, for waking it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Macs {
+    /// The interface it is connected by, as near as it can be told.
+    pub chosen: String,
+    /// Every MAC it reported that a magic packet could be for,
+    /// `chosen` first.
+    pub all: Vec<String>,
+}
 
 /// An LG webOS TV at a known address, paired with `client_key`.
 #[derive(Debug, Clone)]
@@ -90,9 +116,13 @@ pub async fn pair(host: &str) -> Result<String> {
 
 impl Tv {
     pub fn new(host: impl Into<String>, client_key: impl Into<String>) -> Self {
+        Self::at(host, PORT, client_key)
+    }
+
+    pub(crate) fn at(host: impl Into<String>, port: u16, client_key: impl Into<String>) -> Self {
         Self {
             host: host.into(),
-            port: PORT,
+            port,
             client_key: client_key.into(),
         }
     }
@@ -282,12 +312,51 @@ impl Tv {
         })
     }
 
-    /// The TV's own MAC address, wired if it has one in use, for waking it.
-    pub async fn mac_address(&self) -> Result<Option<String>> {
-        let answer = self
-            .ask("com.webos.service.connectionmanager/getinfo", json!({}))
-            .await?;
-        Ok(mac_in(&answer))
+    /// The TV's MAC addresses, with the one it is connected by chosen as
+    /// `macs_in` tells. `None` when it reports none a packet could be for.
+    pub async fn macs(&self) -> Result<Option<Macs>> {
+        let mut session = self.connect().await?;
+        let info = session.request(CONNECTION_INFO, json!({})).await;
+        let status = match &info {
+            Ok(_) => match session.request(CONNECTION_STATUS, json!({})).await {
+                Ok(status) => Some(status),
+                Err(e) => {
+                    tracing::debug!("[tv] which interface is connected: {e}");
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+        session.close().await;
+        let addresses = addresses_of(&self.host).await;
+        Ok(macs_in(&info?, status.as_ref(), &addresses))
+    }
+
+    /// Whether the screen comes on within `within`, asking every second.
+    /// A TV in standby keeps its network up but turns the websocket away,
+    /// so an error is a TV not awake yet rather than an answer.
+    pub async fn came_on(&self, within: Duration) -> bool {
+        let asking = async {
+            loop {
+                if let Ok(true) = self.screen_on().await {
+                    return;
+                }
+                tokio::time::sleep(WAKING_STEP).await;
+            }
+        };
+        tokio::time::timeout(within, asking).await.is_ok()
+    }
+}
+
+/// The addresses `host` stands for: itself when it is one, otherwise
+/// what it resolves to, or none when it does not.
+async fn addresses_of(host: &str) -> Vec<IpAddr> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return vec![ip];
+    }
+    match tokio::net::lookup_host((host, 0)).await {
+        Ok(found) => found.map(|a| a.ip()).collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -400,20 +469,79 @@ fn volume_in(answer: &Value) -> Result<Volume> {
     })
 }
 
-fn mac_in(answer: &Value) -> Option<String> {
-    ["wiredInfo", "wifiInfo"]
+/// Each interface a TV can be woken on: its block in `getinfo`, and in
+/// `getstatus`. Wired first, which is the order of the last resort
+/// below. `p2pInfo` is Wi-Fi Direct, which nothing wakes.
+const INTERFACES: [(&str, &str); 2] = [("wiredInfo", "wired"), ("wifiInfo", "wifi")];
+
+/// The MACs worth a magic packet, and the one the TV is connected by.
+///
+/// `getinfo` lists a wired MAC on a TV that has never had a cable in, so
+/// it cannot say which is in use on its own; `getstatus` says which
+/// interface has a link, and at what address. In order:
+///
+/// 1. The interface at the address Niles reaches the TV by (`host`).
+/// 2. The first connected one, wired before Wi-Fi. A TV with both up is
+///    rare, since webOS drops Wi-Fi when a cable is in; when it happens
+///    and neither has Niles's address, the cable is the steadier wake.
+/// 3. With nothing to tell by — an older TV, or `getstatus` refused —
+///    wired before Wi-Fi. Only a last resort: it is what chose a dead
+///    NIC on a Wi-Fi TV, and why every MAC is woken as well.
+///
+/// A MAC that is empty, all zeros, or not one at all is never chosen.
+fn macs_in(info: &Value, status: Option<&Value>, host: &[IpAddr]) -> Option<Macs> {
+    let unknown = Value::Null;
+    let found: Vec<(String, &Value)> = INTERFACES
         .iter()
-        .filter_map(|kind| answer[kind]["macAddress"].as_str())
-        .find(|mac| !mac.is_empty() && *mac != "00:00:00:00:00:00")
-        .map(str::to_lowercase)
+        .filter_map(|(mac_key, link_key)| {
+            let mac = usable_mac(info[mac_key]["macAddress"].as_str()?)?;
+            Some((mac, status.map_or(&unknown, |s| &s[link_key])))
+        })
+        .collect();
+    let connected = |link: &Value| link["state"] == "connected";
+    let at_host = |link: &Value| {
+        link["ipAddress"]
+            .as_str()
+            .and_then(|ip| ip.parse::<IpAddr>().ok())
+            .is_some_and(|ip| host.contains(&ip))
+    };
+    let chosen = found
+        .iter()
+        .position(|(_, link)| at_host(link))
+        .or_else(|| found.iter().position(|(_, link)| connected(link)))
+        .unwrap_or(0);
+    let (chosen, _) = found.get(chosen)?;
+    let mut all = vec![chosen.clone()];
+    all.extend(
+        found
+            .iter()
+            .map(|(mac, _)| mac.clone())
+            .filter(|mac| mac != chosen),
+    );
+    Some(Macs {
+        chosen: chosen.clone(),
+        all,
+    })
+}
+
+/// `mac` in lowercase with colons, when a magic packet could be for it.
+fn usable_mac(mac: &str) -> Option<String> {
+    let bytes: Vec<u8> = mac
+        .trim()
+        .split([':', '-'])
+        .map(|b| u8::from_str_radix(b, 16).ok().filter(|_| b.len() == 2))
+        .collect::<Option<_>>()?;
+    if bytes.len() != 6 || bytes.iter().all(|b| *b == 0) {
+        return None;
+    }
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Some(hex.join(":"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::{SinkExt, StreamExt};
-    use std::sync::{Arc, Mutex};
-    use tokio_tungstenite::tungstenite::Message;
+    use crate::fake::{Network, WebOs, fake_tv, fake_tv_on};
 
     #[test]
     fn an_input_on_screen_is_called_what_the_tv_calls_it() {
@@ -462,14 +590,125 @@ mod tests {
         assert!(!sound_on("Active Standby"));
     }
 
+    const WIRED: &str = "64:e4:a5:6c:ab:b4";
+    const WIFI: &str = "84:90:0a:63:a9:94";
+
+    /// `getinfo` as an OLED42C3 answers it, recorded in TisVlay's
+    /// docs/lg/firmware-quirks.md: every interface, linked or not.
+    fn info() -> Value {
+        json!({
+            "returnValue": true, "subscribed": false,
+            "wiredInfo": { "macAddress": "64:E4:A5:6C:AB:B4" },
+            "wifiInfo": { "macAddress": "84:90:0A:63:A9:94" },
+            "p2pInfo": { "macAddress": "86:90:0A:63:A9:94" }
+        })
+    }
+
+    /// `getstatus` with `wired` and `wifi` in the given states; the
+    /// connected ones have an address, as the TV gives only then.
+    fn status(wired: Option<&str>, wifi: Option<&str>) -> Value {
+        let link = |ip: Option<&str>| match ip {
+            Some(ip) => json!({ "state": "connected", "interfaceName": "x", "ipAddress": ip }),
+            None => json!({ "state": "disconnected" }),
+        };
+        json!({
+            "returnValue": true,
+            "isInternetConnectionAvailable": true,
+            "wired": link(wired),
+            "wifi": link(wifi),
+            "wifiDirect": { "state": "disconnected" }
+        })
+    }
+
+    fn chosen(info: &Value, status: Option<&Value>, host: &str) -> Option<String> {
+        let host: Vec<IpAddr> = host.parse().into_iter().collect();
+        macs_in(info, status, &host).map(|m| m.chosen)
+    }
+
     #[test]
-    fn the_mac_in_use_is_the_one_to_wake() {
-        let answer = json!({
+    fn a_tv_on_wifi_is_woken_on_wifi() {
+        let on_wifi = status(None, Some("192.168.4.170"));
+        assert_eq!(
+            chosen(&info(), Some(&on_wifi), "192.168.4.170").as_deref(),
+            Some(WIFI)
+        );
+        // Whatever address Niles has for it.
+        assert_eq!(
+            chosen(&info(), Some(&on_wifi), "10.0.0.9").as_deref(),
+            Some(WIFI)
+        );
+    }
+
+    #[test]
+    fn a_tv_on_a_cable_is_woken_on_the_cable() {
+        let wired = status(Some("192.168.4.20"), None);
+        assert_eq!(
+            chosen(&info(), Some(&wired), "192.168.4.20").as_deref(),
+            Some(WIRED)
+        );
+    }
+
+    #[test]
+    fn with_both_up_the_one_at_the_tvs_address_wins() {
+        let both = status(Some("192.168.4.20"), Some("192.168.4.170"));
+        assert_eq!(
+            chosen(&info(), Some(&both), "192.168.4.170").as_deref(),
+            Some(WIFI)
+        );
+        assert_eq!(
+            chosen(&info(), Some(&both), "192.168.4.20").as_deref(),
+            Some(WIRED)
+        );
+        // Neither at the address: the cable, every time.
+        assert_eq!(
+            chosen(&info(), Some(&both), "10.0.0.9").as_deref(),
+            Some(WIRED)
+        );
+    }
+
+    #[test]
+    fn with_nothing_to_tell_by_wired_comes_first_and_every_mac_is_kept() {
+        let macs = macs_in(&info(), None, &[]).unwrap();
+        assert_eq!(macs.chosen, WIRED);
+        assert_eq!(macs.all, [WIRED, WIFI]);
+        // A status of a shape this does not know says nothing either.
+        let odd = json!({ "returnValue": true });
+        assert_eq!(chosen(&info(), Some(&odd), "").as_deref(), Some(WIRED));
+    }
+
+    #[test]
+    fn the_chosen_mac_comes_first_and_wifi_direct_is_left_out() {
+        let on_wifi = status(None, Some("192.168.4.170"));
+        let macs = macs_in(&info(), Some(&on_wifi), &[]).unwrap();
+        assert_eq!(macs.all, [WIFI, WIRED]);
+    }
+
+    #[test]
+    fn an_empty_or_zero_mac_is_never_chosen() {
+        let wired_zero = json!({
             "wiredInfo": { "macAddress": "00:00:00:00:00:00" },
             "wifiInfo": { "macAddress": "A8:23:FE:01:02:03" }
         });
-        assert_eq!(mac_in(&answer).as_deref(), Some("a8:23:fe:01:02:03"));
-        assert_eq!(mac_in(&json!({})), None);
+        // Even when the TV says the cable is the one connected.
+        let wired_up = status(Some("192.168.4.20"), None);
+        let macs = macs_in(&wired_zero, Some(&wired_up), &[]).unwrap();
+        assert_eq!(macs.chosen, "a8:23:fe:01:02:03");
+        assert_eq!(macs.all, ["a8:23:fe:01:02:03"]);
+        let wifi_empty = json!({
+            "wiredInfo": { "macAddress": "64:E4:A5:6C:AB:B4" },
+            "wifiInfo": { "macAddress": "" }
+        });
+        let on_wifi = status(None, Some("192.168.4.170"));
+        assert_eq!(
+            chosen(&wifi_empty, Some(&on_wifi), "192.168.4.170").as_deref(),
+            Some(WIRED)
+        );
+        let nothing = json!({
+            "wiredInfo": { "macAddress": "" },
+            "wifiInfo": { "macAddress": "not a mac" }
+        });
+        assert_eq!(macs_in(&nothing, None, &[]), None);
+        assert_eq!(macs_in(&json!({}), None, &[]), None);
     }
 
     #[test]
@@ -563,170 +802,6 @@ mod tests {
         assert_eq!(stepped(95, 10), 100);
         assert_eq!(stepped(5, -10), 0);
         assert_eq!(stepped(20, -10), 10);
-    }
-
-    // ---- A TV on loopback ---------------------------------------------------
-
-    /// Which webOS a fake TV answers as.
-    #[derive(Clone, Copy)]
-    enum WebOs {
-        /// webOS 3: the volume at the top, and no power service.
-        Three,
-        /// webOS 5 and later: the volume nested, and a power state.
-        Newer(&'static str),
-    }
-
-    struct FakeTv {
-        port: u16,
-        /// Every request, by URI without `ssap://`, with its payload.
-        asked: Arc<Mutex<Vec<(String, Value)>>>,
-    }
-
-    impl FakeTv {
-        fn tv(&self) -> Tv {
-            Tv {
-                host: "127.0.0.1".into(),
-                port: self.port,
-                client_key: "key".into(),
-            }
-        }
-
-        fn asked(&self) -> Vec<(String, Value)> {
-            self.asked.lock().unwrap().clone()
-        }
-
-        fn uris(&self) -> Vec<String> {
-            self.asked().into_iter().map(|(uri, _)| uri).collect()
-        }
-    }
-
-    struct Sound {
-        volume: u64,
-        muted: bool,
-    }
-
-    /// A TV that registers anybody, keeps a volume, and answers the
-    /// audio requests the way `webos` does. Anything else is the error
-    /// a TV gives for a service it does not have.
-    async fn fake_tv(webos: WebOs, volume: u64, app: &'static str) -> FakeTv {
-        let made = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
-        let cert = rustls::pki_types::CertificateDer::from(made.cert.der().to_vec());
-        let key =
-            rustls::pki_types::PrivateKeyDer::try_from(made.signing_key.serialize_der()).unwrap();
-        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert], key)
-        .unwrap();
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        let sound = Arc::new(Mutex::new(Sound {
-            volume,
-            muted: false,
-        }));
-        let kept = asked.clone();
-        tokio::spawn(async move {
-            while let Ok((tcp, _)) = listener.accept().await {
-                let acceptor = acceptor.clone();
-                let asked = kept.clone();
-                let sound = sound.clone();
-                tokio::spawn(async move {
-                    let Ok(tls) = acceptor.accept(tcp).await else {
-                        return;
-                    };
-                    let Ok(mut ws) = tokio_tungstenite::accept_async(tls).await else {
-                        return;
-                    };
-                    while let Some(Ok(Message::Text(text))) = ws.next().await {
-                        let message: Value = serde_json::from_str(&text).unwrap();
-                        let id = message["id"].clone();
-                        let reply = if message["type"] == "register" {
-                            json!({ "type": "registered", "id": id, "payload": { "client-key": "key" } })
-                        } else {
-                            let uri = message["uri"]
-                                .as_str()
-                                .unwrap()
-                                .trim_start_matches("ssap://");
-                            let payload = message["payload"].clone();
-                            asked
-                                .lock()
-                                .unwrap()
-                                .push((uri.to_string(), payload.clone()));
-                            match answer(webos, app, &mut sound.lock().unwrap(), uri, &payload) {
-                                Some(payload) => {
-                                    json!({ "type": "response", "id": id, "payload": payload })
-                                }
-                                None => json!({
-                                    "type": "error",
-                                    "id": id,
-                                    "error": "404 no such service or method"
-                                }),
-                            }
-                        };
-                        if ws
-                            .send(Message::Text(reply.to_string().into()))
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                });
-            }
-        });
-        FakeTv { port, asked }
-    }
-
-    fn answer(
-        webos: WebOs,
-        app: &str,
-        sound: &mut Sound,
-        uri: &str,
-        payload: &Value,
-    ) -> Option<Value> {
-        match (uri, webos) {
-            (POWER_STATE, WebOs::Newer(state)) => {
-                Some(json!({ "returnValue": true, "state": state }))
-            }
-            (FOREGROUND_APP, _) => Some(json!({ "returnValue": true, "appId": app })),
-            (GET_VOLUME, WebOs::Three) => Some(json!({
-                "returnValue": true,
-                "scenario": "mastervolume_tv_speaker",
-                "volume": sound.volume,
-                "muted": sound.muted
-            })),
-            (GET_VOLUME, WebOs::Newer(_)) => Some(json!({
-                "returnValue": true,
-                "volumeStatus": {
-                    "activeStatus": true, "adjustVolume": true, "maxVolume": 100,
-                    "muteStatus": sound.muted, "volume": sound.volume,
-                    "soundOutput": "tv_speaker"
-                },
-                "callerId": "com.webos.service.apiadapter"
-            })),
-            (SET_VOLUME, _) => {
-                sound.volume = payload["volume"].as_u64()?;
-                Some(json!({ "returnValue": true }))
-            }
-            (SET_MUTE, _) => {
-                sound.muted = payload["mute"].as_bool()?;
-                Some(json!({ "returnValue": true }))
-            }
-            ("audio/volumeUp", _) => {
-                sound.volume += 1;
-                Some(json!({ "returnValue": true }))
-            }
-            ("audio/volumeDown", _) => {
-                sound.volume -= 1;
-                Some(json!({ "returnValue": true }))
-            }
-            _ => None,
-        }
     }
 
     #[tokio::test]
@@ -872,5 +947,44 @@ mod tests {
         assert!(!status.on);
         let shown = serde_json::to_value(&status).unwrap();
         assert!(shown.get("volume").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_macs_are_asked_for_over_one_connection() {
+        // Niles reaches the fake at 127.0.0.1, which is its Wi-Fi.
+        let network = Network {
+            info: Some(info()),
+            status: Some(status(None, Some("127.0.0.1"))),
+        };
+        let fake = fake_tv_on(WebOs::Newer("Active"), 0, "", network).await;
+        let macs = fake.tv().macs().await.unwrap().unwrap();
+        assert_eq!(macs.chosen, WIFI);
+        assert_eq!(macs.all, [WIFI, WIRED]);
+        assert_eq!(fake.uris(), [CONNECTION_INFO, CONNECTION_STATUS]);
+    }
+
+    #[tokio::test]
+    async fn a_tv_with_no_connection_status_still_gives_its_macs() {
+        let network = Network {
+            info: Some(info()),
+            status: None,
+        };
+        let fake = fake_tv_on(WebOs::Three, 0, "", network).await;
+        let macs = fake.tv().macs().await.unwrap().unwrap();
+        assert_eq!(macs.chosen, WIRED);
+        assert_eq!(macs.all, [WIRED, WIFI]);
+    }
+
+    #[tokio::test]
+    async fn a_tv_that_is_on_has_come_on() {
+        let fake = fake_tv(WebOs::Newer("Active"), 0, "").await;
+        assert!(fake.tv().came_on(Duration::from_secs(5)).await);
+    }
+
+    #[tokio::test]
+    async fn a_tv_still_asleep_has_not_come_on() {
+        let fake = fake_tv(WebOs::Newer("Active Standby"), 0, "").await;
+        assert!(!fake.tv().came_on(Duration::from_millis(1500)).await);
+        assert!(fake.uris().len() >= 2, "asked again: {:?}", fake.uris());
     }
 }

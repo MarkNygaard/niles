@@ -24,9 +24,15 @@ pub struct TvConfig {
     pub enabled: bool,
     #[serde(default)]
     pub host: String,
-    /// For waking it. Read from the TV at pairing, so rarely typed.
+    /// The MAC the TV is woken by. Read from the TV at pairing, so
+    /// rarely typed; one typed is kept through a pairing again.
     #[serde(default)]
     pub mac: String,
+    /// Every MAC the TV reported at its last pairing, the one Niles
+    /// chose for `mac` first. Each gets a magic packet too, and the
+    /// first is how a `mac` somebody typed is told from one Niles found.
+    #[serde(default)]
+    pub detected_macs: Vec<String>,
     /// Where it stands: "the TV" said in this room is this one, and so
     /// is the room's soundbar it plays through.
     #[serde(default)]
@@ -47,6 +53,7 @@ impl Default for TvConfig {
             enabled: true,
             host: String::new(),
             mac: String::new(),
+            detected_macs: Vec::new(),
             room: String::new(),
             show_announcements: true,
             client_key_env: String::new(),
@@ -69,24 +76,70 @@ impl TvConfig {
         crate::env::require_secret("tv", "tv.client_key", &self.client_key_env)
     }
 
+    /// Every MAC a magic packet goes to: `mac`, then each the TV
+    /// reported at pairing, once each.
+    pub fn wake_macs(&self) -> Vec<String> {
+        let mut macs: Vec<String> = Vec::new();
+        for mac in std::iter::once(&self.mac).chain(&self.detected_macs) {
+            let mac = mac.trim();
+            if !mac.is_empty() && !macs.iter().any(|m| same_mac(m, mac)) {
+                macs.push(mac.to_string());
+            }
+        }
+        macs
+    }
+
+    /// The MAC Niles chose at the last pairing.
+    pub fn detected_mac(&self) -> Option<&str> {
+        self.detected_macs
+            .first()
+            .map(|m| m.trim())
+            .filter(|m| !m.is_empty())
+    }
+
+    /// Whether `mac` is one somebody set rather than the one pairing
+    /// found, and so is kept when the TV is paired again. One from
+    /// before Niles kept what it found counts as set: it may have been.
+    pub fn mac_set_by_hand(&self) -> bool {
+        let mac = self.mac.trim();
+        !mac.is_empty() && !self.detected_mac().is_some_and(|d| same_mac(d, mac))
+    }
+
     pub fn validate(&self) -> Result<()> {
         if !self.room.is_empty() {
             RoomName::parse(&self.room)
                 .map_err(|e| invalid(format!("tv.room = {:?}: {e}", self.room)))?;
         }
         let mac = self.mac.trim();
-        if !mac.is_empty() {
-            let parts: Vec<&str> = mac.split([':', '-']).collect();
-            let well_formed = parts.len() == 6
-                && parts
-                    .iter()
-                    .all(|p| p.len() == 2 && u8::from_str_radix(p, 16).is_ok());
-            if !well_formed {
-                return Err(invalid(format!("tv.mac = {mac:?} is not a MAC address")));
-            }
+        if !mac.is_empty() && !well_formed(mac) {
+            return Err(invalid(format!("tv.mac = {mac:?} is not a MAC address")));
+        }
+        if let Some(mac) = self.detected_macs.iter().find(|m| !well_formed(m.trim())) {
+            return Err(invalid(format!(
+                "tv.detected_macs has {mac:?}, which is not a MAC address"
+            )));
         }
         Ok(())
     }
+}
+
+fn well_formed(mac: &str) -> bool {
+    let parts: Vec<&str> = mac.split([':', '-']).collect();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && u8::from_str_radix(p, 16).is_ok())
+}
+
+/// One MAC however it is written: "A8-23-FE-01-02-03" is "a8:23:fe:01:02:03".
+fn same_mac(a: &str, b: &str) -> bool {
+    let digits = |s: &str| -> String {
+        s.chars()
+            .filter(char::is_ascii_hexdigit)
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
+    digits(a) == digits(b)
 }
 
 fn invalid(reason: String) -> Error {
@@ -132,6 +185,49 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("tv.mac"), "{err}");
+    }
+
+    #[test]
+    fn refuses_a_detected_mac_that_is_not_one() {
+        let err = parse(r#"detected_macs = ["a8:23:fe:01:02:03", "nope"]"#)
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("tv.detected_macs"), "{err}");
+    }
+
+    #[test]
+    fn the_mac_set_is_woken_first_then_every_one_detected_once() {
+        let cfg = parse(
+            r#"
+            mac = "A8-23-FE-01-02-03"
+            detected_macs = ["64:e4:a5:6c:ab:b4", "a8:23:fe:01:02:03"]
+            "#,
+        );
+        assert_eq!(cfg.wake_macs(), ["A8-23-FE-01-02-03", "64:e4:a5:6c:ab:b4"]);
+        let cfg = parse(r#"detected_macs = ["64:e4:a5:6c:ab:b4"]"#);
+        assert_eq!(cfg.wake_macs(), ["64:e4:a5:6c:ab:b4"]);
+        assert!(parse("").wake_macs().is_empty());
+    }
+
+    #[test]
+    fn a_mac_unlike_the_one_detected_was_set_by_hand() {
+        let detected = parse(
+            r#"
+            mac = "84:90:0A:63:A9:94"
+            detected_macs = ["84:90:0a:63:a9:94", "64:e4:a5:6c:ab:b4"]
+            "#,
+        );
+        assert!(!detected.mac_set_by_hand());
+        let typed = parse(
+            r#"
+            mac = "64:e4:a5:6c:ab:b4"
+            detected_macs = ["84:90:0a:63:a9:94", "64:e4:a5:6c:ab:b4"]
+            "#,
+        );
+        assert!(typed.mac_set_by_hand());
+        assert!(parse(r#"mac = "64:e4:a5:6c:ab:b4""#).mac_set_by_hand());
+        assert!(!parse(r#"detected_macs = ["64:e4:a5:6c:ab:b4"]"#).mac_set_by_hand());
     }
 
     #[test]

@@ -130,6 +130,8 @@ export function MediaPage() {
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const [moving, setMoving] = useState<MediaSpeaker | null>(null);
   const [starting, setStarting] = useState<{ source: Startable; preset: string[] } | null>(null);
+  // The wake-up went out and the TV did not answer: where to look.
+  const [tvNote, setTvNote] = useState<string | null>(null);
   const pointer = useRef<{ x: number; y: number } | null>(null);
 
   // The page moves under a drag only at the screen's edges, and then by
@@ -195,9 +197,11 @@ export function MediaPage() {
     // it was in and onto the TV's input. Without Sonos there is no
     // soundbar, and the TV's own speakers are already its sound.
     mutationFn: async (on: boolean) => {
-      await api.tvPower(on);
+      const powered = await api.tvPower(on);
       if (on && sonos) await api.tvSound();
+      return powered;
     },
+    onSuccess: (powered) => setTvNote(powered?.message ?? null),
     onSettled: () => {
       settle();
       // A TV takes a few seconds to come on; ask again once it has.
@@ -229,10 +233,16 @@ export function MediaPage() {
   const pairedTv = tv.data?.paired ? tv.data : undefined;
   const failure = [move, group, volume, tvPower, tvSound, tvSpeakers].find((m) => m.error)
     ?.error;
-  const alert = failure && (
+  const alert = failure ? (
     <p role="alert" className="text-destructive text-sm">
       {failure.message}
     </p>
+  ) : (
+    tvNote && (
+      <p role="status" className="text-muted-foreground text-sm">
+        {tvNote}
+      </p>
+    )
   );
 
   if (!view || !sonos) {

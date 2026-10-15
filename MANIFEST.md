@@ -86,6 +86,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-plugin-setup` | A plugin's panel: a setup form generated from its manifest's settings, its log, and where its widgets go | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `ui-plugins` | Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `ui-tv-volume` | The TV row has volume down and up, a slider and mute while it is on, where the TV is the speaker; POST /tv/volume | [#403](https://github.com/MarkNygaard/niles/pull/403) |
+| `ui-tv-wake-mac` | TV panel: the wake MAC, detected or set by hand and kept through pairing; power-on says when the TV did not answer | [#409](https://github.com/MarkNygaard/niles/pull/409) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-card-blinds` | A room card with lights and blinds has separate Lights and Blinds buttons beside Heating, each opening its own sheet | [#404](https://github.com/MarkNygaard/niles/pull/404) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
@@ -114,6 +115,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `media-volume-set` | Set the speaker volume to a specific level | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-step` | Raise or lower the speaker volume by one step | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `tv-volume` | The LG TV's own speakers by voice, and a room's volume on its TV when the room has no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
+| `tv-wake-connected-interface` | Turning on the LG TV wakes the interface it is connected by, and every other MAC it reported too | [#409](https://github.com/MarkNygaard/niles/pull/409) |
 | `memory-add` | Append a note to the user's persistent memory | [#77](https://github.com/MarkNygaard/niles/pull/77) |
 | `memory-remove` | Remove a note from the user's persistent memory | [#77](https://github.com/MarkNygaard/niles/pull/77) |
 | `memory-replace` | Replace an existing memory entry | [#77](https://github.com/MarkNygaard/niles/pull/77) |
@@ -206,6 +208,10 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - turn the TV up
 - mute the TV
 - volume up in the living room
+
+### `tv-wake-connected-interface` — example phrasings
+
+- turn on the TV
 
 ### `memory-add` — example phrasings
 

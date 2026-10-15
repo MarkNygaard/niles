@@ -20,6 +20,12 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "time"] }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 tracing.workspace = true
+rcgen = { version = "0.14", optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }
+
+[features]
+# `fake`: a TV on loopback, for the crates that drive one in their tests.
+test-support = ["dep:rcgen", "dep:tokio-rustls"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }

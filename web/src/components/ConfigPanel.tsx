@@ -463,6 +463,8 @@ export function ConfigPanel() {
       "integrations",
       "tado",
       "climate",
+      // What the TV is woken by is config, and `GET /tv` says it.
+      "tv",
     ]) {
       queryClient.invalidateQueries({ queryKey: [key] });
     }

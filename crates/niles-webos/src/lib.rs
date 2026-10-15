@@ -5,10 +5,12 @@
 //! a TV in standby has nothing listening that could be asked to wake.
 
 pub mod error;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake;
 mod session;
 pub mod tv;
 pub mod wake;
 
 pub use error::{Error, Result};
-pub use tv::{App, Input, PAIRING, Status, Tv, Volume, VolumeChange, pair};
+pub use tv::{App, Input, Macs, PAIRING, Status, Tv, Volume, VolumeChange, WAKING, pair};
 pub use wake::wake;

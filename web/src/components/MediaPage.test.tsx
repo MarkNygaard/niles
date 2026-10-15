@@ -261,13 +261,22 @@ describe("the Media page without Sonos", () => {
 
   it("turns the TV on without sending its sound to a soundbar", async () => {
     page(() => Promise.resolve({ ...tvOn, status: { on: false, app: null } }));
-    const power = vi.spyOn(api, "tvPower").mockResolvedValue(undefined);
+    const power = vi.spyOn(api, "tvPower").mockResolvedValue({ on: true });
     const sound = vi.spyOn(api, "tvSound").mockResolvedValue(undefined);
     const tv = await screen.findByRole("region", { name: "TV" });
     expect(within(tv).queryByRole("slider", { name: "TV volume" })).toBeNull();
     fireEvent.click(within(tv).getByRole("button", { name: "TV — off" }));
     await waitFor(() => expect(power).toHaveBeenCalledWith(true));
     expect(sound).not.toHaveBeenCalled();
+  });
+
+  it("says when the TV did not answer the wake-up", async () => {
+    page(() => Promise.resolve({ ...tvOn, status: { on: false, app: null } }));
+    const message = "Sent the wake signal, but the TV hasn't answered: check the wake MAC.";
+    vi.spyOn(api, "tvPower").mockResolvedValue({ on: false, message });
+    const tv = await screen.findByRole("region", { name: "TV" });
+    fireEvent.click(within(tv).getByRole("button", { name: "TV — off" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(message);
   });
 
   it("says where to add something when there is nothing to play on", async () => {
