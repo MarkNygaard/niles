@@ -97,7 +97,9 @@ impl Hub {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/repos/jane/hello"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"full_name": "jane/hello"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"full_name": "jane/hello"})),
+            )
             .mount(&server)
             .await;
         Self { server }
@@ -141,8 +143,12 @@ impl Hub {
     /// `tag` as the latest release, and as itself.
     async fn latest(&self, tag: &str, assets: Vec<Asset>) {
         let release = self.release(tag, false, assets).await;
-        self.answer(&format!("/repos/jane/hello/releases/tags/{tag}"), 200, release.clone())
-            .await;
+        self.answer(
+            &format!("/repos/jane/hello/releases/tags/{tag}"),
+            200,
+            release.clone(),
+        )
+        .await;
         self.answer("/repos/jane/hello/releases/latest", 200, release)
             .await;
     }
@@ -183,7 +189,8 @@ impl Home {
         let bus = EventBus::new(1024);
         let tools = DynamicTools::new();
         let store = Arc::new(MemoryStore::new());
-        let house = House::new(registry.clone(), bus.clone(), store.clone()).with_tools(tools.clone());
+        let house =
+            House::new(registry.clone(), bus.clone(), store.clone()).with_tools(tools.clone());
         let runtime = Runtime::new(house, quick()).unwrap();
         let forgotten = Arc::new(Forgotten::default());
         let installer = edit(
@@ -231,7 +238,8 @@ impl Home {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_preview_shows_what_it_may_do_and_the_install_runs_exactly_that() {
     let hub = Hub::new().await;
-    hub.latest("v0.1.0", plugin_assets(&with_logo(MANIFEST))).await;
+    hub.latest("v0.1.0", plugin_assets(&with_logo(MANIFEST)))
+        .await;
     let home = Home::new(&hub, options()).await;
 
     let preview = home
@@ -275,12 +283,12 @@ async fn a_preview_shows_what_it_may_do_and_the_install_runs_exactly_that() {
         .find(|p| p.starts_with("Offer 16 tools to the assistant: "))
         .expect("the tools line");
     assert!(tools.contains("greet"), "{tools}");
-    assert!(preview.cannot.starts_with("It cannot see your conversations"));
-    let token = preview
-        .settings
-        .iter()
-        .find(|s| s.key == "token")
-        .unwrap();
+    assert!(
+        preview
+            .cannot
+            .starts_with("It cannot see your conversations")
+    );
+    let token = preview.settings.iter().find(|s| s.key == "token").unwrap();
     assert_eq!(token.kind, "secret");
     assert!(home.runtime.info("hello").is_none(), "nothing runs yet");
 
@@ -323,7 +331,10 @@ async fn a_tag_is_installed_from_the_request_or_the_url() {
         .preview("https://github.com/jane/hello/releases/tag/v0.1.0", None)
         .await
         .unwrap();
-    assert_eq!(preview.release_url, "https://github.com/jane/hello/releases/tag/v0.1.0");
+    assert_eq!(
+        preview.release_url,
+        "https://github.com/jane/hello/releases/tag/v0.1.0"
+    );
 
     let refused = home
         .installer
@@ -340,17 +351,29 @@ async fn a_tag_is_installed_from_the_request_or_the_url() {
 async fn no_releases_and_no_repo_are_told_apart() {
     let hub = Hub::new().await;
     let home = Home::new(&hub, options()).await;
-    let refused = home.installer.preview("jane/hello", None).await.unwrap_err();
+    let refused = home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err();
     match refused {
         Refusal::NotFound(why) => assert!(why.contains("has no releases yet"), "{why}"),
         other => panic!("{other:?}"),
     }
-    let refused = home.installer.preview("jane/private", None).await.unwrap_err();
+    let refused = home
+        .installer
+        .preview("jane/private", None)
+        .await
+        .unwrap_err();
     match refused {
         Refusal::NotFound(why) => assert!(why.contains("no public repository"), "{why}"),
         other => panic!("{other:?}"),
     }
-    let refused = home.installer.preview("not a repo", None).await.unwrap_err();
+    let refused = home
+        .installer
+        .preview("not a repo", None)
+        .await
+        .unwrap_err();
     assert!(matches!(refused, Refusal::BadRequest(_)), "{refused:?}");
 }
 
@@ -367,7 +390,12 @@ async fn the_rate_limit_is_said_plainly() {
         .mount(&hub.server)
         .await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Upstream(why) => {
             assert!(why.contains("60 requests an hour"), "{why}");
             assert!(why.contains("resets at"), "{why}");
@@ -382,7 +410,12 @@ async fn a_release_without_the_plugins_files_is_not_a_plugin() {
     hub.latest("v0.1.0", vec![asset("niles-integration.toml", MANIFEST)])
         .await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Invalid(why) => assert!(why.contains("integration.wasm"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -392,7 +425,12 @@ async fn a_release_without_the_plugins_files_is_not_a_plugin() {
     assets.retain(|a| a.name != "logo.svg");
     hub.latest("v0.1.0", assets).await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Invalid(why) => assert!(why.contains("logo.svg"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -405,7 +443,12 @@ async fn oversized_assets_are_refused_by_their_size_or_as_they_arrive() {
     assets[0].size = Some(70 * 1024);
     hub.latest("v0.1.0", assets).await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Invalid(why) => assert!(why.contains("at most 64 KiB"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -419,7 +462,12 @@ async fn oversized_assets_are_refused_by_their_size_or_as_they_arrive() {
     logo.digest = None;
     hub.latest("v0.1.0", assets).await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Invalid(why) => assert!(why.contains("at most 32 KiB"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -432,7 +480,12 @@ async fn a_download_that_is_not_what_github_describes_is_refused() {
     assets[1].digest = Some(format!("sha256:{}", "0".repeat(64)));
     hub.latest("v0.1.0", assets).await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Invalid(why) => assert!(why.contains("does not match the sha256"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -443,7 +496,12 @@ async fn a_tag_that_is_not_the_manifests_version_is_refused() {
     let hub = Hub::new().await;
     hub.latest("v0.2.0", plugin_assets(MANIFEST)).await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Invalid(why) => assert!(why.contains("tagged v0.2.0"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -457,7 +515,12 @@ async fn a_plugin_for_a_newer_niles_is_refused_before_the_component_is_fetched()
     assets[1].size = Some(1 << 40);
     hub.latest("v0.1.0", assets).await;
     let home = Home::new(&hub, options()).await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Invalid(why) => assert!(why.contains("needs Niles 99.0.0"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -514,7 +577,12 @@ async fn what_would_clash_is_refused() {
     // Installed already.
     let home = Home::new(&hub, options()).await;
     home.install_latest().await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Conflict(why) => assert!(why.contains("already installed"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -524,17 +592,31 @@ async fn what_would_clash_is_refused() {
         i.with_reserved_tools(vec!["hello_greet".into()])
     })
     .await;
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Conflict(why) => {
-            assert!(why.contains("hello_greet has the name of one of Niles's own"), "{why}")
+            assert!(
+                why.contains("hello_greet has the name of one of Niles's own"),
+                "{why}"
+            )
         }
         other => panic!("{other:?}"),
     }
 
     // A tool named like another plugin's.
     let home = Home::new(&hub, options()).await;
-    home.tools.set("hel", Vec::new(), vec![Arc::new(Named("hello_greet"))]);
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    home.tools
+        .set("hel", Vec::new(), vec![Arc::new(Named("hello_greet"))]);
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Conflict(why) => assert!(why.contains("one of hel's tools"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -546,7 +628,12 @@ async fn what_would_clash_is_refused() {
         DeviceState::default(),
         DeviceClass::Light,
     ));
-    match home.installer.preview("jane/hello", None).await.unwrap_err() {
+    match home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err()
+    {
         Refusal::Conflict(why) => assert!(why.contains("x_hello"), "{why}"),
         other => panic!("{other:?}"),
     }
@@ -578,10 +665,18 @@ async fn released_versions(hub: &Hub) {
         "events = [\"device_state\", \"presence\", \"device_action\"]",
     );
     let releases = vec![
-        hub.release("v0.3.0-beta.2", true, plugin_assets(&manifest("0.3.0-beta.2")))
-            .await,
-        hub.release("v0.3.0-beta.1", true, plugin_assets(&manifest("0.3.0-beta.1")))
-            .await,
+        hub.release(
+            "v0.3.0-beta.2",
+            true,
+            plugin_assets(&manifest("0.3.0-beta.2")),
+        )
+        .await,
+        hub.release(
+            "v0.3.0-beta.1",
+            true,
+            plugin_assets(&manifest("0.3.0-beta.1")),
+        )
+        .await,
         hub.release("v0.0.9", false, plugin_assets(&manifest("0.0.9")))
             .await,
         hub.release("v0.2.0", false, plugin_assets(&two)).await,
@@ -608,7 +703,10 @@ async fn the_newest_release_is_found_with_what_it_would_change() {
     home.install_latest().await;
 
     let update = home.installer.check_update("hello").await.unwrap().unwrap();
-    assert_eq!(update.version, "0.2.0", "not the pre-release, not the older one");
+    assert_eq!(
+        update.version, "0.2.0",
+        "not the pre-release, not the older one"
+    );
     assert_eq!(update.tag, "v0.2.0");
     assert_eq!(update.notes, "What is new in v0.2.0.");
     assert_eq!(update.added, vec!["See button presses"]);
@@ -660,7 +758,11 @@ async fn updated(hub: &Hub) -> Home {
     assert_eq!(preview.version, "0.2.0");
     assert_eq!(preview.added, vec!["See button presses"]);
 
-    let wrong = home.installer.install(&preview.token, None).await.unwrap_err();
+    let wrong = home
+        .installer
+        .install(&preview.token, None)
+        .await
+        .unwrap_err();
     assert!(matches!(wrong, Refusal::BadRequest(_)), "{wrong:?}");
     let preview = home.installer.update_preview("hello").await.unwrap();
     let listed = home
@@ -828,7 +930,11 @@ async fn without_a_database_nothing_is_installed() {
     let hub = Hub::new().await;
     hub.latest("v0.1.0", plugin_assets(MANIFEST)).await;
     let home = Home::build(&hub, options(), |i| i.with_database(false)).await;
-    let refused = home.installer.preview("jane/hello", None).await.unwrap_err();
+    let refused = home
+        .installer
+        .preview("jane/hello", None)
+        .await
+        .unwrap_err();
     assert!(matches!(refused, Refusal::Unavailable(_)), "{refused:?}");
 }
 
@@ -840,6 +946,9 @@ async fn declared_secrets_are_listed_under_the_plugins_key() {
     home.install_latest().await;
     assert_eq!(
         home.installer.secret_settings().await,
-        vec![("plugins.hello.token".to_string(), "Hello: Token".to_string())]
+        vec![(
+            "plugins.hello.token".to_string(),
+            "Hello: Token".to_string()
+        )]
     );
 }

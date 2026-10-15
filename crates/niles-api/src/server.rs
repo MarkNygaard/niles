@@ -120,6 +120,22 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/integrations", get(crate::integrations::list))
         .route("/plugins", get(crate::plugins::list))
+        .route("/plugins/install/preview", post(crate::plugins::preview))
+        .route("/plugins/install", post(crate::plugins::install))
+        .route("/plugins/{id}", delete(crate::plugins::remove))
+        .route("/plugins/{id}/logo", get(crate::plugins::logo))
+        .route(
+            "/plugins/{id}/check-update",
+            post(crate::plugins::check_update),
+        )
+        .route(
+            "/plugins/{id}/update/preview",
+            post(crate::plugins::update_preview),
+        )
+        .route("/plugins/{id}/update", post(crate::plugins::update))
+        .route("/plugins/{id}/rollback", post(crate::plugins::roll_back))
+        .route("/plugins/{id}/enable", post(crate::plugins::enable))
+        .route("/plugins/{id}/disable", post(crate::plugins::disable))
         .route(
             "/plugins/{id}/surfaces/{surface}",
             get(crate::plugins::render),

@@ -92,10 +92,9 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
                 "See every device in your home change: lights, doors, motion",
             ),
             EventPermission::DeviceAction => ("device_action", "See button presses"),
-            EventPermission::Presence => (
-                "presence",
-                "Know when the house becomes occupied or empty",
-            ),
+            EventPermission::Presence => {
+                ("presence", "Know when the house becomes occupied or empty")
+            }
         };
         add(format!("events:{key}"), text.into());
     }
@@ -147,9 +146,8 @@ fn room_name(id: &str) -> String {
 
 /// What `after` may do that `before` may not, and the reverse.
 pub fn diff(before: &[Grant], after: &[Grant]) -> Diff {
-    let keys = |grants: &[Grant]| -> HashSet<String> {
-        grants.iter().map(|g| g.key.clone()).collect()
-    };
+    let keys =
+        |grants: &[Grant]| -> HashSet<String> { grants.iter().map(|g| g.key.clone()).collect() };
     let (had, has) = (keys(before), keys(after));
     Diff {
         added: after
@@ -281,10 +279,7 @@ room = "living_room"
         );
         assert_eq!(
             diff.added,
-            vec![
-                "Connect to api.tibber.com",
-                "Speak through your satellites"
-            ]
+            vec!["Connect to api.tibber.com", "Speak through your satellites"]
         );
         assert_eq!(
             diff.removed,

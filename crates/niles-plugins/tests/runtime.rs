@@ -158,12 +158,13 @@ async fn init_saying_what_is_wrong_is_the_status_line() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_missing_required_setting_is_not_set_up() {
-    let manifest = MANIFEST.replace(
+    // Line endings evened out: a Windows checkout has the fixture in CRLF.
+    let manifest = MANIFEST.replace("\r\n", "\n").replace(
         "key = \"address\"\nlabel = \"Address\"\ntype = \"string\"\n",
         "key = \"address\"\nlabel = \"Address\"\ntype = \"string\"\nrequired = true\n",
     );
-    assert_ne!(
-        manifest, MANIFEST,
+    assert!(
+        manifest.contains("required = true"),
         "the fixture still has the address setting"
     );
     let house = Home::new(quick(), toml::Table::new()).await;

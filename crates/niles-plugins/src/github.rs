@@ -363,7 +363,7 @@ pub fn human_size(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * 1024;
     let scaled = |unit: u64, name: &str| {
-        if bytes % unit == 0 {
+        if bytes.is_multiple_of(unit) {
             format!("{} {name}", bytes / unit)
         } else {
             format!("{:.1} {name}", bytes as f64 / unit as f64)

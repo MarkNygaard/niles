@@ -3,6 +3,7 @@
 
 use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand};
+use niles_api::plugins::{PluginFailure, PluginSummary};
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_mqtt::DeviceCommander;
 use niles_plugins::{
@@ -26,7 +27,9 @@ pub(crate) enum PluginAction {
 
 #[derive(Args)]
 pub(crate) struct CheckArgs {
-    /// The plugin's directory (with niles-integration.toml), or its .wasm.
+    /// The plugin's directory (with niles-integration.toml), its .wasm,
+    /// or its GitHub repo (`jane/niles-spotprice`, or the repo's or a
+    /// release's address), whose latest release is checked.
     path: PathBuf,
 }
 
@@ -119,6 +122,12 @@ fn newest_wasm(dir: &Path) -> Option<PathBuf> {
 }
 
 async fn check(args: CheckArgs) -> anyhow::Result<()> {
+    if !args.path.exists()
+        && let Some(text) = args.path.to_str()
+        && let Ok((repo, tag)) = niles_plugins::github::parse_repo(text)
+    {
+        return check_release(repo, tag).await;
+    }
     let found = locate(&args.path)?;
     let logo = Manifest::parse(&found.manifest)
         .ok()
@@ -131,6 +140,69 @@ async fn check(args: CheckArgs) -> anyhow::Result<()> {
     }
     let report =
         niles_plugins::check::check(&found.manifest, found.component.map(|(_, b)| b), logo).await;
+    print_report(&report)
+}
+
+/// Check a release on GitHub, downloading what an install would.
+async fn check_release(
+    repo: niles_plugins::github::Repo,
+    tag: Option<String>,
+) -> anyhow::Result<()> {
+    use niles_plugins::github::{GitHub, MAX_MANIFEST};
+    let github = GitHub::default();
+    let release = github
+        .release(&repo, tag.as_deref())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("Checking {} {}", repo.slug(), release.tag_name);
+    let fetch = |name: String, cap: usize| {
+        let asset = release.asset(&name).cloned();
+        let github = github.clone();
+        async move {
+            match asset {
+                None => Ok(None),
+                Some(asset) => github
+                    .download(&asset, cap)
+                    .await
+                    .map(Some)
+                    .map_err(|e| anyhow::anyhow!("{name}: {e}")),
+            }
+        }
+    };
+    let manifest = fetch("niles-integration.toml".into(), MAX_MANIFEST)
+        .await?
+        .context("the release has no niles-integration.toml")?;
+    let manifest = String::from_utf8(manifest).context("niles-integration.toml is not UTF-8")?;
+    let logo_name = Manifest::parse(&manifest)
+        .ok()
+        .and_then(|m| m.logo)
+        .map(|logo| logo.rsplit('/').next().unwrap_or(&logo).to_string());
+    let logo = match logo_name {
+        Some(name) => fetch(name, niles_plugins::check::MAX_LOGO).await?,
+        None => None,
+    };
+    let component = fetch(
+        "integration.wasm".into(),
+        niles_plugins::runtime::MAX_COMPONENT,
+    )
+    .await?;
+    let mut report = niles_plugins::check::check(&manifest, component, logo).await;
+    if let Some(m) = &report.manifest
+        && release
+            .tag_name
+            .strip_prefix('v')
+            .unwrap_or(&release.tag_name)
+            != m.version
+    {
+        report.problems.push(format!(
+            "release: tagged {}, and the manifest says {}",
+            release.tag_name, m.version
+        ));
+    }
+    print_report(&report)
+}
+
+fn print_report(report: &niles_plugins::check::Report) -> anyhow::Result<()> {
     for passed in &report.passed {
         println!("  ok       {passed}");
     }
@@ -530,8 +602,9 @@ async fn prompt(runtime: &Runtime, id: &str, registry: &DeviceRegistry, bus: &Ev
 }
 
 /// Where installed plugins are kept: the database, or nowhere a restart
-/// keeps — plugins need the database, so without one none are loaded.
-fn plugin_store(cfg: &niles_config::Config) -> Arc<dyn PluginStore> {
+/// keeps — plugins need the database, so without one none are loaded,
+/// and none can be installed. True when it is the database.
+fn plugin_store(cfg: &niles_config::Config) -> (Arc<dyn PluginStore>, bool) {
     let postgres = cfg.database.as_ref().and_then(|database| {
         let url = database.resolve_url().ok()?;
         let backend =
@@ -542,24 +615,26 @@ fn plugin_store(cfg: &niles_config::Config) -> Arc<dyn PluginStore> {
         ))
     });
     match postgres {
-        Some(store) => Arc::new(store),
+        Some(store) => (Arc::new(store), true),
         None => {
             tracing::info!("[plugins] no database, so no plugins are installed");
-            Arc::new(MemoryStore::new())
+            (Arc::new(MemoryStore::new()), false)
         }
     }
 }
 
-/// The runtime `serve` runs plugins in, or `None` — logged, and Niles
-/// carries on without plugins — if it cannot start.
+/// The runtime `serve` runs plugins in, and whether it keeps them in the
+/// database, or `None` — logged, and Niles carries on without plugins —
+/// if it cannot start.
 pub(crate) fn start_runtime(
     cfg: &niles_config::Config,
     settings: Arc<niles_config::ConfigStore>,
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
     tools: niles_tools::DynamicTools,
-) -> Option<Runtime> {
-    let house = House::new(registry, bus, plugin_store(cfg))
+) -> Option<(Runtime, bool)> {
+    let (store, database) = plugin_store(cfg);
+    let house = House::new(registry, bus, store)
         .with_tools(tools)
         .with_settings(Arc::new(move |id| {
             settings
@@ -573,7 +648,7 @@ pub(crate) fn start_runtime(
             niles_config::secrets::get(&format!("plugins.{id}.{key}"))
         }));
     match Runtime::new(house, Limits::default()) {
-        Ok(runtime) => Some(runtime),
+        Ok(runtime) => Some((runtime, database)),
         Err(e) => {
             tracing::error!("[plugins] {e}; Niles runs without them");
             None
@@ -603,25 +678,106 @@ pub(crate) fn restart_on_settings(
     })
 }
 
+/// What a removed plugin leaves elsewhere: its settings under
+/// `[plugins.<id>]` in the config store, and its secrets under
+/// `plugins.<id>.*` in the secret store.
+pub(crate) struct Forget {
+    pub settings: Arc<niles_config::ConfigStore>,
+    pub secrets: Option<Arc<niles_db::PostgresSecrets>>,
+}
+
+#[async_trait::async_trait]
+impl niles_plugins::Leftovers for Forget {
+    async fn forget(&self, id: &str) -> Result<(), String> {
+        self.settings
+            .reset(&format!("plugins.{id}"), niles_config::ChangeSource::Api)
+            .await
+            .map_err(|e| format!("its settings: {e}"))?;
+        let Some(secrets) = &self.secrets else {
+            return Ok(());
+        };
+        let keys = secrets.keys().await.map_err(|e| e.to_string())?;
+        for key in secrets_of(id, &keys) {
+            secrets.clear(key).await.map_err(|e| e.to_string())?;
+        }
+        let values = secrets.load_all().await.map_err(|e| e.to_string())?;
+        niles_config::secrets::load(values);
+        Ok(())
+    }
+}
+
+/// The stored keys that are `id`'s: `plugins.<id>.<key>`, whether or
+/// not its manifest still declares them.
+fn secrets_of<'a>(id: &str, keys: &'a [String]) -> Vec<&'a str> {
+    let prefix = format!("plugins.{id}.");
+    keys.iter()
+        .filter(|k| k.starts_with(&prefix))
+        .map(String::as_str)
+        .collect()
+}
+
 /// The plugins, as the HTTP API asks after them.
-pub(crate) struct AppPlugins(pub Runtime);
+pub(crate) struct AppPlugins(pub niles_plugins::Installer);
+
+fn summary(listed: niles_plugins::Listed) -> niles_api::plugins::PluginSummary {
+    use niles_api::plugins::{PluginGroup, PluginSummary, PluginUpdate};
+    PluginSummary {
+        logo: listed
+            .has_logo
+            .then(|| format!("/plugins/{}/logo", listed.id)),
+        id: listed.id,
+        name: listed.name,
+        version: listed.version,
+        description: listed.description,
+        authors: listed.authors,
+        homepage: listed.homepage,
+        group: PluginGroup {
+            id: listed.group.id,
+            label: listed.group.label,
+        },
+        status: listed.status,
+        status_line: listed.status_line,
+        error: listed.error,
+        dropped_events: listed.dropped_events,
+        enabled: listed.enabled,
+        repo: listed.source.as_ref().map(|s| s.repo.clone()),
+        release_tag: listed.source.as_ref().map(|s| s.tag.clone()),
+        release_url: listed.source.map(|s| s.release_url),
+        installed_at: listed.installed_at,
+        updated_at: listed.updated_at,
+        previous_version: listed.previous_version,
+        update: listed.update.map(|u| PluginUpdate {
+            version: u.version,
+            tag: u.tag,
+            release_url: u.release_url,
+            notes: u.notes,
+            added: u.added,
+            removed: u.removed,
+        }),
+    }
+}
+
+fn refused(refusal: niles_plugins::Refusal) -> PluginFailure {
+    use niles_plugins::Refusal;
+    match refusal {
+        Refusal::BadRequest(s) => PluginFailure::BadRequest(s),
+        Refusal::NotFound(s) => PluginFailure::NotFound(s),
+        Refusal::Conflict(s) => PluginFailure::Conflict(s),
+        Refusal::Invalid(s) => PluginFailure::Invalid(s),
+        Refusal::Gone(s) => PluginFailure::Gone(s),
+        Refusal::Upstream(s) => PluginFailure::Upstream(s),
+        Refusal::Unavailable(s) => PluginFailure::Unavailable(s),
+    }
+}
+
+fn as_json(preview: niles_plugins::Preview) -> Result<serde_json::Value, PluginFailure> {
+    serde_json::to_value(preview).map_err(|e| PluginFailure::Unavailable(e.to_string()))
+}
 
 #[async_trait::async_trait]
 impl niles_api::plugins::Plugins for AppPlugins {
-    fn list(&self) -> Vec<niles_api::plugins::PluginSummary> {
-        self.0
-            .plugins()
-            .into_iter()
-            .map(|p| niles_api::plugins::PluginSummary {
-                status: p.status.kind().to_string(),
-                status_line: p.status.line(),
-                id: p.id,
-                name: p.name,
-                version: p.version,
-                error: p.error,
-                dropped_events: p.dropped_events,
-            })
-            .collect()
+    async fn list(&self) -> Vec<PluginSummary> {
+        self.0.list().await.into_iter().map(summary).collect()
     }
 
     async fn render(
@@ -634,7 +790,12 @@ impl niles_api::plugins::Plugins for AppPlugins {
             room: viewer.room,
             person: viewer.person,
         };
-        let surface = self.0.render(id, surface, context).await.map_err(failure)?;
+        let surface = self
+            .0
+            .runtime()
+            .render(id, surface, context)
+            .await
+            .map_err(failure)?;
         serde_json::to_value(surface)
             .map_err(|e| niles_api::plugins::SurfaceFailure::Refused(e.to_string()))
     }
@@ -656,11 +817,89 @@ impl niles_api::plugins::Plugins for AppPlugins {
         };
         let outcome = self
             .0
+            .runtime()
             .act(id, surface, control, value, context)
             .await
             .map_err(failure)?;
         serde_json::to_value(outcome)
             .map_err(|e| niles_api::plugins::SurfaceFailure::Refused(e.to_string()))
+    }
+
+    async fn preview(
+        &self,
+        repo: &str,
+        tag: Option<&str>,
+    ) -> Result<serde_json::Value, PluginFailure> {
+        as_json(self.0.preview(repo, tag).await.map_err(refused)?)
+    }
+
+    async fn install(
+        &self,
+        token: &str,
+        sha256: Option<&str>,
+    ) -> Result<PluginSummary, PluginFailure> {
+        self.0
+            .install(token, sha256)
+            .await
+            .map(summary)
+            .map_err(refused)
+    }
+
+    async fn check_update(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
+        self.0.check_update(id).await.map_err(refused)?;
+        self.0
+            .list()
+            .await
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(summary)
+            .ok_or_else(|| PluginFailure::NotFound(format!("There is no plugin called {id}.")))
+    }
+
+    async fn update_preview(&self, id: &str) -> Result<serde_json::Value, PluginFailure> {
+        as_json(self.0.update_preview(id).await.map_err(refused)?)
+    }
+
+    async fn update(
+        &self,
+        id: &str,
+        token: &str,
+        sha256: Option<&str>,
+    ) -> Result<PluginSummary, PluginFailure> {
+        self.0
+            .update(id, token, sha256)
+            .await
+            .map(summary)
+            .map_err(refused)
+    }
+
+    async fn roll_back(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
+        self.0.roll_back(id).await.map(summary).map_err(refused)
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<PluginSummary, PluginFailure> {
+        let done = if enabled {
+            self.0.enable(id).await
+        } else {
+            self.0.disable(id).await
+        };
+        done.map(summary).map_err(refused)
+    }
+
+    async fn remove(&self, id: &str) -> Result<(), PluginFailure> {
+        self.0.remove(id).await.map_err(refused)
+    }
+
+    async fn logo(&self, id: &str) -> Result<Option<String>, PluginFailure> {
+        self.0.logo(id).await.map_err(refused)
+    }
+
+    async fn secret_settings(&self) -> Vec<(String, String)> {
+        self.0.secret_settings().await
+    }
+
+    fn restart(&self, id: &str) {
+        self.0.restart(id);
     }
 }
 
@@ -773,6 +1012,47 @@ type = "secret"
         ));
         assert!(house_event("presence sideways", &registry, &bus).is_err());
         assert!(house_event("weather sunny", &registry, &bus).is_err());
+    }
+
+    #[test]
+    fn a_plugins_secrets_are_the_keys_under_its_id() {
+        let keys: Vec<String> = [
+            "plugins.hello.token",
+            "plugins.hello.old_key",
+            "plugins.hello2.token",
+            "plugins.hellox",
+            "mqtt.password",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            secrets_of("hello", &keys),
+            vec!["plugins.hello.token", "plugins.hello.old_key"]
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_plugin_forgets_its_settings_and_only_its() {
+        use niles_plugins::Leftovers;
+        let settings =
+            Arc::new(niles_config::ConfigStore::from_str_in_memory("").expect("an empty config"));
+        let patch: toml::Table = toml::from_str(
+            "[plugins.hello]\ngreeting = \"Hej\"\n[plugins.spotprice]\narea = \"DK2\"\n",
+        )
+        .unwrap();
+        settings
+            .apply(&patch, niles_config::ChangeSource::Api)
+            .await
+            .unwrap();
+        let forget = Forget {
+            settings: settings.clone(),
+            secrets: None,
+        };
+        forget.forget("hello").await.unwrap();
+        let now = settings.current();
+        assert!(!now.plugins.contains_key("hello"));
+        assert_eq!(now.plugins["spotprice"]["area"].as_str(), Some("DK2"));
+        forget.forget("never_installed").await.unwrap();
     }
 
     #[test]

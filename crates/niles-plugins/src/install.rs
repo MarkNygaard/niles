@@ -420,7 +420,10 @@ impl Installer {
             .max_by(|(a, _), (b, _)| a.cmp(b));
         let store = self.inner.runtime.store();
         let Some((version, release)) = newest else {
-            store.set_update(id, None).await.map_err(Refusal::Unavailable)?;
+            store
+                .set_update(id, None)
+                .await
+                .map_err(Refusal::Unavailable)?;
             return Ok(None);
         };
         let asset = release.asset(MANIFEST_ASSET).ok_or_else(|| {
@@ -524,7 +527,8 @@ impl Installer {
             )));
         }
         self.clashes(&fetched, true)?;
-        let before = Manifest::parse(&record.manifest).map_err(|e| Refusal::Invalid(e.to_string()))?;
+        let before =
+            Manifest::parse(&record.manifest).map_err(|e| Refusal::Invalid(e.to_string()))?;
         let names = bare_names(&fetched.manifest.id, &fetched.tools);
         let diff = permissions::diff(
             &permissions::grants(&before, None),
@@ -547,7 +551,10 @@ impl Installer {
     /// Install what the update preview with `token` downloaded, keep the
     /// version it replaces, and watch the new one.
     pub async fn update(&self, id: &str, token: &str, sha256: Option<&str>) -> Outcome<Listed> {
-        let staged = self.take(token, |p| matches!(p, Purpose::Update { id: of, .. } if of == id))?;
+        let staged = self.take(
+            token,
+            |p| matches!(p, Purpose::Update { id: of, .. } if of == id),
+        )?;
         verify(&staged, sha256)?;
         let Purpose::Update { from, .. } = &staged.purpose else {
             unreachable!("taken as an update");
@@ -1063,12 +1070,7 @@ fn bare_names(id: &str, tools: &[ToolDescriptor]) -> Vec<String> {
     let prefix = format!("{id}_");
     tools
         .iter()
-        .map(|t| {
-            t.name
-                .strip_prefix(&prefix)
-                .unwrap_or(&t.name)
-                .to_string()
-        })
+        .map(|t| t.name.strip_prefix(&prefix).unwrap_or(&t.name).to_string())
         .collect()
 }
 
@@ -1088,7 +1090,9 @@ mod tests {
     use super::*;
 
     fn manifest(group: Option<&str>) -> Manifest {
-        let group = group.map(|g| format!("group = \"{g}\"\n")).unwrap_or_default();
+        let group = group
+            .map(|g| format!("group = \"{g}\"\n"))
+            .unwrap_or_default();
         Manifest::parse(&format!(
             "{group}id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\ndescription = \"x\"\n\
              authors = [\"a\"]\nmin_niles = \"0.2.0\"\ninterface = \"0.1\"\n"

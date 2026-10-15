@@ -340,9 +340,7 @@ impl Runtime {
         };
         for record in records.into_iter().filter(|r| !r.enabled) {
             if let Ok(manifest) = Manifest::parse(&record.manifest) {
-                self.inner
-                    .remember_devices(&Plugin::new(manifest))
-                    .await;
+                self.inner.remember_devices(&Plugin::new(manifest)).await;
             }
         }
     }

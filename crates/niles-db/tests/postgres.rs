@@ -251,14 +251,25 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
     assert!(meta.has_logo);
 
     plugins.set_update(&id, Some("{}")).await.expect("update");
-    let back = plugins.roll_back(&id).await.expect("roll back").expect("a previous");
+    let back = plugins
+        .roll_back(&id)
+        .await
+        .expect("roll back")
+        .expect("a previous");
     assert_eq!(back.version, "0.1.0");
     assert!(
         plugins.roll_back(&id).await.expect("again").is_none(),
         "once"
     );
     assert!(plugins.set_enabled(&id, false).await.expect("disable"));
-    assert!(plugins.enabled().await.expect("enabled").iter().all(|p| p.id != id));
+    assert!(
+        plugins
+            .enabled()
+            .await
+            .expect("enabled")
+            .iter()
+            .all(|p| p.id != id)
+    );
 
     assert!(plugins.set(&id, "day:2", "b", 100).await.expect("set"));
     assert!(plugins.set(&id, "day:1", "a", 100).await.expect("set"));
