@@ -56,11 +56,46 @@ describe("MailPanel", () => {
     );
   });
 
-  it("does not offer iCloud for mail yet", () => {
-    expect(mailProviders({ providers: PROVIDERS, connections: [] }).map((p) => p.id)).toEqual([
-      "microsoft",
-      "google",
-    ]);
+  it("offers every provider, the available ones first", () => {
+    const providers = mailProviders({
+      providers: [{ ...PROVIDERS[0], available: false, reason: "no keys" }, ...PROVIDERS.slice(1)],
+      connections: [],
+    });
+    expect(providers.map((p) => p.id)).toEqual(["google", "icloud", "microsoft"]);
+  });
+
+  it("connects iCloud mail with an app-specific password, read only unless chosen", async () => {
+    panel([]);
+    const connect = vi.spyOn(api, "connectIcloud").mockResolvedValue(PHONE);
+    fireEvent.click(await screen.findByRole("radio", { name: "iCloud" }));
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Phone" } });
+    fireEvent.change(screen.getByLabelText("Apple ID"), { target: { value: "mark@icloud.com" } });
+    fireEvent.change(screen.getByLabelText("App-specific password"), {
+      target: { value: "abcd-efgh-ijkl-mnop" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect iCloud" }));
+    await waitFor(() =>
+      expect(connect.mock.calls[0]?.[0]).toEqual({
+        name: "Phone",
+        calendar: "none",
+        mail: "read",
+        apple_id: "mark@icloud.com",
+        password: "abcd-efgh-ijkl-mnop",
+      }),
+    );
+  });
+
+  it("gives an iCloud calendar its mail in place", async () => {
+    panel([PHONE]);
+    const set = vi.spyOn(api, "setAccountServices").mockResolvedValue(PHONE);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /Use mark@icloud\.com, already connected for your calendar/,
+      }),
+    );
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith("acc-2", { calendar: "write", mail: "read" }),
+    );
   });
 
   it("offers a calendar account for its mail too", async () => {

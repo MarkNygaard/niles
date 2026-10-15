@@ -12,6 +12,7 @@ pub mod gmail;
 pub mod google;
 pub mod graph;
 pub mod graph_mail;
+pub mod icloud_mail;
 pub mod ics;
 pub mod mail;
 pub mod model;
