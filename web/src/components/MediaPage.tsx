@@ -52,13 +52,12 @@ export type Move =
   | { action: "start"; source: Startable };
 
 /** What putting `speaker` down on `drop` does — nothing when it is
-    already there, or when the drop is the TV, whose sound stays in its
-    own room. */
+    already there. Joining the TV plays its sound in that room too. */
 export function moveFor(view: MediaView, speaker: string, drop: Drop): Move | null {
   switch (drop.to) {
     case "group": {
       const group = view.groups.find((g) => g.leader === drop.leader);
-      if (!group || group.kind === "tv") return null;
+      if (!group) return null;
       if (group.speakers.some((s) => s.id === speaker)) return null;
       return { action: "join", leader: drop.leader };
     }
@@ -88,8 +87,8 @@ const KIND_TITLES: Record<MediaGroup["kind"], string> = {
   music: "Other music",
 };
 
-/** Where a speaker can go, for the move menu: each group but the TV and
-    its own, and "not playing" unless it is there already. */
+/** Where a speaker can go, for the move menu: each group but its own —
+    the TV's included — and "not playing" unless it is there already. */
 export function destinations(view: MediaView, speaker: string): { label: string; drop: Drop }[] {
   const out: { label: string; drop: Drop }[] = [];
   for (const group of view.groups) {
@@ -326,7 +325,7 @@ export function MediaPage() {
   const groupBlock = (g: MediaGroup) => (
     <div
       key={g.leader}
-      data-drop={g.kind === "tv" ? undefined : `group:${g.leader}`}
+      data-drop={`group:${g.leader}`}
       className={cn(
         "rounded-lg border px-3 transition-colors",
         held && over === `group:${g.leader}` && "border-foreground/40 bg-muted/50",

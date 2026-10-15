@@ -73,12 +73,16 @@ describe("MediaPage", () => {
     expect(moveFor(view, "RINCON_CLOSET", { to: "idle" })).toEqual({ action: "leave" });
   });
 
-  it("joins nothing to the TV", () => {
-    const tv: MediaView = { groups: [group("tv", "RINCON_BAR", [bar])], idle: [back] };
-    expect(moveFor(tv, "RINCON_BACK", { to: "group", leader: "RINCON_BAR" })).toBeNull();
-    expect(destinations(tv, "RINCON_BACK").map((d) => d.label)).not.toContain(
+  it("joins a speaker to the TV's sound, and takes it out again", () => {
+    const tv: MediaView = { groups: [group("tv", "RINCON_BAR", [bar, back])], idle: [closet] };
+    expect(moveFor(tv, "RINCON_CLOSET", { to: "group", leader: "RINCON_BAR" })).toEqual({
+      action: "join",
+      leader: "RINCON_BAR",
+    });
+    expect(destinations(tv, "RINCON_CLOSET").map((d) => d.label)).toContainEqual(
       expect.stringContaining("TV"),
     );
+    expect(moveFor(tv, "RINCON_BACK", { to: "idle" })).toEqual({ action: "leave" });
   });
 
   it("offers the moves a drag makes", () => {

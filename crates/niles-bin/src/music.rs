@@ -246,7 +246,10 @@ impl Music {
         let Some(leader) = source else {
             return Outcome::NothingPlaying;
         };
-        if leader.client.media().await.is_ok_and(|m| m.is_tv()) {
+        // The TV goes to a room that is named — "play the TV in the
+        // kitchen too" — but never "everywhere": the whole house on the
+        // TV is not what that usually means.
+        if to.is_none() && leader.client.media().await.is_ok_and(|m| m.is_tv()) {
             return Outcome::TvStaysPut;
         }
         let targets = match to {
@@ -1090,7 +1093,7 @@ fn reported(outcome: Outcome, room: Option<&RoomName>) -> Value {
         }
         Outcome::NothingPlaying => json!({ "error": "nothing is playing to share" }),
         Outcome::TvStaysPut => {
-            json!({ "error": "what plays is the TV, which stays in its own room" })
+            json!({ "error": "what plays is the TV, which is only sent to a room that is named" })
         }
         Outcome::Failed(e) => json!({ "error": e }),
     }
@@ -1616,6 +1619,20 @@ room = "kitchen"
     }
 
     #[tokio::test]
+    async fn the_tv_goes_to_a_room_that_is_named() {
+        let mut house = House::new();
+        house.playing.push("10.0.0.2");
+        house
+            .loaded
+            .insert("10.0.0.2", "x-sonos-htastream:RINCON_BAR:spdif");
+        let outcome = music(&house)
+            .await
+            .spread(Some(&room("living_room")), Some(&room("kitchen")))
+            .await;
+        assert_ne!(outcome, Outcome::TvStaysPut);
+    }
+
+    #[tokio::test]
     async fn pausing_a_room_that_follows_another_takes_it_out_of_the_group() {
         let mut house = House::new();
         house.leaders.insert("RINCON_MOVE", "RINCON_BAR");
@@ -1846,14 +1863,14 @@ room = "kitchen"
     }
 
     #[tokio::test]
-    async fn nothing_joins_the_tv() {
+    async fn a_speaker_joins_the_tv_to_play_its_sound_too() {
         let mut house = House::new();
         house
             .loaded
             .insert("10.0.0.2", "x-sonos-htastream:RINCON_BAR:spdif");
         let music = music(&house).await;
-        assert!(music.join_group("RINCON_MOVE", "RINCON_BAR").await.is_err());
-        assert!(!house.did("10.0.0.4", "SetAVTransportURI", ""));
+        music.join_group("RINCON_MOVE", "RINCON_BAR").await.unwrap();
+        assert!(house.did("10.0.0.4", "SetAVTransportURI", "x-rincon:RINCON_BAR"));
     }
 
     #[tokio::test]
