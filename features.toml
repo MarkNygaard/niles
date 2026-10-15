@@ -610,13 +610,13 @@ since_pr = 409
 id = "training-strava-sync"
 category = "runtime.training"
 summary = "Each person's own Strava: 180 days on connect, then a poll every 15 minutes within Strava's rate limits"
-since_pr = 9999
+since_pr = 418
 
 [[feature]]
 id = "ui-strava-connect"
 category = "ui.settings"
 summary = "My profile → Strava: set up your own Strava app, save its keys, connect, last sync, Sync now, disconnect"
-since_pr = 9999
+since_pr = 418
 
 [[feature]]
 id = "voice-training-questions"
