@@ -365,7 +365,7 @@ pub fn nothing_to_share() -> String {
 
 /// "Play it everywhere" while the soundbar plays the TV.
 pub fn tv_stays_put() -> String {
-    "That's the TV, and the TV only plays in its own room.".into()
+    "That's the TV. Say which room, like \"play the TV in the kitchen too\".".into()
 }
 
 /// "I couldn't start the music in the kitchen."

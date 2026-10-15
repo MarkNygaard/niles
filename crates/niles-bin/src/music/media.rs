@@ -102,14 +102,12 @@ impl Music {
             .ok_or_else(|| format!("no speaker {id} is placed in a room"))
     }
 
-    /// `speaker` plays along with `leader`'s group. Not with the TV: its
-    /// sound stays in its own room.
+    /// `speaker` plays along with `leader`'s group — the TV's too: Sonos
+    /// plays the soundbar's TV sound in the other room, a touch behind
+    /// the picture, which its app's Group Audio Delay is for.
     pub async fn join_group(&self, speaker: &str, leader: &str) -> Result<(), String> {
         let joining = self.player(speaker).await?;
         let leading = self.player(leader).await?;
-        if leading.client.media().await.is_ok_and(|m| m.is_tv()) {
-            return Err("That's the TV, and the TV only plays in its own room.".into());
-        }
         joining
             .client
             .join(&leading.sonos.id)
