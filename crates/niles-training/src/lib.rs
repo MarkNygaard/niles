@@ -1,25 +1,24 @@
-//! niles-training — each person's runs, sleep, heart rate and weight.
+//! niles-training — each person's workouts, from their own Strava.
 //!
-//! See ARCHITECTURE.md § Training (per person). What arrives is what a
-//! phone already knows: the Garmin watch and scale write to Apple
-//! Health, and the Health Auto Export app posts Apple Health to Niles.
-//! [`hae`] reads that post, in canonical units — metres, seconds,
-//! kilograms, beats per minute, milliseconds — whatever units it came
-//! in.
+//! See ARCHITECTURE.md § Training (per person). Each person connects
+//! their own Strava on their profile, with an API app they made
+//! themselves ([`StravaApp`]); [`Strava`] brings their activities in
+//! and keeps them coming, in canonical units — metres, seconds, beats
+//! per minute, kilocalories.
 //!
 //! Everything here belongs to one person, named by the same key as
 //! their chat history ([`person_key`]), so what they ask by voice and
 //! what they ask in the app reach the same data, and nobody else's.
 
 mod error;
-pub mod hae;
 mod model;
 mod store;
+pub mod strava;
 mod summary;
-mod token;
+mod sync;
 
 pub use error::{Error, Result};
-pub use model::{Activity, Kind, Wellness, person_key};
+pub use model::{Activity, Athlete, Kind, StravaApp, StravaLink, StravaTokens, person_key};
 pub use store::{MemoryTraining, Overview, Saved, TrainingStore};
-pub use summary::{Summary, Trend, WeightChange, summarise};
-pub use token::{hash_key, same_hash};
+pub use summary::{Summary, summarise};
+pub use sync::{BACKFILL, OVERLAP, POLL, Strava, Synced};

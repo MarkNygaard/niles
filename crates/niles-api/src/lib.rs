@@ -17,7 +17,7 @@
 //! POST /webhooks/linear         -> 200 OK (Linear webhook)
 //! GET  /plugins                 -> installed plugins and how each is doing
 //! POST /plugins/install/preview -> download and check a GitHub release (see `plugins`)
-//! POST /training/ingest         -> a person's Health Auto Export data, by their key (see `training`)
+//! GET  /me/strava               -> the signed-in person's own Strava (see `training`)
 //! ```
 
 pub mod api_token;

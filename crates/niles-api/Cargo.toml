@@ -59,3 +59,4 @@ tower.workspace = true
 http-body-util.workspace = true
 tokio-tungstenite.workspace = true
 hex.workspace = true
+wiremock = "0.6"

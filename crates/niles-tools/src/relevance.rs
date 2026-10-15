@@ -306,8 +306,8 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
-        // The asker's own runs, sleep, heart rate and weight. English
-        // with the Danish the household slips into.
+        // The asker's own workouts, from their Strava. English with the
+        // Danish the household slips into.
         keywords: &[
             "run",
             "runs",
@@ -328,31 +328,20 @@ const GROUPS: &[Group] = &[
             "marathon",
             "race",
             "garmin",
-            "sleep",
-            "slept",
-            "hrv",
+            "strava",
+            "ride",
+            "rode",
+            "cycling",
             "heart rate",
             "pulse",
-            "weight",
-            "weigh",
-            "weighed",
-            "body fat",
             "fitness",
-            "recovery",
             "løb",
             "løbetur",
             "løbet",
             "træning",
-            "søvn",
-            "sov",
-            "vægt",
             "puls",
         ],
-        tools: &[
-            "training_activities",
-            "training_summary",
-            "training_wellness",
-        ],
+        tools: &["training_activities", "training_summary"],
     },
     Group {
         // A rule is said as a condition. The yes that saves one needs
@@ -555,9 +544,8 @@ mod tests {
         for sentence in [
             "how far did I run on Sunday",
             "what was my pace",
-            "how did I sleep last night",
-            "what's my resting heart rate",
-            "how much do I weigh",
+            "what was my heart rate on that run",
+            "how many workouts did I do this month",
             "hvor langt løb jeg i søndags",
         ] {
             let names = relevant_tool_names(sentence).expect(sentence);

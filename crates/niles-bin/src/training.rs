@@ -1,5 +1,5 @@
-//! The training tools: the asker's own runs, sleep, heart rate and
-//! weight, as their phone sent them.
+//! The training tools: the asker's own workouts, as their Strava has
+//! them.
 //!
 //! Whose comes from who is asking, never from an argument: the voice
 //! [`profile::SPEAKER`] names, or in the app's chat the person signed
@@ -9,7 +9,7 @@
 use crate::profile;
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
-use niles_training::{Activity, Kind, TrainingStore, Wellness, person_key};
+use niles_training::{Activity, Kind, TrainingStore, person_key};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -147,38 +147,6 @@ impl Shared {
         }
         out
     }
-
-    fn day(&self, w: &Wellness) -> Value {
-        let mut out = json!({ "date": w.date.format("%A %Y-%m-%d").to_string() });
-        if let Some(hr) = w.resting_hr {
-            out["resting_hr"] = json!(hr.round());
-        }
-        if let Some(ms) = w.hrv_ms {
-            out["hrv_ms"] = json!(ms.round());
-        }
-        if let Some(s) = w.sleep_s {
-            out["sleep"] = json!(hours(s));
-        }
-        if let Some(kg) = w.weight_kg {
-            out["weight"] = self.weight(kg);
-        }
-        if let Some(pct) = w.body_fat_pct {
-            out["body_fat_pct"] = json!(round1(pct));
-        }
-        out
-    }
-
-    fn weight(&self, kg: f64) -> Value {
-        if self.imperial {
-            json!({ "lb": round1(kg / 0.453_592_37) })
-        } else {
-            json!({ "kg": round1(kg) })
-        }
-    }
-}
-
-fn round1(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
 }
 
 fn round2(x: f64) -> f64 {
@@ -196,19 +164,13 @@ fn clock(seconds: f64) -> String {
     }
 }
 
-/// "7h 06m".
-fn hours(seconds: f64) -> String {
-    let m = (seconds / 60.0).round() as i64;
-    format!("{}h {:02}m", m / 60, m % 60)
-}
-
 fn storage(e: niles_training::Error) -> Error {
     Error::Memory(e.to_string())
 }
 
-/// What to say when the phone has sent nothing yet.
-const NOTHING_YET: &str = "No training data has arrived for this person. It comes from their \
-    iPhone: on their profile page in the app, under Training, they can connect Health Auto Export.";
+/// What to say when nothing has come from Strava yet.
+const NOTHING_YET: &str = "No workouts have arrived for this person. They come from their own \
+    Strava: on their profile page in the app, under Strava, they can connect it.";
 
 struct TrainingActivities(Arc<Shared>);
 
@@ -218,7 +180,7 @@ impl Tool for TrainingActivities {
         ToolDescriptor {
             name: "training_activities".into(),
             description: "The workouts of the person asking — runs, walks, rides, strength — \
-                from their watch, oldest first: date, distance, time, pace, heart rate, \
+                from their Strava, oldest first: date, distance, time, pace, heart rate, \
                 climb. from/to are YYYY-MM-DD in the house's time zone, to inclusive; \
                 without them, the last 30 days."
                 .into(),
@@ -270,52 +232,6 @@ impl Tool for TrainingActivities {
     }
 }
 
-struct TrainingWellness(Arc<Shared>);
-
-#[async_trait::async_trait]
-impl Tool for TrainingWellness {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor {
-            name: "training_wellness".into(),
-            description: "The days of the person asking, from their watch and scale: resting \
-                heart rate, HRV (ms), sleep, weight and body fat. A night's sleep is on the \
-                day they woke up. from/to are YYYY-MM-DD, to inclusive; without them, the \
-                last 14 days."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "from": { "type": "string", "description": "YYYY-MM-DD" },
-                    "to": { "type": "string", "description": "YYYY-MM-DD, inclusive" }
-                }
-            }),
-        }
-    }
-
-    async fn execute(&self, args: Value) -> Result<Value> {
-        const TOOL: &str = "training_wellness";
-        let s = &self.0;
-        let person = asker(TOOL)?;
-        let (from, to) = s.range(TOOL, &args, 14)?;
-        let days = s.store.wellness(&person, from, to).await.map_err(storage)?;
-        if days.is_empty()
-            && s.store
-                .overview(&person)
-                .await
-                .map_err(storage)?
-                .wellness_days
-                == 0
-        {
-            return Ok(json!({ "days": [], "note": NOTHING_YET }));
-        }
-        Ok(json!({
-            "from": from.to_string(),
-            "to": to.to_string(),
-            "days": days.iter().map(|w| s.day(w)).collect::<Vec<_>>(),
-        }))
-    }
-}
-
 struct TrainingSummary(Arc<Shared>);
 
 #[async_trait::async_trait]
@@ -324,8 +240,7 @@ impl Tool for TrainingSummary {
         ToolDescriptor {
             name: "training_summary".into(),
             description: "How the person asking has been training, added up: runs, total \
-                and longest distance, average pace, all workouts, and resting heart rate, \
-                HRV and sleep against the period before, and weight change. period is the \
+                and longest distance, average pace, and all workouts. period is the \
                 days up to today (week = 7, month = 30, quarter = 90, year = 365); from/to \
                 (YYYY-MM-DD) instead for given dates. Use this for \"how was my week\"."
                 .into(),
@@ -357,7 +272,6 @@ impl Tool for TrainingSummary {
             }
         };
         let (from, to) = s.range(TOOL, &args, days)?;
-        let length = (to - from).num_days() + 1;
         let activities = s
             .store
             .activities(
@@ -368,33 +282,17 @@ impl Tool for TrainingSummary {
             )
             .await
             .map_err(storage)?;
-        let wellness = s
-            .store
-            .wellness(&person, from - Duration::days(length), to)
-            .await
-            .map_err(storage)?;
-        if activities.is_empty() && wellness.is_empty() {
-            let overview = s.store.overview(&person).await.map_err(storage)?;
-            if overview.activities == 0 && overview.wellness_days == 0 {
-                return Ok(json!({ "note": NOTHING_YET }));
-            }
+        if activities.is_empty()
+            && s.store.overview(&person).await.map_err(storage)?.activities == 0
+        {
+            return Ok(json!({ "note": NOTHING_YET }));
         }
-        let sum = niles_training::summarise(&activities, &wellness, from, to, &s.tz);
+        let sum = niles_training::summarise(&activities, from, to, &s.tz);
         Ok(summary_json(s, &sum))
     }
 }
 
 fn summary_json(s: &Shared, sum: &niles_training::Summary) -> Value {
-    let trend = |t: &niles_training::Trend, show: &dyn Fn(f64) -> Value| {
-        let mut out = json!({ "days_measured": t.days });
-        if let Some(a) = t.average {
-            out["average"] = show(a);
-        }
-        if let Some(p) = t.previous_average {
-            out["period_before"] = show(p);
-        }
-        out
-    };
     let mut out = json!({
         "from": sum.from.to_string(),
         "to": sum.to.to_string(),
@@ -402,9 +300,6 @@ fn summary_json(s: &Shared, sum: &niles_training::Summary) -> Value {
         "run_distance": s.distance(sum.run_distance_m),
         "run_time": clock(sum.run_seconds),
         "all_workouts": sum.activities,
-        "resting_hr": trend(&sum.resting_hr, &|v| json!(v.round())),
-        "hrv_ms": trend(&sum.hrv_ms, &|v| json!(v.round())),
-        "sleep_per_night": trend(&sum.sleep_s, &|v| json!(hours(v))),
     });
     if let Some((day, metres)) = sum.longest_run {
         out["longest_run"] = json!({
@@ -414,16 +309,6 @@ fn summary_json(s: &Shared, sum: &niles_training::Summary) -> Value {
     }
     if let Some(pace) = sum.pace_s_per_km {
         out["average_pace"] = json!(s.pace(pace));
-    }
-    if let Some((day, kg)) = sum.weight.last {
-        let mut weight = json!({
-            "latest": s.weight(kg),
-            "on": day.to_string(),
-        });
-        if let Some(change) = sum.weight.change_kg() {
-            weight["change"] = s.weight(change);
-        }
-        out["weight"] = weight;
     }
     out
 }
@@ -440,7 +325,6 @@ pub fn register(
         imperial,
     });
     reg.register(Box::new(TrainingActivities(shared.clone())));
-    reg.register(Box::new(TrainingWellness(shared.clone())));
     reg.register(Box::new(TrainingSummary(shared)));
 }
 
@@ -451,19 +335,18 @@ mod tests {
 
     async fn store_with_hers() -> Arc<MemoryTraining> {
         let store = Arc::new(MemoryTraining::new());
-        let body = serde_json::from_str(include_str!(
-            "../../niles-training/fixtures/hae-v2-metric.json"
-        ))
+        let run = niles_training::strava::activity(&json!({
+            "id": 1,
+            "name": "Morning Run",
+            "sport_type": "Run",
+            "start_date": "2026-10-14T05:00:00Z",
+            "distance": 5020.0,
+            "moving_time": 1925,
+            "elapsed_time": 1920,
+            "average_heartrate": 150.0
+        }))
         .unwrap();
-        let batch = niles_training::hae::parse(&body, &chrono_tz::Europe::Copenhagen).unwrap();
-        store
-            .save_activities("person:majse", &batch.activities)
-            .await
-            .unwrap();
-        store
-            .save_wellness("person:majse", &batch.wellness)
-            .await
-            .unwrap();
+        store.save_activities("person:majse", &[run]).await.unwrap();
         store
     }
 
@@ -538,16 +421,12 @@ mod tests {
                 "email:majse@example.com".into(),
                 profile::SPEAKER.scope(
                     Some("majse".into()),
-                    TrainingWellness(tools).execute(around_the_run()),
+                    TrainingActivities(tools).execute(around_the_run()),
                 ),
             )
             .await
             .unwrap();
-        let day = out["days"].as_array().unwrap().last().unwrap().clone();
-        assert_eq!(day["resting_hr"], 54.0);
-        assert_eq!(day["hrv_ms"], 49.0);
-        assert_eq!(day["sleep"], "7h 06m");
-        assert_eq!(day["weight"]["kg"], 61.2);
+        assert_eq!(out["activities"][0]["avg_hr"], 150.0);
     }
 
     #[tokio::test]
@@ -564,8 +443,6 @@ mod tests {
         assert_eq!(out["run_distance"]["km"], 5.02);
         assert_eq!(out["longest_run"]["date"], "Wednesday 2026-10-14");
         assert_eq!(out["average_pace"], "6:23 /km");
-        assert_eq!(out["resting_hr"]["average"], 55.0);
-        assert_eq!(out["weight"]["latest"]["kg"], 61.2);
     }
 
     #[test]
@@ -578,6 +455,5 @@ mod tests {
         assert_eq!(s.distance(21_097.5), json!({ "mi": 13.11 }));
         assert_eq!(s.pace(300.0), "8:03 /mi");
         assert_eq!(clock(5025.0), "1:23:45");
-        assert_eq!(hours(25_560.0), "7h 06m");
     }
 }

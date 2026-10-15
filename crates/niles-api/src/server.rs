@@ -187,12 +187,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me", get(crate::me::get).put(crate::me::update))
         .route("/me/phone", delete(crate::me::forget_phone))
-        .route("/me/training", get(crate::training::overview))
         .route(
-            "/me/training/key",
-            post(crate::training::make_key).delete(crate::training::revoke_key),
+            "/me/strava",
+            get(crate::training::status).delete(crate::training::remove),
         )
-        .route("/training/ingest", post(crate::training::ingest))
+        .route("/me/strava/app", put(crate::training::set_app))
+        .route("/me/strava/start", get(crate::training::start))
+        .route("/me/strava/callback", get(crate::training::callback))
+        .route("/me/strava/sync", post(crate::training::sync_now))
+        .route("/me/strava/connection", delete(crate::training::disconnect))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))
         .route("/presence/tado", get(crate::presence::tado_status))

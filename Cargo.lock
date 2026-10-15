@@ -2411,6 +2411,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+ "wiremock",
 ]
 
 [[package]]
@@ -2871,11 +2872,14 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "reqwest",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+ "urlencoding",
+ "wiremock",
 ]
 
 [[package]]

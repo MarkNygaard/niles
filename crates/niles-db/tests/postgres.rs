@@ -312,40 +312,106 @@ async fn training_saved_twice_is_saved_once() {
     let Some(backend) = backend() else {
         return;
     };
-    let store = niles_db::PostgresTraining::new(backend.pool(), backend.describe_target());
+    let store = niles_db::PostgresTraining::new(
+        backend.pool(),
+        backend.describe_target(),
+        &niles_db::Sealer::generate_key(),
+    )
+    .expect("store");
     let person = format!("email:test-{}@example.com", std::process::id());
-    let body = serde_json::from_str(include_str!(
-        "../../niles-training/fixtures/hae-v2-metric.json"
-    ))
+    let run = niles_training::strava::activity(&serde_json::json!({
+        "id": 1, "name": "Morning Run", "sport_type": "Run",
+        "start_date": "2026-10-14T05:00:00Z", "distance": 5000.0,
+        "moving_time": 1500, "elapsed_time": 1560
+    }))
     .unwrap();
-    let batch = niles_training::hae::parse(&body, &chrono_tz::UTC).unwrap();
 
     let first = store
-        .save_activities(&person, &batch.activities)
-        .await
-        .expect("save");
-    store
-        .save_wellness(&person, &batch.wellness)
+        .save_activities(&person, std::slice::from_ref(&run))
         .await
         .expect("save");
     assert_eq!(first.added, 1);
     let again = store
-        .save_activities(&person, &batch.activities)
-        .await
-        .expect("save again");
-    let days = store
-        .save_wellness(&person, &batch.wellness)
+        .save_activities(&person, &[run])
         .await
         .expect("save again");
     assert_eq!((again.added, again.updated), (0, 0));
-    assert_eq!((days.added, days.updated), (0, 0));
-
-    let hash = niles_training::hash_key("a key");
-    store.set_key(&person, &hash).await.expect("key");
     assert_eq!(
-        store.person_for_key(&hash).await.expect("find"),
-        Some(person.clone())
+        store.latest(&person, "strava").await.expect("latest"),
+        Some("2026-10-14T05:00:00Z".parse().unwrap())
     );
-    assert!(store.revoke_key(&person).await.expect("revoke"));
-    assert_eq!(store.person_for_key(&hash).await.expect("find"), None);
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_strava_secret_and_tokens_are_kept_sealed() {
+    use niles_training::{Athlete, StravaApp, StravaTokens, TrainingStore};
+    let Some(backend) = backend() else {
+        return;
+    };
+    let key = niles_db::Sealer::generate_key();
+    let store = niles_db::PostgresTraining::new(backend.pool(), backend.describe_target(), &key)
+        .expect("store");
+    let person = format!("email:strava-{}@example.com", std::process::id());
+    let app = StravaApp {
+        client_id: "1001".into(),
+        client_secret: "plain-client-secret".into(),
+    };
+    store.set_strava_app(&person, &app).await.expect("app");
+    let tokens = StravaTokens {
+        access_token: "plain-access-token".into(),
+        refresh_token: "plain-refresh-token".into(),
+        expires_at: chrono::Utc::now(),
+    };
+    let athlete = Athlete {
+        id: 42,
+        name: "Majse".into(),
+    };
+    store
+        .set_strava_tokens(&person, &tokens, Some(&athlete))
+        .await
+        .expect("tokens");
+
+    let raw: (Vec<u8>, Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "select client_secret_enc, access_token_enc, refresh_token_enc
+         from training_strava where person = $1",
+    )
+    .bind(&person)
+    .fetch_one(&backend.pool())
+    .await
+    .expect("raw row");
+    for (sealed, plain) in [
+        (&raw.0, "plain-client-secret"),
+        (&raw.1, "plain-access-token"),
+        (&raw.2, "plain-refresh-token"),
+    ] {
+        assert!(
+            !sealed.windows(plain.len()).any(|w| w == plain.as_bytes()),
+            "{plain} is in the clear"
+        );
+    }
+
+    let link = store.strava(&person).await.expect("read").expect("a link");
+    assert_eq!(link.app, app);
+    assert_eq!(link.tokens.unwrap().refresh_token, "plain-refresh-token");
+    assert_eq!(link.athlete, Some(athlete));
+    assert!(
+        store
+            .strava_connected()
+            .await
+            .expect("connected")
+            .contains(&person)
+    );
+
+    store.clear_strava_tokens(&person).await.expect("clear");
+    assert!(
+        store
+            .strava(&person)
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens
+            .is_none()
+    );
+    assert!(store.remove_strava(&person).await.expect("remove"));
 }

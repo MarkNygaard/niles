@@ -90,10 +90,12 @@ pub struct AppState {
     pub nemlig: Option<Arc<niles_nemlig::NemligClient>>,
     /// The third-party plugins, when the binary runs them.
     pub plugins: Option<Arc<dyn crate::plugins::Plugins>>,
-    /// Each person's training data, when there is a database for it.
-    pub training: Option<Arc<dyn niles_training::TrainingStore>>,
-    /// Recent posts to `/training/ingest`, per person.
-    pub training_limits: Arc<crate::training::Limits>,
+    /// Each person's Strava and the workouts it brings. Absent without
+    /// a database and its secrets key: an app secret and its tokens are
+    /// not kept anywhere unsealed.
+    pub strava: Option<Arc<niles_training::Strava>>,
+    /// Strava sign-ins in flight, apart from the others.
+    pub strava_attempts: Arc<crate::auth::flow::Attempts>,
 }
 
 impl AppState {
@@ -126,8 +128,8 @@ impl AppState {
             chat: None,
             nemlig: None,
             plugins: None,
-            training: None,
-            training_limits: Arc::default(),
+            strava: None,
+            strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             music: None,
             tado: None,
             voices: None,
@@ -223,11 +225,8 @@ impl AppState {
         self
     }
 
-    pub fn with_training(
-        mut self,
-        training: Option<Arc<dyn niles_training::TrainingStore>>,
-    ) -> Self {
-        self.training = training;
+    pub fn with_strava(mut self, strava: Option<Arc<niles_training::Strava>>) -> Self {
+        self.strava = strava;
         self
     }
 
