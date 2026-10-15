@@ -447,14 +447,15 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            use tokio::io::AsyncReadExt;
+
+            let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = [0; 3];
-            tokio::time::timeout(Duration::from_secs(1), stream.readable())
+            tokio::time::timeout(Duration::from_secs(1), stream.read_exact(&mut bytes))
                 .await
                 .unwrap()
                 .unwrap();
-            let count = stream.try_read(&mut bytes).unwrap();
-            assert_eq!(&bytes[..count], &[0x16, 0x03, 0x01]);
+            assert_eq!(bytes, [0x16, 0x03, 0x01]);
         });
         assert!(
             connect("127.0.0.1", crate::Transport::Tls, Some(port))
@@ -465,7 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tls_rejects_a_bad_tls_peer() {
+    async fn tls_fails_when_peer_closes_before_websocket_upgrade() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
