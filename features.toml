@@ -356,13 +356,13 @@ since_pr = 178
 id = "ui-room-hidden"
 category = "ui.lighting"
 summary = "Hide a room from the dashboard's grid in Settings → Rooms; voice, rules, the API and the house's counts still reach it"
-since_pr = 9999
+since_pr = 404
 
 [[feature]]
 id = "ui-room-card-blinds"
 category = "ui.lighting"
 summary = "A room card with lights and blinds has separate Lights and Blinds buttons beside Heating, each opening its own sheet"
-since_pr = 9999
+since_pr = 404
 
 [[feature]]
 id = "ui-installable"
