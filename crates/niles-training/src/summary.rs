@@ -90,7 +90,10 @@ pub fn summarise<Tz: TimeZone>(
         .max_by(|a, b| a.1.total_cmp(&b.1));
 
     let length = (to - from).num_days() + 1;
-    let before = (from - chrono::Duration::days(length), from - chrono::Duration::days(1));
+    let before = (
+        from - chrono::Duration::days(length),
+        from - chrono::Duration::days(1),
+    );
     let trend = |field: fn(&Wellness) -> Option<f64>| {
         let average = |lo: NaiveDate, hi: NaiveDate| {
             let values: Vec<f64> = wellness

@@ -87,7 +87,12 @@ pub fn parse<Tz: TimeZone>(body: &Value, tz: &Tz) -> Result<Batch, String> {
 
     let mut readings: BTreeMap<(NaiveDate, Field), Vec<Reading>> = BTreeMap::new();
     let mut ignored = BTreeSet::new();
-    for metric in data.get("metrics").and_then(Value::as_array).into_iter().flatten() {
+    for metric in data
+        .get("metrics")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let name = metric.get("name").and_then(Value::as_str).unwrap_or("");
         let Some(field) = Field::of(name) else {
             if !name.is_empty() {
@@ -96,7 +101,12 @@ pub fn parse<Tz: TimeZone>(body: &Value, tz: &Tz) -> Result<Batch, String> {
             continue;
         };
         let units = metric.get("units").and_then(Value::as_str).unwrap_or("");
-        for point in metric.get("data").and_then(Value::as_array).into_iter().flatten() {
+        for point in metric
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             match reading(field, units, point, tz) {
                 Ok(Some((day, r))) => readings.entry((day, field)).or_default().push(r),
                 Ok(None) => {}
@@ -128,7 +138,12 @@ pub fn parse<Tz: TimeZone>(body: &Value, tz: &Tz) -> Result<Batch, String> {
     }
     batch.wellness = days.into_values().filter(|w| !w.is_empty()).collect();
 
-    for workout in data.get("workouts").and_then(Value::as_array).into_iter().flatten() {
+    for workout in data
+        .get("workouts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         match activity(workout, tz) {
             Some(a) => batch.activities.push(a),
             None => batch.unreadable += 1,
@@ -203,7 +218,10 @@ fn sleep_segment<Tz: TimeZone>(
     point: &Value,
     tz: &Tz,
 ) -> Result<Option<(NaiveDate, Reading)>, ()> {
-    let stage = point.get("value").and_then(Value::as_str).unwrap_or("Asleep");
+    let stage = point
+        .get("value")
+        .and_then(Value::as_str)
+        .unwrap_or("Asleep");
     if !matches!(stage, "Asleep" | "Core" | "Deep" | "REM" | "Unspecified") {
         return Ok(None);
     }
@@ -282,10 +300,12 @@ fn activity<Tz: TimeZone>(w: &Value, tz: &Tz) -> Option<Activity> {
         .get("distance")
         .and_then(quantity)
         .and_then(|(q, u)| metres(q, u.as_deref().unwrap_or("km")));
-    let kcal = |v: &Value| {
-        quantity(v).and_then(|(q, u)| kilocalories(q, u.as_deref().unwrap_or("kcal")))
-    };
-    let energy_kcal = match w.get("activeEnergyBurned").or_else(|| w.get("activeEnergy")) {
+    let kcal =
+        |v: &Value| quantity(v).and_then(|(q, u)| kilocalories(q, u.as_deref().unwrap_or("kcal")));
+    let energy_kcal = match w
+        .get("activeEnergyBurned")
+        .or_else(|| w.get("activeEnergy"))
+    {
         // v2's `activeEnergy` is the per-minute samples, sent only when
         // the workout's metrics are; v2 always has the total beside it.
         Some(Value::Array(samples)) => {
@@ -297,8 +317,12 @@ fn activity<Tz: TimeZone>(w: &Value, tz: &Tz) -> Option<Activity> {
     };
     let heart = w.get("heartRate");
     let bpm = |v: Option<&Value>| v.and_then(number).filter(|h| *h > 0.0);
-    let avg_hr = bpm(heart.and_then(|h| h.get("avg")).or_else(|| w.get("avgHeartRate")));
-    let max_hr = bpm(heart.and_then(|h| h.get("max")).or_else(|| w.get("maxHeartRate")));
+    let avg_hr = bpm(heart
+        .and_then(|h| h.get("avg"))
+        .or_else(|| w.get("avgHeartRate")));
+    let max_hr = bpm(heart
+        .and_then(|h| h.get("max"))
+        .or_else(|| w.get("maxHeartRate")));
     let elevation_gain_m = match w.get("elevationUp") {
         Some(up) => quantity(up).and_then(|(q, u)| metres(q, u.as_deref().unwrap_or("m"))),
         None => w.get("elevation").and_then(|e| {
@@ -350,7 +374,9 @@ fn when<Tz: TimeZone>(text: &str, tz: &Tz) -> Option<(NaiveDate, DateTime<Utc>)>
     }
     let naive = NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(&text, "%Y-%m-%dT%H:%M:%S"))
-        .or_else(|_| NaiveDate::parse_from_str(&text, "%Y-%m-%d").map(|d| d.and_time(NaiveTime::MIN)))
+        .or_else(|_| {
+            NaiveDate::parse_from_str(&text, "%Y-%m-%d").map(|d| d.and_time(NaiveTime::MIN))
+        })
         .ok()?;
     let at = tz.from_local_datetime(&naive).earliest()?.to_utc();
     Some((naive.date(), at))
@@ -456,7 +482,11 @@ mod tests {
         let walk = &batch.activities[1];
         assert_eq!(walk.kind, Kind::Walk);
         assert!(close(walk.energy_kcal, 820.0 / 4.184));
-        let weighed = batch.wellness.iter().find(|w| w.weight_kg.is_some()).unwrap();
+        let weighed = batch
+            .wellness
+            .iter()
+            .find(|w| w.weight_kg.is_some())
+            .unwrap();
         assert!(close(weighed.weight_kg, 176.4 * 0.453_592_37));
         // Sent as a fraction: a percent here.
         assert!(close(weighed.body_fat_pct, 24.0));

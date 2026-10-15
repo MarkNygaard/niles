@@ -63,7 +63,12 @@ struct Kept {
     activities: Vec<(String, Activity)>,
     wellness: Vec<(String, Wellness)>,
     /// person, hash, made at, last received.
-    keys: Vec<(String, Option<String>, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>,
+    keys: Vec<(
+        String,
+        Option<String>,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+    )>,
 }
 
 #[derive(Default)]
@@ -88,9 +93,7 @@ impl TrainingStore for MemoryTraining {
         let mut saved = Saved::default();
         for activity in activities {
             match kept.activities.iter_mut().find(|(p, a)| {
-                p == person
-                    && a.source == activity.source
-                    && a.external_id == activity.external_id
+                p == person && a.source == activity.source && a.external_id == activity.external_id
             }) {
                 Some((_, existing)) if existing == activity => {}
                 Some((_, existing)) => {
@@ -192,7 +195,9 @@ impl TrainingStore for MemoryTraining {
                 k.1 = Some(hash.into());
                 k.2 = now;
             }
-            None => kept.keys.push((person.into(), Some(hash.into()), now, None)),
+            None => kept
+                .keys
+                .push((person.into(), Some(hash.into()), now, None)),
         }
         Ok(())
     }
@@ -241,13 +246,37 @@ mod tests {
     async fn sending_the_same_data_twice_changes_nothing() {
         let store = MemoryTraining::new();
         let b = batch();
-        let first = store.save_activities("person:majse", &b.activities).await.unwrap();
-        let days = store.save_wellness("person:majse", &b.wellness).await.unwrap();
-        assert_eq!(first, Saved { added: 1, updated: 0 });
-        assert_eq!(days, Saved { added: 2, updated: 0 });
+        let first = store
+            .save_activities("person:majse", &b.activities)
+            .await
+            .unwrap();
+        let days = store
+            .save_wellness("person:majse", &b.wellness)
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            Saved {
+                added: 1,
+                updated: 0
+            }
+        );
+        assert_eq!(
+            days,
+            Saved {
+                added: 2,
+                updated: 0
+            }
+        );
 
-        let again = store.save_activities("person:majse", &b.activities).await.unwrap();
-        let days = store.save_wellness("person:majse", &b.wellness).await.unwrap();
+        let again = store
+            .save_activities("person:majse", &b.activities)
+            .await
+            .unwrap();
+        let days = store
+            .save_wellness("person:majse", &b.wellness)
+            .await
+            .unwrap();
         assert_eq!(again, Saved::default());
         assert_eq!(days, Saved::default());
         let overview = store.overview("person:majse").await.unwrap();
@@ -261,21 +290,45 @@ mod tests {
         store.save_activities("p", &activities).await.unwrap();
         activities[0].distance_m = Some(5100.0);
         let saved = store.save_activities("p", &activities).await.unwrap();
-        assert_eq!(saved, Saved { added: 0, updated: 1 });
+        assert_eq!(
+            saved,
+            Saved {
+                added: 0,
+                updated: 1
+            }
+        );
     }
 
     #[tokio::test]
     async fn one_person_s_data_is_not_another_s() {
         let store = MemoryTraining::new();
         let b = batch();
-        store.save_activities("person:majse", &b.activities).await.unwrap();
-        store.save_wellness("person:majse", &b.wellness).await.unwrap();
-        let theirs = store.activities("person:mark", None, None, None).await.unwrap();
+        store
+            .save_activities("person:majse", &b.activities)
+            .await
+            .unwrap();
+        store
+            .save_wellness("person:majse", &b.wellness)
+            .await
+            .unwrap();
+        let theirs = store
+            .activities("person:mark", None, None, None)
+            .await
+            .unwrap();
         assert!(theirs.is_empty());
         let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
-        assert!(store.wellness("person:mark", day, day).await.unwrap().is_empty());
+        assert!(
+            store
+                .wellness("person:mark", day, day)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         // The same workout id for somebody else is their own row.
-        let saved = store.save_activities("person:mark", &b.activities).await.unwrap();
+        let saved = store
+            .save_activities("person:mark", &b.activities)
+            .await
+            .unwrap();
         assert_eq!(saved.added, 1);
     }
 

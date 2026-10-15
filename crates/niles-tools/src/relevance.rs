@@ -306,6 +306,55 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        // The asker's own runs, sleep, heart rate and weight. English
+        // with the Danish the household slips into.
+        keywords: &[
+            "run",
+            "runs",
+            "running",
+            "ran",
+            "jog",
+            "jogging",
+            "training",
+            "trained",
+            "workout",
+            "workouts",
+            "exercise",
+            "km",
+            "kilometres",
+            "kilometers",
+            "miles",
+            "pace",
+            "marathon",
+            "race",
+            "garmin",
+            "sleep",
+            "slept",
+            "hrv",
+            "heart rate",
+            "pulse",
+            "weight",
+            "weigh",
+            "weighed",
+            "body fat",
+            "fitness",
+            "recovery",
+            "løb",
+            "løbetur",
+            "løbet",
+            "træning",
+            "søvn",
+            "sov",
+            "vægt",
+            "puls",
+        ],
+        tools: &[
+            "training_activities",
+            "training_summary",
+            "training_wellness",
+        ],
+    },
+    Group {
         // A rule is said as a condition. The yes that saves one needs
         // no word here — a bare yes matches nothing, and nothing
         // matched sends every tool — except "save", which also names
@@ -499,6 +548,22 @@ mod tests {
         }
         // A bare yes confirms all sorts; it still sends everything.
         assert!(relevant_tool_names("yes").is_none());
+    }
+
+    #[test]
+    fn training_is_reached_by_how_people_ask_about_it() {
+        for sentence in [
+            "how far did I run on Sunday",
+            "what was my pace",
+            "how did I sleep last night",
+            "what's my resting heart rate",
+            "how much do I weigh",
+            "hvor langt løb jeg i søndags",
+        ] {
+            let names = relevant_tool_names(sentence).expect(sentence);
+            assert!(names.contains(&"training_summary"), "{sentence}");
+            assert!(names.contains(&"training_activities"), "{sentence}");
+        }
     }
 
     #[test]

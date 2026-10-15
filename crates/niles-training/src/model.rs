@@ -151,8 +151,14 @@ mod tests {
 
     #[test]
     fn a_voice_and_the_address_linked_to_it_are_one_person() {
-        assert_eq!(person_key(Some("majse"), "majse@example.com"), "person:majse");
-        assert_eq!(person_key(None, "majse@example.com"), "email:majse@example.com");
+        assert_eq!(
+            person_key(Some("majse"), "majse@example.com"),
+            "person:majse"
+        );
+        assert_eq!(
+            person_key(None, "majse@example.com"),
+            "email:majse@example.com"
+        );
         assert_ne!(
             person_key(None, "mark@example.com"),
             person_key(None, "majse@example.com")
