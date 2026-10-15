@@ -74,49 +74,62 @@ export function TvRow({ tv, busy, onPower, onVolume }: TvRowProps) {
         </div>
         <PowerButton on={on} label="TV" disabled={busy} onToggle={() => onPower(!on)} />
       </div>
-      {sound && onVolume && (
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={sound.muted ? "Unmute the TV" : "Mute the TV"}
-            aria-pressed={sound.muted}
-            disabled={busy}
-            onClick={() => onVolume({ mute: !sound.muted })}
-          >
-            {sound.muted ? <VolumeX aria-hidden /> : <Volume2 aria-hidden />}
-          </Button>
-          <Button
-            variant="outline"
-            size="icon-sm"
-            aria-label="TV volume down"
-            disabled={busy || sound.volume <= 0}
-            onClick={() => onVolume({ delta: -TV_VOLUME_STEP })}
-          >
-            <Minus aria-hidden />
-          </Button>
-          <div className={cn("min-w-0 flex-1 px-1", sound.muted && "opacity-50")}>
-            <CommitSlider
-              label="TV volume"
-              value={sound.volume}
-              min={0}
-              max={100}
-              disabled={busy}
-              format={(volume) => `${volume}`}
-              onCommit={(volume) => onVolume({ volume })}
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="icon-sm"
-            aria-label="TV volume up"
-            disabled={busy || sound.volume >= 100}
-            onClick={() => onVolume({ delta: TV_VOLUME_STEP })}
-          >
-            <Plus aria-hidden />
-          </Button>
-        </div>
-      )}
+      {sound && onVolume && <TvVolumeControls sound={sound} busy={busy} onVolume={onVolume} />}
+    </div>
+  );
+}
+
+/** Mute, a step down, the slider — sent on release — and a step up. */
+export function TvVolumeControls({
+  sound,
+  busy,
+  onVolume,
+}: {
+  sound: TvVolume;
+  busy?: boolean;
+  onVolume: (change: TvVolumeChange) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label={sound.muted ? "Unmute the TV" : "Mute the TV"}
+        aria-pressed={sound.muted}
+        disabled={busy}
+        onClick={() => onVolume({ mute: !sound.muted })}
+      >
+        {sound.muted ? <VolumeX aria-hidden /> : <Volume2 aria-hidden />}
+      </Button>
+      <Button
+        variant="outline"
+        size="icon-sm"
+        aria-label="TV volume down"
+        disabled={busy || sound.volume <= 0}
+        onClick={() => onVolume({ delta: -TV_VOLUME_STEP })}
+      >
+        <Minus aria-hidden />
+      </Button>
+      <div className={cn("min-w-0 flex-1 px-1", sound.muted && "opacity-50")}>
+        <CommitSlider
+          label="TV volume"
+          value={sound.volume}
+          min={0}
+          max={100}
+          disabled={busy}
+          format={(volume) => `${volume}`}
+          onCommit={(volume) => onVolume({ volume })}
+        />
+      </div>
+      <Button
+        variant="outline"
+        size="icon-sm"
+        aria-label="TV volume up"
+        disabled={busy || sound.volume >= 100}
+        onClick={() => onVolume({ delta: TV_VOLUME_STEP })}
+      >
+        <Plus aria-hidden />
+      </Button>
     </div>
   );
 }

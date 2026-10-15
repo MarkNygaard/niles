@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   MediaPage,
@@ -10,8 +10,8 @@ import {
   somethingPlays,
 } from "./MediaPage";
 import { choiceSections } from "./StartDialog";
-import { api } from "@/lib/api";
-import type { MediaGroup, MediaSpeaker, MediaView, RoomMusic } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
+import type { MediaGroup, MediaSpeaker, MediaView, RoomMusic, TvInfo } from "@/lib/api";
 
 function room(name: string, playing: boolean): RoomMusic {
   return { room: name, playing, what: null, kind: playing ? "music" : null, volume: 20 };
@@ -107,19 +107,40 @@ describe("MediaPage", () => {
   });
 });
 
+const noTv: TvInfo = {
+  configured: false,
+  paired: false,
+  mac: null,
+  room: null,
+  status: null,
+  error: null,
+};
+
+const tvOn: TvInfo = {
+  configured: true,
+  paired: true,
+  mac: null,
+  room: "living_room",
+  status: { on: true, app: "Netflix", volume: 14, muted: false, sound_output: "tv_speaker" },
+  error: null,
+};
+
 describe("the Media page", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  function page(house: MediaView = view) {
+  it("keeps the radio and Spotify for a house with Sonos", async () => {
+    page(view, tvOn);
+    expect(await screen.findByRole("region", { name: "Radio" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Spotify" })).toBeInTheDocument();
+    const tv = await screen.findByRole("region", { name: "TV" });
+    expect(
+      within(tv).getByRole("button", { name: /The TV's sound to the soundbar/ }),
+    ).toBeInTheDocument();
+  });
+
+  function page(house: MediaView = view, tv: TvInfo = noTv) {
     vi.spyOn(api, "media").mockResolvedValue(house);
-    vi.spyOn(api, "tv").mockResolvedValue({
-      configured: false,
-      paired: false,
-      mac: null,
-      room: null,
-      status: null,
-      error: null,
-    });
+    vi.spyOn(api, "tv").mockResolvedValue(tv);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={client}>
@@ -193,5 +214,91 @@ describe("the Media page", () => {
       "aria-checked",
       "false",
     );
+  });
+});
+
+describe("the Media page without Sonos", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const noSonos = () => Promise.reject(new ApiError("there are no speakers set up", 501));
+
+  function page(
+    tv: () => Promise<TvInfo>,
+    media: () => Promise<MediaView> = noSonos,
+  ) {
+    vi.spyOn(api, "media").mockImplementation(media);
+    vi.spyOn(api, "tv").mockImplementation(tv);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MediaPage />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("puts the TV's own volume on its card", async () => {
+    page(() => Promise.resolve(tvOn));
+    const set = vi
+      .spyOn(api, "tvVolume")
+      .mockResolvedValue({ volume: 15, muted: false, sound_output: "tv_speaker" });
+    const tv = await screen.findByRole("region", { name: "TV" });
+    expect(within(tv).getByText("Netflix")).toBeInTheDocument();
+    expect(within(tv).getByRole("slider", { name: "TV volume" })).toBeInTheDocument();
+    fireEvent.click(within(tv).getByRole("button", { name: "TV volume up" }));
+    await waitFor(() => expect(set).toHaveBeenCalledWith({ delta: 1 }));
+    fireEvent.click(within(tv).getByRole("button", { name: "Mute the TV" }));
+    await waitFor(() => expect(set).toHaveBeenCalledWith({ mute: true }));
+  });
+
+  it("has nothing that needs a Sonos", async () => {
+    page(() => Promise.resolve(tvOn));
+    await screen.findByRole("region", { name: "TV" });
+    expect(screen.queryByRole("button", { name: /soundbar/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Radio" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Spotify" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Not playing" })).toBeNull();
+  });
+
+  it("turns the TV on without sending its sound to a soundbar", async () => {
+    page(() => Promise.resolve({ ...tvOn, status: { on: false, app: null } }));
+    const power = vi.spyOn(api, "tvPower").mockResolvedValue(undefined);
+    const sound = vi.spyOn(api, "tvSound").mockResolvedValue(undefined);
+    const tv = await screen.findByRole("region", { name: "TV" });
+    expect(within(tv).queryByRole("slider", { name: "TV volume" })).toBeNull();
+    fireEvent.click(within(tv).getByRole("button", { name: "TV — off" }));
+    await waitFor(() => expect(power).toHaveBeenCalledWith(true));
+    expect(sound).not.toHaveBeenCalled();
+  });
+
+  it("says where to add something when there is nothing to play on", async () => {
+    page(() => Promise.resolve(noTv));
+    const link = await screen.findByRole("link", { name: /Add Sonos speakers or an LG TV/ });
+    expect(link).toHaveAttribute("href", "#/me/settings/addons");
+    expect(screen.getByText("Nothing to play on yet.")).toBeInTheDocument();
+  });
+
+  it("draws neither layout before the speakers have answered", async () => {
+    let answer: (view: MediaView) => void = () => {};
+    page(
+      () => Promise.resolve(tvOn),
+      () => new Promise((resolve) => (answer = resolve)),
+    );
+    await waitFor(() => expect(api.tv).toHaveBeenCalled());
+    // Long enough for the TV to have answered.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(screen.queryByRole("region", { name: "TV" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Add Sonos/ })).toBeNull();
+    act(() => answer(view));
+    expect(await screen.findByRole("region", { name: "Radio" })).toBeInTheDocument();
+  });
+
+  it("waits for the TV before saying there is nothing", async () => {
+    let answer: (tv: TvInfo) => void = () => {};
+    page(() => new Promise((resolve) => (answer = resolve)));
+    await waitFor(() => expect(api.media).toHaveBeenCalled());
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(screen.queryByRole("link", { name: /Add Sonos/ })).toBeNull();
+    act(() => answer(tvOn));
+    expect(await screen.findByRole("region", { name: "TV" })).toBeInTheDocument();
   });
 });
