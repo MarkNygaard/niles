@@ -16,6 +16,7 @@
 //! POST /config/undo             -> walk back one change
 //! POST /webhooks/linear         -> 200 OK (Linear webhook)
 //! GET  /plugins                 -> installed plugins and how each is doing
+//! POST /plugins/install/preview -> download and check a GitHub release (see `plugins`)
 //! ```
 
 pub mod auth;

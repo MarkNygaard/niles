@@ -1,14 +1,17 @@
 # Writing a Niles integration
 
-> **v0.1 of the interface, partly built.** Niles 0.2.0 runs plugins: the
-> sandbox, every host interface, devices, tools, timers, events, pages, and
-> the `niles plugin check` and `niles plugin dev` commands. Not built yet: the
-> "Add from GitHub" flow with its approval screen, updates, the generated
-> setup panel, and pages and widgets drawn in the app. Until then a plugin
-> runs under `niles plugin dev`, or on a Niles whose database it was put in
-> by hand. The interface
+> **v0.1 of the interface, mostly built.** Niles 0.2.0 runs plugins (the
+> sandbox, every host interface, devices, tools, timers, events, pages) and
+> installs them: **Add from GitHub** with its approval screen, update checks,
+> updates that show what changes in permissions and roll back by themselves
+> if the new version fails, turning off and removing, and the
+> `niles plugin check` and `niles plugin dev` commands. Not built yet: the
+> generated setup panel (until it is, settings are set through
+> `PATCH /config` under `plugins.<id>` and secrets through
+> `PUT /secrets/plugins.<id>.<key>`), and pages and widgets drawn in the app.
+> The interface
 > ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) may
-> still change before the install flow ships.
+> still change before those ship.
 
 Niles is an open-source home assistant, written in Rust, that you talk to. It
 runs the lights, music, heating and calendars of one house, and it hands
@@ -70,8 +73,10 @@ script into the app. See [permissions](permissions.md).
 Once installed, a plugin sits on the app's Integrations page among the
 built-ins, in the group its manifest names (Music & TV, Presence & climate…),
 or under **Custom** if it names none. Its row carries a **Custom** badge, and
-its setup panel, generated from your manifest's settings, shows your repo,
-version and authors, a status line ("Working", "Not working: …") and its log.
+its panel shows your repo, version, authors and install date, a status line
+("Working", "Not working: …", "Off", "Update available: v0.2.0"), and the
+buttons to turn it off, check for updates, update, roll back and remove it.
+The settings form generated from your manifest, and its log, come next.
 People find **Add from GitHub** at the end of the Available tab.
 
 ## Capabilities at a glance

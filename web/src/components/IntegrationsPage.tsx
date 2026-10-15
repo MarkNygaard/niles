@@ -55,12 +55,17 @@ import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { MqttPanel } from "@/components/MqttPanel";
 import type { MqttSettings } from "@/components/MqttPanel";
+import { AddPluginDialog } from "@/components/AddPluginDialog";
+import { PluginPanel, PluginRow } from "@/components/PluginPanel";
+import { PluginLogo } from "@/components/PluginPreview";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import {
   RANK,
   groupsOf,
   matchesQuery,
+  pluginMatchesQuery,
+  pluginStatusOf,
   showsRequired,
   statusOf,
   uncoveredRoles,
@@ -69,6 +74,7 @@ import type { Status } from "@/lib/integrations";
 import type {
   ChatGptStatus,
   Integration,
+  PluginSummary,
   Secret,
   SecretsReport,
   SpeakersReport,
@@ -127,6 +133,10 @@ export interface IntegrationsPageProps {
   /** `[mqtt]` as the config has it, and Niles's own values for it. */
   mqtt?: MqttSettings;
   mqttDefaults?: MqttSettings;
+  /** Third-party integrations installed from GitHub. */
+  plugins?: PluginSummary[];
+  /** Something about the plugins changed: ask for them again. */
+  onPluginsChanged?: () => void;
 }
 
 /**
@@ -175,8 +185,12 @@ export function IntegrationsPage({
   onTadoChanged,
   mqtt,
   mqttDefaults,
+  plugins = [],
+  onPluginsChanged,
 }: IntegrationsPageProps) {
   const [open, setOpen] = useState<string | null>(null);
+  const [openPlugin, setOpenPlugin] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -185,10 +199,12 @@ export function IntegrationsPage({
   const added = integrations.filter((i) => i.added);
   const available = integrations.filter((i) => !i.added);
   const current = integrations.find((i) => i.id === open);
+  const currentPlugin = plugins.find((p) => p.id === openPlugin);
   // Worked out rather than set once: the list arrives after the first
   // render, and a house with nothing set up yet should land on what it
   // can add rather than on an empty tab.
-  const tab: Tab = picked ?? (added.length > 0 ? "connected" : "available");
+  const connected = added.length + plugins.length;
+  const tab: Tab = picked ?? (connected > 0 ? "connected" : "available");
   const uncovered = uncoveredRoles(integrations);
 
   function secretFor(key: string | null): Secret | undefined {
@@ -369,6 +385,20 @@ export function IntegrationsPage({
   function results(which: Tab) {
     const all = which === "connected" ? added : available;
     const found = all.filter((i) => matchesQuery(i, query));
+    // Installed plugins are connected things; there is nothing of theirs
+    // to offer under Available but the way to add one.
+    const pluginsHere = which === "connected" ? plugins : [];
+    const foundPlugins = pluginsHere.filter((p) => pluginMatchesQuery(p, query));
+    const groups = groupsOf(found);
+    const pluginRow = (plugin: PluginSummary) => (
+      <PluginRow
+        key={`plugin-${plugin.id}`}
+        plugin={plugin}
+        status={pluginStatusOf(plugin)}
+        disabled={saving}
+        onOpen={() => setOpenPlugin(plugin.id)}
+      />
+    );
     const other: Tab = which === "connected" ? "available" : "connected";
     const elsewhere = (which === "connected" ? available : added).filter((i) =>
       matchesQuery(i, query),
@@ -377,11 +407,11 @@ export function IntegrationsPage({
 
     return (
       <>
-        {searching && found.length === 0 ? (
+        {searching && found.length === 0 && foundPlugins.length === 0 ? (
           <p className="text-muted-foreground px-1 text-sm">
             Nothing matches “{query.trim()}”.
           </p>
-        ) : all.length === 0 ? (
+        ) : all.length === 0 && pluginsHere.length === 0 ? (
           // Nothing at all is the catalogue still loading, not a house
           // with everything connected.
           integrations.length > 0 && (
@@ -392,7 +422,7 @@ export function IntegrationsPage({
             </p>
           )
         ) : (
-          groupsOf(found).map(({ group, items }) => (
+          groups.map(({ group, items }) => (
             <GroupList
               key={group.id}
               id={`${which}-group-${group.id}`}
@@ -442,8 +472,43 @@ export function IntegrationsPage({
                     />
                   ),
                 )}
+              {foundPlugins.filter((p) => p.group.id === group.id).map(pluginRow)}
             </GroupList>
           ))
+        )}
+        {/* A plugin naming a group with nothing else connected in it, or
+            none Niles knows (Custom), gets a block of its own after the
+            built-in ones. */}
+        {pluginGroupsOf(
+          foundPlugins.filter((p) => !groups.some(({ group }) => group.id === p.group.id)),
+        ).map(({ group, items }) => (
+          <GroupList key={group.id} id={`${which}-group-${group.id}`} label={group.label}>
+            {items.map(pluginRow)}
+          </GroupList>
+        ))}
+        {which === "available" && (
+          <GroupList id="available-group-github" label="From GitHub">
+            <div className="flex min-h-12 items-center gap-3 py-2 pr-1.5 pl-3">
+              <span className="flex shrink-0">
+                <BrandMark id="github" label="GitHub" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">Add from GitHub</span>
+                <span className="text-muted-foreground block text-xs">
+                  An integration somebody else wrote, for what Niles does not cover.
+                </span>
+              </span>
+              <Button
+                variant="link"
+                size="sm"
+                disabled={saving}
+                aria-label="Add from GitHub"
+                onClick={() => setAdding(true)}
+              >
+                Add
+              </Button>
+            </div>
+          </GroupList>
         )}
         {searching && elsewhere.length > 0 && (
           // The tab is a filter too, and one search should not need two.
@@ -497,7 +562,7 @@ export function IntegrationsPage({
                 <TabsTrigger key={value} value={value} className="sm:px-3">
                   {TAB_LABELS[value]}{" "}
                   <span className="text-muted-foreground tabular-nums">
-                    {value === "connected" ? added.length : available.length}
+                    {value === "connected" ? connected : available.length}
                   </span>
                 </TabsTrigger>
               ))}
@@ -513,6 +578,52 @@ export function IntegrationsPage({
       </Card>
 
       {error && <p className="text-destructive text-sm">{error}</p>}
+
+      <AddPluginDialog
+        open={adding}
+        onOpenChange={setAdding}
+        onInstalled={(plugin) => {
+          setPicked("connected");
+          setOpenPlugin(plugin.id);
+          onPluginsChanged?.();
+        }}
+      />
+
+      <Dialog
+        open={currentPlugin !== undefined}
+        onOpenChange={(next: boolean) => {
+          if (!next) setOpenPlugin(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          {currentPlugin && (
+            <>
+              <DialogHeader>
+                <div className="flex min-w-0 flex-col gap-1">
+                  <DialogTitle className="flex items-center gap-2">
+                    <PluginLogo src={currentPlugin.logo} />
+                    {currentPlugin.name}
+                  </DialogTitle>
+                  <DialogDescription>{currentPlugin.description}</DialogDescription>
+                </div>
+              </DialogHeader>
+              <DialogBody>
+                <PluginPanel
+                  key={currentPlugin.id}
+                  plugin={currentPlugin}
+                  onChanged={() => onPluginsChanged?.()}
+                  onRemoved={() => {
+                    setOpenPlugin(null);
+                    onPluginsChanged?.();
+                    // Its saved keys went with it.
+                    onSecretsChanged();
+                  }}
+                />
+              </DialogBody>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={current !== undefined}
@@ -876,6 +987,22 @@ const TAB_LABELS: Record<Tab, string> = {
   connected: "Connected",
   available: "Available",
 };
+
+/** Plugins under their groups, in the order they first appear, with
+    Custom last: it follows the built-in groups on the page. */
+function pluginGroupsOf(
+  plugins: PluginSummary[],
+): { group: PluginSummary["group"]; items: PluginSummary[] }[] {
+  const groups = new Map<string, { group: PluginSummary["group"]; items: PluginSummary[] }>();
+  for (const plugin of plugins) {
+    const entry = groups.get(plugin.group.id);
+    if (entry) entry.items.push(plugin);
+    else groups.set(plugin.group.id, { group: plugin.group, items: [plugin] });
+  }
+  return [...groups.values()].sort(
+    (a, b) => Number(a.group.id === "custom") - Number(b.group.id === "custom"),
+  );
+}
 
 /** "Groq", "Groq and Cerebras", "Groq, Cerebras and UniFi", "4 more". */
 function names(integrations: Integration[]): string {

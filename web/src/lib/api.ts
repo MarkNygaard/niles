@@ -106,6 +106,90 @@ export interface Integration {
   secret_key: string | null;
 }
 
+/**
+ * A third-party integration installed from GitHub.
+ *
+ * Mirrors `PluginSummary` in crates/niles-api/src/plugins.rs.
+ */
+export interface PluginSummary {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  authors: string[];
+  homepage: string | null;
+  /** A catalogue group, or `custom`. */
+  group: { id: string; label: string };
+  status: "starting" | "running" | "not_set_up" | "failing" | "stopped" | "disabled";
+  /** "Working", "Not working: …", "Off". */
+  status_line: string;
+  /** The last thing that went wrong, or that an update was rolled back. */
+  error: string | null;
+  dropped_events: number;
+  enabled: boolean;
+  /** `https://github.com/<owner>/<repo>`. */
+  repo: string | null;
+  release_tag: string | null;
+  release_url: string | null;
+  installed_at: string | null;
+  updated_at: string | null;
+  /** Where Niles serves its logo, when it has one. */
+  logo: string | null;
+  /** What a rollback goes back to, when there is something. */
+  previous_version: string | null;
+  update: PluginUpdate | null;
+}
+
+export interface PluginUpdate {
+  version: string;
+  tag: string;
+  release_url: string;
+  notes: string;
+  /** Permissions it adds, in plain words. */
+  added: string[];
+  removed: string[];
+}
+
+/** What the approval screen shows before an install or an update. */
+export interface PluginPreview {
+  /** Given back to install exactly this. */
+  token: string;
+  expires_in: number;
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  authors: string[];
+  homepage: string | null;
+  repo: string;
+  tag: string;
+  release_url: string;
+  notes: string;
+  group: { id: string; label: string };
+  /** The sanitised SVG itself. */
+  logo: string | null;
+  /** What it may do, one line each. */
+  permissions: string[];
+  /** What it may not, always the same sentence. */
+  cannot: string;
+  tools: { name: string; description: string }[];
+  settings: {
+    key: string;
+    label: string;
+    type: "string" | "number" | "boolean" | "secret" | "choice" | "room";
+    required: boolean;
+    help: string | null;
+  }[];
+  warnings: string[];
+  /** The component's sha256, given back with the install. */
+  sha256: string;
+  manifest_sha256: string;
+  /** For an update: the version installed now. */
+  current_version: string | null;
+  added: string[];
+  removed: string[];
+}
+
 /** One Sonos room: a speaker, a stereo pair, or a soundbar with the
     speakers around it — always played as one. */
 export interface SonosSpeaker {
@@ -979,6 +1063,41 @@ export const api = {
   applyScene: (name: string) =>
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
+  plugins: () => request<PluginSummary[]>("/plugins"),
+  previewPlugin: (repo: string) =>
+    request<PluginPreview>("/plugins/install/preview", {
+      method: "POST",
+      body: JSON.stringify({ repo }),
+    }),
+  installPlugin: (preview: PluginPreview) =>
+    request<PluginSummary>("/plugins/install", {
+      method: "POST",
+      body: JSON.stringify({ token: preview.token, sha256: preview.sha256 }),
+    }),
+  checkPluginUpdate: (id: string) =>
+    request<PluginSummary>(`/plugins/${encodeURIComponent(id)}/check-update`, {
+      method: "POST",
+    }),
+  previewPluginUpdate: (id: string) =>
+    request<PluginPreview>(`/plugins/${encodeURIComponent(id)}/update/preview`, {
+      method: "POST",
+    }),
+  updatePlugin: (id: string, preview: PluginPreview) =>
+    request<PluginSummary>(`/plugins/${encodeURIComponent(id)}/update`, {
+      method: "POST",
+      body: JSON.stringify({ token: preview.token, sha256: preview.sha256 }),
+    }),
+  rollBackPlugin: (id: string) =>
+    request<PluginSummary>(`/plugins/${encodeURIComponent(id)}/rollback`, {
+      method: "POST",
+    }),
+  setPluginEnabled: (id: string, enabled: boolean) =>
+    request<PluginSummary>(
+      `/plugins/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`,
+      { method: "POST" },
+    ),
+  removePlugin: (id: string) =>
+    request<void>(`/plugins/${encodeURIComponent(id)}`, { method: "DELETE" }),
   speakers: () => request<SpeakersReport>("/speakers"),
   tv: () => request<TvInfo>("/tv"),
   music: () => request<RoomMusic[]>("/music"),

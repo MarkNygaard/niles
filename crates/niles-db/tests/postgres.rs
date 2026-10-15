@@ -218,12 +218,22 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
     };
     let plugins = niles_db::PostgresPlugins::new(backend.pool(), "test".into());
     let id = format!("test{}", std::process::id());
+    let release = |version, component| niles_db::PluginInstall {
+        id: &id,
+        version,
+        manifest: "id = \"x\"",
+        component,
+        logo: Some("<svg/>"),
+        repo: Some("https://github.com/jane/x"),
+        release_tag: Some(version),
+        release_url: None,
+    };
     plugins
-        .install(&id, "0.1.0", "id = \"x\"", None, b"\0asm one")
+        .install(&release("0.1.0", b"\0asm one"))
         .await
         .expect("install");
     plugins
-        .install(&id, "0.2.0", "id = \"x\"", None, b"\0asm two")
+        .install(&release("0.2.0", b"\0asm two"))
         .await
         .expect("update");
     let row = plugins
@@ -235,6 +245,31 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
         .expect("installed");
     assert_eq!(row.version, "0.2.0");
     assert_eq!(row.sha256, niles_db::hex_digest(b"\0asm two"));
+    let meta = plugins.all().await.expect("all");
+    let meta = meta.iter().find(|p| p.id == id).expect("listed");
+    assert_eq!(meta.previous_version.as_deref(), Some("0.1.0"));
+    assert!(meta.has_logo);
+
+    plugins.set_update(&id, Some("{}")).await.expect("update");
+    let back = plugins
+        .roll_back(&id)
+        .await
+        .expect("roll back")
+        .expect("a previous");
+    assert_eq!(back.version, "0.1.0");
+    assert!(
+        plugins.roll_back(&id).await.expect("again").is_none(),
+        "once"
+    );
+    assert!(plugins.set_enabled(&id, false).await.expect("disable"));
+    assert!(
+        plugins
+            .enabled()
+            .await
+            .expect("enabled")
+            .iter()
+            .all(|p| p.id != id)
+    );
 
     assert!(plugins.set(&id, "day:2", "b", 100).await.expect("set"));
     assert!(plugins.set(&id, "day:1", "a", 100).await.expect("set"));
@@ -262,11 +297,8 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
     plugins.put_device(&id, &lamp).await.expect("device");
     assert_eq!(plugins.devices(&id).await.expect("devices"), vec![lamp]);
 
-    sqlx::query("delete from plugins where id = $1")
-        .bind(&id)
-        .execute(&backend.pool())
-        .await
-        .expect("remove");
+    plugins.remove(&id).await.expect("remove");
+    assert!(plugins.package(&id).await.expect("package").is_none());
     assert!(plugins.keys(&id, "").await.expect("keys").is_empty());
     assert!(plugins.devices(&id).await.expect("devices").is_empty());
 }

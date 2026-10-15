@@ -155,6 +155,27 @@ pub async fn list_secrets(State(state): State<AppState>) -> Json<SecretsReport> 
         },
     }));
 
+    // Each installed plugin's declared secrets: only ever stored, since
+    // no environment variable is named for them.
+    if let Some(plugins) = state.plugins.as_ref() {
+        secrets.extend(
+            plugins
+                .secret_settings()
+                .await
+                .into_iter()
+                .map(|(key, label)| SecretDto {
+                    source: if niles_config::secrets::get(&key).is_some() {
+                        niles_config::Source::Stored
+                    } else {
+                        niles_config::Source::Unset
+                    },
+                    key,
+                    label,
+                    hint: None,
+                }),
+        );
+    }
+
     Json(SecretsReport {
         writable: state.secrets.is_some(),
         secrets,
@@ -174,7 +195,7 @@ pub async fn set_secret(
     Path(key): Path<String>,
     Json(body): Json<SetSecret>,
 ) -> Result<StatusCode, Failure> {
-    let key = known(&state, &key)?;
+    let key = known(&state, &key).await?;
     let store = writable(&state)?;
     if body.value.trim().is_empty() {
         return Err((
@@ -187,6 +208,7 @@ pub async fn set_secret(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not save it: {e}")))?;
     reload(&state).await;
+    restart_its_plugin(&state, &key);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -195,23 +217,23 @@ pub async fn clear_secret(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<StatusCode, Failure> {
-    let key = known(&state, &key)?;
+    let key = known(&state, &key).await?;
     let store = writable(&state)?;
     store
         .clear(&key)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not clear it: {e}")))?;
     reload(&state).await;
+    restart_its_plugin(&state, &key);
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Only keys Niles actually reads, so a typo cannot fill the table with
-/// secrets nothing will ever look for.
-/// Only keys Niles actually reads: the fixed ones, plus a key for each
-/// provider the config declares. A typo must not fill the table with
+/// Only keys Niles actually reads: the fixed ones, a key for each
+/// provider the config declares, and each installed plugin's declared
+/// secrets (`plugins.<id>.<key>`). A typo must not fill the table with
 /// secrets nothing will look for — including `provider.typo.api_key`,
 /// which would look plausible and never be read.
-fn known(state: &AppState, key: &str) -> Result<String, Failure> {
+async fn known(state: &AppState, key: &str) -> Result<String, Failure> {
     if KNOWN.iter().any(|(k, _)| *k == key) {
         return Ok(key.to_string());
     }
@@ -223,10 +245,32 @@ fn known(state: &AppState, key: &str) -> Result<String, Failure> {
     if declared {
         return Ok(key.to_string());
     }
+    if key.starts_with("plugins.")
+        && let Some(plugins) = state.plugins.as_ref()
+        && plugins
+            .secret_settings()
+            .await
+            .iter()
+            .any(|(declared, _)| declared == key)
+    {
+        return Ok(key.to_string());
+    }
     Err((
         StatusCode::NOT_FOUND,
         format!("{key} is not a secret Niles reads"),
     ))
+}
+
+/// A plugin reads its secrets when it starts, so one that changed
+/// starts it again, as saving its settings does.
+fn restart_its_plugin(state: &AppState, key: &str) {
+    let plugin = key
+        .strip_prefix("plugins.")
+        .and_then(|rest| rest.split_once('.'))
+        .map(|(id, _)| id);
+    if let (Some(id), Some(plugins)) = (plugin, state.plugins.as_ref()) {
+        plugins.restart(id);
+    }
 }
 
 pub(crate) fn writable(state: &AppState) -> Result<&niles_db::PostgresSecrets, Failure> {
@@ -249,5 +293,62 @@ pub(crate) async fn reload(state: &AppState) {
     match store.load_all().await {
         Ok(values) => niles_config::secrets::load(values),
         Err(e) => tracing::error!("[secrets] saved, but the reload failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::plugins::tests::{Fake, send, state};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use std::sync::Arc;
+
+    fn put(key: &str) -> Request<Body> {
+        Request::put(format!("/secrets/{key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"value":"hunter2"}"#))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_plugins_declared_secret_is_accepted_and_others_are_not() {
+        let app = || crate::router(state(Arc::default()));
+        // Accepted as a key Niles reads; this test Niles has no store
+        // to keep it in, which is the next thing it is told.
+        let (status, body) = send(app(), put("plugins.spotprice.api_key")).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
+        for undeclared in [
+            "plugins.spotprice.password",
+            "plugins.other.api_key",
+            "plugins.spotprice",
+        ] {
+            let (status, _) = send(app(), put(undeclared)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{undeclared}");
+        }
+        let delete = Request::delete("/secrets/plugins.other.api_key")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = send(app(), delete).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_plugins_secrets_are_listed_unset_until_saved() {
+        let fake = Arc::new(Fake::default());
+        let (status, body) = send(
+            crate::router(state(fake)),
+            Request::get("/secrets").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let report: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let secret = report["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["key"] == "plugins.spotprice.api_key")
+            .expect("listed");
+        assert_eq!(secret["label"], "Spot prices: API key");
+        assert_eq!(secret["source"], "unset");
     }
 }

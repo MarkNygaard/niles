@@ -6514,13 +6514,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // registry below, and they are started once everything they reach
     // exists.
     let plugin_tools = niles_tools::DynamicTools::new();
-    let plugin_runtime = plugins::start_runtime(
+    let plugin_host = plugins::start_runtime(
         &cfg,
         store.clone(),
         registry.clone(),
         bus.clone(),
         plugin_tools.clone(),
     );
+    let plugin_database = plugin_host.as_ref().is_some_and(|(_, database)| *database);
+    let plugin_runtime = plugin_host.map(|(runtime, _)| runtime);
     let router = Arc::new(match &plugin_runtime {
         Some(runtime) => command_router(&cfg).with_commander(Arc::new(runtime.clone())),
         None => command_router(&cfg),
@@ -6896,6 +6898,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
 
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
+    // Taken before the plugins' tools join: the names no plugin may use.
+    let builtin_tool_names = tools.builtin_names();
     tools.attach_dynamic(plugin_tools);
 
     let tools = Arc::new(tools);
@@ -6947,6 +6951,21 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         grocery_delivery::spawn_reminder(client, store.clone(), notifications.clone())
     });
 
+    // Installing, updating and removing plugins, from the app.
+    let plugin_installer = plugin_runtime.clone().map(|runtime| {
+        niles_plugins::Installer::new(
+            runtime,
+            niles_plugins::GitHub::default(),
+            niles_plugins::Options::default(),
+        )
+        .with_database(plugin_database)
+        .with_reserved_tools(builtin_tool_names)
+        .with_leftovers(Arc::new(plugins::Forget {
+            settings: store.clone(),
+            secrets: secret_store.clone(),
+        }))
+    });
+
     // HTTP API
     let chat_ctx = Arc::new(std::sync::OnceLock::new());
     let api_state = AppState::new(
@@ -6976,8 +6995,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_captures(captures.clone())
     .with_unifi(presence.as_ref().and_then(|p| p.unifi.clone()))
     .with_secrets(secret_store.clone())
-    .with_plugins(plugin_runtime.clone().map(|runtime| {
-        Arc::new(plugins::AppPlugins(runtime)) as Arc<dyn niles_api::plugins::Plugins>
+    .with_plugins(plugin_installer.clone().map(|installer| {
+        Arc::new(plugins::AppPlugins(installer)) as Arc<dyn niles_api::plugins::Plugins>
     }))
     .with_api_token(cfg.auth.resolve_api_token());
 
@@ -7021,6 +7040,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             let started = runtime.load_installed().await;
             if started > 0 {
                 tracing::info!("[plugins] starting {started}");
+            }
+            if let Some(installer) = &plugin_installer {
+                installer.spawn_update_checks();
             }
             Some(plugins::restart_on_settings(runtime.clone(), store.clone()))
         }

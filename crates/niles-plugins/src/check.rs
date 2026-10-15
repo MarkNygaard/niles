@@ -206,6 +206,20 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
 /// transform attributes. No script, style, image, use, foreignObject,
 /// links or external references, and at most 32 KiB.
 pub fn check_logo(svg: &[u8]) -> Result<(), String> {
+    sanitise_logo(svg).map(|_| ())
+}
+
+/// The logo as Niles keeps and serves it, or why it is refused.
+///
+/// An allowlist, applied twice. First the parsed document is checked
+/// against it, and anything outside it refuses the logo with a reason
+/// for its author, as `niles plugin check` reports it. Then the SVG is
+/// written out again from the parse, element by allowed element and
+/// attribute by allowed attribute, so what is stored is only ever what
+/// the allowlist describes: comments, processing instructions, text and
+/// whatever the parser tolerated are not carried over. roxmltree refuses
+/// a DTD, so there are no entities to expand.
+pub fn sanitise_logo(svg: &[u8]) -> Result<String, String> {
     const ELEMENTS: &[&str] = &[
         "svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon",
     ];
@@ -286,7 +300,45 @@ pub fn check_logo(svg: &[u8]) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    let mut out = String::with_capacity(svg.len());
+    write_element(root, &mut out);
+    Ok(out)
+}
+
+fn write_element(node: roxmltree::Node, out: &mut String) {
+    let name = node.tag_name().name();
+    out.push('<');
+    out.push_str(name);
+    if name == "svg" {
+        out.push_str(r#" xmlns="http://www.w3.org/2000/svg""#);
+    }
+    for attribute in node.attributes() {
+        out.push(' ');
+        out.push_str(attribute.name());
+        out.push_str("=\"");
+        for c in attribute.value().chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+    let children: Vec<_> = node.children().filter(|n| n.is_element()).collect();
+    if children.is_empty() {
+        out.push_str("/>");
+        return;
+    }
+    out.push('>');
+    for child in children {
+        write_element(child, out);
+    }
+    out.push_str("</");
+    out.push_str(name);
+    out.push('>');
 }
 
 #[cfg(test)]
@@ -323,5 +375,36 @@ mod tests {
         );
         let big = wrap(&format!(r#"<path d="M0 0{}"/>"#, " L1 1".repeat(8000)));
         assert!(check_logo(big.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_kept_logo_is_rewritten_from_the_allowlist() {
+        let svg = br##"<?xml version="1.0"?>
+<!-- made by hand -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24">
+  <?php echo 1; ?>
+  <g fill="currentColor"><path d="M1 1h2" fill="#F5B400"/>stray text</g>
+</svg>"##;
+        assert_eq!(
+            sanitise_logo(svg).unwrap(),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24"><g fill="currentColor"><path d="M1 1h2" fill="#F5B400"/></g></svg>"##
+        );
+    }
+
+    #[test]
+    fn a_dtd_and_its_entities_are_refused() {
+        let svg = br#"<!DOCTYPE svg [<!ENTITY a "aaaaaaaaaa">]>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="&a;"/></svg>"#;
+        assert!(sanitise_logo(svg).is_err());
+    }
+
+    #[test]
+    fn values_are_escaped_when_written_out() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0" fill="a&amp;&quot;b"/></svg>"#;
+        assert!(
+            sanitise_logo(svg)
+                .unwrap()
+                .contains(r#"fill="a&amp;&quot;b""#)
+        );
     }
 }

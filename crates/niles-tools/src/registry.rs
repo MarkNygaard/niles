@@ -62,6 +62,19 @@ impl DynamicTools {
         out
     }
 
+    /// Every tool offered, as `(owner, name)`.
+    pub fn names(&self) -> Vec<(String, String)> {
+        let owners = self.owners.read().unwrap_or_else(|e| e.into_inner());
+        owners
+            .iter()
+            .flat_map(|(owner, o)| {
+                o.tools
+                    .iter()
+                    .map(move |t| (owner.clone(), t.descriptor().name))
+            })
+            .collect()
+    }
+
     fn find(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let owners = self.owners.read().unwrap_or_else(|e| e.into_inner());
         owners
@@ -105,6 +118,14 @@ impl ToolRegistry {
             .into_iter()
             .filter(|t| !self.tools.contains_key(&t.name))
             .collect()
+    }
+
+    /// The names of the tools registered here, without the dynamic ones:
+    /// names no plugin's tool may take.
+    pub fn builtin_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tools.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// Register a tool. If a tool with the same name already exists,

@@ -368,6 +368,13 @@ export function ConfigPanel() {
     queryKey: ["integrations"],
     queryFn: api.integrations,
   });
+  // Answers 501 when this Niles runs no plugins: nothing to list, and
+  // nothing to retry.
+  const plugins = useQuery({
+    queryKey: ["plugins"],
+    queryFn: api.plugins,
+    retry: false,
+  });
   // Answers 501 when recognition is off, which is a fine answer and not
   // worth retrying at: an empty list then stands for "nobody", and the
   // card says separately that recognition is not running.
@@ -1105,6 +1112,8 @@ export function ConfigPanel() {
             mqtt={valueAt(view.effective, "mqtt") as MqttSettings | undefined}
             mqttDefaults={valueAt(view.defaults, "mqtt") as MqttSettings | undefined}
             integrations={integrations.data ?? []}
+            plugins={plugins.data}
+            onPluginsChanged={() => plugins.refetch()}
             secrets={secrets.data}
             tado={tado.data}
             zones={climate.data}

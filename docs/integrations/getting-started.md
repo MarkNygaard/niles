@@ -1,8 +1,9 @@
 # Getting started
 
-> v0.1 of the interface. `niles plugin dev` and `niles plugin check` are
-> built (Niles 0.2.0); the install flow is not yet, and the template repo will
-> be published alongside it.
+> v0.1 of the interface. `niles plugin dev`, `niles plugin check` and
+> installing from GitHub are built (Niles 0.2.0). Not yet: the generated
+> setup panel (step 7 says what to do meanwhile), and the template repo,
+> which will be published alongside it.
 
 From nothing to a plugin installed on a Niles, in Rust. For JavaScript and
 Python, see the snippets at the end of the [worked example](example-spotprice.md#the-same-tool-in-javascript-and-python).
@@ -171,7 +172,9 @@ development plugin marked "Development" on its card, reinstall it each time the
 niles plugin check .
 ```
 
-checks everything an install would: the manifest (including its surfaces,
+(or `niles plugin check you/your-repo` once it is released, to check the
+release exactly as an install would download it) checks everything an install
+would: the manifest (including its surfaces,
 settings and permissions), the logo, that the component targets
 `niles:integration/plugin@0.1.x` and exports every function, and its tools'
 names, descriptions and schemas, asked for with `tools()` before any `init`,
@@ -194,6 +197,28 @@ in [publishing](publishing.md).
 ## 7. Install
 
 In the Niles app: Integrations → Available → **Add from GitHub** (at the end of
-the page), paste `https://github.com/you/your-repo`. Niles shows the name,
-description and the permissions in plain words; approve, fill in the setup
-panel, and the plugin starts. Its card shows a status line and its log.
+the page), paste `https://github.com/you/your-repo` and press **Preview**.
+Niles downloads your latest release, runs every check `niles plugin check`
+runs, and shows the name, authors, repo, version, description, logo and the
+permissions in plain words, with the settings it will ask for. **Install**
+installs exactly the files that preview downloaded, and the plugin starts. It
+is on the Connected tab with a status line; its panel has your repo, the
+version and install date, and buttons to turn it off, check for updates, roll
+back an update and remove it.
+
+Until the generated settings form is in the app, set settings through the
+config API, which restarts the plugin with them:
+
+```sh
+curl -X PATCH https://niles.example.com/config \
+  -H "authorization: Bearer $NILES_API_TOKEN" -H "content-type: application/json" \
+  -d '{"plugins": {"spotprice": {"area": "DK2"}}}'
+```
+
+and secret settings through `PUT /secrets/plugins.<id>.<key>` with
+`{"value": "…"}`, which accepts only keys your manifest declares as `secret`.
+
+A preview is kept for 15 minutes. Installing needs Niles's database; without
+one the preview says so. The same flow is reachable without the app:
+`POST /plugins/install/preview` with `{"repo": "you/your-repo"}`, then
+`POST /plugins/install` with the `token` (and `sha256`) it answered.

@@ -22,6 +22,10 @@ pub enum Error {
     #[error("there is no plugin called {0}")]
     UnknownPlugin(String),
 
+    /// A rollback was asked for, and there is no earlier version.
+    #[error("there is no earlier version of {0} to go back to")]
+    NoPrevious(String),
+
     /// A plugin with this id is already running.
     #[error("a plugin called {0} is already running")]
     AlreadyRunning(String),
