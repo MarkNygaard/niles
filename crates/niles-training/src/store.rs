@@ -62,13 +62,15 @@ pub trait TrainingStore: Send + Sync {
 struct Kept {
     activities: Vec<(String, Activity)>,
     wellness: Vec<(String, Wellness)>,
-    /// person, hash, made at, last received.
-    keys: Vec<(
-        String,
-        Option<String>,
-        Option<DateTime<Utc>>,
-        Option<DateTime<Utc>>,
-    )>,
+    keys: Vec<KeyRow>,
+}
+
+#[derive(Default)]
+struct KeyRow {
+    person: String,
+    hash: Option<String>,
+    made_at: Option<DateTime<Utc>>,
+    received_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Default)]
@@ -176,11 +178,11 @@ impl TrainingStore for MemoryTraining {
 
     async fn overview(&self, person: &str) -> Result<Overview> {
         let kept = self.lock();
-        let key = kept.keys.iter().find(|k| k.0 == person);
+        let key = kept.keys.iter().find(|k| k.person == person);
         let theirs = kept.activities.iter().filter(|(p, _)| p == person);
         Ok(Overview {
-            key_made_at: key.and_then(|k| k.1.as_ref().and(k.2)),
-            last_received_at: key.and_then(|k| k.3),
+            key_made_at: key.and_then(|k| k.hash.as_ref().and(k.made_at)),
+            last_received_at: key.and_then(|k| k.received_at),
             runs: theirs.clone().filter(|(_, a)| a.kind == Kind::Run).count() as u64,
             activities: theirs.count() as u64,
             wellness_days: kept.wellness.iter().filter(|(p, _)| p == person).count() as u64,
@@ -190,24 +192,27 @@ impl TrainingStore for MemoryTraining {
     async fn set_key(&self, person: &str, hash: &str) -> Result<()> {
         let mut kept = self.lock();
         let now = Some(Utc::now());
-        match kept.keys.iter_mut().find(|k| k.0 == person) {
+        match kept.keys.iter_mut().find(|k| k.person == person) {
             Some(k) => {
-                k.1 = Some(hash.into());
-                k.2 = now;
+                k.hash = Some(hash.into());
+                k.made_at = now;
             }
-            None => kept
-                .keys
-                .push((person.into(), Some(hash.into()), now, None)),
+            None => kept.keys.push(KeyRow {
+                person: person.into(),
+                hash: Some(hash.into()),
+                made_at: now,
+                received_at: None,
+            }),
         }
         Ok(())
     }
 
     async fn revoke_key(&self, person: &str) -> Result<bool> {
         let mut kept = self.lock();
-        Ok(match kept.keys.iter_mut().find(|k| k.0 == person) {
-            Some(k) if k.1.is_some() => {
-                k.1 = None;
-                k.2 = None;
+        Ok(match kept.keys.iter_mut().find(|k| k.person == person) {
+            Some(k) if k.hash.is_some() => {
+                k.hash = None;
+                k.made_at = None;
                 true
             }
             _ => false,
@@ -219,15 +224,19 @@ impl TrainingStore for MemoryTraining {
             .lock()
             .keys
             .iter()
-            .find(|k| k.1.as_deref().is_some_and(|h| crate::same_hash(h, hash)))
-            .map(|k| k.0.clone()))
+            .find(|k| k.hash.as_deref().is_some_and(|h| crate::same_hash(h, hash)))
+            .map(|k| k.person.clone()))
     }
 
     async fn received(&self, person: &str, at: DateTime<Utc>) -> Result<()> {
         let mut kept = self.lock();
-        match kept.keys.iter_mut().find(|k| k.0 == person) {
-            Some(k) => k.3 = Some(at),
-            None => kept.keys.push((person.into(), None, None, Some(at))),
+        match kept.keys.iter_mut().find(|k| k.person == person) {
+            Some(k) => k.received_at = Some(at),
+            None => kept.keys.push(KeyRow {
+                person: person.into(),
+                received_at: Some(at),
+                ..KeyRow::default()
+            }),
         }
         Ok(())
     }

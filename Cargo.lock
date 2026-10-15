@@ -2552,6 +2552,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
+ "chrono-tz",
  "niles-calendar",
  "niles-config",
  "niles-presence",

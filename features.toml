@@ -605,3 +605,22 @@ id = "ui-tv-wake-mac"
 category = "ui.integrations"
 summary = "TV panel: the wake MAC, detected or set by hand and kept through pairing; power-on says when the TV did not answer"
 since_pr = 409
+
+[[feature]]
+id = "training-ingest"
+category = "api.write"
+summary = "POST /training/ingest: a person's Health Auto Export workouts, sleep, HRV and weight, by their own key, idempotently"
+since_pr = 9999
+
+[[feature]]
+id = "ui-training-connect"
+category = "ui.settings"
+summary = "My profile → Training: the URL, a key shown once with copy, replace, revoke, setup steps and last data"
+since_pr = 9999
+
+[[feature]]
+id = "voice-training-questions"
+category = "voice.training"
+summary = "Ask about your own runs, sleep, heart rate and weight by voice or chat, and have a week or month added up"
+phrasings = ["how was my week", "how far did I run on Sunday", "how did I sleep last night"]
+since_pr = 9999

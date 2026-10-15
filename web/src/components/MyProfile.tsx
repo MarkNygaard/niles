@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarsCard } from "@/components/CalendarsCard";
 import { MeCard } from "@/components/MeCard";
+import { TrainingCard } from "@/components/TrainingCard";
 import { api } from "@/lib/api";
 
 /**
@@ -50,6 +51,8 @@ export function MyProfile() {
       />
       {/* Yours by your voice: without one there is nobody to read it for. */}
       {me.data?.speaker && <CalendarsCard />}
+      {/* Kept by sign-in as well as by voice, like the chat. */}
+      {me.data && <TrainingCard />}
     </div>
   );
 }

@@ -1122,6 +1122,16 @@ export interface Me {
   phone: string | null;
 }
 
+/** What has arrived from the person's phone, and whether a key is in use. */
+export interface TrainingOverview {
+  /** When the key in use was made; null with none. */
+  key_made_at: string | null;
+  last_received_at: string | null;
+  runs: number;
+  activities: number;
+  wellness_days: number;
+}
+
 /** Each field: absent leaves it, empty clears it. */
 export type MeUpdate = Partial<
   Pick<Me, "spoken_as" | "address_as" | "notes" | "birthday">
@@ -1356,6 +1366,11 @@ export const api = {
   updateMe: (update: MeUpdate) =>
     request<void>("/me", { method: "PUT", body: JSON.stringify(update) }),
   unpairPhone: () => request<void>("/me/phone", { method: "DELETE" }),
+  training: () => request<TrainingOverview>("/me/training"),
+  /** The key, this once: Niles keeps only its hash. Replaces any old one. */
+  makeTrainingKey: () =>
+    request<{ key: string }>("/me/training/key", { method: "POST" }),
+  revokeTrainingKey: () => request<void>("/me/training/key", { method: "DELETE" }),
   deviceStatus: () => request<DeviceView>("/presence/device"),
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),

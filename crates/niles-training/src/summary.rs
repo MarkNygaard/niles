@@ -118,7 +118,7 @@ pub fn summarise<Tz: TimeZone>(
         .filter(|w| w.date >= from && w.date <= to)
         .filter_map(|w| Some((w.date, w.weight_kg?)));
     let first = weighed.next();
-    let last = weighed.last().or(first);
+    let last = weighed.next_back().or(first);
 
     Summary {
         from,
