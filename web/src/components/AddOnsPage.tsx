@@ -334,6 +334,8 @@ export function AddOnsPage({
         return onReset("integrations.nemlig", ["integrations.nemlig"]);
       case "spotify":
         return onReset("integrations.spotify", ["integrations.spotify"]);
+      case "linear":
+        return onReset("integrations.linear", ["integrations.linear"]);
       // The app's keys are deleted; everyone's own connections stay in
       // the database for when it comes back with new ones.
       case "microsoft":
