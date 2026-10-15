@@ -265,7 +265,7 @@ impl Connection {
                 },
             );
         }
-        self.trace(Trace::Subscribe {
+        self.trace(|| Trace::Subscribe {
             conn: self.id,
             filter: filter.clone(),
         });
@@ -276,7 +276,7 @@ impl Connection {
     pub fn unsubscribe(&self, filter: String) -> Result<(), HostError> {
         check_filter(&filter)?;
         if lock(&self.shared.subscriptions).remove(&filter).is_some() {
-            self.trace(Trace::Unsubscribe {
+            self.trace(|| Trace::Unsubscribe {
                 conn: self.id,
                 filter: filter.clone(),
             });
@@ -314,7 +314,7 @@ impl Connection {
                 "at most {PUBLISH_RATE} messages a second, in bursts of {PUBLISH_BURST}"
             )));
         }
-        self.trace(Trace::Publish {
+        self.trace(|| Trace::Publish {
             conn: self.id,
             topic: topic.clone(),
             payload: payload.clone(),
@@ -336,9 +336,10 @@ impl Connection {
         Ok(())
     }
 
-    fn trace(&self, trace: Trace) {
+    /// Tell the watch, if there is one; `trace` is only made then.
+    fn trace(&self, trace: impl FnOnce() -> Trace) {
         if let Some(watch) = &self.house.mqtt_watch {
-            watch(&trace);
+            watch(&trace());
         }
     }
 }
@@ -807,9 +808,10 @@ impl Task {
         self.shared.closed.load(Ordering::SeqCst)
     }
 
-    fn trace(&self, trace: Trace) {
+    /// Tell the watch, if there is one; `trace` is only made then.
+    fn trace(&self, trace: impl FnOnce() -> Trace) {
         if let Some(watch) = &self.house.mqtt_watch {
-            watch(&trace);
+            watch(&trace());
         }
     }
 
@@ -834,7 +836,7 @@ impl Task {
             level,
             &format!("MQTT {}: {line}{detail}", self.target.broker),
         );
-        self.trace(Trace::Status {
+        self.trace(|| Trace::Status {
             conn: self.id,
             broker: self.target.broker.clone(),
             status: line,
@@ -910,7 +912,7 @@ impl Task {
             Err(end) => return end,
         };
         let address = SocketAddr::new(ip, self.target.port);
-        self.trace(Trace::Connecting {
+        self.trace(|| Trace::Connecting {
             conn: self.id,
             broker: self.target.broker.clone(),
             address,
@@ -1189,7 +1191,7 @@ impl Task {
             }
             matching.all(|latest| latest)
         };
-        self.trace(Trace::Message {
+        self.trace(|| Trace::Message {
             conn: self.id,
             topic: topic.to_string(),
             payload: payload.to_vec(),
