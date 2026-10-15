@@ -71,10 +71,6 @@ pub struct Limits {
     /// How often the engine's epoch advances: the resolution of every
     /// deadline above.
     pub tick: Duration,
-    /// Let MQTT connect to this machine, where the tests' broker is.
-    /// Only in the crate's own tests; Niles never has it.
-    #[cfg(test)]
-    pub(crate) mqtt_loopback: bool,
 }
 
 impl Default for Limits {
@@ -94,8 +90,6 @@ impl Default for Limits {
             restarts_per_hour: 5,
             init_retry: Duration::from_secs(10 * 60),
             tick: Duration::from_millis(100),
-            #[cfg(test)]
-            mqtt_loopback: false,
         }
     }
 }
@@ -111,6 +105,8 @@ pub struct House {
     pub(crate) secrets: SecretsFn,
     pub(crate) mqtt_watch: Option<MqttWatch>,
     pub(crate) time_zone: TimeZoneFn,
+    /// See [`House::allowing_loopback`].
+    pub(crate) loopback: bool,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -127,6 +123,7 @@ impl House {
             secrets: Arc::new(|_, _| None),
             mqtt_watch: None,
             time_zone: Arc::new(|| "UTC".to_string()),
+            loopback: false,
             handle: tokio::runtime::Handle::current(),
         }
     }
@@ -145,6 +142,16 @@ impl House {
 
     pub fn with_secrets(mut self, secrets: SecretsFn) -> Self {
         self.secrets = secrets;
+        self
+    }
+
+    /// Let plugins reach this machine where a `setting:` address names it
+    /// (`127.0.0.1`, `::1`, `localhost`), over HTTP and MQTT: a fake
+    /// device beside the plugin under `niles plugin dev
+    /// --allow-loopback`. Never for `serve`, where loopback is Niles
+    /// itself and whatever else runs beside it.
+    pub fn allowing_loopback(mut self) -> Self {
+        self.loopback = true;
         self
     }
 

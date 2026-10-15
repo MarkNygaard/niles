@@ -4,7 +4,7 @@
 //!
 //! Here rather than in `tests/` because the broker is on loopback, which
 //! the policy refuses, and the override for that exists only in the
-//! crate's own test build ([`Limits::mqtt_loopback`]).
+//! test's [`House::allowing_loopback`].
 
 use crate::manifest::Manifest;
 use crate::policy::MqttPolicy;
@@ -220,12 +220,9 @@ impl Home {
             }))
             .with_secrets(Arc::new(|id, key| {
                 (id == "relay" && key == "password").then(|| PASSWORD.to_string())
-            }));
-        let limits = Limits {
-            mqtt_loopback: true,
-            ..Limits::default()
-        };
-        let runtime = Runtime::new(house, limits).expect("the runtime starts");
+            }))
+            .allowing_loopback();
+        let runtime = Runtime::new(house, Limits::default()).expect("the runtime starts");
         Self { runtime, registry }
     }
 
