@@ -8,7 +8,7 @@ use crate::caldav::{self, Login};
 use crate::error::{Error, Result};
 use crate::google::{self, GoogleApp};
 use crate::graph::{self, MicrosoftApp, Tokens};
-use crate::model::{Access, Connection, Event, NewEvent, Provider};
+use crate::model::{Access, Connection, Event, NewEvent, Provider, Services};
 use crate::store::ConnectionStore;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -109,7 +109,7 @@ impl Backend for Network {
                     .refresh(
                         &self.http,
                         &connection.credential,
-                        connection.access,
+                        connection.services(),
                         &connection.name,
                     )
                     .await
@@ -214,11 +214,13 @@ pub struct Change {
     pub location: Option<String>,
 }
 
-/// A connection just made, before it is kept.
+/// An account just connected, before it is kept.
 pub struct Made {
     pub provider: Provider,
     pub name: String,
-    pub access: Access,
+    /// What it serves: for Microsoft and Google, what the sign-in asked
+    /// for and was granted.
+    pub services: Services,
     pub account: String,
     pub credential: String,
     pub endpoint: Option<String>,
@@ -254,8 +256,20 @@ impl Calendars {
         }
     }
 
+    /// Every account of `person`'s, whatever it serves.
     pub async fn connections(&self, person: &str) -> Result<Vec<Connection>> {
         self.store.list(person).await
+    }
+
+    /// The accounts of `person`'s that serve Calendar.
+    async fn calendars_of(&self, person: &str) -> Result<Vec<Connection>> {
+        Ok(self
+            .store
+            .list(person)
+            .await?
+            .into_iter()
+            .filter(|c| c.calendar)
+            .collect())
     }
 
     /// Keep a connection a sign-in just made. `replace` is the one it
@@ -278,9 +292,11 @@ impl Calendars {
             provider: made.provider,
             name: made.name.trim().to_string(),
             account: made.account,
-            access: made.access,
+            access: made.services.calendar.unwrap_or(Access::Read),
             credential: made.credential,
             endpoint: made.endpoint,
+            calendar: made.services.calendar.is_some(),
+            mail: made.services.mail,
         };
         self.store.save(&connection).await?;
         let mut tokens = self.tokens.lock().await;
@@ -301,7 +317,7 @@ impl Calendars {
         &self,
         person: &str,
         name: &str,
-        access: Access,
+        services: Services,
         apple_id: &str,
         password: &str,
         replace: Option<&str>,
@@ -316,7 +332,7 @@ impl Calendars {
             Made {
                 provider: Provider::Icloud,
                 name: name.to_string(),
-                access,
+                services,
                 account: login.user,
                 credential: login.password,
                 endpoint: Some(home),
@@ -327,9 +343,15 @@ impl Calendars {
         .await
     }
 
-    /// Change what a connection may do, where Niles is the one keeping
-    /// it. Microsoft and Google grant it, so for them it is a sign-in.
-    pub async fn set_access(&self, person: &str, id: &str, access: Access) -> Result<Connection> {
+    /// Change what an account serves, and with what access, where Niles
+    /// is the one keeping it. Microsoft and Google grant it, so for them
+    /// it is a sign-in. Nothing left ticked removes the account.
+    pub async fn set_services(
+        &self,
+        person: &str,
+        id: &str,
+        services: Services,
+    ) -> Result<Option<Connection>> {
         let mut connection = self
             .store
             .list(person)
@@ -339,12 +361,18 @@ impl Calendars {
             .ok_or_else(|| Error::NoSuchConnection { name: id.into() })?;
         if connection.provider.enforces_access() {
             return Err(Error::Invalid {
-                reason: "this calendar's access is granted at sign-in; connect it again".into(),
+                reason: "this account's access is granted at sign-in; connect it again".into(),
             });
         }
-        connection.access = access;
+        if services.none() {
+            self.disconnect(person, id).await?;
+            return Ok(None);
+        }
+        connection.access = services.calendar.unwrap_or(connection.access);
+        connection.calendar = services.calendar.is_some();
+        connection.mail = services.mail;
         self.store.save(&connection).await?;
-        Ok(connection)
+        Ok(Some(connection))
     }
 
     pub async fn disconnect(&self, person: &str, id: &str) -> Result<bool> {
@@ -365,7 +393,7 @@ impl Calendars {
     ) -> Result<(Vec<Listed>, Vec<String>)> {
         let mut found: Vec<(Connection, Event)> = Vec::new();
         let mut problems = Vec::new();
-        for connection in self.store.list(person).await? {
+        for connection in self.calendars_of(person).await? {
             let events = match self.auth(apps, &connection).await {
                 Ok(auth) => self.backend.events(&connection, &auth, from, to, tz).await,
                 Err(e) => Err(e),
@@ -452,7 +480,7 @@ impl Calendars {
     }
 
     async fn writable(&self, person: &str, calendar: Option<&str>) -> Result<Connection> {
-        let all = self.store.list(person).await?;
+        let all = self.calendars_of(person).await?;
         if let Some(name) = calendar {
             let connection = all
                 .into_iter()
@@ -755,6 +783,8 @@ mod tests {
             access,
             credential: credential.into(),
             endpoint: (provider == Provider::Icloud).then(|| "https://p1/home/".to_string()),
+            calendar: true,
+            mail: None,
         }
     }
 
@@ -964,7 +994,7 @@ mod tests {
                 .connect_icloud(
                     "majse",
                     "Phone",
-                    Access::Read,
+                    CALENDAR_READ,
                     "majse@icloud.com",
                     "wrong",
                     None
@@ -976,7 +1006,7 @@ mod tests {
             .connect_icloud(
                 "majse",
                 "Phone",
-                Access::Read,
+                CALENDAR_READ,
                 " majse@icloud.com ",
                 "abcd-efgh-ijkl-mnop".replace('-', "").as_str(),
                 None,
@@ -1007,7 +1037,14 @@ mod tests {
             Err(Error::ReadOnly { .. })
         ));
         calendars
-            .set_access("majse", &made.id, Access::Write)
+            .set_services(
+                "majse",
+                &made.id,
+                Services {
+                    calendar: Some(Access::Write),
+                    mail: None,
+                },
+            )
             .await
             .unwrap();
         calendars
@@ -1025,11 +1062,83 @@ mod tests {
         let (calendars, _, _) = household().await;
         assert!(
             calendars
-                .set_access("mark", "w", Access::Write)
+                .set_services(
+                    "mark",
+                    "w",
+                    Services {
+                        calendar: Some(Access::Write),
+                        mail: None,
+                    },
+                )
                 .await
                 .is_err()
         );
     }
+
+    #[tokio::test]
+    async fn an_account_that_serves_only_mail_is_no_calendar() {
+        let (calendars, _, store) = household().await;
+        let mut mail_only =
+            connection("m", "mark", Provider::Google, "Gmail", Access::Read, "rt-m");
+        mail_only.calendar = false;
+        mail_only.mail = Some(crate::model::MailAccess::Read);
+        store.save(&mail_only).await.unwrap();
+        let (from, to) = window();
+        let (listed, problems) = calendars
+            .events(&apps(), "mark", from, to, tz())
+            .await
+            .unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(listed.iter().all(|l| l.calendar != "Gmail"));
+        assert_eq!(calendars.connections("mark").await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn unticking_everything_on_an_icloud_account_removes_it() {
+        let (calendars, _, store) = household().await;
+        let made = calendars
+            .connect_icloud(
+                "majse",
+                "Phone",
+                CALENDAR_READ,
+                "majse@icloud.com",
+                "abcdefghijklmnop",
+                None,
+            )
+            .await
+            .unwrap();
+        let mail_only = calendars
+            .set_services(
+                "majse",
+                &made.id,
+                Services {
+                    calendar: None,
+                    mail: Some(crate::model::MailAccess::Read),
+                },
+            )
+            .await
+            .unwrap()
+            .expect("still there");
+        assert!(!mail_only.calendar);
+        let gone = calendars
+            .set_services(
+                "majse",
+                &made.id,
+                Services {
+                    calendar: None,
+                    mail: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(gone.is_none());
+        assert_eq!(store.list("majse").await.unwrap().len(), 1);
+    }
+
+    const CALENDAR_READ: Services = Services {
+        calendar: Some(Access::Read),
+        mail: None,
+    };
 
     #[tokio::test]
     async fn connecting_again_keeps_the_connection() {
@@ -1040,7 +1149,10 @@ mod tests {
                 Made {
                     provider: Provider::Microsoft,
                     name: "Work".into(),
-                    access: Access::Write,
+                    services: Services {
+                        calendar: Some(Access::Write),
+                        mail: None,
+                    },
                     account: "w@x".into(),
                     credential: "r".into(),
                     endpoint: None,

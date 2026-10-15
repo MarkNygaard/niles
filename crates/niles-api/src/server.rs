@@ -69,7 +69,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/calendars/{id}",
-            put(crate::calendars::set_access).delete(crate::calendars::remove),
+            put(crate::calendars::set_services).delete(crate::calendars::remove),
         )
         .route(
             "/automations",

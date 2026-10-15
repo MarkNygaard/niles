@@ -1,17 +1,23 @@
-//! Each person's calendar connections, in Postgres.
+//! Each person's accounts, in Postgres: a sign-in at Microsoft or
+//! Google, or an iCloud app-specific password, serving Calendar, Mail
+//! or both.
 //!
 //! The credential — a refresh token, or iCloud's app-specific password —
-//! is a standing key to somebody's calendar, so it is sealed with the
-//! same key as the credentials typed into the app, and a database
-//! without that key keeps no calendars at all.
+//! is a standing key to somebody's calendar and mail, so it is sealed
+//! with the same key as the credentials typed into the app, and a
+//! database without that key keeps no accounts at all.
 
 use crate::secrets::Sealer;
 use async_trait::async_trait;
-use niles_calendar::{Access, Connection, ConnectionStore, Error, Provider, Result};
+use niles_calendar::{Access, Connection, ConnectionStore, Error, MailAccess, Provider, Result};
 use sqlx::{Row, postgres::PgPool};
 
 const SCHEMA: &str = "
-create table if not exists calendar_connections (
+-- Calendar connections became accounts when mail joined them: the rows
+-- keep their ids, and serve Calendar as they did.
+alter table if exists calendar_connections rename to accounts;
+alter index if exists calendar_connections_person rename to accounts_person;
+create table if not exists accounts (
     id            text primary key,
     person        text not null,
     name          text not null,
@@ -21,11 +27,15 @@ create table if not exists calendar_connections (
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );
-create index if not exists calendar_connections_person on calendar_connections (person);
+create index if not exists accounts_person on accounts (person);
 -- Added with Google and iCloud. The column keeps its first name: it
 -- holds a refresh token, or iCloud's password.
-alter table calendar_connections add column if not exists provider text not null default 'microsoft';
-alter table calendar_connections add column if not exists endpoint text;
+alter table accounts add column if not exists provider text not null default 'microsoft';
+alter table accounts add column if not exists endpoint text;
+-- Added with mail. `access` is the calendar's; `mail` is null for an
+-- account that does not serve it.
+alter table accounts add column if not exists calendar boolean not null default true;
+alter table accounts add column if not exists mail text;
 ";
 
 pub struct PostgresCalendars {
@@ -77,8 +87,9 @@ impl ConnectionStore for PostgresCalendars {
     async fn list(&self, person: &str) -> Result<Vec<Connection>> {
         self.ensure_schema().await?;
         let rows = sqlx::query(
-            "select id, person, provider, name, account, access, refresh_token, endpoint
-             from calendar_connections where person = $1 order by created_at",
+            "select id, person, provider, name, account, access, refresh_token, endpoint,
+                    calendar, mail
+             from accounts where person = $1 order by created_at",
         )
         .bind(person)
         .fetch_all(&self.pool)
@@ -93,14 +104,14 @@ impl ConnectionStore for PostgresCalendars {
                 // The key changed under it. Left out with a word in the
                 // log: the person sees it gone, and connects again.
                 Err(e) => {
-                    tracing::error!("[calendars] {id}: the stored token would not open ({e})");
+                    tracing::error!("[accounts] {id}: the stored token would not open ({e})");
                     continue;
                 }
             };
             let access: String = row.try_get("access").map_err(|e| self.storage(e))?;
             let provider: String = row.try_get("provider").map_err(|e| self.storage(e))?;
             let Some(provider) = Provider::parse(&provider) else {
-                tracing::error!("[calendars] {id}: unknown provider {provider:?}");
+                tracing::error!("[accounts] {id}: unknown provider {provider:?}");
                 continue;
             };
             out.push(Connection {
@@ -112,6 +123,12 @@ impl ConnectionStore for PostgresCalendars {
                 access: Access::parse(&access).unwrap_or(Access::Read),
                 credential,
                 endpoint: row.try_get("endpoint").map_err(|e| self.storage(e))?,
+                calendar: row.try_get("calendar").map_err(|e| self.storage(e))?,
+                mail: row
+                    .try_get::<Option<String>, _>("mail")
+                    .map_err(|e| self.storage(e))?
+                    .as_deref()
+                    .and_then(MailAccess::parse),
             });
         }
         Ok(out)
@@ -121,15 +138,17 @@ impl ConnectionStore for PostgresCalendars {
         self.ensure_schema().await?;
         let sealed = self.seal(&connection.credential)?;
         sqlx::query(
-            "insert into calendar_connections
-                 (id, person, provider, name, account, access, refresh_token, endpoint)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)
+            "insert into accounts
+                 (id, person, provider, name, account, access, refresh_token, endpoint,
+                  calendar, mail)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              on conflict (id) do update set
                  provider = excluded.provider, name = excluded.name,
                  account = excluded.account, access = excluded.access,
                  refresh_token = excluded.refresh_token, endpoint = excluded.endpoint,
+                 calendar = excluded.calendar, mail = excluded.mail,
                  updated_at = now()
-             where calendar_connections.person = excluded.person",
+             where accounts.person = excluded.person",
         )
         .bind(&connection.id)
         .bind(&connection.person)
@@ -139,6 +158,8 @@ impl ConnectionStore for PostgresCalendars {
         .bind(connection.access.as_str())
         .bind(sealed)
         .bind(&connection.endpoint)
+        .bind(connection.calendar)
+        .bind(connection.mail.map(MailAccess::as_str))
         .execute(&self.pool)
         .await
         .map(|_| ())
@@ -148,20 +169,18 @@ impl ConnectionStore for PostgresCalendars {
     async fn update_credential(&self, id: &str, credential: &str) -> Result<()> {
         self.ensure_schema().await?;
         let sealed = self.seal(credential)?;
-        sqlx::query(
-            "update calendar_connections set refresh_token = $2, updated_at = now() where id = $1",
-        )
-        .bind(id)
-        .bind(sealed)
-        .execute(&self.pool)
-        .await
-        .map(|_| ())
-        .map_err(|e| self.storage(e))
+        sqlx::query("update accounts set refresh_token = $2, updated_at = now() where id = $1")
+            .bind(id)
+            .bind(sealed)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| self.storage(e))
     }
 
     async fn delete(&self, person: &str, id: &str) -> Result<bool> {
         self.ensure_schema().await?;
-        sqlx::query("delete from calendar_connections where person = $1 and id = $2")
+        sqlx::query("delete from accounts where person = $1 and id = $2")
             .bind(person)
             .bind(id)
             .execute(&self.pool)
