@@ -518,28 +518,28 @@ since_pr = 393
 id = "ui-settings-system"
 category = "ui.settings"
 summary = "Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons"
-since_pr = 9999
+since_pr = 394
 
 [[feature]]
 id = "ui-voice-roles"
 category = "ui.settings"
 summary = "Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it"
-since_pr = 9999
+since_pr = 394
 
 [[feature]]
 id = "ui-setup-checklist"
 category = "ui.settings"
 summary = "On a new install each System page leads with what it still needs, and the settings list counts it"
-since_pr = 9999
+since_pr = 394
 
 [[feature]]
 id = "assistant-none"
 category = "runtime.assistant"
 summary = "Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background"
-since_pr = 9999
+since_pr = 394
 
 [[feature]]
 id = "providers-default-elevenlabs-cerebras"
 category = "runtime.providers"
 summary = "A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so"
-since_pr = 9999
+since_pr = 394
