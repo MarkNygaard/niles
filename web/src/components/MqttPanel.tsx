@@ -23,12 +23,11 @@ export interface MqttPanelProps {
 }
 
 /**
- * The broker every light, plug and sensor is reached through — on the
- * Integrations page with the rest of what Niles connects to, rather
- * than a Settings page of its own as well.
+ * The broker every light, plug and sensor is reached through, as
+ * System → Devices sets it up.
  *
  * Niles connects once as it starts, so every value here waits for a
- * restart, and the dialog says so before anybody wonders why nothing
+ * restart, and the page says so before anybody wonders why nothing
  * moved.
  */
 export function MqttPanel({

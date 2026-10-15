@@ -78,7 +78,7 @@ export function SpeakersCard({
           </>
         ) : !report?.configured ? (
           <p className="text-muted-foreground text-sm">
-            Add Sonos under Integrations first, with the address of any one of
+            Add Sonos under Add-ons first, with the address of any one of
             your speakers. Niles finds the rest from it.
           </p>
         ) : (

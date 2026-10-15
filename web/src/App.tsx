@@ -218,6 +218,10 @@ function screenFor(route: string, pages: PluginPageEntry[]): Screen {
     case "/skills":
       return { at: route, title: "Skills", body: <SkillsPage /> };
   }
+  // A section of Settings, by its id: `#/me/settings/voice`.
+  if (route.startsWith("/me/settings/")) {
+    return { at: route, title: "Settings", body: <ConfigPanel /> };
+  }
   const rule = /^\/automations\/([^/]+)$/.exec(route);
   if (rule) {
     return {

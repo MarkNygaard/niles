@@ -31,9 +31,11 @@ function stubApi() {
       kind: "service",
       group: { id: "presence", label: "Presence & climate", blurb: "", requirement: null },
       importance: "optional",
+      system: false,
+      default_for: [],
       icon: "thermometer",
       secret_keys: [],
-          base_url: null,
+      base_url: null,
       serves: [],
       added: true,
       secret_key: null,
@@ -66,7 +68,11 @@ function renderPanel() {
 }
 
 describe("ConfigPanel", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    // The open section lives in the address, which tests share.
+    window.location.hash = "";
+  });
 
   it("re-asks what the server works out from the config, not only the config", async () => {
     // The bug: a write invalidated `config` and `history` and nothing
@@ -75,7 +81,7 @@ describe("ConfigPanel", () => {
     const patch = stubApi();
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: /Integrations/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Add-ons/ }));
     fireEvent.click(await screen.findByRole("button", { name: /Configure/ }));
     const before = vi.mocked(api.tadoStatus).mock.calls.length;
 
@@ -120,7 +126,7 @@ describe("ConfigPanel", () => {
     stubApi();
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: /Integrations/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Add-ons/ }));
     fireEvent.click(await screen.findByRole("button", { name: /Configure/ }));
     const before = vi.mocked(api.secrets).mock.calls.length;
 
@@ -217,23 +223,30 @@ async function setAndSave(label: string, value: string) {
 }
 
 describe("ConfigPanel, the settings that left the ConfigMap", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    window.location.hash = "";
+  });
 
-  it("has no Settings page for the broker: it is an integration", async () => {
-    stubHouse();
+  it("sets the broker up under System, on Devices", async () => {
+    const { patch } = stubHouse();
     renderPanel();
-    await screen.findByRole("button", { name: /Integrations/ });
-    expect(screen.queryByRole("button", { name: /Zigbee & MQTT/ })).toBeNull();
+    await open(/Devices/);
+    const host = await screen.findByLabelText("Broker address");
+    fireEvent.change(host, { target: { value: "mosquitto.local" } });
+    fireEvent.blur(host);
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    expect(patch.mock.calls[0][0]).toEqual({ mqtt: { host: "mosquitto.local" } });
   });
 
   it.each([
     ["Piper address", "http://piper:5000", { tts: { base_url: "http://piper:5000" } }],
     ["Voice voice model", "en_US-amy-low", { tts: { default_voice: "en_US-amy-low" } }],
     ["Language ISO 639-1, like en", "da", { stt: { language: "da" } }],
-  ])("writes %s from Speech & language", async (label, value, body) => {
+  ])("writes %s from Voice & AI", async (label, value, body) => {
     const { patch } = stubHouse();
     renderPanel();
-    await open(/Speech & language/);
+    await open(/Voice & AI/);
     await setAndSave(label, value);
     await waitFor(() => expect(patch).toHaveBeenCalled());
     expect(patch.mock.calls[0][0]).toEqual(body);
@@ -242,7 +255,7 @@ describe("ConfigPanel, the settings that left the ConfigMap", () => {
   it("says Piper only changes after a restart, and the language does not", async () => {
     stubHouse();
     renderPanel();
-    await open(/Speech & language/);
+    await open(/Voice & AI/);
     await screen.findByLabelText("Piper address");
     expect(within(rowOf("Piper")).getByText("restart required")).toBeInTheDocument();
     expect(within(rowOf("Language")).queryByText("restart required")).toBeNull();
@@ -254,7 +267,7 @@ describe("ConfigPanel, the settings that left the ConfigMap", () => {
     // the one request that means "unset".
     const { patch, reset } = stubHouse();
     renderPanel();
-    await open(/Speech & language/);
+    await open(/Voice & AI/);
     await setAndSave("Language ISO 639-1, like en", "");
     await waitFor(() => expect(reset).toHaveBeenCalledWith("stt.language"));
     expect(patch).not.toHaveBeenCalled();
@@ -311,6 +324,113 @@ describe("ConfigPanel, the settings that left the ConfigMap", () => {
     await waitFor(() => expect(stops()).toHaveLength(3));
   });
 
+});
+
+const SYSTEM = { id: "system", label: "System", blurb: "", requirement: null };
+
+function stubVoice() {
+  const { patch } = stubHouse();
+  vi.mocked(api.integrations).mockResolvedValue([
+    {
+      id: "elevenlabs",
+      label: "ElevenLabs",
+      blurb: "Hears what you say.",
+      needs: "An ElevenLabs account.",
+      kind: "provider",
+      group: SYSTEM,
+      importance: "required",
+      system: true,
+      default_for: ["stt"],
+      icon: "audio-lines",
+      secret_keys: ["provider.elevenlabs.api_key"],
+      base_url: "https://api.elevenlabs.io/v1",
+      serves: ["stt"],
+      models: { stt: ["scribe_v2"] },
+      added: false,
+      secret_key: "provider.elevenlabs.api_key",
+    },
+  ]);
+  vi.mocked(api.secrets).mockResolvedValue({
+    writable: true,
+    secrets: [{ key: "provider.elevenlabs.api_key", label: "ElevenLabs API key", source: "unset" }],
+  });
+  vi.mocked(api.setup).mockResolvedValue({
+    set_up: false,
+    gaps: [
+      {
+        path: "stt.api_key",
+        severity: "degraded",
+        consequence:
+          "Niles can't hear yet: choose and set up a hearing provider. ElevenLabs needs an API key.",
+      },
+    ],
+  });
+  const setSecret = vi.spyOn(api, "setSecret").mockResolvedValue(undefined);
+  return { patch, setSecret };
+}
+
+describe("ConfigPanel, System", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    window.location.hash = "";
+  });
+
+  it("says on Voice & AI what a new install still needs, and counts it in the list", async () => {
+    stubVoice();
+    renderPanel();
+    expect(
+      await screen.findByRole("button", { name: /Voice & AI.*1 to set up/ }),
+    ).toBeInTheDocument();
+    await open(/Voice & AI/);
+    expect(await screen.findByText(/Niles can't hear yet/)).toBeInTheDocument();
+  });
+
+  it("declares the provider picked, points the role at it, then keeps its key", async () => {
+    const order: string[] = [];
+    const { patch, setSecret } = stubVoice();
+    patch.mockImplementation(async (body) => {
+      order.push("patch");
+      return { revision: 1, noop: false, changes: [], summary: JSON.stringify(body), needs_restart: [] };
+    });
+    setSecret.mockImplementation(async () => {
+      order.push("key");
+    });
+    renderPanel();
+    await open(/Voice & AI/);
+    fireEvent.change(await screen.findByLabelText("ElevenLabs API key"), {
+      target: { value: "el-key" },
+    });
+    fireEvent.click(
+      screen
+        .getAllByRole("button", { name: "Save" })
+        .find((b) => !(b as HTMLButtonElement).disabled)!,
+    );
+    await waitFor(() => expect(setSecret).toHaveBeenCalled());
+    expect(patch.mock.calls[0][0]).toEqual({
+      providers: [
+        { name: "elevenlabs", base_url: "https://api.elevenlabs.io/v1", serves: ["stt"] },
+      ],
+      stt: { provider: "elevenlabs", model: "scribe_v2" },
+    });
+    expect(setSecret).toHaveBeenCalledWith("provider.elevenlabs.api_key", "el-key");
+    // The provider is in the config before its key is saved.
+    expect(order).toEqual(["patch", "key"]);
+  });
+
+  it("opens Add-ons from an old Integrations address", async () => {
+    stubHouse();
+    window.location.hash = "#/me/settings/integrations";
+    renderPanel();
+    expect(await screen.findByRole("searchbox", { name: "Search add-ons" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#/me/settings/addons"));
+  });
+
+  it("opens Voice & AI from an old Speech & language address", async () => {
+    stubHouse();
+    window.location.hash = "#/me/settings/language";
+    renderPanel();
+    expect(await screen.findByLabelText("Piper address")).toBeInTheDocument();
+  });
 });
 
 describe("satellitesAt", () => {

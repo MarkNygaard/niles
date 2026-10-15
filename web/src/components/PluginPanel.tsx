@@ -382,7 +382,7 @@ export function PluginPanel({
               disabled={busy}
               onClick={() => setConfirmRemove(true)}
             >
-              <Trash2 aria-hidden /> Remove {plugin.name}
+              <Trash2 aria-hidden /> Remove add-on
             </Button>
           </div>
         )}

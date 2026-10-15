@@ -15,7 +15,7 @@ export const RANK: Record<Importance, number> = {
 };
 
 /**
- * The integrations under their groups, groups in the order they first
+ * The add-ons under their groups, groups in the order they first
  * appear. The server sends them in page order, so this is the page's
  * order without the page knowing what the groups are.
  */
@@ -31,29 +31,15 @@ export function groupsOf(
   return [...groups.values()];
 }
 
-/** The roles no added provider serves yet. */
-export function uncoveredRoles(integrations: Integration[]): ("stt" | "llm")[] {
-  const added = integrations.filter((i) => i.added && i.kind === "provider");
-  return (["stt", "llm"] as const).filter(
-    (role) => !added.some((p) => p.serves.includes(role)),
-  );
-}
-
 /**
  * Whether its row says Required.
  *
- * A provider is required only as "one of" for a role: once something
- * serves that role, the others are a choice rather than a gap, and a
- * badge saying otherwise sends somebody off to make accounts they do
- * not need.
+ * None of the add-ons Niles ships is — what it cannot work without is
+ * under System — but the catalogue can say so, and the row says it
+ * when it does.
  */
-export function showsRequired(
-  integration: Integration,
-  uncovered: ("stt" | "llm")[],
-): boolean {
-  if (integration.added || integration.importance !== "required") return false;
-  if (integration.kind !== "provider") return true;
-  return integration.serves.some((role) => uncovered.includes(role));
+export function showsRequired(integration: Integration): boolean {
+  return !integration.added && integration.importance === "required";
 }
 
 /** Whether a search finds it: by name, by what it does, or by its group. */
@@ -92,12 +78,12 @@ const WORKING: Status = { ok: true, text: "Working" };
 /**
  * Whether it is finished, not merely added, and if not, what is left.
  *
- * A provider with no key is a row that looks done and answers nothing;
+ * An add-on with no key is a row that looks done and does nothing;
  * naming the missing piece saves opening it to find out.
  */
 export function statusOf(integration: Integration, inputs: StatusInputs): Status {
   // A key the report does not list is one this page cannot judge, so
-  // it is not held against the integration.
+  // it is not held against the add-on.
   const missing = (...keys: (string | null)[]) =>
     keys.some(
       (key) =>
