@@ -53,3 +53,5 @@ wiremock = "0.6"
 # A real broker for the MQTT tests, with a certificate made on the spot.
 rumqttd = { version = "0.20", default-features = false, features = ["use-rustls"] }
 rcgen = "0.14"
+# PEM for the v1 certificate the tests build by hand.
+base64.workspace = true

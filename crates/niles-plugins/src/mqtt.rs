@@ -33,7 +33,7 @@ use rumqttc::{
     Subscribe, SubscribeFilter, SubscribeReasonCode, Unsubscribe,
 };
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::{CertificateDer, ServerName, SubjectPublicKeyInfoDer, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -577,14 +577,111 @@ pub(crate) fn pin_key(target: &MqttTarget) -> String {
 
 /// The SHA-256 of a certificate's public key, as hex pairs.
 pub fn fingerprint(certificate: &CertificateDer<'_>) -> Result<String, String> {
-    let parsed = webpki::EndEntityCert::try_from(certificate)
-        .map_err(|e| format!("the certificate cannot be read: {e}"))?;
-    let digest = Sha256::digest(parsed.subject_public_key_info().as_ref());
+    let digest = Sha256::digest(public_key_info(certificate)?);
     Ok(digest
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
         .join(":"))
+}
+
+/// A certificate's `subjectPublicKeyInfo`, whole, read straight from its
+/// DER.
+///
+/// Not through webpki, which reads only X.509 v3: a device that signs
+/// its own certificate often makes a v1 one — a Bambu Lab printer does —
+/// and was refused before its key could even be pinned. Nothing here
+/// needs the rest of the certificate; trusting a device is trusting its
+/// key.
+pub(crate) fn public_key_info(certificate: &[u8]) -> Result<&[u8], String> {
+    let unreadable = || "the certificate cannot be read".to_string();
+    let (tag, cert, _) = der(certificate).ok_or_else(unreadable)?;
+    let (tbs_tag, tbs, _) = der(cert).ok_or_else(unreadable)?;
+    if tag != 0x30 || tbs_tag != 0x30 {
+        return Err(unreadable());
+    }
+    let mut rest = tbs;
+    // `[0] version`, which a v1 certificate leaves out.
+    if rest.first() == Some(&0xA0) {
+        rest = der(rest).ok_or_else(unreadable)?.2;
+    }
+    // Serial number, signature algorithm, issuer, validity, subject.
+    for _ in 0..5 {
+        rest = der(rest).ok_or_else(unreadable)?.2;
+    }
+    let (key_tag, _, after) = der(rest).ok_or_else(unreadable)?;
+    if key_tag != 0x30 {
+        return Err(unreadable());
+    }
+    Ok(&rest[..rest.len() - after.len()])
+}
+
+/// One DER element at the front of `input`: its tag, its contents, and
+/// what follows it.
+pub(crate) fn der(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    let (&tag, rest) = input.split_first()?;
+    let (&first, rest) = rest.split_first()?;
+    let (len, rest) = if first < 0x80 {
+        (usize::from(first), rest)
+    } else {
+        let n = usize::from(first & 0x7f);
+        if n == 0 || n > 4 || rest.len() < n {
+            return None;
+        }
+        let len = rest[..n]
+            .iter()
+            .fold(0usize, |len, byte| (len << 8) | usize::from(*byte));
+        (len, &rest[n..])
+    };
+    (rest.len() >= len).then(|| (tag, &rest[..len], &rest[len..]))
+}
+
+/// The handshake signature, checked against the key in the certificate
+/// — again without webpki's certificate parsing, for the same v1
+/// certificates.
+fn signed_by_key(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &DigitallySignedStruct,
+    algorithms: &rustls::crypto::WebPkiSupportedAlgorithms,
+    tls13: bool,
+) -> Result<HandshakeSignatureValid, rustls::Error> {
+    let spki = SubjectPublicKeyInfoDer::from(
+        public_key_info(cert.as_ref()).map_err(rustls::Error::General)?,
+    );
+    if tls13 {
+        return rustls::crypto::verify_tls13_signature_with_raw_key(
+            message, &spki, dss, algorithms,
+        );
+    }
+    let key = webpki::RawPublicKeyEntity::try_from(&spki)
+        .map_err(|e| rustls::Error::General(format!("the device's key cannot be used: {e}")))?;
+    let mut last = None;
+    let candidates = algorithms
+        .mapping
+        .iter()
+        .find(|(scheme, _)| *scheme == dss.scheme)
+        .map(|(_, candidates)| *candidates)
+        .ok_or(rustls::Error::PeerMisbehaved(
+            rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme,
+        ))?;
+    for algorithm in candidates {
+        match key.verify_signature(*algorithm, message, dss.signature()) {
+            Ok(()) => return Ok(HandshakeSignatureValid::assertion()),
+            Err(e @ webpki::Error::UnsupportedSignatureAlgorithmForPublicKeyContext(_)) => {
+                last = Some(e);
+            }
+            Err(e) => {
+                return Err(rustls::Error::General(format!(
+                    "the device's handshake signature is wrong: {e}"
+                )));
+            }
+        }
+    }
+    Err(rustls::Error::General(format!(
+        "the device's key cannot make that signature{}",
+        last.map(|e| format!(": {e}")).unwrap_or_default()
+    )))
 }
 
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
@@ -653,11 +750,12 @@ impl ServerCertVerifier for TrustDevice {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
+        signed_by_key(
             message,
             cert,
             dss,
             &self.provider.signature_verification_algorithms,
+            false,
         )
     }
 
@@ -667,11 +765,12 @@ impl ServerCertVerifier for TrustDevice {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
+        signed_by_key(
             message,
             cert,
             dss,
             &self.provider.signature_verification_algorithms,
+            true,
         )
     }
 
@@ -1482,5 +1581,33 @@ mod tests {
         let key = pin_key(&target);
         assert!(key.starts_with(".niles/mqtt-pin/printer/"), "{key}");
         assert!(key.len() <= crate::store::MAX_KEY);
+    }
+}
+
+#[cfg(test)]
+mod real_device {
+    use super::*;
+
+    /// A TLS handshake with a real device, trusting it as `trust-device`
+    /// does, without logging in.
+    ///
+    /// `NILES_TEST_TLS_DEVICE=192.168.1.40:8883 cargo test -p niles-plugins -- --ignored real_device`
+    #[tokio::test]
+    #[ignore = "needs NILES_TEST_TLS_DEVICE"]
+    async fn a_real_device_shakes_hands() {
+        let Ok(address) = std::env::var("NILES_TEST_TLS_DEVICE") else {
+            return;
+        };
+        let (host, _) = address.rsplit_once(':').expect("host:port");
+        let seen = Arc::new(Mutex::new(None));
+        let connector =
+            rumqttc::tokio_rustls::TlsConnector::from(Arc::new(trusting(None, seen.clone())));
+        let tcp = tokio::net::TcpStream::connect(&address)
+            .await
+            .expect("reachable");
+        let name = ServerName::try_from(host.to_string()).expect("a name");
+        connector.connect(name, tcp).await.expect("the handshake");
+        assert!(lock(&seen).is_some(), "a key was seen");
+        println!("key: {}", lock(&seen).clone().unwrap());
     }
 }
