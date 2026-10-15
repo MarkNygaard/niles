@@ -7,18 +7,18 @@
 //! JavaScript and Python one does, since their toolchains import the
 //! whole world — gets `not-permitted` rather than a link error.
 
-use crate::bindings::{config_0_2, devices_0_2, mqtt};
 use crate::bindings::niles::integration::{
     config, devices, events, http as wit_http, log, notify, storage, timers, types, ui,
 };
+use crate::bindings::{config_0_2, devices_0_2, mqtt};
 use crate::manifest::{EventPermission, Notify, SettingKind, SettingValue, TAKEN_READINGS};
 use crate::mqtt::{Connection, MAX_CONNECTIONS, RESERVED};
 use crate::policy::{HttpPolicy, MqttPolicy};
 use crate::runtime::{House, Plugin};
 use crate::store::{KnownDevice, MAX_KEY, Stored};
 use niles_core::{
-    DeviceClass, DeviceId, DeviceName, DeviceState, Event, LightCapabilities, Reading,
-    RoomName, validate_reading_name,
+    DeviceClass, DeviceId, DeviceName, DeviceState, Event, LightCapabilities, Reading, RoomName,
+    validate_reading_name,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;

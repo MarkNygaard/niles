@@ -62,8 +62,22 @@ fn words(slug: &str) -> String {
 /// (finished)" is what treating every action as a press sounded like.
 fn is_press(action: &str) -> bool {
     const PRESSES: &[&str] = &[
-        "single", "double", "triple", "quadruple", "many", "hold", "release", "long", "toggle",
-        "on", "off", "shake", "tap", "slide", "flip90", "flip180",
+        "single",
+        "double",
+        "triple",
+        "quadruple",
+        "many",
+        "hold",
+        "release",
+        "long",
+        "toggle",
+        "on",
+        "off",
+        "shake",
+        "tap",
+        "slide",
+        "flip90",
+        "flip180",
     ];
     const PARTS: &[&str] = &["press", "hold", "release", "click", "rotate", "brightness"];
     let action = action.to_ascii_lowercase();

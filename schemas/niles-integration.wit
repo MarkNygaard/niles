@@ -346,10 +346,11 @@ interface devices {
 
     /// Whether the device is one of its room's lights: switched by "turn
     /// off the office lights", "all lights", scenes and presence, and
-    /// followed by the light curve and the morning routine. Lights are,
-    /// until this says otherwise; other classes never are. `false` keeps
-    /// a light out of all that, such as a printer's chamber light that
-    /// must stay on mid-print. It can still be switched by name, by the
+    /// followed by the light curve and the morning routine. A light is,
+    /// until this says otherwise; a plug is only when the household lists
+    /// it as a lamp; other classes never are. `false` keeps a light (or a
+    /// listed plug) out of all that, such as a printer's chamber light
+    /// that must stay on mid-print. It can still be switched by name, by the
     /// assistant's tools and by rules. Kept across `upsert` and restarts.
     /// Since 0.2.1.
     set-room-light: func(id: device-id, room-light: bool) -> result<_, host-error>;

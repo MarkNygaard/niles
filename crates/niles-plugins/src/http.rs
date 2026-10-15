@@ -100,9 +100,9 @@ pub async fn send(
             .map(str::to_string);
         match (status.is_redirection(), location) {
             (true, Some(location)) => {
-                let next = url
-                    .join(&location)
-                    .map_err(|_| Failure::Connection(format!("a redirect to {location:?}"), None))?;
+                let next = url.join(&location).map_err(|_| {
+                    Failure::Connection(format!("a redirect to {location:?}"), None)
+                })?;
                 // What a browser does: a 303, or a 301/302 after a POST,
                 // continues as a GET without the body.
                 let becomes_get = status == reqwest::StatusCode::SEE_OTHER
@@ -184,9 +184,7 @@ async fn hop(
     if literal.is_none() {
         client = client.resolve(&admitted.host, SocketAddr::new(ip, port));
     }
-    let client = client
-        .build()
-        .map_err(|e| connection("", &e))?;
+    let client = client.build().map_err(|e| connection("", &e))?;
     let mut builder = client
         .request(method.clone(), url.clone())
         .headers(headers.clone());

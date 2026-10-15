@@ -107,8 +107,7 @@ async fn a_component_built_against_0_2_0_still_loads_and_runs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_0_2_1_component_is_told_the_house_time_zone() {
-    let report =
-        niles_plugins::check::check(PRINTER_MANIFEST, Some(PRINTER.to_vec()), None).await;
+    let report = niles_plugins::check::check(PRINTER_MANIFEST, Some(PRINTER.to_vec()), None).await;
     assert!(report.ok(), "{:?}", report.problems);
     assert!(
         report

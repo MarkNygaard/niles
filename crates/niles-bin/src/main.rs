@@ -4843,20 +4843,19 @@ async fn dispatch_text(
             Some(response::all_lights(on))
         }
         Intent::LightDim { room, percent } => {
-            let (_canonical, targets) =
-                match resolve_room_targets(ctx, peer, &room, |d| {
-                    d.room_light && d.state.brightness.is_some()
-                }) {
-                    RoomResolve::Found(c, t) => (c, t),
-                    RoomResolve::BadName | RoomResolve::NoDevices => {
-                        // Tier 0 matched a light intent but found no target
-                        // (e.g. "living room ceiling light" parsed as room
-                        // "living room ceiling"). Let the LLM resolve it
-                        // rather than dead-ending. See dispatch_tier1.
-                        return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
-                    }
-                    RoomResolve::WarmingUp => return Some(response::room_warming_up()),
-                };
+            let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
+                d.room_light && d.state.brightness.is_some()
+            }) {
+                RoomResolve::Found(c, t) => (c, t),
+                RoomResolve::BadName | RoomResolve::NoDevices => {
+                    // Tier 0 matched a light intent but found no target
+                    // (e.g. "living room ceiling light" parsed as room
+                    // "living room ceiling"). Let the LLM resolve it
+                    // rather than dead-ending. See dispatch_tier1.
+                    return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
+                }
+                RoomResolve::WarmingUp => return Some(response::room_warming_up()),
+            };
             // Flag each dimmable target *before* publishing so the
             // curve driver can't race a tick in between and overwrite
             // the dim we're about to send.
@@ -4874,20 +4873,19 @@ async fn dispatch_text(
             room,
             delta_percent,
         } => {
-            let (_canonical, targets) =
-                match resolve_room_targets(ctx, peer, &room, |d| {
-                    d.room_light && d.state.brightness.is_some()
-                }) {
-                    RoomResolve::Found(c, t) => (c, t),
-                    RoomResolve::BadName | RoomResolve::NoDevices => {
-                        // Tier 0 matched a light intent but found no target
-                        // (e.g. "living room ceiling light" parsed as room
-                        // "living room ceiling"). Let the LLM resolve it
-                        // rather than dead-ending. See dispatch_tier1.
-                        return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
-                    }
-                    RoomResolve::WarmingUp => return Some(response::room_warming_up()),
-                };
+            let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
+                d.room_light && d.state.brightness.is_some()
+            }) {
+                RoomResolve::Found(c, t) => (c, t),
+                RoomResolve::BadName | RoomResolve::NoDevices => {
+                    // Tier 0 matched a light intent but found no target
+                    // (e.g. "living room ceiling light" parsed as room
+                    // "living room ceiling"). Let the LLM resolve it
+                    // rather than dead-ending. See dispatch_tier1.
+                    return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
+                }
+                RoomResolve::WarmingUp => return Some(response::room_warming_up()),
+            };
             // `resolve_room_targets` already filtered for devices with
             // brightness, so every target has a known value.
             let base = (targets
@@ -7895,7 +7893,10 @@ mod switch_target_tests {
         let reg = DeviceRegistry::new();
         reg.upsert(dev("z2m:office/switch", DeviceClass::Switch));
         reg.upsert(dev("x_bambulab:office/printer", DeviceClass::Sensor));
-        assert!(is_wall_switch(&reg, &DeviceId::parse("z2m:office/switch").unwrap()));
+        assert!(is_wall_switch(
+            &reg,
+            &DeviceId::parse("z2m:office/switch").unwrap()
+        ));
         assert!(!is_wall_switch(
             &reg,
             &DeviceId::parse("x_bambulab:office/printer").unwrap()

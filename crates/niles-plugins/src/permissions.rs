@@ -120,7 +120,10 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
                 "device_state",
                 "See every device in your home change: lights, doors, motion",
             ),
-            EventPermission::DeviceAction => ("device_action", "See button presses and what other devices report"),
+            EventPermission::DeviceAction => (
+                "device_action",
+                "See button presses and what other devices report",
+            ),
             EventPermission::Presence => {
                 ("presence", "Know when the house becomes occupied or empty")
             }

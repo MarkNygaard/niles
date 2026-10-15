@@ -2255,7 +2255,10 @@ mod tests {
             .execute(json!({ "room": "garden", "on": false }))
             .await
             .unwrap();
-        assert!(!result["set"].to_string().contains("garden/lamp"), "{result}");
+        assert!(
+            !result["set"].to_string().contains("garden/lamp"),
+            "{result}"
+        );
         assert!(plugins.told.lock().unwrap().is_empty());
 
         let device = SetDevice::new(registry, mock, router, false);

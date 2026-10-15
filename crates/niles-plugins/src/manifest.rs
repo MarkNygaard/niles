@@ -822,7 +822,11 @@ room = "setting:room"
         let manifest = Manifest::parse(&format!("{SPOTPRICE}\n{ROOM_WIDGET}")).unwrap();
         let widget = &manifest.ui.widgets[0];
         let mut values = toml::Table::new();
-        assert_eq!(manifest.widget_room(widget, &values), None, "the front page");
+        assert_eq!(
+            manifest.widget_room(widget, &values),
+            None,
+            "the front page"
+        );
         values.insert("room".into(), "office".into());
         assert_eq!(
             manifest.widget_room(widget, &values).as_deref(),

@@ -71,9 +71,7 @@ fn tls_reason(e: &rustls::Error, peer: &str) -> String {
                     "it is not valid yet"
                 }
                 CertificateError::NotValidForName
-                | CertificateError::NotValidForNameContext { .. } => {
-                    "it is for another address"
-                }
+                | CertificateError::NotValidForNameContext { .. } => "it is for another address",
                 CertificateError::UnknownIssuer => "it is not signed by an authority Niles trusts",
                 CertificateError::Revoked => "it has been revoked",
                 CertificateError::BadSignature => "its signature does not check out",
@@ -167,14 +165,8 @@ mod tests {
 
     #[test]
     fn what_is_not_known_loses_its_links_and_error_numbers() {
-        let e = io_error(
-            ErrorKind::Other,
-            "something odd happened (os error 1234)",
-        );
+        let e = io_error(ErrorKind::Other, "something odd happened (os error 1234)");
         assert_eq!(said(&e, "the broker"), "something odd happened");
-        assert_eq!(
-            plain("bad thing: https://docs.rs/x"),
-            "bad thing"
-        );
+        assert_eq!(plain("bad thing: https://docs.rs/x"), "bad thing");
     }
 }

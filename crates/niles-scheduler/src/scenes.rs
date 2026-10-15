@@ -428,7 +428,10 @@ mod tests {
         reg.upsert(chamber);
 
         assert_eq!(store.save("work", &reg, None, &HashSet::new()), 1);
-        assert_eq!(store.get("work").unwrap()[0].device_id, dev_in("office", "lamp"));
+        assert_eq!(
+            store.get("work").unwrap()[0].device_id,
+            dev_in("office", "lamp")
+        );
     }
 
     #[test]

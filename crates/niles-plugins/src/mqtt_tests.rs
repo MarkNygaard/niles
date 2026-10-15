@@ -370,8 +370,8 @@ async fn a_refused_connection_is_said_plainly_and_the_os_words_are_kept_for_debu
     );
     let log = home.runtime.log("relay");
     assert!(
-        log.iter().any(|l| l.level == crate::log::Level::Debug
-            && l.message.starts_with("MQTT plain: ")),
+        log.iter()
+            .any(|l| l.level == crate::log::Level::Debug && l.message.starts_with("MQTT plain: ")),
         "{log:?}"
     );
 }
@@ -396,10 +396,7 @@ async fn a_refused_password_stops_the_trying() {
     });
     let home = Home::new(Arc::new(MemoryStore::new()), "127.0.0.1", "plain").await;
     home.install_relay(port, free_port()).await;
-    assert_eq!(
-        home.told(1).await,
-        ["failed: wrong username or password"]
-    );
+    assert_eq!(home.told(1).await, ["failed: wrong username or password"]);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(attempts.load(Ordering::SeqCst), 1, "no second try");
 }

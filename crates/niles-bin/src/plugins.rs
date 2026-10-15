@@ -436,11 +436,9 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
                 tokio::time::sleep(time).await;
             }
             Wait::Mqtt => {
-                let heard = tokio::time::timeout(
-                    MQTT_FIRST_STATUS,
-                    first_status.wait_for(|heard| *heard),
-                )
-                .await;
+                let heard =
+                    tokio::time::timeout(MQTT_FIRST_STATUS, first_status.wait_for(|heard| *heard))
+                        .await;
                 if heard.is_ok() {
                     tokio::time::sleep(RETAINED_GRACE).await;
                 } else {
@@ -1178,7 +1176,9 @@ type = "secret"
 
     fn dev_args(args: &[&str]) -> DevArgs {
         use clap::Parser as _;
-        Cli::try_parse_from(["dev", "."].iter().chain(args)).unwrap().dev
+        Cli::try_parse_from(["dev", "."].iter().chain(args))
+            .unwrap()
+            .dev
     }
 
     #[test]
@@ -1225,7 +1225,11 @@ type = "secret"
     #[test]
     fn the_newer_of_the_packaged_and_the_built_component_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let release = dir.path().join("target").join("wasm32-wasip2").join("release");
+        let release = dir
+            .path()
+            .join("target")
+            .join("wasm32-wasip2")
+            .join("release");
         std::fs::create_dir_all(&release).unwrap();
         let packaged = dir.path().join("integration.wasm");
         let built = release.join("plugin.wasm");

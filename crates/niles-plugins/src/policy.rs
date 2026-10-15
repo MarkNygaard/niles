@@ -819,8 +819,14 @@ mod tests {
     fn a_setting_that_names_this_machine_is_reached_only_when_dev_allows_it() {
         for address in ["127.0.0.1:8080", "localhost", "[::1]:8080"] {
             let p = policy(&[], &["setting:address"], Some(address));
-            assert!(p.admit(&url("http://127.0.0.1:8080/")).is_err(), "{address}");
-            assert!(p.admit(&url("http://localhost:8080/")).is_err(), "{address}");
+            assert!(
+                p.admit(&url("http://127.0.0.1:8080/")).is_err(),
+                "{address}"
+            );
+            assert!(
+                p.admit(&url("http://localhost:8080/")).is_err(),
+                "{address}"
+            );
 
             let dev = p.allowing_loopback();
             let ok = dev.admit(&url("http://127.0.0.1:8080/status")).unwrap();
@@ -840,8 +846,7 @@ mod tests {
         let ok = internet.admit(&url("https://api.example.com/")).unwrap();
         assert!(internet.allows(&ok, ip("127.0.0.1")).is_err());
 
-        let device =
-            policy(&[], &["setting:address"], Some("192.168.1.50")).allowing_loopback();
+        let device = policy(&[], &["setting:address"], Some("192.168.1.50")).allowing_loopback();
         assert!(device.admit(&url("http://127.0.0.1/")).is_err());
     }
 
