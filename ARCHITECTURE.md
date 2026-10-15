@@ -2198,10 +2198,27 @@ A cookie is for a person with a browser. Niles is also read from a
 terminal — `/logs` and `/devices` are the fastest way to answer "why
 did it do that", and that is the reason the endpoint exists at all.
 
-So there is also a **bearer token**, one value, referenced by env-var
-name, compared in constant time. It is not a lesser session: it is the
-operator, and it is not subject to the allowlist because it is not a
-person. Cookie for people, token for scripts.
+So there is also a **bearer token**, the API key, one value, compared in
+constant time. It is not a lesser session: it is the operator, and it is
+not subject to the allowlist because it is not a person. Cookie for
+people, token for scripts.
+
+Niles makes it. On a start with a database and no key, it generates 32
+bytes from the operating system's random source, as hex, and keeps them
+in the encrypted secret store as `auth.api_token`; it never logs the
+value. Without a database there is nowhere to keep one, and none is
+made. A deployment that wants to own the key names a variable in
+`[auth] api_token_env`, and a set variable wins over the stored key.
+
+The gate reads the key per request, not once at startup, so a new one
+replaces the old one at once. **Settings → API access** shows it masked,
+reveals and copies it, and makes a new one after a confirmation. Its
+routes, `GET /auth/api-token` and `POST /auth/api-token/rotate`, are for
+a signed-in person only: a request carrying a bearer token is refused
+(403), so a key that leaks can neither read its replacement nor rotate
+it to lock the household's scripts out. A key from the environment is
+never shown, and rotating it is refused (409). The key is not in the
+generic `/secrets` list, so it lives in one place.
 
 ### Managing people
 

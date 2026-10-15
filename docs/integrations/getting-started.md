@@ -256,7 +256,8 @@ its own field. Your pages are in the menu, and your widgets on the front page
 or their room; open one to see it drawn.
 
 A script can do the same through the config API, which restarts the plugin
-with the new values:
+with the new values. `$NILES_API_TOKEN` here is the key from Settings → API
+access:
 
 ```sh
 curl -X PATCH https://niles.example.com/config \
