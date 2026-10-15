@@ -1,0 +1,26 @@
+# The interface 0.2.1 plugin the tests load: a printer that reports
+# actions though it is no switch, a chamber light kept out of its room's
+# lights, and the house's time zone. Built to `../printer.wasm` by
+# `build.sh` / `build.ps1`, and the built component is committed, so the
+# tests need no WebAssembly toolchain.
+[package]
+name = "niles-plugin-printer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.63"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+# Its own workspace: it is built for wasm32-wasip2, never with Niles.
+[workspace]
