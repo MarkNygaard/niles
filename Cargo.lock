@@ -2554,8 +2554,10 @@ dependencies = [
  "niles-config",
  "niles-presence",
  "niles-recognition",
+ "niles-training",
  "rand 0.10.2",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
  "sqlx",
  "tokio",
@@ -2857,6 +2859,20 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "niles-training"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
