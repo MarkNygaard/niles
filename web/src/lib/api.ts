@@ -411,7 +411,7 @@ export type CalendarAccess = "read" | "write";
 
 export type CalendarProvider = "microsoft" | "google" | "icloud";
 
-/** One calendar account a person connected. */
+/** One account a person connected, serving Calendar, Mail or both. */
 export interface CalendarConnection {
   id: string;
   provider: CalendarProvider;
@@ -419,7 +419,11 @@ export interface CalendarConnection {
   name: string;
   /** The account's address. */
   account: string;
+  /** Whether it serves Calendar, with `access`. */
+  calendar: boolean;
   access: CalendarAccess;
+  /** What it may do with mail, when it serves Mail. */
+  mail: "read" | "send" | null;
   /** False for iCloud, where read only is Niles's rule, not Apple's. */
   enforced_by_provider: boolean;
 }
@@ -433,7 +437,8 @@ export interface CalendarsView {
 
 export interface IcloudConnect {
   name: string;
-  access: CalendarAccess;
+  calendar: "none" | "read" | "write";
+  mail: "none" | "read" | "send";
   apple_id: string;
   password: string;
 }
@@ -1420,11 +1425,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  /** iCloud only: the others are granted their access at sign-in. */
-  setCalendarAccess: (id: string, access: CalendarAccess) =>
-    request<CalendarConnection>(`/calendars/${encodeURIComponent(id)}`, {
+  /** iCloud only: the others are granted what they serve at sign-in.
+      Nothing ticked removes the account, and answers null. */
+  setAccountServices: (
+    id: string,
+    ticks: { calendar: "none" | "read" | "write"; mail: "none" | "read" | "send" },
+  ) =>
+    request<CalendarConnection | null>(`/calendars/${encodeURIComponent(id)}`, {
       method: "PUT",
-      body: JSON.stringify({ access }),
+      body: JSON.stringify(ticks),
     }),
   /** Shows the prompt on the TV and waits up to a minute for it. */
   pairTv: () => request<{ mac: string | null }>("/tv/pair", { method: "POST" }),

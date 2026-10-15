@@ -9,7 +9,7 @@
 //! and chrono knows the IANA ones.
 
 use crate::error::{Error, Result};
-use crate::model::{Access, Event, NewEvent};
+use crate::model::{Access, Event, MailAccess, NewEvent, Services};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
@@ -40,14 +40,22 @@ pub struct Tokens {
     pub expires_at: DateTime<Utc>,
 }
 
-/// What a connection asks Microsoft to grant. `offline_access` is
-/// what yields a refresh token; `User.Read` names the account.
-pub fn scopes(access: Access) -> String {
-    let calendars = match access {
-        Access::Read => "Calendars.Read",
-        Access::Write => "Calendars.ReadWrite",
-    };
-    format!("offline_access User.Read {calendars}")
+/// What an account asks Microsoft to grant: exactly what its ticks
+/// need. `offline_access` is what yields a refresh token; `User.Read`
+/// names the account.
+pub fn scopes(services: Services) -> String {
+    let mut scopes = vec!["offline_access", "User.Read"];
+    match services.calendar {
+        Some(Access::Read) => scopes.push("Calendars.Read"),
+        Some(Access::Write) => scopes.push("Calendars.ReadWrite"),
+        None => {}
+    }
+    match services.mail {
+        Some(MailAccess::Read) => scopes.push("Mail.Read"),
+        Some(MailAccess::Send) => scopes.extend(["Mail.Read", "Mail.Send"]),
+        None => {}
+    }
+    scopes.join(" ")
 }
 
 #[derive(Deserialize)]
@@ -71,12 +79,12 @@ impl MicrosoftApp {
     /// Where to send the person's browser. `select_account`, because a
     /// person with two accounts is exactly who this is for, and the
     /// browser would otherwise sign the second in as the first.
-    pub fn authorize_url(&self, state: &str, access: Access) -> String {
+    pub fn authorize_url(&self, state: &str, services: Services) -> String {
         format!(
             "{AUTHORITY}/authorize?client_id={}&response_type=code&redirect_uri={}&response_mode=query&scope={}&state={}&prompt=select_account",
             urlencoding::encode(&self.client_id),
             urlencoding::encode(&self.redirect_uri),
-            urlencoding::encode(&scopes(access)),
+            urlencoding::encode(&scopes(services)),
             urlencoding::encode(state),
         )
     }
@@ -86,7 +94,7 @@ impl MicrosoftApp {
         &self,
         http: &reqwest::Client,
         code: &str,
-        access: Access,
+        services: Services,
     ) -> Result<Tokens> {
         self.token(
             http,
@@ -94,7 +102,7 @@ impl MicrosoftApp {
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("redirect_uri", &self.redirect_uri),
-                ("scope", &scopes(access)),
+                ("scope", &scopes(services)),
             ],
             None,
         )
@@ -107,7 +115,7 @@ impl MicrosoftApp {
         &self,
         http: &reqwest::Client,
         refresh_token: &str,
-        access: Access,
+        services: Services,
         name: &str,
     ) -> Result<Tokens> {
         self.token(
@@ -115,7 +123,7 @@ impl MicrosoftApp {
             &[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token),
-                ("scope", &scopes(access)),
+                ("scope", &scopes(services)),
             ],
             Some(name),
         )
@@ -444,7 +452,13 @@ mod tests {
             client_secret: "secret".into(),
             redirect_uri: "https://niles.example/calendars/microsoft/callback".into(),
         };
-        let read = app.authorize_url("s1", Access::Read);
+        let read = app.authorize_url(
+            "s1",
+            Services {
+                calendar: Some(Access::Read),
+                mail: None,
+            },
+        );
         assert!(read.contains("Calendars.Read&"), "{read}");
         assert!(!read.contains("ReadWrite"), "{read}");
         assert!(read.contains("offline_access"));
@@ -452,9 +466,30 @@ mod tests {
             "redirect_uri=https%3A%2F%2Fniles.example%2Fcalendars%2Fmicrosoft%2Fcallback"
         ));
         assert!(
-            app.authorize_url("s1", Access::Write)
-                .contains("Calendars.ReadWrite")
+            app.authorize_url(
+                "s1",
+                Services {
+                    calendar: Some(Access::Write),
+                    mail: None
+                }
+            )
+            .contains("Calendars.ReadWrite")
         );
+        assert!(!read.contains("Mail."), "{read}");
+    }
+
+    #[test]
+    fn asks_for_mail_only_when_it_is_ticked() {
+        let both = scopes(Services {
+            calendar: Some(Access::Read),
+            mail: Some(MailAccess::Read),
+        });
+        assert_eq!(both, "offline_access User.Read Calendars.Read Mail.Read");
+        let send = scopes(Services {
+            calendar: None,
+            mail: Some(MailAccess::Send),
+        });
+        assert_eq!(send, "offline_access User.Read Mail.Read Mail.Send");
     }
 
     #[test]

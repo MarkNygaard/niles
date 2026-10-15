@@ -15,7 +15,9 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{AppendHeaders, IntoResponse, Response};
-use niles_calendar::{Access, Calendars, GoogleApp, Made, MicrosoftApp, Provider};
+use niles_calendar::{
+    Access, Calendars, GoogleApp, Made, MailAccess, MicrosoftApp, Provider, Services,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -37,8 +39,12 @@ pub struct ConnectionDto {
     pub provider: &'static str,
     pub name: String,
     pub account: String,
-    /// `read` or `write`.
+    /// Whether the account serves Calendar.
+    pub calendar: bool,
+    /// The calendar's access, `read` or `write`, when it does.
     pub access: &'static str,
+    /// `read` or `send` when the account serves Mail.
+    pub mail: Option<&'static str>,
     /// Whether the provider holds the connection to its access, or
     /// Niles does (iCloud).
     pub enforced_by_provider: bool,
@@ -96,11 +102,47 @@ pub async fn list(
 #[derive(Debug, Deserialize)]
 pub struct StartQuery {
     pub name: String,
-    pub access: String,
-    /// The connection this one takes the place of: the same account
-    /// connected again to change its access.
+    /// The calendar's access: `none`, `read` or `write`.
+    pub calendar: String,
+    /// The mail's: `none`, `read` or `send`.
+    pub mail: String,
+    /// The account this one takes the place of: the same account
+    /// connected again to change what it serves.
     #[serde(default)]
     pub replace: Option<String>,
+    /// The panel the sign-in started from, which it comes back to:
+    /// `calendar` (the default) or `mail`.
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+/// What a request asks an account to serve. Something must be ticked.
+fn services(calendar: &str, mail: &str) -> Result<Services, String> {
+    let calendar = match calendar {
+        "none" => None,
+        other => Some(
+            Access::parse(other).ok_or_else(|| "calendar is none, read or write".to_string())?,
+        ),
+    };
+    let mail = match mail {
+        "none" => None,
+        other => {
+            Some(MailAccess::parse(other).ok_or_else(|| "mail is none, read or send".to_string())?)
+        }
+    };
+    let services = Services { calendar, mail };
+    if services.none() {
+        return Err("an account has to serve its calendar, its mail, or both".into());
+    }
+    Ok(services)
+}
+
+/// The panel a sign-in returns to, as the outcome's name.
+fn panel(from: Option<&str>) -> &'static str {
+    match from {
+        Some("mail") => "mail",
+        _ => "calendar",
+    }
 }
 
 /// What survives the round trip to the provider, kept beside the
@@ -110,36 +152,51 @@ struct Pending {
     provider: Provider,
     person: String,
     name: String,
-    access: Access,
+    calendar: Option<Access>,
+    mail: Option<MailAccess>,
     replace: Option<String>,
     redirect_uri: String,
+    /// The panel to come back to: `calendar` or `mail`.
+    from: String,
 }
 
-/// `GET /calendars/{provider}/start?name=Work&access=read` — a link the
-/// browser follows, not a call the page makes: it ends at Microsoft or
-/// Google.
+impl Pending {
+    fn services(&self) -> Services {
+        Services {
+            calendar: self.calendar,
+            mail: self.mail,
+        }
+    }
+}
+
+/// `GET /calendars/{provider}/start?name=Work&calendar=read&mail=none`
+/// — a link the browser follows, not a call the page makes: it ends at
+/// Microsoft or Google. The path keeps `/calendars/`, which is what the
+/// household's app registrations name as their redirect.
 pub async fn start(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(provider): Path<String>,
     Query(query): Query<StartQuery>,
 ) -> Response {
+    let from = panel(query.from.as_deref());
     let outcome = async {
         let provider = oauth_provider(&provider)?;
         let person = person(&state, &headers).map_err(|(_, body)| reason_of(&body))?;
         calendars(&state).map_err(|(_, body)| reason_of(&body))?;
         let name = valid_name(&query.name)?;
-        let access =
-            Access::parse(&query.access).ok_or_else(|| "access is read or write".to_string())?;
+        let services = services(&query.calendar, &query.mail)?;
         let (client_id, client_secret) = keys(&state, provider)?;
         let redirect_uri = redirect_uri(&state, &headers, provider);
         let pending = Pending {
             provider,
             person,
             name,
-            access,
+            calendar: services.calendar,
+            mail: services.mail,
             replace: query.replace.clone(),
             redirect_uri: redirect_uri.clone(),
+            from: from.to_string(),
         };
         let json = serde_json::to_string(&pending).map_err(|e| e.to_string())?;
         let (flow_state, binding) = state.calendar_attempts.begin(json);
@@ -149,13 +206,13 @@ pub async fn start(
                 client_secret,
                 redirect_uri,
             }
-            .authorize_url(&flow_state, access),
+            .authorize_url(&flow_state, services),
             _ => MicrosoftApp {
                 client_id,
                 client_secret,
                 redirect_uri,
             }
-            .authorize_url(&flow_state, access),
+            .authorize_url(&flow_state, services),
         };
         Ok::<_, String>((to, binding))
     }
@@ -171,7 +228,7 @@ pub async fn start(
         )
             .into_response(),
         Err(reason) => back(
-            &format!("calendar_error={}", urlencoding::encode(&reason)),
+            &format!("{from}_error={}", urlencoding::encode(&reason)),
             secure,
         ),
     }
@@ -200,21 +257,44 @@ pub async fn callback(
 ) -> Response {
     let secure = is_secure(&headers);
     match connect(&state, &headers, &provider, query).await {
-        Ok(name) => back(
-            &format!("calendar=connected&name={}", urlencoding::encode(&name)),
+        Ok((name, from)) => back(
+            &format!("{from}=connected&name={}", urlencoding::encode(&name)),
             secure,
         ),
-        Err(reason) => {
-            tracing::warn!("[calendars] connecting {provider} failed: {reason}");
+        Err((reason, from)) => {
+            tracing::warn!("[accounts] connecting {provider} failed: {reason}");
             back(
-                &format!("calendar_error={}", urlencoding::encode(&reason)),
+                &format!("{from}_error={}", urlencoding::encode(&reason)),
                 secure,
             )
         }
     }
 }
 
+/// Keep the account a sign-in made. Answers its name, or why not, with
+/// the panel to say it on.
 async fn connect(
+    state: &AppState,
+    headers: &HeaderMap,
+    provider: &str,
+    query: CallbackQuery,
+) -> Result<(String, &'static str), (String, &'static str)> {
+    // Until the attempt is found, the panel it began on is not known;
+    // the provider's own refusal comes before that, so it is said on
+    // the calendar's, as before mail.
+    let from = query
+        .state
+        .as_deref()
+        .and_then(|s| state.calendar_attempts.peek(s))
+        .and_then(|next| serde_json::from_str::<Pending>(&next).ok())
+        .map_or("calendar", |p| panel(Some(&p.from)));
+    finish(state, headers, provider, query)
+        .await
+        .map(|name| (name, from))
+        .map_err(|reason| (reason, from))
+}
+
+async fn finish(
     state: &AppState,
     headers: &HeaderMap,
     provider: &str,
@@ -248,6 +328,7 @@ async fn connect(
     let calendars = calendars(state).map_err(|(_, body)| reason_of(&body))?;
     let (client_id, client_secret) = keys(state, provider)?;
     let http = reqwest::Client::new();
+    let services = pending.services();
     let (tokens, account) = match provider {
         Provider::Google => {
             let app = GoogleApp {
@@ -259,7 +340,7 @@ async fn connect(
                 .exchange(&http, &code)
                 .await
                 .map_err(|e| e.to_string())?;
-            let account = niles_calendar::google::account(&http, &tokens.access_token)
+            let account = niles_calendar::google::account(&http, &tokens.access_token, services)
                 .await
                 .map_err(|e| e.to_string())?;
             (tokens, account)
@@ -271,7 +352,7 @@ async fn connect(
                 redirect_uri: pending.redirect_uri,
             };
             let tokens = app
-                .exchange(&http, &code, pending.access)
+                .exchange(&http, &code, services)
                 .await
                 .map_err(|e| e.to_string())?;
             let account = niles_calendar::graph::account(&http, &tokens.access_token)
@@ -289,8 +370,8 @@ async fn connect(
             &person,
             Made {
                 provider,
+                services,
                 name: pending.name,
-                access: pending.access,
                 account,
                 credential,
                 endpoint: None,
@@ -301,11 +382,11 @@ async fn connect(
         .await
         .map_err(|e| e.to_string())?;
     tracing::info!(
-        "[calendars] {person} connected {} {} ({}) with {} access",
+        "[accounts] {person} connected {} {} ({}): {:?}",
         provider.as_str(),
         made.name,
         made.account,
-        made.access.as_str()
+        made.services()
     );
     Ok(made.name)
 }
@@ -313,7 +394,10 @@ async fn connect(
 #[derive(Debug, Deserialize)]
 pub struct IcloudConnect {
     pub name: String,
-    pub access: String,
+    /// `none`, `read` or `write`.
+    pub calendar: String,
+    /// `none`, `read` or `send`.
+    pub mail: String,
     pub apple_id: String,
     pub password: String,
     #[serde(default)]
@@ -330,12 +414,8 @@ pub async fn connect_icloud(
     let person = person(&state, &headers)?;
     let calendars = calendars(&state)?;
     let name = valid_name(&body.name).map_err(|e| failed(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    let access = Access::parse(&body.access).ok_or_else(|| {
-        failed(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "access is read or write".into(),
-        )
-    })?;
+    let services = services(&body.calendar, &body.mail)
+        .map_err(|e| failed(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     if body.apple_id.trim().is_empty() || body.password.trim().is_empty() {
         return Err(failed(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -346,7 +426,7 @@ pub async fn connect_icloud(
         .connect_icloud(
             &person,
             &name,
-            access,
+            services,
             &body.apple_id,
             &body.password,
             body.replace.as_deref(),
@@ -354,38 +434,57 @@ pub async fn connect_icloud(
         .await
         .map_err(|e| failed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     tracing::info!(
-        "[calendars] {person} connected icloud {} with {} access",
+        "[accounts] {person} connected icloud {}: {:?}",
         made.name,
-        made.access.as_str()
+        made.services()
     );
     Ok(Json(dto(made)))
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AccessChange {
-    pub access: String,
+pub struct ServicesChange {
+    /// `none`, `read` or `write`.
+    pub calendar: String,
+    /// `none`, `read` or `send`.
+    pub mail: String,
 }
 
-/// `PUT /calendars/{id}` — `{"access":"write"}`, for a connection whose
-/// access Niles keeps (iCloud). The others sign in again.
-pub async fn set_access(
+/// `PUT /calendars/{id}` — `{"calendar":"write","mail":"read"}`, for an
+/// account whose ticks Niles keeps (iCloud). The others sign in again.
+/// Nothing ticked removes the account: 204.
+pub async fn set_services(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<AccessChange>,
-) -> Result<Json<ConnectionDto>, Failure> {
+    Json(body): Json<ServicesChange>,
+) -> Result<Response, Failure> {
     let person = person(&state, &headers)?;
-    let access = Access::parse(&body.access).ok_or_else(|| {
-        failed(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "access is read or write".into(),
-        )
-    })?;
+    let calendar = match body.calendar.as_str() {
+        "none" => None,
+        other => Some(Access::parse(other).ok_or_else(|| {
+            failed(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "calendar is none, read or write".into(),
+            )
+        })?),
+    };
+    let mail = match body.mail.as_str() {
+        "none" => None,
+        other => Some(MailAccess::parse(other).ok_or_else(|| {
+            failed(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "mail is none, read or send".into(),
+            )
+        })?),
+    };
     let changed = calendars(&state)?
-        .set_access(&person, &id, access)
+        .set_services(&person, &id, Services { calendar, mail })
         .await
         .map_err(|e| failed(StatusCode::CONFLICT, e.to_string()))?;
-    Ok(Json(dto(changed)))
+    Ok(match changed {
+        Some(account) => Json(dto(account)).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
 }
 
 /// `DELETE /calendars/{id}` — forget one of your own, and its
@@ -417,7 +516,9 @@ fn dto(c: niles_calendar::Connection) -> ConnectionDto {
         provider: c.provider.as_str(),
         name: c.name,
         account: c.account,
+        calendar: c.calendar,
         access: c.access.as_str(),
+        mail: c.mail.map(MailAccess::as_str),
     }
 }
 
@@ -610,6 +711,34 @@ mod tests {
             redirect_uri(&state(), &headers, Provider::Google),
             "https://niles.mnygaard.io/calendars/google/callback"
         );
+    }
+
+    #[test]
+    fn an_account_serves_something() {
+        assert_eq!(
+            services("read", "none").unwrap(),
+            Services {
+                calendar: Some(Access::Read),
+                mail: None
+            }
+        );
+        assert_eq!(
+            services("none", "send").unwrap(),
+            Services {
+                calendar: None,
+                mail: Some(MailAccess::Send)
+            }
+        );
+        assert!(services("none", "none").is_err());
+        assert!(services("write", "write").is_err(), "mail is read or send");
+    }
+
+    #[test]
+    fn a_sign_in_comes_back_to_the_panel_it_began_on() {
+        assert_eq!(panel(Some("mail")), "mail");
+        assert_eq!(panel(Some("calendar")), "calendar");
+        assert_eq!(panel(None), "calendar");
+        assert_eq!(panel(Some("elsewhere")), "calendar");
     }
 
     #[test]

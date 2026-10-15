@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CalendarsPanel, connectUrl, offered, outcomeOf } from "./CalendarsPanel";
+import { CalendarsPanel, offered, outcomeOf } from "./CalendarsPanel";
 import { redirectUri } from "./CalendarAppPanel";
 import { api } from "@/lib/api";
 import type { CalendarsView } from "@/lib/api";
@@ -20,7 +20,9 @@ const MARK: CalendarsView = {
       provider: "microsoft",
       name: "Private",
       account: "mark@hotmail.com",
+      calendar: true,
       access: "write",
+      mail: null,
       enforced_by_provider: true,
     },
     {
@@ -28,7 +30,9 @@ const MARK: CalendarsView = {
       provider: "microsoft",
       name: "Work",
       account: "mark@work.example",
+      calendar: true,
       access: "read",
+      mail: null,
       enforced_by_provider: true,
     },
     {
@@ -36,7 +40,9 @@ const MARK: CalendarsView = {
       provider: "icloud",
       name: "Phone",
       account: "mark@icloud.com",
+      calendar: true,
       access: "read",
+      mail: null,
       enforced_by_provider: false,
     },
   ],
@@ -53,15 +59,6 @@ function card(view: CalendarsView = MARK) {
 
 describe("CalendarsPanel", () => {
   afterEach(() => vi.restoreAllMocks());
-
-  it("starts a provider's sign-in with the name and access chosen", () => {
-    expect(connectUrl("microsoft", " Work ", "read")).toBe(
-      "/calendars/microsoft/start?name=Work&access=read",
-    );
-    expect(connectUrl("google", "Gmail", "write", "cal-2")).toBe(
-      "/calendars/google/start?name=Gmail&access=write&replace=cal-2",
-    );
-  });
 
   it("says how the sign-in went", () => {
     expect(outcomeOf("?calendar=connected&name=Work")).toEqual({
@@ -102,10 +99,32 @@ describe("CalendarsPanel", () => {
 
   it("switches an iCloud calendar's access in place", async () => {
     card();
-    const set = vi.spyOn(api, "setCalendarAccess").mockResolvedValue(MARK.connections[2]);
+    const set = vi.spyOn(api, "setAccountServices").mockResolvedValue(MARK.connections[2]);
     const allow = await screen.findAllByRole("button", { name: "Allow writing" });
     fireEvent.click(allow[1]);
-    await waitFor(() => expect(set).toHaveBeenCalledWith("cal-3", "write"));
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith("cal-3", { calendar: "write", mail: "none" }),
+    );
+  });
+
+  it("offers an account connected for mail, and leaves it out of the calendars", async () => {
+    const mailOnly = {
+      ...MARK.connections[2],
+      id: "acc-9",
+      account: "mark@icloud.com",
+      calendar: false,
+      mail: "read" as const,
+    };
+    card({ providers: ALL_AVAILABLE, connections: [mailOnly] });
+    const set = vi.spyOn(api, "setAccountServices").mockResolvedValue(mailOnly);
+    const use = await screen.findByRole("button", {
+      name: /Use mark@icloud\.com, already connected for your mail/,
+    });
+    expect(screen.queryByRole("button", { name: "Allow writing" })).toBeNull();
+    fireEvent.click(use);
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith("acc-9", { calendar: "read", mail: "read" }),
+    );
   });
 
   it("asks before disconnecting", async () => {
@@ -133,7 +152,8 @@ describe("CalendarsPanel", () => {
     await waitFor(() =>
       expect(connect.mock.calls[0]?.[0]).toEqual({
         name: "Phone",
-        access: "read",
+        calendar: "read",
+        mail: "none",
         apple_id: "majse@icloud.com",
         password: "abcd-efgh-ijkl-mnop",
       }),

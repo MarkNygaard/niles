@@ -46,7 +46,7 @@ export function personalAddOns(
 ): PersonalAddOn[] {
   const out: PersonalAddOn[] = [];
   if (hasVoice) {
-    const names = (calendars?.connections ?? []).map((c) => c.name);
+    const names = (calendars?.connections ?? []).filter((c) => c.calendar).map((c) => c.name);
     out.push({
       id: "calendars",
       label: "Calendars",

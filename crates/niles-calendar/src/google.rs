@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::graph::{Tokens, first_line, http_error, instant};
-use crate::model::{Access, Event, NewEvent};
+use crate::model::{Access, Event, MailAccess, NewEvent, Services};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
@@ -21,13 +21,24 @@ pub struct GoogleApp {
     pub redirect_uri: String,
 }
 
-/// What a connection asks Google to grant: reading, or reading and
-/// writing events — nothing else in the account.
-pub fn scopes(access: Access) -> &'static str {
-    match access {
-        Access::Read => "https://www.googleapis.com/auth/calendar.readonly",
-        Access::Write => "https://www.googleapis.com/auth/calendar.events",
+/// What an account asks Google to grant: exactly what its ticks need,
+/// nothing else in the account.
+pub fn scopes(services: Services) -> String {
+    let mut scopes = Vec::new();
+    match services.calendar {
+        Some(Access::Read) => scopes.push("https://www.googleapis.com/auth/calendar.readonly"),
+        Some(Access::Write) => scopes.push("https://www.googleapis.com/auth/calendar.events"),
+        None => {}
     }
+    match services.mail {
+        Some(MailAccess::Read) => scopes.push("https://www.googleapis.com/auth/gmail.readonly"),
+        Some(MailAccess::Send) => scopes.extend([
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+        ]),
+        None => {}
+    }
+    scopes.join(" ")
 }
 
 #[derive(Deserialize)]
@@ -42,12 +53,12 @@ struct TokenResponse {
 impl GoogleApp {
     /// `access_type=offline` and `prompt=consent` together are what make
     /// Google hand back a refresh token every time, not only the first.
-    pub fn authorize_url(&self, state: &str, access: Access) -> String {
+    pub fn authorize_url(&self, state: &str, services: Services) -> String {
         format!(
             "{AUTHORIZE}?client_id={}&redirect_uri={}&response_type=code&scope={}&access_type=offline&prompt=consent%20select_account&state={}",
             urlencoding::encode(&self.client_id),
             urlencoding::encode(&self.redirect_uri),
-            urlencoding::encode(scopes(access)),
+            urlencoding::encode(&scopes(services)),
             urlencoding::encode(state),
         )
     }
@@ -134,25 +145,29 @@ impl GoogleApp {
     }
 }
 
-/// The account a token belongs to. A primary calendar is named after
-/// its account's address, and the events list says its calendar's name
-/// — which needs no scope beyond the calendar's own.
-pub async fn account(http: &reqwest::Client, access_token: &str) -> Result<String> {
-    let body = send(
-        http,
-        access_token,
-        reqwest::Method::GET,
-        &format!("{EVENTS}?maxResults=1"),
-        None,
-    )
-    .await?;
+/// The account a token belongs to, asked of what the token may read:
+/// a primary calendar is named after its account's address, and so is
+/// a Gmail profile. Neither needs a scope beyond the service's own.
+pub async fn account(
+    http: &reqwest::Client,
+    access_token: &str,
+    services: Services,
+) -> Result<String> {
+    let (url, field) = if services.calendar.is_some() {
+        (format!("{EVENTS}?maxResults=1"), "summary")
+    } else {
+        (GMAIL_PROFILE.to_string(), "emailAddress")
+    };
+    let body = send(http, access_token, reqwest::Method::GET, &url, None).await?;
     Ok(body
-        .get("summary")
+        .get(field)
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .unwrap_or("Google account")
         .to_string())
 }
+
+const GMAIL_PROFILE: &str = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
 
 /// The events overlapping `[from, to)`, repeating ones as their single
 /// occurrences, in the house's time zone.
@@ -365,14 +380,42 @@ mod tests {
             client_secret: "s".into(),
             redirect_uri: "https://niles.example/calendars/google/callback".into(),
         };
-        let read = app.authorize_url("st", Access::Read);
+        let read = app.authorize_url(
+            "st",
+            Services {
+                calendar: Some(Access::Read),
+                mail: None,
+            },
+        );
         assert!(read.contains("calendar.readonly"));
         assert!(!read.contains("calendar.events"));
         assert!(read.contains("access_type=offline"));
         assert!(
-            app.authorize_url("st", Access::Write)
-                .contains("calendar.events")
+            app.authorize_url(
+                "st",
+                Services {
+                    calendar: Some(Access::Write),
+                    mail: None
+                }
+            )
+            .contains("calendar.events")
         );
+        assert!(!read.contains("gmail"), "{read}");
+    }
+
+    #[test]
+    fn asks_for_gmail_only_when_mail_is_ticked() {
+        let read = scopes(Services {
+            calendar: None,
+            mail: Some(MailAccess::Read),
+        });
+        assert_eq!(read, "https://www.googleapis.com/auth/gmail.readonly");
+        let send = scopes(Services {
+            calendar: Some(Access::Write),
+            mail: Some(MailAccess::Send),
+        });
+        assert!(send.ends_with("gmail.readonly https://www.googleapis.com/auth/gmail.send"));
+        assert!(send.starts_with("https://www.googleapis.com/auth/calendar.events "));
     }
 
     #[test]

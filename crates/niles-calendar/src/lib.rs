@@ -18,6 +18,6 @@ pub mod store;
 pub use error::{Error, Result};
 pub use google::GoogleApp;
 pub use graph::{MicrosoftApp, Tokens};
-pub use model::{Access, Connection, Event, NewEvent, Provider};
+pub use model::{Access, Connection, Event, MailAccess, NewEvent, Provider, Services};
 pub use service::{Apps, Backend, Calendars, Change, Listed, Made, Network};
 pub use store::{ConnectionStore, MemoryConnections};

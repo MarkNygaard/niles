@@ -79,6 +79,13 @@ impl Attempts {
         (given == pending.binding).then_some(pending)
     }
 
+    /// What a `state` carries, without spending it: where its outcome is
+    /// to be said, read before anything checks it. Never a reason to
+    /// trust it.
+    pub fn peek(&self, state: &str) -> Option<String> {
+        self.lock().get(state).map(|p| p.next.clone())
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pending>> {
         self.pending
             .lock()

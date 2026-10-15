@@ -4,6 +4,14 @@ import { BrandMark } from "@/components/BrandMark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  ACCOUNTS,
+  change,
+  connectUrl,
+  outcomeOf as accountOutcome,
+  ticksOf,
+} from "@/lib/accounts";
+import type { Ticks } from "@/lib/accounts";
 import { api } from "@/lib/api";
 import type {
   CalendarAccess,
@@ -13,7 +21,7 @@ import type {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-export const CALENDARS = ["calendars"];
+export const CALENDARS = ACCOUNTS;
 
 const LABEL: Record<CalendarProvider, string> = {
   microsoft: "Microsoft",
@@ -21,29 +29,9 @@ const LABEL: Record<CalendarProvider, string> = {
   icloud: "iCloud",
 };
 
-/** The link that starts a provider's sign-in: followed, not fetched,
-    because it ends at Microsoft or Google. */
-export function connectUrl(
-  provider: "microsoft" | "google",
-  name: string,
-  access: CalendarAccess,
-  replace?: string,
-): string {
-  const query = new URLSearchParams({ name: name.trim(), access });
-  if (replace) query.set("replace", replace);
-  return `/calendars/${provider}/start?${query}`;
-}
-
-/** What the sign-in came back saying, from the address it returned to. */
+/** What a sign-in begun here came back saying. */
 export function outcomeOf(search: string): { ok: boolean; text: string } | null {
-  const query = new URLSearchParams(search);
-  const error = query.get("calendar_error");
-  if (error) return { ok: false, text: error };
-  if (query.get("calendar") === "connected") {
-    const name = query.get("name");
-    return { ok: true, text: name ? `${name} is connected.` : "Connected." };
-  }
-  return null;
+  return accountOutcome(search, "calendar");
 }
 
 /** The providers to offer, the available ones first. */
@@ -70,8 +58,8 @@ export function CalendarsPanel() {
   const settle = () => queryClient.invalidateQueries({ queryKey: CALENDARS });
   const remove = useMutation({ mutationFn: api.removeCalendar, onSettled: settle });
   const setAccess = useMutation({
-    mutationFn: ({ id, access }: { id: string; access: CalendarAccess }) =>
-      api.setCalendarAccess(id, access),
+    mutationFn: ({ id, ticks }: { id: string; ticks: Ticks }) =>
+      api.setAccountServices(id, ticks),
     onSettled: settle,
   });
   const [outcome, setOutcome] = useState(() => outcomeOf(window.location.search));
@@ -88,6 +76,17 @@ export function CalendarsPanel() {
     setOutcome(null);
     window.location.assign(url);
   };
+
+  /** Give an account these ticks, the way its provider allows. */
+  const retick = (account: CalendarConnection, ticks: Ticks) => {
+    const how = change(account, ticks, "calendar");
+    if (how.kind === "remove") remove.mutate(account.id);
+    else if (how.kind === "in_place") setAccess.mutate({ id: account.id, ticks });
+    else go(how.url);
+  };
+  const accounts = calendars.data?.connections ?? [];
+  const serving = accounts.filter((c) => c.calendar);
+  const others = accounts.filter((c) => !c.calendar);
 
   return (
     <div className="flex flex-col gap-4">
@@ -106,24 +105,28 @@ export function CalendarsPanel() {
           <p className="text-destructive text-sm">{(setAccess.error ?? remove.error)?.message}</p>
         )}
 
-        {calendars.data?.connections.map((c) => (
+        {serving.map((c) => (
           <ConnectionRow
             key={c.id}
             connection={c}
             busy={remove.isPending || setAccess.isPending}
-            onChangeAccess={() => {
-              const access = c.access === "read" ? "write" : "read";
-              if (c.provider === "icloud") setAccess.mutate({ id: c.id, access });
-              else go(connectUrl(c.provider, c.name, access, c.id));
-            }}
-            onRemove={() => remove.mutate(c.id)}
+            onChangeAccess={() =>
+              retick(c, { ...ticksOf(c), calendar: c.access === "read" ? "write" : "read" })
+            }
+            // The account stays for its mail, if it serves that too.
+            onRemove={() => retick(c, { ...ticksOf(c), calendar: "none" })}
           />
         ))}
 
         {calendars.data && (
           <ConnectForm
             view={calendars.data}
-            onSignIn={(provider, name, access) => go(connectUrl(provider, name, access))}
+            others={others}
+            busy={remove.isPending || setAccess.isPending}
+            onUse={(account, access) => retick(account, { ...ticksOf(account), calendar: access })}
+            onSignIn={(provider, name, access) =>
+              go(connectUrl(provider, name, { calendar: access, mail: "none" }))
+            }
             onConnected={() => {
               setOutcome(null);
               settle();
@@ -136,10 +139,17 @@ export function CalendarsPanel() {
 
 function ConnectForm({
   view,
+  others,
+  busy,
+  onUse,
   onSignIn,
   onConnected,
 }: {
   view: CalendarsView;
+  /** Accounts already connected that do not serve Calendar yet. */
+  others: CalendarConnection[];
+  busy: boolean;
+  onUse: (account: CalendarConnection, access: CalendarAccess) => void;
   onSignIn: (provider: "microsoft" | "google", name: string, access: CalendarAccess) => void;
   onConnected: () => void;
 }) {
@@ -173,13 +183,35 @@ function ConnectForm({
         e.preventDefault();
         if (!ready) return;
         if (provider === "icloud") {
-          icloud.mutate({ name, access, apple_id: appleId, password });
+          icloud.mutate({ name, calendar: access, mail: "none", apple_id: appleId, password });
         } else {
           onSignIn(provider, name, access);
         }
       }}
     >
       <span className="text-sm font-medium">Connect a calendar</span>
+      {others.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {others.map((account) => (
+            <Button
+              key={account.id}
+              type="button"
+              variant="outline"
+              className="justify-start"
+              disabled={busy}
+              onClick={() => onUse(account, access)}
+            >
+              <BrandMark id={account.provider} label={LABEL[account.provider]} className="size-4" />
+              Use {account.account}, already connected for your mail
+            </Button>
+          ))}
+          <span className="text-muted-foreground text-xs">
+            {others.some((a) => a.provider !== "icloud")
+              ? "Microsoft and Google ask once more, to let Niles read the calendar too. Or connect another:"
+              : "Or connect another:"}
+          </span>
+        </div>
+      )}
       <div role="radiogroup" aria-label="Where the calendar is" className="flex flex-wrap gap-2">
         {providers.map((p) => (
           <button

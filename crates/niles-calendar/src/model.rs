@@ -65,7 +65,48 @@ impl Access {
     }
 }
 
-/// One calendar account a person connected.
+/// What an account may do with mail. Reading is the default; sending is
+/// asked for separately, and every mail sent waits for the person's yes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailAccess {
+    Read,
+    Send,
+}
+
+impl MailAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MailAccess::Read => "read",
+            MailAccess::Send => "send",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(MailAccess::Read),
+            "send" => Some(MailAccess::Send),
+            _ => None,
+        }
+    }
+}
+
+/// What an account serves, each with its access: `None` is not ticked.
+/// For Microsoft and Google it is exactly what the sign-in asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Services {
+    pub calendar: Option<Access>,
+    pub mail: Option<MailAccess>,
+}
+
+impl Services {
+    pub fn none(self) -> bool {
+        self.calendar.is_none() && self.mail.is_none()
+    }
+}
+
+/// One account a person connected: a sign-in at Microsoft or Google, or
+/// an iCloud app-specific password. It serves Calendar, Mail, or both.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Connection {
     pub id: String,
@@ -83,6 +124,19 @@ pub struct Connection {
     /// Where the provider keeps this account's calendars, when that is
     /// not a fixed address: iCloud's calendar home.
     pub endpoint: Option<String>,
+    /// Whether it serves Calendar, with `access`.
+    pub calendar: bool,
+    /// What it may do with mail, if it serves Mail.
+    pub mail: Option<MailAccess>,
+}
+
+impl Connection {
+    pub fn services(&self) -> Services {
+        Services {
+            calendar: self.calendar.then_some(self.access),
+            mail: self.mail,
+        }
+    }
 }
 
 /// An event, in the house's time zone.
