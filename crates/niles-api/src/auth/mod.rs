@@ -19,7 +19,7 @@ pub mod session;
 mod gate_tests;
 
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
@@ -111,17 +111,38 @@ pub async fn require_sign_in(
         return next.run(request).await;
     }
 
-    if wants_html(&request) {
+    if wants_html(&request) && matches!(*request.method(), Method::GET | Method::HEAD) {
         // The page itself is served to everyone; what it shows when
         // nobody is signed in is the sign-in screen. Redirecting here
         // would mean the UI could not ask who it is talking to.
-        return next.run(request).await;
+        //
+        // The page, and only the page: this used to pass the request on
+        // to whatever route it named, and `Accept` is the caller's to
+        // set — so any request saying it took HTML read and wrote the
+        // whole API without signing in.
+        return sign_in_page(request.headers().clone()).await;
     }
+    unauthorized()
+}
+
+fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
         axum::Json(serde_json::json!({ "error": "sign in to use this" })),
     )
         .into_response()
+}
+
+#[cfg(feature = "ui")]
+async fn sign_in_page(headers: HeaderMap) -> Response {
+    crate::web::serve_asset(axum::http::Uri::from_static("/"), headers).await
+}
+
+/// Without the `ui` feature there is no page to show, which is what
+/// asking for one got before the gate existed.
+#[cfg(not(feature = "ui"))]
+async fn sign_in_page(_headers: HeaderMap) -> Response {
+    (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
 /// `GET /auth/status` — what the page may know before anybody signs in.
