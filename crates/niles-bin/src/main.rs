@@ -6250,16 +6250,27 @@ fn build_calendars(cfg: &Config) -> Option<Arc<niles_calendar::Calendars>> {
     }
 }
 
-/// Each person's training data. On whenever there is a database: the
-/// phone that sends it is the switch.
-fn build_training(cfg: &Config) -> Option<Arc<dyn niles_training::TrainingStore>> {
+/// Each person's Strava and the workouts it brings, when there is a
+/// database and a secrets key to seal their app secrets and tokens
+/// with. A person connecting their own Strava is the switch.
+fn build_strava(cfg: &Config) -> Option<Arc<niles_training::Strava>> {
     let database = cfg.database.as_ref()?;
+    let key = std::env::var(&database.secret_key_env).ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
     let url = database.resolve_url().ok()?;
     let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
-    Some(Arc::new(niles_db::PostgresTraining::new(
-        backend.pool(),
-        backend.describe_target(),
-    )))
+    match niles_db::PostgresTraining::new(backend.pool(), backend.describe_target(), &key) {
+        Ok(store) => Some(Arc::new(niles_training::Strava::new(
+            Arc::new(store),
+            niles_training::strava::Client::new(reqwest::Client::new()),
+        ))),
+        Err(e) => {
+            tracing::error!("[strava] unavailable: {e}");
+            None
+        }
+    }
 }
 
 /// Where kept wake audio goes, when there is a database.
@@ -6885,10 +6896,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if let (Some(calendars), Ok(tz)) = (&calendars, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         calendar::register(&mut tools, calendars.clone(), store.clone(), tz);
     }
-    let training = build_training(&cfg);
-    if let (Some(training), Ok(tz)) = (&training, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
+    let strava = build_strava(&cfg);
+    if let (Some(strava), Ok(tz)) = (&strava, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;
-        training::register(&mut tools, training.clone(), tz, imperial);
+        training::register(&mut tools, strava.store().clone(), tz, imperial);
+    }
+    if let Some(strava) = &strava {
+        tokio::spawn(strava.clone().poll());
     }
     if let Some(groceries) = &groceries {
         niles_tools::register_grocery_tools(
@@ -7120,7 +7134,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_memory(memory_store.clone())
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
-    .with_training(training.clone())
+    .with_strava(strava.clone())
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
     .with_chat(Some(Arc::new(AppChat {

@@ -1,15 +1,21 @@
-//! Each person's workouts and days, and the key their phone sends them
-//! with. See `niles_training` for what is kept and why.
+//! Each person's workouts, and their Strava. See `niles_training` for
+//! what is kept and why.
 //!
-//! Saving is an upsert that writes nothing when nothing changed: the
-//! `where ... is distinct from` on each conflict is what makes Health
-//! Auto Export's habit of re-sending the last week every hour cost a
-//! read rather than a write, and what lets a save say how many were new.
+//! Saving a workout is an upsert that writes nothing when nothing
+//! changed: the `where ... is distinct from` on the conflict is what
+//! lets a save say how many were new.
+//!
+//! A person's Strava app secret and tokens are standing keys to their
+//! activities, so they are sealed with the same key as the credentials
+//! typed into the app (`Sealer`), and a database without that key keeps
+//! no Strava at all.
 
+use crate::secrets::Sealer;
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use niles_training::{
-    Activity, Error, Kind, Overview, Result, Saved, TrainingStore, Wellness, same_hash,
+    Activity, Athlete, Error, Kind, Overview, Result, Saved, StravaApp, StravaLink, StravaTokens,
+    TrainingStore,
 };
 use sqlx::{Row, postgres::PgPool, postgres::PgRow};
 
@@ -35,38 +41,42 @@ create table if not exists training_activities (
 );
 create index if not exists training_activities_person
     on training_activities (person, started_at);
-create table if not exists training_wellness (
-    person       text not null,
-    date         date not null,
-    resting_hr   double precision,
-    hrv_ms       double precision,
-    sleep_s      double precision,
-    weight_kg    double precision,
-    body_fat_pct double precision,
-    updated_at   timestamptz not null default now(),
-    primary key (person, date)
+create table if not exists training_strava (
+    person            text primary key,
+    client_id         text not null,
+    client_secret_enc bytea not null,
+    access_token_enc  bytea,
+    refresh_token_enc bytea,
+    expires_at        timestamptz,
+    athlete_id        bigint,
+    athlete_name      text,
+    last_sync         timestamptz,
+    last_error        text,
+    updated_at        timestamptz not null default now()
 );
-create table if not exists training_keys (
-    person           text primary key,
-    key_hash         text unique,
-    made_at          timestamptz,
-    last_received_at timestamptz
-);
+-- The iPhone route's tables, from before Strava. Dropped rather than
+-- left behind: one held sleep, HRV and weight that nothing reads any
+-- more and nobody could delete from the app.
+drop table if exists training_keys;
+drop table if exists training_wellness;
 ";
 
 pub struct PostgresTraining {
     pool: PgPool,
     describe: String,
+    sealer: Sealer,
     schema: tokio::sync::OnceCell<()>,
 }
 
 impl PostgresTraining {
-    pub fn new(pool: PgPool, describe: String) -> Self {
-        Self {
+    /// `key_b64` is the secrets key: 32 bytes, base64.
+    pub fn new(pool: PgPool, describe: String, key_b64: &str) -> niles_config::Result<Self> {
+        Ok(Self {
             pool,
             describe,
+            sealer: Sealer::new(key_b64)?,
             schema: tokio::sync::OnceCell::new(),
-        }
+        })
     }
 
     async fn ensure_schema(&self) -> Result<()> {
@@ -82,8 +92,18 @@ impl PostgresTraining {
             .map(|_| ())
     }
 
+    /// Errors name the database but never the DSN — the connection
+    /// string carries a password.
     fn storage(&self, e: impl std::fmt::Display) -> Error {
         Error::Storage(format!("{}: {e}", self.describe))
+    }
+
+    fn seal(&self, value: &str) -> Result<Vec<u8>> {
+        self.sealer.seal(value).map_err(|e| self.storage(e))
+    }
+
+    fn open(&self, sealed: &[u8]) -> Result<String> {
+        self.sealer.open(sealed).map_err(|e| self.storage(e))
     }
 }
 
@@ -167,53 +187,6 @@ impl TrainingStore for PostgresTraining {
         Ok(saved)
     }
 
-    async fn save_wellness(&self, person: &str, days: &[Wellness]) -> Result<Saved> {
-        self.ensure_schema().await?;
-        let mut saved = Saved::default();
-        let mut tx = self.pool.begin().await.map_err(|e| self.storage(e))?;
-        for d in days.iter().filter(|d| !d.is_empty()) {
-            let row = sqlx::query(
-                "insert into training_wellness
-                     (person, date, resting_hr, hrv_ms, sleep_s, weight_kg, body_fat_pct)
-                 values ($1, $2, $3, $4, $5, $6, $7)
-                 on conflict (person, date) do update set
-                     resting_hr = coalesce(excluded.resting_hr, training_wellness.resting_hr),
-                     hrv_ms = coalesce(excluded.hrv_ms, training_wellness.hrv_ms),
-                     sleep_s = coalesce(excluded.sleep_s, training_wellness.sleep_s),
-                     weight_kg = coalesce(excluded.weight_kg, training_wellness.weight_kg),
-                     body_fat_pct = coalesce(excluded.body_fat_pct, training_wellness.body_fat_pct),
-                     updated_at = now()
-                 where (training_wellness.resting_hr, training_wellness.hrv_ms,
-                        training_wellness.sleep_s, training_wellness.weight_kg,
-                        training_wellness.body_fat_pct)
-                   is distinct from
-                       (coalesce(excluded.resting_hr, training_wellness.resting_hr),
-                        coalesce(excluded.hrv_ms, training_wellness.hrv_ms),
-                        coalesce(excluded.sleep_s, training_wellness.sleep_s),
-                        coalesce(excluded.weight_kg, training_wellness.weight_kg),
-                        coalesce(excluded.body_fat_pct, training_wellness.body_fat_pct))
-                 returning (xmax = 0) as inserted",
-            )
-            .bind(person)
-            .bind(d.date)
-            .bind(d.resting_hr)
-            .bind(d.hrv_ms)
-            .bind(d.sleep_s)
-            .bind(d.weight_kg)
-            .bind(d.body_fat_pct)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| self.storage(e))?;
-            match row.map(|r| r.get::<bool, _>("inserted")) {
-                Some(true) => saved.added += 1,
-                Some(false) => saved.updated += 1,
-                None => {}
-            }
-        }
-        tx.commit().await.map_err(|e| self.storage(e))?;
-        Ok(saved)
-    }
-
     async fn activities(
         &self,
         person: &str,
@@ -242,113 +215,174 @@ impl TrainingStore for PostgresTraining {
         Ok(rows.iter().map(activity).collect())
     }
 
-    async fn wellness(
-        &self,
-        person: &str,
-        from: NaiveDate,
-        to: NaiveDate,
-    ) -> Result<Vec<Wellness>> {
-        self.ensure_schema().await?;
-        let rows = sqlx::query(
-            "select date, resting_hr, hrv_ms, sleep_s, weight_kg, body_fat_pct
-             from training_wellness
-             where person = $1 and date >= $2 and date <= $3
-             order by date",
-        )
-        .bind(person)
-        .bind(from)
-        .bind(to)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| self.storage(e))?;
-        Ok(rows
-            .iter()
-            .map(|r| Wellness {
-                date: r.get("date"),
-                resting_hr: r.get("resting_hr"),
-                hrv_ms: r.get("hrv_ms"),
-                sleep_s: r.get("sleep_s"),
-                weight_kg: r.get("weight_kg"),
-                body_fat_pct: r.get("body_fat_pct"),
-            })
-            .collect())
-    }
-
     async fn overview(&self, person: &str) -> Result<Overview> {
         self.ensure_schema().await?;
         let row = sqlx::query(
-            "select
-                 (select made_at from training_keys
-                   where person = $1 and key_hash is not null) as made_at,
-                 (select last_received_at from training_keys where person = $1) as received,
-                 (select count(*) from training_activities
-                   where person = $1 and kind = 'run') as runs,
-                 (select count(*) from training_activities where person = $1) as activities,
-                 (select count(*) from training_wellness where person = $1) as days",
+            "select count(*) filter (where kind = 'run') as runs, count(*) as activities
+             from training_activities where person = $1",
         )
         .bind(person)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;
         Ok(Overview {
-            key_made_at: row.get("made_at"),
-            last_received_at: row.get("received"),
             runs: row.get::<i64, _>("runs").max(0) as u64,
             activities: row.get::<i64, _>("activities").max(0) as u64,
-            wellness_days: row.get::<i64, _>("days").max(0) as u64,
         })
     }
 
-    async fn set_key(&self, person: &str, hash: &str) -> Result<()> {
+    async fn latest(&self, person: &str, source: &str) -> Result<Option<DateTime<Utc>>> {
         self.ensure_schema().await?;
-        sqlx::query(
-            "insert into training_keys (person, key_hash, made_at) values ($1, $2, now())
-             on conflict (person) do update set key_hash = excluded.key_hash,
-                 made_at = excluded.made_at",
+        sqlx::query_scalar(
+            "select max(started_at) from training_activities where person = $1 and source = $2",
         )
         .bind(person)
-        .bind(hash)
+        .bind(source)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))
+    }
+
+    async fn strava(&self, person: &str) -> Result<Option<StravaLink>> {
+        self.ensure_schema().await?;
+        let Some(row) = sqlx::query(
+            "select client_id, client_secret_enc, access_token_enc, refresh_token_enc,
+                    expires_at, athlete_id, athlete_name, last_sync, last_error
+             from training_strava where person = $1",
+        )
+        .bind(person)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?
+        else {
+            return Ok(None);
+        };
+        // A row whose secret will not open — the key changed under it —
+        // reads as an error rather than as no app: saving the app again
+        // is the way out, and the card says so.
+        let app = StravaApp {
+            client_id: row.get("client_id"),
+            client_secret: self.open(&row.get::<Vec<u8>, _>("client_secret_enc"))?,
+        };
+        let access: Option<Vec<u8>> = row.get("access_token_enc");
+        let refresh: Option<Vec<u8>> = row.get("refresh_token_enc");
+        let expires_at: Option<DateTime<Utc>> = row.get("expires_at");
+        let tokens = match (access, refresh, expires_at) {
+            (Some(access), Some(refresh), Some(expires_at)) => Some(StravaTokens {
+                access_token: self.open(&access)?,
+                refresh_token: self.open(&refresh)?,
+                expires_at,
+            }),
+            _ => None,
+        };
+        let athlete_id: Option<i64> = row.get("athlete_id");
+        let athlete_name: Option<String> = row.get("athlete_name");
+        Ok(Some(StravaLink {
+            app,
+            tokens,
+            athlete: athlete_id.map(|id| Athlete {
+                id,
+                name: athlete_name.unwrap_or_default(),
+            }),
+            last_sync: row.get("last_sync"),
+            last_error: row.get("last_error"),
+        }))
+    }
+
+    async fn strava_connected(&self) -> Result<Vec<String>> {
+        self.ensure_schema().await?;
+        sqlx::query_scalar(
+            "select person from training_strava where refresh_token_enc is not null
+             order by person",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))
+    }
+
+    async fn set_strava_app(&self, person: &str, app: &StravaApp) -> Result<()> {
+        self.ensure_schema().await?;
+        let sealed = self.seal(&app.client_secret)?;
+        sqlx::query(
+            "insert into training_strava (person, client_id, client_secret_enc)
+             values ($1, $2, $3)
+             on conflict (person) do update set client_id = excluded.client_id,
+                 client_secret_enc = excluded.client_secret_enc, updated_at = now()",
+        )
+        .bind(person)
+        .bind(&app.client_id)
+        .bind(sealed)
         .execute(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;
         Ok(())
     }
 
-    async fn revoke_key(&self, person: &str) -> Result<bool> {
+    async fn remove_strava(&self, person: &str) -> Result<bool> {
         self.ensure_schema().await?;
-        let done = sqlx::query(
-            "update training_keys set key_hash = null, made_at = null
-             where person = $1 and key_hash is not null",
+        let done = sqlx::query("delete from training_strava where person = $1")
+            .bind(person)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| self.storage(e))?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn set_strava_tokens(
+        &self,
+        person: &str,
+        tokens: &StravaTokens,
+        athlete: Option<&Athlete>,
+    ) -> Result<()> {
+        self.ensure_schema().await?;
+        sqlx::query(
+            "update training_strava set access_token_enc = $2, refresh_token_enc = $3,
+                 expires_at = $4,
+                 athlete_id = coalesce($5, athlete_id),
+                 athlete_name = coalesce($6, athlete_name),
+                 updated_at = now()
+             where person = $1",
+        )
+        .bind(person)
+        .bind(self.seal(&tokens.access_token)?)
+        .bind(self.seal(&tokens.refresh_token)?)
+        .bind(tokens.expires_at)
+        .bind(athlete.map(|a| a.id))
+        .bind(athlete.map(|a| a.name.as_str()))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(())
+    }
+
+    async fn clear_strava_tokens(&self, person: &str) -> Result<()> {
+        self.ensure_schema().await?;
+        sqlx::query(
+            "update training_strava set access_token_enc = null, refresh_token_enc = null,
+                 expires_at = null, athlete_id = null, athlete_name = null, updated_at = now()
+             where person = $1",
         )
         .bind(person)
         .execute(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;
-        Ok(done.rows_affected() == 1)
+        Ok(())
     }
 
-    async fn person_for_key(&self, hash: &str) -> Result<Option<String>> {
-        self.ensure_schema().await?;
-        let row = sqlx::query("select person, key_hash from training_keys where key_hash = $1")
-            .bind(hash)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| self.storage(e))?;
-        // The index found it; the comparison that decides is ours, and
-        // does not stop at the first byte that differs.
-        Ok(row
-            .filter(|r| same_hash(&r.get::<String, _>("key_hash"), hash))
-            .map(|r| r.get("person")))
-    }
-
-    async fn received(&self, person: &str, at: DateTime<Utc>) -> Result<()> {
+    async fn strava_synced(
+        &self,
+        person: &str,
+        at: Option<DateTime<Utc>>,
+        error: Option<&str>,
+    ) -> Result<()> {
         self.ensure_schema().await?;
         sqlx::query(
-            "insert into training_keys (person, last_received_at) values ($1, $2)
-             on conflict (person) do update set last_received_at = excluded.last_received_at",
+            "update training_strava set last_sync = coalesce($2, last_sync), last_error = $3
+             where person = $1",
         )
         .bind(person)
         .bind(at)
+        .bind(error)
         .execute(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;

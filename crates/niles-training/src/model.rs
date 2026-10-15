@@ -1,5 +1,5 @@
-use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 
 /// Whose data this is: the voice their sign-in is linked to when it is,
 /// so what they say to a satellite and what they type meet in one
@@ -15,7 +15,7 @@ pub fn person_key(speaker: Option<&str>, email: &str) -> String {
 }
 
 /// What sort of workout, as far as a training plan cares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum Kind {
@@ -48,21 +48,16 @@ impl Kind {
         }
     }
 
-    /// From the workout's name as Apple Health has it: "Outdoor Run",
-    /// "Indoor Cycle", "Traditional Strength Training", "Hiking".
-    pub fn from_workout_name(name: &str) -> Kind {
-        let name = name.to_ascii_lowercase();
-        let has = |w: &str| name.contains(w);
-        if has("run") || has("jog") {
-            Kind::Run
-        } else if has("walk") || has("hik") {
-            Kind::Walk
-        } else if has("cycl") || has("bik") || has("ride") {
-            Kind::Ride
-        } else if has("strength") || has("weight") {
-            Kind::Strength
-        } else {
-            Kind::Other
+    /// From Strava's `sport_type` (or the older `type`): "TrailRun",
+    /// "GravelRide", "WeightTraining".
+    pub fn from_sport_type(sport: &str) -> Kind {
+        match sport {
+            "Run" | "TrailRun" | "VirtualRun" => Kind::Run,
+            "Walk" | "Hike" => Kind::Walk,
+            "Ride" | "MountainBikeRide" | "GravelRide" | "EBikeRide" | "EMountainBikeRide"
+            | "VirtualRide" | "Velomobile" | "Handcycle" => Kind::Ride,
+            "WeightTraining" | "Crossfit" => Kind::Strength,
+            _ => Kind::Other,
         }
     }
 }
@@ -71,17 +66,18 @@ impl Kind {
 /// kilocalories.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Activity {
-    /// Where it came from: `health_auto_export`.
+    /// Where it came from: `strava`.
     pub source: String,
     /// The source's own id for it, unique per person and source: the
-    /// same workout sent twice is the same row.
+    /// same workout fetched twice is the same row.
     pub external_id: String,
     pub started_at: DateTime<Utc>,
     pub kind: Kind,
-    /// As the source named it, "Outdoor Run": the kind loses whether it
+    /// As the person named it, "Morning Run": the kind loses whether it
     /// was on a treadmill.
     pub name: String,
     pub distance_m: Option<f64>,
+    /// From start to finish, pauses included.
     pub duration_s: Option<f64>,
     pub moving_s: Option<f64>,
     pub avg_hr: Option<f64>,
@@ -89,7 +85,7 @@ pub struct Activity {
     pub elevation_gain_m: Option<f64>,
     pub energy_kcal: Option<f64>,
     /// The workout as it arrived, for the plan and the review to come:
-    /// splits, heart-rate samples and the route are in here.
+    /// the kilometre splits and the route are in here.
     #[serde(skip)]
     pub raw: serde_json::Value,
 }
@@ -102,47 +98,60 @@ impl Activity {
     }
 }
 
-/// One day of a person's body: what the watch and the scale said.
-/// Every field is optional because each arrives on its own.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct Wellness {
-    pub date: NaiveDate,
-    pub resting_hr: Option<f64>,
-    pub hrv_ms: Option<f64>,
-    pub sleep_s: Option<f64>,
-    pub weight_kg: Option<f64>,
-    pub body_fat_pct: Option<f64>,
+/// A person's own Strava API app, as they typed it on their profile.
+/// Each person makes their own because a new Strava app may only be
+/// used by the athlete who made it.
+#[derive(Clone, PartialEq)]
+pub struct StravaApp {
+    pub client_id: String,
+    pub client_secret: String,
 }
 
-impl Wellness {
-    pub fn on(date: NaiveDate) -> Self {
-        Self {
-            date,
-            ..Self::default()
-        }
+impl std::fmt::Debug for StravaApp {
+    /// Never the secret: a `Debug` that prints it is a secret in a log
+    /// line waiting to happen.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StravaApp")
+            .field("client_id", &self.client_id)
+            .finish_non_exhaustive()
     }
+}
 
-    /// `newer`'s readings over these, keeping what `newer` does not say.
-    pub fn merge(&mut self, newer: &Wellness) {
-        let take = |old: &mut Option<f64>, new: Option<f64>| {
-            if new.is_some() {
-                *old = new;
-            }
-        };
-        take(&mut self.resting_hr, newer.resting_hr);
-        take(&mut self.hrv_ms, newer.hrv_ms);
-        take(&mut self.sleep_s, newer.sleep_s);
-        take(&mut self.weight_kg, newer.weight_kg);
-        take(&mut self.body_fat_pct, newer.body_fat_pct);
-    }
+#[derive(Clone, PartialEq)]
+pub struct StravaTokens {
+    pub access_token: String,
+    /// Strava may hand back a new one on every refresh, and the old one
+    /// stops working the moment it does.
+    pub refresh_token: String,
+    pub expires_at: DateTime<Utc>,
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.resting_hr.is_none()
-            && self.hrv_ms.is_none()
-            && self.sleep_s.is_none()
-            && self.weight_kg.is_none()
-            && self.body_fat_pct.is_none()
+impl std::fmt::Debug for StravaTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StravaTokens")
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
     }
+}
+
+/// Whom the tokens read for, as Strava named them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Athlete {
+    pub id: i64,
+    pub name: String,
+}
+
+/// One person's Strava, as kept.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StravaLink {
+    pub app: StravaApp,
+    /// `None` until they connect, and again once they disconnect.
+    pub tokens: Option<StravaTokens>,
+    pub athlete: Option<Athlete>,
+    /// The last sync that got through.
+    pub last_sync: Option<DateTime<Utc>>,
+    /// Why the last sync did not, when it did not.
+    pub last_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -166,36 +175,40 @@ mod tests {
     }
 
     #[test]
-    fn workout_names_become_kinds() {
-        for (name, kind) in [
-            ("Outdoor Run", Kind::Run),
-            ("Indoor Run", Kind::Run),
-            ("Running", Kind::Run),
-            ("Outdoor Walk", Kind::Walk),
-            ("Hiking", Kind::Walk),
-            ("Indoor Cycle", Kind::Ride),
-            ("Traditional Strength Training", Kind::Strength),
-            ("Functional Strength Training", Kind::Strength),
+    fn sport_types_become_kinds() {
+        for (sport, kind) in [
+            ("Run", Kind::Run),
+            ("TrailRun", Kind::Run),
+            ("VirtualRun", Kind::Run),
+            ("Walk", Kind::Walk),
+            ("Hike", Kind::Walk),
+            ("Ride", Kind::Ride),
+            ("GravelRide", Kind::Ride),
+            ("VirtualRide", Kind::Ride),
+            ("WeightTraining", Kind::Strength),
             ("Yoga", Kind::Other),
-            ("Pool Swim", Kind::Other),
+            ("Swim", Kind::Other),
+            ("SomethingNew", Kind::Other),
         ] {
-            assert_eq!(Kind::from_workout_name(name), kind, "{name}");
+            assert_eq!(Kind::from_sport_type(sport), kind, "{sport}");
         }
     }
 
     #[test]
-    fn a_newer_reading_wins_and_a_missing_one_keeps_the_old() {
-        let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
-        let mut kept = Wellness {
-            resting_hr: Some(52.0),
-            weight_kg: Some(61.0),
-            ..Wellness::on(day)
+    fn secrets_stay_out_of_debug() {
+        let app = StravaApp {
+            client_id: "12345".into(),
+            client_secret: "the-secret".into(),
         };
-        kept.merge(&Wellness {
-            weight_kg: Some(60.6),
-            ..Wellness::on(day)
-        });
-        assert_eq!(kept.resting_hr, Some(52.0));
-        assert_eq!(kept.weight_kg, Some(60.6));
+        let tokens = StravaTokens {
+            access_token: "the-access".into(),
+            refresh_token: "the-refresh".into(),
+            expires_at: Utc::now(),
+        };
+        let shown = format!("{app:?} {tokens:?}");
+        assert!(shown.contains("12345"));
+        for secret in ["the-secret", "the-access", "the-refresh"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
     }
 }

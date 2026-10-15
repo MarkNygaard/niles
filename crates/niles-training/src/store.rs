@@ -1,15 +1,18 @@
 //! Where each person's training is kept: Postgres in the house
 //! (niles-db), in memory for tests.
 //!
-//! Saving is an upsert by key — a workout by (person, source, external
-//! id), a day by (person, date) — that touches nothing when nothing
-//! changed. Health Auto Export sends the same days over and over; the
-//! second time must leave everything as the first left it.
+//! Saving a workout is an upsert by (person, source, external id) that
+//! touches nothing when nothing changed, so fetching the same workout
+//! again leaves everything as the first fetch left it.
+//!
+//! The Strava rows hold a person's app secret and tokens. Postgres
+//! seals them; nothing that reads a [`StravaLink`] sends it anywhere
+//! but to Strava.
 
 use crate::error::Result;
-use crate::model::{Activity, Kind, Wellness};
+use crate::model::{Activity, Athlete, Kind, StravaApp, StravaLink, StravaTokens};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::Mutex;
 
@@ -20,23 +23,16 @@ pub struct Saved {
     pub updated: usize,
 }
 
-/// What the profile card shows.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// How much a person has kept.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Overview {
-    /// When the current key was made; `None` with no key.
-    pub key_made_at: Option<DateTime<Utc>>,
-    pub last_received_at: Option<DateTime<Utc>>,
     pub runs: u64,
     pub activities: u64,
-    pub wellness_days: u64,
 }
 
 #[async_trait]
 pub trait TrainingStore: Send + Sync {
     async fn save_activities(&self, person: &str, activities: &[Activity]) -> Result<Saved>;
-    /// Each day merged into the one kept: a field the day does not
-    /// carry keeps what was there.
-    async fn save_wellness(&self, person: &str, days: &[Wellness]) -> Result<Saved>;
     /// Oldest first, `from` inclusive and `to` exclusive.
     async fn activities(
         &self,
@@ -45,32 +41,41 @@ pub trait TrainingStore: Send + Sync {
         to: Option<DateTime<Utc>>,
         kind: Option<Kind>,
     ) -> Result<Vec<Activity>>;
-    /// Oldest first, both ends inclusive.
-    async fn wellness(&self, person: &str, from: NaiveDate, to: NaiveDate)
-    -> Result<Vec<Wellness>>;
     async fn overview(&self, person: &str) -> Result<Overview>;
-    /// Make `hash` the person's one key, replacing any they had.
-    async fn set_key(&self, person: &str, hash: &str) -> Result<()>;
-    /// False when they had no key.
-    async fn revoke_key(&self, person: &str) -> Result<bool>;
-    /// Whose key hashes to `hash`.
-    async fn person_for_key(&self, hash: &str) -> Result<Option<String>>;
-    async fn received(&self, person: &str, at: DateTime<Utc>) -> Result<()>;
+    /// When the newest workout from `source` started.
+    async fn latest(&self, person: &str, source: &str) -> Result<Option<DateTime<Utc>>>;
+
+    async fn strava(&self, person: &str) -> Result<Option<StravaLink>>;
+    /// Everyone with tokens: whom the poll syncs.
+    async fn strava_connected(&self) -> Result<Vec<String>>;
+    /// The person's app, made or replaced. Their tokens are left alone.
+    async fn set_strava_app(&self, person: &str, app: &StravaApp) -> Result<()>;
+    /// The app, the tokens and the sync state. False when there was
+    /// none. The workouts stay: they are the person's, not Strava's.
+    async fn remove_strava(&self, person: &str) -> Result<bool>;
+    /// `athlete` is `None` on a refresh, which leaves it as it was.
+    async fn set_strava_tokens(
+        &self,
+        person: &str,
+        tokens: &StravaTokens,
+        athlete: Option<&Athlete>,
+    ) -> Result<()>;
+    /// The tokens and the athlete; the app stays.
+    async fn clear_strava_tokens(&self, person: &str) -> Result<()>;
+    /// A sync's outcome: `at` when it got through (otherwise the last
+    /// one is kept), and why not when it did not.
+    async fn strava_synced(
+        &self,
+        person: &str,
+        at: Option<DateTime<Utc>>,
+        error: Option<&str>,
+    ) -> Result<()>;
 }
 
 #[derive(Default)]
 struct Kept {
     activities: Vec<(String, Activity)>,
-    wellness: Vec<(String, Wellness)>,
-    keys: Vec<KeyRow>,
-}
-
-#[derive(Default)]
-struct KeyRow {
-    person: String,
-    hash: Option<String>,
-    made_at: Option<DateTime<Utc>>,
-    received_at: Option<DateTime<Utc>>,
+    strava: Vec<(String, StravaLink)>,
 }
 
 #[derive(Default)]
@@ -85,6 +90,12 @@ impl MemoryTraining {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Kept> {
         self.kept.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn with_link(&self, person: &str, change: impl FnOnce(&mut StravaLink)) {
+        if let Some((_, link)) = self.lock().strava.iter_mut().find(|(p, _)| p == person) {
+            change(link);
+        }
     }
 }
 
@@ -104,31 +115,6 @@ impl TrainingStore for MemoryTraining {
                 }
                 None => {
                     kept.activities.push((person.into(), activity.clone()));
-                    saved.added += 1;
-                }
-            }
-        }
-        Ok(saved)
-    }
-
-    async fn save_wellness(&self, person: &str, days: &[Wellness]) -> Result<Saved> {
-        let mut kept = self.lock();
-        let mut saved = Saved::default();
-        for day in days.iter().filter(|d| !d.is_empty()) {
-            match kept
-                .wellness
-                .iter_mut()
-                .find(|(p, w)| p == person && w.date == day.date)
-            {
-                Some((_, existing)) => {
-                    let before = existing.clone();
-                    existing.merge(day);
-                    if *existing != before {
-                        saved.updated += 1;
-                    }
-                }
-                None => {
-                    kept.wellness.push((person.into(), day.clone()));
                     saved.added += 1;
                 }
             }
@@ -159,85 +145,104 @@ impl TrainingStore for MemoryTraining {
         Ok(out)
     }
 
-    async fn wellness(
-        &self,
-        person: &str,
-        from: NaiveDate,
-        to: NaiveDate,
-    ) -> Result<Vec<Wellness>> {
-        let mut out: Vec<Wellness> = self
-            .lock()
-            .wellness
-            .iter()
-            .filter(|(p, w)| p == person && w.date >= from && w.date <= to)
-            .map(|(_, w)| w.clone())
-            .collect();
-        out.sort_by_key(|w| w.date);
-        Ok(out)
-    }
-
     async fn overview(&self, person: &str) -> Result<Overview> {
         let kept = self.lock();
-        let key = kept.keys.iter().find(|k| k.person == person);
         let theirs = kept.activities.iter().filter(|(p, _)| p == person);
         Ok(Overview {
-            key_made_at: key.and_then(|k| k.hash.as_ref().and(k.made_at)),
-            last_received_at: key.and_then(|k| k.received_at),
             runs: theirs.clone().filter(|(_, a)| a.kind == Kind::Run).count() as u64,
             activities: theirs.count() as u64,
-            wellness_days: kept.wellness.iter().filter(|(p, _)| p == person).count() as u64,
         })
     }
 
-    async fn set_key(&self, person: &str, hash: &str) -> Result<()> {
+    async fn latest(&self, person: &str, source: &str) -> Result<Option<DateTime<Utc>>> {
+        Ok(self
+            .lock()
+            .activities
+            .iter()
+            .filter(|(p, a)| p == person && a.source == source)
+            .map(|(_, a)| a.started_at)
+            .max())
+    }
+
+    async fn strava(&self, person: &str) -> Result<Option<StravaLink>> {
+        Ok(self
+            .lock()
+            .strava
+            .iter()
+            .find(|(p, _)| p == person)
+            .map(|(_, l)| l.clone()))
+    }
+
+    async fn strava_connected(&self) -> Result<Vec<String>> {
+        Ok(self
+            .lock()
+            .strava
+            .iter()
+            .filter(|(_, l)| l.tokens.is_some())
+            .map(|(p, _)| p.clone())
+            .collect())
+    }
+
+    async fn set_strava_app(&self, person: &str, app: &StravaApp) -> Result<()> {
         let mut kept = self.lock();
-        let now = Some(Utc::now());
-        match kept.keys.iter_mut().find(|k| k.person == person) {
-            Some(k) => {
-                k.hash = Some(hash.into());
-                k.made_at = now;
-            }
-            None => kept.keys.push(KeyRow {
-                person: person.into(),
-                hash: Some(hash.into()),
-                made_at: now,
-                received_at: None,
-            }),
+        match kept.strava.iter_mut().find(|(p, _)| p == person) {
+            Some((_, link)) => link.app = app.clone(),
+            None => kept.strava.push((
+                person.into(),
+                StravaLink {
+                    app: app.clone(),
+                    tokens: None,
+                    athlete: None,
+                    last_sync: None,
+                    last_error: None,
+                },
+            )),
         }
         Ok(())
     }
 
-    async fn revoke_key(&self, person: &str) -> Result<bool> {
+    async fn remove_strava(&self, person: &str) -> Result<bool> {
         let mut kept = self.lock();
-        Ok(match kept.keys.iter_mut().find(|k| k.person == person) {
-            Some(k) if k.hash.is_some() => {
-                k.hash = None;
-                k.made_at = None;
-                true
+        let before = kept.strava.len();
+        kept.strava.retain(|(p, _)| p != person);
+        Ok(kept.strava.len() != before)
+    }
+
+    async fn set_strava_tokens(
+        &self,
+        person: &str,
+        tokens: &StravaTokens,
+        athlete: Option<&Athlete>,
+    ) -> Result<()> {
+        self.with_link(person, |link| {
+            link.tokens = Some(tokens.clone());
+            if let Some(athlete) = athlete {
+                link.athlete = Some(athlete.clone());
             }
-            _ => false,
-        })
+        });
+        Ok(())
     }
 
-    async fn person_for_key(&self, hash: &str) -> Result<Option<String>> {
-        Ok(self
-            .lock()
-            .keys
-            .iter()
-            .find(|k| k.hash.as_deref().is_some_and(|h| crate::same_hash(h, hash)))
-            .map(|k| k.person.clone()))
+    async fn clear_strava_tokens(&self, person: &str) -> Result<()> {
+        self.with_link(person, |link| {
+            link.tokens = None;
+            link.athlete = None;
+        });
+        Ok(())
     }
 
-    async fn received(&self, person: &str, at: DateTime<Utc>) -> Result<()> {
-        let mut kept = self.lock();
-        match kept.keys.iter_mut().find(|k| k.person == person) {
-            Some(k) => k.received_at = Some(at),
-            None => kept.keys.push(KeyRow {
-                person: person.into(),
-                received_at: Some(at),
-                ..KeyRow::default()
-            }),
-        }
+    async fn strava_synced(
+        &self,
+        person: &str,
+        at: Option<DateTime<Utc>>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        self.with_link(person, |link| {
+            if at.is_some() {
+                link.last_sync = at;
+            }
+            link.last_error = error.map(str::to_string);
+        });
         Ok(())
     }
 }
@@ -246,23 +251,29 @@ impl TrainingStore for MemoryTraining {
 mod tests {
     use super::*;
 
-    fn batch() -> crate::hae::Batch {
-        let body = serde_json::from_str(include_str!("../fixtures/hae-v2-metric.json")).unwrap();
-        crate::hae::parse(&body, &chrono_tz::Europe::Copenhagen).unwrap()
+    fn run(id: &str, started: &str) -> Activity {
+        Activity {
+            source: "strava".into(),
+            external_id: id.into(),
+            started_at: DateTime::parse_from_rfc3339(started).unwrap().to_utc(),
+            kind: Kind::Run,
+            name: "Morning Run".into(),
+            distance_m: Some(5000.0),
+            duration_s: Some(1800.0),
+            moving_s: Some(1750.0),
+            avg_hr: None,
+            max_hr: None,
+            elevation_gain_m: None,
+            energy_kcal: None,
+            raw: serde_json::Value::Null,
+        }
     }
 
     #[tokio::test]
-    async fn sending_the_same_data_twice_changes_nothing() {
+    async fn saving_the_same_workout_twice_changes_nothing() {
         let store = MemoryTraining::new();
-        let b = batch();
-        let first = store
-            .save_activities("person:majse", &b.activities)
-            .await
-            .unwrap();
-        let days = store
-            .save_wellness("person:majse", &b.wellness)
-            .await
-            .unwrap();
+        let runs = [run("1", "2026-10-14T05:00:00Z")];
+        let first = store.save_activities("person:majse", &runs).await.unwrap();
         assert_eq!(
             first,
             Saved {
@@ -270,35 +281,18 @@ mod tests {
                 updated: 0
             }
         );
-        assert_eq!(
-            days,
-            Saved {
-                added: 2,
-                updated: 0
-            }
-        );
-
-        let again = store
-            .save_activities("person:majse", &b.activities)
-            .await
-            .unwrap();
-        let days = store
-            .save_wellness("person:majse", &b.wellness)
-            .await
-            .unwrap();
+        let again = store.save_activities("person:majse", &runs).await.unwrap();
         assert_eq!(again, Saved::default());
-        assert_eq!(days, Saved::default());
-        let overview = store.overview("person:majse").await.unwrap();
-        assert_eq!((overview.runs, overview.wellness_days), (1, 2));
+        assert_eq!(store.overview("person:majse").await.unwrap().runs, 1);
     }
 
     #[tokio::test]
     async fn a_corrected_workout_is_updated_not_added() {
         let store = MemoryTraining::new();
-        let mut activities = batch().activities;
-        store.save_activities("p", &activities).await.unwrap();
-        activities[0].distance_m = Some(5100.0);
-        let saved = store.save_activities("p", &activities).await.unwrap();
+        let mut runs = [run("1", "2026-10-14T05:00:00Z")];
+        store.save_activities("p", &runs).await.unwrap();
+        runs[0].distance_m = Some(5100.0);
+        let saved = store.save_activities("p", &runs).await.unwrap();
         assert_eq!(
             saved,
             Saved {
@@ -311,47 +305,77 @@ mod tests {
     #[tokio::test]
     async fn one_person_s_data_is_not_another_s() {
         let store = MemoryTraining::new();
-        let b = batch();
-        store
-            .save_activities("person:majse", &b.activities)
-            .await
-            .unwrap();
-        store
-            .save_wellness("person:majse", &b.wellness)
-            .await
-            .unwrap();
+        let runs = [run("1", "2026-10-14T05:00:00Z")];
+        store.save_activities("person:majse", &runs).await.unwrap();
         let theirs = store
             .activities("person:mark", None, None, None)
             .await
             .unwrap();
         assert!(theirs.is_empty());
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
-        assert!(
-            store
-                .wellness("person:mark", day, day)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(store.latest("person:mark", "strava").await.unwrap(), None);
         // The same workout id for somebody else is their own row.
-        let saved = store
-            .save_activities("person:mark", &b.activities)
-            .await
-            .unwrap();
+        let saved = store.save_activities("person:mark", &runs).await.unwrap();
         assert_eq!(saved.added, 1);
     }
 
     #[tokio::test]
-    async fn a_key_is_found_by_its_hash_until_revoked() {
+    async fn the_latest_is_the_newest_start() {
         let store = MemoryTraining::new();
-        let hash = crate::hash_key("the key");
-        store.set_key("person:majse", &hash).await.unwrap();
+        store
+            .save_activities(
+                "p",
+                &[
+                    run("2", "2026-10-14T05:00:00Z"),
+                    run("1", "2026-10-10T05:00:00Z"),
+                ],
+            )
+            .await
+            .unwrap();
         assert_eq!(
-            store.person_for_key(&hash).await.unwrap().as_deref(),
-            Some("person:majse")
+            store.latest("p", "strava").await.unwrap(),
+            Some(
+                DateTime::parse_from_rfc3339("2026-10-14T05:00:00Z")
+                    .unwrap()
+                    .to_utc()
+            )
         );
-        assert!(store.revoke_key("person:majse").await.unwrap());
-        assert_eq!(store.person_for_key(&hash).await.unwrap(), None);
-        assert!(!store.revoke_key("person:majse").await.unwrap());
+        assert_eq!(store.latest("p", "elsewhere").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn disconnecting_keeps_the_app_and_removing_keeps_the_workouts() {
+        let store = MemoryTraining::new();
+        let app = StravaApp {
+            client_id: "1".into(),
+            client_secret: "s".into(),
+        };
+        store.set_strava_app("p", &app).await.unwrap();
+        let tokens = StravaTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            expires_at: Utc::now(),
+        };
+        let athlete = Athlete {
+            id: 7,
+            name: "Majse".into(),
+        };
+        store
+            .set_strava_tokens("p", &tokens, Some(&athlete))
+            .await
+            .unwrap();
+        assert_eq!(store.strava_connected().await.unwrap(), ["p"]);
+
+        store.clear_strava_tokens("p").await.unwrap();
+        let link = store.strava("p").await.unwrap().unwrap();
+        assert_eq!((link.app, link.tokens, link.athlete), (app, None, None));
+        assert!(store.strava_connected().await.unwrap().is_empty());
+
+        store
+            .save_activities("p", &[run("1", "2026-10-14T05:00:00Z")])
+            .await
+            .unwrap();
+        assert!(store.remove_strava("p").await.unwrap());
+        assert!(!store.remove_strava("p").await.unwrap());
+        assert_eq!(store.overview("p").await.unwrap().activities, 1);
     }
 }
