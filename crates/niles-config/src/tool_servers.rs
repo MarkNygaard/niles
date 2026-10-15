@@ -37,6 +37,16 @@ pub struct ToolServerConfig {
     pub tools: BTreeMap<String, ToolMode>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Spoken, with Claude Code or ChatGPT switched on: when the fast
+    /// model reaches for one of these tools, the turn goes to the
+    /// assistant instead. Off for a server whose tools are quick
+    /// lookups.
+    #[serde(default = "default_true")]
+    pub hand_off: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// What the model may do with one tool.

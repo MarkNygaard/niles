@@ -2,6 +2,7 @@ import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { SecretField } from "@/components/SecretField";
 import { api } from "@/lib/api";
@@ -23,6 +24,8 @@ export interface ToolServerPanelProps {
   /** Each tool's setting as the config has it; a tool not here is on. */
   modes: Record<string, ToolMode>;
   notes: string;
+  /** Whether, spoken, these tools go to Claude Code or ChatGPT. */
+  handOff: boolean;
   /** What the notes say before anybody has written any. */
   notesPlaceholder?: string;
   secret?: Secret;
@@ -47,6 +50,7 @@ export function ToolServerPanel({
   server,
   modes,
   notes,
+  handOff,
   notesPlaceholder,
   secret,
   writable,
@@ -92,6 +96,23 @@ export function ToolServerPanel({
           <RefreshCw aria-hidden /> Refresh
         </Button>
       </div>
+
+      <label className="flex items-center justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">Let Claude or ChatGPT handle these</span>
+          <span className="text-muted-foreground block text-xs">
+            Asked by voice, the request goes to the assistant when one is switched on: slower,
+            and better at writing. Off for quick lookups.
+          </span>
+        </span>
+        <Switch
+          checked={handOff}
+          disabled={saving}
+          onCheckedChange={(next) =>
+            onChange([{ path: `tool_servers.${id}.hand_off`, value: next }])
+          }
+        />
+      </label>
 
       <NotesField
         value={notes}

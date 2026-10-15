@@ -152,6 +152,11 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// The tools added while Niles runs, as `(owner, name)`.
+    pub fn dynamic_names(&self) -> Vec<(String, String)> {
+        self.dynamic.names()
+    }
+
     /// The names of the tools registered here, without the dynamic ones:
     /// names no plugin's tool may take.
     pub fn builtin_names(&self) -> Vec<String> {
