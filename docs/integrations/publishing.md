@@ -148,7 +148,7 @@ anyone who installed it; publish a new release instead.
 
 | Interface | Niles | What changed |
 |---|---|---|
-| 0.2.1 | the release after 0.2.0 | `config.time-zone` and `devices.set-room-light`. Any device class may `report-action`. Nothing 0.2.0 had changed. |
+| 0.2.1 | 0.2.1 | `config.time-zone` and `devices.set-room-light`. Any device class may `report-action`. Nothing 0.2.0 had changed. |
 | 0.2.0 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |
 | 0.1 | 0.2.0 | The first. |
 
