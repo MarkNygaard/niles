@@ -91,7 +91,7 @@ export interface AddOnsPageProps {
   presenceLights?: { offWhenAway: boolean; onWhenHome: string[] };
   lightOptions?: DeviceOption[];
   /** Linear's tool-server section as the config has it, if added. */
-  linear?: { notes?: string; tools?: Record<string, ToolMode> };
+  linear?: { notes?: string; tools?: Record<string, ToolMode>; hand_off?: boolean };
   /** The remote tool servers, as Niles is connected to them. */
   toolServers?: ToolServer[];
   /** Something about a tool server changed: ask for them again. */
@@ -660,6 +660,7 @@ export function AddOnsPage({
                     server={toolServers?.find((t) => t.id === "linear")}
                     modes={linear?.tools ?? {}}
                     notes={linear?.notes ?? ""}
+                    handOff={linear?.hand_off !== false}
                     notesPlaceholder="For example: a coding task goes to the team Niles, in Todo, with the label AI Eligible."
                     secret={secretFor(current.secret_key)}
                     writable={secrets?.writable ?? false}

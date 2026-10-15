@@ -33,6 +33,7 @@ function setup(props: Partial<React.ComponentProps<typeof ToolServerPanel>> = {}
       server={LINEAR}
       modes={{}}
       notes=""
+      handOff
       writable
       onChange={onChange}
       onSecretsChanged={vi.fn()}
@@ -71,6 +72,14 @@ describe("ToolServerPanel", () => {
     expect(onChange).toHaveBeenCalledWith([
       { path: "tool_servers.linear.tools.delete_issue", value: "ask" },
     ]);
+  });
+
+  it("leaves spoken requests to the assistant unless switched off", () => {
+    const { onChange } = setup();
+    const toggle = screen.getByRole("switch");
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(onChange).toHaveBeenCalledWith([{ path: "tool_servers.linear.hand_off", value: false }]);
   });
 
   it("writes the notes when you leave them", () => {

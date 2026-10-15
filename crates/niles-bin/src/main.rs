@@ -4226,15 +4226,17 @@ async fn dispatch_tier1(
     });
     // A spoken rule the keyword check missed — "every weekday at 6:30
     // turn on the bedroom light" — still reaches the assistant: the fast
-    // model reaches for the automation tools, and is stopped there.
-    let hand_off: &[&str] = if matches!(thread, conversation::Thread::Room(_))
-        && ctx.automations.is_some()
-        && assistant_on(ctx)
-    {
-        AUTOMATION_CHANGES
-    } else {
-        &[]
-    };
+    // model reaches for the automation tools, and is stopped there. So
+    // does a tool server's, where the household left it to the assistant:
+    // filing a well-written issue is worth a few seconds.
+    let mut hand_off: Vec<String> = Vec::new();
+    if matches!(thread, conversation::Thread::Room(_)) && assistant_on(ctx) {
+        if ctx.automations.is_some() {
+            hand_off.extend(AUTOMATION_CHANGES.iter().map(|t| t.to_string()));
+        }
+        hand_off.extend(handed_to_the_assistant(ctx));
+    }
+    let hand_off: Vec<&str> = hand_off.iter().map(String::as_str).collect();
     let unhanded = messages.clone();
     match run_tool_calling_chat_with_messages(
         ctx.llm.as_ref(),
@@ -4242,7 +4244,7 @@ async fn dispatch_tier1(
         messages,
         MAX_TOOL_ITERATIONS,
         None,
-        hand_off,
+        &hand_off,
     )
     .await
     {
@@ -4338,6 +4340,33 @@ async fn dispatch_tier1(
         }
     }
 }
+/// The tools of every tool server the household left to the assistant,
+/// as they are offered now.
+fn handed_to_the_assistant(ctx: &DispatchCtx) -> Vec<String> {
+    let Some(settings) = ctx.settings.as_ref() else {
+        return Vec::new();
+    };
+    handed(&settings.current().tool_servers, ctx.tools.dynamic_names())
+}
+
+/// Of the tools offered, `(owner, name)`, those of the servers handed
+/// to the assistant.
+fn handed(
+    servers: &std::collections::BTreeMap<String, niles_config::ToolServerConfig>,
+    offered: Vec<(String, String)>,
+) -> Vec<String> {
+    let owners: Vec<String> = servers
+        .iter()
+        .filter(|(_, server)| server.hand_off)
+        .map(|(id, _)| format!("mcp:{id}"))
+        .collect();
+    offered
+        .into_iter()
+        .filter(|(owner, _)| owners.contains(owner))
+        .map(|(_, name)| name)
+        .collect()
+}
+
 /// Whether an assistant is there, switched on and able to run, read per
 /// turn like the chat's switch.
 fn assistant_on(ctx: &DispatchCtx) -> bool {
@@ -9217,6 +9246,31 @@ mod chat_loop_tests {
         let tools = reqs[0].tools.as_ref().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "stub");
+    }
+}
+
+#[cfg(test)]
+mod hand_off_tests {
+    use super::handed;
+
+    #[test]
+    fn a_servers_tools_go_to_the_assistant_unless_kept_back() {
+        let servers: std::collections::BTreeMap<String, niles_config::ToolServerConfig> =
+            toml::from_str(
+                "[linear]
+url = \"https://mcp.linear.app/mcp\"
+[sentry]
+url = \"https://mcp.sentry.dev/mcp\"
+hand_off = false
+",
+            )
+            .unwrap();
+        let offered = vec![
+            ("mcp:linear".to_string(), "linear__create_issue".to_string()),
+            ("mcp:sentry".to_string(), "sentry__list_issues".to_string()),
+            ("spotprice".to_string(), "spotprice_prices".to_string()),
+        ];
+        assert_eq!(handed(&servers, offered), ["linear__create_issue"]);
     }
 }
 

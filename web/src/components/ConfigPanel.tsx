@@ -1164,7 +1164,13 @@ export function ConfigPanel() {
             lightOptions={lights}
             linear={
               (view.effective.tool_servers as
-                | { linear?: { notes?: string; tools?: Record<string, "on" | "ask" | "off"> } }
+                | {
+                    linear?: {
+                      notes?: string;
+                      tools?: Record<string, "on" | "ask" | "off">;
+                      hand_off?: boolean;
+                    };
+                  }
                 | undefined)?.linear
             }
             toolServers={toolServers.data}
