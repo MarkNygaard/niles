@@ -1,8 +1,7 @@
 # Pages and widgets
 
-> v0.1 of the interface. Niles 0.2.0 renders pages and widgets and runs
-> their actions, and `niles plugin dev` draws them as text; the app does
-> not draw them yet.
+> v0.1 of the interface. Niles 0.2.0 renders pages and widgets, runs their
+> actions and draws them in the app; `niles plugin dev` draws them as text.
 
 A plugin can add to the Niles app:
 
@@ -39,10 +38,17 @@ refresh_every = 300
 
 - **Menu entries** join the menu as `<plugin-id>.<id>` (`spotprice.electricity`).
   The household shows, hides and moves them in Settings → Menu like the
-  built-in pages.
+  built-in pages. Selecting one opens the page at `#/plugins/<plugin-id>/<id>`,
+  titled with its `label`; `icon` is drawn from Lucide's set, and a name Lucide
+  does not have draws a puzzle piece.
 - **Widgets** start where the manifest says: a room's card, or the front page.
-  The household can move one to another room or the front page, or hide it. A
-  `room` the house does not have puts it on the front page.
+  The household can move one to another room or the front page, or hide it,
+  from the plugin's panel on the Integrations page. A `room` the house does not
+  have puts it on the front page. On the front page a widget is a card titled
+  with its `title`; on a room it is drawn where the room opens, under its
+  lights, since the room's tile itself is a switch.
+- A plugin that is turned off takes its pages and widgets out of the app;
+  removing it also takes them out of the menu's settings.
 
 The approval screen lists each: "Adds a page to the menu: Electricity", "Adds a
 card to the front page: Electricity now", "Adds a card to the Kitchen".
@@ -67,7 +73,9 @@ do not fetch in `render`. Fetch on a timer and call `ui::invalidate` when
 there is something new.
 
 Return `Err("No prices yet.")` and the app shows that sentence in place of the
-surface.
+surface. While your plugin is not running (failing, stopped, not set up), the
+app shows "Not available right now" in its place, with the status line beneath
+it.
 
 ## The tree
 
@@ -162,16 +170,26 @@ Each control has an `id`, unique within the surface, which `on_action` receives.
 
 A control shows the state you rendered. After the user moves it, the app shows
 the new value at once and keeps it if your `on_action` succeeds, or puts it
-back and shows the error if not.
+back and shows the error if not. On a phone a `Row` is a stack, so a row of
+controls is one under the other there.
+
+How each node looks in the app: a `Reading` is the number large with its unit
+beside it and its label above; a `Badge` is a pill in the tone's colour; a
+`Chart` draws up to four series in the app's series colours, with a legend once
+there are two, the value under the pointer, and the numbers as a table for a
+screen reader. All of it follows dark mode.
 
 ### Images
 
 `src` is one of:
 
 - an `https` URL on a host your `http` permission declares. Niles fetches it
-  itself and serves it to the app, so the viewer's browser never contacts that
-  host: no cookies, no referrer, no tracking pixel. PNG, JPEG, WebP or GIF, at
-  most 4 MiB.
+  itself and serves it to the app from `/plugins/<id>/image`, so the viewer's
+  browser never contacts that host: no cookies, no referrer, no tracking pixel.
+  PNG, JPEG, WebP or GIF by its first bytes, whatever the host says it is, at
+  most 4 MiB. The fetch follows the same rules as your own requests (every
+  redirect checked, no private or loopback addresses), and Niles keeps the
+  picture for 10 minutes, so change the URL when the picture changes.
 - a `data:` URI (`data:image/png;base64,...`) of at most 64 KiB.
 
 No SVG, which can carry script.

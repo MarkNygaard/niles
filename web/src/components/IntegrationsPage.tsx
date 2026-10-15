@@ -71,6 +71,7 @@ import {
   uncoveredRoles,
 } from "@/lib/integrations";
 import type { Status } from "@/lib/integrations";
+import { pluginGroupsOf } from "@/lib/plugins";
 import type {
   ChatGptStatus,
   Integration,
@@ -137,6 +138,8 @@ export interface IntegrationsPageProps {
   plugins?: PluginSummary[];
   /** Something about the plugins changed: ask for them again. */
   onPluginsChanged?: () => void;
+  /** The config as it is, for where each plugin's widgets are. */
+  effective?: unknown;
 }
 
 /**
@@ -187,6 +190,7 @@ export function IntegrationsPage({
   mqttDefaults,
   plugins = [],
   onPluginsChanged,
+  effective,
 }: IntegrationsPageProps) {
   const [open, setOpen] = useState<string | null>(null);
   const [openPlugin, setOpenPlugin] = useState<string | null>(null);
@@ -601,7 +605,7 @@ export function IntegrationsPage({
               <DialogHeader>
                 <div className="flex min-w-0 flex-col gap-1">
                   <DialogTitle className="flex items-center gap-2">
-                    <PluginLogo src={currentPlugin.logo} />
+                    <PluginLogo plugin={currentPlugin} />
                     {currentPlugin.name}
                   </DialogTitle>
                   <DialogDescription>{currentPlugin.description}</DialogDescription>
@@ -611,7 +615,16 @@ export function IntegrationsPage({
                 <PluginPanel
                   key={currentPlugin.id}
                   plugin={currentPlugin}
+                  rooms={rooms}
+                  secrets={secrets}
+                  effective={effective}
                   onChanged={() => onPluginsChanged?.()}
+                  onSecretsChanged={onSecretsChanged}
+                  onPlaceWidget={(widget, place) =>
+                    onChange(`plugins.${currentPlugin.id}.widgets`, [
+                      { path: `menu.widgets.${currentPlugin.id}.${widget}`, value: place },
+                    ])
+                  }
                   onRemoved={() => {
                     setOpenPlugin(null);
                     onPluginsChanged?.();
@@ -987,22 +1000,6 @@ const TAB_LABELS: Record<Tab, string> = {
   connected: "Connected",
   available: "Available",
 };
-
-/** Plugins under their groups, in the order they first appear, with
-    Custom last: it follows the built-in groups on the page. */
-function pluginGroupsOf(
-  plugins: PluginSummary[],
-): { group: PluginSummary["group"]; items: PluginSummary[] }[] {
-  const groups = new Map<string, { group: PluginSummary["group"]; items: PluginSummary[] }>();
-  for (const plugin of plugins) {
-    const entry = groups.get(plugin.group.id);
-    if (entry) entry.items.push(plugin);
-    else groups.set(plugin.group.id, { group: plugin.group, items: [plugin] });
-  }
-  return [...groups.values()].sort(
-    (a, b) => Number(a.group.id === "custom") - Number(b.group.id === "custom"),
-  );
-}
 
 /** "Groq", "Groq and Cerebras", "Groq, Cerebras and UniFi", "4 more". */
 function names(integrations: Integration[]): string {

@@ -808,6 +808,12 @@ async fn an_update_that_fails_soon_after_is_rolled_back() {
     let notice = listed.error.as_deref().unwrap();
     assert!(notice.contains("Version 0.2.0 failed"), "{notice}");
     assert!(notice.contains("0.1.0 was put back"), "{notice}");
+
+    // Kept with the plugin, so a Niles that restarts still says why.
+    let kept = home.store.records().await.unwrap()[0].notice.clone();
+    assert_eq!(kept.as_deref(), Some(notice));
+    let restarted = Installer::new(home.runtime.clone(), hub.github(), options());
+    assert_eq!(restarted.list().await[0].error.as_deref(), Some(notice));
 }
 
 #[tokio::test(flavor = "multi_thread")]

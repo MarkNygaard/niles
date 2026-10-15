@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IntegrationsPage } from "@/components/IntegrationsPage";
 import { api } from "@/lib/api";
 import { pluginStatusOf } from "@/lib/integrations";
-import type { PluginPreview, PluginSummary } from "@/lib/api";
+import type { PluginPreview, PluginSetting, PluginSummary, SecretsReport } from "@/lib/api";
+
+const LOGO =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="currentColor"/></svg>';
 
 const PLUGIN: PluginSummary = {
   id: "spotprice",
@@ -26,6 +30,11 @@ const PLUGIN: PluginSummary = {
   logo: "/plugins/spotprice/logo",
   previous_version: null,
   update: null,
+  settings: [],
+  menu: [],
+  widgets: [],
+  interface: "0.1",
+  older_interface: false,
 };
 
 const PREVIEW: PluginPreview = {
@@ -62,22 +71,35 @@ const PREVIEW: PluginPreview = {
   removed: [],
 };
 
-function setup(plugins: PluginSummary[] = []) {
+function setup(
+  plugins: PluginSummary[] = [],
+  more: { rooms?: string[]; secrets?: SecretsReport; effective?: unknown } = {},
+) {
   const onPluginsChanged = vi.fn();
   const onSecretsChanged = vi.fn();
+  const onChange = vi.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <IntegrationsPage
-      integrations={[]}
-      plugins={plugins}
-      onPluginsChanged={onPluginsChanged}
-      onChange={vi.fn()}
-      onReset={vi.fn()}
-      onSecretsChanged={onSecretsChanged}
-      onTadoChanged={vi.fn()}
-    />,
+    <QueryClientProvider client={client}>
+      <IntegrationsPage
+        integrations={[]}
+        plugins={plugins}
+        onPluginsChanged={onPluginsChanged}
+        onChange={onChange}
+        onReset={vi.fn()}
+        onSecretsChanged={onSecretsChanged}
+        onTadoChanged={vi.fn()}
+        {...more}
+      />
+    </QueryClientProvider>,
   );
-  return { onPluginsChanged, onSecretsChanged };
+  return { onPluginsChanged, onSecretsChanged, onChange };
 }
+
+beforeEach(() => {
+  vi.spyOn(api, "pluginLog").mockResolvedValue([]);
+  vi.spyOn(api, "pluginLogo").mockResolvedValue(LOGO);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -282,5 +304,290 @@ describe("pluginStatusOf", () => {
     ).toEqual({ ok: false, text: "Stopped after repeated failures" });
     expect(pluginStatusOf({ ...PLUGIN, status: "disabled" })).toEqual({ ok: false, text: "Off" });
     expect(pluginStatusOf(PLUGIN)).toEqual({ ok: true, text: "Working" });
+  });
+});
+
+const PRESENCE: PluginSummary = {
+  ...PLUGIN,
+  id: "pres",
+  name: "Presence thing",
+  group: { id: "presence", label: "Presence & climate" },
+};
+
+describe("catalogue placement", () => {
+  it("marks every plugin's row Custom, whatever its group", () => {
+    setup([PLUGIN, PRESENCE]);
+    for (const name of ["Spot prices", "Presence thing"]) {
+      const row = screen.getByRole("button", { name: `Configure ${name}` });
+      expect(within(row).getByText("Custom")).toBeInTheDocument();
+    }
+  });
+
+  it("puts a plugin in its manifest's group, and the Custom group last", () => {
+    setup([PLUGIN, PRESENCE]);
+    const presence = screen.getByRole("region", { name: "Presence & climate" });
+    const custom = screen.getByRole("region", { name: "Custom" });
+    expect(
+      within(presence).getByRole("button", { name: "Configure Presence thing" }),
+    ).toBeInTheDocument();
+    expect(within(custom).getByRole("button", { name: "Configure Spot prices" })).toBeInTheDocument();
+    expect(presence.compareDocumentPosition(custom) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe("the logo", () => {
+  it("is drawn inline, so currentColor is the text colour", async () => {
+    setup([PLUGIN]);
+    const row = screen.getByRole("button", { name: "Configure Spot prices" });
+    await waitFor(() =>
+      expect(row.querySelector('[data-logo="plugin"] svg circle')).not.toBeNull(),
+    );
+    expect(row.querySelector("circle")).toHaveAttribute("fill", "currentColor");
+    expect(row.querySelector("img")).toBeNull();
+    expect(api.pluginLogo).toHaveBeenCalledWith("spotprice");
+  });
+
+  it("falls back to the generic mark for anything outside the allowlist", async () => {
+    vi.mocked(api.pluginLogo).mockResolvedValue(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><script>alert(1)</script></svg>',
+    );
+    setup([PLUGIN]);
+    const row = screen.getByRole("button", { name: "Configure Spot prices" });
+    await waitFor(() => expect(api.pluginLogo).toHaveBeenCalled());
+    await waitFor(() => expect(row.querySelector('[data-logo="generic"]')).not.toBeNull());
+    expect(row.querySelector("script")).toBeNull();
+  });
+});
+
+const SETTINGS: PluginSetting[] = [
+  {
+    key: "label",
+    label: "Label",
+    type: "string",
+    required: false,
+    help: "What the page is called.",
+    default: "Prices",
+    options: [],
+    min: null,
+    max: null,
+    value: null,
+    set: false,
+  },
+  {
+    key: "cheap_hours",
+    label: "Cheap hours",
+    type: "number",
+    required: false,
+    help: null,
+    default: 6,
+    options: [],
+    min: 1,
+    max: 24,
+    value: 4,
+    set: true,
+  },
+  {
+    key: "speak",
+    label: "Say when it is cheap",
+    type: "boolean",
+    required: false,
+    help: null,
+    default: false,
+    options: [],
+    min: null,
+    max: null,
+    value: null,
+    set: false,
+  },
+  {
+    key: "area",
+    label: "Price area",
+    type: "choice",
+    required: true,
+    help: "West of the Great Belt is DK1.",
+    default: "DK1",
+    options: [
+      { value: "DK1", label: "West Denmark" },
+      { value: "DK2", label: "East Denmark" },
+    ],
+    min: null,
+    max: null,
+    value: null,
+    set: false,
+  },
+  {
+    key: "room",
+    label: "Room",
+    type: "room",
+    required: false,
+    help: null,
+    default: null,
+    options: [],
+    min: null,
+    max: null,
+    value: "kitchen",
+    set: true,
+  },
+  {
+    key: "api_key",
+    label: "API key",
+    type: "secret",
+    required: true,
+    help: "From your account page.",
+    default: null,
+    options: [],
+    min: null,
+    max: null,
+    value: null,
+    set: false,
+  },
+];
+
+async function openPanel(plugin: PluginSummary, more: Parameters<typeof setup>[1] = {}) {
+  const handles = setup([plugin], more);
+  fireEvent.click(screen.getByRole("button", { name: `Configure ${plugin.name}` }));
+  const dialog = await screen.findByRole("dialog");
+  return { ...handles, dialog };
+}
+
+const UNSET: PluginSummary = {
+  ...PLUGIN,
+  status: "not_set_up",
+  status_line: "Not set up: API key is required",
+  settings: SETTINGS,
+};
+
+describe("the generated setup panel", () => {
+  it("draws a field for each type, with required marks, help and defaults", async () => {
+    const { dialog } = await openPanel(UNSET, { rooms: ["kitchen", "office"] });
+    const settings = within(dialog).getByRole("region", { name: "Settings" });
+    expect(within(settings).getByRole("textbox", { name: "Label" })).toHaveAttribute(
+      "placeholder",
+      "Prices",
+    );
+    expect(
+      within(settings).getByText("What the page is called. Default: Prices."),
+    ).toBeInTheDocument();
+    expect(within(settings).getByRole("textbox", { name: "Cheap hours" })).toHaveValue("4");
+    expect(within(settings).getByRole("switch", { name: "Say when it is cheap" })).not.toBeChecked();
+    expect(within(settings).getByRole("combobox", { name: "Price area" })).toBeInTheDocument();
+    expect(
+      within(settings).getByText("West of the Great Belt is DK1. Default: West Denmark."),
+    ).toBeInTheDocument();
+    expect(within(settings).getByRole("combobox", { name: "Room" })).toHaveTextContent("Kitchen");
+    // A secret is its own write-only field.
+    expect(within(settings).getByLabelText("API key (required)")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    expect(within(settings).getAllByText("required")).toHaveLength(1);
+  });
+
+  it("says what is missing before it starts", async () => {
+    const { dialog } = await openPanel(UNSET);
+    expect(within(dialog).getByText("Not set up: needs API key")).toBeInTheDocument();
+  });
+
+  it("says how it is doing once nothing is missing", async () => {
+    const { dialog } = await openPanel({
+      ...UNSET,
+      status: "running",
+      status_line: "Working",
+      settings: SETTINGS.map((s) => (s.key === "api_key" ? { ...s, set: true } : s)),
+    });
+    expect(within(dialog).getByText("Working")).toBeInTheDocument();
+  });
+
+  it("saves what changed through PATCH /config, and an emptied field as its default", async () => {
+    const patch = vi.spyOn(api, "patchConfig").mockResolvedValue({} as never);
+    const { dialog, onPluginsChanged } = await openPanel(UNSET);
+    const settings = within(dialog).getByRole("region", { name: "Settings" });
+    fireEvent.change(within(settings).getByRole("textbox", { name: "Label" }), {
+      target: { value: "Strøm" },
+    });
+    fireEvent.change(within(settings).getByRole("textbox", { name: "Cheap hours" }), {
+      target: { value: "" },
+    });
+    fireEvent.click(within(settings).getByRole("switch", { name: "Say when it is cheap" }));
+    fireEvent.click(within(settings).getAllByRole("button", { name: "Save" })[0]);
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith({
+        plugins: { spotprice: { label: "Strøm", cheap_hours: null, speak: true } },
+      }),
+    );
+    await waitFor(() => expect(onPluginsChanged).toHaveBeenCalled());
+  });
+
+  it("refuses a number outside its range without saving", async () => {
+    const patch = vi.spyOn(api, "patchConfig");
+    const { dialog } = await openPanel(UNSET);
+    const settings = within(dialog).getByRole("region", { name: "Settings" });
+    fireEvent.change(within(settings).getByRole("textbox", { name: "Cheap hours" }), {
+      target: { value: "30" },
+    });
+    fireEvent.click(within(settings).getAllByRole("button", { name: "Save" })[0]);
+    expect(
+      await within(settings).findByText("Cheap hours is between 1 and 24."),
+    ).toBeInTheDocument();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("writes a secret under plugins.<id>.<key>", async () => {
+    const put = vi.spyOn(api, "setSecret").mockResolvedValue(undefined);
+    const { dialog, onSecretsChanged } = await openPanel(UNSET, {
+      secrets: {
+        writable: true,
+        secrets: [
+          { key: "plugins.spotprice.api_key", label: "Spot prices: API key", source: "unset" },
+        ],
+      },
+    });
+    const input = within(dialog).getByLabelText("API key (required)");
+    fireEvent.change(input, { target: { value: "hunter2" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(put).toHaveBeenCalledWith("plugins.spotprice.api_key", "hunter2"));
+    await waitFor(() => expect(onSecretsChanged).toHaveBeenCalled());
+  });
+});
+
+describe("the panel", () => {
+  it("shows the log, newest first, with levels and times", async () => {
+    vi.mocked(api.pluginLog).mockResolvedValue([
+      { at: "2026-10-15T08:00:00Z", level: "info", message: "Working", niles: true },
+      { at: "2026-10-15T08:00:05Z", level: "warn", message: "prices are late", niles: false },
+    ]);
+    const { dialog } = await openPanel(PLUGIN);
+    const log = within(dialog).getByRole("region", { name: "Log" });
+    const lines = await within(log).findAllByRole("listitem");
+    expect(lines[0]).toHaveTextContent("prices are late");
+    expect(lines[0]).toHaveAttribute("data-level", "warn");
+    expect(lines[0]).toHaveTextContent("warn");
+    expect(lines[1]).toHaveTextContent("Niles: Working");
+    expect(lines[1].querySelector("time")).toHaveAttribute("datetime", "2026-10-15T08:00:00Z");
+    expect(lines[1].querySelector("time")?.textContent).toMatch(/^\d\d\D\d\d\D\d\d$/);
+    expect(api.pluginLog).toHaveBeenCalledWith("spotprice");
+  });
+
+  it("notes a plugin built for an older Niles, and keeps a rollback notice", async () => {
+    const { dialog } = await openPanel({
+      ...PLUGIN,
+      older_interface: true,
+      error:
+        "Version 0.2.0 failed soon after the update (trapped in on-timer), so 0.1.0 was put back.",
+    });
+    expect(within(dialog).getByText(/Built for an older Niles/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/0.1.0 was put back/)).toBeInTheDocument();
+  });
+
+  it("shows where each widget goes", async () => {
+    const plugin: PluginSummary = {
+      ...PLUGIN,
+      widgets: [{ id: "price_now", title: "Electricity now", room: "kitchen", refresh_every: null }],
+    };
+    const { dialog } = await openPanel(plugin, { rooms: ["kitchen"] });
+    const widgets = within(dialog).getByRole("region", { name: "Widgets" });
+    expect(
+      within(widgets).getByRole("combobox", { name: "Where Electricity now goes" }),
+    ).toHaveTextContent("Kitchen");
   });
 });

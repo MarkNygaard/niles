@@ -79,6 +79,10 @@ pub struct Record {
     /// The version a rollback would go back to.
     pub previous_version: Option<String>,
     pub update: Option<Update>,
+    /// What happened to it that its status does not say: an update that
+    /// failed and was rolled back. Kept until the next update or rollback
+    /// by hand, so the panel still says why after a restart.
+    pub notice: Option<String>,
 }
 
 /// A device Niles holds for a plugin, so it outlives the instance.
@@ -118,6 +122,9 @@ pub trait PluginStore: Send + Sync {
     /// False when there is no such plugin.
     async fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool, String>;
     async fn set_update(&self, id: &str, update: Option<&Update>) -> Result<(), String>;
+    /// Record what happened to the plugin, or forget it. An install,
+    /// an update and a rollback forget it on their own.
+    async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String>;
     async fn logo(&self, id: &str) -> Result<Option<String>, String>;
     /// Forget the plugin, its storage and its devices.
     async fn remove(&self, id: &str) -> Result<(), String>;
@@ -157,6 +164,7 @@ struct Kept {
     installed_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     update: Option<Update>,
+    notice: Option<String>,
 }
 
 fn installed(package: &Package) -> Installed {
@@ -233,6 +241,7 @@ impl PluginStore for MemoryStore {
                 updated_at: k.updated_at,
                 previous_version: k.previous.as_ref().map(|(v, _)| v.clone()),
                 update: k.update.clone(),
+                notice: k.notice.clone(),
             })
             .collect())
     }
@@ -256,6 +265,7 @@ impl PluginStore for MemoryStore {
                 installed_at,
                 updated_at: now,
                 update: None,
+                notice: None,
             },
         );
         Ok(())
@@ -272,6 +282,7 @@ impl PluginStore for MemoryStore {
         kept.version = version;
         kept.package = package;
         kept.update = None;
+        kept.notice = None;
         kept.updated_at = Utc::now();
         Ok(Some(installed(&kept.package)))
     }
@@ -289,6 +300,13 @@ impl PluginStore for MemoryStore {
     async fn set_update(&self, id: &str, update: Option<&Update>) -> Result<(), String> {
         if let Some(kept) = self.lock().installed.get_mut(id) {
             kept.update = update.cloned();
+        }
+        Ok(())
+    }
+
+    async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String> {
+        if let Some(kept) = self.lock().installed.get_mut(id) {
+            kept.notice = notice.map(str::to_string);
         }
         Ok(())
     }
@@ -431,6 +449,7 @@ impl PluginStore for niles_db::PostgresPlugins {
                 installed_at: row.installed_at,
                 updated_at: row.updated_at,
                 previous_version: row.previous_version,
+                notice: row.notice,
             })
             .collect())
     }
@@ -475,6 +494,10 @@ impl PluginStore for niles_db::PostgresPlugins {
             .transpose()
             .map_err(|e| e.to_string())?;
         niles_db::PostgresPlugins::set_update(self, id, json.as_deref()).await
+    }
+
+    async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String> {
+        niles_db::PostgresPlugins::set_notice(self, id, notice).await
     }
 
     async fn logo(&self, id: &str) -> Result<Option<String>, String> {
@@ -604,6 +627,56 @@ mod tests {
             again.get("p", "cursor").await.unwrap().as_deref(),
             Some("42")
         );
+    }
+
+    fn package(version: &str) -> Package {
+        Package {
+            manifest: format!("version = \"{version}\""),
+            component: version.as_bytes().to_vec(),
+            logo: None,
+            source: None,
+        }
+    }
+
+    async fn notice(store: &MemoryStore) -> Option<String> {
+        store.records().await.unwrap()[0].notice.clone()
+    }
+
+    #[tokio::test]
+    async fn a_rollback_notice_is_kept_until_the_next_update_or_rollback() {
+        let store = MemoryStore::new();
+        store
+            .install("p", "0.1.0", &package("0.1.0"))
+            .await
+            .unwrap();
+        store
+            .install("p", "0.2.0", &package("0.2.0"))
+            .await
+            .unwrap();
+        store.roll_back("p").await.unwrap();
+        store
+            .set_notice("p", Some("Version 0.2.0 failed"))
+            .await
+            .unwrap();
+        assert_eq!(
+            notice(&store).await.as_deref(),
+            Some("Version 0.2.0 failed")
+        );
+        store.set_enabled("p", false).await.unwrap();
+        assert!(
+            notice(&store).await.is_some(),
+            "turning it off says nothing new"
+        );
+
+        store
+            .install("p", "0.3.0", &package("0.3.0"))
+            .await
+            .unwrap();
+        assert_eq!(notice(&store).await, None, "an update starts afresh");
+        store.set_notice("p", Some("again")).await.unwrap();
+        store.roll_back("p").await.unwrap();
+        assert_eq!(notice(&store).await, None, "and so does a rollback");
+        store.set_notice("nobody", Some("x")).await.unwrap();
     }
 
     #[test]

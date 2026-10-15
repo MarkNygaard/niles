@@ -13,6 +13,8 @@
 //! POST   /plugins/{id}/disable                               -> PluginSummary
 //! DELETE /plugins/{id}                                       -> 204
 //! GET    /plugins/{id}/logo                                  -> the sanitised SVG
+//! GET    /plugins/{id}/log                                   -> [PluginLogLine], oldest first
+//! GET    /plugins/{id}/image?src=https://…                   -> a page's picture, fetched by Niles
 //! GET    /plugins/{id}/surfaces/{surface}?room=kitchen       -> the node tree
 //! POST   /plugins/{id}/surfaces/{surface}/actions/{control}  -> {toast, rerender}
 //! ```
@@ -32,6 +34,10 @@
 //!
 //! The signed-in person reaches the plugin as their slug, never their
 //! address: the speaker name their account is paired with, when it is.
+//!
+//! A page's `https` picture is fetched by Niles and served from
+//! `/plugins/{id}/image`, so the browser never contacts the plugin's
+//! hosts; `niles_plugins::images` holds the rules.
 
 use crate::state::AppState;
 use async_trait::async_trait;
@@ -81,6 +87,83 @@ pub struct PluginSummary {
     pub previous_version: Option<String>,
     /// A newer release, when the last check found one.
     pub update: Option<PluginUpdate>,
+    /// What its setup panel asks for, and what each holds now.
+    pub settings: Vec<PluginSetting>,
+    /// Its pages, which join the menu as `<id>.<page>`.
+    pub menu: Vec<PluginPage>,
+    /// Its cards for the front page and the rooms' cards.
+    pub widgets: Vec<PluginWidget>,
+    /// The `niles:integration` version it was built for.
+    pub interface: String,
+    /// Built for an older interface than the newest this Niles runs.
+    pub older_interface: bool,
+}
+
+/// One of a plugin's settings, for its setup panel.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginSetting {
+    pub key: String,
+    pub label: String,
+    /// `string`, `number`, `boolean`, `secret`, `choice` or `room`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub required: bool,
+    pub help: Option<String>,
+    pub default: Option<serde_json::Value>,
+    pub options: Vec<PluginOption>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// What the household entered; never a secret's, which stays in the
+    /// secret store under `plugins.<id>.<key>`.
+    pub value: Option<serde_json::Value>,
+    /// Whether it has a value of its own: entered, or a secret stored.
+    pub set: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginOption {
+    pub value: String,
+    pub label: String,
+}
+
+/// A page a plugin adds to the menu.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginPage {
+    pub id: String,
+    pub label: String,
+    /// A Lucide icon name.
+    pub icon: String,
+    pub refresh_every: Option<u32>,
+}
+
+/// A card a plugin adds to the front page or a room's card.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginWidget {
+    pub id: String,
+    pub title: String,
+    /// The room it starts on; none for the front page.
+    pub room: Option<String>,
+    pub refresh_every: Option<u32>,
+}
+
+/// One line of a plugin's log.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginLogLine {
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// `debug`, `info`, `warn` or `error`.
+    pub level: String,
+    pub message: String,
+    /// Said by Niles about the plugin ("Working", "Not working: …"),
+    /// rather than by the plugin.
+    pub niles: bool,
+}
+
+/// A picture for a plugin's page, as Niles fetched it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginImage {
+    /// `image/png`, `image/jpeg`, `image/webp` or `image/gif`.
+    pub mime: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -209,6 +292,11 @@ pub trait Plugins: Send + Sync {
     async fn remove(&self, id: &str) -> Result<(), PluginFailure>;
     /// The sanitised SVG, if it has one.
     async fn logo(&self, id: &str) -> Result<Option<String>, PluginFailure>;
+    /// Its last log lines, oldest first.
+    async fn log(&self, id: &str) -> Result<Vec<PluginLogLine>, PluginFailure>;
+    /// A picture on one of its pages: `BadRequest` for a URL its pages
+    /// may not show, `Upstream` for a host that did not answer with one.
+    async fn image(&self, id: &str, src: &str) -> Result<PluginImage, PluginFailure>;
     /// Every installed plugin's declared secrets, as
     /// `(plugins.<id>.<key>, label)`.
     async fn secret_settings(&self) -> Vec<(String, String)>;
@@ -381,6 +469,53 @@ pub async fn logo(
     Ok(response)
 }
 
+/// `GET /plugins/{id}/log`
+pub async fn log(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<PluginLogLine>>, Failure> {
+    Ok(Json(plugins(&state)?.log(&id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageQuery {
+    pub src: String,
+}
+
+/// `GET /plugins/{id}/image?src=https://…`
+///
+/// The picture a page names, fetched by Niles: the browser asks Niles
+/// and never the plugin's host. Served with the type the bytes are, a
+/// policy that lets nothing in it run or load, and kept by the browser
+/// for as long as Niles keeps it.
+pub async fn image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ImageQuery>,
+) -> Result<Response, Failure> {
+    let image = plugins(&state)?.image(&id, &query.src).await?;
+    let mut response = image.bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&image.mime)
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "not an image".to_string()))?,
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=600"),
+    );
+    Ok(response)
+}
+
 /// `GET /plugins/{id}/surfaces/{surface}?room=kitchen`
 pub async fn render(
     State(state): State<AppState>,
@@ -455,6 +590,31 @@ pub(crate) mod tests {
             logo: Some("/plugins/spotprice/logo".into()),
             previous_version: None,
             update: None,
+            settings: vec![PluginSetting {
+                key: "area".into(),
+                label: "Price area".into(),
+                kind: "choice".into(),
+                required: true,
+                help: None,
+                default: Some(serde_json::json!("DK1")),
+                options: vec![PluginOption {
+                    value: "DK1".into(),
+                    label: "West".into(),
+                }],
+                min: None,
+                max: None,
+                value: None,
+                set: false,
+            }],
+            menu: vec![PluginPage {
+                id: "electricity".into(),
+                label: "Electricity".into(),
+                icon: "zap".into(),
+                refresh_every: Some(300),
+            }],
+            widgets: Vec::new(),
+            interface: "0.1".into(),
+            older_interface: false,
         }
     }
 
@@ -596,6 +756,29 @@ pub(crate) mod tests {
 
         async fn logo(&self, id: &str) -> Result<Option<String>, PluginFailure> {
             Ok((id == "spotprice").then(|| "<svg/>".to_string()))
+        }
+
+        async fn log(&self, id: &str) -> Result<Vec<PluginLogLine>, PluginFailure> {
+            match id {
+                "spotprice" => Ok(vec![PluginLogLine {
+                    at: chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap(),
+                    level: "warn".into(),
+                    message: "prices are late".into(),
+                    niles: false,
+                }]),
+                _ => Err(PluginFailure::NotFound(format!("no plugin called {id}"))),
+            }
+        }
+
+        async fn image(&self, id: &str, src: &str) -> Result<PluginImage, PluginFailure> {
+            self.called(format!("image {id} {src}"));
+            match src {
+                "https://img.example.com/a.png" => Ok(PluginImage {
+                    mime: "image/png".into(),
+                    bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+                }),
+                _ => Err(PluginFailure::BadRequest("not a declared host".into())),
+            }
         }
 
         async fn secret_settings(&self) -> Vec<(String, String)> {
@@ -795,6 +978,72 @@ pub(crate) mod tests {
         assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
         let (status, _) = send(app(Arc::default()), get("/plugins/other/logo")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_list_carries_the_setup_panel_pages_and_widgets() {
+        let (_, body) = send(app(Arc::default()), get("/plugins")).await;
+        let list: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(list[0]["settings"][0]["type"], "choice");
+        assert_eq!(list[0]["settings"][0]["default"], "DK1");
+        assert_eq!(list[0]["settings"][0]["set"], false);
+        assert_eq!(list[0]["menu"][0]["icon"], "zap");
+        assert_eq!(list[0]["interface"], "0.1");
+        assert_eq!(list[0]["older_interface"], false);
+    }
+
+    #[tokio::test]
+    async fn the_log_is_served_oldest_first() {
+        let (status, body) = send(app(Arc::default()), get("/plugins/spotprice/log")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let lines: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(lines[0]["level"], "warn");
+        assert_eq!(lines[0]["message"], "prices are late");
+        assert_eq!(lines[0]["niles"], false);
+        assert!(lines[0]["at"].as_str().unwrap().starts_with("2025-10-09T"));
+        let (status, _) = send(app(Arc::default()), get("/plugins/nope/log")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_pages_picture_is_served_as_an_image_that_runs_nothing() {
+        let fake = Arc::new(Fake::default());
+        let response = app(fake.clone())
+            .oneshot(get(
+                "/plugins/spotprice/image?src=https%3A%2F%2Fimg.example.com%2Fa.png",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert!(
+            headers[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .contains("sandbox")
+        );
+        assert!(
+            headers[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .starts_with("private")
+        );
+        assert_eq!(
+            fake.calls.lock().unwrap()[0],
+            "image spotprice https://img.example.com/a.png"
+        );
+
+        let (status, body) = send(
+            app(fake.clone()),
+            get("/plugins/spotprice/image?src=https%3A%2F%2Fevil.example%2Fa.png"),
+        )
+        .await;
+        assert_eq!(
+            (status, body.as_str()),
+            (StatusCode::BAD_REQUEST, "not a declared host")
+        );
     }
 
     #[tokio::test]

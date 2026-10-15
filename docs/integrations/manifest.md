@@ -1,9 +1,9 @@
 # The manifest
 
 > v0.1 of the interface. Niles 0.2.0 runs it and installs it from GitHub:
-> the runtime, `niles plugin check`, `niles plugin dev`, and Add from GitHub
-> with its approval screen, updates, rollback, turning off and removing. Not
-> yet: the generated setup panel, and pages and widgets drawn in the app.
+> the runtime, `niles plugin check`, `niles plugin dev`, Add from GitHub with
+> its approval screen, updates, rollback, turning off and removing, and in the
+> app the generated setup panel, the plugin's log, and its pages and widgets.
 
 Every plugin has a `niles-integration.toml` at the root of its repo, attached
 to each release. Niles reads it before downloading anything else: it decides
@@ -174,8 +174,18 @@ your settings in `init` and you never have to handle them changing.
 
 Niles keeps the values in its configuration as `[plugins.<id>]`, beside its
 own settings, and secrets in its encrypted secret store as
-`plugins.<id>.<key>`. Until the setup panel is built, a household enters them
-there (`PATCH /config` with `{"plugins":{"spotprice":{"area":"DK2"}}}`).
+`plugins.<id>.<key>`. The setup panel writes them there, as
+`PATCH /config` with `{"plugins":{"spotprice":{"area":"DK2"}}}` and
+`PUT /secrets/plugins.spotprice.api_key`; a script can do the same.
+
+How each type is drawn: `string` and `number` as a text box, `boolean` as a
+switch, `choice` as a menu of its options, `room` as a menu of the house's
+rooms, and `secret` as a password box that says whether one is saved and never
+shows it. A `required` setting is marked, `help` is written under its field,
+and a `default` is shown beside it ("Default: West Denmark (DK1).") rather than
+filled in, so an emptied field goes back to the default. Until every required
+setting has a value the panel reads "Not set up: needs API key", and the plugin
+does not start.
 
 ## `[[ui.menu]]` and `[[ui.widgets]]`
 

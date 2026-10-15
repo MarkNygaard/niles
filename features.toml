@@ -441,3 +441,21 @@ id = "ui-plugins"
 category = "ui.integrations"
 summary = "Integrations page: Add from GitHub, and a panel per plugin to turn it off, update, roll back or remove it"
 since_pr = 390
+
+[[feature]]
+id = "ui-plugin-setup"
+category = "ui.integrations"
+summary = "A plugin's panel: a setup form generated from its manifest's settings, its log, and where its widgets go"
+since_pr = 391
+
+[[feature]]
+id = "ui-plugin-pages"
+category = "ui.integrations"
+summary = "Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees"
+since_pr = 391
+
+[[feature]]
+id = "api-plugin-log-image"
+category = "api.read"
+summary = "GET /plugins/{id}/log for a plugin's last lines, and /plugins/{id}/image for its pages' pictures, fetched by Niles"
+since_pr = 391

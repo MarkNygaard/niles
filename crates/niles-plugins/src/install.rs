@@ -21,7 +21,7 @@
 
 use crate::check::{self, MAX_LOGO};
 use crate::github::{self, GitHub, MAX_MANIFEST, Release, Repo};
-use crate::manifest::{Manifest, SettingKind};
+use crate::manifest::{INTERFACES, Manifest, MenuEntry, SettingKind, Widget};
 use crate::permissions::{self, CANNOT};
 use crate::runtime::{MAX_COMPONENT, Runtime, Status};
 use crate::store::{Package, Record, Source, Update};
@@ -236,6 +236,87 @@ pub struct Listed {
     /// The version a rollback goes back to.
     pub previous_version: Option<String>,
     pub update: Option<Update>,
+    /// Its setup panel: each setting, and what it holds now.
+    pub settings: Vec<SettingState>,
+    /// Its pages in the menu.
+    pub menu: Vec<MenuEntry>,
+    /// Its cards for the front page and the rooms.
+    pub widgets: Vec<Widget>,
+    /// The `niles:integration` version it was built for.
+    pub interface: String,
+    /// Built for an interface older than the newest this Niles runs: it
+    /// works, and its panel says so.
+    pub older_interface: bool,
+}
+
+/// One of a plugin's settings, as its setup panel shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SettingState {
+    pub key: String,
+    pub label: String,
+    /// `string`, `number`, `boolean`, `secret`, `choice` or `room`.
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub required: bool,
+    pub help: Option<String>,
+    pub default: Option<serde_json::Value>,
+    /// A choice's options, as `(value, label)`.
+    pub options: Vec<(String, String)>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// What the household entered, when it fits; never a secret's.
+    pub value: Option<serde_json::Value>,
+    /// Whether it has a value of its own: entered, or for a secret,
+    /// stored. A default does not count.
+    pub set: bool,
+}
+
+/// Each of `manifest`'s settings with what it holds: `values` as the
+/// household entered them, `secret_set` whether a secret is stored.
+pub fn setting_states(
+    manifest: &Manifest,
+    values: &toml::Table,
+    secret_set: impl Fn(&str) -> bool,
+) -> Vec<SettingState> {
+    let json = |v: &toml::Value| serde_json::to_value(v).ok();
+    manifest
+        .settings
+        .iter()
+        .map(|s| {
+            let secret = s.kind == SettingKind::Secret;
+            let value = (!secret)
+                .then(|| values.get(&s.key).filter(|v| s.accepts(v).is_ok()))
+                .flatten()
+                .and_then(json);
+            SettingState {
+                key: s.key.clone(),
+                label: s.label.clone(),
+                kind: kind_name(s.kind),
+                required: s.required,
+                help: s.help.clone(),
+                default: s.default.as_ref().and_then(json),
+                options: s
+                    .options
+                    .iter()
+                    .map(|o| (o.value.clone(), o.label.clone()))
+                    .collect(),
+                min: s.min,
+                max: s.max,
+                set: if secret {
+                    secret_set(&s.key)
+                } else {
+                    value.is_some()
+                },
+                value,
+            }
+        })
+        .collect()
+}
+
+/// Whether a plugin for `interface` was built for an older one than
+/// the newest this Niles runs.
+pub fn older_interface(interface: &str) -> bool {
+    INTERFACES.last().is_some_and(|newest| *newest != interface)
 }
 
 /// Installs, updates and removes plugins. Cheap to clone.
@@ -253,9 +334,6 @@ struct Inner {
     reserved_tools: Vec<String>,
     leftovers: Option<Arc<dyn Leftovers>>,
     staged: Mutex<Vec<Staged>>,
-    /// What happened to a plugin that its status does not say: an update
-    /// that was rolled back.
-    notices: Mutex<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,7 +377,6 @@ impl Installer {
                 reserved_tools: Vec::new(),
                 leftovers: None,
                 staged: Mutex::default(),
-                notices: Mutex::default(),
             }),
         }
     }
@@ -570,7 +647,6 @@ impl Installer {
             .map_err(|e| Refusal::Invalid(e.to_string()))?
             .version;
         self.inner.runtime.install_package(staged.package).await?;
-        lock(&self.inner.notices).remove(id);
         tracing::info!(plugin = %id, "[plugins] updated from {} to {version}", record.version);
         self.watch(id.to_string(), version);
         self.listed(id).await
@@ -601,7 +677,10 @@ impl Installer {
                              was put back."
                         );
                         tracing::warn!(plugin = %id, "[plugins] {notice}");
-                        lock(&installer.inner.notices).insert(id, notice);
+                        let store = installer.inner.runtime.store();
+                        if let Err(e) = store.set_notice(&id, Some(&notice)).await {
+                            tracing::warn!(plugin = %id, "[plugins] the notice was not kept: {e}");
+                        }
                     }
                     Err(e) => {
                         tracing::error!(plugin = %id, "[plugins] {version} failed ({why}) and could not be rolled back: {e}")
@@ -615,7 +694,6 @@ impl Installer {
     /// Put the version before the last update back.
     pub async fn roll_back(&self, id: &str) -> Outcome<Listed> {
         let version = self.inner.runtime.roll_back(id).await?;
-        lock(&self.inner.notices).remove(id);
         tracing::info!(plugin = %id, "[plugins] rolled back to {version}");
         self.listed(id).await
     }
@@ -634,7 +712,6 @@ impl Installer {
     /// component, and through [`Leftovers`] its settings and secrets.
     pub async fn remove(&self, id: &str) -> Outcome<()> {
         self.inner.runtime.remove(id).await?;
-        lock(&self.inner.notices).remove(id);
         lock(&self.inner.staged)
             .retain(|s| !matches!(&s.purpose, Purpose::Update { id: of, .. } if of == id));
         if let Some(leftovers) = &self.inner.leftovers
@@ -696,8 +773,8 @@ impl Installer {
                 Vec::new()
             }
         };
-        let running = self.inner.runtime.plugins();
-        let notices = lock(&self.inner.notices).clone();
+        let runtime = &self.inner.runtime;
+        let running = runtime.plugins();
         let mut out: Vec<Listed> = records
             .into_iter()
             .filter_map(|record| {
@@ -726,7 +803,7 @@ impl Installer {
                     group: group_of(&manifest),
                     status,
                     status_line,
-                    error: notices.get(&record.id).cloned().or(error),
+                    error: record.notice.or(error),
                     dropped_events: dropped,
                     enabled: record.enabled,
                     source: record.source,
@@ -735,6 +812,13 @@ impl Installer {
                     has_logo: record.has_logo,
                     previous_version: record.previous_version,
                     update: record.update,
+                    settings: setting_states(&manifest, &runtime.settings_of(&record.id), |key| {
+                        runtime.secret_is_set(&record.id, key)
+                    }),
+                    menu: manifest.ui.menu.clone(),
+                    widgets: manifest.ui.widgets.clone(),
+                    older_interface: older_interface(&manifest.interface),
+                    interface: manifest.interface.clone(),
                 })
             })
             .collect();
@@ -765,6 +849,11 @@ impl Installer {
                 has_logo: false,
                 previous_version: None,
                 update: None,
+                settings: Vec::new(),
+                menu: Vec::new(),
+                widgets: Vec::new(),
+                interface: String::new(),
+                older_interface: false,
             });
         }
         out
@@ -1127,6 +1216,63 @@ mod tests {
             sha256: niles_db::hex_digest(component),
             manifest_sha256: niles_db::hex_digest(b"id = \"x\""),
         }
+    }
+
+    #[test]
+    fn the_panel_sees_entered_values_and_whether_secrets_are_set_never_their_values() {
+        let manifest = Manifest::parse(
+            r#"
+id = "x"
+name = "X"
+version = "0.1.0"
+description = "x"
+authors = ["a"]
+min_niles = "0.2.0"
+interface = "0.1"
+
+[[settings]]
+key = "area"
+label = "Area"
+type = "choice"
+required = true
+default = "DK1"
+options = [{ value = "DK1", label = "West" }, { value = "DK2", label = "East" }]
+
+[[settings]]
+key = "hours"
+label = "Hours"
+type = "number"
+max = 24
+
+[[settings]]
+key = "api_key"
+label = "API key"
+type = "secret"
+required = true
+"#,
+        )
+        .unwrap();
+        let values: toml::Table =
+            toml::from_str("area = \"DK2\"\nhours = 99\napi_key = \"leaked\"").unwrap();
+        let states = setting_states(&manifest, &values, |key| key == "api_key");
+        assert_eq!(states[0].value, Some(serde_json::json!("DK2")));
+        assert_eq!(states[0].default, Some(serde_json::json!("DK1")));
+        assert_eq!(states[0].options[1], ("DK2".into(), "East".into()));
+        assert!(states[0].set);
+        assert_eq!(
+            states[1].value, None,
+            "99 is past max, so it is not a value"
+        );
+        assert!(!states[1].set);
+        assert_eq!(states[2].kind, "secret");
+        assert_eq!(states[2].value, None, "a secret's value never leaves");
+        assert!(states[2].set);
+    }
+
+    #[test]
+    fn only_the_newest_interface_is_not_older() {
+        assert!(!older_interface(INTERFACES.last().unwrap()));
+        assert!(older_interface("0.0"));
     }
 
     #[test]

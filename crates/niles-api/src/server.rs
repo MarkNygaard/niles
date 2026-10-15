@@ -124,6 +124,8 @@ pub fn router(state: AppState) -> Router {
         .route("/plugins/install", post(crate::plugins::install))
         .route("/plugins/{id}", delete(crate::plugins::remove))
         .route("/plugins/{id}/logo", get(crate::plugins::logo))
+        .route("/plugins/{id}/log", get(crate::plugins::log))
+        .route("/plugins/{id}/image", get(crate::plugins::image))
         .route(
             "/plugins/{id}/check-update",
             post(crate::plugins::check_update),
