@@ -37,10 +37,14 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
-      - name: Manifest freshness check
-        run: cargo run -p niles-bin -- generate-manifest --check
+      # MANIFEST.md freshness is `committed_manifest_matches_features_toml`
+      # in niles-bin, run by `cargo test` above.
 
+      # Not on PRs: the code has already compiled and passed its tests,
+      # so all this adds is a release-only build failure, which main
+      # still catches before the image does.
       - name: cargo build --release
+        if: github.event_name == 'push'
         run: cargo build --workspace --release
 
       - name: Install mdBook
