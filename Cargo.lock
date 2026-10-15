@@ -2884,7 +2884,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tokio-rustls",
+ "tokio-rustls 0.26.4",
  "tokio-tungstenite 0.30.0",
  "tracing",
 ]
