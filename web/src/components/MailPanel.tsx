@@ -25,11 +25,9 @@ const ACCESS: { value: Exclude<MailLevel, "none">; label: string; hint: string }
   },
 ];
 
-/** The providers mail can come from here: iCloud's comes later. */
+/** The providers to offer for mail, the available ones first. */
 export function mailProviders(view?: CalendarsView): CalendarsView["providers"] {
-  return (view?.providers ?? [])
-    .filter((p) => p.id !== "icloud")
-    .sort((a, b) => Number(b.available) - Number(a.available));
+  return [...(view?.providers ?? [])].sort((a, b) => Number(b.available) - Number(a.available));
 }
 
 /**
@@ -67,7 +65,7 @@ export function MailPanel() {
 
   const all = accounts.data?.connections ?? [];
   const serving = all.filter((c) => c.mail);
-  const others = all.filter((c) => !c.mail && c.provider !== "icloud");
+  const others = all.filter((c) => !c.mail);
   const busy = remove.isPending || setTicks.isPending;
 
   return (
@@ -109,6 +107,10 @@ export function MailPanel() {
           onSignIn={(provider, name, mail) =>
             go(connectUrl(provider, name, { calendar: "none", mail }, undefined, "mail"))
           }
+          onConnected={() => {
+            setOutcome(null);
+            settle();
+          }}
         />
       )}
     </div>
@@ -121,6 +123,7 @@ function ConnectMail({
   busy,
   onUse,
   onSignIn,
+  onConnected,
 }: {
   view: CalendarsView;
   /** Accounts already connected that do not serve Mail yet. */
@@ -132,22 +135,42 @@ function ConnectMail({
     name: string,
     mail: Exclude<MailLevel, "none">,
   ) => void;
+  onConnected: () => void;
 }) {
   const providers = mailProviders(view);
-  const [provider, setProvider] = useState<"microsoft" | "google">(
-    (providers.find((p) => p.available)?.id as "microsoft" | "google" | undefined) ?? "google",
+  const [provider, setProvider] = useState<CalendarProvider>(
+    providers.find((p) => p.available)?.id ?? "icloud",
   );
   const [name, setName] = useState("");
   const [access, setAccess] = useState<Exclude<MailLevel, "none">>("read");
+  const [appleId, setAppleId] = useState("");
+  const [password, setPassword] = useState("");
+  const icloud = useMutation({
+    mutationFn: api.connectIcloud,
+    onSuccess: () => {
+      setName("");
+      setAppleId("");
+      setPassword("");
+      onConnected();
+    },
+  });
   const chosen = providers.find((p) => p.id === provider);
-  const ready = Boolean(chosen?.available) && name.trim() !== "";
+  const ready =
+    Boolean(chosen?.available) &&
+    name.trim() !== "" &&
+    (provider !== "icloud" || (appleId.trim() !== "" && password.trim() !== ""));
 
   return (
     <form
       className="flex flex-col gap-3 border-t pt-4"
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready) onSignIn(provider, name, access);
+        if (!ready) return;
+        if (provider === "icloud") {
+          icloud.mutate({ name, calendar: "none", mail: access, apple_id: appleId, password });
+        } else {
+          onSignIn(provider, name, access);
+        }
       }}
     >
       <span className="text-sm font-medium">Connect mail</span>
@@ -188,7 +211,9 @@ function ConnectMail({
             </Button>
           ))}
           <span className="text-muted-foreground text-xs">
-            Microsoft and Google ask once more, to let Niles read the mail too. Or connect another:
+            {others.some((a) => a.provider !== "icloud")
+              ? "Microsoft and Google ask once more, to let Niles read the mail too. Or connect another:"
+              : "Or connect another:"}
           </span>
         </div>
       )}
@@ -202,7 +227,7 @@ function ConnectMail({
             aria-checked={provider === p.id}
             disabled={!p.available}
             title={p.reason ?? undefined}
-            onClick={() => setProvider(p.id as "microsoft" | "google")}
+            onClick={() => setProvider(p.id)}
             className={cn(
               "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
               "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
@@ -227,8 +252,34 @@ function ConnectMail({
         onChange={(e) => setName(e.target.value)}
       />
 
-      <Button type="submit" className="self-start" disabled={!ready}>
-        Connect with {LABEL[provider]}
+      {provider === "icloud" && (
+        <>
+          <Input
+            aria-label="Apple ID"
+            type="email"
+            autoComplete="username"
+            placeholder="Apple ID (your iCloud email)"
+            value={appleId}
+            onChange={(e) => setAppleId(e.target.value)}
+          />
+          <Input
+            aria-label="App-specific password"
+            type="password"
+            autoComplete="off"
+            placeholder="App-specific password, xxxx-xxxx-xxxx-xxxx"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <p className="text-muted-foreground text-xs">
+            Make one at appleid.apple.com → Sign-In and Security → App-Specific Passwords. Apple
+            has no read-only password: for iCloud, read only is a rule Niles keeps.
+          </p>
+        </>
+      )}
+
+      {icloud.error && <p className="text-destructive text-sm">{icloud.error.message}</p>}
+      <Button type="submit" className="self-start" disabled={!ready || icloud.isPending}>
+        {provider === "icloud" ? "Connect iCloud" : `Connect with ${LABEL[provider]}`}
       </Button>
       {provider === "google" && (
         <p className="text-muted-foreground text-xs">
@@ -236,9 +287,6 @@ function ConnectMail({
           for your household's own app.
         </p>
       )}
-      <p className="text-muted-foreground text-xs">
-        Mail from iCloud is not supported yet.
-      </p>
     </form>
   );
 }

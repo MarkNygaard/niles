@@ -179,6 +179,9 @@ impl Backend for Network {
             (Provider::Google, Auth::Bearer(token)) => {
                 crate::gmail::search(&self.http, token, search).await
             }
+            (Provider::Icloud, Auth::Login(login)) => {
+                crate::icloud_mail::search(login, search).await
+            }
             _ => Err(no_mail()),
         }
     }
@@ -191,6 +194,7 @@ impl Backend for Network {
             (Provider::Google, Auth::Bearer(token)) => {
                 crate::gmail::read(&self.http, token, id).await
             }
+            (Provider::Icloud, Auth::Login(login)) => crate::icloud_mail::read(login, id).await,
             _ => Err(no_mail()),
         }
     }
@@ -211,6 +215,9 @@ impl Backend for Network {
             },
             (Provider::Google, Auth::Bearer(token)) => {
                 crate::gmail::send_mail(&self.http, token, &connection.account, draft, reply).await
+            }
+            (Provider::Icloud, Auth::Login(login)) => {
+                crate::icloud_mail::send(login, draft, reply).await
             }
             _ => Err(no_mail()),
         }

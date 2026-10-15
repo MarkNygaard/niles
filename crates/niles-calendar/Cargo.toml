@@ -23,6 +23,14 @@ rand.workspace = true
 roxmltree.workspace = true
 base64.workspace = true
 html2text.workspace = true
+futures-util.workspace = true
+# iCloud mail: IMAP to read, SMTP to send, over the same rustls and ring
+# the MQTT plugins use.
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+mail-parser = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
