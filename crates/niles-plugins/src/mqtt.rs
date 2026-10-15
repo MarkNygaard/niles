@@ -709,6 +709,34 @@ fn lost(reason: impl Into<String>) -> End {
     }
 }
 
+/// Why sending or receiving failed: as the plugin and its card are
+/// told it, and the library's own words, for the log at debug level.
+struct Why {
+    said: String,
+    raw: Option<String>,
+}
+
+impl Why {
+    fn from_error(context: &str, e: &(dyn std::error::Error + 'static)) -> Self {
+        Why {
+            said: format!("{context}: {}", crate::human::said(e, "the broker")),
+            raw: Some(e.to_string()),
+        }
+    }
+}
+
+impl From<String> for Why {
+    fn from(said: String) -> Self {
+        Why { said, raw: None }
+    }
+}
+
+impl From<&str> for Why {
+    fn from(said: &str) -> Self {
+        said.to_string().into()
+    }
+}
+
 /// One connection's task.
 struct Task {
     id: u32,
@@ -847,6 +875,16 @@ impl Task {
         });
     }
 
+    /// What the plugin is told; the library's words go to its log, at
+    /// debug level, for whoever needs them.
+    fn explained(&self, why: Why) -> String {
+        if let Some(raw) = why.raw {
+            self.plugin
+                .note(Level::Debug, &format!("MQTT {}: {raw}", self.target.broker));
+        }
+        why.said
+    }
+
     async fn pinned(&self) -> Option<String> {
         let key = pin_key(&self.target);
         match self.house.store.get(&self.plugin.id, &key).await {
@@ -889,7 +927,10 @@ impl Task {
         let lookup = tokio::net::lookup_host((host.as_str(), self.target.port));
         let addresses: Vec<IpAddr> = match tokio::time::timeout(NETWORK_TIMEOUT, lookup).await {
             Err(_) => return Err(lost(format!("{host} could not be looked up in time"))),
-            Ok(Err(e)) => return Err(lost(format!("{host} could not be found: {e}"))),
+            Ok(Err(e)) => {
+                let why = Why::from_error(&format!("{host} could not be found"), &e);
+                return Err(lost(self.explained(why)));
+            }
             Ok(Ok(found)) => found.map(|a| a.ip()).collect(),
         };
         let mut refusal = None;
@@ -922,7 +963,10 @@ impl Task {
                 .await
             {
                 Err(_) => return lost(format!("{address} did not answer")),
-                Ok(Err(e)) => return lost(format!("could not connect to {address}: {e}")),
+                Ok(Err(e)) => {
+                    let why = Why::from_error(&format!("could not connect to {address}"), &e);
+                    return lost(self.explained(why));
+                }
                 Ok(Ok(tcp)) => tcp,
             };
         let _ = tcp.set_nodelay(true);
@@ -990,12 +1034,11 @@ impl Task {
                     .get_ref()
                     .and_then(|inner| inner.downcast_ref::<rustls::Error>())
                     .is_some_and(|e| matches!(e, rustls::Error::InvalidCertificate(_)));
+                let why = self.explained(Why::from_error(&format!("TLS with {host}"), &e));
                 if certificate {
-                    Err(End::Failed(format!(
-                        "the certificate of {host} is not valid: {e}"
-                    )))
+                    Err(End::Failed(why))
                 } else {
-                    Err(lost(format!("TLS with {host} failed: {e}")))
+                    Err(lost(why))
                 }
             }
         }
@@ -1011,24 +1054,35 @@ impl Task {
             .login
             .as_ref()
             .map(|(user, password)| Login::new(user.clone(), password.clone()));
-        send(wire, Packet::Connect(connect)).await.map_err(lost)?;
+        send(wire, Packet::Connect(connect))
+            .await
+            .map_err(|why| lost(self.explained(why)))?;
         let answer = tokio::time::timeout(NETWORK_TIMEOUT, wire.next())
             .await
             .map_err(|_| lost("the broker did not answer the connection in time"))?;
         let ack = match answer {
             Some(Ok(Packet::ConnAck(ack))) => ack,
             Some(Ok(other)) => return Err(lost(format!("the broker answered {other:?}"))),
-            Some(Err(e)) => return Err(lost(format!("the broker's answer: {e}"))),
-            None => return Err(lost("the broker closed the connection")),
+            Some(Err(e)) => {
+                let why = Why::from_error("the broker's answer", &e);
+                return Err(lost(self.explained(why)));
+            }
+            // Some brokers say nothing to a wrong password: they hang up.
+            None => {
+                return Err(lost(
+                    "the broker closed the connection before accepting it; \
+                     some brokers do that for a wrong username or password",
+                ));
+            }
         };
         match ack.code {
             ConnectReturnCode::Success => Ok(()),
             ConnectReturnCode::ServiceUnavailable => Err(lost("the broker is unavailable")),
-            ConnectReturnCode::BadUserNamePassword => Err(End::Failed(
-                "the broker refused the username or password".into(),
-            )),
+            ConnectReturnCode::BadUserNamePassword => {
+                Err(End::Failed("wrong username or password".into()))
+            }
             ConnectReturnCode::NotAuthorized => Err(End::Failed(
-                "the broker did not authorise the connection".into(),
+                "not authorised: wrong username or password, or no access".into(),
             )),
             ConnectReturnCode::BadClientId => {
                 Err(End::Failed("the broker refused the client id".into()))
@@ -1054,7 +1108,7 @@ impl Task {
         if !again.is_empty() {
             let request = Request::Subscribe(Subscribe::new_many(again));
             if let Err(why) = outgoing(&mut state, &mut wire, request, &mut asked).await {
-                return up(why);
+                return up(self.explained(why));
             }
         }
         self.shared.connected.store(true, Ordering::SeqCst);
@@ -1070,7 +1124,7 @@ impl Task {
                 incoming = wire.next() => match incoming {
                     Some(Ok(packet)) => {
                         if let Err(why) = self.incoming(&mut state, &mut wire, packet, &mut asked).await {
-                            return up(why);
+                            return up(self.explained(why));
                         }
                     }
                     Some(Err(rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(n))) => {
@@ -1080,7 +1134,10 @@ impl Task {
                             MAX_PACKET / 1024
                         ));
                     }
-                    Some(Err(e)) => return up(format!("the broker sent something unreadable: {e}")),
+                    Some(Err(e)) => {
+                        let why = Why::from_error("the broker sent something unreadable", &e);
+                        return up(self.explained(why));
+                    }
                     None => return up("the broker closed the connection".into()),
                 },
                 command = self.commands.recv() => {
@@ -1099,13 +1156,13 @@ impl Task {
                         Some(Command::Publish(publish)) => Request::Publish(publish),
                     };
                     if let Err(why) = outgoing(&mut state, &mut wire, request, &mut asked).await {
-                        return up(why);
+                        return up(self.explained(why));
                     }
                 }
                 _ = ping.tick() => {
                     let request = Request::PingReq(PingReq);
                     if let Err(why) = outgoing(&mut state, &mut wire, request, &mut asked).await {
-                        return up(why);
+                        return up(self.explained(why));
                     }
                 }
             }
@@ -1118,7 +1175,7 @@ impl Task {
         wire: &mut Wire,
         packet: Packet,
         asked: &mut HashMap<u16, Vec<String>>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Why> {
         match &packet {
             Packet::Publish(publish) => self.received(&publish.topic, &publish.payload),
             Packet::SubAck(ack) => {
@@ -1211,7 +1268,7 @@ async fn outgoing(
     wire: &mut Wire,
     request: Request,
     asked: &mut HashMap<u16, Vec<String>>,
-) -> Result<(), String> {
+) -> Result<(), Why> {
     let filters: Option<Vec<String>> = match &request {
         Request::Subscribe(s) => Some(s.filters.iter().map(|f| f.path.clone()).collect()),
         _ => None,
@@ -1228,10 +1285,10 @@ async fn outgoing(
     send(wire, packet).await
 }
 
-async fn send(wire: &mut Wire, packet: Packet) -> Result<(), String> {
+async fn send(wire: &mut Wire, packet: Packet) -> Result<(), Why> {
     match tokio::time::timeout(NETWORK_TIMEOUT, wire.send(packet)).await {
         Err(_) => Err("the broker stopped taking what Niles sends".into()),
-        Ok(Err(e)) => Err(format!("could not send to the broker: {e}")),
+        Ok(Err(e)) => Err(Why::from_error("could not send to the broker", &e)),
         Ok(Ok(())) => Ok(()),
     }
 }

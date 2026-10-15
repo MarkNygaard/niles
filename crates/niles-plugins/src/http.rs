@@ -38,8 +38,21 @@ pub enum Failure {
     NotPermitted(String),
     InvalidRequest(String),
     Timeout,
-    Connection(String),
+    /// What the plugin is told, in plain words, and the library's own,
+    /// for its log at debug level.
+    Connection(String, Option<String>),
     TooLarge,
+}
+
+/// A failure to connect, said plainly, with the library's words kept.
+fn connection(context: &str, e: &(dyn std::error::Error + 'static)) -> Failure {
+    let said = crate::human::said(e, "the server");
+    let said = if context.is_empty() {
+        said
+    } else {
+        format!("{context}: {said}")
+    };
+    Failure::Connection(said, Some(e.to_string()))
 }
 
 /// Send `request` as the plugin `user_agent` names, giving up at
@@ -89,7 +102,7 @@ pub async fn send(
             (true, Some(location)) => {
                 let next = url
                     .join(&location)
-                    .map_err(|_| Failure::Connection(format!("a redirect to {location:?}")))?;
+                    .map_err(|_| Failure::Connection(format!("a redirect to {location:?}"), None))?;
                 // What a browser does: a 303, or a 301/302 after a POST,
                 // continues as a GET without the body.
                 let becomes_get = status == reqwest::StatusCode::SEE_OTHER
@@ -108,9 +121,10 @@ pub async fn send(
             _ => return read(response, until).await,
         }
     }
-    Err(Failure::Connection(format!(
-        "more than {MAX_REDIRECTS} redirects"
-    )))
+    Err(Failure::Connection(
+        format!("more than {MAX_REDIRECTS} redirects"),
+        None,
+    ))
 }
 
 async fn hop(
@@ -135,10 +149,8 @@ async fn hop(
             match tokio::time::timeout(remaining(until)?, lookup).await {
                 Err(_) => return Err(Failure::Timeout),
                 Ok(Err(e)) => {
-                    return Err(Failure::Connection(format!(
-                        "{} could not be found: {e}",
-                        admitted.host
-                    )));
+                    let context = format!("{} could not be found", admitted.host);
+                    return Err(connection(&context, &e));
                 }
                 Ok(Ok(addrs)) => addrs.map(|a| a.ip()).collect(),
             }
@@ -174,7 +186,7 @@ async fn hop(
     }
     let client = client
         .build()
-        .map_err(|e| Failure::Connection(e.to_string()))?;
+        .map_err(|e| connection("", &e))?;
     let mut builder = client
         .request(method.clone(), url.clone())
         .headers(headers.clone());
@@ -236,7 +248,7 @@ fn failure(e: reqwest::Error) -> Failure {
     } else if e.is_builder() {
         Failure::InvalidRequest(e.to_string())
     } else {
-        Failure::Connection(e.to_string())
+        connection("", &e)
     }
 }
 

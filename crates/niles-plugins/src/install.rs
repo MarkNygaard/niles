@@ -779,6 +779,7 @@ impl Installer {
             .into_iter()
             .filter_map(|record| {
                 let manifest = Manifest::parse(&record.manifest).ok()?;
+                let values = runtime.settings_of(&record.id);
                 let info = running.iter().find(|p| p.id == record.id);
                 let (status, status_line, error, dropped) = match (record.enabled, info) {
                     (false, _) => ("disabled".to_string(), "Off".to_string(), None, 0),
@@ -812,11 +813,21 @@ impl Installer {
                     has_logo: record.has_logo,
                     previous_version: record.previous_version,
                     update: record.update,
-                    settings: setting_states(&manifest, &runtime.settings_of(&record.id), |key| {
+                    settings: setting_states(&manifest, &values, |key| {
                         runtime.secret_is_set(&record.id, key)
                     }),
                     menu: manifest.ui.menu.clone(),
-                    widgets: manifest.ui.widgets.clone(),
+                    // With `setting:` rooms resolved: the app places a
+                    // widget by the room it is in, not by a setting.
+                    widgets: manifest
+                        .ui
+                        .widgets
+                        .iter()
+                        .map(|w| Widget {
+                            room: manifest.widget_room(w, &values),
+                            ..w.clone()
+                        })
+                        .collect(),
                     older_interface: older_interface(&manifest.interface),
                     interface: manifest.interface.clone(),
                 })

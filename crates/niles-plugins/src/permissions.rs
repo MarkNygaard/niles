@@ -120,7 +120,7 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
                 "device_state",
                 "See every device in your home change: lights, doors, motion",
             ),
-            EventPermission::DeviceAction => ("device_action", "See button presses"),
+            EventPermission::DeviceAction => ("device_action", "See button presses and what other devices report"),
             EventPermission::Presence => {
                 ("presence", "Know when the house becomes occupied or empty")
             }
@@ -143,9 +143,13 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
             );
         }
         for widget in &manifest.ui.widgets {
-            let place = match &widget.room {
-                Some(room) => format!("the {}", room_name(room)),
-                None => "the front page".to_string(),
+            let place = match (widget.room_setting(), &widget.room) {
+                (Some(key), _) => {
+                    let label = manifest.setting(key).map_or(key, |s| s.label.as_str());
+                    format!("the room its \"{label}\" setting names")
+                }
+                (None, Some(room)) => format!("the {}", room_name(room)),
+                (None, None) => "the front page".to_string(),
             };
             add(
                 format!("ui:widget:{}", widget.id),
@@ -254,7 +258,7 @@ room = "living_room"
                 "Add devices to your home. They appear in rooms, in rules and by voice.",
                 "Offer 2 tools to the assistant: prices, cheapest_window",
                 "See every device in your home change: lights, doors, motion",
-                "See button presses",
+                "See button presses and what other devices report",
                 "Know when the house becomes occupied or empty",
                 "Speak through your satellites, even during quiet hours",
                 "Adds a page to the menu: Electricity",
@@ -262,6 +266,28 @@ room = "living_room"
                 "Adds a card to the Living room: Air quality",
                 "Use up to 128 MB of memory",
             ]
+        );
+    }
+
+    #[test]
+    fn a_widget_placed_by_a_setting_says_which() {
+        let manifest = Manifest::parse(&format!(
+            "{BASE}
+[[settings]]
+key = \"room\"
+label = \"Printer room\"
+type = \"room\"
+
+[[ui.widgets]]
+id = \"printer\"
+title = \"Printer\"
+room = \"setting:room\"
+"
+        ))
+        .unwrap();
+        assert!(
+            texts(&grants(&manifest, None))
+                .contains(&"Adds a card to the room its \"Printer room\" setting names: Printer")
         );
     }
 

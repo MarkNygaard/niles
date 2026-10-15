@@ -421,7 +421,13 @@ impl wit_http::Host for HostState {
                     Failure::NotPermitted(why) => wit_http::HttpError::NotPermitted(why),
                     Failure::InvalidRequest(why) => wit_http::HttpError::InvalidRequest(why),
                     Failure::Timeout => wit_http::HttpError::Timeout,
-                    Failure::Connection(why) => wit_http::HttpError::Connection(why),
+                    Failure::Connection(why, raw) => {
+                        if let Some(raw) = raw {
+                            self.plugin
+                                .note(crate::log::Level::Debug, &format!("http: {raw}"));
+                        }
+                        wit_http::HttpError::Connection(why)
+                    }
                     Failure::TooLarge => wit_http::HttpError::TooLarge,
                 })
             }

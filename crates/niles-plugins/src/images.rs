@@ -211,7 +211,7 @@ impl Images {
                 use crate::http::Failure;
                 ImageError::Upstream(match failure {
                     Failure::NotPermitted(why) | Failure::InvalidRequest(why) => why,
-                    Failure::Connection(why) => format!("the image could not be fetched: {why}"),
+                    Failure::Connection(why, _) => format!("the image could not be fetched: {why}"),
                     Failure::Timeout => "the image took too long".into(),
                     Failure::TooLarge => format!(
                         "the image is over {} MiB",

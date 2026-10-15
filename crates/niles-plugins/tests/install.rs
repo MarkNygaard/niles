@@ -709,7 +709,7 @@ async fn the_newest_release_is_found_with_what_it_would_change() {
     );
     assert_eq!(update.tag, "v0.2.0");
     assert_eq!(update.notes, "What is new in v0.2.0.");
-    assert_eq!(update.added, vec!["See button presses"]);
+    assert_eq!(update.added, vec!["See button presses and what other devices report"]);
     assert!(update.removed.is_empty());
     assert_eq!(
         home.installer.list().await[0].update.as_ref(),
@@ -756,7 +756,7 @@ async fn updated(hub: &Hub) -> Home {
     let preview = home.installer.update_preview("hello").await.unwrap();
     assert_eq!(preview.current_version.as_deref(), Some("0.1.0"));
     assert_eq!(preview.version, "0.2.0");
-    assert_eq!(preview.added, vec!["See button presses"]);
+    assert_eq!(preview.added, vec!["See button presses and what other devices report"]);
 
     let wrong = home
         .installer
