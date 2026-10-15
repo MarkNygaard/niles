@@ -4,7 +4,7 @@ import { ChevronRight, GripVertical, Music, Pause, Play, Radio, Speaker, Tv } fr
 import { BrandMark } from "@/components/BrandMark";
 import { PowerButton } from "@/components/PowerButton";
 import { StartDialog } from "@/components/StartDialog";
-import { tvLine, tvOn } from "@/components/TvRow";
+import { TvVolumeControls, tvLine, tvOn, tvVolume } from "@/components/TvRow";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
+import { useTvVolume } from "@/hooks/useTvVolume";
 import { api } from "@/lib/api";
 import { edgeScroll, useGripsHoldStill, visibleBottom } from "@/lib/drag";
 import type { MediaGroup, MediaSpeaker, MediaView, RoomMusic } from "@/lib/api";
@@ -185,12 +186,17 @@ export function MediaPage() {
       api.mediaGroup(leader, play),
     onSettled: settle,
   });
+  const view = media.data;
+  // A house without Sonos answers `/media` with a 501, and one whose
+  // speakers have not been found yet with none: both are the TV alone.
+  const sonos = Boolean(view && (view.groups.length > 0 || view.idle.length > 0));
   const tvPower = useMutation({
     // On is the TV and its sound: the soundbar out of whatever group
-    // it was in and onto the TV's input.
+    // it was in and onto the TV's input. Without Sonos there is no
+    // soundbar, and the TV's own speakers are already its sound.
     mutationFn: async (on: boolean) => {
       await api.tvPower(on);
-      if (on) await api.tvSound();
+      if (on && sonos) await api.tvSound();
     },
     onSettled: () => {
       settle();
@@ -199,8 +205,7 @@ export function MediaPage() {
     },
   });
   const tvSound = useMutation({ mutationFn: api.tvSound, onSettled: settle });
-
-  const view = media.data;
+  const tvSpeakers = useTvVolume();
 
   const apply = (speaker: MediaSpeaker, drop: Drop | null) => {
     if (!view || !drop) return;
@@ -210,7 +215,9 @@ export function MediaPage() {
     else move.mutate({ id: speaker.id, move: next });
   };
 
-  if (media.isLoading) {
+  // Until both have answered, a house with Sonos cannot be told from
+  // one without, and the page would draw one and then the other.
+  if (media.isPending || (!sonos && tv.isPending)) {
     return (
       <div className="flex flex-col gap-3">
         <Skeleton className="h-24 w-full" />
@@ -219,20 +226,52 @@ export function MediaPage() {
       </div>
     );
   }
-  if (!view) {
+  const pairedTv = tv.data?.paired ? tv.data : undefined;
+  const failure = [move, group, volume, tvPower, tvSound, tvSpeakers].find((m) => m.error)
+    ?.error;
+  const alert = failure && (
+    <p role="alert" className="text-destructive text-sm">
+      {failure.message}
+    </p>
+  );
+
+  if (!view || !sonos) {
+    if (!pairedTv) return <NothingToPlay />;
+    // The TV alone: its switch, what is on, and its own speakers. The
+    // radio, Spotify and the groups are all Sonos.
+    const sound = tvVolume(pairedTv);
     return (
-      <p className="text-muted-foreground text-sm">
-        The speakers did not answer. Sonos is set up under Settings → Add-ons.
-      </p>
+      <div className="flex flex-col gap-3">
+        {alert}
+        <SourceCard
+          title="TV"
+          icon={<Tv aria-hidden className="size-5" />}
+          subtitle={tvLine(pairedTv)}
+          action={
+            <PowerButton
+              on={tvOn(pairedTv)}
+              label="TV"
+              disabled={tvPower.isPending}
+              onToggle={(on) => tvPower.mutate(on)}
+            />
+          }
+        >
+          {sound && (
+            <TvVolumeControls
+              sound={sound}
+              busy={tvPower.isPending}
+              onVolume={(change) => tvSpeakers.mutate(change)}
+            />
+          )}
+        </SourceCard>
+      </div>
     );
   }
 
   const of = (kind: MediaGroup["kind"]) => view.groups.filter((g) => g.kind === kind);
-  const pairedTv = tv.data?.paired ? tv.data : undefined;
   const tvGroups = of("tv");
   const others = of("music");
   const busy = move.isPending || group.isPending;
-  const failure = [move, group, volume, tvPower, tvSound].find((m) => m.error)?.error;
 
   const rows = (speakers: MediaSpeaker[]) =>
     speakers.map((speaker) => (
@@ -362,11 +401,7 @@ export function MediaPage() {
 
   return (
     <div className="flex flex-col gap-3">
-      {failure && (
-        <p role="alert" className="text-destructive text-sm">
-          {failure.message}
-        </p>
-      )}
+      {alert}
       {(pairedTv || tvGroups.length > 0) && (
         <SourceCard
           title="TV"
@@ -447,6 +482,22 @@ export function MediaPage() {
         onClose={() => setStarting(null)}
         onStarted={settle}
       />
+    </div>
+  );
+}
+
+/** No Sonos and no TV: the page has nothing on it but where to add one. */
+function NothingToPlay() {
+  return (
+    <div className="text-muted-foreground flex flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-10 text-center text-sm">
+      <Speaker aria-hidden className="size-5" />
+      <p>Nothing to play on yet.</p>
+      <a
+        href="#/me/settings/addons"
+        className="text-foreground underline underline-offset-4"
+      >
+        Add Sonos speakers or an LG TV under Settings → Add-ons
+      </a>
     </div>
   );
 }
