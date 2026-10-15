@@ -7,7 +7,7 @@
 //! JavaScript and Python one does, since their toolchains import the
 //! whole world — gets `not-permitted` rather than a link error.
 
-use crate::bindings::mqtt;
+use crate::bindings::{config_0_2, devices_0_2, mqtt};
 use crate::bindings::niles::integration::{
     config, devices, events, http as wit_http, log, notify, storage, timers, types, ui,
 };
@@ -17,7 +17,7 @@ use crate::policy::{HttpPolicy, MqttPolicy};
 use crate::runtime::{House, Plugin};
 use crate::store::{KnownDevice, MAX_KEY, Stored};
 use niles_core::{
-    Device, DeviceClass, DeviceId, DeviceName, DeviceState, Event, LightCapabilities, Reading,
+    DeviceClass, DeviceId, DeviceName, DeviceState, Event, LightCapabilities, Reading,
     RoomName, validate_reading_name,
 };
 use std::collections::BTreeMap;
@@ -161,6 +161,42 @@ impl HostState {
 
     fn publish(&self, event: Event) {
         self.house.bus.publish(event);
+    }
+
+    /// Keep what Niles knows about one of the plugin's devices, here and
+    /// in the store, so it outlives the instance.
+    fn remember(&self, id: DeviceId, meta: KnownDevice) {
+        self.plugin.devices_mut().insert(id, meta.clone());
+        let store = self.house.store.clone();
+        let plugin = self.id().to_string();
+        if let Err(e) = self.wait(async { store.put_device(&plugin, &meta).await }) {
+            tracing::warn!(plugin = %plugin, "could not remember {}: {e}", meta.id);
+        }
+    }
+
+    fn set_room_light(&mut self, id: &str, room_light: bool) -> Result<(), HostError> {
+        let device = self.own_device(id)?;
+        let Some(known) = self.plugin.devices().get(&device).cloned() else {
+            return Ok(());
+        };
+        if known.room_light == room_light {
+            return Ok(());
+        }
+        self.remember(
+            device.clone(),
+            KnownDevice {
+                room_light,
+                ..known
+            },
+        );
+        if let Some(mut current) = self.house.registry.get(&device) {
+            current.room_light = room_light;
+            self.house.registry.upsert(current.clone());
+            // Said again so the app reads the device afresh: whether it
+            // counts among the room's lights is part of what it is.
+            self.publish(Event::DeviceAdded { device: current });
+        }
+        Ok(())
     }
 }
 
@@ -526,26 +562,27 @@ impl devices::Host for HostState {
             LightCapabilities::default()
         };
         let partial = state_from_wit(device.state)?;
+        // `upsert` cannot say these, so they stay as they were.
         let meta = KnownDevice {
             id: device.id.clone(),
             class,
             light,
             controllable: device.controllable,
+            room_light: previous.as_ref().is_none_or(|p| p.room_light),
+            reports_actions: previous.as_ref().is_some_and(|p| p.reports_actions),
         };
 
         let registry = &self.house.registry;
         let existing = registry.get(&id);
         // Class, capabilities and availability come from this call; the
         // state is what Niles already knew, merged with this one's.
-        let replacement = Device::new(
+        let replacement = meta.device(
             id.clone(),
             existing
                 .as_ref()
                 .map(|d| d.state.clone())
                 .unwrap_or_default(),
-            class,
-        )
-        .with_capabilities(light);
+        );
         registry.upsert(replacement);
         if !is_empty(&partial) {
             registry.merge_state(&id, partial.clone());
@@ -570,12 +607,7 @@ impl devices::Host for HostState {
         }
 
         if previous.as_ref() != Some(&meta) {
-            self.plugin.devices_mut().insert(id, meta.clone());
-            let store = self.house.store.clone();
-            let plugin = self.id().to_string();
-            if let Err(e) = self.wait(async { store.put_device(&plugin, &meta).await }) {
-                tracing::warn!(plugin = %plugin, "could not remember {}: {e}", meta.id);
-            }
+            self.remember(id, meta);
         }
         Ok(())
     }
@@ -607,15 +639,21 @@ impl devices::Host for HostState {
 
     fn report_action(&mut self, id: String, action: String) -> Result<(), HostError> {
         let device = self.own_device(&id)?;
-        if self.plugin.devices().get(&device).map(|d| d.class) != Some(DeviceClass::Switch) {
-            return Err(HostError::Invalid(format!(
-                "{id} is not a switch; only switches report actions"
-            )));
-        }
         if action.is_empty() || action.len() > MAX_ACTION {
             return Err(HostError::Invalid(format!(
-                "an action is 1 to {MAX_ACTION} bytes, such as single or double"
+                "an action is 1 to {MAX_ACTION} bytes, such as single or finished"
             )));
+        }
+        self.house.registry.note_action(&device);
+        let known = self.plugin.devices().get(&device).cloned();
+        if let Some(known) = known.filter(|k| !k.reports_actions) {
+            self.remember(
+                device.clone(),
+                KnownDevice {
+                    reports_actions: true,
+                    ..known
+                },
+            );
         }
         self.publish(Event::DeviceAction { id: device, action });
         Ok(())
@@ -661,6 +699,57 @@ impl devices::Host for HostState {
             .collect();
         ids.sort();
         ids
+    }
+}
+
+/// 0.2.1's `config`: 0.1's, plus the time zone. Its `setting-value` is
+/// a type of its own in the bindings, with the same three cases.
+impl config_0_2::Host for HostState {
+    fn get(&mut self, key: String) -> Option<config_0_2::SettingValue> {
+        Some(match config::Host::get(self, key)? {
+            config::SettingValue::Text(t) => config_0_2::SettingValue::Text(t),
+            config::SettingValue::Number(n) => config_0_2::SettingValue::Number(n),
+            config::SettingValue::Boolean(b) => config_0_2::SettingValue::Boolean(b),
+        })
+    }
+
+    fn secret(&mut self, key: String) -> Option<String> {
+        config::Host::secret(self, key)
+    }
+
+    fn time_zone(&mut self) -> String {
+        (self.house.time_zone)()
+    }
+}
+
+/// 0.2.1's `devices`: 0.1's, plus `set-room-light`.
+impl devices_0_2::Host for HostState {
+    fn upsert(&mut self, device: types::Device) -> Result<(), HostError> {
+        devices::Host::upsert(self, device)
+    }
+
+    fn report_state(&mut self, id: String, state: types::DeviceState) -> Result<(), HostError> {
+        devices::Host::report_state(self, id, state)
+    }
+
+    fn report_action(&mut self, id: String, action: String) -> Result<(), HostError> {
+        devices::Host::report_action(self, id, action)
+    }
+
+    fn set_available(&mut self, id: String, available: bool) -> Result<(), HostError> {
+        devices::Host::set_available(self, id, available)
+    }
+
+    fn remove(&mut self, id: String) -> Result<(), HostError> {
+        devices::Host::remove(self, id)
+    }
+
+    fn registered(&mut self) -> Vec<String> {
+        devices::Host::registered(self)
+    }
+
+    fn set_room_light(&mut self, id: String, room_light: bool) -> Result<(), HostError> {
+        HostState::set_room_light(self, &id, room_light)
     }
 }
 

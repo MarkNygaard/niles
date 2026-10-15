@@ -361,12 +361,13 @@ impl AutomationEngine {
                         };
                         // The lights, as "the office lights" means: not
                         // the plug that charges something, nor the door
-                        // sensor that may have started this.
+                        // sensor that may have started this, nor a light
+                        // its source keeps out of the room's.
                         let lights: Vec<DeviceId> = self
                             .registry
                             .list_room(room)
                             .into_iter()
-                            .filter(|d| d.is_light() && d.is_switchable())
+                            .filter(|d| d.is_light() && d.is_switchable() && d.room_light)
                             .map(|d| d.id)
                             .collect();
                         if lights.is_empty() {
@@ -681,6 +682,35 @@ mod tests {
         assert_eq!(runs[0].outcome, Outcome::Done);
         assert_eq!(runs[0].trigger.as_deref(), Some("t1"));
         assert_eq!(runs[0].steps, ["set the office lights off"]);
+    }
+
+    #[tokio::test]
+    async fn a_light_kept_out_of_the_room_is_not_one_of_its_lights() {
+        let t = office(vec![garden_door()]);
+        let mut strip = t.registry.get(&id("office/lightstrip")).unwrap();
+        strip.room_light = false;
+        t.registry.upsert(strip);
+        t.engine.seed().await;
+        t.send(door(true), noon()).await;
+        assert_eq!(t.set(), ["z2m:office/go off"]);
+    }
+
+    #[tokio::test]
+    async fn any_device_can_start_a_rule_with_an_action() {
+        let t = office(vec![json!({
+            "id": "print-done",
+            "triggers": [{ "type": "device_action", "device": "office/sensor", "action": "finished" }],
+            "actions": [{ "do": "set_room", "room": "office", "on": false }],
+        })]);
+        t.engine.seed().await;
+        let action = |action: &str| Event::DeviceAction {
+            id: id("office/sensor"),
+            action: action.into(),
+        };
+        t.send(action("failed"), noon()).await;
+        assert!(t.set().is_empty());
+        t.send(action("finished"), noon()).await;
+        assert_eq!(t.set().len(), 2);
     }
 
     #[tokio::test]

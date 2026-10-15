@@ -4844,7 +4844,9 @@ async fn dispatch_text(
         }
         Intent::LightDim { room, percent } => {
             let (_canonical, targets) =
-                match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
+                match resolve_room_targets(ctx, peer, &room, |d| {
+                    d.room_light && d.state.brightness.is_some()
+                }) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName | RoomResolve::NoDevices => {
                         // Tier 0 matched a light intent but found no target
@@ -4873,7 +4875,9 @@ async fn dispatch_text(
             delta_percent,
         } => {
             let (_canonical, targets) =
-                match resolve_room_targets(ctx, peer, &room, |d| d.state.brightness.is_some()) {
+                match resolve_room_targets(ctx, peer, &room, |d| {
+                    d.room_light && d.state.brightness.is_some()
+                }) {
                     RoomResolve::Found(c, t) => (c, t),
                     RoomResolve::BadName | RoomResolve::NoDevices => {
                         // Tier 0 matched a light intent but found no target
@@ -4904,7 +4908,7 @@ async fn dispatch_text(
         }
         Intent::LightKelvinStep { room, delta_kelvin } => {
             let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
-                d.is_light() && d.supports_color_temperature()
+                d.is_light() && d.room_light && d.supports_color_temperature()
             }) {
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
@@ -4932,7 +4936,7 @@ async fn dispatch_text(
         }
         Intent::LightKelvinSet { room, kelvin } => {
             let (_canonical, targets) = match resolve_room_targets(ctx, peer, &room, |d| {
-                d.is_light() && d.supports_color_temperature()
+                d.is_light() && d.room_light && d.supports_color_temperature()
             }) {
                 RoomResolve::Found(c, t) => (c, t),
                 RoomResolve::BadName | RoomResolve::NoDevices => {
@@ -6603,6 +6607,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         .remove(&id);
                 }
                 Ok(Event::DeviceAction { id, action }) => {
+                    if !is_wall_switch(&observer_registry, &id) {
+                        continue;
+                    }
                     let Some(effect) = classify_action(&action) else {
                         // Includes _release variants and unknown strings.
                         continue;
@@ -7440,7 +7447,7 @@ async fn run_curve_tick(
                 curve_target.0,
                 curve_target.1,
             )
-        } else if device.is_light() {
+        } else if device.is_light() && device.room_light {
             match ambient_target {
                 Some(want) => build_ambient_target(
                     &device.state,
@@ -7844,6 +7851,16 @@ const ALL_ROOMS: &str = "all";
 /// on a plug, but not whatever else is on one. A switch in the reserved
 /// `all` room targets the whole home; any other room targets just that
 /// room. The switch itself is always excluded.
+/// Whether a device's actions are presses that switch its room. Any
+/// device may report actions, and a plugin's printer saying `off` is
+/// not somebody at the door pressing off. One Niles does not know is
+/// taken at its word, as before actions came from anything but switches.
+fn is_wall_switch(registry: &DeviceRegistry, id: &DeviceId) -> bool {
+    registry
+        .get(id)
+        .is_none_or(|d| d.class == niles_core::DeviceClass::Switch)
+}
+
 fn switch_targets(
     registry: &DeviceRegistry,
     switch_id: &DeviceId,
@@ -7871,6 +7888,31 @@ mod switch_target_tests {
     }
     fn light(id: &str) -> Device {
         dev(id, DeviceClass::Light)
+    }
+
+    #[test]
+    fn only_a_switch_switches_its_room() {
+        let reg = DeviceRegistry::new();
+        reg.upsert(dev("z2m:office/switch", DeviceClass::Switch));
+        reg.upsert(dev("x_bambulab:office/printer", DeviceClass::Sensor));
+        assert!(is_wall_switch(&reg, &DeviceId::parse("z2m:office/switch").unwrap()));
+        assert!(!is_wall_switch(
+            &reg,
+            &DeviceId::parse("x_bambulab:office/printer").unwrap()
+        ));
+    }
+
+    #[test]
+    fn a_light_kept_out_of_the_room_is_not_switched_with_it() {
+        let reg = DeviceRegistry::new();
+        reg.upsert(light("z2m:office/lamp"));
+        let mut chamber = light("x_bambulab:office/chamber_light");
+        chamber.room_light = false;
+        reg.upsert(chamber);
+        let sw = DeviceId::parse("z2m:office/switch").unwrap();
+        let targets = switch_targets(&reg, &sw, &HashSet::new());
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id.to_string(), "z2m:office/lamp");
     }
 
     #[test]

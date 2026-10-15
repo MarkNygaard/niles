@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use niles_core::{DeviceClass, LightCapabilities};
+use niles_core::{Device, DeviceClass, DeviceId, DeviceState, LightCapabilities};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -93,6 +93,21 @@ pub struct KnownDevice {
     pub class: DeviceClass,
     pub light: LightCapabilities,
     pub controllable: bool,
+    /// Whether it is one of its room's lights; see `devices.set-room-light`.
+    pub room_light: bool,
+    /// Whether it has reported an action, so the rule editor offers it
+    /// as a trigger after a restart too.
+    pub reports_actions: bool,
+}
+
+impl KnownDevice {
+    /// The device as the registry holds it, with `state`.
+    pub(crate) fn device(&self, id: DeviceId, state: DeviceState) -> Device {
+        let mut device = Device::new(id, state, self.class).with_capabilities(self.light);
+        device.room_light = self.room_light;
+        device.reports_actions = self.reports_actions;
+        device
+    }
 }
 
 /// Whether a `set` was kept.
@@ -538,6 +553,8 @@ impl PluginStore for niles_db::PostgresPlugins {
                         rgb: row.rgb,
                     },
                     controllable: row.controllable,
+                    room_light: row.room_light,
+                    reports_actions: row.reports_actions,
                 })
             })
             .collect())
@@ -550,6 +567,8 @@ impl PluginStore for niles_db::PostgresPlugins {
             color_temp: device.light.color_temp,
             rgb: device.light.rgb,
             controllable: device.controllable,
+            room_light: device.room_light,
+            reports_actions: device.reports_actions,
         };
         niles_db::PostgresPlugins::put_device(self, plugin, &row).await
     }

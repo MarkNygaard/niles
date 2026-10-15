@@ -318,6 +318,19 @@ pub struct Device {
     /// dashboard of every working light in a house that never enabled
     /// the feature.
     pub available: bool,
+    /// Whether a light is one of its room's lights. True unless its
+    /// source says otherwise: a plugin can keep a light, such as a 3D
+    /// printer's chamber light, out of room and house commands, scenes,
+    /// presence and the curve, because switching it with the room would
+    /// spoil what the machine is doing. Such a light is still switched
+    /// when asked for by name.
+    pub room_light: bool,
+    /// Whether it has reported an action (a press, or an event such as
+    /// a print finishing) since Niles started, or its source remembers
+    /// that it has. A switch reports actions by nature; this is how a
+    /// device of another class shows that it does too, so the rule
+    /// editor can offer it as a trigger.
+    pub reports_actions: bool,
 }
 
 impl Device {
@@ -330,6 +343,8 @@ impl Device {
             capabilities: LightCapabilities::default(),
             reading_units: BTreeMap::new(),
             available: true,
+            room_light: true,
+            reports_actions: false,
         }
     }
 
@@ -370,8 +385,14 @@ impl Device {
     /// stays the test for whether one device *can* be switched, which
     /// any plug can when asked for by name.
     pub fn is_lamp(&self, lamp_plugs: &HashSet<DeviceId>) -> bool {
-        self.is_light()
-            || (matches!(self.class, DeviceClass::Outlet) && lamp_plugs.contains(&self.id))
+        self.room_light
+            && (self.is_light()
+                || (matches!(self.class, DeviceClass::Outlet) && lamp_plugs.contains(&self.id)))
+    }
+
+    /// True if it reports actions: a switch, or anything that has.
+    pub fn has_actions(&self) -> bool {
+        matches!(self.class, DeviceClass::Switch) || self.reports_actions
     }
 
     /// True if this device should be driven by the daily curve and the
@@ -383,7 +404,7 @@ impl Device {
     /// once meant a light could only become ambient by restarting, and
     /// meant two sources could disagree about what the set contained.
     pub fn is_curve_driven(&self, ambient: &HashSet<DeviceId>) -> bool {
-        self.is_light() && !ambient.contains(&self.id)
+        self.is_light() && self.room_light && !ambient.contains(&self.id)
     }
 
     /// True if this device reports a color temperature.
@@ -545,13 +566,37 @@ mod tests {
         assert!(plug.is_lamp(&HashSet::from([id.clone()])));
 
         let light = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
-        assert!(light.is_lamp(&HashSet::new()), "a light is always a light");
+        assert!(light.is_lamp(&HashSet::new()), "a light is a light");
 
         let switch = Device::new(id.clone(), DeviceState::default(), DeviceClass::Switch);
         assert!(
             !switch.is_lamp(&HashSet::from([id])),
             "only a plug can be listed"
         );
+    }
+
+    #[test]
+    fn a_light_kept_out_of_the_room_is_no_lamp_and_not_on_the_curve() {
+        let id = DeviceId::parse("x_bambulab:office/chamber_light").unwrap();
+        let mut light = Device::new(id.clone(), DeviceState::default(), DeviceClass::Light);
+        light.room_light = false;
+        assert!(!light.is_lamp(&HashSet::new()));
+        assert!(!light.is_curve_driven(&HashSet::new()));
+        assert!(light.is_switchable(), "still switched by name");
+
+        let mut plug = Device::new(id.clone(), DeviceState::default(), DeviceClass::Outlet);
+        plug.room_light = false;
+        assert!(!plug.is_lamp(&HashSet::from([id])), "the source wins");
+    }
+
+    #[test]
+    fn switches_and_devices_that_have_reported_one_have_actions() {
+        let id = DeviceId::parse("x_bambulab:office/printer").unwrap();
+        let mut printer = Device::new(id.clone(), DeviceState::default(), DeviceClass::Sensor);
+        assert!(!printer.has_actions());
+        printer.reports_actions = true;
+        assert!(printer.has_actions());
+        assert!(Device::new(id, DeviceState::default(), DeviceClass::Switch).has_actions());
     }
 
     #[test]

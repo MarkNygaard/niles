@@ -293,6 +293,8 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
         color_temp: true,
         rgb: false,
         controllable: true,
+        room_light: false,
+        reports_actions: true,
     };
     plugins.put_device(&id, &lamp).await.expect("device");
     assert_eq!(plugins.devices(&id).await.expect("devices"), vec![lamp]);

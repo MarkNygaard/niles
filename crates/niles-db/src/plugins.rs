@@ -65,6 +65,10 @@ create table if not exists plugin_devices (
     controllable boolean not null default false,
     primary key (plugin_id, device)
 );
+-- Added with interface 0.2.1: a light kept out of its room's lights,
+-- and a device of any class that has reported an action.
+alter table plugin_devices add column if not exists room_light boolean not null default true;
+alter table plugin_devices add column if not exists reports_actions boolean not null default false;
 ";
 
 /// A plugin's manifest and component, to start it.
@@ -125,6 +129,10 @@ pub struct PluginDeviceRow {
     pub color_temp: bool,
     pub rgb: bool,
     pub controllable: bool,
+    /// False for a light kept out of its room's lights.
+    pub room_light: bool,
+    /// Whether it has reported an action.
+    pub reports_actions: bool,
 }
 
 pub struct PostgresPlugins {
@@ -383,7 +391,7 @@ impl PostgresPlugins {
     pub async fn devices(&self, plugin: &str) -> Result<Vec<PluginDeviceRow>, String> {
         self.ensure_schema().await?;
         let rows = sqlx::query(
-            "select device, class, color_temp, rgb, controllable
+            "select device, class, color_temp, rgb, controllable, room_light, reports_actions
              from plugin_devices where plugin_id = $1 order by device",
         )
         .bind(plugin)
@@ -398,6 +406,8 @@ impl PostgresPlugins {
                 color_temp: r.get("color_temp"),
                 rgb: r.get("rgb"),
                 controllable: r.get("controllable"),
+                room_light: r.get("room_light"),
+                reports_actions: r.get("reports_actions"),
             })
             .collect())
     }
@@ -405,13 +415,16 @@ impl PostgresPlugins {
     pub async fn put_device(&self, plugin: &str, device: &PluginDeviceRow) -> Result<(), String> {
         self.ensure_schema().await?;
         sqlx::query(
-            "insert into plugin_devices (plugin_id, device, class, color_temp, rgb, controllable)
-             values ($1, $2, $3, $4, $5, $6)
+            "insert into plugin_devices
+                 (plugin_id, device, class, color_temp, rgb, controllable, room_light, reports_actions)
+             values ($1, $2, $3, $4, $5, $6, $7, $8)
              on conflict (plugin_id, device) do update set
                  class = excluded.class,
                  color_temp = excluded.color_temp,
                  rgb = excluded.rgb,
-                 controllable = excluded.controllable",
+                 controllable = excluded.controllable,
+                 room_light = excluded.room_light,
+                 reports_actions = excluded.reports_actions",
         )
         .bind(plugin)
         .bind(&device.device)
@@ -419,6 +432,8 @@ impl PostgresPlugins {
         .bind(device.color_temp)
         .bind(device.rgb)
         .bind(device.controllable)
+        .bind(device.room_light)
+        .bind(device.reports_actions)
         .execute(&self.pool)
         .await
         .map(|_| ())

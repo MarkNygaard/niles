@@ -7,9 +7,13 @@
 /// Spec: ARCHITECTURE.md, "Third-party integrations (plugins)".
 /// Author guide: docs/integrations/.
 ///
-/// Status: v0.2.0, run by Niles 0.2.0 and later (`crates/niles-plugins`).
+/// Status: v0.2.1, run by Niles 0.2.0 and later (`crates/niles-plugins`).
 /// 0.2.0 is 0.1.0 plus the `mqtt` interface and the exports
 /// `on-mqtt-message` and `on-mqtt-status`; nothing 0.1.0 had changed.
+/// 0.2.1 adds two functions, `config.time-zone` and
+/// `devices.set-room-light`, and changes nothing 0.2.0 had: a component
+/// built against 0.2.0 runs unchanged, and one that calls the new
+/// functions needs a Niles that has them.
 /// Niles still runs plugins built for 0.1.0, whose interface is kept,
 /// frozen, in `niles-integration-0.1.wit` beside this file.
 ///
@@ -24,7 +28,7 @@
 /// Every call is synchronous from the plugin's point of view. Niles never
 /// calls into a plugin while that plugin is waiting on a host function,
 /// and never makes two calls into the same plugin at once.
-package niles:integration@0.2.0;
+package niles:integration@0.2.1;
 
 /// Types shared by several interfaces and by the exports.
 interface types {
@@ -168,7 +172,8 @@ interface types {
     enum event-kind {
         /// A device anywhere in the house changed state.
         device-state,
-        /// A button or wall switch anywhere in the house was pressed.
+        /// A button, wall switch or other device anywhere in the house
+        /// reported an action.
         device-action,
         /// The house became occupied or empty.
         presence,
@@ -183,7 +188,7 @@ interface types {
         state: device-state,
     }
 
-    /// A press, hold or release on a button.
+    /// A press, hold or release on a button, or another device's action.
     record device-action-fired {
         /// The full id, `source:room/name`.
         id: string,
@@ -229,6 +234,11 @@ interface config {
     /// A `secret` setting, from Niles's encrypted secret store. None if
     /// the user has not set it.
     secret: func(key: string) -> option<string>;
+
+    /// The house's time zone, as an IANA name such as `Europe/Copenhagen`,
+    /// from Niles's own configuration. For clock times a plugin says or
+    /// shows ("done at 14:30"). Since 0.2.1.
+    time-zone: func() -> string;
 }
 
 /// A private key-value store, kept in Niles's database and visible to
@@ -317,8 +327,10 @@ interface devices {
     /// Merge a state change into what Niles knows about the device.
     report-state: func(id: device-id, state: device-state) -> result<_, host-error>;
 
-    /// A press on a `switch` device: `single`, `double`, `hold`...
-    /// Not state: fires once, triggers rules, is never replayed.
+    /// Something that happened on the device, once: a press on a switch
+    /// (`single`, `double`, `hold`...), or an event on any other device
+    /// (`finished`, `failed`, `jammed`). Not state: fires once, triggers
+    /// rules, is never replayed. Any class may report actions.
     report-action: func(id: device-id, action: string) -> result<_, host-error>;
 
     /// Whether the device can be reached. Unavailable devices are greyed
@@ -331,6 +343,16 @@ interface devices {
     /// The devices Niles currently holds for this plugin, including those
     /// remembered from before a restart.
     registered: func() -> list<device-id>;
+
+    /// Whether the device is one of its room's lights: switched by "turn
+    /// off the office lights", "all lights", scenes and presence, and
+    /// followed by the light curve and the morning routine. Lights are,
+    /// until this says otherwise; other classes never are. `false` keeps
+    /// a light out of all that, such as a printer's chamber light that
+    /// must stay on mid-print. It can still be switched by name, by the
+    /// assistant's tools and by rules. Kept across `upsert` and restarts.
+    /// Since 0.2.1.
+    set-room-light: func(id: device-id, room-light: bool) -> result<_, host-error>;
 }
 
 /// Timers that call the export `on-timer`. They do not survive a restart

@@ -66,7 +66,9 @@ impl PresenceLights {
             .registry
             .list_all()
             .into_iter()
-            .filter(|d| d.state.on == Some(true))
+            // Not a light its source keeps out of the room's, such as a
+            // printer's chamber light mid-print.
+            .filter(|d| d.room_light && d.state.on == Some(true))
             .map(|d| d.id.clone())
             .collect();
 
@@ -220,6 +222,22 @@ mod tests {
         );
         f.lights.handle(PresenceState::Away).await;
         assert!(f.sink.calls.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_light_kept_out_of_the_room_stays_on_when_everyone_leaves() {
+        let mut chamber = light("office", "chamber_light", Some(true));
+        chamber.room_light = false;
+        let f = fixture(
+            vec![chamber, light("office", "lamp", Some(true))],
+            true,
+            vec![],
+        );
+        f.lights.handle(PresenceState::Away).await;
+
+        let calls = f.sink.calls.lock().await.clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, id("office", "lamp"));
     }
 
     #[tokio::test]
