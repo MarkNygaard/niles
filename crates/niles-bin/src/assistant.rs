@@ -33,6 +33,9 @@ use std::sync::{Arc, Mutex};
 struct Grant {
     speaker: Option<String>,
     tools: Option<Arc<ToolRegistry>>,
+    /// Whose turn this run answers, so a tool that waits for a yes holds
+    /// its call for them.
+    asker: Option<crate::approvals::Asker>,
 }
 
 /// Live run tokens, and what each grants.
@@ -184,6 +187,7 @@ impl Assistant {
             Grant {
                 speaker,
                 tools: None,
+                asker: crate::approvals::asker(),
             },
         );
         let prompt = transcript(history, text);
@@ -227,6 +231,7 @@ impl Assistant {
             Grant {
                 speaker: None,
                 tools: Some(Arc::new(tools)),
+                asker: None,
             },
         );
         match chosen {
@@ -308,10 +313,17 @@ async fn serve_mcp(
     // A background job lists and calls only its own tools: asking for
     // `set_device` by name finds nothing.
     let tools = grant.tools.unwrap_or_else(|| state.tools.clone());
-    match crate::profile::SPEAKER
-        .scope(grant.speaker, niles_tools::mcp::handle(&tools, &message))
-        .await
-    {
+    let handled = crate::profile::SPEAKER.scope(grant.speaker, async {
+        match grant.asker {
+            Some(asker) => {
+                crate::approvals::ASKER
+                    .scope(asker, niles_tools::mcp::handle(&tools, &message))
+                    .await
+            }
+            None => niles_tools::mcp::handle(&tools, &message).await,
+        }
+    });
+    match handled.await {
         Some(reply) => Json(reply).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
@@ -502,6 +514,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
             Grant {
                 speaker: Some("mark".into()),
                 tools: None,
+                asker: None,
             },
         );
         let key = token.0.clone();
@@ -534,6 +547,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
             Grant {
                 speaker: None,
                 tools: None,
+                asker: None,
             },
         );
         let answered = client
@@ -595,6 +609,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
             Grant {
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
+                asker: None,
             },
         );
         let names = tool_names(&assistant.mcp_url, &token.0).await;
@@ -613,6 +628,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
             Grant {
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
+                asker: None,
             },
         );
         let env: HashMap<String, String> = crate::chatgpt::environment(

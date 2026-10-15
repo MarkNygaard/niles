@@ -123,6 +123,29 @@ describe("ChatView", () => {
     expect(screen.getAllByText("Living room")).toHaveLength(1);
   });
 
+  it("answers an approval card by its id, even after more was said", () => {
+    const onDecide = vi.fn();
+    const approval = {
+      id: "a1",
+      title: "Let Linear create issue?",
+      subtitle: "Linear",
+      icon: "linear",
+      fields: [{ label: "Title", value: "WLED presets" }],
+      body: null,
+      allow_conversation: true,
+      status: "pending" as const,
+      outcome: null,
+    };
+    // A card waits an hour, so unlike a proposal it stays answerable
+    // under later turns.
+    renderChat({
+      turns: [turn("file it", "It's waiting for you.", { approval }), turn("thanks", "Any time.")],
+      onDecide,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    expect(onDecide).toHaveBeenCalledWith("a1", "once");
+  });
+
   describe("a proposal", () => {
     const proposal = { sentence: 'When it is 30 minutes after sunset, say "Close the curtains".' };
     const asked = turn("remind me to close the curtains", "… Shall I save it?", { proposal });

@@ -51,6 +51,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod approvals;
 mod assistant;
 mod calendar;
 mod chat_log;
@@ -3317,6 +3318,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         assistant: assistant.clone(),
         follow_ups: Arc::default(),
         automations: None,
+        approvals: Arc::default(),
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -3590,6 +3592,13 @@ impl niles_api::chat::Chat for AppChat {
             _ => None,
         };
         let started = Instant::now();
+        // Whose yes anything held on this turn waits for.
+        let asker = approvals::Asker {
+            person: person.clone(),
+            slug: slug.clone(),
+            satellite: None,
+            conversation: target,
+        };
         let (reply, note) = CHAT_NOTE
             .scope(std::cell::RefCell::default(), async {
                 // And the training tools read whoever is signed in, voice
@@ -3599,7 +3608,10 @@ impl niles_api::chat::Chat for AppChat {
                         person.clone(),
                         profile::SPEAKER.scope(
                             slug,
-                            dispatch_text(ctx, APP_PEER, text, &thread, &known, None, true),
+                            approvals::ASKER.scope(
+                                asker,
+                                dispatch_text(ctx, APP_PEER, text, &thread, &known, None, true),
+                            ),
                         ),
                     )
                     .await;
@@ -3626,13 +3638,19 @@ impl niles_api::chat::Chat for AppChat {
                     room: None,
                     by: via.map(str::to_string),
                     proposal: proposal_since(ctx, started),
+                    approval: ctx.approvals.for_turn(&person, started),
                 };
-                log.record(&person, target, &turn)
+                let kept = log
+                    .record(&person, target, &turn)
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("[chat-log] a typed turn was not kept: {e}");
                         None
-                    })
+                    });
+                if let (Some(card), Some(id)) = (&turn.approval, kept) {
+                    ctx.approvals.place(&card.id, id);
+                }
+                kept
             }
             None => None,
         };
@@ -3667,13 +3685,100 @@ impl niles_api::chat::Chat for AppChat {
         speaker: Option<&str>,
         id: i64,
     ) -> Option<niles_api::chat::Conversation> {
-        let log = self.ctx.get()?.chat_log.as_ref()?;
-        log.conversation(&chat_log::person(speaker, who), id)
+        let ctx = self.ctx.get()?;
+        let log = ctx.chat_log.as_ref()?;
+        let mut conversation = log
+            .conversation(&chat_log::person(speaker, who), id)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("[chat-log] {e}");
                 None
-            })
+            })?;
+        // A card the store no longer holds lapsed, or was held by a Niles
+        // that has since restarted: either way nothing is waiting.
+        for card in conversation
+            .turns
+            .iter_mut()
+            .filter_map(|t| t.approval.as_mut())
+        {
+            if card.status == niles_api::chat::ApprovalStatus::Pending
+                && !ctx.approvals.waiting(&card.id)
+            {
+                card.status = niles_api::chat::ApprovalStatus::Lapsed;
+            }
+        }
+        Some(conversation)
+    }
+
+    async fn decide(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        id: i64,
+        approval: &str,
+        decision: niles_api::chat::Decision,
+    ) -> Result<String, niles_api::chat::Undecidable> {
+        use niles_api::chat::{Decision, Undecidable};
+        let ctx = self.ctx.get().ok_or(Undecidable::NoSuchConversation)?;
+        let log = ctx
+            .chat_log
+            .as_ref()
+            .ok_or(Undecidable::NoSuchConversation)?;
+        let person = chat_log::person(speaker, who);
+        let conversation = log
+            .conversation(&person, id)
+            .await
+            .ok()
+            .flatten()
+            .ok_or(Undecidable::NoSuchConversation)?;
+        let card = conversation
+            .turns
+            .iter()
+            .filter_map(|t| t.approval.as_ref())
+            .find(|a| a.id == approval)
+            .ok_or(Undecidable::NoSuchApproval)?;
+        if decision == Decision::Conversation && !card.allow_conversation {
+            return Err(Undecidable::OnceOnly);
+        }
+        let held = ctx
+            .approvals
+            .take(approval, &person)
+            .ok_or(Undecidable::NotWaiting)?;
+        let tool = held.tool_name().to_string();
+        let (card, reply) = match decision {
+            Decision::Deny => held.deny(),
+            Decision::Once => held.run().await,
+            Decision::Conversation => {
+                ctx.approvals.grant(&person, id, &tool);
+                held.run().await
+            }
+        };
+        tracing::info!("[approvals] {tool}: {:?} by {person}", card.status);
+        if let Err(e) = log.update_approval(&person, id, &card).await {
+            tracing::warn!("[chat-log] the answered card was not kept: {e}");
+        }
+        let said = match decision {
+            Decision::Once => "Allow once",
+            Decision::Conversation => "Allow for this conversation",
+            Decision::Deny => "Deny",
+        };
+        // Into the conversation, so the next turn knows what happened.
+        let thread = conversation::Thread::Chat(who.to_string());
+        ctx.conversation.record_via(&thread, said, &reply, None);
+        let answered = niles_api::chat::Turn {
+            at: chrono::Utc::now(),
+            said: said.into(),
+            reply: reply.clone(),
+            via: "app".into(),
+            room: None,
+            by: None,
+            proposal: None,
+            approval: None,
+        };
+        if let Err(e) = log.record(&person, Some(id), &answered).await {
+            tracing::warn!("[chat-log] the answer was not kept: {e}");
+        }
+        Ok(reply)
     }
 
     async fn answer(
@@ -3731,6 +3836,7 @@ impl niles_api::chat::Chat for AppChat {
             room: None,
             by: None,
             proposal: None,
+            approval: None,
         };
         if let Err(e) = log.record(&person, Some(id), &answered).await {
             tracing::warn!("[chat-log] the answer was not kept: {e}");
@@ -3865,6 +3971,8 @@ struct DispatchCtx {
         Arc<niles_automations::AutomationStore>,
         Arc<niles_tools::automations::Proposals>,
     )>,
+    /// What is waiting for somebody's yes.
+    approvals: Arc<approvals::Approvals>,
 }
 
 impl DispatchCtx {
@@ -3977,10 +4085,25 @@ async fn handle_transcript(
         SpeakerContext::Identified { known, .. } => known.slug.clone(),
         _ => None,
     };
+    // A question asked aloud is answered at the satellite that asked it,
+    // by the voice that asked: or, where nobody is recognised, by whoever
+    // is there.
+    let asker = approvals::Asker {
+        person: match &slug {
+            Some(slug) => chat_log::person(Some(slug), ""),
+            None => format!("satellite:{peer}"),
+        },
+        slug: slug.clone(),
+        satellite: Some(peer),
+        conversation: None,
+    };
     let mut response = profile::SPEAKER
         .scope(
             slug,
-            dispatch_transcript(ctx, peer, text, confidence, speaker, voice, answering),
+            approvals::ASKER.scope(
+                asker,
+                dispatch_transcript(ctx, peer, text, confidence, speaker, voice, answering),
+            ),
         )
         .await;
     if let Some((name, whom, birthday)) = greeting {
@@ -4002,6 +4125,7 @@ async fn handle_transcript(
                 room: room.as_ref().map(|r| r.as_str().to_string()),
                 by: None,
                 proposal: proposal_since(ctx, started),
+                approval: None,
             };
             let (log, person) = (log.clone(), chat_log::person(Some(slug), ""));
             tokio::spawn(async move { log.record_spoken(&person, &turn).await });
@@ -4385,6 +4509,37 @@ fn without_vocative(text: &str) -> Option<&str> {
     (!rest.is_empty()).then_some(rest)
 }
 
+/// A yes or no to what a satellite just asked before running a tool set
+/// to Ask first: decided here, from the words, never by the model.
+/// Anything that is not a yes or a no leaves it waiting.
+async fn answer_to_approval(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    text: &str,
+    speaker: &SpeakerContext,
+) -> Option<String> {
+    let (id, asker) = ctx.approvals.spoken(peer)?;
+    // Only the voice that asked, when Niles knew it.
+    if let Some(asked) = &asker.slug {
+        let answering = match speaker {
+            SpeakerContext::Identified { known, .. } => known.slug.as_ref(),
+            _ => None,
+        };
+        if answering != Some(asked) {
+            return None;
+        }
+    }
+    let yes = niles_tools::automations::answer(text)?;
+    let held = ctx.approvals.take(&id, &asker.person)?;
+    let tool = held.tool_name().to_string();
+    let (_, reply) = if yes { held.run().await } else { held.deny() };
+    tracing::info!(
+        "[{peer}] {tool}: {} by voice",
+        if yes { "allowed" } else { "denied" }
+    );
+    Some(reply)
+}
+
 /// A plain yes or no to the rule Niles just read back, answered here
 /// rather than by the model. Asked to save it, the model proposed it
 /// again and said "saved" — and nothing was.
@@ -4645,6 +4800,9 @@ async fn dispatch_text(
 ) -> Option<String> {
     let origin_room = ctx.satellites.room_for(peer);
 
+    if let Some(reply) = answer_to_approval(ctx, peer, text, speaker).await {
+        return Some(reply);
+    }
     if let Some(reply) = answer_to_proposal(ctx, peer, text) {
         return Some(reply);
     }
@@ -6638,7 +6796,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
     // Remote tool servers put their tools beside the plugins'. After the
     // secrets are loaded, since each connects with its key.
-    let tool_servers = tool_servers::ToolServers::start(store.clone(), plugin_tools.clone());
+    let approvals = Arc::new(approvals::Approvals::default());
+    let tool_servers =
+        tool_servers::ToolServers::start(store.clone(), plugin_tools.clone(), approvals.clone());
     let plugin_database = plugin_host.as_ref().is_some_and(|(_, database)| *database);
     let plugin_runtime = plugin_host.map(|(runtime, _)| runtime);
     let router = Arc::new(match &plugin_runtime {
@@ -7247,6 +7407,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         assistant: assistant.clone(),
         follow_ups: Arc::default(),
         automations: automations.clone().map(|store| (store, proposals.clone())),
+        approvals: approvals.clone(),
     };
     // The API is already up; from here on the chat has something to
     // answer with.

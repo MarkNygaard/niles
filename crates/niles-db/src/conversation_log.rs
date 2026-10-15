@@ -195,6 +195,35 @@ impl PostgresConversationLog {
         }))
     }
 
+    /// Replace one field of one turn: an approval card that has been
+    /// answered says so where it was asked. False when there was no such
+    /// conversation of theirs, or no such turn.
+    pub async fn set_turn_field(
+        &self,
+        person: &str,
+        id: i64,
+        turn: usize,
+        field: &str,
+        value: &str,
+    ) -> Result<bool, String> {
+        self.ensure_schema().await?;
+        let updated = sqlx::query(
+            "update conversation_log
+             set turns = jsonb_set(turns, array[$3::text, $4::text], $5::jsonb)
+             where id = $1 and person = $2 and jsonb_array_length(turns) > $6",
+        )
+        .bind(id)
+        .bind(person)
+        .bind(turn.to_string())
+        .bind(field)
+        .bind(value)
+        .bind(turn as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(updated.rows_affected() == 1)
+    }
+
     /// Forget one of the person's conversations. False when there was
     /// none of theirs by that id.
     pub async fn delete(&self, person: &str, id: i64) -> Result<bool, String> {

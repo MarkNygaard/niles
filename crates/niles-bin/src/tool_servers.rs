@@ -7,6 +7,7 @@
 //! keywords or its notes only offers its tools again, from the list it
 //! already has.
 
+use crate::approvals::{Approvals, AskFirst, ToolCard};
 use async_trait::async_trait;
 use niles_api::tool_servers::{RemoteToolView, ServerStatus, ToolServerView};
 use niles_config::{ConfigStore, ToolMode, ToolServerConfig};
@@ -26,6 +27,8 @@ const MAX_NAME: usize = 64;
 pub(crate) struct ToolServers {
     settings: Arc<ConfigStore>,
     dynamic: DynamicTools,
+    /// Where an Ask-first tool's call waits for its yes.
+    approvals: Arc<Approvals>,
     servers: Mutex<BTreeMap<String, Server>>,
     refresh: mpsc::UnboundedSender<String>,
 }
@@ -63,11 +66,16 @@ impl Connection {
 impl ToolServers {
     /// Connect every configured server, and follow the config from then
     /// on.
-    pub(crate) fn start(settings: Arc<ConfigStore>, dynamic: DynamicTools) -> Arc<Self> {
+    pub(crate) fn start(
+        settings: Arc<ConfigStore>,
+        dynamic: DynamicTools,
+        approvals: Arc<Approvals>,
+    ) -> Arc<Self> {
         let (refresh, mut asked) = mpsc::unbounded_channel::<String>();
         let this = Arc::new(Self {
             settings,
             dynamic,
+            approvals,
             servers: Mutex::new(BTreeMap::new()),
             refresh,
         });
@@ -186,7 +194,8 @@ impl ToolServers {
         });
     }
 
-    /// Put a server's tools that are on into the registry.
+    /// Put a server's tools that are on, or Ask first, into the
+    /// registry.
     fn offer(
         &self,
         id: &str,
@@ -196,7 +205,7 @@ impl ToolServers {
     ) {
         let offered: Vec<Arc<dyn Tool>> = tools
             .iter()
-            .filter(|tool| cfg.mode(&tool.name) == ToolMode::On)
+            .filter(|tool| cfg.mode(&tool.name) != ToolMode::Off)
             .filter_map(|tool| {
                 let descriptor = describe(id, tool).or_else(|| {
                     tracing::warn!(
@@ -205,11 +214,24 @@ impl ToolServers {
                     );
                     None
                 })?;
-                Some(Arc::new(RemoteToolAdapter {
+                let adapter = Arc::new(RemoteToolAdapter {
                     client: client.clone(),
                     name: tool.name.clone(),
                     descriptor,
-                }) as Arc<dyn Tool>)
+                }) as Arc<dyn Tool>;
+                if cfg.mode(&tool.name) == ToolMode::Ask {
+                    let card = ToolCard {
+                        title: format!("Let {} {}?", cfg.display_name(id), action(tool)),
+                        subtitle: cfg.display_name(id).to_string(),
+                        icon: Some(id.to_string()),
+                        schema: tool.input_schema.clone(),
+                    };
+                    return Some(
+                        Arc::new(AskFirst::new(adapter, self.approvals.clone(), card))
+                            as Arc<dyn Tool>,
+                    );
+                }
+                Some(adapter)
             })
             .collect();
         let notes = cfg.notes.trim();
@@ -221,6 +243,20 @@ impl ToolServers {
         });
         self.dynamic
             .set_with_notes(&owner(id), cfg.keywords_for(id), notes, offered);
+    }
+}
+
+/// What a tool does, as the end of "Let Linear …?": its title, or its
+/// name, in lower case.
+fn action(tool: &RemoteTool) -> String {
+    let words = tool
+        .title
+        .clone()
+        .unwrap_or_else(|| tool.name.replace(['_', '-'], " "));
+    let mut chars = words.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => tool.name.clone(),
     }
 }
 
@@ -441,7 +477,7 @@ mod tests {
         let server = linear().await;
         let settings = Arc::new(ConfigStore::from_str_in_memory("").unwrap());
         let dynamic = DynamicTools::new();
-        let servers = ToolServers::start(settings.clone(), dynamic.clone());
+        let servers = ToolServers::start(settings.clone(), dynamic.clone(), Arc::default());
         write(
             &settings,
             &format!(
@@ -506,6 +542,46 @@ mod tests {
             registry.notes_for("anything in linear"),
             ["About the linear tools (linear__…): Coding tasks go to Todo."]
         );
+
+        // Ask first: still offered, but a call is held, not sent.
+        write(
+            &settings,
+            "[tool_servers.linear.tools]\nlist_issues = \"ask\"\n",
+        )
+        .await;
+        let asker = crate::approvals::Asker {
+            person: "person:mark".into(),
+            slug: Some("mark".into()),
+            satellite: None,
+            conversation: None,
+        };
+        let list = niles_llm::ToolCall {
+            id: "2".into(),
+            name: "linear__list_issues".into(),
+            arguments: json!({ "team": "niles" }),
+        };
+        let call = || crate::approvals::ASKER.scope(asker.clone(), registry.execute(&list));
+        let mut held = json!(null);
+        for _ in 0..200 {
+            held = call().await.unwrap();
+            if held.get("waiting_for_approval").is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(held["shown_to_the_person"], "Let linear list issues?");
+        let calls = || async {
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.body_json::<Value>().unwrap()["method"] == "tools/call")
+                .count()
+        };
+        let before = calls().await;
+        call().await.unwrap();
+        assert_eq!(calls().await, before, "held, not sent");
 
         // Removed: every tool goes.
         settings

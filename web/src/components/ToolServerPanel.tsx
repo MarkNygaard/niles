@@ -2,13 +2,19 @@ import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { SecretField } from "@/components/SecretField";
 import { api } from "@/lib/api";
 import type { RemoteTool, Secret, ToolServer } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
-export type ToolMode = "on" | "off";
+export type ToolMode = "on" | "ask" | "off";
+
+const MODES: { value: ToolMode; label: string }[] = [
+  { value: "on", label: "On" },
+  { value: "ask", label: "Ask first" },
+  { value: "off", label: "Off" },
+];
 
 export interface ToolServerPanelProps {
   id: string;
@@ -51,7 +57,7 @@ export function ToolServerPanel({
 }: ToolServerPanelProps) {
   const [refreshing, setRefreshing] = useState(false);
   const tools = [...(server?.tools ?? [])].sort((a, b) => a.name.localeCompare(b.name));
-  const on = tools.filter((t) => (modes[t.name] ?? "on") === "on").length;
+  const on = tools.filter((t) => (modes[t.name] ?? "on") !== "off").length;
 
   async function refresh() {
     setRefreshing(true);
@@ -100,12 +106,10 @@ export function ToolServerPanel({
             <ToolRow
               key={tool.name}
               tool={tool}
-              on={(modes[tool.name] ?? "on") === "on"}
+              mode={modes[tool.name] ?? "on"}
               disabled={saving}
               onChange={(next) =>
-                onChange([
-                  { path: `tool_servers.${id}.tools.${tool.name}`, value: next ? "on" : "off" },
-                ])
+                onChange([{ path: `tool_servers.${id}.tools.${tool.name}`, value: next }])
               }
             />
           ))}
@@ -132,14 +136,14 @@ export function connection(server: ToolServer | undefined, tools: number, on: nu
 
 function ToolRow({
   tool,
-  on,
+  mode,
   disabled,
   onChange,
 }: {
   tool: RemoteTool;
-  on: boolean;
+  mode: ToolMode;
   disabled?: boolean;
-  onChange: (on: boolean) => void;
+  onChange: (mode: ToolMode) => void;
 }) {
   const label = tool.title ?? tool.name;
   return (
@@ -154,12 +158,35 @@ function ToolRow({
           <p className="text-muted-foreground line-clamp-2 text-xs">{tool.description}</p>
         )}
       </div>
-      <Switch
-        aria-label={`Let Niles use ${label}`}
-        checked={on}
-        disabled={disabled}
-        onCheckedChange={(next) => onChange(next)}
-      />
+      {/* Buttons, not a select: three short choices fit on a row. */}
+      <div
+        role="radiogroup"
+        aria-label={`What Niles may do with ${label}`}
+        className="bg-muted/60 flex shrink-0 gap-0.5 rounded-lg p-0.5"
+      >
+        {MODES.map((m) => {
+          const active = m.value === mode;
+          return (
+            <button
+              key={m.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={disabled}
+              onClick={() => !active && onChange(m.value)}
+              className={cn(
+                "rounded-md px-2 py-1 text-xs whitespace-nowrap transition-colors",
+                "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+                active
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
     </li>
   );
 }

@@ -66,6 +66,18 @@ pub trait Chat: Send + Sync {
         save: bool,
     ) -> Result<String, Unanswerable>;
 
+    /// Allow, or deny, what an approval card in conversation `id` is
+    /// holding — the tap on one of its buttons. Answers what became of
+    /// it, in a sentence.
+    async fn decide(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        id: i64,
+        approval: &str,
+        decision: Decision,
+    ) -> Result<String, Undecidable>;
+
     /// Forget one of theirs. False when there was none by that id.
     async fn delete(&self, who: &str, speaker: Option<&str>, id: i64) -> bool;
 
@@ -80,6 +92,77 @@ pub enum Unanswerable {
     NoSuchConversation,
     /// The turn asked nothing to save, or something came after it.
     NothingToAnswer,
+}
+
+/// The answer to an approval card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    /// Allow once.
+    Once,
+    /// Allow for this conversation: the same tool runs without asking
+    /// for the rest of it.
+    Conversation,
+    Deny,
+}
+
+/// Why an approval could not be answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Undecidable {
+    NoSuchConversation,
+    /// No card by that id in the conversation.
+    NoSuchApproval,
+    /// It was answered already, lapsed, or Niles restarted since: the
+    /// call it held is gone.
+    NotWaiting,
+    /// "Allow for this conversation" on something that is only ever
+    /// approved once: a mail.
+    OnceOnly,
+}
+
+/// Something Niles would not do on the model's word alone, waiting for
+/// the person: shown as a card in the chat. What it holds — the tool
+/// and its arguments — stays on the server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalCard {
+    pub id: String,
+    /// A question: "Send this email?", "Let Linear create issue?"
+    pub title: String,
+    /// Whose account, or which add-on.
+    pub subtitle: String,
+    /// A brand mark's id (`linear`, `google`), or a generic icon's name.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// What will happen, as labelled values: To, Subject; or a tool's
+    /// arguments.
+    #[serde(default)]
+    pub fields: Vec<CardField>,
+    /// A long text shown in full: a mail's body.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Whether "Allow for this conversation" is offered.
+    #[serde(default)]
+    pub allow_conversation: bool,
+    pub status: ApprovalStatus,
+    /// What became of it, once it is not pending: "Sent", the error.
+    #[serde(default)]
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardField {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Allowed,
+    Denied,
+    Lapsed,
+    Failed,
 }
 
 /// One exchange: what was said, and what Niles answered.
@@ -100,6 +183,9 @@ pub struct Turn {
     /// The rule Niles read back and asked to save, in this turn.
     #[serde(default)]
     pub proposal: Option<Proposal>,
+    /// What this turn left waiting for the person's yes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalCard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -233,6 +319,43 @@ pub async fn answer(
         Err(Unanswerable::NothingToAnswer) => Err(failed(
             StatusCode::CONFLICT,
             "that has already been answered, or asked nothing to save".into(),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Decide {
+    pub decision: Decision,
+}
+
+/// `POST /chat/conversations/{id}/approvals/{approval}` — Allow once,
+/// Allow for this conversation, or Deny.
+pub async fn decide(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, approval)): Path<(i64, String)>,
+    Json(body): Json<Decide>,
+) -> Result<Json<Answered>, Failure> {
+    let chat = chat(&state)?;
+    let (who, speaker) = caller(&state, &headers);
+    match chat
+        .decide(&who, speaker.as_deref(), id, &approval, body.decision)
+        .await
+    {
+        Ok(reply) => Ok(Json(Answered { reply })),
+        Err(Undecidable::NoSuchConversation) => {
+            Err(failed(StatusCode::NOT_FOUND, "no such conversation".into()))
+        }
+        Err(Undecidable::NoSuchApproval) => {
+            Err(failed(StatusCode::NOT_FOUND, "no such approval".into()))
+        }
+        Err(Undecidable::NotWaiting) => Err(failed(
+            StatusCode::CONFLICT,
+            "that is no longer waiting: it was answered, or it lapsed".into(),
+        )),
+        Err(Undecidable::OnceOnly) => Err(failed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "this can only be allowed once".into(),
         )),
     }
 }
@@ -397,6 +520,7 @@ mod tests {
             room: None,
             by: None,
             proposal: None,
+            approval: None,
         }
     }
 
@@ -504,6 +628,24 @@ mod tests {
             }
         }
 
+        async fn decide(
+            &self,
+            _who: &str,
+            _speaker: Option<&str>,
+            id: i64,
+            approval: &str,
+            decision: Decision,
+        ) -> Result<String, Undecidable> {
+            match (id, approval, decision) {
+                (1, "a1", Decision::Once) => Ok("Done.".into()),
+                (1, "a1", Decision::Deny) => Ok("All right, I didn't.".into()),
+                (1, "mail", Decision::Conversation) => Err(Undecidable::OnceOnly),
+                (1, "gone", _) => Err(Undecidable::NotWaiting),
+                (1, _, _) => Err(Undecidable::NoSuchApproval),
+                _ => Err(Undecidable::NoSuchConversation),
+            }
+        }
+
         async fn delete(&self, who: &str, _speaker: Option<&str>, id: i64) -> bool {
             let mut all = self.conversations.lock().unwrap();
             let before = all.len();
@@ -551,6 +693,30 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn an_approval_is_answered_with_its_decision() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let decide = |approval: &str, decision: &str| {
+            let app = app.clone();
+            let uri = format!("/chat/conversations/1/approvals/{approval}");
+            let body = json!({ "decision": decision });
+            async move { call(&app, "POST", &uri, Some(body)).await }
+        };
+        let (status, body) = decide("a1", "once").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["reply"], "Done.");
+        assert_eq!(decide("gone", "once").await.0, StatusCode::CONFLICT);
+        assert_eq!(
+            decide("mail", "conversation").await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(decide("nope", "deny").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(
+            decide("a1", "maybe").await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 
     #[tokio::test]

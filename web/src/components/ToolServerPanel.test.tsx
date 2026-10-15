@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { ToolServerPanel, connection } from "@/components/ToolServerPanel";
 import type { ToolServer } from "@/lib/api";
 
@@ -44,11 +44,18 @@ function setup(props: Partial<React.ComponentProps<typeof ToolServerPanel>> = {}
 }
 
 describe("ToolServerPanel", () => {
-  it("lists every tool the server offers, on unless switched off", () => {
+  it("lists every tool the server offers, on unless set otherwise", () => {
     setup({ modes: { delete_issue: "off" } });
-    expect(screen.getByRole("switch", { name: "Let Niles use List issues" })).toBeChecked();
-    expect(screen.getByRole("switch", { name: "Let Niles use delete_issue" })).not.toBeChecked();
+    const list = screen.getByRole("radiogroup", { name: "What Niles may do with List issues" });
+    expect(within(list).getByRole("radio", { name: "On" })).toHaveAttribute("aria-checked", "true");
+    const del = screen.getByRole("radiogroup", { name: "What Niles may do with delete_issue" });
+    expect(within(del).getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("status")).toHaveTextContent("Connected. 1 of 2 tools on.");
+  });
+
+  it("counts a tool that asks first as on", () => {
+    setup({ modes: { delete_issue: "ask" } });
+    expect(screen.getByRole("status")).toHaveTextContent("Connected. 2 of 2 tools on.");
   });
 
   it("shows what the server says each tool does", () => {
@@ -59,9 +66,10 @@ describe("ToolServerPanel", () => {
 
   it("writes a tool's setting under the server's name for it", () => {
     const { onChange } = setup();
-    fireEvent.click(screen.getByRole("switch", { name: "Let Niles use delete_issue" }));
+    const del = screen.getByRole("radiogroup", { name: "What Niles may do with delete_issue" });
+    fireEvent.click(within(del).getByRole("radio", { name: "Ask first" }));
     expect(onChange).toHaveBeenCalledWith([
-      { path: "tool_servers.linear.tools.delete_issue", value: "off" },
+      { path: "tool_servers.linear.tools.delete_issue", value: "ask" },
     ]);
   });
 
