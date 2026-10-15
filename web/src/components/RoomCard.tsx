@@ -217,7 +217,14 @@ export function RoomCard({
       </div>
       <div className="divide-border min-h-0 flex-1 divide-y overflow-y-auto px-4 py-3">
         {tv && (
-          <TvRow tv={tv.info} busy={tv.busy} onPower={tv.onPower} onVolume={tv.onVolume} />
+          // A room with a Sonos hears the TV through it: its volume is
+          // the Sonos's, as it is by voice.
+          <TvRow
+            tv={tv.info}
+            busy={tv.busy}
+            onPower={tv.onPower}
+            onVolume={music ? undefined : tv.onVolume}
+          />
         )}
         {room.lights.map((light) => (
           <LightRow

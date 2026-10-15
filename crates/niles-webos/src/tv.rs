@@ -39,13 +39,20 @@ pub struct Status {
     pub volume: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
+    /// Where its sound goes, when it says: "tv_speaker" is its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound_output: Option<String>,
 }
 
 /// How loud the TV's own sound is, `0..=100`, and whether it is muted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Volume {
     pub volume: u8,
     pub muted: bool,
+    /// Where the sound goes — "tv_speaker", "external_arc" — on a TV
+    /// new enough to say. An older one does not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound_output: Option<String>,
 }
 
 /// Something to do to the TV's sound.
@@ -243,14 +250,16 @@ impl Tv {
                 app: None,
                 volume: None,
                 muted: None,
+                sound_output: None,
             });
         }
         let sound = self.volume().await.ok();
         let nothing_on_screen = Status {
             on,
             app: None,
-            volume: sound.map(|s| s.volume),
-            muted: sound.map(|s| s.muted),
+            volume: sound.as_ref().map(|s| s.volume),
+            muted: sound.as_ref().map(|s| s.muted),
+            sound_output: sound.and_then(|s| s.sound_output),
         };
         let Some(app) = self.foreground_app().await.ok().flatten() else {
             return Ok(nothing_on_screen);
@@ -387,6 +396,7 @@ fn volume_in(answer: &Value) -> Result<Volume> {
     Ok(Volume {
         volume: volume.min(100) as u8,
         muted,
+        sound_output: status["soundOutput"].as_str().map(str::to_string),
     })
 }
 
@@ -478,7 +488,8 @@ mod tests {
             volume_in(&answer).unwrap(),
             Volume {
                 volume: 20,
-                muted: false
+                muted: false,
+                sound_output: Some("tv_speaker".into()),
             }
         );
         // node-red-contrib-lgtv#51: a 2021 TV, with the old fields
@@ -498,7 +509,8 @@ mod tests {
             volume_in(&answer).unwrap(),
             Volume {
                 volume: 12,
-                muted: true
+                muted: true,
+                sound_output: Some("tv_external_speaker".into()),
             }
         );
     }
@@ -515,7 +527,8 @@ mod tests {
             volume_in(&answer).unwrap(),
             Volume {
                 volume: 9,
-                muted: true
+                muted: true,
+                sound_output: None,
             }
         );
         // node-red-contrib-lgtv#51 recorded one with "mute".
@@ -529,7 +542,8 @@ mod tests {
             volume_in(&answer).unwrap(),
             Volume {
                 volume: 98,
-                muted: false
+                muted: false,
+                sound_output: None,
             }
         );
     }
@@ -723,7 +737,8 @@ mod tests {
             after,
             Some(Volume {
                 volume: 20,
-                muted: false
+                muted: false,
+                sound_output: Some("tv_speaker".into()),
             })
         );
         assert_eq!(
@@ -763,7 +778,8 @@ mod tests {
             after,
             Some(Volume {
                 volume: 15,
-                muted: true
+                muted: true,
+                sound_output: Some("tv_speaker".into()),
             })
         );
         assert!(
@@ -781,7 +797,8 @@ mod tests {
             after,
             Some(Volume {
                 volume: 19,
-                muted: false
+                muted: false,
+                sound_output: None,
             })
         );
         assert_eq!(
@@ -831,7 +848,8 @@ mod tests {
             tv.volume().await.unwrap(),
             Volume {
                 volume: 100,
-                muted: true
+                muted: true,
+                sound_output: None,
             }
         );
     }
@@ -844,6 +862,7 @@ mod tests {
         assert_eq!(status.muted, Some(false));
         let shown = serde_json::to_value(&status).unwrap();
         assert_eq!(shown["volume"], 23);
+        assert_eq!(shown["sound_output"], "tv_speaker");
     }
 
     #[tokio::test]

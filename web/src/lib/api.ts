@@ -427,6 +427,8 @@ export interface TvInfo {
     /** The TV's own speakers, `0..=100`: only while it is on and says. */
     volume?: number;
     muted?: boolean;
+    /** Where its sound goes, on a TV new enough to say: "tv_speaker" is its own. */
+    sound_output?: string;
   } | null;
   error: string | null;
 }
@@ -438,6 +440,7 @@ export type TvVolumeChange = { volume: number } | { delta: number } | { mute: bo
 export interface TvVolume {
   volume: number;
   muted: boolean;
+  sound_output?: string;
 }
 
 /** The Sonos household as a speaker described it just now. */

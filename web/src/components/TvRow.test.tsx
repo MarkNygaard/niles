@@ -36,6 +36,13 @@ describe("TvRow volume", () => {
     expect(tvVolume(tv({ on: false, app: null }))).toBeNull();
     expect(tvVolume(tv({ on: true, app: null }))).toBeNull();
     expect(tvVolume(undefined)).toBeNull();
+    // Sent to a soundbar, the TV's own number is not what anyone hears.
+    expect(
+      tvVolume(tv({ on: true, app: null, volume: 14, sound_output: "external_arc" })),
+    ).toBeNull();
+    expect(
+      tvVolume(tv({ on: true, app: null, volume: 14, sound_output: "tv_speaker" })),
+    ).toEqual({ volume: 14, muted: false });
 
     const { rerender } = render(
       <TvRow tv={tv({ on: false, app: null })} onPower={vi.fn()} onVolume={vi.fn()} />,

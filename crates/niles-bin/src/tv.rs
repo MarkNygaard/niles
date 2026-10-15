@@ -450,7 +450,11 @@ mod tests {
 
     #[test]
     fn the_tv_volume_is_said_plainly() {
-        let at = |volume, muted| Volume { volume, muted };
+        let at = |volume, muted| Volume {
+            volume,
+            muted,
+            sound_output: None,
+        };
         assert_eq!(
             said(VolumeChange::To(20), at(20, false)),
             "TV volume to 20."

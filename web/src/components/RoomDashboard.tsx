@@ -349,7 +349,11 @@ export function RoomDashboard() {
                     info: tv.data,
                     busy: tvPower.isPending,
                     onPower: (on) => tvPower.mutate(on),
-                    onVolume: (change) => tvSound.mutate(change),
+                    // Until the speakers have answered, a room with a
+                    // Sonos cannot be told from one without.
+                    onVolume: music.isPending
+                      ? undefined
+                      : (change) => tvSound.mutate(change),
                   }
                 : undefined
             }

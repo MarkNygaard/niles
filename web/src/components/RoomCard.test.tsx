@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { RoomCard } from "@/components/RoomCard";
 import { roomsOf } from "@/lib/rooms";
-import type { Device, DeviceState } from "@/lib/api";
+import type { Device, DeviceState, RoomMusic } from "@/lib/api";
 
 function state(partial: Partial<DeviceState> = {}): DeviceState {
   return {
@@ -145,6 +145,47 @@ describe("RoomCard", () => {
     expect(screen.getByLabelText("TV on: Netflix")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
     expect(screen.getByText("Netflix")).toBeInTheDocument();
+  });
+
+  describe("the TV's volume", () => {
+    function withTv(music?: RoomMusic) {
+      const [room] = roomsOf([light("ceiling", true)]);
+      render(
+        <RoomCard
+          room={room}
+          onSetRoom={vi.fn()}
+          onSetLight={vi.fn()}
+          onSetBlinds={vi.fn()}
+          music={music}
+          tv={{
+            info: {
+              configured: true,
+              paired: true,
+              mac: null,
+              room: "kitchen",
+              status: { on: true, app: "Netflix", volume: 12, muted: false },
+              error: null,
+            },
+            onPower: vi.fn(),
+            onVolume: vi.fn(),
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^Lights in / }));
+    }
+
+    it("is in the room's view where the TV is the only speaker", () => {
+      withTv();
+      expect(screen.getByRole("slider", { name: "TV volume" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Mute the TV" })).toBeInTheDocument();
+    });
+
+    it("is not where a Sonos plays the TV's sound", () => {
+      withTv({ room: "kitchen", playing: true, what: null, kind: "tv", volume: 30 });
+      expect(screen.getByText("Netflix")).toBeInTheDocument();
+      expect(screen.queryByRole("slider", { name: "TV volume" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Mute the TV" })).toBeNull();
+    });
   });
 
   it("has no TV mark where there is no TV", () => {

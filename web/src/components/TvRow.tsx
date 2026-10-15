@@ -27,10 +27,15 @@ export function tvOn(tv?: TvInfo): boolean {
   return Boolean(tv?.status?.on);
 }
 
-/** The TV's own volume, while it is on and says what it is. */
+/**
+ * The TV's own volume, while it is on, says what it is, and its sound
+ * comes out of its own speakers. Sent to a soundbar, the number is the
+ * TV's and not what anyone hears. Only newer TVs say where it goes.
+ */
 export function tvVolume(tv?: TvInfo): TvVolume | null {
   const status = tv?.status;
   if (!status?.on || typeof status.volume !== "number") return null;
+  if (status.sound_output && status.sound_output !== "tv_speaker") return null;
   return { volume: status.volume, muted: Boolean(status.muted) };
 }
 
