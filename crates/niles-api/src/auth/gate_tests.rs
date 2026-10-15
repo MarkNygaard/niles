@@ -117,6 +117,37 @@ fn get_with(uri: &str, name: header::HeaderName, value: &str) -> Request<Body> {
 
 const ONE_PERSON: &str = r#"allowed = [{ email = "mark@example.com" }]"#;
 
+// Both found in an outside review: `Accept` is the caller's to set, and
+// saying it took HTML used to walk straight past the gate into any route.
+#[tokio::test]
+async fn asking_for_html_does_not_open_the_api() {
+    let app = app_allowing(ONE_PERSON, None);
+    let request = get_with("/config", header::ACCEPT, "text/html");
+    let response = app.oneshot(request).await.unwrap();
+    // The sign-in page, or nothing at all — never the config.
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&body).contains("\"effective\""),
+        "the config leaked"
+    );
+}
+
+#[tokio::test]
+async fn asking_for_html_does_not_let_a_change_through() {
+    let app = app_allowing(ONE_PERSON, None);
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/config")
+        .header(header::ACCEPT, "text/html")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"lighting":{"daytime_brightness":42}}"#))
+        .unwrap();
+    let (status, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "write result: {body}");
+}
+
 #[tokio::test]
 async fn nobody_listed_means_everything_is_open() {
     // A fresh install has to be usable, or there is no way to add the
