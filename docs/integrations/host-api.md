@@ -1,8 +1,10 @@
 # Host API
 
-> v0.1 of the interface, as Niles 0.2.0 runs it. The examples compile
-> against [`niles-integration.wit`](../../schemas/niles-integration.wit) with
-> `wit-bindgen` 0.63; the WIT file is the authority.
+> Interface 0.2, as Niles 0.2.0 runs it: 0.1 plus [`mqtt`](#mqtt) and its two
+> exports. The examples compile against
+> [`niles-integration.wit`](../../schemas/niles-integration.wit) with
+> `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for 0.1
+> has everything here but MQTT.
 
 A plugin **imports** functions Niles provides and **exports** functions Niles
 calls. Examples are Rust; in JavaScript and Python the names are the same in
@@ -84,6 +86,14 @@ fn on_event(event: Event) {
 
 Pages and widgets. See [pages and widgets](ui.md).
 
+### `on-mqtt-message(conn, topic, payload)` and `on-mqtt-status(conn, status)`
+
+New in 0.2. A message on a topic one of your MQTT subscriptions matches, and
+a change in a connection's state: `connected`, `disconnected(why)` while Niles
+reconnects, `failed(why)` when it stopped trying, `certificate-changed` when a
+device's certificate is not the one trusted before. A plugin that uses no MQTT
+still exports both, empty. See [MQTT](mqtt.md).
+
 ### `stop()`
 
 The instance is about to go: Niles is stopping, or the plugin is being
@@ -141,7 +151,10 @@ for key in storage::list_keys("day:") {
 ```
 
 Keys up to 256 bytes. All keys and values together up to 1 MiB; a `set` that
-would go over fails with `HostError::Limit`. Store JSON with `serde_json` when
+would go over fails with `HostError::Limit`. Keys starting with `.niles/` are
+Niles's own, kept for your plugin (the certificates [MQTT](mqtt.md) trusts):
+they are not listed, and reading or writing one fails, but they count towards
+the 1 MiB. Store JSON with `serde_json` when
 you need structure. `list_keys` returns keys in sorted order, so date-stamped
 keys (`day:2026-10-14`) list oldest first.
 
@@ -294,6 +307,38 @@ ui::invalidate("electricity");
 which asks every app showing that surface to render it again. Cheap; see
 [pages and widgets](ui.md#refresh).
 
+### `mqtt`
+
+New in 0.2. Connections to the brokers your manifest's `mqtt` permission
+names, held by Niles: it reconnects with a backoff and subscribes again, and
+nothing here waits on the network.
+
+```rust
+use niles::integration::mqtt::{self, ConnectOptions, Qos};
+use niles::integration::types::HostError;
+
+let conn = mqtt::connect("printer", &ConnectOptions {
+    client_id: None,
+    username: Some("bblp".into()),
+    password: config::secret("access_code"),
+    keep_alive: None,
+    clean_session: None,
+})
+.map_err(|e| format!("{e:?}"))?;
+let fail = |e: HostError| format!("{e:?}");
+mqtt::subscribe(conn, "device/+/report", Qos::AtMostOnce, false).map_err(fail)?;
+let pushall = br#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#;
+mqtt::publish(conn, "device/01S00A/request", pushall, Qos::AtMostOnce, false).map_err(fail)?;
+mqtt::unsubscribe(conn, "device/+/report").map_err(fail)?;
+mqtt::accept_certificate(conn).map_err(fail)?; // only after asking the household
+mqtt::disconnect(conn);
+```
+
+At most 4 connections, 64 subscriptions each, 256 KiB a message, 20 publishes
+a second. `publish` fails with `unavailable` while the connection is down.
+The full story, with the address rules and `trust-device` certificates, is in
+[MQTT](mqtt.md).
+
 ### WASI
 
 Toolchains import parts of WASI 0.2 whether you use them or not, so Niles
@@ -304,8 +349,8 @@ sockets and DNS (refused), `std::process`, threads.
 
 ## Coming later
 
-Not in v0.1, and sketched in
-[ARCHITECTURE.md](../../ARCHITECTURE.md#the-interface) for 0.2:
+Not yet, and sketched in
+[ARCHITECTURE.md](../../ARCHITECTURE.md#the-interface):
 
 - **WebSockets**, held by Niles, which reconnects them and delivers each
   message to a new export, for devices and services that push.

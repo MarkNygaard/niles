@@ -1,7 +1,7 @@
 # Writing an integration
 
-> **Specification only.** The plugin interface is at v0.1 and Niles cannot run
-> plugins yet.
+> The plugin interface is at v0.2 (v0.1 plus MQTT), and Niles 0.2.0 runs and
+> installs plugins.
 
 Third-party integrations are WebAssembly components installed from a GitHub
 release. They add devices, tools for the assistant, and pages and widgets in
@@ -16,6 +16,7 @@ The guide for authors lives beside this site, in `docs/integrations/`:
 - [Devices](https://github.com/MarkNygaard/niles/blob/main/docs/integrations/devices.md)
 - [Tools](https://github.com/MarkNygaard/niles/blob/main/docs/integrations/tools.md)
 - [Pages and widgets](https://github.com/MarkNygaard/niles/blob/main/docs/integrations/ui.md)
+- [MQTT](https://github.com/MarkNygaard/niles/blob/main/docs/integrations/mqtt.md)
 - [Permissions](https://github.com/MarkNygaard/niles/blob/main/docs/integrations/permissions.md)
 - [Publishing](https://github.com/MarkNygaard/niles/blob/main/docs/integrations/publishing.md)
 - [Worked example: spot prices](https://github.com/MarkNygaard/niles/blob/main/docs/integrations/example-spotprice.md)

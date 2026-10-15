@@ -1,6 +1,6 @@
 # Getting started
 
-> v0.1 of the interface. `niles plugin dev`, `niles plugin check`,
+> Interface 0.2. `niles plugin dev`, `niles plugin check`,
 > installing from GitHub, and the plugin's setup panel, log, pages and widgets
 > in the app are built (Niles 0.2.0). Not yet: `niles plugin dev --live`, and
 > the template repo, which will be published alongside it.
@@ -35,7 +35,7 @@ It holds:
 ```
 niles-integration.toml       # the manifest: id, name, settings, permissions
 logo.svg                     # 24x24 mark shown on the Integrations page
-wit/niles-integration.wit    # the interface, copied from Niles at v0.1.0
+wit/niles-integration.wit    # the interface, copied from Niles at v0.2.0
 src/lib.rs                   # every export stubbed out
 Cargo.toml                   # crate-type = ["cdylib"], wit-bindgen
 dev-settings.toml            # setting values for local runs (gitignored)
@@ -73,6 +73,8 @@ impl Guest for MyPlugin {
     }
     fn on_timer(_id: String) {}
     fn on_event(_event: Event) {}
+    fn on_mqtt_message(_conn: u32, _topic: String, _payload: Vec<u8>) {}
+    fn on_mqtt_status(_conn: u32, _status: ConnectionStatus) {}
     fn render(_surface_id: String, _context: RenderContext) -> Result<UiTree, String> {
         Err("No pages.".into())
     }
@@ -93,9 +95,10 @@ impl Guest for MyPlugin {
 - `Guest`, the trait with one method per export, and `export!`, which wires
   your type to it;
 - one module per import, under `niles::integration::`: `log`, `config`,
-  `storage`, `http`, `devices`, `timers`, `events`, `notify`, `ui`;
+  `storage`, `http`, `devices`, `timers`, `events`, `notify`, `ui`, `mqtt`;
 - the types the exports use (`DeviceState`, `Event`, `ToolDef`,
-  `RenderContext`, `UiTree`, `ActionValue`, `ActionResult`) at the crate root.
+  `RenderContext`, `UiTree`, `ActionValue`, `ActionResult`,
+  `ConnectionStatus`) at the crate root.
   Other types come from their interface, e.g. `niles::integration::types::Device`.
 
 Every export must be there; return an empty list or an error from the ones you
@@ -177,7 +180,8 @@ niles plugin check .
 release exactly as an install would download it) checks everything an install
 would: the manifest (including its surfaces,
 settings and permissions), the logo, that the component targets
-`niles:integration/plugin@0.1.x` and exports every function, and its tools'
+the world its manifest's `interface` names (`niles:integration/plugin@0.2.x`)
+and exports every function, and its tools'
 names, descriptions and schemas, asked for with `tools()` before any `init`,
 and that there are keywords if there are tools. Fix whatever it reports before
 you publish; it exits non-zero while there is anything to fix.

@@ -1,9 +1,10 @@
 # The manifest
 
-> v0.1 of the interface. Niles 0.2.0 runs it and installs it from GitHub:
-> the runtime, `niles plugin check`, `niles plugin dev`, Add from GitHub with
-> its approval screen, updates, rollback, turning off and removing, and in the
-> app the generated setup panel, the plugin's log, and its pages and widgets.
+> Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
+> installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
+> dev`, Add from GitHub with its approval screen, updates, rollback, turning
+> off and removing, and in the app the generated setup panel, the plugin's
+> log, and its pages and widgets.
 
 Every plugin has a `niles-integration.toml` at the root of its repo, attached
 to each release. Niles reads it before downloading anything else: it decides
@@ -23,7 +24,7 @@ A complete example is in the [worked example](example-spotprice.md#the-manifest)
 | `authors` | yes | List of `"Name <email>"` or `"Name"`. |
 | `homepage` | no | Usually the repo. Linked from the setup panel. |
 | `min_niles` | yes | The oldest Niles version it runs on. Niles 0.2.0 is the first with plugins, so `"0.2.0"` or later. |
-| `interface` | yes | The `niles:integration` version the component targets: `"0.1"`. |
+| `interface` | yes | The `niles:integration` version the component targets: `"0.2"`, or `"0.1"` for a plugin built before MQTT. It must match the WIT the component was built with. |
 | `group` | no | Where it sits on the Integrations page. See [Groups](#groups). |
 | `logo` | no | Path of an SVG in the release, normally `"logo.svg"`. See [Logo](#logo). |
 | `memory_mb` | no | Memory cap, 64 by default, at most 256. JavaScript and Python plugins want 128. |
@@ -106,9 +107,13 @@ tools = true
 events = ["device_state", "device_action", "presence"]
 notify = true            # or "urgent"
 ui = true
+mqtt = [                 # interface 0.2
+    { name = "printer", host = "setting:address", port = 8883, tls = "trust-device" },
+]
 ```
 
-All are optional; leave out what you do not use.
+All are optional; leave out what you do not use. `mqtt` needs
+`interface = "0.2"`; see [MQTT](mqtt.md#declaring-a-broker) for its fields.
 
 ## Settings
 
@@ -210,7 +215,10 @@ refresh_every = 300
 
 At install and in `niles plugin check`: every required field is present and
 well-formed; `version` matches the release tag; `interface` is one this Niles
-runs and `min_niles` is not newer than it; `id` is free; settings keys are
+runs and `min_niles` is not newer than it, and the component was built for
+that interface; `mqtt` brokers have unique names, a `setting:` that names a
+string setting, and `trust-device` or `none` only for home-network addresses;
+`id` is free; settings keys are
 unique and defaults match their types; `keywords` exist if the component
 returns tools; surface ids are unique and `[a-z0-9_]+`; icons are Lucide names;
 the logo passes sanitising.

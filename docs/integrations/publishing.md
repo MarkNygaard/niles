@@ -1,6 +1,6 @@
 # Publishing
 
-> v0.1 of the interface. `niles plugin check` and installing, updating and
+> Interface 0.2, and 0.1. `niles plugin check` and installing, updating and
 > rolling back from GitHub releases are built (Niles 0.2.0), as described
 > here.
 
@@ -136,18 +136,38 @@ anyone who installed it; publish a new release instead.
 
 ## Which Niles versions you support
 
-- `interface = "0.1"` in the manifest and the WIT your component was built
-  with say which interface you target. A Niles that runs 0.1 runs any
-  `0.1.x` component; patch versions of the interface only add.
-- When interface 0.2 comes, Niles runs 0.1 plugins beside 0.2 ones for at
-  least six months, marked "built for an older Niles". Rebuild against the new
-  WIT within that time.
+- `interface = "0.2"` in the manifest and the WIT your component was built
+  with say which interface you target, and they must agree: Niles reads the
+  version your component's imports carry, and refuses a component built for
+  0.2 under a manifest that says 0.1, or the reverse. A Niles that runs 0.2
+  runs any `0.2.x` component; patch versions of the interface only add.
 - `min_niles` is the oldest Niles your plugin needs: raise it when you use a
-  function or UI node added in a later 0.1.x.
+  function or UI node added in a later 0.2.x.
+
+### Interface versions
+
+| Interface | Niles | What changed |
+|---|---|---|
+| 0.2 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |
+| 0.1 | 0.2.0 | The first. |
+
+Niles runs plugins built for the previous interface beside the current one
+for at least six months, and their panel says "Built for an older Niles".
+Moving a plugin from 0.1 to 0.2 takes a copy of the new
+[WIT](../../schemas/niles-integration.wit), `interface = "0.2"`, and the two
+new exports, empty if you use no MQTT:
+
+```rust
+fn on_mqtt_message(_conn: u32, _topic: String, _payload: Vec<u8>) {}
+fn on_mqtt_status(_conn: u32, _status: ConnectionStatus) {}
+```
+
+The 0.1 interface is kept, frozen, as
+[`niles-integration-0.1.wit`](../../schemas/niles-integration-0.1.wit).
 
 ## Private repos, and GitHub's limit
 
-Not in v0.1. Installing from a private repo needs a GitHub token in Niles,
+Not yet. Installing from a private repo needs a GitHub token in Niles,
 which is planned but not specified. Without a token GitHub allows 60 API
 requests an hour from one address: a preview takes one or two, an update check
 one per plugin. When the limit is reached Niles says so, with the time it

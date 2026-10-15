@@ -657,8 +657,8 @@ interface mqtt {
         disconnected(string),
         /// Niles stopped trying: the broker refused the username or
         /// password, the address is not one the manifest allows, or the
-        /// certificate is not valid for it. Call `connect` again once
-        /// something has changed.
+        /// certificate is not valid for it. `disconnect` it, and
+        /// `connect` again once something has changed.
         failed(string),
         /// The device's certificate changed. Nothing was sent to it, and
         /// Niles stops trying until `accept-certificate`. A firmware

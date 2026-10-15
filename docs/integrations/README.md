@@ -1,7 +1,7 @@
 # Writing a Niles integration
 
-> **v0.1 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
-> every host interface, devices, tools, timers, events, pages) and installs
+> **v0.2 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
+> every host interface, devices, tools, timers, events, pages, MQTT) and installs
 > them: **Add from GitHub** with its approval screen, update checks, updates
 > that show what changes in permissions and roll back by themselves if the new
 > version fails, turning off and removing, and the `niles plugin check` and
@@ -11,7 +11,8 @@
 > `niles plugin dev --live`, which would run a plugin on a running Niles. The
 > interface
 > ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) is
-> v0.1; see [versioning](publishing.md) for what may change.
+> v0.2, which is v0.1 plus MQTT; Niles still runs plugins built for 0.1. See
+> [versioning](publishing.md#interface-versions) for what may change.
 
 Niles is an open-source home assistant, written in Rust, that you talk to. It
 runs the lights, music, heating and calendars of one house, and it hands
@@ -32,7 +33,7 @@ installs it by pasting your repo's URL into the app.
 - **WIT** (WebAssembly Interface Type) is the language those declarations are
   written in. Niles's is one file,
   [`niles-integration.wit`](../../schemas/niles-integration.wit): package
-  `niles:integration@0.1.0`, world `plugin`. A *world* is the full contract,
+  `niles:integration@0.2.0`, world `plugin`. A *world* is the full contract,
   what you import and what you export. You do not write WIT; you read it, and a
   bindings generator turns it into types and functions in your language.
 - **`cargo-component`** and **`wit-bindgen`** are the Rust tools that do that
@@ -59,13 +60,17 @@ installs it by pasting your repo's URL into the app.
   chime, quiet hours and recall as Niles's own.
 - **Reactions to the house.** Subscribe to device changes, button presses and
   whether anyone is home.
+- **Devices that speak MQTT.** A 3D printer, Tasmota and Shelly plugs, the
+  household's own broker: Niles holds the connection and hands your plugin
+  each message.
 
 ## What you cannot do
 
 A plugin runs in a sandbox. It cannot read Niles's database, other
 integrations' passwords, conversations, memory or the people in the house. It
 has no filesystem, no environment variables and no sockets; the only network
-access is HTTP to the hosts your manifest declares. It cannot put HTML or
+access is HTTP to the hosts your manifest declares, and MQTT to the brokers it
+names. It cannot put HTML or
 script into the app. See [permissions](permissions.md).
 
 ## Where it shows up
@@ -98,9 +103,10 @@ hides and moves them in Settings → Menu like the built-in ones. People find
 | Add a widget to the front page or a room card | `[[ui.widgets]]`, same exports | `ui = true` | [UI](ui.md) |
 | Speak through the satellites | `notify.say` | `notify = true` or `"urgent"` | [host API](host-api.md#notify) |
 | React to other devices or presence | `events.subscribe` → `on-event` | `events = [...]` | [host API](host-api.md#events) |
+| Talk to an MQTT device or broker | `mqtt.connect`, `subscribe`, `publish` → `on-mqtt-message`, `on-mqtt-status` | `mqtt = [{ name, host, tls }]` (0.2) | [MQTT](mqtt.md) |
 | Log | `log.log` | none | [host API](host-api.md#log) |
 
-Not in v0.1: raw TCP or UDP, WebSockets, and a page that runs your own HTML.
+Not yet: raw TCP or UDP, WebSockets, and a page that runs your own HTML.
 See [host API](host-api.md#coming-later).
 
 ## The guide
@@ -111,9 +117,10 @@ See [host API](host-api.md#coming-later).
 4. [Devices](devices.md): classes, state fields and units, controllable devices, naming
 5. [Tools](tools.md): designing tools the AI uses well
 6. [Pages and widgets](ui.md): the declarative UI
-7. [Permissions](permissions.md): what each one allows and how the household sees it
-8. [Publishing](publishing.md): release layout, versioning, updates
-9. [Worked example: spot prices](example-spotprice.md): a complete plugin in Rust,
+7. [MQTT](mqtt.md): brokers, `trust-device` certificates, a printer as the example
+8. [Permissions](permissions.md): what each one allows and how the household sees it
+9. [Publishing](publishing.md): release layout, versioning, updates
+10. [Worked example: spot prices](example-spotprice.md): a complete plugin in Rust,
    with the same tool in JavaScript and Python
 
 The design and its reasoning are in
