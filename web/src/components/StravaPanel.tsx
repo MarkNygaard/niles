@@ -3,13 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
   Dialog,
   DialogBody,
   DialogContent,
@@ -62,7 +55,7 @@ type Confirming = "disconnect" | "remove" | null;
  * used by the athlete who made it. Its secret is kept sealed and never
  * shown again; the card only says whether one is saved.
  */
-export function StravaCard() {
+export function StravaPanel() {
   const queryClient = useQueryClient();
   const status = useQuery({
     queryKey: STRAVA,
@@ -106,14 +99,8 @@ export function StravaCard() {
 
   const s = status.data;
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Strava</CardTitle>
-        <CardDescription>
-          Your workouts, from your own Strava. Yours alone: Niles reads them only for you.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
+    <>
+      <div className="flex flex-col gap-5">
         {outcome && (
           <p
             role="status"
@@ -173,7 +160,7 @@ export function StravaCard() {
           </>
         )}
         {error && !confirming && <p className="text-destructive text-sm">{error}</p>}
-      </CardContent>
+      </div>
       <Confirm
         what={confirming}
         busy={busy}
@@ -185,7 +172,7 @@ export function StravaCard() {
           setConfirming(null);
         }}
       />
-    </Card>
+    </>
   );
 }
 

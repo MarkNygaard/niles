@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECT_URL, StravaCard, outcomeOf, syncText } from "@/components/StravaCard";
+import { CONNECT_URL, StravaPanel, outcomeOf, syncText } from "@/components/StravaPanel";
 import { api } from "@/lib/api";
 import type { StravaStatus } from "@/lib/api";
 
@@ -34,12 +34,12 @@ function renderCard() {
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <StravaCard />
+      <StravaPanel />
     </QueryClientProvider>,
   );
 }
 
-describe("StravaCard", () => {
+describe("StravaPanel", () => {
   const writeText = vi.fn();
 
   beforeEach(() => {
