@@ -3,10 +3,12 @@
 //!
 //! Three tables, created on first use:
 //!
-//! - `plugins`: the approved manifest, where it came from, the
-//!   component's bytes and sha256, the version before it (kept for one
-//!   rollback), and whether it is enabled. A restart never downloads
-//!   anything: what was approved is what runs.
+//! - `plugins`: the approved manifest, where it came from (the repo, the
+//!   release's tag and page), the component's bytes and sha256, the
+//!   manifest's sha256, the sanitised logo, the version before it (kept
+//!   for one rollback), whether it is enabled, and the newer release the
+//!   last update check found. A restart never downloads anything: what
+//!   was approved is what runs.
 //! - `plugin_storage`: the plugin's own key-value store, 1 MiB each.
 //! - `plugin_devices`: the devices it registered, so they stay in their
 //!   rooms, unavailable, while the plugin is stopped, and the rules that
@@ -34,6 +36,16 @@ create table if not exists plugins (
     installed_at       timestamptz not null default now(),
     updated_at         timestamptz not null default now()
 );
+-- Added with installing from GitHub, after the table shipped.
+alter table plugins add column if not exists release_tag text;
+alter table plugins add column if not exists release_url text;
+alter table plugins add column if not exists manifest_sha256 text;
+alter table plugins add column if not exists logo text;
+alter table plugins add column if not exists previous_release_tag text;
+alter table plugins add column if not exists previous_release_url text;
+alter table plugins add column if not exists previous_manifest_sha256 text;
+alter table plugins add column if not exists previous_logo text;
+alter table plugins add column if not exists update_available text;
 create table if not exists plugin_storage (
     plugin_id text not null references plugins (id) on delete cascade,
     key       text not null,
@@ -51,16 +63,50 @@ create table if not exists plugin_devices (
 );
 ";
 
-/// An installed plugin, as kept.
+/// A plugin's manifest and component, to start it.
 #[derive(Debug, Clone)]
 pub struct PluginRow {
     pub id: String,
     pub manifest: String,
-    pub repo: Option<String>,
     pub version: String,
     pub component: Vec<u8>,
     pub sha256: String,
+}
+
+/// What an approved install or update writes.
+#[derive(Debug, Clone, Copy)]
+pub struct PluginInstall<'a> {
+    pub id: &'a str,
+    pub version: &'a str,
+    pub manifest: &'a str,
+    pub component: &'a [u8],
+    /// The sanitised SVG.
+    pub logo: Option<&'a str>,
+    /// `https://github.com/<owner>/<repo>`; none for a plugin installed
+    /// from a file.
+    pub repo: Option<&'a str>,
+    pub release_tag: Option<&'a str>,
+    pub release_url: Option<&'a str>,
+}
+
+/// An installed plugin as listed: everything but the component's bytes.
+#[derive(Debug, Clone)]
+pub struct PluginMeta {
+    pub id: String,
+    pub manifest: String,
+    pub version: String,
+    pub repo: Option<String>,
+    pub release_tag: Option<String>,
+    pub release_url: Option<String>,
+    pub sha256: String,
+    pub manifest_sha256: Option<String>,
+    pub has_logo: bool,
     pub enabled: bool,
+    pub installed_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub previous_version: Option<String>,
+    /// What the last update check found, as its caller wrote it.
+    pub update_available: Option<String>,
 }
 
 /// A device Niles holds for a plugin.
@@ -115,67 +161,189 @@ impl PostgresPlugins {
     pub async fn enabled(&self) -> Result<Vec<PluginRow>, String> {
         self.ensure_schema().await?;
         let rows = sqlx::query(
-            "select id, manifest, repo, version, component, sha256, enabled
+            "select id, manifest, version, component, sha256
              from plugins where enabled order by installed_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(rows.iter().map(plugin_row).collect())
+    }
+
+    /// Every installed plugin, enabled or not, oldest install first.
+    pub async fn all(&self) -> Result<Vec<PluginMeta>, String> {
+        self.ensure_schema().await?;
+        let rows = sqlx::query(
+            "select id, manifest, version, repo, release_tag, release_url, sha256,
+                    manifest_sha256, logo is not null as has_logo, enabled,
+                    installed_at, updated_at, previous_version, update_available
+             from plugins order by installed_at, id",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;
         Ok(rows
             .iter()
-            .map(|r| PluginRow {
+            .map(|r| PluginMeta {
                 id: r.get("id"),
                 manifest: r.get("manifest"),
-                repo: r.get("repo"),
                 version: r.get("version"),
-                component: r.get("component"),
+                repo: r.get("repo"),
+                release_tag: r.get("release_tag"),
+                release_url: r.get("release_url"),
                 sha256: r.get("sha256"),
+                manifest_sha256: r.get("manifest_sha256"),
+                has_logo: r.get("has_logo"),
                 enabled: r.get("enabled"),
+                installed_at: r.get("installed_at"),
+                updated_at: r.get("updated_at"),
+                previous_version: r.get("previous_version"),
+                update_available: r.get("update_available"),
             })
             .collect())
     }
 
+    /// One plugin's manifest and component, enabled or not.
+    pub async fn package(&self, id: &str) -> Result<Option<PluginRow>, String> {
+        self.ensure_schema().await?;
+        let row = sqlx::query(
+            "select id, manifest, version, component, sha256 from plugins where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(row.as_ref().map(plugin_row))
+    }
+
     /// Add a plugin, or replace one with the same id and keep what it
-    /// replaced as the previous version. Enabled either way.
+    /// replaced as the previous version. Enabled either way, and the
+    /// update the last check found is forgotten: this is it, or newer.
     ///
     /// Internal: what an approved install writes. Nothing here checks
     /// the manifest or the component; the caller has.
-    pub async fn install(
-        &self,
-        id: &str,
-        version: &str,
-        manifest: &str,
-        repo: Option<&str>,
-        component: &[u8],
-    ) -> Result<(), String> {
+    pub async fn install(&self, plugin: &PluginInstall<'_>) -> Result<(), String> {
         self.ensure_schema().await?;
-        let sha256 = hex_digest(component);
         sqlx::query(
-            "insert into plugins (id, manifest, repo, version, component, sha256)
-             values ($1, $2, $3, $4, $5, $6)
+            "insert into plugins (id, manifest, repo, version, component, sha256,
+                                  manifest_sha256, logo, release_tag, release_url)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              on conflict (id) do update set
                  previous_version = plugins.version,
                  previous_manifest = plugins.manifest,
                  previous_component = plugins.component,
                  previous_sha256 = plugins.sha256,
+                 previous_manifest_sha256 = plugins.manifest_sha256,
+                 previous_logo = plugins.logo,
+                 previous_release_tag = plugins.release_tag,
+                 previous_release_url = plugins.release_url,
                  manifest = excluded.manifest,
                  repo = excluded.repo,
                  version = excluded.version,
                  component = excluded.component,
                  sha256 = excluded.sha256,
+                 manifest_sha256 = excluded.manifest_sha256,
+                 logo = excluded.logo,
+                 release_tag = excluded.release_tag,
+                 release_url = excluded.release_url,
+                 update_available = null,
                  enabled = true,
                  updated_at = now()",
         )
-        .bind(id)
-        .bind(manifest)
-        .bind(repo)
-        .bind(version)
-        .bind(component)
-        .bind(&sha256)
+        .bind(plugin.id)
+        .bind(plugin.manifest)
+        .bind(plugin.repo)
+        .bind(plugin.version)
+        .bind(plugin.component)
+        .bind(hex_digest(plugin.component))
+        .bind(hex_digest(plugin.manifest.as_bytes()))
+        .bind(plugin.logo)
+        .bind(plugin.release_tag)
+        .bind(plugin.release_url)
         .execute(&self.pool)
         .await
         .map(|_| ())
         .map_err(|e| self.storage(e))
+    }
+
+    /// Put the previous version back in place of the current one, which
+    /// is not kept: a rollback happens once. `None` when there is no
+    /// previous version.
+    pub async fn roll_back(&self, id: &str) -> Result<Option<PluginRow>, String> {
+        self.ensure_schema().await?;
+        let row = sqlx::query(
+            "update plugins set
+                 version = previous_version,
+                 manifest = previous_manifest,
+                 component = previous_component,
+                 sha256 = previous_sha256,
+                 manifest_sha256 = previous_manifest_sha256,
+                 logo = previous_logo,
+                 release_tag = previous_release_tag,
+                 release_url = previous_release_url,
+                 previous_version = null,
+                 previous_manifest = null,
+                 previous_component = null,
+                 previous_sha256 = null,
+                 previous_manifest_sha256 = null,
+                 previous_logo = null,
+                 previous_release_tag = null,
+                 previous_release_url = null,
+                 update_available = null,
+                 updated_at = now()
+             where id = $1 and previous_component is not null
+             returning id, manifest, version, component, sha256",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(row.as_ref().map(plugin_row))
+    }
+
+    /// False when there is no such plugin.
+    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool, String> {
+        self.ensure_schema().await?;
+        sqlx::query("update plugins set enabled = $2 where id = $1")
+            .bind(id)
+            .bind(enabled)
+            .execute(&self.pool)
+            .await
+            .map(|done| done.rows_affected() > 0)
+            .map_err(|e| self.storage(e))
+    }
+
+    /// Record what the last update check found, or that it found nothing.
+    pub async fn set_update(&self, id: &str, update: Option<&str>) -> Result<(), String> {
+        self.ensure_schema().await?;
+        sqlx::query("update plugins set update_available = $2 where id = $1")
+            .bind(id)
+            .bind(update)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| self.storage(e))
+    }
+
+    pub async fn logo(&self, id: &str) -> Result<Option<String>, String> {
+        self.ensure_schema().await?;
+        sqlx::query_scalar::<_, Option<String>>("select logo from plugins where id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(Option::flatten)
+            .map_err(|e| self.storage(e))
+    }
+
+    /// Delete the plugin, and with it its storage and its devices.
+    pub async fn remove(&self, id: &str) -> Result<(), String> {
+        self.ensure_schema().await?;
+        sqlx::query("delete from plugins where id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| self.storage(e))
     }
 
     pub async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>, String> {
@@ -302,7 +470,17 @@ impl PostgresPlugins {
     }
 }
 
-/// The component's sha256, as lowercase hex: what an install pins.
+fn plugin_row(r: &sqlx::postgres::PgRow) -> PluginRow {
+    PluginRow {
+        id: r.get("id"),
+        manifest: r.get("manifest"),
+        version: r.get("version"),
+        component: r.get("component"),
+        sha256: r.get("sha256"),
+    }
+}
+
+/// A sha256 as lowercase hex: what an install pins.
 pub fn hex_digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()

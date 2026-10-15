@@ -13,7 +13,9 @@ wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wasmtime-wasi-http.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 bytes.workspace = true
+rand.workspace = true
 reqwest.workspace = true
 roxmltree.workspace = true
 semver.workspace = true
@@ -35,3 +37,4 @@ niles-tools.workspace = true
 tempfile.workspace = true
 niles-llm.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+wiremock = "0.6"

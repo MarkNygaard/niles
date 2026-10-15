@@ -2301,6 +2301,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "chrono",
  "niles-config",
  "niles-core",
  "niles-db",
@@ -2308,6 +2309,7 @@ dependencies = [
  "niles-mqtt",
  "niles-notifications",
  "niles-tools",
+ "rand 0.10.2",
  "reqwest",
  "roxmltree",
  "semver",
@@ -2322,6 +2324,7 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
+ "wiremock",
 ]
 
 [[package]]

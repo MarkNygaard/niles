@@ -78,6 +78,7 @@ pub(crate) fn run(
         Ok(pre) => worker.pre = Some(pre),
         Err(why) => {
             tracing::error!(plugin = %worker.plugin.id, "the component {why}");
+            worker.plugin.count_failure();
             worker
                 .plugin
                 .set_status(Status::Failing(format!("the component {why}")));
@@ -219,6 +220,7 @@ impl Worker {
     /// another after the backoff, or stop for good.
     fn failed(&mut self, export: &str, limit: Duration, error: &wasmtime::Error) {
         let reason = describe(export, limit, error);
+        self.plugin.count_failure();
         self.discard();
         let now = Instant::now();
         let hour = Duration::from_secs(3600);

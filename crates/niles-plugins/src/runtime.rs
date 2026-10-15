@@ -12,7 +12,7 @@ use crate::bindings::niles::integration::types as wit;
 use crate::error::{Error, Result};
 use crate::host::{HostState, class_to_wit, state_to_wit};
 use crate::manifest::{EventPermission, Manifest};
-use crate::store::{KnownDevice, PluginStore};
+use crate::store::{KnownDevice, Package, PluginStore};
 use crate::ui::{ActionOutcome, ActionValue, Context, Surface};
 use async_trait::async_trait;
 use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState};
@@ -182,6 +182,9 @@ pub struct PluginInfo {
     pub error: Option<String>,
     /// Events dropped because the plugin was not keeping up.
     pub dropped_events: u64,
+    /// Traps, timeouts and a component that would not load, since this
+    /// version started: what an update's rollback watches for.
+    pub failures: u64,
 }
 
 /// Why a page or an action could not be answered.
@@ -310,6 +313,7 @@ impl Runtime {
                 return 0;
             }
         };
+        self.remember_disabled().await;
         let mut started = 0;
         for plugin in installed {
             let manifest = match Manifest::parse(&plugin.manifest) {
@@ -327,22 +331,50 @@ impl Runtime {
         started
     }
 
-    /// Keep a plugin as installed and start it. Internal, for tests and
-    /// for what stage two's approval will call: nothing here asks the
-    /// household. The manifest and component are checked; a plugin
-    /// with the same id is replaced.
+    /// A disabled plugin's devices stay in their rooms, unavailable, as
+    /// they were when it was switched off, so the rules that name them
+    /// still read.
+    async fn remember_disabled(&self) {
+        let Ok(records) = self.inner.house.store.records().await else {
+            return;
+        };
+        for record in records.into_iter().filter(|r| !r.enabled) {
+            if let Ok(manifest) = Manifest::parse(&record.manifest) {
+                self.inner
+                    .remember_devices(&Plugin::new(manifest))
+                    .await;
+            }
+        }
+    }
+
+    /// Keep a plugin from a file, with no source, and start it. For
+    /// tests and development: nothing here asks the household.
     pub async fn install(&self, manifest_text: &str, component: Vec<u8>) -> Result<()> {
-        let manifest = Manifest::parse_valid(manifest_text)?;
-        if component.len() > MAX_COMPONENT {
+        self.install_package(Package {
+            manifest: manifest_text.to_string(),
+            component,
+            logo: None,
+            source: None,
+        })
+        .await
+    }
+
+    /// Keep a plugin as installed and start it: what an approved
+    /// install or update ends in. The manifest and component are checked;
+    /// a plugin with the same id is replaced, and kept as the version a
+    /// rollback goes back to.
+    pub async fn install_package(&self, package: Package) -> Result<()> {
+        let manifest = Manifest::parse_valid(&package.manifest)?;
+        if package.component.len() > MAX_COMPONENT {
             return Err(Error::Component(format!(
                 "is {} MiB; at most {} MiB",
-                component.len() / (1024 * 1024),
+                package.component.len() / (1024 * 1024),
                 MAX_COMPONENT / (1024 * 1024)
             )));
         }
         let engine = self.inner.engine.clone();
         let linker = self.inner.linker.clone();
-        let bytes = component.clone();
+        let bytes = package.component.clone();
         tokio::task::spawn_blocking(move || crate::worker::prepare(&engine, &linker, &bytes))
             .await
             .map_err(|e| Error::Component(e.to_string()))?
@@ -350,11 +382,99 @@ impl Runtime {
         self.inner
             .house
             .store
-            .install(&manifest.id, &manifest.version, manifest_text, &component)
+            .install(&manifest.id, &manifest.version, &package)
             .await
             .map_err(Error::Store)?;
         self.remove_running(&manifest.id).await;
-        self.start(manifest, component).await
+        self.start(manifest, package.component).await
+    }
+
+    /// Stop a plugin and keep it stopped across restarts. Its settings,
+    /// secrets, storage and devices stay; the devices are unavailable.
+    pub async fn disable(&self, id: &str) -> Result<()> {
+        if !self
+            .inner
+            .house
+            .store
+            .set_enabled(id, false)
+            .await
+            .map_err(Error::Store)?
+        {
+            return Err(Error::UnknownPlugin(id.to_string()));
+        }
+        self.remove_running(id).await;
+        Ok(())
+    }
+
+    /// Start a disabled plugin, and keep it starting with Niles.
+    pub async fn enable(&self, id: &str) -> Result<()> {
+        let store = &self.inner.house.store;
+        let installed = store
+            .package(id)
+            .await
+            .map_err(Error::Store)?
+            .ok_or_else(|| Error::UnknownPlugin(id.to_string()))?;
+        store.set_enabled(id, true).await.map_err(Error::Store)?;
+        if self.inner.plugins_read().contains_key(id) {
+            return Ok(());
+        }
+        self.start(Manifest::parse(&installed.manifest)?, installed.component)
+            .await
+    }
+
+    /// Put the version before the last update back, and start it. The
+    /// version it replaces is not kept.
+    pub async fn roll_back(&self, id: &str) -> Result<String> {
+        let installed = self
+            .inner
+            .house
+            .store
+            .roll_back(id)
+            .await
+            .map_err(Error::Store)?
+            .ok_or_else(|| Error::NoPrevious(id.to_string()))?;
+        let manifest = Manifest::parse(&installed.manifest)?;
+        let version = manifest.version.clone();
+        self.remove_running(id).await;
+        self.start(manifest, installed.component).await?;
+        Ok(version)
+    }
+
+    /// Stop a plugin and forget it: its devices leave the house, with an
+    /// event each, and its tools, storage and stored component go.
+    /// Settings and secrets are kept elsewhere and are the caller's.
+    pub async fn remove(&self, id: &str) -> Result<()> {
+        let store = &self.inner.house.store;
+        if store.package(id).await.map_err(Error::Store)?.is_none()
+            && !self.inner.plugins_read().contains_key(id)
+        {
+            return Err(Error::UnknownPlugin(id.to_string()));
+        }
+        self.remove_running(id).await;
+        self.inner.house.tools.remove(id);
+        let source = format!("x_{id}");
+        for device in self.inner.house.registry.list_all() {
+            if device.id.source() == source {
+                self.inner.house.registry.remove(&device.id);
+                self.inner
+                    .house
+                    .bus
+                    .publish(Event::DeviceRemoved { id: device.id });
+            }
+        }
+        store.remove(id).await.map_err(Error::Store)
+    }
+
+    pub(crate) fn store(&self) -> &Arc<dyn PluginStore> {
+        &self.inner.house.store
+    }
+
+    pub(crate) fn registry(&self) -> &Arc<DeviceRegistry> {
+        &self.inner.house.registry
+    }
+
+    pub(crate) fn dynamic_tools(&self) -> &DynamicTools {
+        &self.inner.house.tools
     }
 
     /// Run `manifest`'s component. Its devices from before are put back
@@ -676,6 +796,7 @@ pub(crate) struct Plugin {
     reports: Mutex<HashMap<DeviceId, Reported>>,
     notified: Mutex<VecDeque<Instant>>,
     log_window: Mutex<LogWindow>,
+    failures: std::sync::atomic::AtomicU64,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -723,6 +844,7 @@ impl Plugin {
                 lines: 0,
                 dropped: 0,
             }),
+            failures: Default::default(),
             thread: Mutex::default(),
         }
     }
@@ -736,7 +858,14 @@ impl Plugin {
             status: record.status.clone(),
             error: record.error.clone(),
             dropped_events: self.queue.dropped(),
+            failures: self.failures.load(std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    /// The instance trapped, timed out, or could not be made at all.
+    pub fn count_failure(&self) {
+        self.failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn status(&self) -> Status {
