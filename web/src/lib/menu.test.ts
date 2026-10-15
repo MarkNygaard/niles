@@ -76,3 +76,33 @@ describe("menuLayout", () => {
     expect(media({}, undefined)).toBe(false);
   });
 });
+
+describe("a plugin's pages in the menu", () => {
+  const pages = ["spotprice.electricity"];
+
+  it("join the main navigation after the arranged entries", () => {
+    const layout = menuLayout({ menu: { order: ["chat"] } }, undefined, pages);
+    expect(ids(layout.main).at(-1)).toBe("spotprice.electricity");
+  });
+
+  it("move and hide like the built-in ones", () => {
+    const layout = menuLayout(
+      {
+        menu: {
+          avatar: ["spotprice.electricity", "settings"],
+          hidden: ["spotprice.electricity"],
+        },
+      },
+      undefined,
+      pages,
+    );
+    expect(ids(layout.avatar)[0]).toBe("spotprice.electricity");
+    expect(layout.avatar[0].hidden).toBe(true);
+    expect(ids(layout.main)).not.toContain("spotprice.electricity");
+  });
+
+  it("are left out once their plugin is not installed", () => {
+    const layout = menuLayout({ menu: { order: ["spotprice.electricity", "chat"] } });
+    expect([...ids(layout.main), ...ids(layout.avatar)]).not.toContain("spotprice.electricity");
+  });
+});

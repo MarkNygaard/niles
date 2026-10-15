@@ -222,7 +222,7 @@ export function MediaPage() {
   if (!view) {
     return (
       <p className="text-muted-foreground text-sm">
-        The speakers did not answer. Sonos is set up under Settings → Integrations.
+        The speakers did not answer. Sonos is set up under Settings → Add-ons.
       </p>
     );
   }

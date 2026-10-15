@@ -50,7 +50,7 @@ describe("SpeakersCard", () => {
     render(
       <SpeakersCard report={{ configured: false, error: null, sonos: [] }} placed={{}} {...props} />,
     );
-    expect(screen.getByText(/Add Sonos under Integrations first/)).toBeInTheDocument();
+    expect(screen.getByText(/Add Sonos under Add-ons first/)).toBeInTheDocument();
   });
 
   it("says why when no speaker answered", () => {

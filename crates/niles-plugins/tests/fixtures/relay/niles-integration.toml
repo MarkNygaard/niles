@@ -1,0 +1,41 @@
+id = "relay"
+name = "Relay"
+version = "0.1.0"
+description = "Relays MQTT messages into a reading and back, for Niles's own tests."
+authors = ["Niles"]
+homepage = "https://github.com/MarkNygaard/niles"
+min_niles = "0.2.0"
+interface = "0.2"
+keywords = ["relay", "mqtt"]
+
+# The tests start their brokers on free ports and write them in here.
+[permissions]
+devices = true
+tools = true
+mqtt = [
+    { name = "plain", host = "setting:address", port = 18830, tls = "none" },
+    { name = "device", host = "setting:address", port = 18831, tls = "trust-device" },
+]
+
+[[settings]]
+key = "address"
+label = "Broker address"
+type = "string"
+required = true
+
+[[settings]]
+key = "broker"
+label = "Broker"
+type = "choice"
+default = "plain"
+options = [{ value = "plain", label = "Plain" }, { value = "device", label = "Its own certificate" }]
+
+[[settings]]
+key = "username"
+label = "Username"
+type = "string"
+
+[[settings]]
+key = "password"
+label = "Password"
+type = "secret"

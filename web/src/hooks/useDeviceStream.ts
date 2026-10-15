@@ -12,6 +12,9 @@ import type { Device, DeviceState } from "@/lib/api";
  * long enough for the page to be describing a room you are standing in
  * and can see is wrong. Niles already pushes every state change over
  * `/events/stream`, so take it from there and patch the cache in place.
+ *
+ * The same stream says when a plugin's page or widget has changed,
+ * which refetches it if it is on screen.
  */
 export function useDeviceStream() {
   const queryClient = useQueryClient();
@@ -45,6 +48,14 @@ export function useDeviceStream() {
           case "device_removed":
             queryClient.invalidateQueries({ queryKey: ["devices"] });
             break;
+          // A plugin has something new for a page or widget. Every
+          // room's copy is marked stale, and only those on screen are
+          // asked for again: nothing polls for this.
+          case "ui_invalidated":
+            queryClient.invalidateQueries({
+              queryKey: ["surface", event.plugin, event.surface],
+            });
+            break;
         }
       };
 
@@ -72,6 +83,7 @@ type WireEvent =
   | { type: "device_state_changed"; id: string; state: Partial<DeviceState> }
   | { type: "device_added"; id: string }
   | { type: "device_removed"; id: string }
+  | { type: "ui_invalidated"; plugin: string; surface: string }
   | { type: "ping" | "close" };
 
 function parse(raw: unknown): WireEvent | null {

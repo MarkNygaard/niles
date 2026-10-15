@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Card,
@@ -21,12 +21,17 @@ import { deviceOptions } from "@/components/DevicePicker";
 import { PeopleCard } from "@/components/PeopleCard";
 import { VoicesCard } from "@/components/VoicesCard";
 import { CaptureCard } from "@/components/CaptureCard";
-import { IntegrationsPage } from "@/components/IntegrationsPage";
-import { RoleCard } from "@/components/RoleCard";
+import { AddOnsPage } from "@/components/AddOnsPage";
+import { DevicesPage } from "@/components/DevicesPage";
+import { VoicePage, roleEntries } from "@/components/VoicePage";
+import type { Assistant, RoleState } from "@/components/VoicePage";
+import type { Role, RoleChange } from "@/components/RoleCard";
 import { SecretField } from "@/components/SecretField";
-import { SECTIONS, SettingsNav } from "@/components/SettingsNav";
+import { SECTIONS, SettingsNav, sectionId } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
-import { SetupBanner } from "@/components/SetupBanner";
+import { SetupChecklist } from "@/components/SetupChecklist";
+import { gapsFor, todoByPage } from "@/lib/setup";
+import { useRoute } from "@/lib/route";
 import { WledCard } from "@/components/WledCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
@@ -42,6 +47,7 @@ import { SettingRow } from "@/components/SettingRow";
 import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, roomOrder, valueAt } from "@/lib/api";
 import { mediaShownOf, menuLayout } from "@/lib/menu";
+import { pluginPages } from "@/lib/plugins";
 import { roomsOf } from "@/lib/rooms";
 import type { Applied, ConfigView, Revision, WledStrip } from "@/lib/api";
 import type { Satellite } from "@/components/SatellitesCard";
@@ -257,12 +263,6 @@ function routineAt(root: unknown): { enabled?: boolean; fire_days?: string[] } {
   return value && typeof value === "object" ? (value as Record<string, never>) : {};
 }
 
-/** The host out of a base URL, for the line saying what answers today. */
-function hostOf(baseUrl?: string): string | undefined {
-  const rest = baseUrl?.split("://")[1];
-  return rest ? rest.split(/[/?]/)[0] || undefined : undefined;
-}
-
 /** The satellites as `[satellites.<name>]` has them, sorted by name. */
 /** A list of strings at a dotted path, with anything else read as none. */
 function stringsAt(root: unknown, path: string): string[] {
@@ -368,6 +368,13 @@ export function ConfigPanel() {
     queryKey: ["integrations"],
     queryFn: api.integrations,
   });
+  // Answers 501 when this Niles runs no plugins: nothing to list, and
+  // nothing to retry.
+  const plugins = useQuery({
+    queryKey: ["plugins"],
+    queryFn: api.plugins,
+    retry: false,
+  });
   // Answers 501 when recognition is off, which is a fine answer and not
   // worth retrying at: an empty list then stands for "nobody", and the
   // card says separately that recognition is not running.
@@ -412,7 +419,21 @@ export function ConfigPanel() {
   // section; from `sm` both sit side by side and something has to be
   // open, so nothing lands on an empty pane.
   const phone = useMediaQuery("(max-width: 639px)");
-  const [section, setSection] = useState<string | null>(null);
+  // In the address, `#/me/settings/voice`, so a section can be linked
+  // to and the back button on a phone leaves it.
+  const route = useRoute();
+  const asked = /^\/me\/settings\/([^/]+)/.exec(route)?.[1] ?? null;
+  const section = sectionId(asked);
+  // A moved section — `integrations`, `language` — is rewritten to
+  // where it went, so the address says what the page shows.
+  useEffect(() => {
+    if (asked && section && asked !== section) {
+      window.history.replaceState(null, "", `#/me/settings/${section}`);
+    }
+  }, [asked, section]);
+  const setSection = (id: string | null) => {
+    window.location.hash = id ? `#/me/settings/${id}` : "#/me/settings";
+  };
   // The anchor list as it is being edited, drawn on the chart before it
   // is saved: a colour point is judged by the curve it makes.
   const [anchorPreview, setAnchorPreview] = useState<Anchor[] | null>(null);
@@ -505,20 +526,47 @@ export function ConfigPanel() {
   const shippedAt = (path: string) => valueAt(view.defaults, path);
   const shippedAnchors = anchorsAt(view.defaults) ?? [];
   const anchors = anchorsAt(view.effective) ?? shippedAnchors;
-  const providers =
-    (view.effective.providers as import("@/lib/api").Provider[] | undefined) ?? [];
-  /** What each provider offers for a role, from the catalogue. */
-  const modelsFor = (role: "stt" | "llm") =>
-    Object.fromEntries(
-      (integrations.data ?? [])
-        .map((i) => [i.id, i.models?.[role] ?? []] as const)
-        .filter(([, list]) => list.length > 0),
-    );
-  /** A field of a role section, as the live config has it. */
-  const roleValue = (section: "stt" | "llm", field: string) =>
-    (view.effective[section] as Record<string, unknown> | undefined)?.[field] as
-      | string
-      | undefined;
+  /** A role section, as the live config has it. */
+  const roleState = (role: Role): RoleState => {
+    const value = (field: string) =>
+      (view.effective[role] as Record<string, unknown> | undefined)?.[field] as
+        | string
+        | undefined;
+    return {
+      provider: value("provider"),
+      model: value("model"),
+      baseUrl: value("base_url"),
+      effort: value("reasoning_effort"),
+    };
+  };
+
+  /**
+   * One Save on a role card: the provider declared if it is new, the
+   * role pointed at it, then its key — after, because the provider has
+   * to be in the config before its key means anything to it.
+   */
+  async function saveRole(role: Role, change: RoleChange) {
+    const entries = roleEntries(role, change, roleState(role), integrations.data ?? []);
+    if (entries.length > 0) {
+      try {
+        await save.mutateAsync({ row: role, entries });
+      } catch {
+        // Said by the mutation, on the row.
+        return;
+      }
+    }
+    if (change.key && change.provider) {
+      try {
+        await api.setSecret(`provider.${change.provider}.api_key`, change.key);
+      } catch (error) {
+        setRowError({
+          row: role,
+          message: error instanceof ApiError ? error.message : String(error),
+        });
+      }
+      refresh();
+    }
+  }
   // Off unless turned on: a new Niles leaves the lights alone.
   const curveOn =
     ((view.effective.lighting as { enabled?: boolean } | undefined)?.enabled ??
@@ -622,14 +670,16 @@ export function ConfigPanel() {
         </Notice>
       )}
 
-      {setup.data && <SetupBanner report={setup.data} />}
-
       {/* Driven by value alone: the nav beside it is the trigger, and a
           tab bar as well would be two controls for one thing. */}
       <Tabs value={section ?? SECTIONS[0].items[0].id} onValueChange={(v) => setSection(String(v))}>
         <div className="flex flex-col gap-5 sm:flex-row sm:gap-6">
           {showNav && (
-            <SettingsNav current={phone ? null : section} onPick={setSection} />
+            <SettingsNav
+              current={phone ? null : section}
+              onPick={setSection}
+              todo={todoByPage(setup.data)}
+            />
           )}
           <div className={cn("min-w-0 flex-1", !showSection && "hidden")}>
             {phone && (
@@ -815,7 +865,8 @@ export function ConfigPanel() {
           />
         </TabsContent>
 
-        <TabsContent value="home">
+        <TabsContent value="home" className="flex flex-col gap-4">
+          <SetupChecklist gaps={gapsFor(setup.data, "home")} />
           <HomeCard
             values={{
               name: stringAt(view.effective, "home.name"),
@@ -854,7 +905,12 @@ export function ConfigPanel() {
 
         <TabsContent value="menu">
           <MenuCard
-            layout={menuLayout(view.effective)}
+            layout={menuLayout(
+              view.effective,
+              undefined,
+              pluginPages(plugins.data ?? []).map((p) => p.id),
+            )}
+            pages={pluginPages(plugins.data ?? [])}
             mediaShown={mediaShownOf(view.effective)}
             onMediaShown={(shown) =>
               save.mutate({ row: "menu", entries: [{ path: "menu.media", value: shown }] })
@@ -1000,111 +1056,79 @@ export function ConfigPanel() {
           <MemoryCard />
         </TabsContent>
 
-        <TabsContent value="language" className="flex flex-col gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Speech &amp; language</CardTitle>
-              <CardDescription>
-                Which provider does each job, and with which model. The two go
-                together: a model name is not portable between providers.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="divide-border flex flex-col gap-5 divide-y">
-              <RoleCard
-                role="stt"
-                title="Speech-to-text"
-                description="Turns what a satellite heard into words."
-                providers={providers}
-                current={roleValue("stt", "provider")}
-                model={roleValue("stt", "model") ?? ""}
-                fallbackHost={hostOf(roleValue("stt", "base_url"))}
-                defaultModel={stringAt(view.defaults, "stt.model")}
-                models={modelsFor("stt")}
-                saving={save.isPending}
-                onSave={(change) =>
-                  save.mutate({
-                    row: "stt",
-                    entries: [
-                      { path: "stt.provider", value: change.provider ?? null },
-                      { path: "stt.model", value: change.model },
-                    ],
-                  })
-                }
-              />
-              <label className="flex items-center justify-between gap-4 pt-5">
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium">
-                    Only when it hears its name
-                  </span>
-                  <span className="text-muted-foreground block text-xs">
-                    Ignore a wake unless what was heard starts with
-                    &ldquo;Niles&rdquo; &mdash; the television that set the
-                    satellite off almost never says it. Best with ElevenLabs,
-                    which spells the name right.
-                  </span>
-                </span>
-                <Switch
-                  aria-label="Only when it hears its name"
-                  checked={valueAt(view.effective, "stt.require_name") === true}
-                  disabled={save.isPending}
-                  onCheckedChange={(next: boolean) =>
-                    save.mutate({
-                      row: "stt",
-                      entries: [{ path: "stt.require_name", value: next }],
-                    })
-                  }
-                />
-              </label>
-              {row(LANGUAGE_ROW)}
-              <div className="pt-5">
-                <RoleCard
-                  role="llm"
-                  title="Language model"
-                  description="Answers anything a pattern cannot."
-                  providers={providers}
-                  current={roleValue("llm", "provider")}
-                  model={roleValue("llm", "model") ?? ""}
-                  effort={roleValue("llm", "reasoning_effort")}
-                  fallbackHost={hostOf(roleValue("llm", "base_url"))}
-                  defaultModel={stringAt(view.defaults, "llm.model")}
-                  models={modelsFor("llm")}
-                  saving={save.isPending}
-                  onSave={(change) =>
-                    save.mutate({
-                      row: "llm",
-                      entries: [
-                        { path: "llm.provider", value: change.provider ?? null },
-                        { path: "llm.model", value: change.model },
-                        {
-                          path: "llm.reasoning_effort",
-                          value: change.effort ?? null,
-                        },
-                      ],
-                    })
-                  }
-                />
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Spoken replies</CardTitle>
-              <CardDescription>
-                What a satellite says back is spoken by Piper, which runs in
-                the house rather than in somebody else&apos;s cloud.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="divide-border divide-y">
-              {TTS_ROWS.map(row)}
-            </CardContent>
-          </Card>
+        <TabsContent value="devices">
+          <DevicesPage
+            mqtt={(valueAt(view.effective, "mqtt") as MqttSettings | undefined) ?? {}}
+            defaults={(valueAt(view.defaults, "mqtt") as MqttSettings | undefined) ?? {}}
+            username={secrets.data?.secrets.find((s) => s.key === "mqtt.username")}
+            password={secrets.data?.secrets.find((s) => s.key === "mqtt.password")}
+            writable={secrets.data?.writable ?? false}
+            devices={devices.data?.length}
+            gaps={gapsFor(setup.data, "devices")}
+            saving={save.isPending}
+            error={rowError?.row === "mqtt" ? rowError.message : undefined}
+            onChange={(entries) => save.mutate({ row: "mqtt", entries })}
+            onSecretsChanged={() => {
+              secrets.refetch();
+              queryClient.invalidateQueries({ queryKey: ["setup"] });
+            }}
+          />
         </TabsContent>
 
-        <TabsContent value="integrations">
-          <IntegrationsPage
-            mqtt={valueAt(view.effective, "mqtt") as MqttSettings | undefined}
-            mqttDefaults={valueAt(view.defaults, "mqtt") as MqttSettings | undefined}
+        <TabsContent value="voice">
+          <VoicePage
             integrations={integrations.data ?? []}
+            stt={roleState("stt")}
+            llm={roleState("llm")}
+            defaultModels={{
+              stt: stringAt(view.defaults, "stt.model"),
+              llm: stringAt(view.defaults, "llm.model"),
+            }}
+            secrets={secrets.data}
+            gaps={gapsFor(setup.data, "voice")}
+            requireName={valueAt(view.effective, "stt.require_name") === true}
+            language={row(LANGUAGE_ROW)}
+            speaking={TTS_ROWS.map(row)}
+            assistant={stringAt(view.effective, "integrations.assistant")}
+            claudeCode={
+              (view.effective.integrations as
+                | { claude_code?: { enabled?: boolean } }
+                | undefined)?.claude_code
+            }
+            chatgpt={
+              (view.effective.integrations as
+                | { chatgpt?: { enabled?: boolean } }
+                | undefined)?.chatgpt
+            }
+            chatgptSignedIn={chatgpt.data?.signed_in}
+            saving={save.isPending}
+            error={
+              rowError && ["stt", "llm", "integrations.assistant"].includes(rowError.row)
+                ? rowError.message
+                : undefined
+            }
+            onSaveRole={(role, change) => void saveRole(role, change)}
+            onRequireName={(next) =>
+              save.mutate({
+                row: "stt",
+                entries: [{ path: "stt.require_name", value: next }],
+              })
+            }
+            onAssistant={(value: Assistant) =>
+              save.mutate({
+                row: "integrations.assistant",
+                entries: [{ path: "integrations.assistant", value }],
+              })
+            }
+          />
+        </TabsContent>
+
+        <TabsContent value="addons">
+          <AddOnsPage
+            integrations={integrations.data ?? []}
+            plugins={plugins.data}
+            onPluginsChanged={() => plugins.refetch()}
+            effective={view.effective}
             secrets={secrets.data}
             tado={tado.data}
             zones={climate.data}
@@ -1131,11 +1155,6 @@ export function ConfigPanel() {
             }
             chatgptStatus={chatgpt.data}
             onChatGptChanged={() => chatgpt.refetch()}
-            assistant={
-              stringAt(view.effective, "integrations.assistant") === "chatgpt"
-                ? "chatgpt"
-                : "claude_code"
-            }
             nemlig={
               (view.effective.integrations as
                 | { nemlig?: { enabled?: boolean } }

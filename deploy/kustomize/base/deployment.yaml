@@ -45,11 +45,6 @@ spec:
                 secretKeyRef:
                   name: niles-secrets
                   key: mqtt-password
-            - name: GROQ_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: niles-secrets
-                  key: groq-api-key
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

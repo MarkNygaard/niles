@@ -109,3 +109,59 @@ describe("RoomDashboard", () => {
     expect(await screen.findByText("Open", { selector: "div" })).toBeInTheDocument();
   });
 });
+
+describe("RoomDashboard with plugins' widgets", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const plugin = {
+    id: "spotprice",
+    name: "Spot prices",
+    version: "0.1.0",
+    description: "",
+    authors: [],
+    homepage: null,
+    group: { id: "custom", label: "Custom" },
+    status: "running" as const,
+    status_line: "Working",
+    error: null,
+    dropped_events: 0,
+    enabled: true,
+    repo: null,
+    release_tag: null,
+    release_url: null,
+    installed_at: null,
+    updated_at: null,
+    logo: null,
+    previous_version: null,
+    update: null,
+    settings: [],
+    menu: [],
+    widgets: [
+      { id: "price_now", title: "Electricity now", room: null, refresh_every: null },
+      { id: "kitchen_price", title: "Kitchen price", room: "kitchen", refresh_every: null },
+    ],
+    interface: "0.1",
+    older_interface: false,
+  };
+
+  it("draws a front-page widget as a card, and a room's where the room opens", async () => {
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1")]);
+    vi.spyOn(api, "plugins").mockResolvedValue([plugin]);
+    const surface = vi.spyOn(api, "surface").mockImplementation(async (_p, id) => ({
+      nodes: [{ type: "text", value: `drawn ${id}`, muted: false, children: [] }],
+    }));
+
+    renderDashboard();
+
+    expect(await screen.findByText("Electricity now")).toBeInTheDocument();
+    expect(await screen.findByText("drawn price_now")).toBeInTheDocument();
+    expect(screen.queryByText("Kitchen price")).toBeNull();
+    expect(surface).toHaveBeenCalledWith("spotprice", "price_now", null);
+
+    fireEvent.click(screen.getByRole("button", { name: "Lights in Kitchen" }));
+    expect(await screen.findByRole("region", { name: "Kitchen price" })).toBeInTheDocument();
+    expect(await screen.findByText("drawn kitchen_price")).toBeInTheDocument();
+    expect(surface).toHaveBeenCalledWith("spotprice", "kitchen_price", "kitchen");
+  });
+});

@@ -2,9 +2,10 @@ import { useState } from "react";
 import { LogOut, Monitor, Moon, Sun, UserRound } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { DESTINATIONS, PROFILE } from "@/lib/destinations";
+import { PROFILE, destinationOf } from "@/lib/destinations";
 import type { Destination } from "@/lib/destinations";
 import type { MenuItem } from "@/lib/menu";
+import type { PluginPageEntry } from "@/lib/plugins";
 import type { Theme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -14,6 +15,8 @@ export interface AvatarMenuProps {
   avatarUrl?: string;
   /** What Settings → Menu put here, after My profile. */
   items: MenuItem[];
+  /** The plugins' pages, for the entries that are theirs. */
+  pages?: PluginPageEntry[];
   theme: Theme;
   onTheme: (theme: Theme) => void;
 }
@@ -28,12 +31,21 @@ export interface AvatarMenuProps {
  * now and then — Settings, your profile — has no need of a thumb's
  * reach.
  */
-export function AvatarMenu({ email, avatarUrl, items, theme, onTheme }: AvatarMenuProps) {
+export function AvatarMenu({
+  email,
+  avatarUrl,
+  items,
+  pages = [],
+  theme,
+  onTheme,
+}: AvatarMenuProps) {
   const [open, setOpen] = useState(false);
   const entries: Destination[] = [
     // A profile needs a you, so not with sign-in off.
     ...(email ? [PROFILE] : []),
-    ...items.filter((item) => !item.hidden).map((item) => DESTINATIONS[item.id]),
+    ...items
+      .filter((item) => !item.hidden)
+      .flatMap((item) => destinationOf(item.id, pages) ?? []),
   ];
 
   return (

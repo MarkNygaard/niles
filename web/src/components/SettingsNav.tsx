@@ -1,4 +1,5 @@
 import {
+  AudioLines,
   Brain,
   ChevronRight,
   Clock,
@@ -6,9 +7,9 @@ import {
   LayoutGrid,
   Lightbulb,
   Menu,
-  MessagesSquare,
   Mic,
-  Plug,
+  Network,
+  Puzzle,
   Speaker,
   Users,
 } from "lucide-react";
@@ -23,9 +24,12 @@ export interface Section {
 
 /**
  * Grouped the way somebody looks for a setting, not the way the config
- * file is laid out. "Everything else" is last and honest about being a
- * dump: it is the one section that exists because a config has more in
- * it than a page should pretend to curate.
+ * file is laid out.
+ *
+ * The house is what is in it. System is what Niles needs to work at
+ * all — the broker its lights are reached through, and who hears,
+ * thinks and speaks — set up by the job each does. Add-ons are the
+ * optional extras, Niles's own and other people's, in one list.
  */
 export const SECTIONS: { group: string; items: Section[] }[] = [
   {
@@ -82,19 +86,30 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
     ],
   },
   {
-    group: "Connections",
+    group: "System",
     items: [
       {
-        id: "integrations",
-        label: "Integrations",
-        hint: "The services Niles reads from",
-        icon: Plug,
+        id: "devices",
+        label: "Devices",
+        hint: "The broker your Zigbee lights and WLED strips are reached through",
+        icon: Network,
       },
       {
-        id: "language",
-        label: "Speech & language",
-        hint: "Who transcribes, who answers, and with what model",
-        icon: MessagesSquare,
+        id: "voice",
+        label: "Voice & AI",
+        hint: "Who hears, who thinks, who speaks, and the assistant",
+        icon: AudioLines,
+      },
+    ],
+  },
+  {
+    group: "Add-ons",
+    items: [
+      {
+        id: "addons",
+        label: "Add-ons",
+        hint: "Music, presence, calendars and more, and add-ons from GitHub",
+        icon: Puzzle,
       },
     ],
   },
@@ -111,9 +126,33 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
   },
 ];
 
+/**
+ * Where a section that has moved lives now.
+ *
+ * "Integrations" became System (the broker, the voice providers) and
+ * Add-ons; "Speech & language" became Voice & AI. A link or bookmark to
+ * the old id — `#/me/settings/integrations` — lands where its contents
+ * went rather than on a blank pane.
+ */
+const MOVED: Record<string, string> = {
+  integrations: "addons",
+  language: "voice",
+};
+
+/** The section an id names, after any move; `null` for none at all. */
+export function sectionId(id: string | null | undefined): string | null {
+  if (!id) return null;
+  const moved = MOVED[id] ?? id;
+  return SECTIONS.some((group) => group.items.some((item) => item.id === moved))
+    ? moved
+    : null;
+}
+
 export interface SettingsNavProps {
   current: string | null;
   onPick: (id: string) => void;
+  /** How many things each section still has to set up, by its id. */
+  todo?: Record<string, number>;
 }
 
 /**
@@ -126,7 +165,7 @@ export interface SettingsNavProps {
  * `sm` it sits beside the section it opened, which is the same shape
  * once there is room for both.
  */
-export function SettingsNav({ current, onPick }: SettingsNavProps) {
+export function SettingsNav({ current, onPick, todo = {} }: SettingsNavProps) {
   return (
     <nav className="flex w-full shrink-0 flex-col gap-5 sm:w-64">
       {SECTIONS.map((group) => (
@@ -165,6 +204,14 @@ export function SettingsNav({ current, onPick }: SettingsNavProps) {
                       {item.hint}
                     </span>
                   </span>
+                  {/* A new install sees where to start without opening
+                      every section to find out. */}
+                  {(todo[item.id] ?? 0) > 0 && (
+                    <span className="bg-destructive/10 text-destructive flex size-5 shrink-0 items-center justify-center rounded-full text-xs font-medium tabular-nums">
+                      {todo[item.id]}
+                      <span className="sr-only"> to set up</span>
+                    </span>
+                  )}
                   {/* Only on a phone, where tapping goes somewhere. Beside
                       the section it opened, it would point at itself. */}
                   <ChevronRight
@@ -183,8 +230,9 @@ export function SettingsNav({ current, onPick }: SettingsNavProps) {
 
 /** What a section is called, for the header above it. */
 export function labelOf(id: string): string {
+  const moved = sectionId(id);
   for (const group of SECTIONS) {
-    const found = group.items.find((item) => item.id === id);
+    const found = group.items.find((item) => item.id === moved);
     if (found) return found.label;
   }
   return "Settings";

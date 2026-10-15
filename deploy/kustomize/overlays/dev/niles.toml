@@ -17,14 +17,11 @@ bind_address = "0.0.0.0:8080"
 [wyoming]
 bind_address = "0.0.0.0:10300"
 
-[stt]
-api_key_env = "GROQ_API_KEY"
+# Who hears and who thinks — ElevenLabs and Cerebras by default — and
+# their API keys are set up in the app, under Settings → System → Voice & AI.
 
 [tts]
 base_url = "http://piper.home-automation.svc.cluster.local:5000"
-
-[llm]
-api_key_env = "GROQ_API_KEY"
 
 [lighting]
 morning_start = "05:45"

@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { IntegrationsPage } from "@/components/IntegrationsPage";
-import type { IntegrationsPageProps } from "@/components/IntegrationsPage";
+import { AddOnsPage } from "@/components/AddOnsPage";
+import type { AddOnsPageProps } from "@/components/AddOnsPage";
 import { api } from "@/lib/api";
 import { matchesQuery, statusOf } from "@/lib/integrations";
 import type { Integration, IntegrationGroup, SecretsReport } from "@/lib/api";
 
-const ESSENTIALS: IntegrationGroup = {
-  id: "essentials",
-  label: "Essentials",
+const SYSTEM: IntegrationGroup = {
+  id: "system",
+  label: "System",
   blurb: "What Niles needs.",
-  requirement: "Niles needs one speech-to-text provider and one AI provider.",
+  requirement: "Niles needs one hearing provider and one thinking provider.",
 };
 const PRESENCE: IntegrationGroup = {
   id: "presence",
@@ -31,33 +31,34 @@ const ASSISTANTS: IntegrationGroup = {
   requirement: null,
 };
 
-const GROQ: Integration = {
-  id: "groq",
-  label: "Groq",
-  blurb: "Speech-to-text and language models.",
-  needs: "A Groq account and an API key.",
-  kind: "provider",
-  group: ESSENTIALS,
-  importance: "required",
-  icon: "sparkles",
-  secret_keys: ["provider.groq.api_key"],
-  base_url: "https://api.groq.com/openai/v1",
-  serves: ["stt", "llm"],
-  added: false,
-  secret_key: "provider.groq.api_key",
-};
-
 const CEREBRAS: Integration = {
-  ...GROQ,
   id: "cerebras",
   label: "Cerebras",
   blurb: "Works out the answer.",
   needs: "A Cerebras account and an API key.",
+  kind: "provider",
+  group: SYSTEM,
+  importance: "required",
+  system: true,
+  default_for: ["llm"],
   icon: "brain",
   secret_keys: ["provider.cerebras.api_key"],
   base_url: "https://api.cerebras.ai/v1",
   serves: ["llm"],
+  added: false,
   secret_key: "provider.cerebras.api_key",
+};
+
+const ELEVENLABS: Integration = {
+  ...CEREBRAS,
+  id: "elevenlabs",
+  label: "ElevenLabs",
+  blurb: "Hears what you say.",
+  default_for: ["stt"],
+  secret_keys: ["provider.elevenlabs.api_key"],
+  base_url: "https://api.elevenlabs.io/v1",
+  serves: ["stt"],
+  secret_key: "provider.elevenlabs.api_key",
 };
 
 const MQTT: Integration = {
@@ -66,8 +67,10 @@ const MQTT: Integration = {
   blurb: "How Niles reaches your lights.",
   needs: "An MQTT broker.",
   kind: "service",
-  group: ESSENTIALS,
+  group: SYSTEM,
   importance: "required",
+  system: true,
+  default_for: [],
   icon: "network",
   secret_keys: ["mqtt.username", "mqtt.password"],
   base_url: null,
@@ -84,6 +87,8 @@ const TADO: Integration = {
   kind: "service",
   group: PRESENCE,
   importance: "optional",
+  system: false,
+  default_for: [],
   icon: "thermometer",
   secret_keys: [],
   base_url: null,
@@ -92,58 +97,34 @@ const TADO: Integration = {
   secret_key: null,
 };
 
-const SECRETS: SecretsReport = {
-  writable: true,
-  secrets: [
-    {
-      key: "provider.groq.api_key",
-      label: "groq API key",
-      hint: "api.groq.com",
-      source: "unset",
-    },
-  ],
-};
-
 const UNIFI: Integration = {
+  ...TADO,
   id: "unifi",
   label: "UniFi",
   blurb: "Who is home, from the Wi-Fi.",
   needs: "A UniFi console.",
-  kind: "service",
-  group: PRESENCE,
   importance: "recommended",
   icon: "wifi",
   secret_keys: ["presence.unifi.api_key"],
-  base_url: null,
-  serves: [],
-  added: false,
   secret_key: "presence.unifi.api_key",
 };
 
-const UNIFI_KEY: SecretsReport = {
-  writable: true,
-  secrets: [
-    {
-      key: "presence.unifi.api_key",
-      label: "UniFi console API key",
-      source: "unset",
-    },
-  ],
-};
+function unifiKey(source: "stored" | "unset" | "environment" = "unset"): SecretsReport {
+  return {
+    writable: true,
+    secrets: [{ key: "presence.unifi.api_key", label: "UniFi console API key", source }],
+  };
+}
 
 const CLAUDE: Integration = {
+  ...TADO,
   id: "claude_code",
   label: "Claude Code",
   blurb: "Answers the chat with Claude, on your Claude subscription.",
   needs: "A Claude subscription.",
-  kind: "service",
   group: ASSISTANTS,
-  importance: "optional",
   icon: "bot",
   secret_keys: ["integrations.claude_code.oauth_token"],
-  base_url: null,
-  serves: [],
-  added: false,
   secret_key: "integrations.claude_code.oauth_token",
 };
 
@@ -160,23 +141,17 @@ const CLAUDE_TOKEN: SecretsReport = {
 };
 
 const CHATGPT: Integration = {
+  ...CLAUDE,
   id: "chatgpt",
   label: "ChatGPT",
   blurb: "ChatGPT answers the chat and handles new rules.",
   needs: "A paid ChatGPT subscription.",
-  kind: "service",
-  group: ASSISTANTS,
-  importance: "optional",
-  icon: "bot",
   secret_keys: [
     "integrations.chatgpt.access_token",
     "integrations.chatgpt.refresh_token",
     "integrations.chatgpt.account_id",
     "integrations.chatgpt.expires_at",
   ],
-  base_url: null,
-  serves: [],
-  added: false,
   secret_key: "integrations.chatgpt.access_token",
 };
 
@@ -188,18 +163,14 @@ function chatgptSignIn(source: "stored" | "unset"): SecretsReport {
 }
 
 const NEMLIG: Integration = {
+  ...TADO,
   id: "nemlig",
   label: "nemlig.com",
   blurb: "Groceries delivered.",
   needs: "A nemlig.com account.",
-  kind: "service",
   group: SHOPPING,
-  importance: "optional",
   icon: "shopping-basket",
   secret_keys: ["integrations.nemlig.username", "integrations.nemlig.password"],
-  base_url: null,
-  serves: [],
-  added: false,
   secret_key: "integrations.nemlig.password",
 };
 
@@ -213,15 +184,15 @@ const NEMLIG_LOGIN: SecretsReport = {
 
 function setup(
   integrations: Integration[],
-  secrets: SecretsReport = SECRETS,
+  secrets: SecretsReport = unifiKey(),
   unifiHost?: string,
-  extra: Partial<IntegrationsPageProps> = {},
+  extra: Partial<AddOnsPageProps> = {},
 ) {
   const onChange = vi.fn();
   const onReset = vi.fn();
   const onSecretsChanged = vi.fn();
   render(
-    <IntegrationsPage
+    <AddOnsPage
       integrations={integrations}
       secrets={secrets}
       unifiHost={unifiHost}
@@ -244,127 +215,112 @@ function tab(name: "Connected" | "Available") {
 }
 
 function search(text: string) {
-  fireEvent.change(screen.getByRole("searchbox", { name: "Search integrations" }), {
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search add-ons" }), {
     target: { value: text },
   });
 }
 
-describe("IntegrationsPage tabs", () => {
+const UNIFI_ADDED = { ...UNIFI, added: true };
+
+describe("AddOnsPage tabs", () => {
   it("lands on Connected when something is added", () => {
-    setup([{ ...GROQ, added: true }, TADO]);
+    setup([UNIFI_ADDED, TADO], unifiKey(), "192.168.1.1");
     expect(tab("Connected")).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("button", { name: "Configure Groq" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Configure UniFi" })).toBeInTheDocument();
     expect(screen.queryByText("tado°")).toBeNull();
   });
 
   it("lands on Available on a new install", () => {
     // Someone setting Niles up for the first time starts from what they
     // can add, not from an empty list.
-    setup([GROQ, TADO]);
+    setup([UNIFI, TADO]);
     expect(tab("Available")).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("button", { name: "Connect Groq" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect UniFi" })).toBeInTheDocument();
   });
 
   it("counts each side in its tab", () => {
-    setup([{ ...GROQ, added: true }, CEREBRAS, TADO]);
+    setup([UNIFI_ADDED, NEMLIG, TADO]);
     expect(tab("Connected")).toHaveAccessibleName("Connected 1");
     expect(tab("Available")).toHaveAccessibleName("Available 2");
   });
 
   it("offers what is not added under Available", () => {
-    setup([{ ...GROQ, added: true }, TADO]);
+    setup([UNIFI_ADDED, TADO]);
     fireEvent.click(tab("Available"));
     expect(screen.getByRole("button", { name: "Connect tado°" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Connect Groq" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect UniFi" })).toBeNull();
   });
 
-  it("says so when everything is connected", () => {
-    setup([{ ...GROQ, added: true }]);
+  it("says so when every add-on is connected", () => {
+    setup([UNIFI_ADDED]);
     fireEvent.click(tab("Available"));
-    expect(screen.getByText("Everything Niles knows is connected.")).toBeInTheDocument();
+    expect(screen.getByText("Every add-on Niles ships is connected.")).toBeInTheDocument();
   });
 });
 
-describe("IntegrationsPage", () => {
-  it("says what is missing from an integration added without a key", () => {
-    // A row that looks done and answers nothing is worse than one that
+describe("AddOnsPage and the base system", () => {
+  it("leaves out the broker and the voice providers: they are under System", () => {
+    setup([MQTT, ELEVENLABS, CEREBRAS, TADO]);
+    expect(tab("Available")).toHaveAccessibleName("Available 1");
+    expect(screen.queryByText("Zigbee & MQTT")).toBeNull();
+    expect(screen.queryByText("ElevenLabs")).toBeNull();
+    expect(screen.queryByText("Cerebras")).toBeNull();
+    expect(screen.queryByRole("region", { name: "System" })).toBeNull();
+  });
+
+  it("does not count a set-up system as a connected add-on", () => {
+    // A house with only its broker and providers has no add-ons yet,
+    // and lands where it can add one.
+    setup([{ ...MQTT, added: true }, { ...CEREBRAS, added: true }, TADO]);
+    expect(tab("Connected")).toHaveAccessibleName("Connected 0");
+    expect(tab("Available")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("finds nothing of the system when searched for", () => {
+    setup([MQTT, CEREBRAS, UNIFI, TADO]);
+    search("cerebras");
+    expect(screen.getByText("Nothing matches “cerebras”.")).toBeInTheDocument();
+  });
+});
+
+describe("AddOnsPage", () => {
+  it("says what is missing from an add-on added without its key", () => {
+    // A row that looks done and does nothing is worse than one that
     // says what is left to do.
-    setup([{ ...GROQ, added: true }]);
+    setup([UNIFI_ADDED], unifiKey("unset"), "192.168.1.1");
     expect(screen.getByText("Needs its API key")).toBeInTheDocument();
   });
 
   it("says it works once the key is there", () => {
-    setup([{ ...GROQ, added: true }], {
-      writable: true,
-      secrets: [{ ...SECRETS.secrets[0], source: "stored" }],
-    });
+    setup([UNIFI_ADDED], unifiKey("stored"), "192.168.1.1");
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.queryByText("Needs its API key")).toBeNull();
   });
 
-  it("adds a provider without asking for its endpoint, and opens it", () => {
-    // Which is the whole difference from the pair of text boxes this
-    // replaces: Niles already knows where Groq's API lives, and typing
-    // a name and a URL let you invent a provider that cannot work.
-    const { onChange } = setup([GROQ]);
-    fireEvent.click(screen.getByRole("button", { name: "Connect Groq" }));
-    expect(onChange).toHaveBeenCalledWith("providers", [
-      {
-        path: "providers",
-        value: [
-          {
-            name: "groq",
-            base_url: "https://api.groq.com/openai/v1",
-            serves: ["stt", "llm"],
-          },
-        ],
-      },
-    ]);
-    expect(screen.getByLabelText("groq API key")).toBeInTheDocument();
-  });
-
-  it("keeps the providers already added when adding another", () => {
-    const { onChange } = setup([{ ...GROQ, added: true }, CEREBRAS]);
-    fireEvent.click(tab("Available"));
-    fireEvent.click(screen.getByRole("button", { name: "Connect Cerebras" }));
-    const value = onChange.mock.calls[0][1][0].value as { name: string }[];
-    expect(value.map((p) => p.name)).toEqual(["groq", "cerebras"]);
-  });
-
   it("keeps the key out of the list and behind the row", () => {
-    // The list answers "what is connected". A key is setup detail, and
-    // true at a glance is not the same as useful at a glance.
-    setup([{ ...GROQ, added: true }]);
-    expect(screen.queryByLabelText("groq API key")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
-    expect(screen.getByLabelText("groq API key")).toBeInTheDocument();
+    // The list answers "what is connected". A key is setup detail.
+    setup([UNIFI_ADDED], unifiKey(), "192.168.1.1");
+    expect(screen.queryByLabelText("UniFi console API key")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Configure UniFi" }));
+    expect(screen.getByLabelText("UniFi console API key")).toBeInTheDocument();
   });
 
   it("says what it does and what it takes in its dialog, once", () => {
-    setup([{ ...GROQ, added: true }]);
-    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
+    setup([UNIFI_ADDED], unifiKey(), "192.168.1.1");
+    fireEvent.click(screen.getByRole("button", { name: "Configure UniFi" }));
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getAllByText(GROQ.blurb)).toHaveLength(1);
-    expect(within(dialog).getByText(GROQ.needs)).toBeInTheDocument();
-  });
-
-  it("removes a provider by leaving it out of the list", () => {
-    const { onChange } = setup([{ ...GROQ, added: true }]);
-    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
-    fireEvent.click(screen.getByRole("button", { name: /Remove Groq/ }));
-    expect(onChange).toHaveBeenCalledWith("providers", [
-      { path: "providers", value: [] },
-    ]);
+    expect(within(dialog).getAllByText(UNIFI.blurb)).toHaveLength(1);
+    expect(within(dialog).getByText(UNIFI.needs)).toBeInTheDocument();
   });
 
   it("says where to start when nothing is connected", () => {
-    setup([GROQ, TADO]);
+    setup([UNIFI, TADO]);
     fireEvent.click(tab("Connected"));
-    expect(screen.getByText(/Nothing connected yet/)).toBeInTheDocument();
+    expect(screen.getByText(/No add-ons yet/)).toBeInTheDocument();
   });
 
   it("asks for the console's address and key when UniFi is added", () => {
-    const { onChange } = setup([UNIFI], UNIFI_KEY);
+    const { onChange } = setup([UNIFI], unifiKey());
     fireEvent.click(screen.getByRole("button", { name: "Connect UniFi" }));
 
     // Adding it writes nothing: an empty address is not a console.
@@ -374,7 +330,7 @@ describe("IntegrationsPage", () => {
   });
 
   it("saves the address when you leave the field", () => {
-    const { onChange } = setup([{ ...UNIFI, added: true }], UNIFI_KEY, "");
+    const { onChange } = setup([UNIFI_ADDED], unifiKey(), "");
     expect(screen.getByText("Needs its address")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Configure UniFi" }));
     const field = screen.getByLabelText("Console address");
@@ -387,13 +343,9 @@ describe("IntegrationsPage", () => {
   });
 
   it("removing UniFi forgets the console", () => {
-    const { onChange } = setup(
-      [{ ...UNIFI, added: true }],
-      UNIFI_KEY,
-      "192.168.1.1",
-    );
+    const { onChange } = setup([UNIFI_ADDED], unifiKey(), "192.168.1.1");
     fireEvent.click(screen.getByRole("button", { name: "Configure UniFi" }));
-    fireEvent.click(screen.getByRole("button", { name: /Remove UniFi/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
 
     expect(onChange).toHaveBeenCalledWith("presence.unifi", [
       { path: "presence.unifi.host", value: "" },
@@ -434,7 +386,7 @@ describe("IntegrationsPage", () => {
   it("removing Claude Code takes the section away", () => {
     const { onChange, onReset } = setup([{ ...CLAUDE, added: true }], CLAUDE_TOKEN);
     fireEvent.click(screen.getByRole("button", { name: "Configure Claude Code" }));
-    fireEvent.click(screen.getByRole("button", { name: /Remove Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
 
     expect(onReset).toHaveBeenCalledWith("integrations.claude_code", [
       "integrations.claude_code",
@@ -465,12 +417,12 @@ describe("IntegrationsPage", () => {
   it("removing nemlig.com takes the section away", () => {
     const { onReset } = setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
     fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
-    fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
     expect(onReset).toHaveBeenCalledWith("integrations.nemlig", ["integrations.nemlig"]);
   });
 });
 
-describe("IntegrationsPage assistants", () => {
+describe("AddOnsPage assistants", () => {
   it("switches ChatGPT on and opens it to sign in", () => {
     const { onChange } = setup([CHATGPT], chatgptSignIn("unset"), undefined, {
       chatgptStatus: { signed_in: false, email: null, expires_at: null, writable: true },
@@ -506,110 +458,75 @@ describe("IntegrationsPage assistants", () => {
     const clear = vi.spyOn(api, "clearSecret").mockResolvedValue(undefined);
     const { onReset } = setup([{ ...CHATGPT, added: true }], chatgptSignIn("stored"));
     fireEvent.click(screen.getByRole("button", { name: "Configure ChatGPT" }));
-    fireEvent.click(screen.getByRole("button", { name: "Remove ChatGPT" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove add-on" }));
     await waitFor(() =>
       expect(onReset).toHaveBeenCalledWith("integrations.chatgpt", ["integrations.chatgpt"]),
     );
     expect(clear.mock.calls.map(([key]) => key).sort()).toEqual([...CHATGPT.secret_keys].sort());
   });
 
-  it("asks which answers only when both are added", () => {
-    setup([{ ...CLAUDE, added: true }, CHATGPT], CLAUDE_TOKEN);
+  it("leaves which one answers to Voice & AI", () => {
+    // The choice includes Niles's own model, which is not an add-on, so
+    // it lives with the rest of the voice.
+    setup([{ ...CLAUDE, added: true }, { ...CHATGPT, added: true }], CLAUDE_TOKEN);
     expect(screen.queryByRole("radiogroup", { name: "Which assistant answers" })).toBeNull();
-  });
-
-  it("lets the household choose between the two", () => {
-    const { onChange } = setup(
-      [{ ...CLAUDE, added: true }, { ...CHATGPT, added: true }],
-      CLAUDE_TOKEN,
-      undefined,
-      { assistant: "claude_code" },
-    );
-    const choice = screen.getByRole("radiogroup", { name: "Which assistant answers" });
-    expect(within(choice).getByRole("radio", { name: "Claude" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    fireEvent.click(within(choice).getByRole("radio", { name: "ChatGPT" }));
-    expect(onChange).toHaveBeenCalledWith("integrations.assistant", [
-      { path: "integrations.assistant", value: "chatgpt" },
-    ]);
+    expect(
+      within(screen.getByRole("region", { name: "Assistants & tools" })).getByText(
+        /chosen under System, in Voice & AI/,
+      ),
+    ).toBeInTheDocument();
   });
 });
 
-describe("IntegrationsPage groups", () => {
+describe("AddOnsPage groups", () => {
   it("lists what is set up under its group's heading, in the order given", () => {
     setup(
-      [
-        { ...GROQ, added: true },
-        { ...UNIFI, added: true },
-        { ...NEMLIG, added: true },
-        TADO,
-      ],
-      UNIFI_KEY,
+      [{ ...MQTT, added: true }, UNIFI_ADDED, { ...NEMLIG, added: true }, TADO],
+      unifiKey(),
       "192.168.1.1",
     );
-    const headings = screen
-      .getAllByRole("heading", { level: 3 })
-      .map((h) => h.textContent);
-    expect(headings).toEqual(["Essentials", "Presence & climate", "Shopping"]);
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    expect(headings).toEqual(["Presence & climate", "Shopping"]);
 
     const presence = screen.getByRole("region", { name: "Presence & climate" });
     expect(within(presence).getByText("UniFi")).toBeInTheDocument();
     // Not added, so not listed — its group shows only what is.
     expect(within(presence).queryByText("tado°")).toBeNull();
-    expect(
-      within(screen.getByRole("region", { name: "Essentials" })).getByText("Groq"),
-    ).toBeInTheDocument();
   });
 
-  it("offers what is not added under the same groups, Essentials first", () => {
-    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO, NEMLIG, CLAUDE]);
-    const headings = screen
-      .getAllByRole("heading", { level: 3 })
-      .map((h) => h.textContent);
+  it("offers what is not added under the same groups, GitHub last", () => {
+    setup([MQTT, ELEVENLABS, CEREBRAS, UNIFI, TADO, NEMLIG, CLAUDE]);
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
     expect(headings).toEqual([
-      "Essentials",
       "Presence & climate",
       "Shopping",
       "Assistants & tools",
+      // Last, under a heading of its own.
+      "From GitHub",
     ]);
-    // The group says it is one of each, not every one of them.
-    expect(screen.getByRole("region", { name: "Essentials" })).toHaveTextContent(
-      "Niles needs one speech-to-text provider and one AI provider.",
+    expect(screen.getByRole("region", { name: "From GitHub" })).toHaveTextContent(
+      "Add-on from GitHub",
     );
   });
 
-  it("shows each service's own logo, and an icon for the broker", () => {
-    setup([MQTT, GROQ, NEMLIG]);
+  it("shows each service's own logo, and an icon where there is none", () => {
+    setup([UNIFI, NEMLIG, { ...TADO, id: "something_new", label: "Something new", icon: "speaker" }]);
     const logo = (name: string) =>
       screen
         .getByRole("button", { name: `Connect ${name}` })
         .parentElement?.querySelector("[data-logo]");
-    expect(logo("Groq")).toHaveAttribute("data-logo", "brand");
+    expect(logo("UniFi")).toHaveAttribute("data-logo", "brand");
     expect(logo("nemlig.com")).toHaveAttribute("data-logo", "brand");
-    expect(logo("Zigbee & MQTT")).toHaveAttribute("data-logo", "icon");
+    expect(logo("Something new")).toHaveAttribute("data-logo", "icon");
   });
 
-  it("badges Required where it applies", () => {
-    setup([MQTT, GROQ, CEREBRAS, UNIFI, TADO]);
-    const row = (name: string) =>
-      screen.getByRole("button", { name: `Connect ${name}` }).parentElement!;
-    expect(row("Zigbee & MQTT")).toHaveTextContent("Required");
-    expect(row("Groq")).toHaveTextContent("Required");
-    expect(row("UniFi")).not.toHaveTextContent("Required");
-    expect(row("tado°")).not.toHaveTextContent("Required");
-  });
-
-  it("stops calling the other providers required once a role is covered", () => {
-    // Groq answers and transcribes, so Cerebras is a choice, not a gap.
-    setup([{ ...GROQ, added: true }, CEREBRAS]);
-    fireEvent.click(tab("Available"));
-    const cerebras = screen.getByRole("button", { name: "Connect Cerebras" }).parentElement!;
-    expect(cerebras).not.toHaveTextContent("Required");
-    expect(screen.getByRole("region", { name: "Essentials" })).toHaveTextContent(
-      "AI: Groq",
-    );
+  it("calls none of them Required: what Niles needs is under System", () => {
+    setup([UNIFI, TADO, NEMLIG]);
+    for (const name of ["UniFi", "tado°", "nemlig.com"]) {
+      expect(
+        screen.getByRole("button", { name: `Connect ${name}` }).parentElement!,
+      ).not.toHaveTextContent("Required");
+    }
   });
 
   it("puts the more important ones first within a group", () => {
@@ -620,66 +537,29 @@ describe("IntegrationsPage groups", () => {
       .map((b) => b.getAttribute("aria-label"));
     expect(names).toEqual(["Connect UniFi", "Connect tado°"]);
   });
-
-  it("sets the broker up from its row, asking for its address first", () => {
-    setup([MQTT]);
-    fireEvent.click(screen.getByRole("button", { name: "Connect Zigbee & MQTT" }));
-    expect(screen.getByLabelText("Broker address")).toBeInTheDocument();
-  });
-
-  it("sets the broker up in its own dialog, login and all", () => {
-    // Once, here: there is no Settings page for it as well.
-    const withLogin: SecretsReport = {
-      writable: true,
-      secrets: [
-        { key: "mqtt.username", label: "Zigbee2MQTT broker username", source: "unset" },
-        { key: "mqtt.password", label: "Zigbee2MQTT broker password", source: "unset" },
-      ],
-    };
-    const { onChange } = setup([{ ...MQTT, added: true }], withLogin, undefined, {
-      mqtt: { host: "10.0.0.2" },
-      mqttDefaults: { port: 1883, z2m_prefix: "zigbee2mqtt", client_id: "niles" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Configure Zigbee & MQTT" }));
-    const host = screen.getByLabelText("Broker address");
-    expect(host).toHaveValue("10.0.0.2");
-    expect(screen.getByLabelText("Port")).toHaveAttribute("placeholder", "1883");
-    expect(screen.getByLabelText("Zigbee2MQTT broker password")).toBeInTheDocument();
-    expect(screen.getByText(/take effect when Niles restarts/)).toBeInTheDocument();
-
-    fireEvent.change(host, { target: { value: "mosquitto.local" } });
-    fireEvent.blur(host);
-    expect(onChange).toHaveBeenCalledWith("mqtt", [
-      { path: "mqtt.host", value: "mosquitto.local" },
-    ]);
-    const port = screen.getByLabelText("Port");
-    fireEvent.change(port, { target: { value: "8883" } });
-    fireEvent.blur(port);
-    expect(onChange).toHaveBeenCalledWith("mqtt", [{ path: "mqtt.port", value: 8883 }]);
-  });
 });
 
-describe("IntegrationsPage search", () => {
+describe("AddOnsPage search", () => {
   it("is not a box a browser fills in with a saved login", () => {
-    setup([{ ...GROQ, added: true }]);
-    const box = screen.getByRole("searchbox", { name: "Search integrations" });
+    setup([UNIFI_ADDED]);
+    const box = screen.getByRole("searchbox", { name: "Search add-ons" });
     expect(box).toHaveAttribute("autocomplete", "off");
-    expect(box).toHaveAttribute("name", "integration-search");
+    expect(box).toHaveAttribute("name", "addon-search");
   });
 
-  const EVERYTHING = [MQTT, { ...GROQ, added: true }, CEREBRAS, UNIFI, TADO, NEMLIG, CLAUDE];
+  const EVERYTHING = [MQTT, CEREBRAS, UNIFI_ADDED, TADO, NEMLIG, CLAUDE];
 
   it("narrows the tab to what matches, hiding empty groups", () => {
     setup(EVERYTHING);
     fireEvent.click(tab("Available"));
-    // "Who is home" is in both presence blurbs and nowhere else.
+    // "Who is home" is in tado's blurb and the presence group's name.
     search("WHO IS HOME");
-    expect(screen.getByRole("button", { name: "Connect UniFi" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Connect tado°" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect nemlig.com" })).toBeNull();
-    expect(
-      screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
-    ).toEqual(["Presence & climate"]);
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+      "Presence & climate",
+      "From GitHub",
+    ]);
   });
 
   it("finds by group name", () => {
@@ -687,7 +567,7 @@ describe("IntegrationsPage search", () => {
     fireEvent.click(tab("Available"));
     search("shopping");
     expect(screen.getByRole("button", { name: "Connect nemlig.com" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Connect UniFi" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect tado°" })).toBeNull();
   });
 
   it("says when nothing matches", () => {
@@ -699,21 +579,21 @@ describe("IntegrationsPage search", () => {
 
   it("points to a match on the other tab", () => {
     setup(EVERYTHING);
-    search("cerebras");
-    expect(screen.getByText("Nothing matches “cerebras”.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Cerebras is under Available" }));
+    search("nemlig");
+    expect(screen.getByText("Nothing matches “nemlig”.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "nemlig.com is under Available" }));
     expect(tab("Available")).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("button", { name: "Connect Cerebras" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect nemlig.com" })).toBeInTheDocument();
   });
 });
 
 describe("matchesQuery", () => {
   it("matches label, blurb and group, ignoring case", () => {
-    expect(matchesQuery(GROQ, "groq")).toBe(true);
-    expect(matchesQuery(GROQ, "LANGUAGE MODELS")).toBe(true);
-    expect(matchesQuery(GROQ, "essent")).toBe(true);
-    expect(matchesQuery(GROQ, "  ")).toBe(true);
-    expect(matchesQuery(GROQ, "thermostat")).toBe(false);
+    expect(matchesQuery(UNIFI, "unifi")).toBe(true);
+    expect(matchesQuery(UNIFI, "THE WI-FI")).toBe(true);
+    expect(matchesQuery(UNIFI, "climate")).toBe(true);
+    expect(matchesQuery(UNIFI, "  ")).toBe(true);
+    expect(matchesQuery(UNIFI, "thermostat")).toBe(false);
   });
 });
 
@@ -721,18 +601,18 @@ describe("statusOf", () => {
   const unset = (key: string) => ({ key, label: key, source: "unset" as const });
   const stored = (key: string) => ({ key, label: key, source: "stored" as const });
 
-  it("says a provider without its key needs one", () => {
+  it("says one without its key needs one", () => {
     const status = statusOf(
-      { ...GROQ, added: true },
-      { secrets: { writable: true, secrets: [unset("provider.groq.api_key")] } },
+      { ...CEREBRAS, added: true },
+      { secrets: { writable: true, secrets: [unset("provider.cerebras.api_key")] } },
     );
     expect(status).toEqual({ ok: false, text: "Needs its API key" });
   });
 
   it("says a finished one is working", () => {
     const status = statusOf(
-      { ...GROQ, added: true },
-      { secrets: { writable: true, secrets: [stored("provider.groq.api_key")] } },
+      { ...CEREBRAS, added: true },
+      { secrets: { writable: true, secrets: [stored("provider.cerebras.api_key")] } },
     );
     expect(status).toEqual({ ok: true, text: "Working" });
   });
@@ -747,9 +627,7 @@ describe("statusOf", () => {
 
   it("names what each kind is waiting for", () => {
     expect(statusOf({ ...TADO, added: true }, {}).text).toBe("Not signed in to tado° yet");
-    expect(statusOf({ ...UNIFI, added: true }, { unifiHost: " " }).text).toBe(
-      "Needs its address",
-    );
+    expect(statusOf(UNIFI_ADDED, { unifiHost: " " }).text).toBe("Needs its address");
     expect(
       statusOf({ ...TADO, id: "linear", label: "Linear", added: true }, { linear: { team: "" } })
         .text,
@@ -800,7 +678,7 @@ describe("statusOf ChatGPT", () => {
   });
 });
 
-describe("IntegrationsPage removing", () => {
+describe("AddOnsPage removing", () => {
   it("deletes the keys it saved, and leaves ones from the environment", async () => {
     const clear = vi.spyOn(api, "clearSecret").mockResolvedValue(undefined);
     const { onReset, onSecretsChanged } = setup([{ ...NEMLIG, added: true }], {
@@ -812,7 +690,7 @@ describe("IntegrationsPage removing", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     expect(screen.getByText("Its saved keys are deleted too.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
 
     await waitFor(() =>
       expect(onReset).toHaveBeenCalledWith("integrations.nemlig", ["integrations.nemlig"]),
@@ -822,20 +700,19 @@ describe("IntegrationsPage removing", () => {
     expect(onSecretsChanged).toHaveBeenCalled();
   });
 
-  it("deletes a provider's key before the provider, while the server still accepts it", async () => {
+  it("deletes the keys before the add-on goes", async () => {
+    // So a key that cannot be deleted stops the removal rather than
+    // being stranded by it.
     const order: string[] = [];
     vi.spyOn(api, "clearSecret").mockImplementation(async (key) => {
       order.push(`clear ${key}`);
     });
-    const { onChange } = setup([{ ...GROQ, added: true }], {
-      writable: true,
-      secrets: [{ ...SECRETS.secrets[0], source: "stored" }],
-    });
+    const { onChange } = setup([UNIFI_ADDED], unifiKey("stored"), "192.168.1.1");
     onChange.mockImplementation((row: string) => order.push(`change ${row}`));
-    fireEvent.click(screen.getByRole("button", { name: "Configure Groq" }));
-    fireEvent.click(screen.getByRole("button", { name: /Remove Groq/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure UniFi" }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
     await waitFor(() =>
-      expect(order).toEqual(["clear provider.groq.api_key", "change providers"]),
+      expect(order).toEqual(["clear presence.unifi.api_key", "change presence.unifi"]),
     );
   });
 
@@ -846,7 +723,7 @@ describe("IntegrationsPage removing", () => {
       secrets: NEMLIG_LOGIN.secrets.map((s) => ({ ...s, source: "stored" as const })),
     });
     fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
-    fireEvent.click(screen.getByRole("button", { name: /Remove nemlig.com/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
     expect(await screen.findByText("no database")).toBeInTheDocument();
     expect(onReset).not.toHaveBeenCalled();
   });

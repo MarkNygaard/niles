@@ -1,0 +1,25 @@
+# The interface 0.2 plugin the MQTT tests load: it relays messages
+# through a broker into a device reading and back. Built to
+# `../relay.wasm` by `build.sh` / `build.ps1`, and the built component is
+# committed, so the tests need no WebAssembly toolchain.
+[package]
+name = "niles-plugin-relay"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.63"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+# Its own workspace: it is built for wasm32-wasip2, never with Niles.
+[workspace]

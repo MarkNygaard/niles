@@ -1,23 +1,34 @@
-# Writing a Niles integration
+# Writing a Niles add-on
 
-> **v0.1 of the interface, partly built.** Niles 0.2.0 runs plugins: the
-> sandbox, every host interface, devices, tools, timers, events, pages, and
-> the `niles plugin check` and `niles plugin dev` commands. Not built yet: the
-> "Add from GitHub" flow with its approval screen, updates, the generated
-> setup panel, and pages and widgets drawn in the app. Until then a plugin
-> runs under `niles plugin dev`, or on a Niles whose database it was put in
-> by hand. The interface
-> ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) may
-> still change before the install flow ships.
+A third-party add-on is what Niles calls a plugin in the app: something
+somebody else wrote, installed from GitHub. The technical names keep the old
+word — the WIT package is `niles:integration`, the manifest
+`niles-integration.toml`, the component `integration.wasm` and this folder
+`docs/integrations/` — because plugins already built depend on them.
+
+> **v0.2 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
+> every host interface, devices, tools, timers, events, pages, MQTT) and installs
+> them: **Add-on from GitHub** with its approval screen, update checks, updates
+> that show what changes in permissions and roll back by themselves if the new
+> version fails, turning off and removing, and the `niles plugin check` and
+> `niles plugin dev` commands. The app draws everything a plugin declares: its
+> setup panel generated from the manifest's settings, its log, its pages in
+> the menu and its widgets on the front page and the rooms. Not built yet:
+> `niles plugin dev --live`, which would run a plugin on a running Niles. The
+> interface
+> ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) is
+> v0.2.1: v0.1 plus MQTT, and in 0.2.1 the house's time zone and lights
+> kept out of their room's. Niles still runs plugins built for 0.2.0 and 0.1. See
+> [versioning](publishing.md#interface-versions) for what may change.
 
 Niles is an open-source home assistant, written in Rust, that you talk to. It
 runs the lights, music, heating and calendars of one house, and it hands
 questions it cannot answer from fixed phrases to a language model with tools.
-Its built-in integrations live in its own repository. This guide is for
+Its built-in add-ons live in its own repository. This guide is for
 everything else: the thing in your house, or the service you use, that Niles
 does not know about.
 
-You write the integration in Rust, JavaScript, Go or Python, compile it to a
+You write the add-on in Rust, JavaScript, Go or Python, compile it to a
 WebAssembly component, publish it as a GitHub release, and anyone running Niles
 installs it by pasting your repo's URL into the app.
 
@@ -29,7 +40,7 @@ installs it by pasting your repo's URL into the app.
 - **WIT** (WebAssembly Interface Type) is the language those declarations are
   written in. Niles's is one file,
   [`niles-integration.wit`](../../schemas/niles-integration.wit): package
-  `niles:integration@0.1.0`, world `plugin`. A *world* is the full contract,
+  `niles:integration@0.2.1`, world `plugin`. A *world* is the full contract,
   what you import and what you export. You do not write WIT; you read it, and a
   bindings generator turns it into types and functions in your language.
 - **`cargo-component`** and **`wit-bindgen`** are the Rust tools that do that
@@ -56,43 +67,56 @@ installs it by pasting your repo's URL into the app.
   chime, quiet hours and recall as Niles's own.
 - **Reactions to the house.** Subscribe to device changes, button presses and
   whether anyone is home.
+- **Devices that speak MQTT.** A 3D printer, Tasmota and Shelly plugs, the
+  household's own broker: Niles holds the connection and hands your plugin
+  each message.
 
 ## What you cannot do
 
 A plugin runs in a sandbox. It cannot read Niles's database, other
-integrations' passwords, conversations, memory or the people in the house. It
+add-ons' passwords, conversations, memory or the people in the house. It
 has no filesystem, no environment variables and no sockets; the only network
-access is HTTP to the hosts your manifest declares. It cannot put HTML or
+access is HTTP to the hosts your manifest declares, and MQTT to the brokers it
+names. It cannot put HTML or
 script into the app. See [permissions](permissions.md).
 
 ## Where it shows up
 
-Once installed, a plugin sits on the app's Integrations page among the
-built-ins, in the group its manifest names (Music & TV, Presence & climate…),
+Once installed, a plugin sits on the app's Add-ons page (Settings → Add-ons)
+among the built-ins, in the group its manifest names (Music & TV, Presence & climate…),
 or under **Custom** if it names none. Its row carries a **Custom** badge, and
-its setup panel, generated from your manifest's settings, shows your repo,
-version and authors, a status line ("Working", "Not working: …") and its log.
-People find **Add from GitHub** at the end of the Available tab.
+its panel shows your repo, version, authors and install date, a status line
+("Working", "Not set up: needs API key", "Not working: …", "Off", "Update
+available: v0.2.0"), the settings form generated from your manifest, where
+each of your widgets goes, the last lines of its log (yours, and what Niles
+noted about it), and the buttons to turn it off, check for updates, update,
+roll back and remove it. Your pages join the menu, where the household shows,
+hides and moves them in Settings → Menu like the built-in ones. People find
+**Add-on from GitHub** at the end of the Available tab.
 
 ## Capabilities at a glance
 
 | You want to | Use | Permission | Guide |
 |---|---|---|---|
 | Read your settings and secrets | `config.get`, `config.secret` | none | [manifest](manifest.md#settings) |
+| Know the house's time zone | `config.time-zone` (0.2.1) | none | [host API](host-api.md#config) |
 | Keep data between restarts | `storage` (1 MiB) | none | [host API](host-api.md#storage) |
 | Call an API on the internet | `http.send` | `http = ["api.example.com"]` | [host API](host-api.md#http) |
 | Call a device on the LAN | `http.send` | `local_network = ["setting:address"]` | [permissions](permissions.md#local_network) |
 | Run something every N seconds | `timers.every` → `on-timer` | none | [host API](host-api.md#timers) |
 | Add lights, plugs, sensors, covers | `devices.upsert`, `report-state` | `devices = true` | [devices](devices.md) |
 | Be switched by voice and rules | export `set-device` | `devices = true` | [devices](devices.md#controllable-devices) |
+| Start rules when something happens on a device | `devices.report-action` | `devices = true` | [devices](devices.md#actions) |
+| Keep a light out of its room's lights | `devices.set-room-light` (0.2.1) | `devices = true` | [devices](devices.md#lights-and-the-room) |
 | Answer questions, do things on request | exports `tools`, `call-tool` | `tools = true` | [tools](tools.md) |
 | Add a page to the menu | `[[ui.menu]]`, exports `render`, `on-action` | `ui = true` | [UI](ui.md) |
 | Add a widget to the front page or a room card | `[[ui.widgets]]`, same exports | `ui = true` | [UI](ui.md) |
 | Speak through the satellites | `notify.say` | `notify = true` or `"urgent"` | [host API](host-api.md#notify) |
 | React to other devices or presence | `events.subscribe` → `on-event` | `events = [...]` | [host API](host-api.md#events) |
+| Talk to an MQTT device or broker | `mqtt.connect`, `subscribe`, `publish` → `on-mqtt-message`, `on-mqtt-status` | `mqtt = [{ name, host, tls }]` (0.2) | [MQTT](mqtt.md) |
 | Log | `log.log` | none | [host API](host-api.md#log) |
 
-Not in v0.1: raw TCP or UDP, WebSockets, and a page that runs your own HTML.
+Not yet: raw TCP or UDP, WebSockets, and a page that runs your own HTML.
 See [host API](host-api.md#coming-later).
 
 ## The guide
@@ -103,10 +127,11 @@ See [host API](host-api.md#coming-later).
 4. [Devices](devices.md): classes, state fields and units, controllable devices, naming
 5. [Tools](tools.md): designing tools the AI uses well
 6. [Pages and widgets](ui.md): the declarative UI
-7. [Permissions](permissions.md): what each one allows and how the household sees it
-8. [Publishing](publishing.md): release layout, versioning, updates
-9. [Worked example: spot prices](example-spotprice.md): a complete plugin in Rust,
+7. [MQTT](mqtt.md): brokers, `trust-device` certificates, a printer as the example
+8. [Permissions](permissions.md): what each one allows and how the household sees it
+9. [Publishing](publishing.md): release layout, versioning, updates
+10. [Worked example: spot prices](example-spotprice.md): a complete plugin in Rust,
    with the same tool in JavaScript and Python
 
 The design and its reasoning are in
-[ARCHITECTURE.md](../../ARCHITECTURE.md#third-party-integrations-plugins).
+[ARCHITECTURE.md](../../ARCHITECTURE.md#third-party-add-ons-plugins).

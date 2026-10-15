@@ -1,7 +1,8 @@
-//! OpenAI chat-completions client.
+//! OpenAI-compatible chat-completions client.
 //!
-//! Targets the standard `POST /v1/chat/completions` endpoint.
-//! Shares wire types and HTTP logic with [`crate::groq::GroqClient`].
+//! Targets the standard `POST <base_url>/chat/completions` endpoint,
+//! which Cerebras and OpenAI both answer. Wire types and the HTTP call
+//! live in [`crate::chat`].
 
 use crate::backend::LlmBackend;
 use crate::chat::{ChatRequest, ChatResponse, ReasoningEffort};
@@ -21,7 +22,7 @@ pub struct OpenAiConfig {
     pub request_timeout: Duration,
 }
 
-/// HTTP client around OpenAI's chat-completions endpoint.
+/// HTTP client around an OpenAI-compatible chat-completions endpoint.
 #[derive(Debug)]
 pub struct OpenAiClient {
     http: reqwest::Client,
@@ -38,7 +39,7 @@ impl OpenAiClient {
 
     /// Send a chat-completion request and return the model's reply.
     pub async fn chat(&self, req: ChatRequest) -> Result<ChatResponse> {
-        debug!(model = %self.cfg.model, "sending OpenAI chat-completion request");
+        debug!(model = %self.cfg.model, base_url = %self.cfg.base_url, "sending chat-completion request");
         crate::chat::post_chat_completions(
             &self.http,
             &self.cfg.base_url,

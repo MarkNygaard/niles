@@ -815,7 +815,9 @@ impl<P: Publisher> Tool for SetRoom<P> {
             .registry
             .list_room(&room)
             .into_iter()
-            .filter(|d| can_do(d, &target))
+            // A light its source keeps out of the room's (a printer's
+            // chamber light) is only ever switched by name.
+            .filter(|d| d.room_light && can_do(d, &target))
             .collect();
 
         if targets.is_empty() {
@@ -2241,6 +2243,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_room_leaves_a_light_kept_out_of_the_room_and_set_device_still_reaches_it() {
+        let (mock, plugins, registry, router) = with_plugin_devices();
+        let id = DeviceId::parse("x_pool:garden/lamp").unwrap();
+        let mut lamp = registry.get(&id).unwrap();
+        lamp.room_light = false;
+        registry.upsert(lamp);
+
+        let room = SetRoom::new(registry.clone(), mock.clone(), router.clone(), false);
+        let result = room
+            .execute(json!({ "room": "garden", "on": false }))
+            .await
+            .unwrap();
+        assert!(
+            !result["set"].to_string().contains("garden/lamp"),
+            "{result}"
+        );
+        assert!(plugins.told.lock().unwrap().is_empty());
+
+        let device = SetDevice::new(registry, mock, router, false);
+        device
+            .execute(json!({ "device_id": "garden/lamp", "on": false }))
+            .await
+            .unwrap();
+        assert_eq!(*plugins.told.lock().unwrap(), vec!["x_pool:garden/lamp"]);
+    }
+
+    #[tokio::test]
     async fn an_outlet_can_be_switched() {
         // The failure this whole change exists for: "turn off the
         // lights in the living room" picked the lamp on a plug first,
@@ -2351,7 +2380,7 @@ mod tests {
     async fn a_room_goes_off_in_one_call() {
         // One call, not one per device. Seven `set_device` calls with
         // the whole conversation re-sent each time is what put the
-        // turn over Groq's tokens-per-minute limit.
+        // turn over the provider's tokens-per-minute limit.
         let (mock, tool) = set_room_setup(false);
         let args = json!({ "room": "living_room", "on": false });
         let result = tool.execute(args).await.unwrap();

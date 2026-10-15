@@ -3,6 +3,7 @@
 
 use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand};
+use niles_api::plugins::{PluginFailure, PluginSummary};
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_mqtt::DeviceCommander;
 use niles_plugins::{
@@ -26,15 +27,17 @@ pub(crate) enum PluginAction {
 
 #[derive(Args)]
 pub(crate) struct CheckArgs {
-    /// The plugin's directory (with niles-integration.toml), or its .wasm.
+    /// The plugin's directory (with niles-integration.toml), its .wasm,
+    /// or its GitHub repo (`jane/niles-spotprice`, or the repo's or a
+    /// release's address), whose latest release is checked.
     path: PathBuf,
 }
 
 #[derive(Args)]
 pub(crate) struct DevArgs {
     /// The plugin's directory (with niles-integration.toml), or its .wasm.
-    /// From a directory, the newest target/wasm32-wasip2/release/*.wasm
-    /// is run, or integration.wasm if there is one.
+    /// From a directory, the newer of integration.wasm and the newest
+    /// target/wasm32-wasip2/release/*.wasm is run.
     path: PathBuf,
     /// A setting for this run, as key=value. Repeatable. Over
     /// dev-settings.toml, which is read from the plugin's directory.
@@ -50,6 +53,61 @@ pub(crate) struct DevArgs {
     /// After init, draw a page or widget as text.
     #[arg(long, value_name = "SURFACE")]
     render: Option<String>,
+    /// Before --call and --render, wait this many seconds after init.
+    /// Without it, a plugin with MQTT brokers is waited for until a
+    /// connection reports its first status (at most 10 s), and a second
+    /// more for the messages the broker kept.
+    #[arg(long, value_name = "SECS")]
+    wait: Option<u64>,
+    /// Let the plugin reach this machine where a setting's address names
+    /// it (127.0.0.1, ::1, localhost), over HTTP and MQTT, so a fake
+    /// device can run beside it. Only here: an installed plugin never can.
+    #[arg(long)]
+    allow_loopback: bool,
+    /// The house's time zone, as config.time-zone gives it: an IANA name
+    /// such as Europe/Copenhagen. This machine's, by default.
+    #[arg(long, value_name = "IANA")]
+    time_zone: Option<String>,
+}
+
+/// How long `dev` waits for a plugin's first MQTT status before --call
+/// and --render, and then for the retained messages after it.
+const MQTT_FIRST_STATUS: Duration = Duration::from_secs(10);
+const RETAINED_GRACE: Duration = Duration::from_secs(1);
+
+/// What `dev` waits for between init and --call / --render.
+#[derive(Debug, PartialEq)]
+enum Wait {
+    Nothing,
+    For(Duration),
+    /// The first MQTT status, then [`RETAINED_GRACE`].
+    Mqtt,
+}
+
+fn wait_plan(args: &DevArgs, manifest: &Manifest) -> Wait {
+    if args.call.is_none() && args.render.is_none() {
+        return Wait::Nothing;
+    }
+    match args.wait {
+        Some(0) => Wait::Nothing,
+        Some(secs) => Wait::For(Duration::from_secs(secs)),
+        None if manifest.permissions.mqtt.is_empty() => Wait::Nothing,
+        None => Wait::Mqtt,
+    }
+}
+
+/// The zone `config.time-zone` answers in `dev`: the flag's, else this
+/// machine's, else UTC.
+fn dev_time_zone(flag: Option<&str>) -> anyhow::Result<String> {
+    if let Some(zone) = flag {
+        zone.parse::<chrono_tz::Tz>()
+            .map_err(|_| anyhow::anyhow!("--time-zone {zone:?} is not an IANA zone"))?;
+        return Ok(zone.to_string());
+    }
+    Ok(iana_time_zone::get_timezone()
+        .ok()
+        .filter(|zone| zone.parse::<chrono_tz::Tz>().is_ok())
+        .unwrap_or_else(|| "UTC".to_string()))
 }
 
 pub(crate) async fn run(action: PluginAction) -> anyhow::Result<()> {
@@ -64,13 +122,17 @@ struct Found {
     dir: PathBuf,
     manifest: String,
     component: Option<(PathBuf, Vec<u8>)>,
+    /// Which of two components was taken, when there were two.
+    chose: Option<String>,
 }
 
 fn locate(path: &Path) -> anyhow::Result<Found> {
+    let mut chose = None;
     let (dir, wasm) = if path.is_dir() {
-        let wasm = Some(path.join("integration.wasm"))
-            .filter(|p| p.is_file())
-            .or_else(|| newest_wasm(&path.join("target").join("wasm32-wasip2").join("release")));
+        let wasm = pick_wasm(path).map(|(wasm, why)| {
+            chose = why;
+            wasm
+        });
         (path.to_path_buf(), wasm)
     } else if path.extension().is_some_and(|e| e == "wasm") {
         let dir = path
@@ -106,7 +168,34 @@ fn locate(path: &Path) -> anyhow::Result<Found> {
         dir,
         manifest,
         component,
+        chose,
     })
+}
+
+/// The component in a plugin's directory: `integration.wasm` or the
+/// newest build under `target/wasm32-wasip2/release`, whichever was
+/// written last, with a line saying so when there are both. A stale
+/// integration.wasm left from the last release build used to win over
+/// the build just made, and the change being tested was not running.
+fn pick_wasm(dir: &Path) -> Option<(PathBuf, Option<String>)> {
+    let packaged = Some(dir.join("integration.wasm")).filter(|p| p.is_file());
+    let built = newest_wasm(&dir.join("target").join("wasm32-wasip2").join("release"));
+    let (packaged, built) = match (packaged, built) {
+        (Some(packaged), Some(built)) => (packaged, built),
+        (packaged, built) => return packaged.or(built).map(|wasm| (wasm, None)),
+    };
+    let modified = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
+    let (newer, older) = if modified(&built) > modified(&packaged) {
+        (built, packaged)
+    } else {
+        (packaged, built)
+    };
+    let why = format!(
+        "using {}, which is newer than {}",
+        newer.display(),
+        older.display()
+    );
+    Some((newer, Some(why)))
 }
 
 fn newest_wasm(dir: &Path) -> Option<PathBuf> {
@@ -119,11 +208,20 @@ fn newest_wasm(dir: &Path) -> Option<PathBuf> {
 }
 
 async fn check(args: CheckArgs) -> anyhow::Result<()> {
+    if !args.path.exists()
+        && let Some(text) = args.path.to_str()
+        && let Ok((repo, tag)) = niles_plugins::github::parse_repo(text)
+    {
+        return check_release(repo, tag).await;
+    }
     let found = locate(&args.path)?;
     let logo = Manifest::parse(&found.manifest)
         .ok()
         .and_then(|m| m.logo)
         .and_then(|logo| std::fs::read(found.dir.join(logo)).ok());
+    if let Some(chose) = &found.chose {
+        println!("{chose}");
+    }
     if let Some((path, _)) = &found.component {
         println!("Checking {}", path.display());
     } else {
@@ -131,6 +229,69 @@ async fn check(args: CheckArgs) -> anyhow::Result<()> {
     }
     let report =
         niles_plugins::check::check(&found.manifest, found.component.map(|(_, b)| b), logo).await;
+    print_report(&report)
+}
+
+/// Check a release on GitHub, downloading what an install would.
+async fn check_release(
+    repo: niles_plugins::github::Repo,
+    tag: Option<String>,
+) -> anyhow::Result<()> {
+    use niles_plugins::github::{GitHub, MAX_MANIFEST};
+    let github = GitHub::default();
+    let release = github
+        .release(&repo, tag.as_deref())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("Checking {} {}", repo.slug(), release.tag_name);
+    let fetch = |name: String, cap: usize| {
+        let asset = release.asset(&name).cloned();
+        let github = github.clone();
+        async move {
+            match asset {
+                None => Ok(None),
+                Some(asset) => github
+                    .download(&asset, cap)
+                    .await
+                    .map(Some)
+                    .map_err(|e| anyhow::anyhow!("{name}: {e}")),
+            }
+        }
+    };
+    let manifest = fetch("niles-integration.toml".into(), MAX_MANIFEST)
+        .await?
+        .context("the release has no niles-integration.toml")?;
+    let manifest = String::from_utf8(manifest).context("niles-integration.toml is not UTF-8")?;
+    let logo_name = Manifest::parse(&manifest)
+        .ok()
+        .and_then(|m| m.logo)
+        .map(|logo| logo.rsplit('/').next().unwrap_or(&logo).to_string());
+    let logo = match logo_name {
+        Some(name) => fetch(name, niles_plugins::check::MAX_LOGO).await?,
+        None => None,
+    };
+    let component = fetch(
+        "integration.wasm".into(),
+        niles_plugins::runtime::MAX_COMPONENT,
+    )
+    .await?;
+    let mut report = niles_plugins::check::check(&manifest, component, logo).await;
+    if let Some(m) = &report.manifest
+        && release
+            .tag_name
+            .strip_prefix('v')
+            .unwrap_or(&release.tag_name)
+            != m.version
+    {
+        report.problems.push(format!(
+            "release: tagged {}, and the manifest says {}",
+            release.tag_name, m.version
+        ));
+    }
+    print_report(&report)
+}
+
+fn print_report(report: &niles_plugins::check::Report) -> anyhow::Result<()> {
     for passed in &report.passed {
         println!("  ok       {passed}");
     }
@@ -223,18 +384,35 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
         }
         bail!("fix the manifest first; `niles plugin check` says the same");
     }
+    if let Some(chose) = &found.chose {
+        println!("{chose}");
+    }
     let (path, component) = found
         .component
         .context("no .wasm found; build it with cargo build --release --target wasm32-wasip2")?;
     let (values, secrets) = dev_settings(&found.dir, &manifest, &args.settings)?;
+    let time_zone = dev_time_zone(args.time_zone.as_deref())?;
+    let wait = wait_plan(&args, &manifest);
 
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::new(1024);
     let storage = found.dir.join(".niles-dev").join("storage.json");
     let store: Arc<dyn PluginStore> = Arc::new(MemoryStore::in_file(storage.clone()));
-    let house = House::new(registry.clone(), bus.clone(), store)
+    let (heard, mut first_status) = tokio::sync::watch::channel(false);
+    let mut house = House::new(registry.clone(), bus.clone(), store)
         .with_settings(Arc::new(move |_| values.clone()))
-        .with_secrets(Arc::new(move |_, key| secrets.get(key).cloned()));
+        .with_secrets(Arc::new(move |_, key| secrets.get(key).cloned()))
+        .with_time_zone(Arc::new(move || time_zone.clone()))
+        .with_mqtt_watch(Arc::new(move |trace| {
+            println!("{trace}");
+            if matches!(trace, niles_plugins::mqtt::Trace::Status { .. }) {
+                heard.send_replace(true);
+            }
+        }));
+    if args.allow_loopback {
+        println!("loopback: this machine is reachable where a setting names it");
+        house = house.allowing_loopback();
+    }
     let runtime = Runtime::new(house, Limits::default())?;
     let printer = spawn_printer(bus.subscribe(), registry.clone());
 
@@ -250,6 +428,28 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
     let status = settled(&runtime, &id).await;
     println!("status: {}", status.line());
     print_tools(&runtime, &id);
+    if status == Status::Running {
+        match wait {
+            Wait::Nothing => {}
+            Wait::For(time) => {
+                println!("waiting {} s", time.as_secs());
+                tokio::time::sleep(time).await;
+            }
+            Wait::Mqtt => {
+                let heard =
+                    tokio::time::timeout(MQTT_FIRST_STATUS, first_status.wait_for(|heard| *heard))
+                        .await;
+                if heard.is_ok() {
+                    tokio::time::sleep(RETAINED_GRACE).await;
+                } else {
+                    println!(
+                        "no MQTT status within {} s; going on (--wait sets the time)",
+                        MQTT_FIRST_STATUS.as_secs()
+                    );
+                }
+            }
+        }
+    }
 
     if let Some(call) = &args.call {
         let [tool, json] = call.as_slice() else {
@@ -262,7 +462,7 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
     }
     if !args.dry_run {
         println!(
-            "Running; timers fire and changes print as they happen. Type `help` for commands, Ctrl-C to stop."
+            "Running; timers fire, and changes and MQTT traffic print as they happen. Type `help` for commands, Ctrl-C to stop."
         );
         prompt(&runtime, &id, &registry, &bus).await;
     }
@@ -530,8 +730,9 @@ async fn prompt(runtime: &Runtime, id: &str, registry: &DeviceRegistry, bus: &Ev
 }
 
 /// Where installed plugins are kept: the database, or nowhere a restart
-/// keeps — plugins need the database, so without one none are loaded.
-fn plugin_store(cfg: &niles_config::Config) -> Arc<dyn PluginStore> {
+/// keeps — plugins need the database, so without one none are loaded,
+/// and none can be installed. True when it is the database.
+fn plugin_store(cfg: &niles_config::Config) -> (Arc<dyn PluginStore>, bool) {
     let postgres = cfg.database.as_ref().and_then(|database| {
         let url = database.resolve_url().ok()?;
         let backend =
@@ -542,25 +743,29 @@ fn plugin_store(cfg: &niles_config::Config) -> Arc<dyn PluginStore> {
         ))
     });
     match postgres {
-        Some(store) => Arc::new(store),
+        Some(store) => (Arc::new(store), true),
         None => {
             tracing::info!("[plugins] no database, so no plugins are installed");
-            Arc::new(MemoryStore::new())
+            (Arc::new(MemoryStore::new()), false)
         }
     }
 }
 
-/// The runtime `serve` runs plugins in, or `None` — logged, and Niles
-/// carries on without plugins — if it cannot start.
+/// The runtime `serve` runs plugins in, and whether it keeps them in the
+/// database, or `None` — logged, and Niles carries on without plugins —
+/// if it cannot start.
 pub(crate) fn start_runtime(
     cfg: &niles_config::Config,
     settings: Arc<niles_config::ConfigStore>,
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
     tools: niles_tools::DynamicTools,
-) -> Option<Runtime> {
-    let house = House::new(registry, bus, plugin_store(cfg))
+) -> Option<(Runtime, bool)> {
+    let (store, database) = plugin_store(cfg);
+    let config = settings.clone();
+    let house = House::new(registry, bus, store)
         .with_tools(tools)
+        .with_time_zone(Arc::new(move || config.current().home.timezone.clone()))
         .with_settings(Arc::new(move |id| {
             settings
                 .current()
@@ -573,7 +778,7 @@ pub(crate) fn start_runtime(
             niles_config::secrets::get(&format!("plugins.{id}.{key}"))
         }));
     match Runtime::new(house, Limits::default()) {
-        Ok(runtime) => Some(runtime),
+        Ok(runtime) => Some((runtime, database)),
         Err(e) => {
             tracing::error!("[plugins] {e}; Niles runs without them");
             None
@@ -603,25 +808,160 @@ pub(crate) fn restart_on_settings(
     })
 }
 
+/// What a removed plugin leaves elsewhere: its settings under
+/// `[plugins.<id>]` and its pages and widgets under `[menu]` in the
+/// config store, and its secrets under `plugins.<id>.*` in the secret
+/// store.
+pub(crate) struct Forget {
+    pub settings: Arc<niles_config::ConfigStore>,
+    pub secrets: Option<Arc<niles_db::PostgresSecrets>>,
+}
+
+#[async_trait::async_trait]
+impl niles_plugins::Leftovers for Forget {
+    async fn forget(&self, id: &str) -> Result<(), String> {
+        let (menu, widgets) = self.settings.current().menu.forget_plugin(id);
+        let mut patch = toml::Table::new();
+        if !menu.is_empty() {
+            patch.insert("menu".into(), toml::Value::Table(menu));
+        }
+        let mut resets = vec![format!("plugins.{id}")];
+        if widgets {
+            resets.push(format!("menu.widgets.{id}"));
+        }
+        // One revision, so one undo brings all of it back.
+        self.settings
+            .apply_and_reset(&patch, &resets, niles_config::ChangeSource::Api)
+            .await
+            .map_err(|e| format!("its settings and menu entries: {e}"))?;
+        let Some(secrets) = &self.secrets else {
+            return Ok(());
+        };
+        let keys = secrets.keys().await.map_err(|e| e.to_string())?;
+        for key in secrets_of(id, &keys) {
+            secrets.clear(key).await.map_err(|e| e.to_string())?;
+        }
+        let values = secrets.load_all().await.map_err(|e| e.to_string())?;
+        niles_config::secrets::load(values);
+        Ok(())
+    }
+}
+
+/// The stored keys that are `id`'s: `plugins.<id>.<key>`, whether or
+/// not its manifest still declares them.
+fn secrets_of<'a>(id: &str, keys: &'a [String]) -> Vec<&'a str> {
+    let prefix = format!("plugins.{id}.");
+    keys.iter()
+        .filter(|k| k.starts_with(&prefix))
+        .map(String::as_str)
+        .collect()
+}
+
 /// The plugins, as the HTTP API asks after them.
-pub(crate) struct AppPlugins(pub Runtime);
+pub(crate) struct AppPlugins(pub niles_plugins::Installer);
+
+fn summary(listed: niles_plugins::Listed) -> niles_api::plugins::PluginSummary {
+    use niles_api::plugins::{PluginGroup, PluginSummary, PluginUpdate};
+    PluginSummary {
+        logo: listed
+            .has_logo
+            .then(|| format!("/plugins/{}/logo", listed.id)),
+        id: listed.id,
+        name: listed.name,
+        version: listed.version,
+        description: listed.description,
+        authors: listed.authors,
+        homepage: listed.homepage,
+        group: PluginGroup {
+            id: listed.group.id,
+            label: listed.group.label,
+        },
+        status: listed.status,
+        status_line: listed.status_line,
+        error: listed.error,
+        dropped_events: listed.dropped_events,
+        enabled: listed.enabled,
+        repo: listed.source.as_ref().map(|s| s.repo.clone()),
+        release_tag: listed.source.as_ref().map(|s| s.tag.clone()),
+        release_url: listed.source.map(|s| s.release_url),
+        installed_at: listed.installed_at,
+        updated_at: listed.updated_at,
+        previous_version: listed.previous_version,
+        update: listed.update.map(|u| PluginUpdate {
+            version: u.version,
+            tag: u.tag,
+            release_url: u.release_url,
+            notes: u.notes,
+            added: u.added,
+            removed: u.removed,
+        }),
+        settings: listed
+            .settings
+            .into_iter()
+            .map(|s| niles_api::plugins::PluginSetting {
+                key: s.key,
+                label: s.label,
+                kind: s.kind.to_string(),
+                required: s.required,
+                help: s.help,
+                default: s.default,
+                options: s
+                    .options
+                    .into_iter()
+                    .map(|(value, label)| niles_api::plugins::PluginOption { value, label })
+                    .collect(),
+                min: s.min,
+                max: s.max,
+                value: s.value,
+                set: s.set,
+            })
+            .collect(),
+        menu: listed
+            .menu
+            .into_iter()
+            .map(|m| niles_api::plugins::PluginPage {
+                id: m.id,
+                label: m.label,
+                icon: m.icon,
+                refresh_every: m.refresh_every,
+            })
+            .collect(),
+        widgets: listed
+            .widgets
+            .into_iter()
+            .map(|w| niles_api::plugins::PluginWidget {
+                id: w.id,
+                title: w.title,
+                room: w.room,
+                refresh_every: w.refresh_every,
+            })
+            .collect(),
+        interface: listed.interface,
+        older_interface: listed.older_interface,
+    }
+}
+
+fn refused(refusal: niles_plugins::Refusal) -> PluginFailure {
+    use niles_plugins::Refusal;
+    match refusal {
+        Refusal::BadRequest(s) => PluginFailure::BadRequest(s),
+        Refusal::NotFound(s) => PluginFailure::NotFound(s),
+        Refusal::Conflict(s) => PluginFailure::Conflict(s),
+        Refusal::Invalid(s) => PluginFailure::Invalid(s),
+        Refusal::Gone(s) => PluginFailure::Gone(s),
+        Refusal::Upstream(s) => PluginFailure::Upstream(s),
+        Refusal::Unavailable(s) => PluginFailure::Unavailable(s),
+    }
+}
+
+fn as_json(preview: niles_plugins::Preview) -> Result<serde_json::Value, PluginFailure> {
+    serde_json::to_value(preview).map_err(|e| PluginFailure::Unavailable(e.to_string()))
+}
 
 #[async_trait::async_trait]
 impl niles_api::plugins::Plugins for AppPlugins {
-    fn list(&self) -> Vec<niles_api::plugins::PluginSummary> {
-        self.0
-            .plugins()
-            .into_iter()
-            .map(|p| niles_api::plugins::PluginSummary {
-                status: p.status.kind().to_string(),
-                status_line: p.status.line(),
-                id: p.id,
-                name: p.name,
-                version: p.version,
-                error: p.error,
-                dropped_events: p.dropped_events,
-            })
-            .collect()
+    async fn list(&self) -> Vec<PluginSummary> {
+        self.0.list().await.into_iter().map(summary).collect()
     }
 
     async fn render(
@@ -634,7 +974,12 @@ impl niles_api::plugins::Plugins for AppPlugins {
             room: viewer.room,
             person: viewer.person,
         };
-        let surface = self.0.render(id, surface, context).await.map_err(failure)?;
+        let surface = self
+            .0
+            .runtime()
+            .render(id, surface, context)
+            .await
+            .map_err(failure)?;
         serde_json::to_value(surface)
             .map_err(|e| niles_api::plugins::SurfaceFailure::Refused(e.to_string()))
     }
@@ -656,11 +1001,132 @@ impl niles_api::plugins::Plugins for AppPlugins {
         };
         let outcome = self
             .0
+            .runtime()
             .act(id, surface, control, value, context)
             .await
             .map_err(failure)?;
         serde_json::to_value(outcome)
             .map_err(|e| niles_api::plugins::SurfaceFailure::Refused(e.to_string()))
+    }
+
+    async fn preview(
+        &self,
+        repo: &str,
+        tag: Option<&str>,
+    ) -> Result<serde_json::Value, PluginFailure> {
+        as_json(self.0.preview(repo, tag).await.map_err(refused)?)
+    }
+
+    async fn install(
+        &self,
+        token: &str,
+        sha256: Option<&str>,
+    ) -> Result<PluginSummary, PluginFailure> {
+        self.0
+            .install(token, sha256)
+            .await
+            .map(summary)
+            .map_err(refused)
+    }
+
+    async fn check_update(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
+        self.0.check_update(id).await.map_err(refused)?;
+        self.0
+            .list()
+            .await
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(summary)
+            .ok_or_else(|| PluginFailure::NotFound(format!("There is no plugin called {id}.")))
+    }
+
+    async fn update_preview(&self, id: &str) -> Result<serde_json::Value, PluginFailure> {
+        as_json(self.0.update_preview(id).await.map_err(refused)?)
+    }
+
+    async fn update(
+        &self,
+        id: &str,
+        token: &str,
+        sha256: Option<&str>,
+    ) -> Result<PluginSummary, PluginFailure> {
+        self.0
+            .update(id, token, sha256)
+            .await
+            .map(summary)
+            .map_err(refused)
+    }
+
+    async fn roll_back(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
+        self.0.roll_back(id).await.map(summary).map_err(refused)
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<PluginSummary, PluginFailure> {
+        let done = if enabled {
+            self.0.enable(id).await
+        } else {
+            self.0.disable(id).await
+        };
+        done.map(summary).map_err(refused)
+    }
+
+    async fn remove(&self, id: &str) -> Result<(), PluginFailure> {
+        self.0.remove(id).await.map_err(refused)
+    }
+
+    async fn logo(&self, id: &str) -> Result<Option<String>, PluginFailure> {
+        self.0.logo(id).await.map_err(refused)
+    }
+
+    async fn log(&self, id: &str) -> Result<Vec<niles_api::plugins::PluginLogLine>, PluginFailure> {
+        if !self.0.list().await.iter().any(|p| p.id == id) {
+            return Err(PluginFailure::NotFound(format!(
+                "There is no plugin called {id}."
+            )));
+        }
+        Ok(self
+            .0
+            .runtime()
+            .log(id)
+            .into_iter()
+            .map(|line| niles_api::plugins::PluginLogLine {
+                at: line.at,
+                level: match line.level {
+                    niles_plugins::log::Level::Debug => "debug",
+                    niles_plugins::log::Level::Info => "info",
+                    niles_plugins::log::Level::Warn => "warn",
+                    niles_plugins::log::Level::Error => "error",
+                }
+                .to_string(),
+                message: line.message,
+                niles: line.niles,
+            })
+            .collect())
+    }
+
+    async fn image(
+        &self,
+        id: &str,
+        src: &str,
+    ) -> Result<niles_api::plugins::PluginImage, PluginFailure> {
+        use niles_plugins::images::ImageError;
+        match self.0.runtime().image(id, src).await {
+            Ok(image) => Ok(niles_api::plugins::PluginImage {
+                mime: image.mime.to_string(),
+                bytes: image.bytes,
+            }),
+            Err(ImageError::NotAllowed(why)) => Err(PluginFailure::BadRequest(why)),
+            Err(ImageError::NotFound(why)) => Err(PluginFailure::NotFound(why)),
+            Err(ImageError::Upstream(why)) => Err(PluginFailure::Upstream(why)),
+        }
+    }
+
+    async fn secret_settings(&self) -> Vec<(String, String)> {
+        self.0.secret_settings().await
+    }
+
+    fn restart(&self, id: &str) {
+        self.0.restart(id);
     }
 }
 
@@ -701,6 +1167,94 @@ key = "api_key"
 label = "API key"
 type = "secret"
 "#;
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        dev: DevArgs,
+    }
+
+    fn dev_args(args: &[&str]) -> DevArgs {
+        use clap::Parser as _;
+        Cli::try_parse_from(["dev", "."].iter().chain(args))
+            .unwrap()
+            .dev
+    }
+
+    #[test]
+    fn dev_waits_for_mqtt_only_when_something_is_asked_of_a_plugin_that_has_it() {
+        let plain = Manifest::parse(MANIFEST).unwrap();
+        let mqtt = Manifest::parse(&MANIFEST.replace(
+            "[[settings]]\nkey = \"area\"",
+            "[permissions]\nmqtt = [{ name = \"b\", host = \"broker.lan\", tls = \"none\" }]\n\n[[settings]]\nkey = \"area\"",
+        ).replace("interface = \"0.1\"", "interface = \"0.2\""))
+        .unwrap();
+        assert!(!mqtt.permissions.mqtt.is_empty());
+
+        let render = dev_args(&["--render", "page"]);
+        assert_eq!(wait_plan(&render, &mqtt), Wait::Mqtt);
+        assert_eq!(wait_plan(&render, &plain), Wait::Nothing);
+        assert_eq!(wait_plan(&dev_args(&[]), &mqtt), Wait::Nothing);
+        assert_eq!(
+            wait_plan(&dev_args(&["--call", "t", "{}", "--wait", "5"]), &plain),
+            Wait::For(Duration::from_secs(5))
+        );
+        assert_eq!(
+            wait_plan(&dev_args(&["--render", "page", "--wait", "0"]), &mqtt),
+            Wait::Nothing
+        );
+    }
+
+    #[test]
+    fn loopback_is_a_dev_flag_and_off_unless_asked() {
+        assert!(!dev_args(&[]).allow_loopback);
+        assert!(dev_args(&["--allow-loopback"]).allow_loopback);
+    }
+
+    #[test]
+    fn the_dev_time_zone_is_the_flags_else_this_machines() {
+        assert_eq!(
+            dev_time_zone(Some("Europe/Copenhagen")).unwrap(),
+            "Europe/Copenhagen"
+        );
+        assert!(dev_time_zone(Some("Mars/Olympus")).is_err());
+        let local = dev_time_zone(None).unwrap();
+        assert!(local.parse::<chrono_tz::Tz>().is_ok(), "{local}");
+    }
+
+    #[test]
+    fn the_newer_of_the_packaged_and_the_built_component_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let release = dir
+            .path()
+            .join("target")
+            .join("wasm32-wasip2")
+            .join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let packaged = dir.path().join("integration.wasm");
+        let built = release.join("plugin.wasm");
+        let write = |path: &Path, age: u64| {
+            std::fs::write(path, b"\0asm").unwrap();
+            let when = std::time::SystemTime::now() - Duration::from_secs(age);
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        };
+
+        write(&packaged, 60);
+        assert_eq!(pick_wasm(dir.path()).unwrap(), (packaged.clone(), None));
+
+        write(&built, 10);
+        let (chosen, why) = pick_wasm(dir.path()).unwrap();
+        assert_eq!(chosen, built);
+        assert!(why.unwrap().contains("newer than"));
+
+        write(&packaged, 1);
+        assert_eq!(pick_wasm(dir.path()).unwrap().0, packaged);
+    }
 
     #[test]
     fn dev_settings_come_from_the_file_and_the_flags_typed_by_the_manifest() {
@@ -773,6 +1327,124 @@ type = "secret"
         ));
         assert!(house_event("presence sideways", &registry, &bus).is_err());
         assert!(house_event("weather sunny", &registry, &bus).is_err());
+    }
+
+    #[test]
+    fn a_plugins_secrets_are_the_keys_under_its_id() {
+        let keys: Vec<String> = [
+            "plugins.hello.token",
+            "plugins.hello.old_key",
+            "plugins.hello2.token",
+            "plugins.hellox",
+            "mqtt.password",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            secrets_of("hello", &keys),
+            vec!["plugins.hello.token", "plugins.hello.old_key"]
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_plugin_forgets_its_settings_and_only_its() {
+        use niles_plugins::Leftovers;
+        let settings =
+            Arc::new(niles_config::ConfigStore::from_str_in_memory("").expect("an empty config"));
+        let patch: toml::Table = toml::from_str(
+            "[plugins.hello]\ngreeting = \"Hej\"\n[plugins.spotprice]\narea = \"DK2\"\n",
+        )
+        .unwrap();
+        settings
+            .apply(&patch, niles_config::ChangeSource::Api)
+            .await
+            .unwrap();
+        let forget = Forget {
+            settings: settings.clone(),
+            secrets: None,
+        };
+        forget.forget("hello").await.unwrap();
+        let now = settings.current();
+        assert!(!now.plugins.contains_key("hello"));
+        assert_eq!(now.plugins["spotprice"]["area"].as_str(), Some("DK2"));
+        forget.forget("never_installed").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn removing_a_plugin_takes_its_pages_and_widgets_out_of_the_menu() {
+        use niles_plugins::Leftovers;
+        let settings =
+            Arc::new(niles_config::ConfigStore::from_str_in_memory("").expect("an empty config"));
+        let patch: toml::Table = toml::from_str(
+            "[menu]\norder = [\"chat\", \"hello.page\", \"spotprice.electricity\"]\n\
+             hidden = [\"hello.other\"]\n\
+             [menu.widgets.hello]\ncard = \"front\"\n\
+             [menu.widgets.spotprice]\nnow = \"room:kitchen\"\n",
+        )
+        .unwrap();
+        settings
+            .apply(&patch, niles_config::ChangeSource::Api)
+            .await
+            .unwrap();
+        let forget = Forget {
+            settings: settings.clone(),
+            secrets: None,
+        };
+        forget.forget("hello").await.unwrap();
+        let menu = &settings.current().menu;
+        assert_eq!(menu.order, ["chat", "spotprice.electricity"]);
+        assert!(menu.hidden.is_empty());
+        assert!(!menu.widgets.contains_key("hello"));
+        assert_eq!(menu.widgets["spotprice"]["now"], "room:kitchen");
+    }
+
+    /// What the setup panel will do: write `[plugins.<id>]` through
+    /// `PATCH /config`'s store, and see the plugin start again with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_settings_change_restarts_the_plugin_with_the_new_values() {
+        let settings =
+            Arc::new(niles_config::ConfigStore::from_str_in_memory("").expect("an empty config"));
+        let read = settings.clone();
+        let house = House::new(
+            Arc::new(DeviceRegistry::new()),
+            EventBus::default(),
+            Arc::new(MemoryStore::new()),
+        )
+        .with_settings(Arc::new(move |id| {
+            read.current().plugins.get(id).cloned().unwrap_or_default()
+        }));
+        let runtime = Runtime::new(house, Limits::default()).unwrap();
+        runtime
+            .install(
+                include_str!("../../niles-plugins/tests/fixtures/hello/niles-integration.toml"),
+                include_bytes!("../../niles-plugins/tests/fixtures/hello.wasm").to_vec(),
+            )
+            .await
+            .unwrap();
+        let _restarts = restart_on_settings(runtime.clone(), settings.clone());
+        let greeting = || async {
+            let until = std::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Ok(text) = runtime.call_tool("hello", "greet", "{}").await {
+                    return text;
+                }
+                assert!(std::time::Instant::now() < until, "hello never answered");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        assert_eq!(greeting().await, "Hello, world!");
+
+        let patch: toml::Table = toml::from_str("[plugins.hello]\ngreeting = \"Hej\"\n").unwrap();
+        settings
+            .apply(&patch, niles_config::ChangeSource::Api)
+            .await
+            .unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(20);
+        while greeting().await != "Hej, world!" {
+            assert!(std::time::Instant::now() < until, "never restarted");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        runtime.shutdown().await;
     }
 
     #[test]

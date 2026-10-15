@@ -1,9 +1,10 @@
 import { valueAt } from "@/lib/api";
 
-/** The menu entries that can be moved. Home and My profile are not:
-    Home is the main navigation's first entry, My profile the avatar
-    menu's. Settings moves but does not hide — it is the way back here. */
-export type MenuEntry =
+/** The built-in menu entries that can be moved. Home and My profile
+    are not: Home is the main navigation's first entry, My profile the
+    avatar menu's. Settings moves but does not hide — it is the way back
+    here. */
+export type BuiltinEntry =
   | "groceries"
   | "chat"
   | "media"
@@ -11,9 +12,13 @@ export type MenuEntry =
   | "automations"
   | "skills";
 
-/** Every movable entry, in the order the main navigation shows them
-    before anybody arranges it. */
-export const MOVABLE: MenuEntry[] = [
+/** A built-in entry, or a plugin's page as `<plugin-id>.<page-id>`
+    (`spotprice.electricity`), which moves and hides like the others. */
+export type MenuEntry = BuiltinEntry | `${string}.${string}`;
+
+/** Every movable built-in entry, in the order the main navigation shows
+    them before anybody arranges it. */
+export const MOVABLE: BuiltinEntry[] = [
   "groceries",
   "chat",
   "media",
@@ -23,14 +28,14 @@ export const MOVABLE: MenuEntry[] = [
 ];
 
 /** Where Settings sits before anybody moves it. */
-const AVATAR_AT_FIRST: MenuEntry[] = ["settings"];
+const AVATAR_AT_FIRST: BuiltinEntry[] = ["settings"];
 
 /** Entries that go to the end of the avatar menu, not the main
     navigation, while neither list names them. Automations is opened
     now and then, to look or to fix one, and Skills to see what Niles
     has learned: neither has a claim on a tab, and a menu arranged
     before they existed should not gain one. */
-export const AVATAR_UNLESS_PLACED: MenuEntry[] = ["automations", "skills"];
+export const AVATAR_UNLESS_PLACED: BuiltinEntry[] = ["automations", "skills"];
 
 /** When the Media entry is in the menu. */
 export type MediaShown = "playing" | "always" | "never";
@@ -57,7 +62,7 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
 }
 
-function isEntry(value: string): value is MenuEntry {
+export function isBuiltin(value: string): value is BuiltinEntry {
   return (MOVABLE as string[]).includes(value);
 }
 
@@ -72,8 +77,18 @@ function isEntry(value: string): value is MenuEntry {
  *
  * `playing` is whether anything plays now, for Media's "when something
  * plays"; Settings leaves it out, and lists Media either way.
+ *
+ * `pages` are the installed plugins' pages (`spotprice.electricity`).
+ * They join like a page added in a later version; an entry naming a
+ * plugin that is not installed, or is off, is left out.
  */
-export function menuLayout(effective: unknown, playing?: boolean): MenuLayout {
+export function menuLayout(
+  effective: unknown,
+  playing?: boolean,
+  pages: string[] = [],
+): MenuLayout {
+  const isEntry = (value: string): value is MenuEntry =>
+    isBuiltin(value) || pages.includes(value);
   const hidden = new Set(strings(valueAt(effective, "menu.hidden")));
   const written = valueAt(effective, "menu.avatar");
   const placed = [
@@ -82,9 +97,11 @@ export function menuLayout(effective: unknown, playing?: boolean): MenuLayout {
   const arranged = strings(valueAt(effective, "menu.order")).filter(isEntry);
   const avatarIds = [
     ...placed,
-    ...AVATAR_UNLESS_PLACED.filter((id) => !placed.includes(id) && !arranged.includes(id)),
+    ...AVATAR_UNLESS_PLACED.filter(
+      (id) => !placed.includes(id) && !arranged.includes(id),
+    ),
   ];
-  const mainIds = [...new Set([...arranged, ...MOVABLE])].filter(
+  const mainIds = [...new Set<MenuEntry>([...arranged, ...MOVABLE, ...pages.filter(isEntry)])].filter(
     (id) => !avatarIds.includes(id),
   );
   const media = mediaShownOf(effective);

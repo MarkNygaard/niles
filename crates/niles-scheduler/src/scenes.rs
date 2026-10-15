@@ -417,6 +417,24 @@ mod tests {
     }
 
     #[test]
+    fn a_light_kept_out_of_the_room_is_not_in_the_scene() {
+        let store = SceneStore::new();
+        let reg = registry_with(&[
+            ("office", "lamp", state(true, 80, 2700)),
+            ("office", "chamber_light", state(true, 100, 4000)),
+        ]);
+        let mut chamber = reg.get(&dev_in("office", "chamber_light")).unwrap();
+        chamber.room_light = false;
+        reg.upsert(chamber);
+
+        assert_eq!(store.save("work", &reg, None, &HashSet::new()), 1);
+        assert_eq!(
+            store.get("work").unwrap()[0].device_id,
+            dev_in("office", "lamp")
+        );
+    }
+
+    #[test]
     fn save_drops_non_light_devices() {
         // Sensor-style device: only sensor fields set. Scenes are
         // about lights (ARCHITECTURE.md:491), so it should be filtered

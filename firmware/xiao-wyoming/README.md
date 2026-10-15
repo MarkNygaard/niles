@@ -41,7 +41,7 @@ noise suppression           ► wake word (microWakeWord)        (TCP :10300)
                               16 kHz 16-bit PCM                  ▼
                             ► TCP stream (Wyoming framing) ───► session accumulator
                                                                  ▼
-                                                                Groq Whisper STT
+                                                                ElevenLabs STT
                                                                  ▼
                                                                 Tier 0 / Tier 1 → act
 ```

@@ -19,6 +19,18 @@ export function isControllable(device: Device): boolean {
   return device.class === "outlet" && device.lamp !== false;
 }
 
+/**
+ * Whether it is one of the lights the room's switch moves and its "N
+ * on" counts. A light a plugin keeps out of its room's lights — a 3D
+ * printer's chamber light, which must not go off with the room
+ * mid-print — is still on the card with a switch of its own, but is
+ * neither. The server says so with `lamp: false`, as it does for a plug
+ * that is not a lamp.
+ */
+export function isRoomLight(device: Device): boolean {
+  return isControllable(device) && device.lamp !== false;
+}
+
 /** Whether it takes a level, as opposed to only on and off. */
 export function isDimmable(device: Device): boolean {
   return device.class === "light";
@@ -48,7 +60,9 @@ export interface Room {
   label: string;
   /** The ones the source can currently reach. */
   lights: Device[];
-  /** How many of them are reporting on. */
+  /** How many of them the room's switch moves: see `isRoomLight`. */
+  switched: number;
+  /** How many of those are reporting on. */
   on: number;
   /** The blinds the source can reach, kept apart from the lights. */
   blinds: Device[];
@@ -137,10 +151,11 @@ export function roomsOf(
         name,
         label: humanize(name),
         lights,
+        switched: lights.filter(isRoomLight).length,
         unreachable: [...controllable, ...blinds]
           .filter((d) => d.available === false)
           .map((d) => humanize(d.name)),
-        on: lights.filter((light) => light.state.on === true).length,
+        on: lights.filter((light) => isRoomLight(light) && light.state.on === true).length,
         blinds: blinds.filter((d) => d.available !== false),
         meters: all
           .filter((d) => isMeter(d) && d.available !== false)
@@ -203,6 +218,15 @@ function firstReported(
  */
 export function roomToggle(room: Room): SetLight {
   return { on: room.on === 0 };
+}
+
+/**
+ * Whether the card has a switch for the whole room. A room with blinds
+ * and no lights has nothing for it to switch, and nor does one whose
+ * only lights are kept out of it; pressing either opens the room.
+ */
+export function hasRoomSwitch(room: Room): boolean {
+  return room.switched > 0 || (room.lights.length === 0 && room.blinds.length === 0);
 }
 
 /**
@@ -319,12 +343,17 @@ export function roomSummary(room: Room): string {
   if (room.lights.length === 0 && room.blinds.length > 0) {
     return blindsSummary(room.blinds);
   }
-  if (room.lights.length === 1) {
-    return room.on === 1 ? "On" : "Off";
+  // The room's own lights, or, in a room that has none but a light kept
+  // out of them, that light: it is still worth saying whether it is on.
+  const total = room.switched > 0 ? room.switched : room.lights.length;
+  const on =
+    room.switched > 0 ? room.on : room.lights.filter((l) => l.state.on === true).length;
+  if (total === 1) {
+    return on === 1 ? "On" : "Off";
   }
-  if (room.on === 0) return `${room.lights.length} lights, all off`;
-  if (room.on === room.lights.length) return `All ${room.on} on`;
-  return `${room.on} of ${room.lights.length} on`;
+  if (on === 0) return `${total} lights, all off`;
+  if (on === total) return `All ${on} on`;
+  return `${on} of ${total} on`;
 }
 
 /** The blinds, the way the lights are summed up: any opening counts. */
@@ -368,9 +397,9 @@ export type Target =
 export function targets(device: Device, target: Target): boolean {
   switch (target.scope) {
     case "house":
-      return isControllable(device);
+      return isRoomLight(device);
     case "room":
-      return device.room === target.room && isControllable(device);
+      return device.room === target.room && isRoomLight(device);
     case "light":
       return device.id === target.light.id;
   }
@@ -391,7 +420,7 @@ export function houseToggle(rooms: Room[]): SetLight {
 /** How the bar above the rooms reads. */
 export function houseSummary(rooms: Room[]): string {
   const on = rooms.reduce((total, room) => total + room.on, 0);
-  const total = rooms.reduce((count, room) => count + room.lights.length, 0);
+  const total = rooms.reduce((count, room) => count + room.switched, 0);
   if (on === 0) return `Nothing on, ${total} lights`;
   if (on === total) return `All ${total} on`;
   return `${on} of ${total} on`;

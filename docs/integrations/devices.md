@@ -1,8 +1,10 @@
 # Devices
 
-> v0.1 of the interface. Niles 0.2.0 runs it: the runtime, `niles plugin
-> check` and `niles plugin dev` are built. Not yet: installing from GitHub,
-> the setup panel, and pages and widgets drawn in the app.
+> Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
+> installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
+> dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
+> off and removing, and in the app the generated setup panel, the plugin's
+> log, and its pages and widgets.
 
 A plugin with `devices = true` can add devices to the house. Once added, Niles
 treats them like its own: they appear on their room's card in the app, voice
@@ -45,7 +47,8 @@ To move a device to another room, `remove` the old id and `upsert` the new one.
 | `sensor` | Anything that only reports | any field, and [readings](#readings) | no |
 
 The class decides how Niles treats a device: only `light`s are "the lights"
-of a room and follow the curve; `outlet`s switch but never dim; `contact` and
+of a room and follow the curve (unless you keep one out, see
+[below](#lights-and-the-room)); `outlet`s switch but never dim; `contact` and
 `motion` have their own rule triggers; a `cover` is never one of the lights.
 Choose by what the device *is*, not what it reports right now.
 
@@ -207,7 +210,47 @@ fn set_device(id: String, desired: DeviceState) -> Result<(), String> {
   curve gets a `set_device` once a minute. Send the command and return; do not
   poll until it settles.
 
-## Buttons
+## Lights and the room
+
+A `light` is one of its room's lights. That means Niles switches it with
+everything else that acts on the room's lights as a group:
+
+- "turn off the office lights", "dim the office", "make it warmer in here",
+  and "turn off all the lights";
+- the room's wall switch, and the room and house switches in the app;
+- scenes, which save and restore the room's lights;
+- presence: when everybody leaves, every light that is on goes off;
+- the lighting curve and the morning routine, which send it a `set_device`
+  about once a minute while it is on, with the curve's brightness and colour
+  temperature. A light the household lists as ambient is held at its own
+  setting instead.
+
+Some lights are not the room's to switch. A 3D printer's chamber light lights
+the camera and the failure detection, and must not go off when someone says
+"turn off the office lights" mid-print. Keep such a light out (interface
+0.2.1):
+
+```rust
+devices::upsert(&chamber_light).map_err(|e| format!("{e:?}"))?;
+devices::set_room_light("office/chamber_light", false).map_err(|e| format!("{e:?}"))?;
+```
+
+It is then left alone by everything in the list above. It is still a light:
+it is switched when asked for by name ("turn on the printer light"), by the
+assistant's tools, by rules that name it, and from its own row on the room's
+card, which shows it but does not count it in "2 of 3 on" or switch it with
+the room. The flag is kept with the device, across `upsert` calls and
+restarts; call it again with `true` to put the light back among the room's.
+
+A plug (`outlet`) is one of the lights only when the household lists it as a
+lamp; `set_room_light(id, false)` keeps it out even then. Other classes are
+never lights, and the flag changes nothing for them.
+
+## Actions
+
+A device reports an action when something happens on it once: a press on a
+button, or an event on any other device, such as a print finishing. An action
+is not state: it fires once, can start rules, and is never replayed.
 
 A wall switch or remote is a `switch` device that never takes commands and
 reports actions:
@@ -217,4 +260,19 @@ devices::report_action("hall/remote", "double").map_err(|e| format!("{e:?}"))?;
 ```
 
 The household then writes a rule on it ("when the hall remote is pressed
-twice, turn everything off").
+twice, turn everything off"). A press on a `switch` that Niles knows the
+meaning of (`on`, `off`, `on_press`, `up_hold`...) also switches its room's
+lights, as a wall switch does.
+
+Any other class may report actions too:
+
+```rust
+devices::report_action("office/printer", "finished").map_err(|e| format!("{e:?}"))?;
+```
+
+The rule editor then offers the device for "when … reports", and reads the
+rule as "When the office printer reports finished". Niles remembers that a
+device has reported an action, so it stays on offer after a restart. Only a
+`switch`'s actions switch lights: the printer saying `off` switches nothing.
+Use short `snake_case` words, at most 64 bytes: `finished`, `failed`,
+`paused`.

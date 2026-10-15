@@ -2,7 +2,7 @@
 //!
 //! Wyoming `audio-chunk` events carry raw PCM bytes with sample-rate,
 //! sample-width, and channel-count declared in the preceding
-//! `audio-start`. Groq's transcription endpoint expects a complete
+//! `audio-start`. A transcription endpoint expects a complete
 //! container (WAV/MP3/FLAC/...) — wrapping the PCM in a standard
 //! RIFF/WAVE header is the cheapest way to satisfy that.
 

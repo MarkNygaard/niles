@@ -19,10 +19,19 @@
 mod bindings;
 pub mod check;
 pub mod error;
+pub mod github;
 mod host;
 pub mod http;
+mod human;
+pub mod images;
+pub mod install;
+pub mod log;
 pub mod manifest;
+pub mod mqtt;
+#[cfg(test)]
+mod mqtt_tests;
 mod output;
+pub mod permissions;
 pub mod policy;
 pub mod runtime;
 pub mod store;
@@ -31,7 +40,9 @@ pub mod ui;
 mod worker;
 
 pub use error::{Error, Result};
+pub use github::GitHub;
+pub use install::{Installer, Leftovers, Listed, Options, Preview, Refusal};
 pub use manifest::Manifest;
 pub use runtime::{House, Limits, PluginInfo, Runtime, Status, SurfaceError};
-pub use store::{MemoryStore, PluginStore};
+pub use store::{MemoryStore, Package, PluginStore, Source, Update};
 pub use ui::{ActionOutcome, ActionValue, Context, Surface};

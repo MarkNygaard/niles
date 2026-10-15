@@ -2,8 +2,8 @@
 //! once, so an author fixes it in one pass.
 //!
 //! The manifest against `manifest.md`; the logo against the sanitiser's
-//! rules; the component compiled and linked against the
-//! `niles:integration/plugin@0.1` world; and its tools, asked for
+//! rules; the component compiled and linked against the world its
+//! manifest's `interface` names, `niles:integration/plugin@0.1` or `@0.2`; and its tools, asked for
 //! without `init` in the same sandbox and limits a real run has, against
 //! the rules in `tools.md`.
 
@@ -112,8 +112,9 @@ async fn check_component(manifest: &Manifest, bytes: Vec<u8>, report: &mut Repor
     };
     report.imports = inspected.imports;
     report.passed.push(format!(
-        "component: {} KiB, targets niles:integration/plugin@0.1 and exports every function",
-        size / 1024
+        "component: {} KiB, targets niles:integration/plugin@{} and exports every function",
+        size / 1024,
+        inspected.interface
     ));
     let tools = match inspected.tools {
         Ok(tools) => tools,
@@ -151,7 +152,9 @@ async fn check_component(manifest: &Manifest, bytes: Vec<u8>, report: &mut Repor
 
 struct Inspected {
     imports: Vec<String>,
-    tools: Result<Vec<crate::bindings::ToolDef>, String>,
+    /// The world it targets: `0.1` or `0.2`.
+    interface: &'static str,
+    tools: Result<Vec<crate::bindings::niles::integration::types::ToolDef>, String>,
 }
 
 fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Inspected, String> {
@@ -159,21 +162,13 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
     let linker = crate::runtime::linker(&engine).map_err(|e| e.to_string())?;
     let component = wasmtime::component::Component::new(&engine, &bytes)
         .map_err(|e| format!("is not a WebAssembly component: {}", e.root_cause()))?;
-    let mut imports = Vec::new();
-    for (name, _) in component.component_type().imports(&engine) {
-        if let Some(version) = name
-            .strip_prefix("niles:integration/")
-            .and_then(|rest| rest.split_once('@'))
-            .map(|(_, v)| v)
-            && !version.starts_with("0.1.")
-        {
-            return Err(format!(
-                "imports {name}; this Niles runs niles:integration 0.1"
-            ));
-        }
-        imports.push(name.to_string());
-    }
-    let pre = crate::worker::prepare(&engine, &linker, &bytes)?;
+    let imports = component
+        .component_type()
+        .imports(&engine)
+        .map(|(name, _)| name.to_string())
+        .collect();
+    let interface = crate::worker::interface_of(&component, &engine)?;
+    let pre = crate::worker::prepare(&engine, &linker, &bytes, &plugin.manifest.interface)?;
 
     let ticking = engine.weak();
     std::thread::spawn(move || {
@@ -188,6 +183,7 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
         house,
         toml::Table::new(),
         crate::policy::HttpPolicy::default(),
+        crate::policy::MqttPolicy::default(),
     );
     let mut store = wasmtime::Store::new(&engine, state);
     store.limiter(|state| &mut state.memory);
@@ -198,7 +194,11 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
         .instantiate(&mut store)
         .and_then(|bindings| bindings.call_tools(&mut store))
         .map_err(|e| format!("tools() did not answer: {}", e.root_cause()));
-    Ok(Inspected { imports, tools })
+    Ok(Inspected {
+        imports,
+        interface,
+        tools,
+    })
 }
 
 /// What the install's sanitiser accepts: an SVG on a 24×24 view box,
@@ -206,6 +206,20 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
 /// transform attributes. No script, style, image, use, foreignObject,
 /// links or external references, and at most 32 KiB.
 pub fn check_logo(svg: &[u8]) -> Result<(), String> {
+    sanitise_logo(svg).map(|_| ())
+}
+
+/// The logo as Niles keeps and serves it, or why it is refused.
+///
+/// An allowlist, applied twice. First the parsed document is checked
+/// against it, and anything outside it refuses the logo with a reason
+/// for its author, as `niles plugin check` reports it. Then the SVG is
+/// written out again from the parse, element by allowed element and
+/// attribute by allowed attribute, so what is stored is only ever what
+/// the allowlist describes: comments, processing instructions, text and
+/// whatever the parser tolerated are not carried over. roxmltree refuses
+/// a DTD, so there are no entities to expand.
+pub fn sanitise_logo(svg: &[u8]) -> Result<String, String> {
     const ELEMENTS: &[&str] = &[
         "svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon",
     ];
@@ -286,7 +300,45 @@ pub fn check_logo(svg: &[u8]) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    let mut out = String::with_capacity(svg.len());
+    write_element(root, &mut out);
+    Ok(out)
+}
+
+fn write_element(node: roxmltree::Node, out: &mut String) {
+    let name = node.tag_name().name();
+    out.push('<');
+    out.push_str(name);
+    if name == "svg" {
+        out.push_str(r#" xmlns="http://www.w3.org/2000/svg""#);
+    }
+    for attribute in node.attributes() {
+        out.push(' ');
+        out.push_str(attribute.name());
+        out.push_str("=\"");
+        for c in attribute.value().chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+    let children: Vec<_> = node.children().filter(|n| n.is_element()).collect();
+    if children.is_empty() {
+        out.push_str("/>");
+        return;
+    }
+    out.push('>');
+    for child in children {
+        write_element(child, out);
+    }
+    out.push_str("</");
+    out.push_str(name);
+    out.push('>');
 }
 
 #[cfg(test)]
@@ -323,5 +375,36 @@ mod tests {
         );
         let big = wrap(&format!(r#"<path d="M0 0{}"/>"#, " L1 1".repeat(8000)));
         assert!(check_logo(big.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_kept_logo_is_rewritten_from_the_allowlist() {
+        let svg = br##"<?xml version="1.0"?>
+<!-- made by hand -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24">
+  <?php echo 1; ?>
+  <g fill="currentColor"><path d="M1 1h2" fill="#F5B400"/>stray text</g>
+</svg>"##;
+        assert_eq!(
+            sanitise_logo(svg).unwrap(),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24"><g fill="currentColor"><path d="M1 1h2" fill="#F5B400"/></g></svg>"##
+        );
+    }
+
+    #[test]
+    fn a_dtd_and_its_entities_are_refused() {
+        let svg = br#"<!DOCTYPE svg [<!ENTITY a "aaaaaaaaaa">]>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="&a;"/></svg>"#;
+        assert!(sanitise_logo(svg).is_err());
+    }
+
+    #[test]
+    fn values_are_escaped_when_written_out() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0" fill="a&amp;&quot;b"/></svg>"#;
+        assert!(
+            sanitise_logo(svg)
+                .unwrap()
+                .contains(r#"fill="a&amp;&quot;b""#)
+        );
     }
 }

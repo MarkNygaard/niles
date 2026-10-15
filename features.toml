@@ -411,3 +411,135 @@ id = "api-plugins"
 category = "api.read"
 summary = "GET /plugins lists installed plugins with their status and last error"
 since_pr = 388
+
+[[feature]]
+id = "plugins-install"
+category = "runtime.plugins"
+summary = "Install a plugin from a GitHub release after a preview of its permissions; exactly the previewed files run"
+since_pr = 390
+
+[[feature]]
+id = "plugins-update-rollback"
+category = "runtime.plugins"
+summary = "Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails"
+since_pr = 390
+
+[[feature]]
+id = "plugins-disable-remove"
+category = "runtime.plugins"
+summary = "Turn a plugin off and keep its data, or remove it with its devices, storage, settings and secrets"
+since_pr = 390
+
+[[feature]]
+id = "api-plugins-manage"
+category = "api.write"
+summary = "POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin"
+since_pr = 390
+
+[[feature]]
+id = "ui-plugins"
+category = "ui.integrations"
+summary = "Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it"
+since_pr = 390
+
+[[feature]]
+id = "ui-plugin-setup"
+category = "ui.integrations"
+summary = "A plugin's panel: a setup form generated from its manifest's settings, its log, and where its widgets go"
+since_pr = 391
+
+[[feature]]
+id = "ui-plugin-pages"
+category = "ui.integrations"
+summary = "Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees"
+since_pr = 391
+
+[[feature]]
+id = "api-plugin-log-image"
+category = "api.read"
+summary = "GET /plugins/{id}/log for a plugin's last lines, and /plugins/{id}/image for its pages' pictures, fetched by Niles"
+since_pr = 391
+
+[[feature]]
+id = "plugins-mqtt"
+category = "runtime.plugins"
+summary = "Plugins on interface 0.2 talk MQTT to the brokers their manifest names; Niles holds the connection and reconnects"
+since_pr = 392
+
+[[feature]]
+id = "plugins-mqtt-trust-device"
+category = "runtime.plugins"
+summary = "A device's own MQTT certificate is trusted on first use and pinned; a changed one waits for the household to accept it"
+since_pr = 392
+
+[[feature]]
+id = "plugins-interface-versions"
+category = "runtime.plugins"
+summary = "Plugins built for interface 0.1 keep running beside 0.2 ones, marked as built for an older Niles"
+since_pr = 392
+
+[[feature]]
+id = "plugins-room-light"
+category = "runtime.plugins"
+summary = "A plugin can keep a light out of its room's lights, so room commands, scenes, presence and the curve leave it alone"
+since_pr = 393
+
+[[feature]]
+id = "plugins-time-zone"
+category = "runtime.plugins"
+summary = "Plugins on interface 0.2.1 are told the house's time zone; 0.2.0 plugins run unchanged"
+since_pr = 393
+
+[[feature]]
+id = "automations-any-device-action"
+category = "automations"
+summary = "Any device that reports an action, such as a printer finishing, can start a rule, and the editor offers it"
+since_pr = 393
+
+[[feature]]
+id = "plugins-widget-room-setting"
+category = "ui.integrations"
+summary = "A plugin's widget can start in the room one of its settings names, and moves when the setting changes"
+since_pr = 393
+
+[[feature]]
+id = "plugins-dev-loopback-wait"
+category = "runtime.plugins"
+summary = "`niles plugin dev` waits for MQTT before --call, runs the newer build, and reaches a fake device with --allow-loopback"
+since_pr = 393
+
+[[feature]]
+id = "plugins-plain-errors"
+category = "runtime.plugins"
+summary = "Plugins' MQTT and HTTP failures read as plain reasons, such as connection refused or wrong username or password"
+since_pr = 393
+
+[[feature]]
+id = "ui-settings-system"
+category = "ui.settings"
+summary = "Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons"
+since_pr = 394
+
+[[feature]]
+id = "ui-voice-roles"
+category = "ui.settings"
+summary = "Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it"
+since_pr = 394
+
+[[feature]]
+id = "ui-setup-checklist"
+category = "ui.settings"
+summary = "On a new install each System page leads with what it still needs, and the settings list counts it"
+since_pr = 394
+
+[[feature]]
+id = "assistant-none"
+category = "runtime.assistant"
+summary = "Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background"
+since_pr = 394
+
+[[feature]]
+id = "providers-default-elevenlabs-cerebras"
+category = "runtime.providers"
+summary = "A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so"
+since_pr = 394

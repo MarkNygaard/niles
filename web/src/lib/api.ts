@@ -33,20 +33,6 @@ export interface ConfigView {
 }
 
 /**
- * What a device is reporting.
- *
- * Every field is nullable and null means "not reported", which is not
- * the same as off or zero — a lamp that has never been heard from has
- * `on: null`, and the UI shows that as unknown rather than off.
- */
-export interface Provider {
-  name: string;
-  base_url: string;
-  /** Which roles it can serve. Empty means anything. */
-  serves?: ("stt" | "llm")[];
-}
-
-/**
  * One WLED strip, as `[[wled.devices]]` has it.
  *
  * `rgb` and `white_balance` are optional here because the config file
@@ -91,6 +77,12 @@ export interface Integration {
       appears. */
   group: IntegrationGroup;
   importance: Importance;
+  /** Part of the base system — the broker, the providers that hear and
+      think — set up under Settings → System rather than offered as an
+      add-on. */
+  system: boolean;
+  /** The roles that use it when they name no provider. */
+  default_for: ("stt" | "llm")[];
   /** A Lucide icon name. */
   icon: string;
   /** Every key it keeps; removing it deletes the stored ones. */
@@ -104,6 +96,219 @@ export interface Integration {
   models?: Partial<Record<"stt" | "llm", string[]>>;
   added: boolean;
   secret_key: string | null;
+}
+
+/**
+ * A third-party add-on installed from GitHub.
+ *
+ * Mirrors `PluginSummary` in crates/niles-api/src/plugins.rs.
+ */
+export interface PluginSummary {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  authors: string[];
+  homepage: string | null;
+  /** A catalogue group, or `custom`. */
+  group: { id: string; label: string };
+  status: "starting" | "running" | "not_set_up" | "failing" | "stopped" | "disabled";
+  /** "Working", "Not working: …", "Off". */
+  status_line: string;
+  /** The last thing that went wrong, or that an update was rolled back. */
+  error: string | null;
+  dropped_events: number;
+  enabled: boolean;
+  /** `https://github.com/<owner>/<repo>`. */
+  repo: string | null;
+  release_tag: string | null;
+  release_url: string | null;
+  installed_at: string | null;
+  updated_at: string | null;
+  /** Where Niles serves its logo, when it has one. */
+  logo: string | null;
+  /** What a rollback goes back to, when there is something. */
+  previous_version: string | null;
+  update: PluginUpdate | null;
+  /** What its setup panel asks for, and what each holds now. */
+  settings: PluginSetting[];
+  /** Its pages, which join the menu as `<id>.<page>`. */
+  menu: PluginPage[];
+  /** Its cards for the front page and the rooms. */
+  widgets: PluginWidget[];
+  /** The `niles:integration` version it was built for. */
+  interface: string;
+  /** Built for an older interface than the newest this Niles runs. */
+  older_interface: boolean;
+}
+
+export type SettingType = "string" | "number" | "boolean" | "secret" | "choice" | "room";
+
+/** One of a plugin's settings, as its manifest declares it. */
+export interface PluginSetting {
+  key: string;
+  label: string;
+  type: SettingType;
+  required: boolean;
+  help: string | null;
+  default: string | number | boolean | null;
+  options: { value: string; label: string }[];
+  min: number | null;
+  max: number | null;
+  /** What the household entered; never a secret's. */
+  value: string | number | boolean | null;
+  /** Entered, or for a secret, stored. A default does not count. */
+  set: boolean;
+}
+
+export interface PluginPage {
+  id: string;
+  label: string;
+  /** A Lucide icon name, `zap`. */
+  icon: string;
+  refresh_every: number | null;
+}
+
+export interface PluginWidget {
+  id: string;
+  title: string;
+  /** The room it starts on; none for the front page. */
+  room: string | null;
+  refresh_every: number | null;
+}
+
+export interface PluginLogLine {
+  at: string;
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  /** Said by Niles about the plugin, not by the plugin. */
+  niles: boolean;
+}
+
+/**
+ * A plugin's page or widget: a flat list of nodes, the root first,
+ * each naming its children by index. Mirrors `niles_plugins::ui::Surface`.
+ */
+export interface Surface {
+  nodes: UiNode[];
+}
+
+export type Tone = "neutral" | "good" | "warning" | "bad";
+
+export type UiNode = { children: number[] } & (
+  | { type: "stack" }
+  | { type: "row" }
+  | { type: "card"; title: string | null }
+  | { type: "heading"; text: string }
+  | { type: "text"; value: string; muted: boolean }
+  | { type: "reading"; label: string; value: string; unit: string | null }
+  | { type: "badge"; label: string; tone: Tone }
+  | {
+      type: "items";
+      items: { title: string; detail: string | null; trailing: string | null }[];
+    }
+  | {
+      type: "button";
+      id: string;
+      label: string;
+      style: "primary" | "secondary" | "destructive";
+    }
+  | { type: "switch"; id: string; label: string; value: boolean }
+  | {
+      type: "slider";
+      id: string;
+      label: string;
+      min: number;
+      max: number;
+      step: number;
+      value: number;
+      unit: string | null;
+    }
+  | {
+      type: "choice";
+      id: string;
+      label: string;
+      options: { value: string; label: string }[];
+      value: string | null;
+    }
+  | {
+      type: "text_field";
+      id: string;
+      label: string;
+      placeholder: string | null;
+      value: string | null;
+    }
+  | {
+      type: "chart";
+      kind: "line" | "bar";
+      labels: string[];
+      series: { name: string; values: number[] }[];
+      unit: string | null;
+    }
+  | { type: "image"; src: string; alt: string }
+);
+
+/** What somebody did to a control, as the plugin's `on_action` gets it. */
+export type ActionValue =
+  | { type: "pressed" }
+  | { type: "toggled"; value: boolean }
+  | { type: "number"; value: number }
+  | { type: "chosen"; value: string }
+  | { type: "text"; value: string };
+
+export interface ActionOutcome {
+  toast: string | null;
+  rerender: boolean;
+}
+
+export interface PluginUpdate {
+  version: string;
+  tag: string;
+  release_url: string;
+  notes: string;
+  /** Permissions it adds, in plain words. */
+  added: string[];
+  removed: string[];
+}
+
+/** What the approval screen shows before an install or an update. */
+export interface PluginPreview {
+  /** Given back to install exactly this. */
+  token: string;
+  expires_in: number;
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  authors: string[];
+  homepage: string | null;
+  repo: string;
+  tag: string;
+  release_url: string;
+  notes: string;
+  group: { id: string; label: string };
+  /** The sanitised SVG itself. */
+  logo: string | null;
+  /** What it may do, one line each. */
+  permissions: string[];
+  /** What it may not, always the same sentence. */
+  cannot: string;
+  tools: { name: string; description: string }[];
+  settings: {
+    key: string;
+    label: string;
+    type: "string" | "number" | "boolean" | "secret" | "choice" | "room";
+    required: boolean;
+    help: string | null;
+  }[];
+  warnings: string[];
+  /** The component's sha256, given back with the install. */
+  sha256: string;
+  manifest_sha256: string;
+  /** For an update: the version installed now. */
+  current_version: string | null;
+  added: string[];
+  removed: string[];
 }
 
 /** One Sonos room: a speaker, a stereo pair, or a soundbar with the
@@ -381,9 +586,16 @@ export interface Device {
   available?: boolean;
   /**
    * One of the house's lights: a light, or a plug listed as having a
-   * lamp on it. Absent on an older server, where every plug was one.
+   * lamp on it. False for a light its plugin keeps out of its room's
+   * lights, such as a printer's chamber light. Absent on an older
+   * server, where every plug and every light was one.
    */
   lamp?: boolean;
+  /**
+   * Whether it reports actions: a switch, or anything that has reported
+   * one. Absent on an older server, where only switches did.
+   */
+  actions?: boolean;
 }
 
 /** What a light can be told. Every field is optional; at least one is required. */
@@ -980,6 +1192,68 @@ export const api = {
   applyScene: (name: string) =>
     request<void>(`/scenes/${encodeURIComponent(name)}`, { method: "POST" }),
   integrations: () => request<Integration[]>("/integrations"),
+  plugins: () => request<PluginSummary[]>("/plugins"),
+  previewPlugin: (repo: string) =>
+    request<PluginPreview>("/plugins/install/preview", {
+      method: "POST",
+      body: JSON.stringify({ repo }),
+    }),
+  installPlugin: (preview: PluginPreview) =>
+    request<PluginSummary>("/plugins/install", {
+      method: "POST",
+      body: JSON.stringify({ token: preview.token, sha256: preview.sha256 }),
+    }),
+  checkPluginUpdate: (id: string) =>
+    request<PluginSummary>(`/plugins/${encodeURIComponent(id)}/check-update`, {
+      method: "POST",
+    }),
+  previewPluginUpdate: (id: string) =>
+    request<PluginPreview>(`/plugins/${encodeURIComponent(id)}/update/preview`, {
+      method: "POST",
+    }),
+  updatePlugin: (id: string, preview: PluginPreview) =>
+    request<PluginSummary>(`/plugins/${encodeURIComponent(id)}/update`, {
+      method: "POST",
+      body: JSON.stringify({ token: preview.token, sha256: preview.sha256 }),
+    }),
+  rollBackPlugin: (id: string) =>
+    request<PluginSummary>(`/plugins/${encodeURIComponent(id)}/rollback`, {
+      method: "POST",
+    }),
+  setPluginEnabled: (id: string, enabled: boolean) =>
+    request<PluginSummary>(
+      `/plugins/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`,
+      { method: "POST" },
+    ),
+  removePlugin: (id: string) =>
+    request<void>(`/plugins/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  pluginLog: (id: string) =>
+    request<PluginLogLine[]>(`/plugins/${encodeURIComponent(id)}/log`),
+  /** The logo as text, to be drawn inline by `PluginLogo`. */
+  pluginLogo: async (id: string): Promise<string> => {
+    const response = await fetch(`/plugins/${encodeURIComponent(id)}/logo`);
+    if (!response.ok) throw new ApiError("no logo", response.status);
+    return response.text();
+  },
+  surface: (plugin: string, surface: string, room?: string | null) =>
+    request<Surface>(
+      `/plugins/${encodeURIComponent(plugin)}/surfaces/${encodeURIComponent(surface)}${
+        room ? `?room=${encodeURIComponent(room)}` : ""
+      }`,
+    ),
+  act: (
+    plugin: string,
+    surface: string,
+    control: string,
+    value: ActionValue,
+    room?: string | null,
+  ) =>
+    request<ActionOutcome>(
+      `/plugins/${encodeURIComponent(plugin)}/surfaces/${encodeURIComponent(
+        surface,
+      )}/actions/${encodeURIComponent(control)}${room ? `?room=${encodeURIComponent(room)}` : ""}`,
+      { method: "POST", body: JSON.stringify(value) },
+    ),
   speakers: () => request<SpeakersReport>("/speakers"),
   tv: () => request<TvInfo>("/tv"),
   music: () => request<RoomMusic[]>("/music"),

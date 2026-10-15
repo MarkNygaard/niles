@@ -21,10 +21,18 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-get-devices` | GET /devices returns the full device registry snapshot | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
+| `api-plugin-log-image` | GET /plugins/{id}/log for a plugin's last lines, and /plugins/{id}/image for its pages' pictures, fetched by Niles | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
+
+## automations
+
+| Feature | Summary | Since |
+| --- | --- | --- |
+| `automations-any-device-action` | Any device that reports an action, such as a printer finishing, can start a rule, and the editor offers it | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 
 ## llm
 
@@ -46,11 +54,23 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
 | `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `plugins-dev-loopback-wait` | `niles plugin dev` waits for MQTT before --call, runs the newer build, and reaches a fake device with --allow-loopback | [#393](https://github.com/MarkNygaard/niles/pull/393) |
+| `plugins-disable-remove` | Turn a plugin off and keep its data, or remove it with its devices, storage, settings and secrets | [#390](https://github.com/MarkNygaard/niles/pull/390) |
+| `plugins-install` | Install a plugin from a GitHub release after a preview of its permissions; exactly the previewed files run | [#390](https://github.com/MarkNygaard/niles/pull/390) |
+| `plugins-interface-versions` | Plugins built for interface 0.1 keep running beside 0.2 ones, marked as built for an older Niles | [#392](https://github.com/MarkNygaard/niles/pull/392) |
+| `plugins-mqtt` | Plugins on interface 0.2 talk MQTT to the brokers their manifest names; Niles holds the connection and reconnects | [#392](https://github.com/MarkNygaard/niles/pull/392) |
+| `plugins-mqtt-trust-device` | A device's own MQTT certificate is trusted on first use and pinned; a changed one waits for the household to accept it | [#392](https://github.com/MarkNygaard/niles/pull/392) |
+| `plugins-plain-errors` | Plugins' MQTT and HTTP failures read as plain reasons, such as connection refused or wrong username or password | [#393](https://github.com/MarkNygaard/niles/pull/393) |
+| `plugins-room-light` | A plugin can keep a light out of its room's lights, so room commands, scenes, presence and the curve leave it alone | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `plugins-runtime` | Run third-party integrations as sandboxed WebAssembly components; their devices, tools and pages join the house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `plugins-time-zone` | Plugins on interface 0.2.1 are told the house's time zone; 0.2.0 plugins run unchanged | [#393](https://github.com/MarkNygaard/niles/pull/393) |
+| `plugins-update-rollback` | Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails | [#390](https://github.com/MarkNygaard/niles/pull/390) |
+| `providers-default-elevenlabs-cerebras` | A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 
 ## ui
 
@@ -58,8 +78,15 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `plugins-widget-room-setting` | A plugin's widget can start in the room one of its settings names, and moves when the setting changes | [#393](https://github.com/MarkNygaard/niles/pull/393) |
+| `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#391](https://github.com/MarkNygaard/niles/pull/391) |
+| `ui-plugin-setup` | A plugin's panel: a setup form generated from its manifest's settings, its log, and where its widgets go | [#391](https://github.com/MarkNygaard/niles/pull/391) |
+| `ui-plugins` | Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
+| `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
+| `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
+| `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 
 ## voice
 

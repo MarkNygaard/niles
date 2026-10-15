@@ -8,7 +8,7 @@
 - [LLM tools](tools.md)
 
 # Extending
-- [Writing an integration](integrations.md)
+- [Writing an add-on](integrations.md)
 
 # Operations
 - [Deployment](deployment.md)

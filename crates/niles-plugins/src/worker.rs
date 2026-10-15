@@ -10,32 +10,220 @@
 //! restarts it. `init` returning an error is not a failure of that kind:
 //! it is the plugin saying what is wrong, and it is asked again in ten
 //! minutes, or as soon as its settings change.
+//!
+//! A component targets the 0.1 world or the 0.2 one, and [`Bindings`]
+//! calls either: the exports they share take the same Rust types (see
+//! [`crate::bindings`]), and a 0.1 plugin has no MQTT to deliver.
 
-use crate::bindings::{Plugin as Bindings, PluginPre};
+use crate::bindings::niles::integration::types::{DeviceState, Event, ToolDef};
+use crate::bindings::niles::integration::ui::{ActionResult, ActionValue, RenderContext, UiTree};
+use crate::bindings::{mqtt, v0_1, v0_2};
 use crate::host::HostState;
-use crate::manifest::SettingValue;
-use crate::policy::HttpPolicy;
+use crate::log::Level;
+use crate::manifest::{INTERFACES, SettingValue};
+use crate::mqtt::Delivery;
+use crate::policy::{HttpPolicy, MqttPolicy};
 use crate::runtime::{House, Job, Limits, Next, Plugin, Status, SurfaceError};
 use crate::ui::Context;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Engine, Store};
 
-/// Compile `bytes` and check it against the world, or say why not.
+/// Dropped MQTT messages are noted in the plugin's log at most this often.
+const NOTE_DROPS: Duration = Duration::from_secs(10);
+
+/// The `niles:integration` version a component was built against, by
+/// what it imports and exports: `0.1` or `0.2`.
+pub(crate) fn interface_of(component: &Component, engine: &Engine) -> Result<&'static str, String> {
+    let ty = component.component_type();
+    let mut found = BTreeSet::new();
+    for (name, _) in ty.imports(engine) {
+        let Some(version) = name
+            .strip_prefix("niles:integration/")
+            .and_then(|rest| rest.split_once('@'))
+            .map(|(_, v)| v)
+        else {
+            continue;
+        };
+        let minor = INTERFACES
+            .iter()
+            .find(|i| {
+                version
+                    .strip_prefix(**i)
+                    .is_some_and(|rest| rest.starts_with('.'))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "imports {name}; this Niles runs niles:integration {}",
+                    INTERFACES.join(" and ")
+                )
+            })?;
+        found.insert(*minor);
+    }
+    if ty
+        .exports(engine)
+        .any(|(name, _)| name == "on-mqtt-message")
+    {
+        found.insert("0.2");
+    }
+    match found.len() {
+        0 => Ok("0.1"),
+        1 => Ok(found.into_iter().next().unwrap_or("0.1")),
+        _ => Err(format!(
+            "mixes niles:integration {}; build it against one",
+            found.into_iter().collect::<Vec<_>>().join(" and ")
+        )),
+    }
+}
+
+/// Compile `bytes` and check it against the world of `interface`, the
+/// manifest's, or say why not.
 pub(crate) fn prepare(
     engine: &Engine,
     linker: &Linker<HostState>,
     bytes: &[u8],
-) -> Result<PluginPre<HostState>, String> {
+    interface: &str,
+) -> Result<Pre, String> {
     let component = Component::new(engine, bytes)
         .map_err(|e| format!("is not a WebAssembly component: {}", e.root_cause()))?;
+    let built = interface_of(&component, engine)?;
+    if built != interface {
+        return Err(format!(
+            "is built for niles:integration {built}, and the manifest says interface = \"{interface}\""
+        ));
+    }
     let pre = linker
         .instantiate_pre(&component)
         .map_err(|e| format!("imports something Niles does not provide: {e:#}"))?;
-    PluginPre::new(pre)
-        .map_err(|e| format!("does not export the niles:integration plugin world: {e:#}"))
+    let missing = |e: wasmtime::Error| {
+        format!("does not export the niles:integration {interface} plugin world: {e:#}")
+    };
+    Ok(match built {
+        "0.1" => Pre::V1(v0_1::PluginPre::new(pre).map_err(missing)?),
+        _ => Pre::V2(v0_2::PluginPre::new(pre).map_err(missing)?),
+    })
+}
+
+/// A component ready to instantiate, as one world or the other.
+#[derive(Clone)]
+pub(crate) enum Pre {
+    V1(v0_1::PluginPre<HostState>),
+    V2(v0_2::PluginPre<HostState>),
+}
+
+impl Pre {
+    pub fn instantiate(&self, store: &mut Store<HostState>) -> wasmtime::Result<Bindings> {
+        Ok(match self {
+            Pre::V1(pre) => Bindings::V1(pre.instantiate(store)?),
+            Pre::V2(pre) => Bindings::V2(pre.instantiate(store)?),
+        })
+    }
+}
+
+/// An instance's exports, as one world or the other.
+pub(crate) enum Bindings {
+    V1(v0_1::Plugin),
+    V2(v0_2::Plugin),
+}
+
+/// The same call on either world's bindings.
+macro_rules! either {
+    ($self:ident, $b:ident => $call:expr) => {
+        match $self {
+            Bindings::V1($b) => $call,
+            Bindings::V2($b) => $call,
+        }
+    };
+}
+
+type Called<T> = wasmtime::Result<T>;
+
+impl Bindings {
+    pub fn call_init(&self, s: &mut Store<HostState>) -> Called<Result<(), String>> {
+        either!(self, b => b.call_init(s))
+    }
+
+    pub fn call_tools(&self, s: &mut Store<HostState>) -> Called<Vec<ToolDef>> {
+        either!(self, b => b.call_tools(s))
+    }
+
+    pub fn call_call_tool(
+        &self,
+        s: &mut Store<HostState>,
+        name: &str,
+        args: &str,
+    ) -> Called<Result<String, String>> {
+        either!(self, b => b.call_call_tool(s, name, args))
+    }
+
+    pub fn call_set_device(
+        &self,
+        s: &mut Store<HostState>,
+        id: &str,
+        desired: &DeviceState,
+    ) -> Called<Result<(), String>> {
+        either!(self, b => b.call_set_device(s, &id.to_owned(), desired))
+    }
+
+    pub fn call_on_timer(&self, s: &mut Store<HostState>, id: &str) -> Called<()> {
+        either!(self, b => b.call_on_timer(s, id))
+    }
+
+    pub fn call_on_event(&self, s: &mut Store<HostState>, event: &Event) -> Called<()> {
+        either!(self, b => b.call_on_event(s, event))
+    }
+
+    pub fn call_render(
+        &self,
+        s: &mut Store<HostState>,
+        surface: &str,
+        context: &RenderContext,
+    ) -> Called<Result<UiTree, String>> {
+        either!(self, b => b.call_render(s, surface, context))
+    }
+
+    pub fn call_on_action(
+        &self,
+        s: &mut Store<HostState>,
+        surface: &str,
+        control: &str,
+        value: &ActionValue,
+        context: &RenderContext,
+    ) -> Called<Result<ActionResult, String>> {
+        either!(self, b => b.call_on_action(s, surface, control, value, context))
+    }
+
+    pub fn call_stop(&self, s: &mut Store<HostState>) -> Called<()> {
+        either!(self, b => b.call_stop(s))
+    }
+
+    /// A 0.1 plugin cannot connect, so it never has anything delivered.
+    pub fn call_on_mqtt_message(
+        &self,
+        s: &mut Store<HostState>,
+        conn: u32,
+        topic: &str,
+        payload: &[u8],
+    ) -> Called<()> {
+        match self {
+            Bindings::V1(_) => Ok(()),
+            Bindings::V2(b) => b.call_on_mqtt_message(s, conn, topic, payload),
+        }
+    }
+
+    pub fn call_on_mqtt_status(
+        &self,
+        s: &mut Store<HostState>,
+        conn: u32,
+        status: &mqtt::ConnectionStatus,
+    ) -> Called<()> {
+        match self {
+            Bindings::V1(_) => Ok(()),
+            Bindings::V2(b) => b.call_on_mqtt_status(s, conn, status),
+        }
+    }
 }
 
 struct Live {
@@ -48,12 +236,14 @@ struct Worker {
     house: Arc<House>,
     limits: Arc<Limits>,
     engine: Engine,
-    pre: Option<PluginPre<HostState>>,
+    pre: Option<Pre>,
     live: Option<Live>,
     /// When each restart after a failure happened, for the hourly limit.
     restarts: VecDeque<Instant>,
     /// When to start an instance, if one should be started.
     start_at: Option<Instant>,
+    /// When dropped MQTT messages were last noted in the log.
+    noted_drops: Option<Instant>,
 }
 
 pub(crate) fn run(
@@ -72,12 +262,15 @@ pub(crate) fn run(
         live: None,
         restarts: VecDeque::new(),
         start_at: Some(Instant::now()),
+        noted_drops: None,
         engine,
     };
-    match prepare(&worker.engine, &linker, &component) {
+    let interface = worker.plugin.manifest.interface.clone();
+    match prepare(&worker.engine, &linker, &component, &interface) {
         Ok(pre) => worker.pre = Some(pre),
         Err(why) => {
             tracing::error!(plugin = %worker.plugin.id, "the component {why}");
+            worker.plugin.count_failure();
             worker
                 .plugin
                 .set_status(Status::Failing(format!("the component {why}")));
@@ -117,6 +310,7 @@ pub(crate) fn run(
                 });
             }
             Next::Job(job) => worker.handle(job),
+            Next::Mqtt(delivery) => worker.deliver(delivery),
         }
     }
 }
@@ -146,13 +340,23 @@ impl Worker {
             self.plugin.set_status(Status::NotSetUp(why));
             return;
         }
-        let policy = HttpPolicy::new(&manifest.permissions, |key| {
-            match manifest.setting(key)?.value(&settings)? {
-                SettingValue::Text(text) => Some(text),
-                _ => None,
-            }
-        });
-        let state = HostState::new(self.plugin.clone(), self.house.clone(), settings, policy);
+        let text = |key: &str| match manifest.setting(key)?.value(&settings)? {
+            SettingValue::Text(text) => Some(text),
+            _ => None,
+        };
+        let mut policy = HttpPolicy::new(&manifest.permissions, text);
+        let mut mqtt = MqttPolicy::new(&manifest.permissions, text);
+        if self.house.loopback {
+            policy = policy.allowing_loopback();
+            mqtt = mqtt.allowing_loopback();
+        }
+        let state = HostState::new(
+            self.plugin.clone(),
+            self.house.clone(),
+            settings,
+            policy,
+            mqtt,
+        );
         let mut store = Store::new(&self.engine, state);
         store.limiter(|state| &mut state.memory);
         self.deadline(&mut store, self.limits.init);
@@ -219,6 +423,7 @@ impl Worker {
     /// another after the backoff, or stop for good.
     fn failed(&mut self, export: &str, limit: Duration, error: &wasmtime::Error) {
         let reason = describe(export, limit, error);
+        self.plugin.count_failure();
         self.discard();
         let now = Instant::now();
         let hour = Duration::from_secs(3600);
@@ -376,6 +581,46 @@ impl Worker {
                     },
                 };
                 let _ = reply.send(answer);
+            }
+        }
+    }
+
+    /// Hand the plugin what one of its connections received, unless the
+    /// connection is not this instance's.
+    fn deliver(&mut self, delivery: Delivery) {
+        if self.noted_drops.is_none_or(|at| at.elapsed() >= NOTE_DROPS) {
+            let dropped = self.plugin.queue.take_mqtt_dropped();
+            if dropped > 0 {
+                self.plugin.note(
+                    Level::Warn,
+                    &format!(
+                        "{dropped} MQTT message(s) were dropped: they came faster than the plugin took them"
+                    ),
+                );
+                self.noted_drops = Some(Instant::now());
+            }
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        if !live.store.data().connections.contains_key(&delivery.conn()) {
+            return;
+        }
+        match delivery {
+            Delivery::Message {
+                conn,
+                topic,
+                payload,
+                ..
+            } => {
+                self.call("on-mqtt-message", self.limits.call, |b, s| {
+                    b.call_on_mqtt_message(s, conn, &topic, &payload)
+                });
+            }
+            Delivery::Status { conn, status } => {
+                self.call("on-mqtt-status", self.limits.call, |b, s| {
+                    b.call_on_mqtt_status(s, conn, &status)
+                });
             }
         }
     }

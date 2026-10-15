@@ -8,9 +8,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { DESTINATIONS, HOME, PROFILE } from "@/lib/destinations";
+import { HOME, PROFILE, destinationOf } from "@/lib/destinations";
 import { edgeScroll, useGripsHoldStill, visibleBottom } from "@/lib/drag";
 import type { MediaShown, MenuEntry, MenuLayout } from "@/lib/menu";
+import type { PluginPageEntry } from "@/lib/plugins";
 import { cn } from "@/lib/utils";
 
 /** The two menus as lists of entries, avatar menu first. */
@@ -91,6 +92,8 @@ export interface MenuCardProps {
   onChange: (next: Lists & { hidden: MenuEntry[] }) => void;
   mediaShown: MediaShown;
   onMediaShown: (shown: MediaShown) => void;
+  /** The plugins' pages, which move and hide like the built-in ones. */
+  pages?: PluginPageEntry[];
 }
 
 type Row =
@@ -112,7 +115,14 @@ type Row =
  * in the page too, and a browser lets go of a pointer whose element
  * moves: every drag stopped after one step.)
  */
-export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown }: MenuCardProps) {
+export function MenuCard({
+  layout,
+  disabled,
+  onChange,
+  mediaShown,
+  onMediaShown,
+  pages = [],
+}: MenuCardProps) {
   const [held, setHeld] = useState<{
     id: MenuEntry;
     /** Where the press began, in the page rather than the window, so
@@ -222,7 +232,8 @@ export function MenuCard({ layout, disabled, onChange, mediaShown, onMediaShown 
           );
         }
         const { id } = row;
-        const destination = DESTINATIONS[id];
+        const destination = destinationOf(id, pages);
+        if (!destination) return null;
         const lifted = held?.id === id;
         return (
           <li

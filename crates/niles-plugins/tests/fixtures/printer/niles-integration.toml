@@ -1,0 +1,24 @@
+id = "printer"
+name = "Printer"
+version = "0.1.0"
+description = "A 3D printer and its chamber light, for Niles's own tests of interface 0.2.1."
+authors = ["Niles"]
+homepage = "https://github.com/MarkNygaard/niles"
+min_niles = "0.2.0"
+interface = "0.2"
+keywords = ["printer", "print"]
+
+[permissions]
+devices = true
+tools = true
+ui = true
+
+[[settings]]
+key = "room"
+label = "Room"
+type = "room"
+
+[[ui.widgets]]
+id = "now"
+title = "Printer"
+room = "setting:room"

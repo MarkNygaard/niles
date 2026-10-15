@@ -6,7 +6,9 @@
 //! storage in a file beside the plugin so a restart keeps it.
 
 use async_trait::async_trait;
-use niles_core::{DeviceClass, LightCapabilities};
+use chrono::{DateTime, Utc};
+use niles_core::{Device, DeviceClass, DeviceId, DeviceState, LightCapabilities};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -23,6 +25,66 @@ pub struct Installed {
     pub component: Vec<u8>,
 }
 
+/// What an approved install or update keeps.
+#[derive(Debug, Clone)]
+pub struct Package {
+    pub manifest: String,
+    pub component: Vec<u8>,
+    /// The sanitised SVG.
+    pub logo: Option<String>,
+    /// Where it came from; none for a file installed by hand.
+    pub source: Option<Source>,
+}
+
+/// The GitHub release a plugin was installed from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Source {
+    /// `https://github.com/<owner>/<repo>`.
+    pub repo: String,
+    pub tag: String,
+    /// The release's page.
+    pub release_url: String,
+}
+
+/// A newer release the update check found, and what it would change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Update {
+    pub version: String,
+    pub tag: String,
+    pub release_url: String,
+    /// The release's notes, as its author wrote them.
+    #[serde(default)]
+    pub notes: String,
+    /// Permissions it asks for that the installed version does not, in
+    /// plain words.
+    #[serde(default)]
+    pub added: Vec<String>,
+    /// Permissions it no longer asks for.
+    #[serde(default)]
+    pub removed: Vec<String>,
+}
+
+/// An installed plugin as listed: everything but the component.
+#[derive(Debug, Clone)]
+pub struct Record {
+    pub id: String,
+    pub version: String,
+    pub manifest: String,
+    pub source: Option<Source>,
+    pub sha256: String,
+    pub has_logo: bool,
+    pub enabled: bool,
+    pub installed_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// The version a rollback would go back to.
+    pub previous_version: Option<String>,
+    pub update: Option<Update>,
+    /// What happened to it that its status does not say: an update that
+    /// failed and was rolled back. Kept until the next update or rollback
+    /// by hand, so the panel still says why after a restart.
+    pub notice: Option<String>,
+}
+
 /// A device Niles holds for a plugin, so it outlives the instance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KnownDevice {
@@ -31,6 +93,21 @@ pub struct KnownDevice {
     pub class: DeviceClass,
     pub light: LightCapabilities,
     pub controllable: bool,
+    /// Whether it is one of its room's lights; see `devices.set-room-light`.
+    pub room_light: bool,
+    /// Whether it has reported an action, so the rule editor offers it
+    /// as a trigger after a restart too.
+    pub reports_actions: bool,
+}
+
+impl KnownDevice {
+    /// The device as the registry holds it, with `state`.
+    pub(crate) fn device(&self, id: DeviceId, state: DeviceState) -> Device {
+        let mut device = Device::new(id, state, self.class).with_capabilities(self.light);
+        device.room_light = self.room_light;
+        device.reports_actions = self.reports_actions;
+        device
+    }
 }
 
 /// Whether a `set` was kept.
@@ -45,15 +122,27 @@ pub enum Stored {
 pub trait PluginStore: Send + Sync {
     /// The enabled plugins, to start with Niles.
     async fn installed(&self) -> Result<Vec<Installed>, String>;
-    /// Keep a plugin, replacing one with the same id. Internal: what an
-    /// approved install writes, after the caller has checked it.
-    async fn install(
-        &self,
-        id: &str,
-        version: &str,
-        manifest: &str,
-        component: &[u8],
-    ) -> Result<(), String>;
+    /// Every plugin, enabled or not.
+    async fn records(&self) -> Result<Vec<Record>, String>;
+    /// One plugin's manifest and component, enabled or not.
+    async fn package(&self, id: &str) -> Result<Option<Installed>, String>;
+    /// Keep a plugin, replacing one with the same id and keeping what it
+    /// replaced for one rollback. Enabled, with no update pending.
+    /// Internal: what an approved install writes, after the caller has
+    /// checked it.
+    async fn install(&self, id: &str, version: &str, package: &Package) -> Result<(), String>;
+    /// Put the previous version back, forgetting the current one. `None`
+    /// when there is no previous version.
+    async fn roll_back(&self, id: &str) -> Result<Option<Installed>, String>;
+    /// False when there is no such plugin.
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool, String>;
+    async fn set_update(&self, id: &str, update: Option<&Update>) -> Result<(), String>;
+    /// Record what happened to the plugin, or forget it. An install,
+    /// an update and a rollback forget it on their own.
+    async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String>;
+    async fn logo(&self, id: &str) -> Result<Option<String>, String>;
+    /// Forget the plugin, its storage and its devices.
+    async fn remove(&self, id: &str) -> Result<(), String>;
 
     async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>, String>;
     async fn set(&self, plugin: &str, key: &str, value: &str) -> Result<Stored, String>;
@@ -77,9 +166,27 @@ pub struct MemoryStore {
 
 #[derive(Default)]
 struct Memory {
-    installed: BTreeMap<String, Installed>,
+    installed: BTreeMap<String, Kept>,
     storage: BTreeMap<String, BTreeMap<String, String>>,
     devices: BTreeMap<String, BTreeMap<String, KnownDevice>>,
+}
+
+struct Kept {
+    version: String,
+    package: Package,
+    previous: Option<(String, Package)>,
+    enabled: bool,
+    installed_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    update: Option<Update>,
+    notice: Option<String>,
+}
+
+fn installed(package: &Package) -> Installed {
+    Installed {
+        manifest: package.manifest.clone(),
+        component: package.component.clone(),
+    }
 }
 
 impl MemoryStore {
@@ -123,24 +230,116 @@ impl MemoryStore {
 #[async_trait]
 impl PluginStore for MemoryStore {
     async fn installed(&self) -> Result<Vec<Installed>, String> {
-        Ok(self.lock().installed.values().cloned().collect())
+        Ok(self
+            .lock()
+            .installed
+            .values()
+            .filter(|k| k.enabled)
+            .map(|k| installed(&k.package))
+            .collect())
     }
 
-    async fn install(
-        &self,
-        id: &str,
-        _version: &str,
-        manifest: &str,
-        component: &[u8],
-    ) -> Result<(), String> {
-        self.lock().installed.insert(
+    async fn records(&self) -> Result<Vec<Record>, String> {
+        Ok(self
+            .lock()
+            .installed
+            .iter()
+            .map(|(id, k)| Record {
+                id: id.clone(),
+                version: k.version.clone(),
+                manifest: k.package.manifest.clone(),
+                source: k.package.source.clone(),
+                sha256: niles_db::hex_digest(&k.package.component),
+                has_logo: k.package.logo.is_some(),
+                enabled: k.enabled,
+                installed_at: k.installed_at,
+                updated_at: k.updated_at,
+                previous_version: k.previous.as_ref().map(|(v, _)| v.clone()),
+                update: k.update.clone(),
+                notice: k.notice.clone(),
+            })
+            .collect())
+    }
+
+    async fn package(&self, id: &str) -> Result<Option<Installed>, String> {
+        Ok(self.lock().installed.get(id).map(|k| installed(&k.package)))
+    }
+
+    async fn install(&self, id: &str, version: &str, package: &Package) -> Result<(), String> {
+        let mut memory = self.lock();
+        let now = Utc::now();
+        let previous = memory.installed.remove(id);
+        let installed_at = previous.as_ref().map_or(now, |k| k.installed_at);
+        memory.installed.insert(
             id.to_string(),
-            Installed {
-                manifest: manifest.to_string(),
-                component: component.to_vec(),
+            Kept {
+                version: version.to_string(),
+                package: package.clone(),
+                previous: previous.map(|k| (k.version, k.package)),
+                enabled: true,
+                installed_at,
+                updated_at: now,
+                update: None,
+                notice: None,
             },
         );
         Ok(())
+    }
+
+    async fn roll_back(&self, id: &str) -> Result<Option<Installed>, String> {
+        let mut memory = self.lock();
+        let Some(kept) = memory.installed.get_mut(id) else {
+            return Ok(None);
+        };
+        let Some((version, package)) = kept.previous.take() else {
+            return Ok(None);
+        };
+        kept.version = version;
+        kept.package = package;
+        kept.update = None;
+        kept.notice = None;
+        kept.updated_at = Utc::now();
+        Ok(Some(installed(&kept.package)))
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool, String> {
+        Ok(match self.lock().installed.get_mut(id) {
+            Some(kept) => {
+                kept.enabled = enabled;
+                true
+            }
+            None => false,
+        })
+    }
+
+    async fn set_update(&self, id: &str, update: Option<&Update>) -> Result<(), String> {
+        if let Some(kept) = self.lock().installed.get_mut(id) {
+            kept.update = update.cloned();
+        }
+        Ok(())
+    }
+
+    async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String> {
+        if let Some(kept) = self.lock().installed.get_mut(id) {
+            kept.notice = notice.map(str::to_string);
+        }
+        Ok(())
+    }
+
+    async fn logo(&self, id: &str) -> Result<Option<String>, String> {
+        Ok(self
+            .lock()
+            .installed
+            .get(id)
+            .and_then(|k| k.package.logo.clone()))
+    }
+
+    async fn remove(&self, id: &str) -> Result<(), String> {
+        let mut memory = self.lock();
+        memory.installed.remove(id);
+        memory.storage.remove(id);
+        memory.devices.remove(id);
+        self.save(&memory)
     }
 
     async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>, String> {
@@ -224,28 +423,104 @@ impl PluginStore for MemoryStore {
     }
 }
 
+fn from_row(row: niles_db::PluginRow) -> Installed {
+    Installed {
+        manifest: row.manifest,
+        component: row.component,
+    }
+}
+
 #[async_trait]
 impl PluginStore for niles_db::PostgresPlugins {
     async fn installed(&self) -> Result<Vec<Installed>, String> {
+        Ok(self.enabled().await?.into_iter().map(from_row).collect())
+    }
+
+    async fn records(&self) -> Result<Vec<Record>, String> {
         Ok(self
-            .enabled()
+            .all()
             .await?
             .into_iter()
-            .map(|row| Installed {
+            .map(|row| Record {
+                source: match (row.repo, row.release_tag) {
+                    (Some(repo), Some(tag)) => Some(Source {
+                        repo,
+                        tag,
+                        release_url: row.release_url.unwrap_or_default(),
+                    }),
+                    _ => None,
+                },
+                // A record that does not read is no update: the next
+                // check writes it again.
+                update: row
+                    .update_available
+                    .and_then(|json| serde_json::from_str(&json).ok()),
+                id: row.id,
+                version: row.version,
                 manifest: row.manifest,
-                component: row.component,
+                sha256: row.sha256,
+                has_logo: row.has_logo,
+                enabled: row.enabled,
+                installed_at: row.installed_at,
+                updated_at: row.updated_at,
+                previous_version: row.previous_version,
+                notice: row.notice,
             })
             .collect())
     }
 
-    async fn install(
-        &self,
-        id: &str,
-        version: &str,
-        manifest: &str,
-        component: &[u8],
-    ) -> Result<(), String> {
-        niles_db::PostgresPlugins::install(self, id, version, manifest, None, component).await
+    async fn package(&self, id: &str) -> Result<Option<Installed>, String> {
+        Ok(niles_db::PostgresPlugins::package(self, id)
+            .await?
+            .map(from_row))
+    }
+
+    async fn install(&self, id: &str, version: &str, package: &Package) -> Result<(), String> {
+        let source = package.source.as_ref();
+        niles_db::PostgresPlugins::install(
+            self,
+            &niles_db::PluginInstall {
+                id,
+                version,
+                manifest: &package.manifest,
+                component: &package.component,
+                logo: package.logo.as_deref(),
+                repo: source.map(|s| s.repo.as_str()),
+                release_tag: source.map(|s| s.tag.as_str()),
+                release_url: source.map(|s| s.release_url.as_str()),
+            },
+        )
+        .await
+    }
+
+    async fn roll_back(&self, id: &str) -> Result<Option<Installed>, String> {
+        Ok(niles_db::PostgresPlugins::roll_back(self, id)
+            .await?
+            .map(from_row))
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool, String> {
+        niles_db::PostgresPlugins::set_enabled(self, id, enabled).await
+    }
+
+    async fn set_update(&self, id: &str, update: Option<&Update>) -> Result<(), String> {
+        let json = update
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        niles_db::PostgresPlugins::set_update(self, id, json.as_deref()).await
+    }
+
+    async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String> {
+        niles_db::PostgresPlugins::set_notice(self, id, notice).await
+    }
+
+    async fn logo(&self, id: &str) -> Result<Option<String>, String> {
+        niles_db::PostgresPlugins::logo(self, id).await
+    }
+
+    async fn remove(&self, id: &str) -> Result<(), String> {
+        niles_db::PostgresPlugins::remove(self, id).await
     }
 
     async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>, String> {
@@ -278,6 +553,8 @@ impl PluginStore for niles_db::PostgresPlugins {
                         rgb: row.rgb,
                     },
                     controllable: row.controllable,
+                    room_light: row.room_light,
+                    reports_actions: row.reports_actions,
                 })
             })
             .collect())
@@ -290,6 +567,8 @@ impl PluginStore for niles_db::PostgresPlugins {
             color_temp: device.light.color_temp,
             rgb: device.light.rgb,
             controllable: device.controllable,
+            room_light: device.room_light,
+            reports_actions: device.reports_actions,
         };
         niles_db::PostgresPlugins::put_device(self, plugin, &row).await
     }
@@ -367,6 +646,56 @@ mod tests {
             again.get("p", "cursor").await.unwrap().as_deref(),
             Some("42")
         );
+    }
+
+    fn package(version: &str) -> Package {
+        Package {
+            manifest: format!("version = \"{version}\""),
+            component: version.as_bytes().to_vec(),
+            logo: None,
+            source: None,
+        }
+    }
+
+    async fn notice(store: &MemoryStore) -> Option<String> {
+        store.records().await.unwrap()[0].notice.clone()
+    }
+
+    #[tokio::test]
+    async fn a_rollback_notice_is_kept_until_the_next_update_or_rollback() {
+        let store = MemoryStore::new();
+        store
+            .install("p", "0.1.0", &package("0.1.0"))
+            .await
+            .unwrap();
+        store
+            .install("p", "0.2.0", &package("0.2.0"))
+            .await
+            .unwrap();
+        store.roll_back("p").await.unwrap();
+        store
+            .set_notice("p", Some("Version 0.2.0 failed"))
+            .await
+            .unwrap();
+        assert_eq!(
+            notice(&store).await.as_deref(),
+            Some("Version 0.2.0 failed")
+        );
+        store.set_enabled("p", false).await.unwrap();
+        assert!(
+            notice(&store).await.is_some(),
+            "turning it off says nothing new"
+        );
+
+        store
+            .install("p", "0.3.0", &package("0.3.0"))
+            .await
+            .unwrap();
+        assert_eq!(notice(&store).await, None, "an update starts afresh");
+        store.set_notice("p", Some("again")).await.unwrap();
+        store.roll_back("p").await.unwrap();
+        assert_eq!(notice(&store).await, None, "and so does a rollback");
+        store.set_notice("nobody", Some("x")).await.unwrap();
     }
 
     #[test]

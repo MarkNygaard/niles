@@ -1,8 +1,10 @@
 # Tools
 
-> v0.1 of the interface. Niles 0.2.0 runs it: the runtime, `niles plugin
-> check` and `niles plugin dev` are built. Not yet: installing from GitHub,
-> the setup panel, and pages and widgets drawn in the app.
+> Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
+> installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
+> dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
+> off and removing, and in the app the generated setup panel, the plugin's
+> log, and its pages and widgets.
 
 A tool is a function the AI can decide to call. Niles offers your tools to its
 voice model, which answers spoken requests, and to the Claude and ChatGPT
@@ -38,7 +40,10 @@ fn tools() -> Vec<ToolDef> {
   the whole thing at most 64 characters. A name that would clash with one of
   Niles's tools or another plugin's is refused at install.
 - **Description**: the only thing the model reads to decide whether to call
-  it and how. At most 1 KiB.
+  it and how. At most 1 KiB. To point at a sibling tool, use the name the
+  model sees, with the prefix: "It can be resumed with
+  bambulab_resume_print", not "with resume_print", which names no tool the
+  model has.
 - **Schema**: a JSON Schema object for the arguments, at most 8 KiB.
 
 ## Writing a tool the model uses well

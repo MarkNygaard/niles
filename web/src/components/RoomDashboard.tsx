@@ -11,6 +11,8 @@ import { BoostButton } from "@/components/BoostButton";
 import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
 import { HouseBar } from "@/components/HouseBar";
 import { PairPhoneCard } from "@/components/PairPhoneCard";
+import { PluginWidgetCard } from "@/components/PluginWidgets";
+import { placeWidgets } from "@/lib/plugins";
 import { SceneBar } from "@/components/SceneBar";
 import {
   boostEndsAt,
@@ -188,6 +190,9 @@ export function RoomDashboard() {
   // lands is a page that arranges itself, not a page that is missing
   // something. The key is the one Settings writes and invalidates.
   const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
+  // For the plugins' widgets. A 501 is a Niles without plugins: no
+  // widgets, and nothing to ask again.
+  const plugins = useQuery({ queryKey: ["plugins"], queryFn: api.plugins, retry: false });
   const setZone = useMutation({
     mutationFn: ({ zone, body }: { zone: number; body: SetZone }) =>
       api.setZone(zone, body),
@@ -248,6 +253,11 @@ export function RoomDashboard() {
   // boost started on a phone is one this page can end, and one that
   // expired while nobody was looking is one it has already forgotten.
   const running = boosted(climate.data ?? []);
+  const widgets = placeWidgets(
+    plugins.data ?? [],
+    config.data?.effective,
+    rooms.map((room) => room.name),
+  );
   if (rooms.length === 0) {
     return (
       <Notice>
@@ -298,12 +308,20 @@ export function RoomDashboard() {
         pairing={pair.isPending}
         onPair={() => pair.mutate()}
       />
+      {widgets.front.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {widgets.front.map((placed) => (
+            <PluginWidgetCard key={`${placed.plugin}.${placed.widget.id}`} placed={placed} />
+          ))}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {rooms.map((room) => (
           <RoomCard
             key={room.name}
             room={room}
             music={music.data?.find((m) => m.room === room.name)}
+            widgets={widgets.rooms[room.name]}
             tv={
               tv.data?.paired && tv.data.room === room.name
                 ? {

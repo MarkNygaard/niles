@@ -61,6 +61,7 @@ niles-plugins.workspace = true
 niles-recognition.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+iana-time-zone.workspace = true
 hound.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true

@@ -6,7 +6,7 @@
 //! An empty variable counts as unset. A secret rendered as `""` is a
 //! placeholder nobody filled in, and letting it through means the process
 //! starts happily and then fails at the first API call — which is how a
-//! missing Groq key presented as "the voice satellite gets no reply",
+//! missing provider key presented as "the voice satellite gets no reply",
 //! three layers away from the cause.
 
 use crate::error::{Error, Result};

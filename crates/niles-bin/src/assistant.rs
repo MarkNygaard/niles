@@ -3,7 +3,7 @@
 //! fast model would build something badly or not at all.
 //!
 //! Both are agents, not APIs, so Niles cannot hand them tools in a
-//! request the way it does Groq. Instead Niles serves its tool registry
+//! request the way it does its own model. Instead Niles serves its tool registry
 //! over MCP on a loopback port, and points each run at it with a token
 //! that lives for that one run. The token is also how a tool call knows
 //! who is typing: it maps to the speaker the run was started for, so
@@ -118,10 +118,15 @@ type Candidate = Option<Result<Chosen, (&'static str, String)>>;
 
 /// The preferred one when it can run, else the other when it can, else
 /// why the one that was meant to could not. `None` is not switched on.
+///
+/// Every gate asks this — the chat, a spoken rule, the fast model's
+/// hand-off and the background review — so "neither" chosen here is
+/// neither everywhere.
 fn pick(preferred: Preferred, claude: Candidate, chatgpt: Candidate) -> Choice {
     let (first, second) = match preferred {
         Preferred::ClaudeCode => (claude, chatgpt),
         Preferred::Chatgpt => (chatgpt, claude),
+        Preferred::None => return Choice::Off,
     };
     match (first, second) {
         (Some(Ok(chosen)), _) | (_, Some(Ok(chosen))) => Choice::Use(chosen),
@@ -415,6 +420,32 @@ mod tests {
             Choice::Unready { via, .. } => assert_eq!(via, "claude"),
             _ => panic!("expected it to say why"),
         }
+    }
+
+    #[test]
+    fn choosing_neither_keeps_both_out_even_when_both_could_run() {
+        assert!(matches!(
+            pick(Preferred::None, claude(), chatgpt()),
+            Choice::Off
+        ));
+        // Not "unready" either: nothing is broken, so nothing is said.
+        assert!(matches!(
+            pick(Preferred::None, unready("claude"), unready("chatgpt")),
+            Choice::Off
+        ));
+    }
+
+    #[test]
+    fn choosing_neither_in_the_config_turns_the_assistant_off() {
+        unsafe { std::env::set_var("NILES_TEST_ASSISTANT_NONE_TOKEN", "t") };
+        let cfg: IntegrationsConfig = toml::from_str(
+            "assistant = \"none\"
+[claude_code]
+oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
+",
+        )
+        .unwrap();
+        assert!(matches!(choose(&cfg), Choice::Off));
     }
 
     #[test]

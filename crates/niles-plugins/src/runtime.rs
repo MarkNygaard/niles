@@ -11,11 +11,12 @@
 use crate::bindings::niles::integration::types as wit;
 use crate::error::{Error, Result};
 use crate::host::{HostState, class_to_wit, state_to_wit};
+use crate::log::{Level, PluginLog};
 use crate::manifest::{EventPermission, Manifest};
-use crate::store::{KnownDevice, PluginStore};
+use crate::store::{KnownDevice, Package, PluginStore};
 use crate::ui::{ActionOutcome, ActionValue, Context, Surface};
 use async_trait::async_trait;
-use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState};
+use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState};
 use niles_mqtt::DeviceCommander;
 use niles_notifications::NotificationCenter;
 use niles_tools::DynamicTools;
@@ -32,6 +33,11 @@ use wasmtime::{Engine, EngineWeak};
 pub type SettingsFn = Arc<dyn Fn(&str) -> toml::Table + Send + Sync>;
 /// A plugin's secret, by plugin id and key.
 pub type SecretsFn = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
+/// Told what happens on every plugin's MQTT connections.
+pub type MqttWatch = Arc<dyn Fn(&crate::mqtt::Trace) + Send + Sync>;
+/// The house's time zone, an IANA name, read each time a plugin asks:
+/// it can change while plugins run.
+pub type TimeZoneFn = Arc<dyn Fn() -> String + Send + Sync>;
 
 /// The largest component Niles will run.
 pub const MAX_COMPONENT: usize = 64 * 1024 * 1024;
@@ -97,6 +103,10 @@ pub struct House {
     pub(crate) notifications: OnceLock<Arc<NotificationCenter>>,
     pub(crate) settings: SettingsFn,
     pub(crate) secrets: SecretsFn,
+    pub(crate) mqtt_watch: Option<MqttWatch>,
+    pub(crate) time_zone: TimeZoneFn,
+    /// See [`House::allowing_loopback`].
+    pub(crate) loopback: bool,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -111,6 +121,9 @@ impl House {
             notifications: OnceLock::new(),
             settings: Arc::new(|_| toml::Table::new()),
             secrets: Arc::new(|_, _| None),
+            mqtt_watch: None,
+            time_zone: Arc::new(|| "UTC".to_string()),
+            loopback: false,
             handle: tokio::runtime::Handle::current(),
         }
     }
@@ -129,6 +142,29 @@ impl House {
 
     pub fn with_secrets(mut self, secrets: SecretsFn) -> Self {
         self.secrets = secrets;
+        self
+    }
+
+    /// Let plugins reach this machine where a `setting:` address names it
+    /// (`127.0.0.1`, `::1`, `localhost`), over HTTP and MQTT: a fake
+    /// device beside the plugin under `niles plugin dev
+    /// --allow-loopback`. Never for `serve`, where loopback is Niles
+    /// itself and whatever else runs beside it.
+    pub fn allowing_loopback(mut self) -> Self {
+        self.loopback = true;
+        self
+    }
+
+    /// What `config.time-zone` answers. UTC until this is set.
+    pub fn with_time_zone(mut self, time_zone: TimeZoneFn) -> Self {
+        self.time_zone = time_zone;
+        self
+    }
+
+    /// Be told each connect, status, subscription, publish and message
+    /// on the plugins' MQTT connections, as `niles plugin dev` prints them.
+    pub fn with_mqtt_watch(mut self, watch: MqttWatch) -> Self {
+        self.mqtt_watch = Some(watch);
         self
     }
 }
@@ -182,6 +218,9 @@ pub struct PluginInfo {
     pub error: Option<String>,
     /// Events dropped because the plugin was not keeping up.
     pub dropped_events: u64,
+    /// Traps, timeouts and a component that would not load, since this
+    /// version started: what an update's rollback watches for.
+    pub failures: u64,
 }
 
 /// Why a page or an action could not be answered.
@@ -218,6 +257,10 @@ struct Inner {
     house: Arc<House>,
     limits: Arc<Limits>,
     plugins: RwLock<BTreeMap<String, Arc<Plugin>>>,
+    /// Each plugin's log, by id: it outlives the instance and the
+    /// version that wrote it.
+    logs: Mutex<HashMap<String, Arc<PluginLog>>>,
+    images: crate::images::Images,
 }
 
 impl Drop for Inner {
@@ -255,11 +298,7 @@ pub(crate) fn linker(engine: &Engine) -> Result<Linker<HostState>> {
         <HostState as wasmtime_wasi_http::WasiHttpView>::http,
     )
     .map_err(fail)?;
-    crate::bindings::Plugin::add_to_linker::<_, wasmtime::component::HasSelf<HostState>>(
-        &mut linker,
-        |state| state,
-    )
-    .map_err(fail)?;
+    crate::bindings::add_to_linker(&mut linker).map_err(fail)?;
     Ok(linker)
 }
 
@@ -290,6 +329,8 @@ impl Runtime {
             house: Arc::new(house),
             limits: Arc::new(limits),
             plugins: RwLock::new(BTreeMap::new()),
+            logs: Mutex::default(),
+            images: Default::default(),
         });
         spawn_forwarder(Arc::downgrade(&inner));
         Ok(Self { inner })
@@ -310,6 +351,7 @@ impl Runtime {
                 return 0;
             }
         };
+        self.remember_disabled().await;
         let mut started = 0;
         for plugin in installed {
             let manifest = match Manifest::parse(&plugin.manifest) {
@@ -327,34 +369,153 @@ impl Runtime {
         started
     }
 
-    /// Keep a plugin as installed and start it. Internal, for tests and
-    /// for what stage two's approval will call: nothing here asks the
-    /// household. The manifest and component are checked; a plugin
-    /// with the same id is replaced.
+    /// A disabled plugin's devices stay in their rooms, unavailable, as
+    /// they were when it was switched off, so the rules that name them
+    /// still read.
+    async fn remember_disabled(&self) {
+        let Ok(records) = self.inner.house.store.records().await else {
+            return;
+        };
+        for record in records.into_iter().filter(|r| !r.enabled) {
+            if let Ok(manifest) = Manifest::parse(&record.manifest) {
+                self.inner.remember_devices(&Plugin::new(manifest)).await;
+            }
+        }
+    }
+
+    /// Keep a plugin from a file, with no source, and start it. For
+    /// tests and development: nothing here asks the household.
     pub async fn install(&self, manifest_text: &str, component: Vec<u8>) -> Result<()> {
-        let manifest = Manifest::parse_valid(manifest_text)?;
-        if component.len() > MAX_COMPONENT {
+        self.install_package(Package {
+            manifest: manifest_text.to_string(),
+            component,
+            logo: None,
+            source: None,
+        })
+        .await
+    }
+
+    /// Keep a plugin as installed and start it: what an approved
+    /// install or update ends in. The manifest and component are checked;
+    /// a plugin with the same id is replaced, and kept as the version a
+    /// rollback goes back to.
+    pub async fn install_package(&self, package: Package) -> Result<()> {
+        let manifest = Manifest::parse_valid(&package.manifest)?;
+        if package.component.len() > MAX_COMPONENT {
             return Err(Error::Component(format!(
                 "is {} MiB; at most {} MiB",
-                component.len() / (1024 * 1024),
+                package.component.len() / (1024 * 1024),
                 MAX_COMPONENT / (1024 * 1024)
             )));
         }
         let engine = self.inner.engine.clone();
         let linker = self.inner.linker.clone();
-        let bytes = component.clone();
-        tokio::task::spawn_blocking(move || crate::worker::prepare(&engine, &linker, &bytes))
-            .await
-            .map_err(|e| Error::Component(e.to_string()))?
-            .map_err(Error::Component)?;
+        let bytes = package.component.clone();
+        let interface = manifest.interface.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::worker::prepare(&engine, &linker, &bytes, &interface)
+        })
+        .await
+        .map_err(|e| Error::Component(e.to_string()))?
+        .map_err(Error::Component)?;
         self.inner
             .house
             .store
-            .install(&manifest.id, &manifest.version, manifest_text, &component)
+            .install(&manifest.id, &manifest.version, &package)
             .await
             .map_err(Error::Store)?;
         self.remove_running(&manifest.id).await;
-        self.start(manifest, component).await
+        self.start(manifest, package.component).await
+    }
+
+    /// Stop a plugin and keep it stopped across restarts. Its settings,
+    /// secrets, storage and devices stay; the devices are unavailable.
+    pub async fn disable(&self, id: &str) -> Result<()> {
+        if !self
+            .inner
+            .house
+            .store
+            .set_enabled(id, false)
+            .await
+            .map_err(Error::Store)?
+        {
+            return Err(Error::UnknownPlugin(id.to_string()));
+        }
+        self.remove_running(id).await;
+        Ok(())
+    }
+
+    /// Start a disabled plugin, and keep it starting with Niles.
+    pub async fn enable(&self, id: &str) -> Result<()> {
+        let store = &self.inner.house.store;
+        let installed = store
+            .package(id)
+            .await
+            .map_err(Error::Store)?
+            .ok_or_else(|| Error::UnknownPlugin(id.to_string()))?;
+        store.set_enabled(id, true).await.map_err(Error::Store)?;
+        if self.inner.plugins_read().contains_key(id) {
+            return Ok(());
+        }
+        self.start(Manifest::parse(&installed.manifest)?, installed.component)
+            .await
+    }
+
+    /// Put the version before the last update back, and start it. The
+    /// version it replaces is not kept.
+    pub async fn roll_back(&self, id: &str) -> Result<String> {
+        let installed = self
+            .inner
+            .house
+            .store
+            .roll_back(id)
+            .await
+            .map_err(Error::Store)?
+            .ok_or_else(|| Error::NoPrevious(id.to_string()))?;
+        let manifest = Manifest::parse(&installed.manifest)?;
+        let version = manifest.version.clone();
+        self.remove_running(id).await;
+        self.start(manifest, installed.component).await?;
+        Ok(version)
+    }
+
+    /// Stop a plugin and forget it: its devices leave the house, with an
+    /// event each, and its tools, storage and stored component go.
+    /// Settings and secrets are kept elsewhere and are the caller's.
+    pub async fn remove(&self, id: &str) -> Result<()> {
+        let store = &self.inner.house.store;
+        if store.package(id).await.map_err(Error::Store)?.is_none()
+            && !self.inner.plugins_read().contains_key(id)
+        {
+            return Err(Error::UnknownPlugin(id.to_string()));
+        }
+        self.remove_running(id).await;
+        lock(&self.inner.logs).remove(id);
+        self.inner.images.forget(id);
+        self.inner.house.tools.remove(id);
+        let source = format!("x_{id}");
+        for device in self.inner.house.registry.list_all() {
+            if device.id.source() == source {
+                self.inner.house.registry.remove(&device.id);
+                self.inner
+                    .house
+                    .bus
+                    .publish(Event::DeviceRemoved { id: device.id });
+            }
+        }
+        store.remove(id).await.map_err(Error::Store)
+    }
+
+    pub(crate) fn store(&self) -> &Arc<dyn PluginStore> {
+        &self.inner.house.store
+    }
+
+    pub(crate) fn registry(&self) -> &Arc<DeviceRegistry> {
+        &self.inner.house.registry
+    }
+
+    pub(crate) fn dynamic_tools(&self) -> &DynamicTools {
+        &self.inner.house.tools
     }
 
     /// Run `manifest`'s component. Its devices from before are put back
@@ -364,7 +525,8 @@ impl Runtime {
         if self.inner.plugins_read().contains_key(&id) {
             return Err(Error::AlreadyRunning(id));
         }
-        let plugin = Arc::new(Plugin::new(manifest));
+        let log = self.inner.log_of(&id);
+        let plugin = Arc::new(Plugin::with_log(manifest, log));
         self.inner.remember_devices(&plugin).await;
         self.inner
             .plugins
@@ -414,6 +576,43 @@ impl Runtime {
 
     pub fn info(&self, id: &str) -> Option<PluginInfo> {
         self.inner.plugin(id).ok().map(|p| p.info())
+    }
+
+    /// The plugin's last log lines, oldest first; empty for one that has
+    /// written nothing since Niles started.
+    pub fn log(&self, id: &str) -> Vec<crate::log::Line> {
+        lock(&self.inner.logs)
+            .get(id)
+            .map(|log| log.lines())
+            .unwrap_or_default()
+    }
+
+    /// A picture on one of a running plugin's pages, fetched by Niles
+    /// (see [`crate::images`]).
+    pub async fn image(
+        &self,
+        id: &str,
+        src: &str,
+    ) -> std::result::Result<crate::images::Image, crate::images::ImageError> {
+        let manifest = self.manifest(id).ok_or_else(|| {
+            crate::images::ImageError::NotFound(format!("No plugin {id} is running."))
+        })?;
+        self.inner.images.get(&manifest, src).await
+    }
+
+    /// The manifest of a running plugin.
+    pub fn manifest(&self, id: &str) -> Option<Manifest> {
+        self.inner.plugin(id).ok().map(|p| p.manifest.clone())
+    }
+
+    /// What the household entered for a plugin's settings.
+    pub fn settings_of(&self, id: &str) -> toml::Table {
+        (self.inner.house.settings)(id)
+    }
+
+    /// Whether a plugin's secret has a value.
+    pub fn secret_is_set(&self, id: &str, key: &str) -> bool {
+        (self.inner.house.secrets)(id, key).is_some()
     }
 
     /// The tools a plugin offers right now, as the model sees them.
@@ -501,6 +700,10 @@ impl Inner {
         self.plugins.read().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn log_of(&self, id: &str) -> Arc<PluginLog> {
+        lock(&self.logs).entry(id.to_string()).or_default().clone()
+    }
+
     fn plugin(&self, id: &str) -> Result<Arc<Plugin>> {
         self.plugins_read()
             .get(id)
@@ -532,8 +735,7 @@ impl Inner {
                 continue;
             };
             if self.house.registry.get(&id).is_none() {
-                let mut remembered = Device::new(id.clone(), DeviceState::default(), device.class)
-                    .with_capabilities(device.light);
+                let mut remembered = device.device(id.clone(), DeviceState::default());
                 remembered.available = false;
                 self.house.registry.upsert(remembered.clone());
                 self.house
@@ -641,7 +843,7 @@ impl DeviceCommander for Runtime {
         let plugin = self
             .inner
             .by_source(id.source())
-            .ok_or_else(|| format!("The {spoken}'s integration is not installed."))?;
+            .ok_or_else(|| format!("The {spoken}'s add-on is not installed."))?;
         let known =
             plugin.devices().get(id).cloned().ok_or_else(|| {
                 format!("{} has no device called {spoken}.", plugin.manifest.name)
@@ -676,6 +878,11 @@ pub(crate) struct Plugin {
     reports: Mutex<HashMap<DeviceId, Reported>>,
     notified: Mutex<VecDeque<Instant>>,
     log_window: Mutex<LogWindow>,
+    log: Arc<PluginLog>,
+    failures: std::sync::atomic::AtomicU64,
+    /// The last MQTT connection id handed out. Ids are never reused, so
+    /// a message for a connection that is gone cannot reach a new one.
+    connections: std::sync::atomic::AtomicU32,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -703,6 +910,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Plugin {
     pub(crate) fn new(manifest: Manifest) -> Self {
+        Self::with_log(manifest, Arc::default())
+    }
+
+    fn with_log(manifest: Manifest, log: Arc<PluginLog>) -> Self {
         Self {
             id: manifest.id.clone(),
             source: manifest.source(),
@@ -723,6 +934,9 @@ impl Plugin {
                 lines: 0,
                 dropped: 0,
             }),
+            log,
+            failures: Default::default(),
+            connections: Default::default(),
             thread: Mutex::default(),
         }
     }
@@ -736,7 +950,14 @@ impl Plugin {
             status: record.status.clone(),
             error: record.error.clone(),
             dropped_events: self.queue.dropped(),
+            failures: self.failures.load(std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    /// The instance trapped, timed out, or could not be made at all.
+    pub fn count_failure(&self) {
+        self.failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn status(&self) -> Status {
@@ -745,6 +966,18 @@ impl Plugin {
 
     pub fn set_status(&self, status: Status) {
         let mut record = lock(&self.record);
+        if record.status != status {
+            let level = match &status {
+                Status::Starting | Status::Running => Level::Info,
+                Status::NotSetUp(_) => Level::Warn,
+                Status::Failing(_) | Status::Stopped(_) => Level::Error,
+            };
+            let line = match &status {
+                Status::Stopped(why) => format!("Stopped after repeated failures: {why}"),
+                other => other.line(),
+            };
+            self.log.push(level, &line, true);
+        }
         match &status {
             Status::Failing(why) | Status::Stopped(why) | Status::NotSetUp(why) => {
                 record.error = Some(why.clone());
@@ -752,6 +985,25 @@ impl Plugin {
             Status::Starting | Status::Running => {}
         }
         record.status = status;
+    }
+
+    /// A line in the plugin's log from Niles, about the plugin.
+    pub fn note(&self, level: Level, line: &str) {
+        self.log.push(level, line, true);
+        let id = &self.id;
+        match level {
+            Level::Debug => tracing::debug!(plugin = %id, "{line}"),
+            Level::Info => tracing::info!(plugin = %id, "{line}"),
+            Level::Warn => tracing::warn!(plugin = %id, "{line}"),
+            Level::Error => tracing::error!(plugin = %id, "{line}"),
+        }
+    }
+
+    /// An id for a new MQTT connection.
+    pub fn next_connection(&self) -> u32 {
+        self.connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
     /// What a caller is told while the plugin is down.
@@ -830,11 +1082,9 @@ impl Plugin {
             let mut window = lock(&self.log_window);
             if window.start.elapsed() >= LOG_WINDOW {
                 if window.dropped > 0 {
-                    tracing::warn!(
-                        plugin = %self.id,
-                        "{} log lines over the limit were not kept",
-                        window.dropped
-                    );
+                    let note = format!("{} log lines over the limit were not kept", window.dropped);
+                    tracing::warn!(plugin = %self.id, "{note}");
+                    self.log.push(crate::log::Level::Warn, &note, true);
                 }
                 *window = LogWindow {
                     start: Instant::now(),
@@ -853,6 +1103,7 @@ impl Plugin {
             cut -= 1;
         }
         let message = &message[..cut];
+        self.log.push(level.into(), message, false);
         let id = &self.id;
         match level {
             Level::Debug => tracing::debug!(plugin = %id, "{message}"),
@@ -1038,10 +1289,11 @@ pub(crate) enum Next {
     /// It is time to start an instance.
     Start,
     Event(wit::Event),
+    Mqtt(crate::mqtt::Delivery),
 }
 
 /// A plugin's work, in the order it is done: jobs somebody is waiting
-/// for, then due timers, then events.
+/// for, then due timers, then events and MQTT deliveries, taking turns.
 #[derive(Default)]
 pub(crate) struct Queue {
     pending: Mutex<Pending>,
@@ -1053,6 +1305,9 @@ struct Pending {
     jobs: VecDeque<Job>,
     events: VecDeque<wit::Event>,
     dropped: u64,
+    mqtt: crate::mqtt::Inbox,
+    /// Whether an event goes next when both are waiting.
+    events_turn: bool,
     restart: bool,
     stop: bool,
 }
@@ -1084,6 +1339,15 @@ impl Queue {
         });
     }
 
+    pub fn push_mqtt(&self, delivery: crate::mqtt::Delivery) {
+        self.change(|p| p.mqtt.push(delivery));
+    }
+
+    /// MQTT messages dropped since this was last asked.
+    pub fn take_mqtt_dropped(&self) -> u64 {
+        lock(&self.pending).mqtt.take_dropped()
+    }
+
     pub fn restart(&self) {
         self.change(|p| p.restart = true);
     }
@@ -1095,8 +1359,11 @@ impl Queue {
         });
     }
 
+    /// Forget the events and MQTT deliveries waiting: their instance is gone.
     pub fn clear_events(&self) {
-        lock(&self.pending).events.clear();
+        let mut pending = lock(&self.pending);
+        pending.events.clear();
+        pending.mqtt.clear();
     }
 
     pub fn dropped(&self) -> u64 {
@@ -1124,8 +1391,16 @@ impl Queue {
             if start.is_some_and(|t| t <= now) {
                 return Next::Start;
             }
-            if let Some(event) = pending.events.pop_front() {
-                return Next::Event(event);
+            let mqtt_waiting = !pending.mqtt.is_empty();
+            if !pending.events.is_empty() && (pending.events_turn || !mqtt_waiting) {
+                pending.events_turn = false;
+                if let Some(event) = pending.events.pop_front() {
+                    return Next::Event(event);
+                }
+            }
+            if let Some(delivery) = pending.mqtt.pop() {
+                pending.events_turn = true;
+                return Next::Mqtt(delivery);
             }
             pending = match [timers, start].into_iter().flatten().min() {
                 Some(at) => {
@@ -1184,6 +1459,47 @@ mod tests {
             queue.next(Some(Instant::now()), None),
             Next::Timers
         ));
+    }
+
+    #[test]
+    fn events_and_mqtt_take_turns() {
+        let queue = Queue::default();
+        let message = |n: u8| crate::mqtt::Delivery::Message {
+            conn: 1,
+            topic: "t".into(),
+            payload: vec![n],
+            latest_only: false,
+        };
+        queue.push_event(event());
+        queue.push_event(event());
+        queue.push_mqtt(message(1));
+        queue.push_mqtt(message(2));
+        let kinds: Vec<&str> = (0..4)
+            .map(|_| match queue.next(None, None) {
+                Next::Event(_) => "event",
+                Next::Mqtt(_) => "mqtt",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["mqtt", "event", "mqtt", "event"]);
+    }
+
+    #[test]
+    fn a_gone_instances_mqtt_deliveries_go_with_it() {
+        let queue = Queue::default();
+        queue.push_mqtt(crate::mqtt::Delivery::Status {
+            conn: 1,
+            status: crate::bindings::mqtt::ConnectionStatus::Connected,
+        });
+        queue.clear_events();
+        let (reply, _answer) = oneshot::channel();
+        queue.push(Job::CallTool {
+            name: "x".into(),
+            args: "{}".into(),
+            reply,
+        });
+        assert!(matches!(queue.next(None, None), Next::Job(_)));
+        assert!(lock(&queue.pending).mqtt.is_empty());
     }
 
     #[test]

@@ -41,3 +41,34 @@ describe("TabBar", () => {
     expect(labels).toEqual(["Home", "Chat"]);
   });
 });
+
+describe("TabBar with a plugin's page", () => {
+  const pages = [
+    {
+      id: "spotprice.electricity",
+      plugin: "spotprice",
+      page: "electricity",
+      label: "Electricity",
+      icon: "zap",
+      refresh_every: null,
+    },
+  ];
+
+  it("links to the page's route and marks it while it is open", () => {
+    render(
+      <TabBar
+        route="/plugins/spotprice/electricity"
+        menu={[{ id: "spotprice.electricity", hidden: false }]}
+        pages={pages}
+      />,
+    );
+    const link = screen.getByRole("link", { name: "Electricity" });
+    expect(link).toHaveAttribute("href", "#/plugins/spotprice/electricity");
+    expect(link).toHaveAttribute("aria-current", "page");
+  });
+
+  it("leaves out an entry whose plugin is gone", () => {
+    render(<TabBar route="/" menu={[{ id: "gone.page", hidden: false }]} pages={pages} />);
+    expect(screen.getAllByRole("link").map((a) => a.textContent)).toEqual(["Home"]);
+  });
+});

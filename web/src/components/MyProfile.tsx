@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 /**
  * Your own page, beside Settings on the Me tab rather than inside it.
  *
- * Settings is the house — lights, rooms, integrations — and most of the
+ * Settings is the house — lights, rooms, add-ons — and most of the
  * household never needs it. Everyone has a birthday and a way they like
  * to be spoken to, so that sits where a phone app keeps your profile.
  */

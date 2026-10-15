@@ -49,12 +49,12 @@ bind_address = "0.0.0.0:8080"
 bind_address = "0.0.0.0:10300"
 
 [stt]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "ELEVENLABS_API_KEY"
 
 [tts]
 
 [llm]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "CEREBRAS_API_KEY"
 
 [lighting]
 morning_start = "05:45"

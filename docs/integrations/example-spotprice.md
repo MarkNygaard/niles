@@ -1,12 +1,13 @@
 # Worked example: spot prices
 
-> v0.1 of the interface. The Rust below was built with `cargo build --release
+> Interface 0.2. The Rust below was built with `cargo build --release
 > --target wasm32-wasip2` against
 > [`niles-integration.wit`](../../schemas/niles-integration.wit) and
 > `wit-bindgen` 0.63, passes `niles plugin check`, and runs under `niles plugin
 > dev` on Niles 0.2.0 against the live service. The JavaScript and Python
-> snippets were built with `jco componentize` and `componentize-py` and have
-> not been run in Niles yet.
+> snippets were built with `jco componentize` and `componentize-py` against
+> interface 0.1, have had the two MQTT exports of 0.2 added by hand since,
+> and have not been run in Niles yet.
 
 A complete, small plugin: Danish electricity spot prices from
 [Energi Data Service](https://www.energidataservice.dk/), Energinet's free open
@@ -65,7 +66,7 @@ description = "Hear what power costs hour by hour, and let rules run things when
 authors = ["Jane Doe <jane@example.com>"]
 homepage = "https://github.com/jane/niles-spotprice"
 min_niles = "0.2.0"
-interface = "0.1"
+interface = "0.2"
 # No group fits electricity, so it is left out and the plugin shows under Custom.
 logo = "logo.svg"
 keywords = [
@@ -121,7 +122,7 @@ The household is shown:
 > - Adds a page to the menu: Electricity
 >
 > It cannot see your conversations, the people in your house, other
-> integrations' passwords or Niles's database.
+> add-ons' passwords or Niles's database.
 
 ## `logo.svg`
 
@@ -170,8 +171,9 @@ wit_bindgen::generate!({
 });
 
 // The types the world's exports use (DeviceState, Event, ToolDef,
-// RenderContext, UiTree, ActionValue, ActionResult) are generated at the
-// crate root; the rest are imported from their interfaces.
+// RenderContext, UiTree, ActionValue, ActionResult, ConnectionStatus)
+// are generated at the crate root; the rest are imported from their
+// interfaces.
 use niles::integration::types::{Device, DeviceClass, LightCapabilities, Reading};
 use niles::integration::ui::{
     Badge, Button, ButtonStyle, Chart, ChartKind, ChartSeries, Node, NodeKind, TextBlock,
@@ -352,6 +354,10 @@ impl Guest for SpotPrice {
     }
 
     fn on_event(_event: Event) {}
+
+    fn on_mqtt_message(_conn: u32, _topic: String, _payload: Vec<u8>) {}
+
+    fn on_mqtt_status(_conn: u32, _status: ConnectionStatus) {}
 
     fn render(surface_id: String, _context: RenderContext) -> Result<UiTree, String> {
         if surface_id != PAGE {
@@ -760,8 +766,8 @@ throws its `err`; an import that returns `result` throws on `err`, with the
 error variant in `e.payload`.
 
 ```js
-import { send } from "niles:integration/http@0.1.0";
-import { get } from "niles:integration/config@0.1.0";
+import { send } from "niles:integration/http@0.2.1";
+import { get } from "niles:integration/config@0.2.1";
 
 const API = "https://api.energidataservice.dk/dataset/DayAheadPrices";
 
@@ -831,6 +837,8 @@ export function setDevice() {
 }
 export function onTimer() {}
 export function onEvent() {}
+export function onMqttMessage() {}
+export function onMqttStatus() {}
 export function render() {
   throw "No pages.";
 }
@@ -937,6 +945,12 @@ class WitWorld(wit_world.WitWorld):
         pass
 
     def on_event(self, event: types.Event) -> None:
+        pass
+
+    def on_mqtt_message(self, conn: int, topic: str, payload: bytes) -> None:
+        pass
+
+    def on_mqtt_status(self, conn: int, status) -> None:
         pass
 
     def render(self, surface_id, context):

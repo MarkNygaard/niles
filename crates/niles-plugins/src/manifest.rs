@@ -8,14 +8,14 @@
 //! once, so `niles plugin check` can say it in one go.
 
 use crate::error::{Error, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// The Niles this is, for `min_niles`.
 pub const NILES_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The `interface` versions this Niles runs.
-pub const INTERFACES: &[&str] = &["0.1"];
+/// The `interface` versions this Niles runs, oldest first.
+pub const INTERFACES: &[&str] = &["0.1", "0.2"];
 
 /// Memory a plugin gets unless its manifest asks for more.
 pub const DEFAULT_MEMORY_MB: u32 = 64;
@@ -84,6 +84,71 @@ pub struct Permissions {
     pub notify: Notify,
     #[serde(default)]
     pub ui: bool,
+    /// MQTT brokers, from interface 0.2.
+    #[serde(default)]
+    pub mqtt: Vec<MqttBroker>,
+}
+
+/// One broker a plugin may connect to.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MqttBroker {
+    /// What `mqtt.connect` calls it: `[a-z0-9_]+`, unique.
+    pub name: String,
+    /// A host name, an IP address, or `setting:<key>` for the address
+    /// the household types in.
+    pub host: String,
+    /// 8883, or 1883 with `tls = "none"`, unless given.
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub tls: TlsMode,
+}
+
+/// How a broker's certificate is checked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+pub enum TlsMode {
+    /// Against the public certificate authorities, for the host's name.
+    #[default]
+    #[serde(rename = "verify")]
+    Verify,
+    /// The device's own certificate, self-signed or not, trusted the
+    /// first time and pinned from then on. Home network only.
+    #[serde(rename = "trust-device")]
+    TrustDevice,
+    /// No TLS at all. Home network only.
+    #[serde(rename = "none")]
+    Plain,
+}
+
+impl TlsMode {
+    /// As the manifest writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TlsMode::Verify => "verify",
+            TlsMode::TrustDevice => "trust-device",
+            TlsMode::Plain => "none",
+        }
+    }
+}
+
+impl MqttBroker {
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(self.default_port())
+    }
+
+    /// MQTT's own: 8883 over TLS, 1883 without.
+    pub fn default_port(&self) -> u16 {
+        match self.tls {
+            TlsMode::Plain => 1883,
+            _ => 8883,
+        }
+    }
+
+    /// The setting the address comes from, for `setting:<key>`.
+    pub fn setting(&self) -> Option<&str> {
+        self.host.strip_prefix("setting:")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -170,7 +235,7 @@ pub struct Surfaces {
     pub widgets: Vec<Widget>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MenuEntry {
     pub id: String,
@@ -180,15 +245,25 @@ pub struct MenuEntry {
     pub refresh_every: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Widget {
     pub id: String,
     pub title: String,
+    /// The room it starts in: a room's name, or `setting:<key>` for the
+    /// room a `room` setting holds. None, or that setting unset, is the
+    /// front page.
     #[serde(default)]
     pub room: Option<String>,
     #[serde(default)]
     pub refresh_every: Option<u32>,
+}
+
+impl Widget {
+    /// The `room` setting that places it, when `room` is `setting:<key>`.
+    pub fn room_setting(&self) -> Option<&str> {
+        self.room.as_deref()?.strip_prefix("setting:")
+    }
 }
 
 /// What a setting holds, as the plugin is given it.
@@ -242,6 +317,19 @@ impl Manifest {
 
     pub fn setting(&self, key: &str) -> Option<&Setting> {
         self.settings.iter().find(|s| s.key == key)
+    }
+
+    /// The room `widget` starts in with these settings: its `room`, or
+    /// the one its `setting:` names. None is the front page, which is
+    /// also where it is while that setting is empty.
+    pub fn widget_room(&self, widget: &Widget, values: &toml::Table) -> Option<String> {
+        let Some(key) = widget.room_setting() else {
+            return widget.room.clone();
+        };
+        match self.setting(key)?.value(values)? {
+            SettingValue::Text(room) if !room.is_empty() => Some(room),
+            _ => None,
+        }
     }
 
     /// Whether `id` is one of this plugin's declared pages or widgets.
@@ -389,6 +477,48 @@ impl Manifest {
         if has_surfaces && !p.ui {
             out.push("pages and widgets need ui = true in [permissions]".into());
         }
+        self.check_mqtt(out);
+    }
+
+    fn check_mqtt(&self, out: &mut Vec<String>) {
+        let brokers = &self.permissions.mqtt;
+        if !brokers.is_empty() && self.interface == "0.1" {
+            out.push(
+                "mqtt: MQTT is in interface 0.2; set interface = \"0.2\" and build against its WIT"
+                    .into(),
+            );
+        }
+        let mut names = HashSet::new();
+        for broker in brokers {
+            let name = &broker.name;
+            if !is_identifier(name) || name.len() > 32 {
+                out.push(format!(
+                    "mqtt: the broker name {name:?} must be [a-z0-9_]+, at most 32 characters"
+                ));
+            }
+            if !names.insert(name.as_str()) {
+                out.push(format!("mqtt: the broker name {name:?} is used twice"));
+            }
+            if broker.port == Some(0) {
+                out.push(format!("mqtt: broker {name:?} has port 0"));
+            }
+            match broker.setting() {
+                Some(key) => match self.setting(key) {
+                    Some(s) if matches!(s.kind, SettingKind::String) => {}
+                    Some(_) => out.push(format!(
+                        "mqtt: broker {name:?}: setting:{key} must name a string setting"
+                    )),
+                    None => out.push(format!(
+                        "mqtt: broker {name:?}: setting:{key} names no declared setting"
+                    )),
+                },
+                None => {
+                    if let Err(why) = crate::policy::check_mqtt_host(&broker.host, broker.tls) {
+                        out.push(format!("mqtt: broker {name:?}: {why}"));
+                    }
+                }
+            }
+        }
     }
 
     fn check_settings(&self, out: &mut Vec<String>) {
@@ -469,11 +599,21 @@ impl Manifest {
             if w.title.trim().is_empty() {
                 out.push(format!("widget {:?} has no title", w.id));
             }
-            if let Some(room) = &w.room
+            if let Some(key) = w.room_setting() {
+                if self
+                    .setting(key)
+                    .is_none_or(|s| s.kind != SettingKind::Room)
+                {
+                    out.push(format!(
+                        "widget {:?}: room \"setting:{key}\" must name a setting of type room",
+                        w.id
+                    ));
+                }
+            } else if let Some(room) = &w.room
                 && !is_identifier(room)
             {
                 out.push(format!(
-                    "widget {:?}: room {room:?} must be [a-z0-9_]+",
+                    "widget {:?}: room {room:?} must be [a-z0-9_]+, or setting:<key> for a room setting",
                     w.id
                 ));
             }
@@ -575,9 +715,7 @@ pub fn check_id(id: &str) -> std::result::Result<(), String> {
         ));
     }
     if niles_config::catalogue::find(id).is_some() {
-        return Err(format!(
-            "id {id:?} is the id of one of Niles's own integrations"
-        ));
+        return Err(format!("id {id:?} is the id of one of Niles's own add-ons"));
     }
     Ok(())
 }
@@ -664,6 +802,63 @@ refresh_every = 300
             .unwrap_or_else(|e| vec![e.to_string()])
     }
 
+    const ROOM_WIDGET: &str = r#"
+[[settings]]
+key = "room"
+label = "Room"
+type = "room"
+
+[[ui.widgets]]
+id = "now"
+title = "Now"
+room = "setting:room"
+"#;
+
+    #[test]
+    fn a_widget_can_start_in_the_room_a_setting_names() {
+        assert_eq!(with(ROOM_WIDGET), Vec::<String>::new());
+        let manifest = Manifest::parse(&format!("{SPOTPRICE}\n{ROOM_WIDGET}")).unwrap();
+        let widget = &manifest.ui.widgets[0];
+        let mut values = toml::Table::new();
+        assert_eq!(
+            manifest.widget_room(widget, &values),
+            None,
+            "the front page"
+        );
+        values.insert("room".into(), "office".into());
+        assert_eq!(
+            manifest.widget_room(widget, &values).as_deref(),
+            Some("office")
+        );
+        values.insert("room".into(), "".into());
+        assert_eq!(manifest.widget_room(widget, &values), None);
+
+        let fixed = Widget {
+            room: Some("hallway".into()),
+            ..widget.clone()
+        };
+        assert_eq!(
+            manifest.widget_room(&fixed, &values).as_deref(),
+            Some("hallway")
+        );
+    }
+
+    #[test]
+    fn a_widget_room_setting_must_be_a_declared_room_setting() {
+        let undeclared = with(&ROOM_WIDGET.replace("setting:room", "setting:place"));
+        assert!(
+            undeclared.iter().any(|p| p.contains("setting:place")),
+            "{undeclared:?}"
+        );
+        let not_a_room = with(&ROOM_WIDGET.replace("setting:room", "setting:area"));
+        assert!(
+            not_a_room.iter().any(|p| p.contains("of type room")),
+            "{not_a_room:?}"
+        );
+        let bad = with(&ROOM_WIDGET.replace("setting:room", "Office!"));
+        assert!(bad.iter().any(|p| p.contains("[a-z0-9_]+")), "{bad:?}");
+    }
+
     #[test]
     fn the_worked_example_is_valid() {
         assert_eq!(spotprice().problems(), Vec::<String>::new());
@@ -694,7 +889,8 @@ refresh_every = 300
             replacing(r#"min_niles = "0.2.0""#, r#"min_niles = "9.0.0""#)[0]
                 .contains("needs Niles")
         );
-        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#)[0].contains("interface"));
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.3""#)[0].contains("interface"));
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#).is_empty());
     }
 
     #[test]
@@ -817,6 +1013,100 @@ refresh_every = 300
                 .iter()
                 .any(|p| p.contains("setting:area must name a string")),
             "{problems:?}"
+        );
+    }
+
+    /// The worked example on interface 0.2, with `brokers` as its mqtt
+    /// permission and an address setting.
+    fn with_brokers(brokers: &str) -> std::result::Result<Manifest, Vec<String>> {
+        let text = SPOTPRICE
+            .replace(r#"interface = "0.1""#, r#"interface = "0.2""#)
+            .replace("ui = true\n", &format!("ui = true\nmqtt = [{brokers}]\n"))
+            + "\n[[settings]]\nkey = \"address\"\nlabel = \"Printer address\"\ntype = \"string\"\n";
+        let manifest = Manifest::parse(&text).map_err(|e| vec![e.to_string()])?;
+        let problems = manifest.problems();
+        if problems.is_empty() {
+            Ok(manifest)
+        } else {
+            Err(problems)
+        }
+    }
+
+    #[test]
+    fn a_broker_takes_mqtts_port_and_verifies_by_default() {
+        let m = with_brokers(r#"{ name = "cloud", host = "broker.example.com" }"#).unwrap();
+        let broker = &m.permissions.mqtt[0];
+        assert_eq!(broker.tls, TlsMode::Verify);
+        assert_eq!(broker.port(), 8883);
+        let m = with_brokers(
+            r#"{ name = "plugs", host = "192.168.1.20", tls = "none" },
+               { name = "printer", host = "setting:address", port = 8883, tls = "trust-device" }"#,
+        )
+        .unwrap();
+        assert_eq!(m.permissions.mqtt[0].port(), 1883);
+        assert_eq!(m.permissions.mqtt[1].setting(), Some("address"));
+    }
+
+    #[test]
+    fn mqtt_needs_interface_0_2() {
+        let text = SPOTPRICE.replace(
+            "ui = true\n",
+            "ui = true\nmqtt = [{ name = \"b\", host = \"broker.example.com\" }]\n",
+        );
+        let problems = Manifest::parse(&text).unwrap().problems();
+        assert!(
+            problems.iter().any(|p| p.contains("interface = \"0.2\"")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn trust_device_and_plain_mqtt_are_for_the_home_network_only() {
+        let refused = |broker: &str| with_brokers(broker).unwrap_err().join("; ");
+        assert!(
+            refused(r#"{ name = "b", host = "8.8.8.8", tls = "trust-device" }"#)
+                .contains("only for the home network")
+        );
+        assert!(
+            refused(r#"{ name = "b", host = "8.8.8.8", tls = "none" }"#)
+                .contains("only for the home network")
+        );
+        assert!(with_brokers(r#"{ name = "b", host = "8.8.8.8" }"#).is_ok());
+        assert!(
+            with_brokers(r#"{ name = "b", host = "192.168.1.40", tls = "trust-device" }"#).is_ok()
+        );
+        assert!(
+            with_brokers(r#"{ name = "b", host = "printer.lan", tls = "trust-device" }"#).is_ok(),
+            "a name is checked when it resolves"
+        );
+        assert!(refused(r#"{ name = "b", host = "127.0.0.1" }"#).contains("no plugin may reach"));
+        assert!(
+            refused(r#"{ name = "b", host = "localhost", tls = "none" }"#).contains("localhost")
+        );
+    }
+
+    #[test]
+    fn broker_entries_are_checked() {
+        let refused = |broker: &str| with_brokers(broker).unwrap_err().join("; ");
+        assert!(
+            refused(r#"{ name = "b", host = "mqtts://broker.example.com" }"#).contains("no scheme")
+        );
+        assert!(refused(r#"{ name = "b", host = "broker.example.com:8883" }"#).contains("port"));
+        assert!(refused(r#"{ name = "b", host = "*.example.com" }"#).contains("wildcards"));
+        assert!(refused(r#"{ name = "B", host = "broker.example.com" }"#).contains("[a-z0-9_]+"));
+        assert!(
+            refused(
+                r#"{ name = "b", host = "a.example.com" }, { name = "b", host = "b.example.com" }"#
+            )
+            .contains("twice")
+        );
+        assert!(refused(r#"{ name = "b", host = "setting:nope" }"#).contains("names no declared"));
+        assert!(refused(r#"{ name = "b", host = "setting:area" }"#).contains("string setting"));
+        assert!(refused(r#"{ name = "b", host = "x.example.com", port = 0 }"#).contains("port 0"));
+        assert!(
+            refused(r#"{ name = "b", host = "x.example.com", tls = "insecure" }"#)
+                .contains("unknown variant"),
+            "a misspelt mode is an error, not verify"
         );
     }
 

@@ -53,7 +53,9 @@ pub use groceries::PostgresGroceries;
 pub use journal::PostgresJournal;
 pub use memory::PostgresMemory;
 pub use morning_claims::PostgresMorningClaims;
-pub use plugins::{PluginDeviceRow, PluginRow, PostgresPlugins, hex_digest};
+pub use plugins::{
+    PluginDeviceRow, PluginInstall, PluginMeta, PluginRow, PostgresPlugins, hex_digest,
+};
 pub use room_music::PostgresRoomMusic;
 pub use scenes::PostgresScenes;
 pub use secrets::{PostgresSecrets, Sealer};

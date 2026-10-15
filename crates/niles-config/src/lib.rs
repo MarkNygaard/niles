@@ -68,7 +68,7 @@ pub use menu::MenuConfig;
 pub use mqtt::MqttConfig;
 pub use notifications::NotificationsConfig;
 pub use presence::{PresenceConfig, TadoConfigDto};
-pub use providers::{ProviderConfig, Role};
+pub use providers::{ProviderConfig, Retired, Role};
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use rooms::RoomsConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
@@ -112,12 +112,12 @@ bind_address = "0.0.0.0:8080"
 bind_address = "0.0.0.0:10300"
 
 [stt]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "ELEVENLABS_API_KEY"
 
 [tts]
 
 [llm]
-api_key_env = "GROQ_API_KEY"
+api_key_env = "CEREBRAS_API_KEY"
 
 [lighting]
 morning_start = "05:45"
@@ -351,12 +351,18 @@ pub struct Config {
     /// `plugins.<id>.<key>`.
     #[serde(default)]
     pub plugins: std::collections::BTreeMap<String, toml::Table>,
+    /// What the config named that Niles no longer has, and was dropped
+    /// or set back to its default as it loaded. Never written by anybody:
+    /// see [`Config::settle`].
+    #[serde(skip)]
+    pub retired: Vec<providers::Retired>,
 }
 
 impl Config {
     /// Parse from a TOML string.
     pub fn load_from_str(s: &str) -> Result<Self> {
-        let cfg: Self = toml::from_str(s)?;
+        let mut cfg: Self = toml::from_str(s)?;
+        cfg.settle();
         Ok(cfg)
     }
 
@@ -674,9 +680,10 @@ mod tests {
     #[test]
     fn stt_section_parses_with_defaults() {
         let cfg = Config::load_from_str(valid_toml()).unwrap();
-        assert_eq!(cfg.stt.api_key_env, "GROQ_API_KEY");
-        assert_eq!(cfg.stt.base_url, "https://api.groq.com/openai/v1");
-        assert_eq!(cfg.stt.model, "whisper-large-v3-turbo");
+        assert_eq!(cfg.stt.api_key_env, "ELEVENLABS_API_KEY");
+        assert_eq!(cfg.stt.base_url, None);
+        assert_eq!(cfg.stt.provider_in_use(), Some("elevenlabs"));
+        assert_eq!(cfg.stt.model, "scribe_v2");
         assert!(cfg.stt.language.is_none());
         assert_eq!(cfg.stt.timeout_seconds, 30);
     }
@@ -712,8 +719,8 @@ mod tests {
     #[test]
     fn rejects_zero_stt_timeout() {
         let bad = valid_toml().replace(
-            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
-            "[stt]\napi_key_env = \"GROQ_API_KEY\"\ntimeout_seconds = 0",
+            "[stt]\napi_key_env = \"ELEVENLABS_API_KEY\"",
+            "[stt]\napi_key_env = \"ELEVENLABS_API_KEY\"\ntimeout_seconds = 0",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -722,8 +729,8 @@ mod tests {
     #[test]
     fn rejects_empty_stt_language_when_set() {
         let bad = valid_toml().replace(
-            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
-            "[stt]\napi_key_env = \"GROQ_API_KEY\"\nlanguage = \"\"",
+            "[stt]\napi_key_env = \"ELEVENLABS_API_KEY\"",
+            "[stt]\napi_key_env = \"ELEVENLABS_API_KEY\"\nlanguage = \"\"",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -732,8 +739,8 @@ mod tests {
     #[test]
     fn rejects_stt_base_url_without_http_scheme() {
         let bad = valid_toml().replace(
-            "[stt]\napi_key_env = \"GROQ_API_KEY\"",
-            "[stt]\napi_key_env = \"GROQ_API_KEY\"\nbase_url = \"api.groq.com/openai/v1\"",
+            "[stt]\napi_key_env = \"ELEVENLABS_API_KEY\"",
+            "[stt]\napi_key_env = \"ELEVENLABS_API_KEY\"\nbase_url = \"api.example.com/v1\"",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -743,12 +750,12 @@ mod tests {
     fn resolve_stt_api_key_reads_env_var() {
         // SAFETY: in #[cfg(test)] only.
         unsafe {
-            std::env::set_var("NILES_TEST_GROQ_API_KEY", "gsk_test");
+            std::env::set_var("NILES_TEST_STT_API_KEY", "key_test");
         }
         let cfg = SttConfig {
             provider: None,
-            api_key_env: "NILES_TEST_GROQ_API_KEY".into(),
-            base_url: "https://example".into(),
+            api_key_env: "NILES_TEST_STT_API_KEY".into(),
+            base_url: Some("https://example".into()),
             model: "m".into(),
             language: None,
             timeout_seconds: 30,
@@ -756,7 +763,7 @@ mod tests {
             keyterms: Vec::new(),
             require_name: false,
         };
-        assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test");
+        assert_eq!(cfg.resolve_api_key().unwrap(), "key_test");
     }
 
     #[test]
@@ -771,7 +778,7 @@ mod tests {
         let cfg = SttConfig {
             provider: None,
             api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_STT_KEY_XYZ".into(),
-            base_url: "https://example".into(),
+            base_url: Some("https://example".into()),
             model: "m".into(),
             language: None,
             timeout_seconds: 30,
@@ -790,17 +797,18 @@ mod tests {
     #[test]
     fn llm_section_parses_with_defaults() {
         let cfg = Config::load_from_str(valid_toml()).unwrap();
-        assert_eq!(cfg.llm.api_key_env, "GROQ_API_KEY");
-        assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
-        assert_eq!(cfg.llm.model, "openai/gpt-oss-20b");
+        assert_eq!(cfg.llm.api_key_env, "CEREBRAS_API_KEY");
+        assert_eq!(cfg.llm.base_url, None);
+        assert_eq!(cfg.llm.provider_in_use(), Some("cerebras"));
+        assert_eq!(cfg.llm.model, "gpt-oss-120b");
         assert_eq!(cfg.llm.timeout_seconds, 30);
     }
 
     #[test]
     fn rejects_zero_llm_timeout() {
         let bad = valid_toml().replace(
-            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
-            "[llm]\napi_key_env = \"GROQ_API_KEY\"\ntimeout_seconds = 0",
+            "[llm]\napi_key_env = \"CEREBRAS_API_KEY\"",
+            "[llm]\napi_key_env = \"CEREBRAS_API_KEY\"\ntimeout_seconds = 0",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -809,8 +817,8 @@ mod tests {
     #[test]
     fn rejects_llm_base_url_without_http_scheme() {
         let bad = valid_toml().replace(
-            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
-            "[llm]\napi_key_env = \"GROQ_API_KEY\"\nbase_url = \"api.groq.com/openai/v1\"",
+            "[llm]\napi_key_env = \"CEREBRAS_API_KEY\"",
+            "[llm]\napi_key_env = \"CEREBRAS_API_KEY\"\nbase_url = \"api.example.com/v1\"",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -819,8 +827,8 @@ mod tests {
     #[test]
     fn rejects_empty_llm_model() {
         let bad = valid_toml().replace(
-            "[llm]\napi_key_env = \"GROQ_API_KEY\"",
-            "[llm]\napi_key_env = \"GROQ_API_KEY\"\nmodel = \"\"",
+            "[llm]\napi_key_env = \"CEREBRAS_API_KEY\"",
+            "[llm]\napi_key_env = \"CEREBRAS_API_KEY\"\nmodel = \"\"",
         );
         let cfg = Config::load_from_str(&bad).unwrap();
         assert!(cfg.validate().is_err());
@@ -830,18 +838,18 @@ mod tests {
     fn resolve_llm_api_key_reads_env_var() {
         // SAFETY: in #[cfg(test)] only.
         unsafe {
-            std::env::set_var("NILES_TEST_LLM_GROQ_API_KEY", "gsk_test_llm");
+            std::env::set_var("NILES_TEST_LLM_API_KEY", "key_test_llm");
         }
         let cfg = LlmConfig {
             provider: None,
-            api_key_env: "NILES_TEST_LLM_GROQ_API_KEY".into(),
-            base_url: "https://example".into(),
+            api_key_env: "NILES_TEST_LLM_API_KEY".into(),
+            base_url: Some("https://example".into()),
             model: "m".into(),
             timeout_seconds: 30,
             reasoning_effort: None,
             tier2: None,
         };
-        assert_eq!(cfg.resolve_api_key().unwrap(), "gsk_test_llm");
+        assert_eq!(cfg.resolve_api_key().unwrap(), "key_test_llm");
     }
 
     #[test]
@@ -853,7 +861,7 @@ mod tests {
         let cfg = LlmConfig {
             provider: None,
             api_key_env: "NILES_TEST_DEFINITELY_NOT_SET_LLM_KEY_XYZ".into(),
-            base_url: "https://example".into(),
+            base_url: Some("https://example".into()),
             model: "m".into(),
             timeout_seconds: 30,
             reasoning_effort: None,

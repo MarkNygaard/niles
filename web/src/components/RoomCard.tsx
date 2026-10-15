@@ -26,8 +26,10 @@ import { musicLine, musicPlaying } from "@/components/MusicRow";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useThemeColor } from "@/hooks/useThemeColor";
 import { ClimatePanel } from "@/components/ClimatePanel";
+import { RoomWidgets } from "@/components/PluginWidgets";
+import type { PlacedWidget } from "@/lib/plugins";
 import { HEAT_INK, heatSheet, heatTop } from "@/lib/heat";
-import { humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
+import { hasRoomSwitch, humid, measured, roomSummary, roomToggle, subtitle } from "@/lib/rooms";
 import type { Room } from "@/lib/rooms";
 import type { Device, RoomMusic, SetLight, TvInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -46,6 +48,8 @@ export interface RoomCardProps {
   /** The room's Sonos, when it has one: marked on the card while it
       plays. Its controls are on the Media page. */
   music?: RoomMusic;
+  /** Plugins' widgets placed on this room, drawn where the room opens. */
+  widgets?: PlacedWidget[];
 }
 
 /**
@@ -134,12 +138,11 @@ export function RoomCard({
   onSetZone,
   tv,
   music,
+  widgets = [],
 }: RoomCardProps) {
   const lit = room.on > 0;
   const toggle = roomToggle(room);
-  // A room with blinds and no lights has nothing for the card to
-  // switch, so pressing it opens the room instead.
-  const switchable = room.lights.length > 0 || room.blinds.length === 0;
+  const switchable = hasRoomSwitch(room);
   const hasZone = room.zone !== undefined && onSetZone !== undefined;
   const [open, setOpen] = useState<"lights" | "heating" | null>(null);
   /**
@@ -237,6 +240,7 @@ export function RoomCard({
         {room.meters.map((meter) => (
           <MeterRow key={meter.id} device={meter} />
         ))}
+        <RoomWidgets widgets={widgets} />
         {/* Named rather than simply gone. A control that publishes to
             something not listening looks broken, but a light that
             vanishes when its battery dies is one nobody notices has

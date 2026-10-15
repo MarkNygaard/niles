@@ -1,19 +1,14 @@
 import { useState, type ReactNode } from "react";
 import {
-  AudioLines,
   Bot,
-  Brain,
   Calendar,
   CalendarDays,
-  Check,
   ChevronRight,
   ListTodo,
   Music,
-  Network,
   Plug,
   Search,
   ShoppingBasket,
-  Sparkles,
   Speaker,
   Thermometer,
   Trash2,
@@ -42,7 +37,6 @@ import {
 } from "@/components/ui/dialog";
 import { BrandMark, hasBrandMark } from "@/components/BrandMark";
 import type { DeviceOption } from "@/components/DevicePicker";
-import { SecretField } from "@/components/SecretField";
 import { TadoPanel } from "@/components/TadoPanel";
 import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { ChatGptPanel } from "@/components/ChatGptPanel";
@@ -53,22 +47,26 @@ import { CalendarAppPanel, redirectUri } from "@/components/CalendarAppPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
-import { MqttPanel } from "@/components/MqttPanel";
-import type { MqttSettings } from "@/components/MqttPanel";
+import { AddPluginDialog } from "@/components/AddPluginDialog";
+import { PluginPanel, PluginRow } from "@/components/PluginPanel";
+import { PluginLogo } from "@/components/PluginPreview";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import {
   RANK,
   groupsOf,
   matchesQuery,
+  pluginMatchesQuery,
+  pluginStatusOf,
   showsRequired,
   statusOf,
-  uncoveredRoles,
 } from "@/lib/integrations";
 import type { Status } from "@/lib/integrations";
+import { pluginGroupsOf } from "@/lib/plugins";
 import type {
   ChatGptStatus,
   Integration,
+  PluginSummary,
   Secret,
   SecretsReport,
   SpeakersReport,
@@ -77,7 +75,8 @@ import type {
   Zone,
 } from "@/lib/api";
 
-export interface IntegrationsPageProps {
+export interface AddOnsPageProps {
+  /** The whole catalogue; the base system in it is left out here. */
   integrations: Integration[];
   secrets?: SecretsReport;
   tado?: TadoStatus;
@@ -96,8 +95,6 @@ export interface IntegrationsPageProps {
   /** Whether ChatGPT is signed in, and as whom. */
   chatgptStatus?: ChatGptStatus;
   onChatGptChanged?: () => void;
-  /** Which assistant answers when both are set up: `integrations.assistant`. */
-  assistant?: Assistant;
   /** The nemlig.com section as the config has it, if there is one. */
   nemlig?: { enabled?: boolean };
   /** The Spotify section as the config has it, if there is one. */
@@ -124,27 +121,33 @@ export interface IntegrationsPageProps {
   onReset: (row: string, paths: string[]) => void;
   onSecretsChanged: () => void;
   onTadoChanged: () => void;
-  /** `[mqtt]` as the config has it, and Niles's own values for it. */
-  mqtt?: MqttSettings;
-  mqttDefaults?: MqttSettings;
+  /** Third-party add-ons installed from GitHub. */
+  plugins?: PluginSummary[];
+  /** Something about the plugins changed: ask for them again. */
+  onPluginsChanged?: () => void;
+  /** The config as it is, for where each plugin's widgets are. */
+  effective?: unknown;
 }
 
 /**
- * What Niles is connected to, and what it could be.
+ * The optional extras: what Niles can do beyond lights and voice, its
+ * own and other people's.
  *
- * Rows rather than cards. An endpoint, a key and a model are all setup
- * detail — true, and worth nothing at a glance. What this page is for
- * is seeing which things are connected and getting into the one you
- * came to change, and both of those fit on a row; the rest is in the
- * dialog a row opens.
+ * The base system — the broker, who hears and who thinks — is not here:
+ * it is under System, set up by the job it does, because a list of
+ * optional things is the wrong place to find what Niles cannot work
+ * without.
  *
- * Connected and Available are two tabs over the same groups, so a thing
- * is found in the same place whether or not it is set up yet. Only
- * Niles's own catalogue is offered: the pair of text boxes this replaces
- * let any name and any URL buy a provider that would never work.
+ * Rows rather than cards. A key and an address are setup detail — true,
+ * and worth nothing at a glance. What this page is for is seeing which
+ * add-ons are connected and getting into the one you came to change,
+ * and both of those fit on a row; the rest is in the dialog a row opens.
+ *
+ * Connected and Available are two tabs over the same groups, so an
+ * add-on is found in the same place whether or not it is set up yet.
  */
-export function IntegrationsPage({
-  integrations,
+export function AddOnsPage({
+  integrations: catalogue,
   secrets,
   tado,
   zones,
@@ -156,7 +159,6 @@ export function IntegrationsPage({
   chatgpt,
   chatgptStatus,
   onChatGptChanged,
-  assistant,
   nemlig,
   spotify,
   microsoft,
@@ -173,23 +175,28 @@ export function IntegrationsPage({
   onReset,
   onSecretsChanged,
   onTadoChanged,
-  mqtt,
-  mqttDefaults,
-}: IntegrationsPageProps) {
+  plugins = [],
+  onPluginsChanged,
+  effective,
+}: AddOnsPageProps) {
   const [open, setOpen] = useState<string | null>(null);
+  const [openPlugin, setOpenPlugin] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<Tab | null>(null);
 
+  const integrations = catalogue.filter((i) => !i.system);
   const added = integrations.filter((i) => i.added);
   const available = integrations.filter((i) => !i.added);
   const current = integrations.find((i) => i.id === open);
+  const currentPlugin = plugins.find((p) => p.id === openPlugin);
   // Worked out rather than set once: the list arrives after the first
   // render, and a house with nothing set up yet should land on what it
   // can add rather than on an empty tab.
-  const tab: Tab = picked ?? (added.length > 0 ? "connected" : "available");
-  const uncovered = uncoveredRoles(integrations);
+  const connected = added.length + plugins.length;
+  const tab: Tab = picked ?? (connected > 0 ? "connected" : "available");
 
   function secretFor(key: string | null): Secret | undefined {
     if (!key) return undefined;
@@ -261,23 +268,11 @@ export function IntegrationsPage({
           { path: "integrations.google.enabled", value: true },
           { path: "integrations.google.redirect_uri", value: redirectUri("google") },
         ]);
-      case "mqtt":
-      case "unifi":
-      case "sonos":
-      case "lg_tv":
-        // Nothing to write yet: the address is what makes it added, and
-        // that is the first thing the dialog asks for.
-        return;
       default:
-        // A provider is its endpoint and the roles it serves, both of
-        // which Niles already knows. Appending rather than replacing:
-        // adding one must not drop the others.
-        return onChange("providers", [
-          {
-            path: "providers",
-            value: [...providerRows(integrations), asRow(integration)],
-          },
-        ]);
+        // UniFi, Sonos, the TV: nothing to write yet. The address is
+        // what makes it added, and that is the first thing the dialog
+        // asks for.
+        return;
     }
   }
 
@@ -290,10 +285,10 @@ export function IntegrationsPage({
   }
 
   async function remove(integration: Integration) {
-    // Its keys go with it. A key shows only on its integration's card,
-    // so one left behind is one nobody can see or delete. Cleared
-    // before the config changes, because the server accepts a
-    // provider's key only while that provider is declared.
+    // Its keys go with it. A key shows only on its add-on's card, so
+    // one left behind is one nobody can see or delete. Cleared first,
+    // so a key that cannot be deleted stops the removal rather than
+    // being stranded by it.
     const keys = storedKeys(integration);
     if (keys.length > 0) {
       setRemoveError(null);
@@ -320,9 +315,6 @@ export function IntegrationsPage({
         return onChange("presence.unifi", [
           { path: "presence.unifi.host", value: "" },
         ]);
-      // The broker's login went with its keys, above.
-      case "mqtt":
-        return onChange("mqtt", [{ path: "mqtt.host", value: "" }]);
       // The pairing key is gone with it: it belongs to one TV, so a TV
       // added again pairs again.
       case "lg_tv":
@@ -348,27 +340,26 @@ export function IntegrationsPage({
         return onReset("integrations.microsoft", ["integrations.microsoft"]);
       case "google":
         return onReset("integrations.google", ["integrations.google"]);
-      default:
-        return onChange("providers", [
-          {
-            path: "providers",
-            value: providerRows(integrations).filter(
-              (p) => p.name !== integration.id,
-            ),
-          },
-        ]);
     }
   }
-
-  // Asked only when there is a choice to make. With one assistant that
-  // one answers, and a choice of one is a setting with nothing to do.
-  const bothAssistants = ["claude_code", "chatgpt"].every((id) =>
-    added.some((i) => i.id === id),
-  );
 
   function results(which: Tab) {
     const all = which === "connected" ? added : available;
     const found = all.filter((i) => matchesQuery(i, query));
+    // Installed plugins are connected things; there is nothing of theirs
+    // to offer under Available but the way to add one.
+    const pluginsHere = which === "connected" ? plugins : [];
+    const foundPlugins = pluginsHere.filter((p) => pluginMatchesQuery(p, query));
+    const groups = groupsOf(found);
+    const pluginRow = (plugin: PluginSummary) => (
+      <PluginRow
+        key={`plugin-${plugin.id}`}
+        plugin={plugin}
+        status={pluginStatusOf(plugin)}
+        disabled={saving}
+        onOpen={() => setOpenPlugin(plugin.id)}
+      />
+    );
     const other: Tab = which === "connected" ? "available" : "connected";
     const elsewhere = (which === "connected" ? available : added).filter((i) =>
       matchesQuery(i, query),
@@ -377,48 +368,35 @@ export function IntegrationsPage({
 
     return (
       <>
-        {searching && found.length === 0 ? (
+        {searching && found.length === 0 && foundPlugins.length === 0 ? (
           <p className="text-muted-foreground px-1 text-sm">
             Nothing matches “{query.trim()}”.
           </p>
-        ) : all.length === 0 ? (
+        ) : all.length === 0 && pluginsHere.length === 0 ? (
           // Nothing at all is the catalogue still loading, not a house
           // with everything connected.
           integrations.length > 0 && (
             <p className="text-muted-foreground px-1 text-sm">
               {which === "connected"
-                ? "Nothing connected yet. Start under Available: the ones marked Required are what Niles needs to reach your lights, hear you and answer."
-                : "Everything Niles knows is connected."}
+                ? "No add-ons yet. Everything Niles needs to work is under System; these are extras, for when you want them."
+                : "Every add-on Niles ships is connected."}
             </p>
           )
         ) : (
-          groupsOf(found).map(({ group, items }) => (
+          groups.map(({ group, items }) => (
             <GroupList
               key={group.id}
               id={`${which}-group-${group.id}`}
               label={group.label}
               footer={
-                which === "available"
-                  ? group.requirement && (
-                      <Requirement
-                        text={group.requirement}
-                        providers={integrations.filter(
-                          (i) => i.group.id === group.id && i.kind === "provider",
-                        )}
-                      />
-                    )
-                  : group.id === "assistants" &&
-                    bothAssistants && (
-                      <AssistantChoice
-                        value={assistant ?? "claude_code"}
-                        disabled={saving}
-                        onChoose={(value) =>
-                          onChange("integrations.assistant", [
-                            { path: "integrations.assistant", value },
-                          ])
-                        }
-                      />
-                    )
+                // Which one answers is chosen under Voice & AI, beside
+                // Niles's own model; here is only how each is set up.
+                which === "connected" &&
+                group.id === "assistants" && (
+                  <p className="text-muted-foreground px-3 text-xs">
+                    Which assistant answers is chosen under System, in Voice &amp; AI.
+                  </p>
+                )
               }
             >
               {[...items]
@@ -436,14 +414,49 @@ export function IntegrationsPage({
                     <AvailableRow
                       key={integration.id}
                       integration={integration}
-                      required={showsRequired(integration, uncovered)}
+                      required={showsRequired(integration)}
                       disabled={saving}
                       onConnect={() => add(integration)}
                     />
                   ),
                 )}
+              {foundPlugins.filter((p) => p.group.id === group.id).map(pluginRow)}
             </GroupList>
           ))
+        )}
+        {/* A plugin naming a group with nothing else connected in it, or
+            none Niles knows (Custom), gets a block of its own after the
+            built-in ones. */}
+        {pluginGroupsOf(
+          foundPlugins.filter((p) => !groups.some(({ group }) => group.id === p.group.id)),
+        ).map(({ group, items }) => (
+          <GroupList key={group.id} id={`${which}-group-${group.id}`} label={group.label}>
+            {items.map(pluginRow)}
+          </GroupList>
+        ))}
+        {which === "available" && (
+          <GroupList id="available-group-github" label="From GitHub">
+            <div className="flex min-h-12 items-center gap-3 py-2 pr-1.5 pl-3">
+              <span className="flex shrink-0">
+                <BrandMark id="github" label="GitHub" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">Add-on from GitHub</span>
+                <span className="text-muted-foreground block text-xs">
+                  A third-party add-on somebody else wrote, for what Niles does not cover.
+                </span>
+              </span>
+              <Button
+                variant="link"
+                size="sm"
+                disabled={saving}
+                aria-label="Add-on from GitHub"
+                onClick={() => setAdding(true)}
+              >
+                Add
+              </Button>
+            </div>
+          </GroupList>
         )}
         {searching && elsewhere.length > 0 && (
           // The tab is a filter too, and one search should not need two.
@@ -465,8 +478,11 @@ export function IntegrationsPage({
     <div className="flex flex-col gap-4">
       <Card>
         <CardHeader>
-          <CardTitle>Integrations</CardTitle>
-          <CardDescription>The services Niles works through.</CardDescription>
+          <CardTitle>Add-ons</CardTitle>
+          <CardDescription>
+            Optional extras: music, presence, calendars, shopping and
+            assistants, and add-ons other people wrote.
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="relative">
@@ -479,11 +495,11 @@ export function IntegrationsPage({
                 signed-in address whenever a panel closed. */}
             <Input
               type="search"
-              name="integration-search"
+              name="addon-search"
               autoComplete="off"
               data-1p-ignore
               data-lpignore="true"
-              aria-label="Search integrations"
+              aria-label="Search add-ons"
               placeholder="Search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -497,7 +513,7 @@ export function IntegrationsPage({
                 <TabsTrigger key={value} value={value} className="sm:px-3">
                   {TAB_LABELS[value]}{" "}
                   <span className="text-muted-foreground tabular-nums">
-                    {value === "connected" ? added.length : available.length}
+                    {value === "connected" ? connected : available.length}
                   </span>
                 </TabsTrigger>
               ))}
@@ -513,6 +529,61 @@ export function IntegrationsPage({
       </Card>
 
       {error && <p className="text-destructive text-sm">{error}</p>}
+
+      <AddPluginDialog
+        open={adding}
+        onOpenChange={setAdding}
+        onInstalled={(plugin) => {
+          setPicked("connected");
+          setOpenPlugin(plugin.id);
+          onPluginsChanged?.();
+        }}
+      />
+
+      <Dialog
+        open={currentPlugin !== undefined}
+        onOpenChange={(next: boolean) => {
+          if (!next) setOpenPlugin(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          {currentPlugin && (
+            <>
+              <DialogHeader>
+                <div className="flex min-w-0 flex-col gap-1">
+                  <DialogTitle className="flex items-center gap-2">
+                    <PluginLogo plugin={currentPlugin} />
+                    {currentPlugin.name}
+                  </DialogTitle>
+                  <DialogDescription>{currentPlugin.description}</DialogDescription>
+                </div>
+              </DialogHeader>
+              <DialogBody>
+                <PluginPanel
+                  key={currentPlugin.id}
+                  plugin={currentPlugin}
+                  rooms={rooms}
+                  secrets={secrets}
+                  effective={effective}
+                  onChanged={() => onPluginsChanged?.()}
+                  onSecretsChanged={onSecretsChanged}
+                  onPlaceWidget={(widget, place) =>
+                    onChange(`plugins.${currentPlugin.id}.widgets`, [
+                      { path: `menu.widgets.${currentPlugin.id}.${widget}`, value: place },
+                    ])
+                  }
+                  onRemoved={() => {
+                    setOpenPlugin(null);
+                    onPluginsChanged?.();
+                    // Its saved keys went with it.
+                    onSecretsChanged();
+                  }}
+                />
+              </DialogBody>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={current !== undefined}
@@ -724,19 +795,6 @@ export function IntegrationsPage({
                   />
                 )}
 
-                {current.id === "mqtt" && (
-                  <MqttPanel
-                    mqtt={mqtt ?? {}}
-                    defaults={mqttDefaults ?? {}}
-                    username={secretFor("mqtt.username")}
-                    password={secretFor("mqtt.password")}
-                    writable={secrets?.writable ?? false}
-                    saving={saving}
-                    onChange={(entries) => onChange("mqtt", entries)}
-                    onSecretsChanged={onSecretsChanged}
-                  />
-                )}
-
                 {current.id === "unifi" && (
                   <UnifiPanel
                     host={unifiHost ?? ""}
@@ -752,30 +810,6 @@ export function IntegrationsPage({
                   />
                 )}
 
-                {current.kind === "provider" && (
-                  <>
-                    <p className="text-muted-foreground text-sm">
-                      Choose what it does under Speech &amp; language.
-                    </p>
-                    {secretFor(current.secret_key) && (
-                      <SecretField
-                        // The endpoint is named once below. Repeating it
-                        // beside the field, inside this provider's own
-                        // dialog, says the same thing twice.
-                        secret={{
-                          ...secretFor(current.secret_key)!,
-                          hint: undefined,
-                        }}
-                        writable={secrets?.writable ?? false}
-                        onChanged={onSecretsChanged}
-                      />
-                    )}
-                    <p className="text-muted-foreground font-mono text-xs">
-                      {current.base_url}
-                    </p>
-                  </>
-                )}
-
                 <div className="flex flex-col gap-1 border-t pt-3">
                   <div>
                     <Button
@@ -784,7 +818,7 @@ export function IntegrationsPage({
                       disabled={saving || removing}
                       onClick={() => remove(current)}
                     >
-                      <Trash2 aria-hidden /> Remove {current.label}
+                      <Trash2 aria-hidden /> Remove add-on
                     </Button>
                   </div>
                   {/* Said before the click rather than after: there is
@@ -809,76 +843,12 @@ export function IntegrationsPage({
 
 type Tab = "connected" | "available";
 
-/** `integrations.assistant`: which one answers when both are set up. */
-export type Assistant = "claude_code" | "chatgpt";
-
-const ASSISTANTS: { id: Assistant; label: string }[] = [
-  { id: "claude_code", label: "Claude" },
-  { id: "chatgpt", label: "ChatGPT" },
-];
-
-/**
- * Which assistant answers, under the two of them. Here rather than with
- * the voice settings: the assistant answers the chat, new rules and the
- * nightly review, and this is where both of them are set up.
- */
-function AssistantChoice({
-  value,
-  disabled,
-  onChoose,
-}: {
-  value: Assistant;
-  disabled?: boolean;
-  onChoose: (value: Assistant) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 pt-1">
-      <span className="min-w-0">
-        <span id="assistant-choice" className="block text-sm font-medium">
-          Which assistant answers
-        </span>
-        <span className="text-muted-foreground block text-xs">
-          If it is switched off or not signed in, the other one answers.
-        </span>
-      </span>
-      <div
-        role="radiogroup"
-        aria-labelledby="assistant-choice"
-        className="bg-muted/60 flex gap-1 rounded-lg p-1"
-      >
-        {ASSISTANTS.map((a) => {
-          const active = a.id === value;
-          return (
-            <button
-              key={a.id}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              disabled={disabled}
-              onClick={() => !active && onChoose(a.id)}
-              className={cn(
-                "rounded-md px-3 py-1 text-sm transition-colors",
-                "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
-                active
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {a.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 const TAB_LABELS: Record<Tab, string> = {
   connected: "Connected",
   available: "Available",
 };
 
-/** "Groq", "Groq and Cerebras", "Groq, Cerebras and UniFi", "4 more". */
+/** "UniFi", "UniFi and tado°", "UniFi, tado° and Sonos", "4 more". */
 function names(integrations: Integration[]): string {
   if (integrations.length > 3) return `${integrations.length} more`;
   const labels = integrations.map((i) => i.label);
@@ -892,10 +862,6 @@ function names(integrations: Integration[]): string {
  * that names an icon missing from it still gets a plug.
  */
 const ICONS: Record<string, LucideIcon> = {
-  network: Network,
-  sparkles: Sparkles,
-  "audio-lines": AudioLines,
-  brain: Brain,
   speaker: Speaker,
   music: Music,
   tv: Tv,
@@ -909,7 +875,7 @@ const ICONS: Record<string, LucideIcon> = {
 };
 
 /** The service's own mark; the catalogue's icon only where there is
-    none (the broker), which says more than its initial would. */
+    none, which says more than its initial would. */
 function Logo({ integration }: { integration: Integration }) {
   if (hasBrandMark(integration.id)) {
     return (
@@ -953,40 +919,6 @@ function GroupList({
     </section>
   );
 }
-
-/** The group's "one of these", and how far along it is. */
-function Requirement({
-  text,
-  providers,
-}: {
-  text: string;
-  providers: Integration[];
-}) {
-  return (
-    <div className="text-muted-foreground px-3 text-xs">
-      <p>{text}</p>
-      {providers.length > 0 && (
-        <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-          {(["stt", "llm"] as const).map((role) => {
-            const by = providers.filter((p) => p.added && p.serves.includes(role));
-            return (
-              <li key={role} className="flex items-center gap-1">
-                {by.length > 0 && <Check aria-hidden className="text-lit size-3" />}
-                {ROLE_LABELS[role]}:{" "}
-                {by.length > 0 ? by.map((p) => p.label).join(", ") : "not yet"}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-const ROLE_LABELS: Record<"stt" | "llm", string> = {
-  stt: "Speech-to-text",
-  llm: "AI",
-};
 
 /** Something not set up yet: its name, and a way to start. */
 function AvailableRow({
@@ -1059,19 +991,4 @@ function ConnectedRow({
       <ChevronRight aria-hidden className="text-muted-foreground size-4 shrink-0" />
     </button>
   );
-}
-
-/** The `[[providers]]` array as it stands, ready to be written back. */
-function providerRows(integrations: Integration[]) {
-  return integrations
-    .filter((i) => i.added && i.kind === "provider")
-    .map(asRow);
-}
-
-function asRow(integration: Integration) {
-  return {
-    name: integration.id,
-    base_url: integration.base_url,
-    serves: integration.serves,
-  };
 }

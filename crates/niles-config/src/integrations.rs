@@ -45,7 +45,7 @@ pub struct IntegrationsConfig {
     pub chatgpt: Option<ChatGptConfig>,
     /// Which assistant answers when both are added, switched on and
     /// signed in. With only one of them usable, that one answers
-    /// whatever this says.
+    /// whatever this says — unless it says `none`, which keeps both out.
     #[serde(default)]
     pub assistant: Assistant,
     #[serde(default)]
@@ -209,6 +209,11 @@ pub enum Assistant {
     #[default]
     ClaudeCode,
     Chatgpt,
+    /// Neither answers, even when one is set up: Niles's own model
+    /// handles the chat and rules, and nothing runs in the background.
+    /// For a house that keeps a subscription for other things and does
+    /// not want it spent here.
+    None,
 }
 
 /// `[integrations.claude_code]` — Claude Code, on the household's Claude
@@ -443,6 +448,10 @@ mod tests {
         assert_eq!(
             integrations("assistant = \"chatgpt\"").assistant,
             Assistant::Chatgpt
+        );
+        assert_eq!(
+            integrations("assistant = \"none\"").assistant,
+            Assistant::None
         );
         assert!(toml::from_str::<IntegrationsConfig>("assistant = \"gemini\"").is_err());
     }
