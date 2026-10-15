@@ -369,6 +369,8 @@ export interface MediaGroup {
 export interface MediaView {
   groups: MediaGroup[];
   idle: MediaSpeaker[];
+  /** Spotify's add-on is set up: its Play button can work. */
+  spotify?: boolean;
 }
 
 /** Something the Media page can start playing. */

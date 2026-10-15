@@ -54,6 +54,13 @@ impl Music {
         let mut view = MediaView {
             groups: Vec::new(),
             idle: Vec::new(),
+            // Asked of the config rather than through `spotify_keys`,
+            // which warns: the page asks every few seconds.
+            spotify: cfg
+                .integrations
+                .spotify
+                .as_ref()
+                .is_some_and(|s| s.enabled && s.resolve_credentials().is_ok()),
         };
         let mut following = Vec::new();
         for (leader, loaded, playing, speakers) in read {

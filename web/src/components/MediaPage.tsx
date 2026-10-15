@@ -99,7 +99,9 @@ export function destinations(view: MediaView, speaker: string): { label: string;
     out.push({ label: `${KIND_TITLES[group.kind]}${what} (${names(group)})`, drop });
   }
   out.push({ label: "Start the radio", drop: { to: "start", source: "radio" } });
-  out.push({ label: "Start Spotify", drop: { to: "start", source: "spotify" } });
+  if (view.spotify) {
+    out.push({ label: "Start Spotify", drop: { to: "start", source: "spotify" } });
+  }
   if (moveFor(view, speaker, { to: "idle" })) {
     out.push({ label: "Not playing", drop: { to: "idle" } });
   }
@@ -384,17 +386,25 @@ export function MediaPage() {
     </div>
   );
 
-  const startable = (source: Startable, title: string, icon: React.ReactNode) => {
+  /** `canStart` false: what already plays is shown, but nothing new can
+      be started from here — Spotify without its add-on. */
+  const startable = (
+    source: Startable,
+    title: string,
+    icon: React.ReactNode,
+    canStart = true,
+  ) => {
     const groups = of(source);
     return (
       <SourceCard
         title={title}
         icon={icon}
-        drop={`start:${source}`}
-        lit={Boolean(held) && over === `start:${source}`}
+        drop={canStart ? `start:${source}` : undefined}
+        lit={canStart && Boolean(held) && over === `start:${source}`}
         action={
           // One play button at a time: once something is loaded, its
           // group's own.
+          canStart &&
           groups.length === 0 && (
             <Button
               variant="outline"
@@ -457,7 +467,15 @@ export function MediaPage() {
         </SourceCard>
       )}
       {startable("radio", "Radio", <Radio aria-hidden className="size-5" />)}
-      {startable("spotify", "Spotify", <BrandMark id="spotify" label="Spotify" className="size-5" />)}
+      {/* Only with its add-on set up — or when a Sonos is already playing
+          Spotify, started from Sonos's own app, which still belongs here. */}
+      {(media.data?.spotify || of("spotify").length > 0) &&
+        startable(
+          "spotify",
+          "Spotify",
+          <BrandMark id="spotify" label="Spotify" className="size-5" />,
+          Boolean(media.data?.spotify),
+        )}
       {others.length > 0 && (
         <SourceCard title="Other music" icon={<Music aria-hidden className="size-5" />}>
           {others.map(groupBlock)}
