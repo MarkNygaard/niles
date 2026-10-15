@@ -10,5 +10,5 @@ pub mod tv;
 pub mod wake;
 
 pub use error::{Error, Result};
-pub use tv::{App, Input, PAIRING, Status, Tv, pair};
+pub use tv::{App, Input, PAIRING, Status, Tv, Volume, VolumeChange, pair};
 pub use wake::wake;

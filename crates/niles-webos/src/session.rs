@@ -28,6 +28,8 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 const CONNECT: Duration = Duration::from_secs(4);
 /// How long one request may take once connected.
 const ANSWER: Duration = Duration::from_secs(6);
+/// Where every webOS TV listens.
+pub(crate) const PORT: u16 = 3001;
 
 /// What Niles asks to be allowed. The list LG's own tools ask for; the
 /// TV shows it on the pairing prompt.
@@ -74,6 +76,7 @@ impl Session {
     /// somebody to accept it — returning the key the TV issued.
     pub(crate) async fn open(
         host: &str,
+        port: u16,
         client_key: Option<&str>,
         pairing: Duration,
     ) -> Result<(Session, String)> {
@@ -85,7 +88,7 @@ impl Session {
         let (socket, _) = tokio::time::timeout(
             CONNECT,
             tokio_tungstenite::connect_async_tls_with_config(
-                format!("wss://{host}:3001"),
+                format!("wss://{host}:{port}"),
                 None,
                 false,
                 Some(connector),
