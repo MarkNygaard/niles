@@ -591,4 +591,4 @@ since_pr = 405
 id = "ui-media-without-sonos"
 category = "ui.integrations"
 summary = "Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one"
-since_pr = 9999
+since_pr = 408

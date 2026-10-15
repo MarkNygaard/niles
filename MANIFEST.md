@@ -81,7 +81,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `plugins-widget-room-setting` | A plugin's widget can start in the room one of its settings names, and moves when the setting changes | [#393](https://github.com/MarkNygaard/niles/pull/393) |
-| `ui-media-without-sonos` | Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `ui-media-without-sonos` | Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one | [#408](https://github.com/MarkNygaard/niles/pull/408) |
 | `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `ui-plugin-setup` | A plugin's panel: a setup form generated from its manifest's settings, its log, and where its widgets go | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `ui-plugins` | Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#390](https://github.com/MarkNygaard/niles/pull/390) |
