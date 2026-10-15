@@ -274,6 +274,13 @@ const GROUPS: &[Group] = &[
     },
     Group {
         keywords: &[
+            "mail", "mails", "email", "emails", "e-mail", "e-mails", "inbox", "unread", "reply",
+            "wrote", "post", "indbakke", "svar", "skrev",
+        ],
+        tools: &["mail_search", "mail_read", "send_mail"],
+    },
+    Group {
+        keywords: &[
             "calendar",
             "calendars",
             "meeting",

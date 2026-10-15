@@ -23,7 +23,7 @@ export function redirectUri(provider: CalendarApp, origin = window.location.orig
 
 const COPY: Record<CalendarApp, { what: string; use: string; steps: React.ReactNode[] }> = {
   microsoft: {
-    what: "each person's own Outlook.com and work calendars",
+    what: "each person's own Outlook.com and work calendars and mail",
     use: "Use Microsoft calendars",
     steps: [
       <>
@@ -38,16 +38,19 @@ const COPY: Record<CalendarApp, { what: string; use: string; steps: React.ReactN
     ],
   },
   google: {
-    what: "each person's own Gmail calendar",
+    what: "each person's own Gmail calendar and mail",
     use: "Use Google calendars",
     steps: [
       <>
-        In console.cloud.google.com, make a project and enable the Google Calendar API.
+        In console.cloud.google.com, make a project and enable the Google Calendar API, and the
+        Gmail API for mail.
       </>,
       <>
         Google Auth Platform: name the app, choose External, and publish it — left in testing,
-        Google ends every sign-in after a week. Add the scopes calendar.readonly and
-        calendar.events.
+        Google ends every sign-in after a week. Add the scopes calendar.readonly,
+        calendar.events, gmail.readonly and gmail.send. Reading Gmail is one of Google's
+        restricted scopes: while the app is unverified it may hold it for up to 100 people,
+        which a household is well under.
       </>,
       "redirect",
       <>Clients → Create client → Web application. Copy its client ID and secret here.</>,

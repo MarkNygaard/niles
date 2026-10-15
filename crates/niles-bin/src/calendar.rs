@@ -13,14 +13,14 @@ use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-struct Shared {
-    calendars: Arc<Calendars>,
-    config: Arc<ConfigStore>,
-    tz: chrono_tz::Tz,
+pub(crate) struct Shared {
+    pub(crate) calendars: Arc<Calendars>,
+    pub(crate) config: Arc<ConfigStore>,
+    pub(crate) tz: chrono_tz::Tz,
 }
 
 impl Shared {
-    fn person(&self, tool: &str) -> Result<String> {
+    pub(crate) fn person(&self, tool: &str) -> Result<String> {
         profile::SPEAKER
             .try_with(Clone::clone)
             .ok()
@@ -37,7 +37,7 @@ impl Shared {
     /// The app registrations that are switched on, read per call so
     /// keys typed into the app take hold without a restart. A refresh
     /// needs no redirect. iCloud needs none at all.
-    fn apps(&self) -> Apps {
+    pub(crate) fn apps(&self) -> Apps {
         let cfg = self.config.current();
         let integrations = &cfg.integrations;
         Apps {
@@ -175,11 +175,14 @@ impl Tool for CalendarEvents {
         let to = when(TOOL, &args, "to")?
             .filter(|to| *to > from)
             .unwrap_or(from + Duration::days(1));
-        let connections = s
+        let connections: Vec<_> = s
             .calendars
             .connections(&person)
             .await
-            .map_err(|e| failed(TOOL, e))?;
+            .map_err(|e| failed(TOOL, e))?
+            .into_iter()
+            .filter(|c| c.calendar)
+            .collect();
         if connections.is_empty() {
             return Ok(json!({
                 "events": [],
@@ -374,12 +377,14 @@ impl Tool for DeleteCalendarEvent {
     }
 }
 
+/// Register the calendar tools. Answers what they share, which the mail
+/// tools read the same accounts through.
 pub fn register(
     reg: &mut ToolRegistry,
     calendars: Arc<Calendars>,
     config: Arc<ConfigStore>,
     tz: chrono_tz::Tz,
-) {
+) -> Arc<Shared> {
     let shared = Arc::new(Shared {
         calendars,
         config,
@@ -388,7 +393,8 @@ pub fn register(
     reg.register(Box::new(CalendarEvents(shared.clone())));
     reg.register(Box::new(CreateCalendarEvent(shared.clone())));
     reg.register(Box::new(UpdateCalendarEvent(shared.clone())));
-    reg.register(Box::new(DeleteCalendarEvent(shared)));
+    reg.register(Box::new(DeleteCalendarEvent(shared.clone())));
+    shared
 }
 
 #[cfg(test)]

@@ -2491,8 +2491,10 @@ name = "niles-calendar"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "chrono",
  "chrono-tz",
+ "html2text",
  "rand 0.10.2",
  "reqwest",
  "roxmltree",
