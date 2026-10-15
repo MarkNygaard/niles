@@ -10,8 +10,55 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use niles_config::catalogue;
+use std::collections::HashMap;
 
 type Failure = (StatusCode, String);
+
+/// Where credentials typed into the app are kept.
+///
+/// A trait for the one reason that matters to the API key: making and
+/// replacing it has to be provable without a database, and that is the
+/// part that must not quietly stop working.
+#[async_trait::async_trait]
+pub trait SecretStore: Send + Sync {
+    async fn load_all(&self) -> niles_config::Result<HashMap<String, String>>;
+    async fn set(&self, key: &str, value: &str) -> niles_config::Result<()>;
+    async fn clear(&self, key: &str) -> niles_config::Result<()>;
+}
+
+#[async_trait::async_trait]
+impl SecretStore for niles_db::PostgresSecrets {
+    async fn load_all(&self) -> niles_config::Result<HashMap<String, String>> {
+        niles_db::PostgresSecrets::load_all(self).await
+    }
+    async fn set(&self, key: &str, value: &str) -> niles_config::Result<()> {
+        niles_db::PostgresSecrets::set(self, key, value).await
+    }
+    async fn clear(&self, key: &str) -> niles_config::Result<()> {
+        niles_db::PostgresSecrets::clear(self, key).await
+    }
+}
+
+/// A store that is a map, for tests.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MemorySecrets(pub std::sync::Mutex<HashMap<String, String>>);
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl SecretStore for MemorySecrets {
+    async fn load_all(&self) -> niles_config::Result<HashMap<String, String>> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+    async fn set(&self, key: &str, value: &str) -> niles_config::Result<()> {
+        self.0.lock().unwrap().insert(key.into(), value.into());
+        Ok(())
+    }
+    async fn clear(&self, key: &str) -> niles_config::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
 
 /// Every credential Niles knows how to be given, and where each one is
 /// currently coming from.
@@ -30,10 +77,6 @@ const KNOWN: &[(&str, &str)] = &[
     ("auth.github_client_id", "GitHub OAuth client ID"),
     ("auth.github_client_secret", "GitHub OAuth client secret"),
     ("auth.session_secret", "Session signing secret"),
-    (
-        "auth.api_token",
-        "API token for callers that are not browsers",
-    ),
     ("integrations.linear.api_key", "Linear API key"),
     (
         "integrations.claude_code.oauth_token",
@@ -279,7 +322,7 @@ fn restart_its_plugin(state: &AppState, key: &str) {
     }
 }
 
-pub(crate) fn writable(state: &AppState) -> Result<&niles_db::PostgresSecrets, Failure> {
+pub(crate) fn writable(state: &AppState) -> Result<&dyn SecretStore, Failure> {
     state.secrets.as_deref().ok_or((
         StatusCode::NOT_IMPLEMENTED,
         "secrets cannot be saved without a database and an encryption key".into(),

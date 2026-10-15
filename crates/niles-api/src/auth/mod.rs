@@ -96,8 +96,12 @@ pub async fn require_sign_in(
         return next.run(request).await;
     }
 
-    if let Some(token) = state.api_token.as_deref()
-        && presented_token(&request).is_some_and(|given| constant_time_eq(given, token))
+    // Resolved per request, not once at startup, so a new key replaces
+    // the old one the moment it is made: a key somebody leaked has to
+    // stop working when they press the button, not at the next deploy.
+    if let Some(given) = presented_token(request.headers())
+        && let Some(token) = config.auth.resolve_api_token()
+        && constant_time_eq(given, &token)
     {
         return next.run(request).await;
     }
@@ -207,9 +211,9 @@ pub fn signed_in_as(headers: &HeaderMap, config: &niles_config::Config) -> Optio
     session_from(headers, config).map(|s| s.email)
 }
 
-fn presented_token(request: &Request) -> Option<&str> {
-    request
-        .headers()
+/// The bearer token a request carries, if it carries one.
+pub(crate) fn presented_token(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get(header::AUTHORIZATION)?
         .to_str()
         .ok()?

@@ -19,6 +19,7 @@
 //! POST /plugins/install/preview -> download and check a GitHub release (see `plugins`)
 //! ```
 
+pub mod api_token;
 pub mod auth;
 pub mod automations;
 pub mod calendars;
@@ -55,5 +56,6 @@ pub mod web;
 pub mod webhook;
 
 pub use publish::DevicePublisher;
+pub use secrets::SecretStore;
 pub use server::{router, serve};
 pub use state::{AppState, LinearWebhookState};

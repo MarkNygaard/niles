@@ -198,6 +198,8 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/github/start", get(crate::auth::github::start))
         .route("/auth/github/callback", get(crate::auth::github::callback))
         .route("/auth/signout", get(crate::auth::github::sign_out))
+        .route("/auth/api-token", get(crate::api_token::show))
+        .route("/auth/api-token/rotate", post(crate::api_token::rotate))
         .route(
             "/config",
             get(crate::config::get_config).patch(crate::config::patch_config),

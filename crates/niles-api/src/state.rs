@@ -35,13 +35,10 @@ pub struct AppState {
     /// Sign-in attempts in flight. In memory on purpose: an attempt is
     /// worth ten minutes, and a restart mid-sign-in costs one retry.
     pub attempts: Arc<crate::auth::flow::Attempts>,
-    /// The operator's token, for callers that are not browsers. Not
-    /// subject to the allowlist, because it is not a person.
-    pub api_token: Option<Arc<String>>,
     /// Where credentials typed into the app are kept. Absent when
     /// there is no database or no encryption key, in which case
     /// secrets come from the environment and cannot be changed here.
-    pub secrets: Option<Arc<niles_db::PostgresSecrets>>,
+    pub secrets: Option<Arc<dyn crate::secrets::SecretStore>>,
     /// The tado connection, when presence names it. Present so the app
     /// can get it authorised: the device flow needs a person with a
     /// browser, which a service does not have.
@@ -112,7 +109,6 @@ impl AppState {
             logs: None,
             unifi: None,
             attempts: Arc::new(crate::auth::flow::Attempts::new()),
-            api_token: None,
             manual_mode: None,
             scenes: None,
             groceries: None,
@@ -135,7 +131,7 @@ impl AppState {
     }
 
     /// The encrypted secret store, so Settings can fill it in.
-    pub fn with_secrets(mut self, secrets: Option<Arc<niles_db::PostgresSecrets>>) -> Self {
+    pub fn with_secrets(mut self, secrets: Option<Arc<dyn crate::secrets::SecretStore>>) -> Self {
         self.secrets = secrets;
         self
     }
@@ -233,14 +229,6 @@ impl AppState {
 
     pub fn with_manual_mode(mut self, tracker: Option<Arc<ManualModeTracker>>) -> Self {
         self.manual_mode = tracker;
-        self
-    }
-
-    /// The bearer token that stands in for a session, when one is
-    /// configured. Empty is treated as absent: a placeholder nobody
-    /// filled in must not become a password of "".
-    pub fn with_api_token(mut self, token: Option<String>) -> Self {
-        self.api_token = token.filter(|t| !t.trim().is_empty()).map(Arc::new);
         self
     }
 

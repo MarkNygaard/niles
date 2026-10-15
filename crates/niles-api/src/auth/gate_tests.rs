@@ -5,8 +5,10 @@
 //! does not reach `/devices`, and that one with a session that has
 //! since been revoked does not either.
 
+use crate::api_token::{KEY, STORE_LOCK};
 use crate::auth::session::{self, Session};
 use crate::publish::DevicePublisher;
+use crate::secrets::{MemorySecrets, SecretStore};
 use crate::server::router;
 use crate::state::AppState;
 use async_trait::async_trait;
@@ -17,6 +19,7 @@ use niles_config::ConfigStore;
 use niles_core::{DeviceRegistry, EventBus};
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::ServiceExt;
 
 const SECRET_VAR: &str = "NILES_TEST_AUTH_SESSION_SECRET";
@@ -43,25 +46,56 @@ fn set_env() {
     }
 }
 
-/// The base fixture plus an `[auth]` section listing `allowed`.
+/// The base fixture plus an `[auth]` section listing `allowed`, with
+/// `api_token` as the key when given — set in an environment variable
+/// of its own, so tests running side by side cannot see each other's.
 fn app_allowing(allowed: &str, api_token: Option<&str>) -> axum::Router {
+    let var = api_token.map(|token| {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let var = format!(
+            "NILES_TEST_GATE_API_TOKEN_{}",
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        // SAFETY: a test-only variable name nothing else reads.
+        unsafe { std::env::set_var(&var, token) };
+        var
+    });
+    router(state_allowing(allowed, var.as_deref(), None))
+}
+
+fn state_allowing(
+    allowed: &str,
+    api_token_env: Option<&str>,
+    secrets: Option<Arc<dyn SecretStore>>,
+) -> AppState {
     set_env();
+    let token_line = api_token_env
+        .map(|var| {
+            format!(
+                "api_token_env = \"{var}\"
+"
+            )
+        })
+        .unwrap_or_default();
     let toml = format!(
-        "{}\n[auth]\ngithub_client_id_env = \"{CLIENT_ID_VAR}\"\n\
-         github_client_secret_env = \"{CLIENT_SECRET_VAR}\"\n\
-         session_secret_env = \"{SECRET_VAR}\"\n{allowed}\n",
+        "{}
+[auth]
+github_client_id_env = \"{CLIENT_ID_VAR}\"
+         github_client_secret_env = \"{CLIENT_SECRET_VAR}\"
+         session_secret_env = \"{SECRET_VAR}\"
+{token_line}{allowed}
+",
         crate::config_tests::base_toml()
     );
     let store = Arc::new(ConfigStore::from_str_in_memory(&toml).expect("fixture is valid"));
-    let state = AppState::new(
+    AppState::new(
         Arc::new(DeviceRegistry::new()),
         Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
         Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
         EventBus::default(),
     )
     .with_config_store(Some(store))
-    .with_api_token(api_token.map(str::to_string));
-    router(state)
+    .with_secrets(secrets)
 }
 
 /// `[auth]` naming variables that are not set — a platform that dropped
@@ -346,6 +380,7 @@ async fn every_route_this_api_serves_is_either_named_public_or_refused() {
 
     // Everything that carries or changes state.
     for path in [
+        "/auth/api-token",
         "/devices",
         "/rooms/kitchen",
         "/config",
@@ -365,6 +400,7 @@ async fn every_route_this_api_serves_is_either_named_public_or_refused() {
         ("POST", "/rooms/kitchen"),
         ("POST", "/rooms/kitchen/ceiling"),
         ("POST", "/config/undo"),
+        ("POST", "/auth/api-token/rotate"),
         ("PATCH", "/config"),
         ("DELETE", "/config/lighting.daytime_brightness"),
     ] {
@@ -401,4 +437,119 @@ async fn status_tells_a_missing_secret_apart_from_an_empty_list() {
         body["configured"], false,
         "the secrets never arrived, and saying so is the whole point"
     );
+}
+
+fn with_key(uri: &str, method: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .method(method)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn as_mark(uri: &str, method: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .method(method)
+        .header(header::COOKIE, signed_in_as("mark@example.com"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// A secret store holding `key` as the API key, and loaded, as startup
+/// leaves it.
+fn keeping(key: Option<&str>) -> Arc<MemorySecrets> {
+    let store = MemorySecrets::default();
+    if let Some(key) = key {
+        store.0.lock().unwrap().insert(KEY.into(), key.into());
+    }
+    niles_config::secrets::load(store.0.lock().unwrap().clone());
+    Arc::new(store)
+}
+
+#[tokio::test]
+async fn the_api_key_is_shown_to_a_person_and_not_to_the_key() {
+    // A key that leaked must not be able to read its own replacement,
+    // or rotate it to lock the household out of its scripts.
+    let _guard = STORE_LOCK.lock().await;
+    let store = keeping(Some("current-key"));
+    let app = router(state_allowing(ONE_PERSON, None, Some(store.clone())));
+
+    assert_eq!(
+        send(&app, get("/auth/api-token")).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let refused = with_key("/auth/api-token", "GET", "current-key");
+    assert_eq!(send(&app, refused).await.0, StatusCode::FORBIDDEN);
+    let refused = with_key("/auth/api-token/rotate", "POST", "current-key");
+    assert_eq!(send(&app, refused).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        store.0.lock().unwrap().get(KEY).map(String::as_str),
+        Some("current-key"),
+        "the key rotated itself"
+    );
+
+    let (status, body) = send(&app, as_mark("/auth/api-token", "GET")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["source"], "stored");
+    assert_eq!(body["token"], "current-key");
+    assert_eq!(body["writable"], true);
+}
+
+#[tokio::test]
+async fn a_new_key_works_at_once_and_the_old_one_stops() {
+    let _guard = STORE_LOCK.lock().await;
+    let store = keeping(Some("old-key"));
+    let app = router(state_allowing(ONE_PERSON, None, Some(store)));
+    let devices = |token: &str| with_key("/devices", "GET", token);
+    assert_eq!(send(&app, devices("old-key")).await.0, StatusCode::OK);
+
+    let (status, body) = send(&app, as_mark("/auth/api-token/rotate", "POST")).await;
+    assert_eq!(status, StatusCode::OK);
+    let new = body["token"].as_str().expect("the new key is shown once");
+    assert_ne!(new, "old-key");
+    assert_eq!(new.len(), 64);
+
+    assert_eq!(
+        send(&app, devices("old-key")).await.0,
+        StatusCode::UNAUTHORIZED,
+        "the old key still works"
+    );
+    assert_eq!(send(&app, devices(new)).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_key_from_the_environment_is_neither_shown_nor_replaced() {
+    const VAR: &str = "NILES_TEST_GATE_API_TOKEN_FROM_ENV";
+    // SAFETY: a test-only variable name nothing else reads.
+    unsafe { std::env::set_var(VAR, "from-the-environment") };
+    let store: Arc<dyn SecretStore> = Arc::new(MemorySecrets::default());
+    let app = router(state_allowing(ONE_PERSON, Some(VAR), Some(store)));
+
+    let (status, body) = send(&app, as_mark("/auth/api-token", "GET")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["source"], "environment");
+    assert_eq!(body["env_var"], VAR);
+    assert!(body.get("token").is_none(), "{body}");
+
+    let (status, _) = send(&app, as_mark("/auth/api-token/rotate", "POST")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let devices = with_key("/devices", "GET", "from-the-environment");
+    assert_eq!(send(&app, devices).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn without_a_database_there_is_no_key_and_none_can_be_made() {
+    let _guard = STORE_LOCK.lock().await;
+    keeping(None);
+    let app = router(state_allowing(ONE_PERSON, None, None));
+
+    let (status, body) = send(&app, as_mark("/auth/api-token", "GET")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["source"], "none");
+    assert_eq!(body["writable"], false);
+
+    let (status, _) = send(&app, as_mark("/auth/api-token/rotate", "POST")).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
 }
