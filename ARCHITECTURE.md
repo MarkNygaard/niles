@@ -1324,6 +1324,7 @@ homepage = "https://github.com/jane/niles-spotprice"
 min_niles = "0.2.0"                  # the oldest Niles it runs on; 0.2.0 is the first with plugins
 interface = "0.2"                    # the niles:integration version it targets: "0.2", or "0.1"
 # group = "presence"                 # a catalogue group id; missing or unknown means Custom
+# scope = "person"                   # "house" (the default) or "person"; see Personal plugins
 logo = "logo.svg"
 memory_mb = 64
 keywords = ["electricity", "power", "price", "kwh", "cheap", "strøm", "elpris"]
@@ -1350,6 +1351,7 @@ options = [{ value = "DK1", label = "West Denmark (DK1)" }, { value = "DK2", lab
 
 - **The description** is one line saying what the household gets, in the voice of the built-in catalogue's blurbs ("Hear what is on your Google calendar."), not what the API is.
 - **The id** must not be a built-in catalogue id (`mqtt`, `cerebras`, `sonos`…) or another installed plugin's. It names the plugin's device source (`x_<id>`), tool prefix (`<id>_`), secret keys (`plugins.<id>.<key>`) and menu entries (`<id>.<entry>`).
+- **The scope** says whose it is. `house`, the default, is set up once for everybody: a printer, a price feed. `person` is set up by each person for themselves: their own Garmin, their own task list. See [personal plugins](#personal-plugins).
 - **The logo** is an SVG in the release, drawn on a 24×24 view box like the built-in marks in `BrandMark.tsx`. Niles sanitises it on install (shapes, paths, groups and fills only; no script, style, link, `foreignObject` or external reference; at most 32 KiB): an allowlist refuses anything else with a reason, and the SVG is then written out again from the parse, element by allowed element and attribute by allowed attribute, so the stored copy holds nothing the allowlist does not name. Niles keeps that copy in its database and serves it itself from `GET /plugins/{id}/logo`, with a content security policy that allows nothing to run or load, so the Add-ons page never fetches a logo from somewhere else. The app draws it inline, so `currentColor` follows the text colour, as ChatGPT's mark does, in both themes: it fetches the text and rebuilds it as React elements from the same allowlist (`web/src/lib/svg.tsx`), never as markup, so nothing in it can run even if the server's sanitiser ever let something through; anything outside the list draws the generic mark instead. Without a logo the card shows the group's generic icon.
 - **Settings** generate the plugin's setup panel. `room` is a `choice` filled with the house's rooms. `secret` values go into Niles's existing encrypted secret store under `plugins.<id>.<key>`, are never shown again, and reach the plugin only through `config.secret`. `GET /plugins` carries each setting as the manifest declares it, with what the household entered (never a secret's value) and whether it is set; the panel draws a text box, a switch, a select or a password box per type, marks the required ones, writes help under each and the default beside it rather than into it, and saves what changed with one `PATCH /config` (an emptied field as `null`, back to its default) and each secret on its own through `PUT /secrets`. Until every required setting has a value it reads "Not set up: needs API key".
 - **`setting:<key>`** in `local_network` means "the address the user types into that setting", for devices whose address only the household knows. The approval screen says so in those words.
@@ -1406,6 +1408,38 @@ Three Postgres tables, owned by `niles-db` and created on first use: `plugins` (
 **Settings** are not in those tables but in Niles's [runtime configuration](#runtime-configuration), as `[plugins.<id>]` (`[plugins.spotprice]` with `area = "DK1"`): the same store, history and undo as every other setting, kept in Postgres with the other overrides, and hot — a change to a plugin's table restarts that plugin, as saving its setup panel does. They are typed and checked against the manifest when the plugin reads them; a value that does not fit falls back to the default. **Secrets** live in the existing encrypted secret store as `plugins.<id>.<key>`, the same store and key as the credentials typed into Settings; the Add-ons page can say whether one is set and never what it is. `PUT` and `DELETE /secrets/plugins.<id>.<key>` accept a key only when that plugin's manifest declares it as a `secret` setting, `GET /secrets` lists each declared one, and saving or clearing one restarts the plugin, as a settings change does. Removing a plugin deletes its rows from all three tables, its settings and its secrets.
 
 Storage is the plugin's to use as it likes: caches, a cursor, a token it refreshed, a little history. A write that would take the plugin over 1 MiB fails with `limit`.
+
+### Personal plugins
+
+Some add-ons belong to one person rather than the house: their Garmin, their task list, their reading list. A plugin says so with `scope = "person"` in its manifest. Each person who wants it connects their own, on **My profile → Add-ons**, beside Calendars and Strava, and it acts only for them, as their [calendars](#calendars) do.
+
+**Installed once, connected by each.** The code is the house's either way: one copy, one update, one place to roll back or remove it. What is each person's is the settings, the secrets and the storage.
+
+- **From My profile**, under Add-ons, **Add from GitHub** takes a repo as Settings does and shows the same preview. A personal plugin installs from there, for the house, and its panel opens for the person who added it. A house plugin is refused at the preview, before anything is downloaded beyond the manifest: "This add-on is for the whole house. Add it under Settings → Add-ons."
+- **From Settings**, a personal plugin installs as any other, and the preview says before Install: "This add-on is personal. It is installed for the house, and each person connects their own under My profile → Add-ons."
+- Once installed, a personal plugin is under **Available** on everybody's My profile → Add-ons, and moves to **Connected** for each person who sets it up.
+- Anyone signed in may install either kind, as from Settings today. [Permissions](#permissions-and-admin) may later restrict who installs anything.
+
+**One running copy per person.** Niles starts a separate instance of the component for each person who has connected it, that is, whose required settings are all set. Each instance sees only its person's settings through `config.setting` and `config.secret`, and only its person's storage. The interface is unchanged: an author writes a personal plugin as if it had one user, and one person's data cannot reach another's through a bug in it. Each instance has the manifest's memory and time limits and its own failure handling. Changing a person's settings or secrets restarts that person's instance only. An update or rollback restarts them all, and the automatic rollback watches them all.
+
+**Where each person's things are kept.**
+
+- **Settings** in a `plugin_person_settings` table (plugin id, person, key, value), not in the house's runtime configuration, which is the house's and goes through its history and undo.
+- **Secrets** in the encrypted secret store as `person.<slug>.plugins.<id>.<key>`. `PUT` and `DELETE /me/plugins/{id}/secrets/{key}` take the person from the session, never from the request.
+- **Storage** in `plugin_storage`, with the person's slug in a new column (empty for a house plugin), and 1 MiB per person.
+- A person is their [recognition](#user-recognition) slug. Somebody signed in whose sign-in is not linked to a voice has no slug, and is told that a personal add-on needs one, as calendars are.
+
+**What a personal plugin may ask for.** `http`, `tools`, `ui` pages, and `notify` only as described below. It may not ask for `devices`, `local_network`, `mqtt` or `events`: those are the house's lights, network and goings-on, not one person's. A manifest with `scope = "person"` that asks for any of them is refused at the preview, naming which. Its pages appear in the menu only for the people who have connected it, rendered by that person's instance. Widgets on room cards are not offered, since a room is everybody's.
+
+**Tools.** A personal plugin's tools are offered only when Niles knows who is asking and that person has connected it: a recognised voice, or a signed-in person in the app's chat, or through the assistants' MCP grant, which carries the speaker. A call goes to the asker's instance. An unrecognised voice gets none of them, and one person's tools are never called for another, whoever asks.
+
+**Notifications.** Not in v1. Niles speaks in rooms, and does not yet know which room a person is in, so a personal plugin cannot tell somebody something unprompted.
+
+**In Settings.** A personal plugin shows under Connected with a **Personal** badge and a status like "Connected by 2 people". Its panel has update, rollback, turn off and remove, but no settings form and no log: both are the people's. **Remove** says how many people have connected it, and removes everything, theirs included. On My profile, **Disconnect** removes only that person's settings, secrets and storage, and stops their instance.
+
+**The person's log.** Each person's panel on My profile shows their own instance's log, kept as a house plugin's is, by plugin and person. The Settings panel shows only Niles's own notes about each instance's status, without the person's name.
+
+**Developer tooling.** `niles plugin dev --person <slug>` runs a personal plugin as one person, with settings from a file as for a house plugin.
 
 ### Failure handling
 
