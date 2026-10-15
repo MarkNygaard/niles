@@ -416,28 +416,28 @@ since_pr = 388
 id = "plugins-install"
 category = "runtime.plugins"
 summary = "Install a plugin from a GitHub release after a preview of its permissions; exactly the previewed files run"
-since_pr = 9999
+since_pr = 390
 
 [[feature]]
 id = "plugins-update-rollback"
 category = "runtime.plugins"
 summary = "Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails"
-since_pr = 9999
+since_pr = 390
 
 [[feature]]
 id = "plugins-disable-remove"
 category = "runtime.plugins"
 summary = "Turn a plugin off and keep its data, or remove it with its devices, storage, settings and secrets"
-since_pr = 9999
+since_pr = 390
 
 [[feature]]
 id = "api-plugins-manage"
 category = "api.write"
 summary = "POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin"
-since_pr = 9999
+since_pr = 390
 
 [[feature]]
 id = "ui-plugins"
 category = "ui.integrations"
 summary = "Integrations page: Add from GitHub, and a panel per plugin to turn it off, update, roll back or remove it"
-since_pr = 9999
+since_pr = 390
