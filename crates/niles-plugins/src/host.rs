@@ -7,11 +7,13 @@
 //! JavaScript and Python one does, since their toolchains import the
 //! whole world — gets `not-permitted` rather than a link error.
 
+use crate::bindings::mqtt;
 use crate::bindings::niles::integration::{
     config, devices, events, http as wit_http, log, notify, storage, timers, types, ui,
 };
 use crate::manifest::{EventPermission, Notify, SettingKind, SettingValue, TAKEN_READINGS};
-use crate::policy::HttpPolicy;
+use crate::mqtt::{Connection, MAX_CONNECTIONS, RESERVED};
+use crate::policy::{HttpPolicy, MqttPolicy};
 use crate::runtime::{House, Plugin};
 use crate::store::{KnownDevice, MAX_KEY, Stored};
 use niles_core::{
@@ -53,6 +55,9 @@ pub(crate) struct HostState {
     /// settings starts a new instance, so these never change under it.
     settings: toml::Table,
     policy: HttpPolicy,
+    mqtt_policy: MqttPolicy,
+    /// The instance's MQTT connections, by id. They close when it goes.
+    pub connections: BTreeMap<u32, Connection>,
     /// When the call in progress has to be finished. Host calls that
     /// wait — HTTP, the database — never wait past it.
     pub deadline: Instant,
@@ -65,6 +70,7 @@ impl HostState {
         house: Arc<House>,
         settings: toml::Table,
         policy: HttpPolicy,
+        mqtt_policy: MqttPolicy,
     ) -> Self {
         let mut wasi = wasmtime_wasi::WasiCtxBuilder::new();
         // No directories, no environment, no arguments: the builder's
@@ -92,6 +98,8 @@ impl HostState {
             house,
             settings,
             policy,
+            mqtt_policy,
+            connections: BTreeMap::new(),
             deadline: Instant::now(),
             timers: BTreeMap::new(),
         }
@@ -264,6 +272,11 @@ fn check_key(key: &str) -> Result<(), HostError> {
             "a storage key is 1 to {MAX_KEY} bytes"
         )));
     }
+    if key.starts_with(RESERVED) {
+        return Err(HostError::Invalid(format!(
+            "keys starting with {RESERVED} are Niles's own"
+        )));
+    }
     Ok(())
 }
 
@@ -298,6 +311,9 @@ impl storage::Host for HostState {
     }
 
     fn delete(&mut self, key: String) {
+        if check_key(&key).is_err() {
+            return;
+        }
         let store = self.house.store.clone();
         let id = self.id().to_string();
         if let Err(e) = self.wait(async { store.delete(&id, &key).await }) {
@@ -313,6 +329,9 @@ impl storage::Host for HostState {
                 tracing::warn!(plugin = %id, "storage.list-keys failed: {e}");
                 Vec::new()
             })
+            .into_iter()
+            .filter(|key| !key.starts_with(RESERVED))
+            .collect()
     }
 }
 
@@ -779,6 +798,81 @@ impl notify::Host for HostState {
             ),
         }
         Ok(())
+    }
+}
+
+impl HostState {
+    fn connection(&self, conn: u32) -> Result<&Connection, HostError> {
+        self.connections
+            .get(&conn)
+            .ok_or_else(|| HostError::Invalid(format!("there is no connection {conn}")))
+    }
+}
+
+impl mqtt::Host for HostState {
+    fn connect(
+        &mut self,
+        broker: String,
+        options: mqtt::ConnectOptions,
+    ) -> Result<mqtt::ConnId, HostError> {
+        let target = match self.mqtt_policy.target(&broker) {
+            None => {
+                return Err(HostError::NotPermitted(format!(
+                    "the manifest's mqtt permission names no broker {broker:?}"
+                )));
+            }
+            Some(Err(why)) => {
+                self.plugin
+                    .log(log::Level::Warn, &format!("mqtt.connect refused: {why}"));
+                return Err(HostError::NotPermitted(why));
+            }
+            Some(Ok(target)) => target,
+        };
+        if self.connections.len() >= MAX_CONNECTIONS {
+            return Err(HostError::Limit(format!(
+                "at most {MAX_CONNECTIONS} connections; disconnect one first"
+            )));
+        }
+        let options =
+            crate::mqtt::Options::from_wit(&self.plugin.id, options).map_err(HostError::Invalid)?;
+        let id = self.plugin.next_connection();
+        let connection =
+            crate::mqtt::open(self.plugin.clone(), self.house.clone(), id, target, options);
+        self.connections.insert(id, connection);
+        Ok(id)
+    }
+
+    fn subscribe(
+        &mut self,
+        conn: mqtt::ConnId,
+        filter: String,
+        qos: mqtt::Qos,
+        latest_only: bool,
+    ) -> Result<(), HostError> {
+        self.connection(conn)?.subscribe(filter, qos, latest_only)
+    }
+
+    fn unsubscribe(&mut self, conn: mqtt::ConnId, filter: String) -> Result<(), HostError> {
+        self.connection(conn)?.unsubscribe(filter)
+    }
+
+    fn publish(
+        &mut self,
+        conn: mqtt::ConnId,
+        topic: String,
+        payload: Vec<u8>,
+        qos: mqtt::Qos,
+        retain: bool,
+    ) -> Result<(), HostError> {
+        self.connection(conn)?.publish(topic, payload, qos, retain)
+    }
+
+    fn accept_certificate(&mut self, conn: mqtt::ConnId) -> Result<(), HostError> {
+        self.connection(conn)?.accept_certificate()
+    }
+
+    fn disconnect(&mut self, conn: mqtt::ConnId) {
+        self.connections.remove(&conn);
     }
 }
 

@@ -32,9 +32,24 @@ niles-db.workspace = true
 niles-mqtt.workspace = true
 niles-notifications.workspace = true
 niles-tools.workspace = true
+# MQTT for plugins: rumqttc's packet codec and session state, over a
+# connection Niles makes itself to the address it checked.
+rumqttc.workspace = true
+futures-util.workspace = true
+tokio-util = { version = "0.7", features = ["codec"] }
+# A trust-device broker's certificate is its own, signed by nobody, so
+# this crate needs rustls directly to say so; ring, the provider the rest
+# already builds. webpki reads the public key Niles pins.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
+webpki-roots = "1"
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 niles-llm.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = "0.6"
+# A real broker for the MQTT tests, with a certificate made on the spot.
+rumqttd = { version = "0.20", default-features = false, features = ["use-rustls"] }
+rcgen = "0.14"

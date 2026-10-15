@@ -2,8 +2,8 @@
 //! once, so an author fixes it in one pass.
 //!
 //! The manifest against `manifest.md`; the logo against the sanitiser's
-//! rules; the component compiled and linked against the
-//! `niles:integration/plugin@0.1` world; and its tools, asked for
+//! rules; the component compiled and linked against the world its
+//! manifest's `interface` names, `niles:integration/plugin@0.1` or `@0.2`; and its tools, asked for
 //! without `init` in the same sandbox and limits a real run has, against
 //! the rules in `tools.md`.
 
@@ -112,8 +112,9 @@ async fn check_component(manifest: &Manifest, bytes: Vec<u8>, report: &mut Repor
     };
     report.imports = inspected.imports;
     report.passed.push(format!(
-        "component: {} KiB, targets niles:integration/plugin@0.1 and exports every function",
-        size / 1024
+        "component: {} KiB, targets niles:integration/plugin@{} and exports every function",
+        size / 1024,
+        inspected.interface
     ));
     let tools = match inspected.tools {
         Ok(tools) => tools,
@@ -151,7 +152,9 @@ async fn check_component(manifest: &Manifest, bytes: Vec<u8>, report: &mut Repor
 
 struct Inspected {
     imports: Vec<String>,
-    tools: Result<Vec<crate::bindings::ToolDef>, String>,
+    /// The world it targets: `0.1` or `0.2`.
+    interface: &'static str,
+    tools: Result<Vec<crate::bindings::niles::integration::types::ToolDef>, String>,
 }
 
 fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Inspected, String> {
@@ -159,21 +162,13 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
     let linker = crate::runtime::linker(&engine).map_err(|e| e.to_string())?;
     let component = wasmtime::component::Component::new(&engine, &bytes)
         .map_err(|e| format!("is not a WebAssembly component: {}", e.root_cause()))?;
-    let mut imports = Vec::new();
-    for (name, _) in component.component_type().imports(&engine) {
-        if let Some(version) = name
-            .strip_prefix("niles:integration/")
-            .and_then(|rest| rest.split_once('@'))
-            .map(|(_, v)| v)
-            && !version.starts_with("0.1.")
-        {
-            return Err(format!(
-                "imports {name}; this Niles runs niles:integration 0.1"
-            ));
-        }
-        imports.push(name.to_string());
-    }
-    let pre = crate::worker::prepare(&engine, &linker, &bytes)?;
+    let imports = component
+        .component_type()
+        .imports(&engine)
+        .map(|(name, _)| name.to_string())
+        .collect();
+    let interface = crate::worker::interface_of(&component, &engine)?;
+    let pre = crate::worker::prepare(&engine, &linker, &bytes, &plugin.manifest.interface)?;
 
     let ticking = engine.weak();
     std::thread::spawn(move || {
@@ -188,6 +183,7 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
         house,
         toml::Table::new(),
         crate::policy::HttpPolicy::default(),
+        crate::policy::MqttPolicy::default(),
     );
     let mut store = wasmtime::Store::new(&engine, state);
     store.limiter(|state| &mut state.memory);
@@ -198,7 +194,11 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
         .instantiate(&mut store)
         .and_then(|bindings| bindings.call_tools(&mut store))
         .map_err(|e| format!("tools() did not answer: {}", e.root_cause()));
-    Ok(Inspected { imports, tools })
+    Ok(Inspected {
+        imports,
+        interface,
+        tools,
+    })
 }
 
 /// What the install's sanitiser accepts: an SVG on a 24×24 view box,

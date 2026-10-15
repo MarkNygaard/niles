@@ -6,7 +6,7 @@
 //! may now do that it could not before — not a page label that changed,
 //! or a tool that was added under a `tools` permission it already had.
 
-use crate::manifest::{DEFAULT_MEMORY_MB, EventPermission, Manifest, Notify};
+use crate::manifest::{DEFAULT_MEMORY_MB, EventPermission, Manifest, Notify, TlsMode};
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -66,6 +66,35 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
             }
         };
         add(format!("local:{entry}"), text);
+    }
+    for broker in &p.mqtt {
+        let mut text = match broker.setting() {
+            Some(key) => format!(
+                "Connect to the MQTT broker at the address you enter under {}",
+                manifest.setting(key).map_or(key, |s| s.label.as_str())
+            ),
+            None => format!("Connect to the MQTT broker at {}", broker.host),
+        };
+        if broker.port() != broker.default_port() {
+            text.push_str(&format!(", port {}", broker.port()));
+        }
+        text.push_str(match broker.tls {
+            TlsMode::Verify => "",
+            TlsMode::TrustDevice => {
+                ", on your home network, trusting the certificate it shows the first time"
+            }
+            TlsMode::Plain => ", on your home network, unencrypted",
+        });
+        add(
+            format!(
+                "mqtt:{}:{}:{}:{}",
+                broker.name,
+                broker.host,
+                broker.port(),
+                broker.tls.as_str()
+            ),
+            text,
+        );
     }
     if p.devices {
         add(
@@ -249,6 +278,45 @@ room = "living_room"
         };
         assert_eq!(worded(Some(&one)), "Offer 1 tool to the assistant: prices");
         assert_eq!(worded(None), "Offer tools to the assistant");
+    }
+
+    #[test]
+    fn brokers_say_where_and_how_their_certificate_is_trusted() {
+        let manifest = Manifest::parse(
+            r#"
+id = "printer"
+name = "Printer"
+version = "0.1.0"
+description = "x"
+authors = ["a"]
+min_niles = "0.2.0"
+interface = "0.2"
+
+[permissions]
+mqtt = [
+    { name = "printer", host = "setting:address", tls = "trust-device" },
+    { name = "plugs", host = "192.168.1.20", tls = "none" },
+    { name = "cloud", host = "broker.example.com", port = 8884 },
+]
+
+[[settings]]
+key = "address"
+label = "Printer address"
+type = "string"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            texts(&grants(&manifest, None)),
+            vec![
+                "Connect to the MQTT broker at the address you enter under Printer address, \
+                 on your home network, trusting the certificate it shows the first time",
+                "Connect to the MQTT broker at 192.168.1.20, on your home network, unencrypted",
+                "Connect to the MQTT broker at broker.example.com, port 8884",
+            ]
+        );
+        let keys: Vec<String> = grants(&manifest, None).into_iter().map(|g| g.key).collect();
+        assert_eq!(keys[0], "mqtt:printer:setting:address:8883:trust-device");
     }
 
     #[test]

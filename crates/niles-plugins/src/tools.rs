@@ -6,7 +6,7 @@
 //! registered while the plugin is down, and answer that it is not
 //! working, so the model can say so rather than find the tool missing.
 
-use crate::bindings::ToolDef;
+use crate::bindings::niles::integration::types::ToolDef;
 use crate::manifest::{MAX_TOOLS, is_identifier};
 use crate::runtime::{House, Plugin};
 use async_trait::async_trait;
