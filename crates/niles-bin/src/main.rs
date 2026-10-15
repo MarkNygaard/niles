@@ -2021,6 +2021,10 @@ fn build_linear_client(
     cfg: &niles_config::IntegrationsConfig,
 ) -> Option<Arc<niles_integration_linear::LinearClient>> {
     let linear = cfg.linear.as_ref()?;
+    if linear.team.trim().is_empty() {
+        tracing::warn!("Linear integration disabled: no team set");
+        return None;
+    }
     let api_key = linear
         .resolve_api_key()
         .inspect_err(|e| tracing::warn!("Linear integration disabled: {e}"))

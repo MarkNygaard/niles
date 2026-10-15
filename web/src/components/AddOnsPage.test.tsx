@@ -182,6 +182,17 @@ const NEMLIG_LOGIN: SecretsReport = {
   ],
 };
 
+const LINEAR: Integration = {
+  ...TADO,
+  id: "linear",
+  label: "Linear",
+  blurb: "Tasks.",
+  needs: "A Linear API key.",
+  icon: "list-todo",
+  secret_keys: ["integrations.linear.api_key"],
+  secret_key: "integrations.linear.api_key",
+};
+
 function setup(
   integrations: Integration[],
   secrets: SecretsReport = unifiKey(),
@@ -634,6 +645,15 @@ describe("statusOf", () => {
     ).toBe("Needs a team");
     expect(
       statusOf(
+        { ...LINEAR, added: true },
+        {
+          linear: { team: "test" },
+          secrets: { writable: true, secrets: [unset("integrations.linear.api_key")] },
+        },
+      ).text,
+    ).toBe("Needs its API key");
+    expect(
+      statusOf(
         { ...TADO, id: "lg_tv", label: "LG TV", added: true },
         {
           tv: { configured: true, paired: false, mac: null, room: null, status: null, error: null },
@@ -698,6 +718,23 @@ describe("AddOnsPage removing", () => {
     expect(clear).toHaveBeenCalledTimes(1);
     expect(clear).toHaveBeenCalledWith("integrations.nemlig.password");
     expect(onSecretsChanged).toHaveBeenCalled();
+  });
+
+  it("takes Linear out of the config, not only its key", async () => {
+    // Its key went and the section stayed, so the row never left
+    // Connected.
+    vi.spyOn(api, "clearSecret").mockResolvedValue(undefined);
+    const { onReset } = setup([{ ...LINEAR, added: true }], {
+      writable: true,
+      secrets: [
+        { key: "integrations.linear.api_key", label: "Linear API key", source: "stored" },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Configure Linear" }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
+    await waitFor(() =>
+      expect(onReset).toHaveBeenCalledWith("integrations.linear", ["integrations.linear"]),
+    );
   });
 
   it("deletes the keys before the add-on goes", async () => {

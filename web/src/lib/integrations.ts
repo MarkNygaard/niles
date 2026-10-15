@@ -96,8 +96,10 @@ export function statusOf(integration: Integration, inputs: StatusInputs): Status
   switch (integration.id) {
     case "tado":
       return inputs.tado?.authorised ? WORKING : needs("Not signed in to tado° yet");
+    // Present, not proven: nothing asks Linear whether the key works.
     case "linear":
-      return inputs.linear?.team?.trim() ? WORKING : needs("Needs a team");
+      if (!inputs.linear?.team?.trim()) return needs("Needs a team");
+      return missing(integration.secret_key) ? needs("Needs its API key") : WORKING;
     case "nemlig":
       if (inputs.nemlig?.enabled === false) return off;
       return missing("integrations.nemlig.username", "integrations.nemlig.password")

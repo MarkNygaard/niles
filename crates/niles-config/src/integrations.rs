@@ -397,13 +397,11 @@ impl IntegrationsConfig {
 }
 
 impl LinearConfigDto {
+    /// An empty team is allowed: it is what adding Linear in the app
+    /// writes, before anybody has typed one, and refusing it left the
+    /// add-on unable to be added at all. Without a team the tools are
+    /// not registered, and the add-on says it needs one.
     pub fn validate(&self) -> Result<()> {
-        if self.team.trim().is_empty() {
-            return Err(Error::InvalidSection {
-                section: "integrations.linear",
-                reason: "team must not be empty".into(),
-            });
-        }
         if self.trigger_label.trim().is_empty() {
             return Err(Error::InvalidSection {
                 section: "integrations.linear",

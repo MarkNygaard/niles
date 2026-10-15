@@ -2262,20 +2262,15 @@ actions = [{{ do = "notify", body = "hi" }}]
         assert_eq!(cfg.integrations.linear.expect("present").api_key_env, "");
     }
     #[test]
-    fn integrations_linear_empty_team_rejected() {
+    fn integrations_linear_empty_team_is_added_but_unfinished() {
+        // What adding Linear in the app writes. Refusing it meant the
+        // add-on could not be added from the app at all.
         let toml = format!(
             "{}\n[integrations.linear]\napi_key_env = \"LINEAR_API_KEY\"\nteam = \"\"\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "integrations.linear",
-                ..
-            }
-        ));
+        cfg.validate().expect("valid without a team");
     }
     #[test]
     fn integrations_linear_timeout_zero_rejected() {
