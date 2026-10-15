@@ -53,6 +53,7 @@ rand.workspace = true
 ui = ["dep:rust-embed", "dep:mime_guess"]
 
 [dev-dependencies]
+niles-webos = { workspace = true, features = ["test-support"] }
 tower.workspace = true
 http-body-util.workspace = true
 tokio-tungstenite.workspace = true
