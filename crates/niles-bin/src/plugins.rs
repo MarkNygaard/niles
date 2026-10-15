@@ -1055,6 +1055,55 @@ type = "secret"
         forget.forget("never_installed").await.unwrap();
     }
 
+    /// What the setup panel will do: write `[plugins.<id>]` through
+    /// `PATCH /config`'s store, and see the plugin start again with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_settings_change_restarts_the_plugin_with_the_new_values() {
+        let settings =
+            Arc::new(niles_config::ConfigStore::from_str_in_memory("").expect("an empty config"));
+        let read = settings.clone();
+        let house = House::new(
+            Arc::new(DeviceRegistry::new()),
+            EventBus::default(),
+            Arc::new(MemoryStore::new()),
+        )
+        .with_settings(Arc::new(move |id| {
+            read.current().plugins.get(id).cloned().unwrap_or_default()
+        }));
+        let runtime = Runtime::new(house, Limits::default()).unwrap();
+        runtime
+            .install(
+                include_str!("../../niles-plugins/tests/fixtures/hello/niles-integration.toml"),
+                include_bytes!("../../niles-plugins/tests/fixtures/hello.wasm").to_vec(),
+            )
+            .await
+            .unwrap();
+        let _restarts = restart_on_settings(runtime.clone(), settings.clone());
+        let greeting = || async {
+            let until = std::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Ok(text) = runtime.call_tool("hello", "greet", "{}").await {
+                    return text;
+                }
+                assert!(std::time::Instant::now() < until, "hello never answered");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        assert_eq!(greeting().await, "Hello, world!");
+
+        let patch: toml::Table = toml::from_str("[plugins.hello]\ngreeting = \"Hej\"\n").unwrap();
+        settings
+            .apply(&patch, niles_config::ChangeSource::Api)
+            .await
+            .unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(20);
+        while greeting().await != "Hej, world!" {
+            assert!(std::time::Instant::now() < until, "never restarted");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        runtime.shutdown().await;
+    }
+
     #[test]
     fn state_prints_compactly_with_units() {
         let mut state = DeviceState {

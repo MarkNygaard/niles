@@ -2,6 +2,7 @@ import type {
   Importance,
   Integration,
   IntegrationGroup,
+  PluginSummary,
   SecretsReport,
   TadoStatus,
   TvInfo,
@@ -143,4 +144,31 @@ export function statusOf(integration: Integration, inputs: StatusInputs): Status
     default:
       return missing(integration.secret_key) ? needs("Needs its API key") : WORKING;
   }
+}
+
+/**
+ * A plugin's line on its row: how it is doing, and, when it is working,
+ * that a newer release is waiting. A plugin that is not working says
+ * that first: an update is not the fix until somebody decides it is.
+ */
+export function pluginStatusOf(plugin: PluginSummary): Status {
+  switch (plugin.status) {
+    case "disabled":
+      return { ok: false, text: "Off" };
+    case "running":
+      return plugin.update
+        ? { ok: true, text: `Update available: v${plugin.update.version}` }
+        : WORKING;
+    default:
+      return { ok: false, text: plugin.status_line };
+  }
+}
+
+/** Whether a search finds it: by name, by what it does, or by its group. */
+export function pluginMatchesQuery(plugin: PluginSummary, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [plugin.name, plugin.description, plugin.group.label].some((text) =>
+    text.toLowerCase().includes(q),
+  );
 }
