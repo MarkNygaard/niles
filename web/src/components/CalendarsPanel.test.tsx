@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CalendarsCard, connectUrl, offered, outcomeOf } from "./CalendarsCard";
+import { CalendarsPanel, connectUrl, offered, outcomeOf } from "./CalendarsPanel";
 import { redirectUri } from "./CalendarAppPanel";
 import { api } from "@/lib/api";
 import type { CalendarsView } from "@/lib/api";
@@ -46,12 +46,12 @@ function card(view: CalendarsView = MARK) {
   vi.spyOn(api, "calendars").mockResolvedValue(view);
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <CalendarsCard />
+      <CalendarsPanel />
     </QueryClientProvider>,
   );
 }
 
-describe("CalendarsCard", () => {
+describe("CalendarsPanel", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("starts a provider's sign-in with the name and access chosen", () => {

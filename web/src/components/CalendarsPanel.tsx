@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import type {
@@ -15,7 +13,7 @@ import type {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const KEY = ["calendars"];
+export const CALENDARS = ["calendars"];
 
 const LABEL: Record<CalendarProvider, string> = {
   microsoft: "Microsoft",
@@ -66,10 +64,10 @@ const ACCESS: { value: CalendarAccess; label: string; hint: string }[] = [
  * own, granting what Niles may do; iCloud takes an app-specific
  * password, and there read only is Niles's own rule.
  */
-export function CalendarsCard() {
+export function CalendarsPanel() {
   const queryClient = useQueryClient();
-  const calendars = useQuery({ queryKey: KEY, queryFn: api.calendars, retry: false });
-  const settle = () => queryClient.invalidateQueries({ queryKey: KEY });
+  const calendars = useQuery({ queryKey: CALENDARS, queryFn: api.calendars, retry: false });
+  const settle = () => queryClient.invalidateQueries({ queryKey: CALENDARS });
   const remove = useMutation({ mutationFn: api.removeCalendar, onSettled: settle });
   const setAccess = useMutation({
     mutationFn: ({ id, access }: { id: string; access: CalendarAccess }) =>
@@ -92,17 +90,7 @@ export function CalendarsCard() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <CalendarDays aria-hidden className="size-4" /> Calendars
-        </CardTitle>
-        <CardDescription>
-          Read by Niles only when it hears you, or when you ask here. Nobody else can ask for
-          yours.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4">
         {outcome && (
           <p
             role="status"
@@ -142,8 +130,7 @@ export function CalendarsCard() {
             }}
           />
         )}
-      </CardContent>
-    </Card>
+    </div>
   );
 }
 
