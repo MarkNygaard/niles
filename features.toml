@@ -579,10 +579,10 @@ since_pr = 403
 id = "auth-api-key-made"
 category = "ui.access"
 summary = "Niles makes its own API key on a start with a database, and a new one works at once with no restart"
-since_pr = 9999
+since_pr = 405
 
 [[feature]]
 id = "ui-api-access"
 category = "ui.settings"
 summary = "Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only"
-since_pr = 9999
+since_pr = 405
