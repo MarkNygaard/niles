@@ -1049,12 +1049,7 @@ A service that runs its own **MCP server** brings its own tools. Niles connects 
 
 Every tool starts **On**: the model does what it is told. The list shows what the server says about each tool, read-only or destructive (MCP's `readOnlyHint` and `destructiveHint`), so a household can see which to set to Ask first. A tool the server adds later arrives On, and the add-on says how many are new.
 
-**Ask first.** The call does not run. Niles holds it as a **pending approval**: the tool, its arguments, who asked and where. The model is told only that the action is waiting for a yes, and it asks the person in one sentence ("Shall I file 'WLED presets' in Linear?"). The model never decides the answer. Niles decides it, from what the person does:
-
-- **By voice**, the satellite keeps listening for the reply, as it does after any question. A yes runs the held call, a no drops it, and anything else leaves it waiting.
-- **In the app's chat**, the reply shows as a card under the question, with **Allow once**, **Allow for this conversation** and **Deny**. "For this conversation" means that tool runs without asking for the rest of that conversation.
-
-Niles runs the held call itself, with the arguments it held. What runs is what was shown, whatever the model says next. A pending approval lapses with its conversation, or after five minutes.
+**Ask first.** The call does not run until a person says yes, through an [approval](#approvals): by voice, a spoken yes to the one-sentence question the model asks ("Shall I file 'WLED presets' in Linear?"); in the app, the card's **Allow once**, **Allow for this conversation** or **Deny**.
 
 **Which tools a request gets.** A server's tools go out only with a request that mentions one of its keywords, as a [plugin's](#third-party-add-ons-plugins) do. The add-on sets the keywords; Linear's start as *linear*, *issue*, *task* and *ticket*. Tool names are prefixed with the server's id (`linear__create_issue`), so two servers cannot collide with each other or with Niles's own tools.
 
@@ -1064,55 +1059,116 @@ Niles runs the held call itself, with the arguments it held. What runs is what w
 
 **Not in v1:** OAuth sign-in to a server (a key covers Linear and most others); a server that pushes tool-list changes (the list is refreshed on save, on start, and with the add-on's Refresh button); MCP resources and prompts (tools only); per-person servers (a server belongs to the house).
 
-### Calendars
+### Approvals
 
-"What's on my calendar tomorrow?", "when's my next meeting?", "put the dentist in on Thursday at ten." A calendar is the clearest case of a *personal reference*: "my calendar" means a different calendar for each person who says it, so this integration is built around the person, not the house.
+Some things Niles must not do on the model's word alone: send a mail, or call a tool a household has set to [Ask first](#remote-tool-servers-mcp). The call does not run. Niles holds it as a **pending approval**: the tool, its arguments exactly as they would be sent, who asked, and where (a room, or the app's chat). The model is told only that it is waiting, and what the person was shown. **The model never decides the answer: the person does, and Niles runs the held call itself, with the arguments it held.** What runs is what was shown, whatever the model says next. A change is a new approval.
 
-**Whose calendar.** Each person connects their own calendars, from their profile in the web UI. A calendar is only ever read or written for the person it belongs to: by voice, when [recognition](#user-recognition) has identified that person; in the app's chat, when they are signed in. An unrecognised voice gets no calendar at all ("I don't know who's asking"), and one person's calendar is never read out for another, whoever asks.
+**In the app, a card in the chat.** It sits under the message that asked, in the conversation it belongs to:
 
-**Three providers, one set of tools.** A household's calendars live where its people's phones and work put them:
+```
+┌──────────────────────────────────────────────────────┐
+│ [✉]  Send this email?                                │
+│      From your Gmail, mark@gmail.com                 │
+│ ┌──────────────────────────────────────────────────┐ │
+│ │ To       jakob@example.com                       │ │
+│ │ Subject  Running late                            │ │
+│ │                                                  │ │
+│ │ Hi Jakob, I'll be fifteen minutes late…          │ │
+│ └──────────────────────────────────────────────────┘ │
+│ [ Allow once ]  [ Deny ]                             │
+└──────────────────────────────────────────────────────┘
+```
 
-| | Reached through | Connected by |
+- **The title** is a question naming the action and where it goes: "Send this email?", "Let Linear create an issue?". Under it, one line saying whose account or which add-on, with its mark.
+- **The preview** is what will happen, not the call's JSON. A mail is drawn as a mail: its account, To, Cc, Subject and the body in full. A remote tool's call is drawn as its arguments, each labelled with the server's own description of it, long values folded behind a chevron, as Muse folds its details.
+- **The buttons.** **Allow once** is the primary one. **Allow for this conversation** is offered only where the tool allows it, and never for mail: a mail is approved one at a time. **Deny**.
+- **After.** The card stays in the conversation, saying what became of it: "Sent", "Denied", "Lapsed", or the error the call ended in. Niles writes the outcome into the conversation, so the model knows what happened on the next turn.
+- **Only its person.** The approval is for the person it was asked for, and only their signed-in session can answer it. Another member of the household sees the conversation's history, not the buttons.
+
+**By voice.** A remote tool set to Ask first can be answered by voice: the satellite keeps listening after the question, a yes runs the held call, a no drops it, and anything else leaves it waiting. **A mail cannot.** A mail is too long to hear and judge, and a misheard yes is worse here than anywhere else. When a mail is asked for by voice, Niles writes it and says so ("I've written it to Jakob; it's in the app for you to send"), and the card waits in that person's chat.
+
+**How long it waits.** An approval answered by voice lapses after five minutes. A card in the app waits an hour, so a mail asked for in the kitchen can be sent from the phone later. Either lapses with its conversation.
+
+**What is kept.** The pending approval, its preview and its outcome are part of the conversation, in its history, as the messages around it are.
+
+### Accounts
+
+A person's sign-in at Microsoft, Google or Apple is one **account**, connected on their profile. An account serves **Calendar**, **Mail**, or both, each ticked separately. On My profile → Add-ons, Calendars and Mail are separate add-ons, each listing the accounts that serve it, because that is how people think of them. Underneath, one Gmail is one sign-in.
+
+**Three providers.**
+
+| | Calendar through | Mail through | Connected by |
+|---|---|---|---|
+| **Microsoft**: Outlook.com, Hotmail, work or school accounts (Entra ID) | Microsoft Graph | Microsoft Graph | Microsoft's sign-in (OAuth 2.0), redirect `/calendars/microsoft/callback` |
+| **Google**: Gmail and Google Workspace | Google Calendar API | Gmail API | Google's sign-in (OAuth 2.0), redirect `/calendars/google/callback` |
+| **iCloud**: the iPhone's calendar and mail | CalDAV, at `caldav.icloud.com` | IMAP at `imap.mail.me.com:993`, SMTP at `smtp.mail.me.com:587` | the Apple ID and an **app-specific password** the person makes at appleid.apple.com |
+
+A person may connect several, of any kind; each has a name they choose ("Private", "Work"). The tools merge them. The redirects keep the `/calendars/` path they were registered with, so an existing app registration keeps working.
+
+**What each service may do.** Each ticked service has an access of its own:
+
+| | Read | Read and change |
 |---|---|---|
-| **Microsoft** — Outlook.com, Hotmail, and work or school accounts (Entra ID) | Microsoft Graph | Microsoft's sign-in (OAuth 2.0), redirect `/calendars/microsoft/callback` |
-| **Google** — Gmail and Google Workspace | Google Calendar API | Google's sign-in (OAuth 2.0), redirect `/calendars/google/callback` |
-| **iCloud** — the calendar on an iPhone | CalDAV, at `caldav.icloud.com` | the Apple ID and an **app-specific password** the person makes at appleid.apple.com |
+| **Calendar** | read only | read and write |
+| **Mail** | read only (the default) | read and send |
 
-A person may connect several, of any kind; each is one connection, with a name they choose ("Private", "Work"). The tools merge them.
+- **Microsoft and Google grant it.** Niles asks for exactly what the ticks need and nothing more: `Calendars.Read` or `Calendars.ReadWrite`, `Mail.Read`, `Mail.Send` from Microsoft (with `offline_access` and `User.Read`); `calendar.readonly` or `calendar.events`, `gmail.readonly`, `gmail.send` from Google. A token without a permission cannot use it, so a read-only service stays read-only even if Niles misbehaves.
+- **So changing a tick means signing in again.** Ticking Mail on a Gmail connected for its calendar, or unticking it, sends the person through Google's sign-in once more, asking for the new set. They type no password; they see one consent screen ("Niles also wants to read your mail"). The new token replaces the old, which is discarded. If they refuse, the account stays as it was. This is the provider's rule, not Niles's: what an account may do is its owner's to grant.
+- **iCloud cannot narrow it.** Apple has no narrower credential than an app-specific password, which opens the whole account's calendars, contacts and mail. For an iCloud account each tick and each read-only is a rule Niles keeps, not one Apple enforces, and the profile says so where it is chosen. Ticking Mail on an iCloud account is a tick: the password it holds already reaches mail. The password can be revoked at appleid.apple.com at any time, which ends the account.
 
-**Access.** A connection is either **read only** or **read and write**.
+**Connecting the second service.** Connecting Mail offers the person's accounts that do not serve it yet first ("Use mark@gmail.com, already connected for your calendar"), then a new sign-in. Connecting Calendars does the same the other way.
 
-- **Microsoft and Google grant it.** That is what Niles asks them for — `Calendars.Read` or `Calendars.ReadWrite` (with `offline_access` and `User.Read`) from Microsoft; `calendar.readonly` or `calendar.events` from Google. A read-only connection holds a token that *cannot* write, so a work calendar connected read-only stays read-only even if Niles misbehaves. Changing a connection's access means signing in to it again; the old token is discarded.
-- **iCloud cannot.** Apple has no narrower credential than an app-specific password, and that password opens the whole account's calendars (and contacts and mail). For an iCloud connection "read only" is a rule Niles keeps, not one Apple enforces, and the profile says so where it is chosen. The password can be revoked at appleid.apple.com at any time, which ends the connection.
-
-**Which calendar.** Microsoft: the account's default calendar. Google: its primary calendar. iCloud: every calendar on the account that holds events, read together; new events go to the first of them, which on an iPhone is the default one ("Calendar" or "Home").
-
-**What is stored.** Per connection: the person, its provider, its name, the account's address, its access, and its credential — a refresh token, or iCloud's app-specific password — encrypted with the same key as the credentials typed into the app, in a `calendar_connections` table. Disconnecting deletes the row and its credential. Access tokens are kept in memory only.
+**What is stored.** Per account, in an `accounts` table: the person, its provider, its name, the account's address, the calendar's access (none, read, write), the mail's access (none, read, send), and its credential, a refresh token or iCloud's app-specific password, encrypted with the same key as the credentials typed into the app. Removing the last service of an account deletes the row and its credential. Access tokens are kept in memory only. The `calendar_connections` rows of an existing install become accounts serving Calendar, with their access, and Mail off.
 
 **The household's app registrations.** Microsoft and Google each need one, made once by whoever runs Niles, with its client ID and secret entered under Settings → Add-ons:
 
-- *Microsoft:* the Entra admin center, "accounts in any organizational directory and personal Microsoft accounts", the redirect above. A work tenant may still refuse a person's consent to an outside app; that is the employer's call, and the profile says so when Microsoft refuses.
-- *Google:* a Google Cloud project with the Calendar API enabled and a web OAuth client with the redirect above. The app must be **published** rather than left in testing, where Google expires its sign-ins after seven days; unverified, it shows "Google hasn't verified this app" on the way in, which is expected for a household's own app.
+- *Microsoft:* the Entra admin center, "accounts in any organizational directory and personal Microsoft accounts", the redirect above, with the Graph permissions above as delegated permissions. A work tenant may still refuse a person's consent to an outside app; that is the employer's call, and the profile says so when Microsoft refuses.
+- *Google:* a Google Cloud project with the Calendar API and the Gmail API enabled, and a web OAuth client with the redirect above. The app must be **published** rather than left in testing, where Google expires its sign-ins after seven days. Unverified, it shows "Google hasn't verified this app" on the way in, which is expected for a household's own app. Reading Gmail is one of Google's *restricted* permissions: an unverified app may hold it for at most 100 people, which a household is well under, and Settings says so beside Google's keys.
 
 iCloud needs no registration.
 
+**Whose account.** An account is only ever used for the person it belongs to: by voice, when [recognition](#user-recognition) has identified that person; in the app's chat, when they are signed in. An unrecognised voice reaches nobody's calendar or mail ("I don't know who's asking"), and one person's is never read out for another, whoever asks. The tools below exist only when the person asking has an account serving them, and the LLM is told whose it is looking at.
+
+### Calendars
+
+"What's on my calendar tomorrow?", "when's my next meeting?", "put the dentist in on Thursday at ten." A calendar is the clearest case of a *personal reference*: "my calendar" means a different calendar for each person who says it. Calendars come from the person's [accounts](#accounts) that serve Calendar.
+
+**Which calendar.** Microsoft: the account's default calendar. Google: its primary calendar. iCloud: every calendar on the account that holds events, read together; new events go to the first of them, which on an iPhone is the default one ("Calendar" or "Home").
+
 **By voice (LLM tools).**
 
-- `calendar_events(from, to)` — the speaker's events in a window, every connection merged and labelled with the connection's name. Times are the house's time zone.
-- `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` — only on a read-and-write connection. When the person has more than one, Niles asks which (by its name) unless they said. Every write is read back first and made only on a yes ("Dentist, Thursday at 10:00 in your private calendar — shall I?"), as [rules](#voice-created-rules) are.
+- `calendar_events(from, to)`: the speaker's events in a window, every account merged and labelled with the account's name. Times are the house's time zone.
+- `create_calendar_event`, `update_calendar_event`, `delete_calendar_event`: only on an account whose calendar is read and write. When the person has more than one, Niles asks which (by its name) unless they said. Every write is read back first and made only on a yes ("Dentist, Thursday at 10:00 in your private calendar — shall I?"), as [rules](#voice-created-rules) are.
 
-These tools exist only when the person asking has a connection; the LLM is told whose calendar it is looking at.
-
-**What leaves the house.** Answering a calendar question sends the events it needs — titles, times, places — to the LLM provider in the request that writes the answer, as any tool result is. Nothing is sent ahead of a question, and nothing is kept outside Niles's own database.
+**What leaves the house.** Answering a calendar question sends the events it needs, titles, times and places, to the LLM provider in the request that writes the answer, as any tool result is. Nothing is sent ahead of a question, and nothing is kept outside Niles's own database.
 
 **Not in v1:** reminders Niles speaks unprompted ("your meeting is in ten minutes"), which belong to [notifications](#notifications-niles-speaks-unprompted); inviting other people; recurring-series edits beyond a single occurrence; choosing which of an account's calendars to read or write.
+
+### Mail
+
+"Any mail from Jakob today?", "what did the school write?", "tell Jakob I'm running late." Mail comes from the person's [accounts](#accounts) that serve Mail. It is the most private thing Niles touches, so reading is the default, and sending always waits for the person.
+
+**Reading.** A question about mail reads only what it needs: headers and a short excerpt to find the right messages, then the text of the one or two the answer is about. The inbox by default; the whole mailbox when the person asks to search it. A message's text is its plain-text part (or its HTML reduced to text), with the quoted history of earlier replies cut off, at most 16 KiB. Attachments are named, never opened.
+
+**Sending.** Only on an account whose mail is read and send, and **never without an [approval](#approvals) answered in the app**, whether the mail was asked for in the chat or by voice. The card shows the mail exactly as it will go: the account it goes from, To, Cc, Subject and the whole body. What is sent is what was shown. There is no Allow for this conversation for mail, and no setting that turns the approval off. A reply keeps the thread: it answers the message it replies to, with its subject and references, from the account that received it.
+
+**By voice.** Reading works by voice as calendars do, read out briefly: who, what about, when. A mail asked for by voice is written and put in the app for the person to send; Niles says so, and does not offer to send it by voice.
+
+**LLM tools.**
+
+- `mail_search(query?, from?, since?, unread_only?, limit?)`: matching messages across the person's mail accounts, newest first, each with its account's name, sender, subject, time, whether it is read, and an excerpt. At most 20.
+- `mail_read(id)`: one message's text, as above.
+- `send_mail(to, subject, body, cc?, account?, in_reply_to?)`: never sends. It holds the mail as an approval and returns that it is waiting. When the person has more than one account that can send, Niles asks which unless they said, or uses the account of the message replied to.
+
+**What leaves the house.** Answering a mail question sends the messages it read, headers, excerpts and the text of the ones it opened, to the LLM provider in the request that writes the answer, as any tool result is. Niles keeps no copy of anybody's mail: it reads from the provider when asked.
+
+**Not in v1:** deleting, archiving, moving, flagging or marking mail as read; sending attachments; mail Niles reads unprompted ("you have a new mail from the school"), which belongs to [notifications](#notifications-niles-speaks-unprompted); shared or delegated mailboxes.
 
 ### Future integrations (not v1)
 
 The same pattern scales to:
 
 - **Calendar reminders** — spoken unprompted before what is coming up, from the [calendars](#calendars) already connected
-- **Email** — summary digests, send drafts (with explicit confirmation)
 - **GitHub** directly — repository status, recent activity, code review requests
 - **Monitoring** — alerts from Grafana, Prometheus, Sentry surfaced as notifications
 - **Deployments** — trigger or check status of CI/CD pipelines
