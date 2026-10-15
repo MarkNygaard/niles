@@ -766,8 +766,8 @@ throws its `err`; an import that returns `result` throws on `err`, with the
 error variant in `e.payload`.
 
 ```js
-import { send } from "niles:integration/http@0.2.0";
-import { get } from "niles:integration/config@0.2.0";
+import { send } from "niles:integration/http@0.2.1";
+import { get } from "niles:integration/config@0.2.1";
 
 const API = "https://api.energidataservice.dk/dataset/DayAheadPrices";
 

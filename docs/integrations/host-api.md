@@ -1,10 +1,11 @@
 # Host API
 
-> Interface 0.2, as Niles 0.2.0 runs it: 0.1 plus [`mqtt`](#mqtt) and its two
-> exports. The examples compile against
-> [`niles-integration.wit`](../../schemas/niles-integration.wit) with
-> `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for 0.1
-> has everything here but MQTT.
+> Interface 0.2.1: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0), and
+> `config.time-zone` and `devices.set-room-light` (0.2.1). The examples
+> compile against [`niles-integration.wit`](../../schemas/niles-integration.wit)
+> with `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for
+> 0.1 has everything here but MQTT and the 0.2.1 functions; see
+> [interface versions](publishing.md#interface-versions).
 
 A plugin **imports** functions Niles provides and **exports** functions Niles
 calls. Examples are Rust; in JavaScript and Python the names are the same in
@@ -135,6 +136,18 @@ let key: Option<String> = config::secret("api_key");
 manifest does not declare returns `None` and logs a warning, which is how
 typos show up.
 
+```rust
+let zone: String = config::time_zone(); // "Europe/Copenhagen"
+```
+
+`time_zone` (0.2.1) is the house's time zone, an IANA name, from Niles's own
+configuration (`[home] timezone`), so a plugin can say "done at 14:30" in
+the household's clock without a setting of its own. WASI's clock is UTC;
+convert with a time-zone crate such as `chrono-tz`, or `jiff`, built for
+`wasm32-wasip2`. Read it when you need it rather than once in `init`: the
+household can change it while your plugin runs. Under `niles plugin dev` it
+is your machine's zone, or `--time-zone`'s.
+
 ### `storage`
 
 A private key-value store of strings, kept in Niles's database. Nobody else
@@ -226,10 +239,17 @@ state.brightness = Some(60);
 devices::report_state("living_room/floor_lamp", &state);
 
 devices::report_action("hall/button", "single");
+devices::report_action("office/printer", "finished");
 devices::set_available("living_room/floor_lamp", false);
+devices::set_room_light("office/chamber_light", false);
 devices::remove("living_room/old_lamp");
 let mine: Vec<String> = devices::registered();
 ```
+
+Any class may `report_action`, not only a `switch`
+([actions](devices.md#actions)). `set_room_light` (0.2.1) keeps a light out
+of its room's lights: room and house commands, scenes, presence, the curve
+and the morning routine ([lights and the room](devices.md#lights-and-the-room)).
 
 ### `timers`
 

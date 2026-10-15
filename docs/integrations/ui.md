@@ -36,6 +36,12 @@ room = "kitchen"          # optional; without it the widget starts on the front 
 refresh_every = 300
 ```
 
+`room` can also be `"setting:<key>"`, naming a setting of type `room`: the
+widget then starts in the room the household chose there ("Where the printer
+stands"), and moves with it when they change it. While that setting is empty
+it is on the front page. `niles plugin check` refuses a key that is not a
+declared `room` setting.
+
 - **Menu entries** join the menu as `<plugin-id>.<id>` (`spotprice.electricity`).
   The household shows, hides and moves them in Settings → Menu like the
   built-in pages. Selecting one opens the page at `#/plugins/<plugin-id>/<id>`,
@@ -215,7 +221,10 @@ fn on_action(
 
 - `context` is the same as for `render`: which room's widget, who pressed it.
 - `toast` is a short message the app shows for a few seconds.
-- `rerender: true` renders the surface again straight away.
+- `rerender: true` renders the surface again straight away: this one, for
+  whoever pressed it. Other surfaces showing the same data (the widget, when
+  the button was on the page) keep their cached tree until you call
+  `ui::invalidate` for them.
 - `Err(text)` shows `text` as an error toast.
 - The usual 10-second limit applies. A button that starts something long
   should start it, return, and let a timer finish the work and call

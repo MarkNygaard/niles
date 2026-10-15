@@ -207,7 +207,7 @@ refresh_every = 300
 [[ui.widgets]]
 id = "price_now"
 title = "Electricity now"
-room = "kitchen"
+room = "kitchen"           # or "setting:<key>" for a room setting's room
 refresh_every = 300
 ```
 

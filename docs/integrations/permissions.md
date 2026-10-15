@@ -16,6 +16,13 @@ Ask for what you use, and nothing else. The approval screen is the first thing
 anyone sees of your plugin, and a long list of grants for a small feature reads
 as a reason not to install it.
 
+Permissions are static: the manifest's, the same for every household, read
+before anyone has filled in a setting. They cannot depend on settings. A
+plugin that can announce something, but only when the household turns
+announcements on in its settings, still asks for `notify`, and the approval
+screen shows "Speak through your satellites" even to a household that will
+leave announcements off. Say so in the setting's `help`, and in your README.
+
 ## What every plugin gets, and what none does
 
 Without asking, every plugin can log, read its own settings and secrets, keep
@@ -138,11 +145,13 @@ Subscribe to what happens elsewhere in the house. List only the kinds you use.
 - `device_state`: every device's state changes, from any source. This is a
   lot: lights going on and off, doors opening, motion. It says when people are
   home, awake and in which rooms.
-- `device_action`: button and wall-switch presses.
+- `device_action`: button and wall-switch presses, and the actions other
+  devices report, such as another plugin's printer finishing a print.
 - `presence`: whether anyone is home, as one value for the house. Never who.
 
 Shown as: **"See every device in your home change: lights, doors, motion"**,
-**"See button presses"**, **"Know when the house becomes occupied or empty"**.
+**"See button presses and what other devices report"**, **"Know when the
+house becomes occupied or empty"**.
 
 ### `notify`
 
@@ -167,7 +176,8 @@ and see the signed-in person's slug when drawing them.
 
 Shown as one line per surface: **"Adds a page to the menu: Electricity"**,
 **"Adds a card to the front page: Electricity now"**, **"Adds a card to the
-Kitchen: Air quality"**.
+Kitchen: Air quality"**, and for a widget placed by a setting, **"Adds a card
+to the room its "Room" setting names: Printer"**.
 
 ### `memory_mb`
 
