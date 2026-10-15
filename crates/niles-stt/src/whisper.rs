@@ -1,11 +1,11 @@
-//! Groq Whisper transcription client.
+//! OpenAI-compatible Whisper transcription client.
 //!
 //! Targets the OpenAI-compatible `POST /openai/v1/audio/transcriptions`
 //! endpoint. Audio is uploaded as multipart/form-data; the JSON
 //! response carries the transcript and (optionally) the detected
 //! language and audio duration.
 //!
-//! Groq's hosted Whisper is request-response, not streaming — for a
+//! The transcription API is request-response, not streaming — for a
 //! Wyoming voice loop we accumulate audio chunks between
 //! `audio-start` and `audio-stop` and submit the whole buffer once.
 //! The model itself runs at ~200ms for short utterances so this is
@@ -31,7 +31,7 @@ pub struct WhisperConfig {
 }
 
 /// Successful transcription. Fields beyond `text` are best-effort:
-/// Groq returns them today via `verbose_json` but a future provider
+/// a provider returns them via `verbose_json` but another
 /// might not.
 #[derive(Debug, Clone)]
 pub struct Transcript {
@@ -67,7 +67,7 @@ pub struct Confidence {
     pub avg_logprob: f64,
 }
 
-/// HTTP client around Groq's Whisper endpoint. Owns its own
+/// HTTP client around an OpenAI-compatible transcription endpoint. Owns its own
 /// `reqwest::Client` so caller wiring stays a one-liner.
 pub struct WhisperClient {
     http: reqwest::Client,
@@ -82,7 +82,7 @@ impl WhisperClient {
         Ok(Self { http, cfg })
     }
 
-    /// Submit audio bytes (any format Groq accepts — WAV, MP3, FLAC,
+    /// Submit audio bytes (any format the endpoint accepts — WAV, MP3, FLAC,
     /// OGG, M4A, etc.) and return the transcript. `filename` is sent
     /// to the server purely so the multipart parser can sniff the
     /// type from the extension; the content is what actually matters.

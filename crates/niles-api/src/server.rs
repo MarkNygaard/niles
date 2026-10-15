@@ -1633,8 +1633,8 @@ devices = [\"living_room/corner_lamp\"]
             .collect();
         assert!(keys.contains(&"mqtt.password"), "{keys:?}");
         assert!(
-            !keys.iter().any(|k| k.starts_with("provider.")),
-            "no config store means no providers to list: {keys:?}"
+            keys.contains(&"provider.cerebras.api_key"),
+            "the providers Niles ships are listed whatever the config says: {keys:?}"
         );
         assert_eq!(
             body["secrets"][0]["source"], "unset",

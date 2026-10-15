@@ -1,6 +1,6 @@
 //! Shared OpenAI-shaped chat-completions wire types.
 //!
-//! Used by both Groq and OpenAI backends. Request and response types
+//! Used by every OpenAI-compatible provider. Request and response types
 //! are the stable public surface; private wire types may evolve as
 //! providers diverge.
 
@@ -221,7 +221,7 @@ pub(crate) struct RawMessage {
     #[serde(default)]
     pub(crate) content: Option<String>,
     /// What a reasoning model thought before answering, where the
-    /// provider hands it back (Cerebras and Groq, for gpt-oss). Never
+    /// provider hands it back (Cerebras, for gpt-oss). Never
     /// spoken; logged, so a strange answer can be traced to its cause.
     #[serde(default)]
     pub(crate) reasoning: Option<String>,
@@ -261,8 +261,8 @@ pub(crate) struct WireChatRequest<'a> {
 // ------------------------------------------------------------------
 
 /// POST a [`ChatRequest`] to `{base_url}/chat/completions` and parse
-/// the response. This is the shared core used by both Groq and OpenAI
-/// clients — the only provider-specific differences are the URL,
+/// the response. This is the shared core used by [`crate::OpenAiClient`]
+/// for every provider — the only provider-specific differences are the URL,
 /// model name, and API key.
 pub(crate) async fn post_chat_completions(
     http: &reqwest::Client,
