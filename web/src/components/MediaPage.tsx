@@ -192,13 +192,19 @@ export function MediaPage() {
   // A house without Sonos answers `/media` with a 501, and one whose
   // speakers have not been found yet with none: both are the TV alone.
   const sonos = Boolean(view && (view.groups.length > 0 || view.idle.length > 0));
+  // Sonos is not a soundbar: a house can have a speaker in the office
+  // and a TV that plays through its own.
+  const soundbar = Boolean(
+    view &&
+      [...view.groups.flatMap((g) => g.speakers), ...view.idle].some((s) => s.soundbar),
+  );
   const tvPower = useMutation({
     // On is the TV and its sound: the soundbar out of whatever group
-    // it was in and onto the TV's input. Without Sonos there is no
-    // soundbar, and the TV's own speakers are already its sound.
+    // it was in and onto the TV's input. Without a soundbar the TV's
+    // own speakers are already its sound.
     mutationFn: async (on: boolean) => {
       const powered = await api.tvPower(on);
-      if (on && sonos) await api.tvSound();
+      if (on && soundbar) await api.tvSound();
       return powered;
     },
     onSuccess: (powered) => setTvNote(powered?.message ?? null),
@@ -278,6 +284,7 @@ export function MediaPage() {
     );
   }
 
+  const tvSpeakerSound = soundbar ? null : tvVolume(pairedTv);
   const of = (kind: MediaGroup["kind"]) => view.groups.filter((g) => g.kind === kind);
   const tvGroups = of("tv");
   const others = of("music");
@@ -429,7 +436,14 @@ export function MediaPage() {
           }
         >
           {tvGroups.map(groupBlock)}
-          {tvOn(pairedTv) && tvGroups.length === 0 && (
+          {tvSpeakerSound && (
+            <TvVolumeControls
+              sound={tvSpeakerSound}
+              busy={tvPower.isPending}
+              onVolume={(change) => tvSpeakers.mutate(change)}
+            />
+          )}
+          {soundbar && tvOn(pairedTv) && tvGroups.length === 0 && (
             <Button
               variant="outline"
               size="sm"

@@ -25,7 +25,7 @@ function group(kind: MediaGroup["kind"], leader: string, speakers: MediaSpeaker[
   return { leader, kind, what: null, playing: false, speakers };
 }
 
-const bar = speaker("RINCON_BAR", "Living Room");
+const bar = { ...speaker("RINCON_BAR", "Living Room"), soundbar: true };
 const closet = speaker("RINCON_CLOSET", "Walk In Closet");
 const move = speaker("RINCON_MOVE", "Kitchen");
 const back = speaker("RINCON_BACK", "Living Room Back");
@@ -136,6 +136,30 @@ describe("the Media page", () => {
     expect(
       within(tv).getByRole("button", { name: /The TV's sound to the soundbar/ }),
     ).toBeInTheDocument();
+  });
+
+  it("puts the TV's own volume on its card when the Sonos are not a soundbar", async () => {
+    // A speaker in the office and a TV playing through its own: the
+    // soundbar button there sent the sound nowhere, and the volume
+    // that worked was only on the room's card.
+    page({ groups: [group("music", "RINCON_MOVE", [move])], idle: [] }, tvOn);
+    const tv = await screen.findByRole("region", { name: "TV" });
+    expect(within(tv).getByRole("slider", { name: "TV volume" })).toBeInTheDocument();
+    expect(within(tv).queryByRole("button", { name: /soundbar/ })).toBeNull();
+    expect(screen.getByRole("region", { name: "Radio" })).toBeInTheDocument();
+  });
+
+  it("leaves the TV's sound alone when turning it on without a soundbar", async () => {
+    page(
+      { groups: [group("music", "RINCON_MOVE", [move])], idle: [] },
+      { ...tvOn, status: { on: false, app: null } },
+    );
+    const power = vi.spyOn(api, "tvPower").mockResolvedValue({ on: true });
+    const sound = vi.spyOn(api, "tvSound").mockResolvedValue(undefined);
+    const tv = await screen.findByRole("region", { name: "TV" });
+    fireEvent.click(within(tv).getByRole("button", { name: "TV — off" }));
+    await waitFor(() => expect(power).toHaveBeenCalledWith(true));
+    expect(sound).not.toHaveBeenCalled();
   });
 
   function page(house: MediaView = view, tv: TvInfo = noTv) {
