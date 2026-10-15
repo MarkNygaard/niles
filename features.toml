@@ -459,3 +459,21 @@ id = "api-plugin-log-image"
 category = "api.read"
 summary = "GET /plugins/{id}/log for a plugin's last lines, and /plugins/{id}/image for its pages' pictures, fetched by Niles"
 since_pr = 391
+
+[[feature]]
+id = "plugins-mqtt"
+category = "runtime.plugins"
+summary = "Plugins on interface 0.2 talk MQTT to the brokers their manifest names; Niles holds the connection and reconnects"
+since_pr = 392
+
+[[feature]]
+id = "plugins-mqtt-trust-device"
+category = "runtime.plugins"
+summary = "A device's own MQTT certificate is trusted on first use and pinned; a changed one waits for the household to accept it"
+since_pr = 392
+
+[[feature]]
+id = "plugins-interface-versions"
+category = "runtime.plugins"
+summary = "Plugins built for interface 0.1 keep running beside 0.2 ones, marked as built for an older Niles"
+since_pr = 392

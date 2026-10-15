@@ -54,6 +54,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `plugins-disable-remove` | Turn a plugin off and keep its data, or remove it with its devices, storage, settings and secrets | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `plugins-install` | Install a plugin from a GitHub release after a preview of its permissions; exactly the previewed files run | [#390](https://github.com/MarkNygaard/niles/pull/390) |
+| `plugins-interface-versions` | Plugins built for interface 0.1 keep running beside 0.2 ones, marked as built for an older Niles | [#392](https://github.com/MarkNygaard/niles/pull/392) |
+| `plugins-mqtt` | Plugins on interface 0.2 talk MQTT to the brokers their manifest names; Niles holds the connection and reconnects | [#392](https://github.com/MarkNygaard/niles/pull/392) |
+| `plugins-mqtt-trust-device` | A device's own MQTT certificate is trusted on first use and pinned; a changed one waits for the household to accept it | [#392](https://github.com/MarkNygaard/niles/pull/392) |
 | `plugins-runtime` | Run third-party integrations as sandboxed WebAssembly components; their devices, tools and pages join the house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `plugins-update-rollback` | Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 

@@ -7,7 +7,11 @@
 /// Spec: ARCHITECTURE.md, "Third-party integrations (plugins)".
 /// Author guide: docs/integrations/.
 ///
-/// Status: v0.1.0, run by Niles 0.2.0 and later (`crates/niles-plugins`).
+/// Status: v0.2.0, run by Niles 0.2.0 and later (`crates/niles-plugins`).
+/// 0.2.0 is 0.1.0 plus the `mqtt` interface and the exports
+/// `on-mqtt-message` and `on-mqtt-status`; nothing 0.1.0 had changed.
+/// Niles still runs plugins built for 0.1.0, whose interface is kept,
+/// frozen, in `niles-integration-0.1.wit` beside this file.
 ///
 /// Conventions, the same as the rest of Niles:
 /// - brightness and position are percent, 0-100 (position 0 is shut,
@@ -20,7 +24,7 @@
 /// Every call is synchronous from the plugin's point of view. Niles never
 /// calls into a plugin while that plugin is waiting on a host function,
 /// and never makes two calls into the same plugin at once.
-package niles:integration@0.1.0;
+package niles:integration@0.2.0;
 
 /// Types shared by several interfaces and by the exports.
 interface types {
@@ -229,6 +233,10 @@ interface config {
 
 /// A private key-value store, kept in Niles's database and visible to
 /// this plugin only. Removed with the plugin. Quota: 1 MiB in all.
+///
+/// Keys starting with `.niles/` are Niles's own, kept here for this
+/// plugin (the certificates `mqtt` trusts): they are not listed, read or
+/// written through this interface, but count towards the quota.
 interface storage {
     use types.{host-error};
 
@@ -581,7 +589,122 @@ interface ui {
     invalidate: func(surface-id: string);
 }
 
+/// MQTT, to the brokers the manifest's `mqtt` permission names.
+///
+/// Niles holds each connection. A task of its own connects, keeps the
+/// connection alive with pings, reconnects with a backoff after it
+/// drops, and subscribes again to every filter, so nothing here waits on
+/// the network: `connect` returns at once, and what becomes of the
+/// connection arrives later through the export `on-mqtt-status`.
+/// Messages on subscribed topics arrive through `on-mqtt-message`, one
+/// call at a time like every other export.
+///
+/// MQTT 3.1.1. At most 4 connections per plugin, 64 subscriptions per
+/// connection, messages up to 256 KiB each way, and 20 publishes a
+/// second per connection (bursts of 50). Up to 256 messages wait for the
+/// plugin, 8 MiB in all; past that the oldest are dropped, and how many
+/// is written to the plugin's log.
+interface mqtt {
+    use types.{host-error};
+
+    /// A connection, as `connect` returned it. Never reused while the
+    /// plugin runs, so a message for a closed connection cannot reach
+    /// the one that replaced it.
+    type conn-id = u32;
+
+    /// How hard the broker and Niles try to deliver a message.
+    enum qos {
+        /// At most once: lost if the connection drops on the way. Right
+        /// for reports that repeat.
+        at-most-once,
+        /// At least once: acknowledged, and may arrive twice.
+        at-least-once,
+        /// Exactly once.
+        exactly-once,
+    }
+
+    record connect-options {
+        /// The MQTT client id, 1 to 64 printable ASCII characters. None
+        /// is `niles-<plugin-id>-` and eight random hex digits.
+        client-id: option<string>,
+        /// Usually from a setting, or fixed: a Bambu Lab printer's is `bblp`.
+        username: option<string>,
+        /// Usually from `config.secret`, such as a printer's access code.
+        password: option<string>,
+        /// Seconds between keep-alive pings, 5 to 1200. None is 60.
+        keep-alive: option<u16>,
+        /// Whether the broker forgets this client's session when it
+        /// connects. None is true.
+        clean-session: option<bool>,
+    }
+
+    /// A `trust-device` broker presented a certificate other than the
+    /// one Niles trusted the first time it connected.
+    record certificate-change {
+        /// The SHA-256 of the public key Niles trusted, as hex pairs:
+        /// `3f:a0:...`.
+        trusted: string,
+        /// The SHA-256 of the public key it presented this time.
+        presented: string,
+    }
+
+    /// What became of a connection.
+    variant connection-status {
+        /// Connected, and every subscription applied again.
+        connected,
+        /// The connection dropped, or could not be made. Niles keeps
+        /// trying: after 1 s, 2 s, 5 s, 10 s, 30 s, then every 60 s.
+        disconnected(string),
+        /// Niles stopped trying: the broker refused the username or
+        /// password, the address is not one the manifest allows, or the
+        /// certificate is not valid for it. `disconnect` it, and
+        /// `connect` again once something has changed.
+        failed(string),
+        /// The device's certificate changed. Nothing was sent to it, and
+        /// Niles stops trying until `accept-certificate`. A firmware
+        /// update or a factory reset changes it; so does another device
+        /// answering at that address. Ask the household before accepting.
+        certificate-changed(certificate-change),
+    }
+
+    /// Open a connection to the broker the manifest's `mqtt` permission
+    /// names `broker`. Returns at once; `on-mqtt-status` says when it is
+    /// connected. Subscribe straight away if you like: subscriptions
+    /// wait for the connection.
+    connect: func(broker: string, options: connect-options) -> result<conn-id, host-error>;
+
+    /// Receive messages on topics matching `filter` (`+` for one level,
+    /// `#` for the rest), now and after every reconnect. Subscribing to
+    /// the same filter again replaces its qos and `latest-only`.
+    ///
+    /// `latest-only`: while messages wait for the plugin, keep only the
+    /// newest per topic. For topics where each message is the whole
+    /// state. Leave it off where messages are partial updates that build
+    /// on each other, as a Bambu Lab printer's reports are.
+    subscribe: func(conn: conn-id, filter: string, qos: qos, latest-only: bool) -> result<_, host-error>;
+
+    /// Stop receiving messages on `filter`.
+    unsubscribe: func(conn: conn-id, filter: string) -> result<_, host-error>;
+
+    /// Send `payload` to `topic`. `ok` means Niles took it, not that the
+    /// broker has it: it is sent in the background. `unavailable` while
+    /// the connection is down, `limit` past the rate or 256 KiB.
+    publish: func(conn: conn-id, topic: string, payload: list<u8>, qos: qos, retain: bool) -> result<_, host-error>;
+
+    /// Trust the certificate a `trust-device` broker presented in its
+    /// last `certificate-changed`, and connect again. Only after asking
+    /// the household: a plugin that accepts every change pins nothing.
+    accept-certificate: func(conn: conn-id) -> result<_, host-error>;
+
+    /// Close the connection. Closing a missing one is not an error.
+    disconnect: func(conn: conn-id);
+}
+
 /// The world a plugin targets.
+///
+/// Every export must exist: a plugin that never connects to a broker
+/// still exports `on-mqtt-message` and `on-mqtt-status`, and leaves them
+/// empty.
 ///
 /// Besides these imports, a component may import WASI 0.2 (`wasi:cli`,
 /// `wasi:clocks`, `wasi:random`, `wasi:io`, `wasi:filesystem`,
@@ -593,6 +716,7 @@ interface ui {
 world plugin {
     use types.{device-id, device-state, event, tool-def};
     use ui.{action-result, action-value, render-context, ui-tree};
+    use mqtt.{conn-id, connection-status};
 
     import log;
     import config;
@@ -603,10 +727,12 @@ world plugin {
     import events;
     import notify;
     import ui;
+    import mqtt;
 
     /// Called once per instance, after the plugin starts and after every
     /// settings change (each of which starts a fresh instance). Read
-    /// settings, register devices, set timers, subscribe to events.
+    /// settings, register devices, set timers, subscribe to events,
+    /// connect to brokers.
     /// An `err` is shown on the plugin's card as the reason it is not
     /// working, e.g. "The address is not set."
     export init: func() -> result<_, string>;
@@ -642,9 +768,18 @@ world plugin {
     /// A control on a surface was used. An `err` is shown as an error toast.
     export on-action: func(surface-id: string, control-id: string, value: action-value, context: render-context) -> result<action-result, string>;
 
+    /// A message arrived on a topic one of the connection's
+    /// subscriptions matches.
+    export on-mqtt-message: func(conn: conn-id, topic: string, payload: list<u8>);
+
+    /// A connection's state changed. Delivered in order with its
+    /// messages, so `connected` comes before the messages after it.
+    export on-mqtt-status: func(conn: conn-id, status: connection-status);
+
     /// The instance is about to be dropped: Niles is stopping, the plugin
     /// is being updated, disabled or removed, or its settings changed.
-    /// Two seconds; nothing is guaranteed to run after it.
+    /// Two seconds; nothing is guaranteed to run after it. Niles closes
+    /// the instance's MQTT connections after it.
     ///
     /// Named `stop` rather than `shutdown`: a world-level export called
     /// `shutdown` clashes with a symbol in componentize-py's runtime,

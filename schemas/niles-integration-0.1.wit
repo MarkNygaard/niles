@@ -1,0 +1,655 @@
+/// The interface between Niles and a third-party integration (a plugin).
+///
+/// A plugin is a WebAssembly component that targets the `plugin` world
+/// at the bottom of this file: it imports the host interfaces below and
+/// exports the lifecycle and tool functions Niles calls.
+///
+/// Spec: ARCHITECTURE.md, "Third-party integrations (plugins)".
+/// Author guide: docs/integrations/.
+///
+/// Status: v0.1.0, frozen. Niles still runs plugins built against it,
+/// beside 0.2. New plugins target `niles-integration.wit`, 0.2.0, which
+/// is this interface plus MQTT; see "Versioning the interface" in the spec.
+///
+/// Conventions, the same as the rest of Niles:
+/// - brightness and position are percent, 0-100 (position 0 is shut,
+///   100 all the way open);
+/// - colour temperature is kelvin, temperatures are degrees Celsius,
+///   light level is lux;
+/// - any other number is a named `reading` carrying its own unit;
+/// - room and device names are `[a-z0-9_]+`, such as `living_room`.
+///
+/// Every call is synchronous from the plugin's point of view. Niles never
+/// calls into a plugin while that plugin is waiting on a host function,
+/// and never makes two calls into the same plugin at once.
+package niles:integration@0.1.0;
+
+/// Types shared by several interfaces and by the exports.
+interface types {
+    /// Why a host function refused or failed.
+    variant host-error {
+        /// The approved manifest does not grant this.
+        not-permitted(string),
+        /// An argument Niles cannot accept: a malformed device id, an
+        /// undeclared setting, a key that is too long.
+        invalid(string),
+        /// A quota or rate limit was reached.
+        limit(string),
+        /// Niles could not do it just now, for instance because its
+        /// database is unreachable. Worth trying again later.
+        unavailable(string),
+    }
+
+    /// A device's class. It decides how Niles treats the device: which
+    /// devices "the lights" means, what the room card draws, which rule
+    /// triggers apply.
+    enum device-class {
+        /// Dimmable, possibly with colour temperature or colour.
+        light,
+        /// An on/off plug.
+        outlet,
+        /// A wall switch or button that reports presses.
+        switch,
+        /// A door or window sensor.
+        contact,
+        /// A motion sensor.
+        motion,
+        /// A blind, curtain or shutter.
+        cover,
+        /// Anything that only reports readings.
+        sensor,
+    }
+
+    /// What a light can be told to do, beyond on/off and brightness.
+    record light-capabilities {
+        /// Takes a colour temperature.
+        color-temp: bool,
+        /// Takes an arbitrary colour.
+        rgb: bool,
+    }
+
+    /// A colour, 0-255 per channel.
+    record rgb-color {
+        r: u8,
+        g: u8,
+        b: u8,
+    }
+
+    /// A named number a device reports that has no field of its own in
+    /// `device-state`: an electricity price, a power draw, CO2.
+    record reading {
+        /// `[a-z0-9_]+`, such as `price`, `power` or `co2`. Never the
+        /// name of a fixed measure (`temperature`, `humidity`, `battery`,
+        /// `brightness`, `illuminance`): use the field for those.
+        name: string,
+        value: f64,
+        /// How it is shown, as given: `W`, `kWh`, `kr/kWh`, `ppm`.
+        /// Niles never converts it. None for a plain number.
+        unit: option<string>,
+    }
+
+    /// A device's state, every field optional.
+    ///
+    /// `none` means "not reported" or "leave unchanged", never "off" or
+    /// "cleared". Reports are merged field by field into what Niles
+    /// already knows, so send only what changed.
+    record device-state {
+        /// On or off.
+        on: option<bool>,
+        /// 0-100 percent.
+        brightness: option<u8>,
+        /// Kelvin, e.g. 2700.
+        color-temp-kelvin: option<u16>,
+        /// Only for lights whose capabilities include rgb.
+        rgb: option<rgb-color>,
+        /// Degrees Celsius.
+        temperature-celsius: option<f32>,
+        /// Relative humidity, 0-100 percent.
+        humidity-percent: option<f32>,
+        /// 0-100 percent.
+        battery-percent: option<u8>,
+        /// A door or window: true is open.
+        open: option<bool>,
+        /// True while the sensor sees movement.
+        motion: option<bool>,
+        /// Light level in lux.
+        illuminance-lux: option<f32>,
+        /// A cover: 0 shut, 100 all the way open.
+        position: option<u8>,
+        /// Every other number, by name. Merged name by name like the
+        /// fields: reporting `power` leaves `energy` as it was, and an
+        /// empty list says nothing about readings. Rules can follow any
+        /// of them ("when the price drops below 1"). Never sent in
+        /// `set-device`: a reading is measured, not set. At most 32.
+        readings: list<reading>,
+    }
+
+    /// One of this plugin's devices, as `room/name`, e.g. `office/air_quality`.
+    /// Niles keeps it as `x_<plugin-id>:room/name` internally.
+    type device-id = string;
+
+    /// A device as a plugin describes it.
+    record device {
+        id: device-id,
+        class: device-class,
+        /// Ignored unless the class is `light`.
+        light: light-capabilities,
+        /// Whether Niles may call `set-device` for it. A sensor is not.
+        controllable: bool,
+        /// What is known now. May be all `none`.
+        state: device-state,
+    }
+
+    /// A tool the AI can call.
+    record tool-def {
+        /// `[a-z0-9_]+`, unique within the plugin. Niles shows it to the
+        /// model as `<plugin-id>_<name>`; `call-tool` receives the bare name.
+        name: string,
+        /// What the tool does and when to use it, written for the model.
+        description: string,
+        /// A JSON Schema (as JSON text) for the arguments. Must describe an
+        /// object; `{"type":"object","properties":{}}` for none.
+        schema: string,
+    }
+
+    /// The house's presence, as Niles resolves it. Never who.
+    enum home-state {
+        /// Someone is home.
+        home,
+        /// Nobody is home.
+        away,
+        /// Niles cannot tell.
+        unknown,
+    }
+
+    /// What a plugin can subscribe to.
+    enum event-kind {
+        /// A device anywhere in the house changed state.
+        device-state,
+        /// A button or wall switch anywhere in the house was pressed.
+        device-action,
+        /// The house became occupied or empty.
+        presence,
+    }
+
+    /// A state change on a device that may belong to another source.
+    record device-state-changed {
+        /// The full id, `source:room/name`, e.g. `z2m:office/door`.
+        id: string,
+        class: device-class,
+        /// Only the fields that changed.
+        state: device-state,
+    }
+
+    /// A press, hold or release on a button.
+    record device-action-fired {
+        /// The full id, `source:room/name`.
+        id: string,
+        /// Zigbee2MQTT's vocabulary: `single`, `double`, `on_press`, `up_hold`...
+        action: string,
+    }
+
+    /// Something that happened in the house.
+    variant event {
+        device-state(device-state-changed),
+        device-action(device-action-fired),
+        presence(home-state),
+    }
+}
+
+/// Logging. Lines go to Niles's log and to the plugin's card in the app.
+interface log {
+    enum level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// Write one line. Rate-limited; lines over the limit are counted, not kept.
+    log: func(level: level, message: string);
+}
+
+/// The plugin's own settings, as the user filled them in on its setup
+/// panel. Declared in the manifest's `[[settings]]`.
+interface config {
+    /// A setting's value. `choice` and `room` settings arrive as `text`.
+    variant setting-value {
+        text(string),
+        number(f64),
+        boolean(bool),
+    }
+
+    /// A non-secret setting: what the user entered, else the manifest's
+    /// default, else none. None for an undeclared key, which is also logged.
+    get: func(key: string) -> option<setting-value>;
+
+    /// A `secret` setting, from Niles's encrypted secret store. None if
+    /// the user has not set it.
+    secret: func(key: string) -> option<string>;
+}
+
+/// A private key-value store, kept in Niles's database and visible to
+/// this plugin only. Removed with the plugin. Quota: 1 MiB in all.
+interface storage {
+    use types.{host-error};
+
+    /// The value under `key`, if any.
+    get: func(key: string) -> option<string>;
+
+    /// Store `value` under `key`, replacing what was there. Keys are at
+    /// most 256 bytes; all keys and values together at most 1 MiB, past
+    /// which this fails with `limit`.
+    set: func(key: string, value: string) -> result<_, host-error>;
+
+    /// Remove `key`. Removing a missing key is not an error.
+    delete: func(key: string);
+
+    /// Every key that starts with `prefix`, sorted. `""` lists them all.
+    list-keys: func(prefix: string) -> list<string>;
+}
+
+/// Outgoing HTTP, only to the hosts the manifest declares.
+interface http {
+    enum method {
+        get,
+        head,
+        post,
+        put,
+        patch,
+        delete,
+    }
+
+    record request {
+        method: method,
+        /// Absolute URL. `https` for the internet; plain `http` only to
+        /// addresses under the `local_network` permission.
+        url: string,
+        /// Name/value pairs. Niles sets `user-agent` if this does not.
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+        /// Default 5000; never longer than the time left in the current call.
+        timeout-ms: option<u32>,
+    }
+
+    record response {
+        /// Any status, 4xx and 5xx included; they are not errors here.
+        status: u16,
+        /// Header names in lower case.
+        headers: list<tuple<string, string>>,
+        /// At most 4 MiB.
+        body: list<u8>,
+    }
+
+    variant http-error {
+        /// The host is not declared, or it resolved to a private,
+        /// loopback or link-local address the manifest does not list.
+        not-permitted(string),
+        /// The URL or a header could not be used.
+        invalid-request(string),
+        /// No complete answer within the timeout.
+        timeout,
+        /// DNS, connection or TLS failure.
+        connection(string),
+        /// The response body was over the limit.
+        too-large,
+    }
+
+    /// Send a request and wait for the whole response. Redirects are
+    /// followed (up to 5), each hop checked against the manifest again.
+    send: func(req: request) -> result<response, http-error>;
+}
+
+/// This plugin's devices. Needs the `devices` permission.
+interface devices {
+    use types.{device, device-id, device-state, host-error};
+
+    /// Add a device, or replace its class, capabilities and
+    /// controllability. The state in it is merged like `report-state`.
+    upsert: func(device: device) -> result<_, host-error>;
+
+    /// Merge a state change into what Niles knows about the device.
+    report-state: func(id: device-id, state: device-state) -> result<_, host-error>;
+
+    /// A press on a `switch` device: `single`, `double`, `hold`...
+    /// Not state: fires once, triggers rules, is never replayed.
+    report-action: func(id: device-id, action: string) -> result<_, host-error>;
+
+    /// Whether the device can be reached. Unavailable devices are greyed
+    /// out in the app and skipped by rules. Devices start available.
+    set-available: func(id: device-id, available: bool) -> result<_, host-error>;
+
+    /// Remove the device from the house.
+    remove: func(id: device-id) -> result<_, host-error>;
+
+    /// The devices Niles currently holds for this plugin, including those
+    /// remembered from before a restart.
+    registered: func() -> list<device-id>;
+}
+
+/// Timers that call the export `on-timer`. They do not survive a restart
+/// of the plugin; set them again in `init`.
+interface timers {
+    use types.{host-error};
+
+    /// Call `on-timer(id)` every `seconds` (at least 5), the first time
+    /// `seconds` from now. Replaces any timer with the same id.
+    every: func(id: string, seconds: u32) -> result<_, host-error>;
+
+    /// Call `on-timer(id)` once, `seconds` from now (at least 1).
+    /// Replaces any timer with the same id.
+    after: func(id: string, seconds: u32) -> result<_, host-error>;
+
+    /// Stop the timer. Cancelling a missing timer is not an error.
+    cancel: func(id: string);
+}
+
+/// Subscriptions to things happening in the house, delivered to the
+/// export `on-event`. Each kind needs to be listed under the manifest's
+/// `events` permission. A plugin never receives events for its own devices.
+interface events {
+    use types.{event-kind, host-error};
+
+    /// Start delivering events of `kind`. For the device kinds, `devices`
+    /// narrows them by `room/name` pattern: `office/door`, `office/*`,
+    /// `*/door`. Empty means every device. Calling again replaces the filter.
+    subscribe: func(kind: event-kind, devices: list<string>) -> result<_, host-error>;
+
+    /// Stop delivering events of `kind`.
+    unsubscribe: func(kind: event-kind);
+}
+
+/// Speaking through the satellites, by way of Niles's notifications:
+/// the same chime, routing, quiet hours and recall as everything else.
+/// Needs the `notify` permission; `urgent` needs `notify = "urgent"`.
+interface notify {
+    use types.{host-error};
+
+    enum priority {
+        /// Held during quiet hours, replayed in the morning if still relevant.
+        low,
+        /// Played quietly during quiet hours.
+        normal,
+        /// Played at normal volume, quiet hours or not.
+        urgent,
+    }
+
+    /// Say `message`, one or two short sentences, most important fact
+    /// first. `room` picks the room; none lets Niles choose.
+    say: func(message: string, priority: priority, room: option<string>) -> result<_, host-error>;
+}
+
+/// Declarative UI: what the plugin's menu pages and widgets show.
+///
+/// A plugin never sends HTML or script to the app. It describes a
+/// surface as a tree of a few Niles components, and the app draws them
+/// with its own: native look, dark mode, the phone layout. Surfaces are
+/// declared in the manifest (`[[ui.menu]]`, `[[ui.widgets]]`) and need
+/// the `ui` permission.
+///
+/// WIT has no recursive types, so a tree is a flat list. `nodes[0]` is
+/// the root. Each node lists its children by index into the same list,
+/// in display order. A child's index must be greater than its parent's
+/// and each node may have only one parent, which rules out cycles. Only
+/// `stack`, `row` and `card` may have children. At most 500 nodes,
+/// nested at most 8 deep.
+interface ui {
+    /// Where a surface is being drawn, and for whom.
+    record render-context {
+        /// The room whose card a widget is on, or the widget's default
+        /// room on the front page. None for menu pages.
+        room: option<string>,
+        /// The signed-in person's slug, such as `mark`, if the app knows
+        /// who is looking. Never a name or an email address.
+        person: option<string>,
+    }
+
+    /// The colour of a badge, from Niles's palette.
+    enum tone {
+        neutral,
+        good,
+        warning,
+        bad,
+    }
+
+    enum button-style {
+        primary,
+        secondary,
+        destructive,
+    }
+
+    enum chart-kind {
+        line,
+        bar,
+    }
+
+    /// A paragraph.
+    record text-block {
+        value: string,
+        /// Smaller and greyer, for footnotes and explanations.
+        muted: bool,
+    }
+
+    /// One value with its label, drawn large: "Now 1.23 kr/kWh".
+    record reading {
+        label: string,
+        value: string,
+        unit: option<string>,
+    }
+
+    /// A short status pill: "Online", "Cheap now".
+    record badge {
+        label: string,
+        tone: tone,
+    }
+
+    /// One row of a list.
+    record list-item {
+        title: string,
+        detail: option<string>,
+        /// Shown at the right end of the row, e.g. a time or an amount.
+        trailing: option<string>,
+    }
+
+    /// A control's `id` is what `on-action` receives. Unique per surface.
+    record button {
+        id: string,
+        label: string,
+        style: button-style,
+    }
+
+    /// An on/off switch. `on-action` gets `toggled`.
+    record switch-control {
+        id: string,
+        label: string,
+        value: bool,
+    }
+
+    /// A slider. `on-action` gets `number` when it is let go.
+    record slider {
+        id: string,
+        label: string,
+        min: f64,
+        max: f64,
+        step: f64,
+        value: f64,
+        unit: option<string>,
+    }
+
+    record choice-option {
+        value: string,
+        label: string,
+    }
+
+    /// A drop-down. `on-action` gets `chosen` with the option's value.
+    record choice {
+        id: string,
+        label: string,
+        options: list<choice-option>,
+        value: option<string>,
+    }
+
+    /// A one-line text box. `on-action` gets `text` when it is submitted.
+    record text-field {
+        id: string,
+        label: string,
+        placeholder: option<string>,
+        value: option<string>,
+    }
+
+    /// One series of a chart, one value per label.
+    record chart-series {
+        name: string,
+        values: list<f64>,
+    }
+
+    /// A simple line or bar chart. At most 4 series of 200 points.
+    record chart {
+        kind: chart-kind,
+        labels: list<string>,
+        series: list<chart-series>,
+        /// The y-axis unit, e.g. "kr/kWh".
+        unit: option<string>,
+    }
+
+    /// A PNG, JPEG, WebP or GIF. `src` is either an `https` URL on a host
+    /// the `http` permission declares, which Niles fetches and serves
+    /// itself so the viewer's browser never contacts that host, or a
+    /// `data:` URI of at most 64 KiB. No SVG.
+    record image {
+        src: string,
+        alt: string,
+    }
+
+    /// What one node is.
+    variant node-kind {
+        /// Children one above the other.
+        stack,
+        /// Children side by side; wraps to a stack on a phone.
+        row,
+        /// A card around its children, with an optional title.
+        card(option<string>),
+        heading(string),
+        text(text-block),
+        reading(reading),
+        badge(badge),
+        items(list<list-item>),
+        button(button),
+        switch(switch-control),
+        slider(slider),
+        choice(choice),
+        text-field(text-field),
+        chart(chart),
+        image(image),
+    }
+
+    record node {
+        kind: node-kind,
+        /// Indexes into `ui-tree.nodes`. Empty for everything but
+        /// `stack`, `row` and `card`.
+        children: list<u32>,
+    }
+
+    /// A whole surface. `nodes[0]` is the root.
+    record ui-tree {
+        nodes: list<node>,
+    }
+
+    /// What the user did to a control.
+    variant action-value {
+        /// A button was pressed.
+        pressed,
+        /// A switch was flipped to this value.
+        toggled(bool),
+        /// A slider was let go at this value.
+        number(f64),
+        /// A drop-down option was picked (its value).
+        chosen(string),
+        /// A text field was submitted.
+        text(string),
+    }
+
+    /// The answer to an action.
+    record action-result {
+        /// A short message the app shows briefly, e.g. "Prices updated".
+        toast: option<string>,
+        /// Render the surface again now.
+        rerender: bool,
+    }
+
+    /// Ask every app showing `surface-id` to render it again, e.g. after
+    /// a timer fetched new data. Cheap to call; Niles coalesces calls
+    /// and renders only for surfaces someone is looking at.
+    invalidate: func(surface-id: string);
+}
+
+/// The world a plugin targets.
+///
+/// Besides these imports, a component may import WASI 0.2 (`wasi:cli`,
+/// `wasi:clocks`, `wasi:random`, `wasi:io`, `wasi:filesystem`,
+/// `wasi:sockets`, `wasi:http/types`), as every toolchain's runtime does.
+/// Niles provides them empty: no environment variables, no directories,
+/// every socket refused, and no `wasi:http/outgoing-handler`, so HTTP
+/// goes through the `http` interface above. Clocks, randomness, stdout
+/// and stderr work; the last two go to the plugin's log.
+world plugin {
+    use types.{device-id, device-state, event, tool-def};
+    use ui.{action-result, action-value, render-context, ui-tree};
+
+    import log;
+    import config;
+    import storage;
+    import http;
+    import devices;
+    import timers;
+    import events;
+    import notify;
+    import ui;
+
+    /// Called once per instance, after the plugin starts and after every
+    /// settings change (each of which starts a fresh instance). Read
+    /// settings, register devices, set timers, subscribe to events.
+    /// An `err` is shown on the plugin's card as the reason it is not
+    /// working, e.g. "The address is not set."
+    export init: func() -> result<_, string>;
+
+    /// The tools this plugin offers, read after each successful `init`.
+    export tools: func() -> list<tool-def>;
+
+    /// Run a tool. `name` is the bare name from `tool-def`, `args-json` a
+    /// JSON object matching its schema. `ok` is what the model reads:
+    /// a short sentence or compact JSON. `err` is told to the model as
+    /// the tool's failure, so write it for a person to hear.
+    export call-tool: func(name: string, args-json: string) -> result<string, string>;
+
+    /// Change one of this plugin's controllable devices. `desired` holds
+    /// only the fields to change. Report the result with
+    /// `devices.report-state` once the device confirms it.
+    export set-device: func(id: device-id, desired: device-state) -> result<_, string>;
+
+    /// A timer set through `timers` fired. If the previous call for the
+    /// same timer has not finished, this one is skipped, not queued.
+    export on-timer: func(id: string);
+
+    /// An event the plugin subscribed to.
+    export on-event: func(event: event);
+
+    /// Describe a declared menu page or widget. Called when someone opens
+    /// it, after an action that asks for it, when the manifest's
+    /// `refresh_every` passes while it is open, and after
+    /// `ui.invalidate`. Three seconds: draw from what the plugin already
+    /// has, not from a fresh fetch. An `err` is shown in place of the surface.
+    export render: func(surface-id: string, context: render-context) -> result<ui-tree, string>;
+
+    /// A control on a surface was used. An `err` is shown as an error toast.
+    export on-action: func(surface-id: string, control-id: string, value: action-value, context: render-context) -> result<action-result, string>;
+
+    /// The instance is about to be dropped: Niles is stopping, the plugin
+    /// is being updated, disabled or removed, or its settings changed.
+    /// Two seconds; nothing is guaranteed to run after it.
+    ///
+    /// Named `stop` rather than `shutdown`: a world-level export called
+    /// `shutdown` clashes with a symbol in componentize-py's runtime,
+    /// and the Python build fails.
+    export stop: func();
+}

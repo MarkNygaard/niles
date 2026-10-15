@@ -306,7 +306,8 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
     let store: Arc<dyn PluginStore> = Arc::new(MemoryStore::in_file(storage.clone()));
     let house = House::new(registry.clone(), bus.clone(), store)
         .with_settings(Arc::new(move |_| values.clone()))
-        .with_secrets(Arc::new(move |_, key| secrets.get(key).cloned()));
+        .with_secrets(Arc::new(move |_, key| secrets.get(key).cloned()))
+        .with_mqtt_watch(Arc::new(|trace| println!("{trace}")));
     let runtime = Runtime::new(house, Limits::default())?;
     let printer = spawn_printer(bus.subscribe(), registry.clone());
 
@@ -334,7 +335,7 @@ async fn dev(args: DevArgs) -> anyhow::Result<()> {
     }
     if !args.dry_run {
         println!(
-            "Running; timers fire and changes print as they happen. Type `help` for commands, Ctrl-C to stop."
+            "Running; timers fire, and changes and MQTT traffic print as they happen. Type `help` for commands, Ctrl-C to stop."
         );
         prompt(&runtime, &id, &registry, &bus).await;
     }

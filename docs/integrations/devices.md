@@ -1,9 +1,10 @@
 # Devices
 
-> v0.1 of the interface. Niles 0.2.0 runs it and installs it from GitHub:
-> the runtime, `niles plugin check`, `niles plugin dev`, Add from GitHub with
-> its approval screen, updates, rollback, turning off and removing, and in the
-> app the generated setup panel, the plugin's log, and its pages and widgets.
+> Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
+> installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
+> dev`, Add from GitHub with its approval screen, updates, rollback, turning
+> off and removing, and in the app the generated setup panel, the plugin's
+> log, and its pages and widgets.
 
 A plugin with `devices = true` can add devices to the house. Once added, Niles
 treats them like its own: they appear on their room's card in the app, voice

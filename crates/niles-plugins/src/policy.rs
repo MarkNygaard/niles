@@ -15,8 +15,12 @@
 //!
 //! The request is then made to the address that passed, never resolved
 //! again, so DNS cannot be rebound between the check and the connection.
+//!
+//! MQTT brokers ([`MqttPolicy`]) get the same two checks, with the
+//! broker's own entry in place of the two lists: see [`MqttTarget::allows`].
 
-use crate::manifest::Permissions;
+use crate::manifest::{MqttBroker, Permissions, TlsMode};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// What a plugin's manifest lets it reach, with `setting:` entries
@@ -234,19 +238,25 @@ fn parse_local(entry: &str) -> Result<Local, String> {
     Ok(Local::Name(entry.to_ascii_lowercase()))
 }
 
-/// What the household typed into a `setting:` address: an IP or a host
-/// name, perhaps with a scheme, a port or a path they pasted along with it.
-fn parse_setting_address(value: &str) -> Option<Local> {
+/// The host in what the household typed into a `setting:` address: an
+/// IP or a host name, perhaps with a scheme, a port or a path they pasted
+/// along with it.
+fn setting_host(value: &str) -> &str {
     let value = value.trim();
     let rest = value.split_once("://").map_or(value, |(_, rest)| rest);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = match authority.strip_prefix('[') {
+    match authority.strip_prefix('[') {
         Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
         None if authority.matches(':').count() == 1 => {
             authority.split(':').next().unwrap_or_default()
         }
         None => authority,
-    };
+    }
+}
+
+/// What the household typed into a `setting:` address, as a local entry.
+fn parse_setting_address(value: &str) -> Option<Local> {
+    let host = setting_host(value);
     if let Ok(ip) = host.parse::<IpAddr>() {
         let ip = canonical(ip);
         return (never(ip).is_none() && is_local(ip)).then_some(Local::Addr(ip));
@@ -254,6 +264,180 @@ fn parse_setting_address(value: &str) -> Option<Local> {
     check_host_name(host)
         .ok()
         .map(|()| Local::Name(host.to_ascii_lowercase()))
+}
+
+/// A `[[permissions.mqtt]]` host other than `setting:`, as a sentence
+/// when it is wrong.
+pub fn check_mqtt_host(host: &str, tls: TlsMode) -> Result<(), String> {
+    if host.contains("://") || host.contains('/') {
+        return Err(format!(
+            "{host:?}: a host name or an address only, no scheme or path"
+        ));
+    }
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+        let ip = canonical(ip);
+        if let Some(why) = never(ip) {
+            return Err(format!("{host:?} is {why}, which no plugin may reach"));
+        }
+        if tls != TlsMode::Verify && !is_local(ip) {
+            return Err(format!(
+                "{host:?} is not on the home network, and tls = \"{}\" is only for the home network",
+                tls.as_str()
+            ));
+        }
+        return Ok(());
+    }
+    if host.contains(':') {
+        return Err(format!("{host:?}: the port goes in port, not in host"));
+    }
+    if host.contains('*') {
+        return Err(format!("{host:?}: a broker is one host, without wildcards"));
+    }
+    check_host_name(host).map_err(|why| format!("{host:?}: {why}"))
+}
+
+/// The brokers a plugin's manifest names, with `setting:` hosts replaced
+/// by what the household entered.
+#[derive(Debug, Clone, Default)]
+pub struct MqttPolicy {
+    brokers: Vec<MqttBroker>,
+    /// The `setting:` values, by key.
+    entered: HashMap<String, String>,
+    #[cfg(test)]
+    loopback: bool,
+}
+
+impl MqttPolicy {
+    pub fn new(permissions: &Permissions, setting: impl Fn(&str) -> Option<String>) -> Self {
+        let entered = permissions
+            .mqtt
+            .iter()
+            .filter_map(MqttBroker::setting)
+            .filter_map(|key| Some((key.to_string(), setting(key)?)))
+            .collect();
+        Self {
+            brokers: permissions.mqtt.clone(),
+            entered,
+            #[cfg(test)]
+            loopback: false,
+        }
+    }
+
+    /// Let brokers on this machine through, for the tests' broker. Never
+    /// compiled into Niles itself.
+    #[cfg(test)]
+    pub(crate) fn allowing_loopback(mut self) -> Self {
+        self.loopback = true;
+        self
+    }
+
+    /// Where `name` is, if the manifest names it: the target, or why it
+    /// cannot be reached as it stands.
+    pub fn target(&self, name: &str) -> Option<Result<MqttTarget, String>> {
+        let broker = self.brokers.iter().find(|b| b.name == name)?;
+        Some(self.resolve(broker))
+    }
+
+    fn resolve(&self, broker: &MqttBroker) -> Result<MqttTarget, String> {
+        let (host, entered) = match broker.setting() {
+            Some(key) => {
+                let value = self
+                    .entered
+                    .get(key)
+                    .map(|v| setting_host(v))
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| format!("the address in the setting {key} is empty"))?;
+                (value.to_ascii_lowercase(), true)
+            }
+            None => (
+                broker.host.trim_matches(['[', ']']).to_ascii_lowercase(),
+                false,
+            ),
+        };
+        let literal = host.parse::<IpAddr>().ok();
+        if literal.is_none() {
+            check_host_name(&host).map_err(|why| format!("{host:?}: {why}"))?;
+        }
+        let reach = match broker.tls {
+            TlsMode::TrustDevice | TlsMode::Plain => Reach::Home,
+            TlsMode::Verify if entered || literal.is_some() => Reach::Either,
+            TlsMode::Verify => Reach::Internet,
+        };
+        let target = MqttTarget {
+            broker: broker.name.clone(),
+            host,
+            port: broker.port(),
+            tls: broker.tls,
+            reach,
+            #[cfg(test)]
+            loopback: self.loopback,
+        };
+        if let Some(ip) = literal {
+            target.allows(ip)?;
+        }
+        Ok(target)
+    }
+}
+
+/// Where a broker's addresses may be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// `trust-device` and `none`: the home network only.
+    Home,
+    /// A host name the manifest declares for `verify`: the internet, as
+    /// an `http` host.
+    Internet,
+    /// An address, or one the household entered, for `verify`: either.
+    /// The certificate has to be valid for it.
+    Either,
+}
+
+/// One broker, ready to connect to.
+#[derive(Debug, Clone)]
+pub struct MqttTarget {
+    /// The manifest's name for it.
+    pub broker: String,
+    /// A host name or an IP address, lower case, without brackets: what
+    /// the certificate is checked for and the pin is kept under.
+    pub host: String,
+    pub port: u16,
+    pub tls: TlsMode,
+    reach: Reach,
+    #[cfg(test)]
+    loopback: bool,
+}
+
+impl MqttTarget {
+    /// The host, if it is an address rather than a name.
+    pub fn literal(&self) -> Option<IpAddr> {
+        self.host.parse().ok()
+    }
+
+    /// The check for each address the host resolves to, or for the
+    /// address it is: never loopback or the metadata address; only the
+    /// home network for `trust-device` and `none`; and for a host name
+    /// declared under `verify`, only the internet, as for `http`.
+    pub fn allows(&self, ip: IpAddr) -> Result<(), String> {
+        let ip = canonical(ip);
+        let host = &self.host;
+        #[cfg(test)]
+        if self.loopback && ip.is_loopback() {
+            return Ok(());
+        }
+        if let Some(why) = never(ip) {
+            return Err(format!("{host} is {ip}, {why}, which no plugin may reach"));
+        }
+        match (self.reach, is_local(ip)) {
+            (Reach::Home, false) => Err(format!(
+                "{host} is {ip}, which is not on the home network, and tls = \"{}\" is only for the home network",
+                self.tls.as_str()
+            )),
+            (Reach::Internet, true) => Err(format!(
+                "{host} is {ip}, on the home network, and the manifest names it as a broker on the internet"
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 fn check_host_name(name: &str) -> Result<(), String> {
@@ -504,6 +688,107 @@ mod tests {
             "not the home network"
         );
         assert!(check_local_entry("8.8.8.0/24").is_err());
+    }
+
+    fn broker(host: &str, tls: TlsMode) -> MqttPolicy {
+        let permissions = Permissions {
+            mqtt: vec![MqttBroker {
+                name: "b".into(),
+                host: host.into(),
+                port: None,
+                tls,
+            }],
+            ..Default::default()
+        };
+        MqttPolicy::new(&permissions, |key| {
+            (key == "address").then(|| "http://192.168.1.40:8883/".to_string())
+        })
+    }
+
+    fn target(policy: &MqttPolicy) -> MqttTarget {
+        policy.target("b").unwrap().unwrap()
+    }
+
+    #[test]
+    fn a_broker_named_for_verify_is_on_the_internet_as_an_http_host_is() {
+        let t = target(&broker("broker.example.com", TlsMode::Verify));
+        assert_eq!(t.port, 8883);
+        assert!(t.allows(ip("93.184.216.34")).is_ok());
+        assert!(
+            t.allows(ip("192.168.1.10")).is_err(),
+            "rebound to the house"
+        );
+        assert!(t.allows(ip("127.0.0.1")).is_err());
+        assert!(t.allows(ip("169.254.169.254")).is_err());
+        assert!(
+            broker("broker.example.com", TlsMode::Verify)
+                .target("other")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn trust_device_and_plain_brokers_are_on_the_home_network() {
+        for tls in [TlsMode::TrustDevice, TlsMode::Plain] {
+            let t = target(&broker("setting:address", tls));
+            assert_eq!(
+                t.host, "192.168.1.40",
+                "the scheme, port and path are dropped"
+            );
+            assert_eq!(t.literal(), Some(ip("192.168.1.40")));
+            let named = target(&broker("printer.lan", tls));
+            assert!(named.allows(ip("192.168.1.40")).is_ok());
+            assert!(named.allows(ip("fd12::40")).is_ok());
+            assert!(named.allows(ip("93.184.216.34")).is_err());
+            assert!(named.allows(ip("::ffff:127.0.0.1")).is_err());
+        }
+    }
+
+    #[test]
+    fn an_address_the_household_enters_for_verify_may_be_anywhere() {
+        let t = target(&broker("setting:address", TlsMode::Verify));
+        assert!(t.allows(ip("192.168.1.40")).is_ok());
+        assert!(t.allows(ip("93.184.216.34")).is_ok());
+        assert!(t.allows(ip("127.0.0.1")).is_err());
+    }
+
+    #[test]
+    fn an_empty_or_unreachable_setting_is_said_at_connect() {
+        let permissions = Permissions {
+            mqtt: vec![MqttBroker {
+                name: "b".into(),
+                host: "setting:address".into(),
+                port: None,
+                tls: TlsMode::TrustDevice,
+            }],
+            ..Default::default()
+        };
+        let empty = MqttPolicy::new(&permissions, |_| None);
+        assert!(empty.target("b").unwrap().unwrap_err().contains("empty"));
+        let public = MqttPolicy::new(&permissions, |_| Some("8.8.8.8".into()));
+        assert!(
+            public
+                .target("b")
+                .unwrap()
+                .unwrap_err()
+                .contains("home network")
+        );
+        let loopback = MqttPolicy::new(&permissions, |_| Some("127.0.0.1".into()));
+        assert!(loopback.target("b").unwrap().is_err());
+        assert!(
+            loopback.allowing_loopback().target("b").unwrap().is_ok(),
+            "only the tests' override lets it through"
+        );
+    }
+
+    #[test]
+    fn mqtt_hosts_in_the_manifest_are_checked() {
+        assert!(check_mqtt_host("broker.example.com", TlsMode::Verify).is_ok());
+        assert!(check_mqtt_host("192.168.1.40", TlsMode::TrustDevice).is_ok());
+        assert!(check_mqtt_host("[fd12::40]", TlsMode::Plain).is_ok());
+        assert!(check_mqtt_host("8.8.8.8", TlsMode::TrustDevice).is_err());
+        assert!(check_mqtt_host("169.254.169.254", TlsMode::Verify).is_err());
+        assert!(check_mqtt_host("mqtt://x.example.com", TlsMode::Verify).is_err());
     }
 
     #[test]

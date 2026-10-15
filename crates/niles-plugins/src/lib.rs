@@ -26,6 +26,9 @@ pub mod images;
 pub mod install;
 pub mod log;
 pub mod manifest;
+pub mod mqtt;
+#[cfg(test)]
+mod mqtt_tests;
 mod output;
 pub mod permissions;
 pub mod policy;

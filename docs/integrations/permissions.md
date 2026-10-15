@@ -1,9 +1,10 @@
 # Permissions
 
-> v0.1 of the interface. Niles 0.2.0 runs it and installs it from GitHub:
-> the runtime, `niles plugin check`, `niles plugin dev`, Add from GitHub with
-> its approval screen, updates, rollback, turning off and removing, and in the
-> app the generated setup panel, the plugin's log, and its pages and widgets.
+> Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
+> installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
+> dev`, Add from GitHub with its approval screen, updates, rollback, turning
+> off and removing, and in the app the generated setup panel, the plugin's
+> log, and its pages and widgets.
 
 A plugin declares in `[permissions]` what it needs to reach. Before install,
 Niles shows the household each permission **in plain words** and installs
@@ -23,6 +24,7 @@ Without asking, every plugin can log, read its own settings and secrets, keep
 No plugin, whatever it asks for, can read Niles's database, other
 integrations' secrets, conversations, memory, voice data or the people in the
 house; open files, sockets or environment variables; or run code in the app.
+Its network is HTTP and MQTT, to what the manifest names.
 The approval screen always ends with that sentence: "It cannot see your
 conversations, the people in your house, other integrations' passwords or
 Niles's database."
@@ -67,6 +69,39 @@ other machines lets the plugin talk HTTP to all of them; prefer `setting:`.
 Shown as: **"Reach the device at the address you enter under Address, on your
 home network"**, **"Reach 192.168.1.50 on your home network"**, **"Reach any of
 256 addresses on your home network (192.168.20.0/24)"**.
+
+### `mqtt`
+
+Interface 0.2.
+
+```toml
+mqtt = [
+    { name = "printer", host = "setting:address", port = 8883, tls = "trust-device" },
+    { name = "cloud", host = "broker.example.com" },
+]
+```
+
+Connections to these MQTT brokers, each named for `mqtt.connect`. `host` is a
+host name, an address, or `setting:<key>` for the address the household types
+in; `port` is 8883 unless given (1883 with `tls = "none"`). `tls` says how the
+broker's certificate is checked:
+
+- **`verify`** (the default): against the public certificate authorities, for
+  the host's name.
+- **`trust-device`**: the device's own certificate, trusted the first time and
+  pinned from then on; a different one stops the connection until the
+  household accepts it. Home network only.
+- **`none`**: no TLS. Home network only.
+
+Every address is checked again after DNS: loopback and the cloud metadata
+address never; `trust-device` and `none` only on the home network; a host
+name written here for `verify` only on the internet, as an `http` host. See
+[MQTT](mqtt.md#which-addresses-are-allowed).
+
+Shown as: **"Connect to the MQTT broker at the address you enter under Printer
+address, on your home network, trusting the certificate it shows the first
+time"**, **"Connect to the MQTT broker at 192.168.1.20, on your home network,
+unencrypted"**, **"Connect to the MQTT broker at broker.example.com"**.
 
 ### `devices`
 

@@ -33,6 +33,8 @@ use wasmtime::{Engine, EngineWeak};
 pub type SettingsFn = Arc<dyn Fn(&str) -> toml::Table + Send + Sync>;
 /// A plugin's secret, by plugin id and key.
 pub type SecretsFn = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
+/// Told what happens on every plugin's MQTT connections.
+pub type MqttWatch = Arc<dyn Fn(&crate::mqtt::Trace) + Send + Sync>;
 
 /// The largest component Niles will run.
 pub const MAX_COMPONENT: usize = 64 * 1024 * 1024;
@@ -66,6 +68,10 @@ pub struct Limits {
     /// How often the engine's epoch advances: the resolution of every
     /// deadline above.
     pub tick: Duration,
+    /// Let MQTT connect to this machine, where the tests' broker is.
+    /// Only in the crate's own tests; Niles never has it.
+    #[cfg(test)]
+    pub(crate) mqtt_loopback: bool,
 }
 
 impl Default for Limits {
@@ -85,6 +91,8 @@ impl Default for Limits {
             restarts_per_hour: 5,
             init_retry: Duration::from_secs(10 * 60),
             tick: Duration::from_millis(100),
+            #[cfg(test)]
+            mqtt_loopback: false,
         }
     }
 }
@@ -98,6 +106,7 @@ pub struct House {
     pub(crate) notifications: OnceLock<Arc<NotificationCenter>>,
     pub(crate) settings: SettingsFn,
     pub(crate) secrets: SecretsFn,
+    pub(crate) mqtt_watch: Option<MqttWatch>,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -112,6 +121,7 @@ impl House {
             notifications: OnceLock::new(),
             settings: Arc::new(|_| toml::Table::new()),
             secrets: Arc::new(|_, _| None),
+            mqtt_watch: None,
             handle: tokio::runtime::Handle::current(),
         }
     }
@@ -130,6 +140,13 @@ impl House {
 
     pub fn with_secrets(mut self, secrets: SecretsFn) -> Self {
         self.secrets = secrets;
+        self
+    }
+
+    /// Be told each connect, status, subscription, publish and message
+    /// on the plugins' MQTT connections, as `niles plugin dev` prints them.
+    pub fn with_mqtt_watch(mut self, watch: MqttWatch) -> Self {
+        self.mqtt_watch = Some(watch);
         self
     }
 }
@@ -263,11 +280,7 @@ pub(crate) fn linker(engine: &Engine) -> Result<Linker<HostState>> {
         <HostState as wasmtime_wasi_http::WasiHttpView>::http,
     )
     .map_err(fail)?;
-    crate::bindings::Plugin::add_to_linker::<_, wasmtime::component::HasSelf<HostState>>(
-        &mut linker,
-        |state| state,
-    )
-    .map_err(fail)?;
+    crate::bindings::add_to_linker(&mut linker).map_err(fail)?;
     Ok(linker)
 }
 
@@ -380,10 +393,13 @@ impl Runtime {
         let engine = self.inner.engine.clone();
         let linker = self.inner.linker.clone();
         let bytes = package.component.clone();
-        tokio::task::spawn_blocking(move || crate::worker::prepare(&engine, &linker, &bytes))
-            .await
-            .map_err(|e| Error::Component(e.to_string()))?
-            .map_err(Error::Component)?;
+        let interface = manifest.interface.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::worker::prepare(&engine, &linker, &bytes, &interface)
+        })
+        .await
+        .map_err(|e| Error::Component(e.to_string()))?
+        .map_err(Error::Component)?;
         self.inner
             .house
             .store
@@ -847,6 +863,9 @@ pub(crate) struct Plugin {
     log_window: Mutex<LogWindow>,
     log: Arc<PluginLog>,
     failures: std::sync::atomic::AtomicU64,
+    /// The last MQTT connection id handed out. Ids are never reused, so
+    /// a message for a connection that is gone cannot reach a new one.
+    connections: std::sync::atomic::AtomicU32,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -900,6 +919,7 @@ impl Plugin {
             }),
             log,
             failures: Default::default(),
+            connections: Default::default(),
             thread: Mutex::default(),
         }
     }
@@ -948,6 +968,25 @@ impl Plugin {
             Status::Starting | Status::Running => {}
         }
         record.status = status;
+    }
+
+    /// A line in the plugin's log from Niles, about the plugin.
+    pub fn note(&self, level: Level, line: &str) {
+        self.log.push(level, line, true);
+        let id = &self.id;
+        match level {
+            Level::Debug => tracing::debug!(plugin = %id, "{line}"),
+            Level::Info => tracing::info!(plugin = %id, "{line}"),
+            Level::Warn => tracing::warn!(plugin = %id, "{line}"),
+            Level::Error => tracing::error!(plugin = %id, "{line}"),
+        }
+    }
+
+    /// An id for a new MQTT connection.
+    pub fn next_connection(&self) -> u32 {
+        self.connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
     /// What a caller is told while the plugin is down.
@@ -1233,10 +1272,11 @@ pub(crate) enum Next {
     /// It is time to start an instance.
     Start,
     Event(wit::Event),
+    Mqtt(crate::mqtt::Delivery),
 }
 
 /// A plugin's work, in the order it is done: jobs somebody is waiting
-/// for, then due timers, then events.
+/// for, then due timers, then events and MQTT deliveries, taking turns.
 #[derive(Default)]
 pub(crate) struct Queue {
     pending: Mutex<Pending>,
@@ -1248,6 +1288,9 @@ struct Pending {
     jobs: VecDeque<Job>,
     events: VecDeque<wit::Event>,
     dropped: u64,
+    mqtt: crate::mqtt::Inbox,
+    /// Whether an event goes next when both are waiting.
+    events_turn: bool,
     restart: bool,
     stop: bool,
 }
@@ -1279,6 +1322,15 @@ impl Queue {
         });
     }
 
+    pub fn push_mqtt(&self, delivery: crate::mqtt::Delivery) {
+        self.change(|p| p.mqtt.push(delivery));
+    }
+
+    /// MQTT messages dropped since this was last asked.
+    pub fn take_mqtt_dropped(&self) -> u64 {
+        lock(&self.pending).mqtt.take_dropped()
+    }
+
     pub fn restart(&self) {
         self.change(|p| p.restart = true);
     }
@@ -1290,8 +1342,11 @@ impl Queue {
         });
     }
 
+    /// Forget the events and MQTT deliveries waiting: their instance is gone.
     pub fn clear_events(&self) {
-        lock(&self.pending).events.clear();
+        let mut pending = lock(&self.pending);
+        pending.events.clear();
+        pending.mqtt.clear();
     }
 
     pub fn dropped(&self) -> u64 {
@@ -1319,8 +1374,16 @@ impl Queue {
             if start.is_some_and(|t| t <= now) {
                 return Next::Start;
             }
-            if let Some(event) = pending.events.pop_front() {
-                return Next::Event(event);
+            let mqtt_waiting = !pending.mqtt.is_empty();
+            if !pending.events.is_empty() && (pending.events_turn || !mqtt_waiting) {
+                pending.events_turn = false;
+                if let Some(event) = pending.events.pop_front() {
+                    return Next::Event(event);
+                }
+            }
+            if let Some(delivery) = pending.mqtt.pop() {
+                pending.events_turn = true;
+                return Next::Mqtt(delivery);
             }
             pending = match [timers, start].into_iter().flatten().min() {
                 Some(at) => {
@@ -1379,6 +1442,47 @@ mod tests {
             queue.next(Some(Instant::now()), None),
             Next::Timers
         ));
+    }
+
+    #[test]
+    fn events_and_mqtt_take_turns() {
+        let queue = Queue::default();
+        let message = |n: u8| crate::mqtt::Delivery::Message {
+            conn: 1,
+            topic: "t".into(),
+            payload: vec![n],
+            latest_only: false,
+        };
+        queue.push_event(event());
+        queue.push_event(event());
+        queue.push_mqtt(message(1));
+        queue.push_mqtt(message(2));
+        let kinds: Vec<&str> = (0..4)
+            .map(|_| match queue.next(None, None) {
+                Next::Event(_) => "event",
+                Next::Mqtt(_) => "mqtt",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["mqtt", "event", "mqtt", "event"]);
+    }
+
+    #[test]
+    fn a_gone_instances_mqtt_deliveries_go_with_it() {
+        let queue = Queue::default();
+        queue.push_mqtt(crate::mqtt::Delivery::Status {
+            conn: 1,
+            status: crate::bindings::mqtt::ConnectionStatus::Connected,
+        });
+        queue.clear_events();
+        let (reply, _answer) = oneshot::channel();
+        queue.push(Job::CallTool {
+            name: "x".into(),
+            args: "{}".into(),
+            reply,
+        });
+        assert!(matches!(queue.next(None, None), Next::Job(_)));
+        assert!(lock(&queue.pending).mqtt.is_empty());
     }
 
     #[test]
