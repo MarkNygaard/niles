@@ -1111,11 +1111,11 @@ What the project will never carry in-tree — one household's inverter, a region
 
 ## Third-party integrations (plugins)
 
-> **Status: v0.1 of the interface; built (Niles 0.2.0).** Built: the runtime and its sandbox, every host interface, devices, tools, timers, events, notifications, the pages' render and action routes, loading the enabled plugins from the `plugins` table at startup, `niles plugin check` (a directory, a `.wasm` or a GitHub repo) and `niles plugin dev`; installing from GitHub with the approval screen, update checks, updates with the permission difference and automatic rollback, turning off and removing ([Install](#install) onwards), with their routes; and in the app, a plugin's row with its Custom badge in its group, its panel with the generated setup panel, its log and where its widgets go, its pages in the menu, its widgets on the front page and the rooms, and the image fetch behind their pictures. Not yet: `niles plugin dev --live`. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
+> **Status: v0.2 of the interface (v0.1 plus [MQTT](#mqtt)), with v0.1 plugins still run beside it; built (Niles 0.2.0).** Built: the runtime and its sandbox, every host interface, devices, tools, timers, events, notifications, the pages' render and action routes, loading the enabled plugins from the `plugins` table at startup, `niles plugin check` (a directory, a `.wasm` or a GitHub repo) and `niles plugin dev`; installing from GitHub with the approval screen, update checks, updates with the permission difference and automatic rollback, turning off and removing ([Install](#install) onwards), with their routes; and in the app, a plugin's row with its Custom badge in its group, its panel with the generated setup panel, its log and where its widgets go, its pages in the menu, its widgets on the front page and the rooms, and the image fetch behind their pictures. Not yet: `niles plugin dev --live`. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
 
 Built-in integrations are crates in this repository, and they stay that way: reviewed, tested and released with Niles. That cannot cover every household. Somebody with an inverter, a pool pump, a local bus timetable or a niche gadget with an HTTP API wants it in Niles without asking for a crate, and without forking. Home Assistant answers this with custom integrations installed from GitHub (HACS). Niles takes the same shape, installing from a GitHub repo, and adds a sandbox around the code.
 
-A third-party integration, a **plugin**, is a **WebAssembly component**: a compiled `.wasm` file that declares in its own metadata which functions it needs from its host and which it provides. Those declarations are written in **WIT**, the component model's interface language, and Niles's is the package `niles:integration@0.1.0`, world `plugin`. Niles runs plugins with **wasmtime**, using the Component Model and WASI 0.2.
+A third-party integration, a **plugin**, is a **WebAssembly component**: a compiled `.wasm` file that declares in its own metadata which functions it needs from its host and which it provides. Those declarations are written in **WIT**, the component model's interface language, and Niles's is the package `niles:integration@0.2.0`, world `plugin`; plugins built for `niles:integration@0.1.0` still run (see [Versioning the interface](#versioning-the-interface)). Niles runs plugins with **wasmtime**, using the Component Model and WASI 0.2.
 
 ### Goals and non-goals
 
@@ -1128,7 +1128,7 @@ Goals:
 Non-goals:
 
 - **Replacing built-ins.** Anything most households want (lights, music, presence, calendars) is a built-in crate. Plugins are for the long tail.
-- **A marketplace.** There is no central index, rating or review in v0.1. A plugin is a GitHub repo somebody chose to trust. A curated list may come later; it changes nothing in this interface.
+- **A marketplace.** There is no central index, rating or review. A plugin is a GitHub repo somebody chose to trust. A curated list may come later; it changes nothing in this interface.
 - **Arbitrary code in the web app.** A plugin describes its pages and widgets declaratively and the app draws them with its own components. No plugin HTML or script runs in the app (see [Pages and widgets](#pages-and-widgets)).
 - **Speed-critical paths.** A plugin never sits between a spoken command and a Zigbee light. Tier 0 and Tier 1 for built-in devices are unchanged by any number of plugins.
 
@@ -1150,7 +1150,7 @@ Anything that produces a WASI 0.2 component targeting the world:
 A plugin is one component instance in its own wasmtime `Store`. It has nothing but its imports, and Niles decides what each import does:
 
 - **No WASI filesystem, environment or sockets.** Toolchains import WASI 0.2 whether the code uses it or not, so Niles links it, but empty: no preopened directories, an empty environment, a socket policy that refuses every address and every name lookup, and `wasi:http/types` without `wasi:http/outgoing-handler`. Clocks and randomness work. Stdout and stderr go to the plugin's log.
-- **Network only through `niles:integration/http`.** Each request's host must match the manifest's `http` list (exact, or `*.example.com` for any subdomain), and the address it resolves to is checked again: a private, link-local or unique-local address (RFC 1918, `169.254.0.0/16`, `fc00::/7`, `fe80::/10`) is refused unless the `local_network` permission names it, and loopback (`127.0.0.0/8`, `::1`) and the cloud metadata address `169.254.169.254` are refused whatever it says. Niles connects to the address it checked, so DNS cannot be rebound between the check and the request. Every redirect hop is checked the same way. Internet hosts are `https` only; plain `http` is allowed to local-network addresses, where devices rarely have certificates.
+- **Network only through `niles:integration/http`, and MQTT through `niles:integration/mqtt`** to the brokers the manifest names, with the same address checks ([MQTT](#mqtt)). Each request's host must match the manifest's `http` list (exact, or `*.example.com` for any subdomain), and the address it resolves to is checked again: a private, link-local or unique-local address (RFC 1918, `169.254.0.0/16`, `fc00::/7`, `fe80::/10`) is refused unless the `local_network` permission names it, and loopback (`127.0.0.0/8`, `::1`) and the cloud metadata address `169.254.169.254` are refused whatever it says. Niles connects to the address it checked, so DNS cannot be rebound between the check and the request. Every redirect hop is checked the same way. Internet hosts are `https` only; plain `http` is allowed to local-network addresses, where devices rarely have certificates.
 - **No access to Niles's own state.** There is no import for the database, the secret store, conversations, memory, people, voice embeddings or other integrations. A plugin reads its own settings and its own secrets, and its own key-value storage.
 - **One instance per plugin, calls serialised.** Niles never makes two calls into the same plugin at once and never calls a plugin while it is inside a host call, so a plugin has no locking to get right. Tool calls and `set-device` go ahead of queued timers and events, since somebody is waiting for them. Plugin calls run on their own threads, never on the async workers that carry the voice loop.
 
@@ -1160,14 +1160,15 @@ A plugin is one component instance in its own wasmtime `Store`. It has nothing b
 |---|---|---|
 | Memory | 64 MiB by default. The manifest may ask for up to 256 MiB (`memory_mb`), shown at approval. | Rust plugins use a few MiB. JavaScript and Python carry an interpreter and want 128. |
 | Time per call | 10 s, enforced by epoch interruption. `init` gets 30 s, `render` 3 s, `stop` 2 s. | One instance means a slow call holds up every other. Ten seconds already makes a spoken answer feel broken. |
-| Long calls | None in v0.1. | Work that takes longer is split: start it, then pick it up from a timer. A per-call "long" flag would let one plugin block its own tools for minutes, and nothing in the long tail needs it yet. |
+| Long calls | None. | Work that takes longer is split: start it, then pick it up from a timer. A per-call "long" flag would let one plugin block its own tools for minutes, and nothing in the long tail needs it yet. |
 | Component | 64 MiB download; the manifest 64 KiB, the logo 32 KiB | |
 | Storage | 1 MiB per plugin; keys up to 256 bytes | Settings, caches and a little history, not a database. |
 | HTTP | 4 MiB response body, 5 redirects, timeout 5 s by default, never past the call's deadline | |
 | Timers | 32; `every` at least 5 s | |
 | Devices | 256 | |
 | Tools | 16; description up to 1 KiB, schema up to 8 KiB, result up to 16 KiB (cut off beyond, with a note to the model) | Each tool costs prompt tokens on every request it is sent with. |
-| Events | A queue of 256 per plugin; on overflow the oldest are dropped and counted on the card | |
+| Events | A queue of 256 per plugin; on overflow the oldest are dropped and counted on the card |
+| MQTT | 4 connections, 64 subscriptions each; 256 KiB a message each way (past 1 MiB the connection is dropped); 20 publishes a second per connection, bursts of 50; 256 messages and 8 MiB waiting, the oldest dropped and counted in the log | A printer's full report is tens of KiB. The waiting messages are bounded in bytes as well as count, or 256 large ones would be 64 MiB. | |
 | UI | 500 nodes, 8 deep, 256 KiB per render; images 64 KiB as `data:` URIs | |
 | Notifications | 6 an hour | |
 | Logs | 100 lines per 10 s, 2 KiB each; the last 1,000 kept for the card | |
@@ -1191,17 +1192,18 @@ The full WIT is [`schemas/niles-integration.wit`](schemas/niles-integration.wit)
 | `events` | `subscribe(kind, device-patterns)`, `unsubscribe(kind)` for device-state changes, button actions and the house's presence, delivered to `on-event`. |
 | `notify` | `say(message, priority, room)`, through Niles's [notifications](#notifications-niles-speaks-unprompted): chime, routing, quiet hours, recall. |
 | `ui` | The node types for pages and widgets, and `invalidate(surface)` to ask open apps to redraw one. |
+| `mqtt` (0.2) | `connect(broker, options)`, `subscribe(conn, filter, qos, latest-only)`, `unsubscribe`, `publish(conn, topic, payload, qos, retain)`, `accept-certificate(conn)`, `disconnect`: connections Niles holds to the brokers the manifest names. See [MQTT](#mqtt). |
 
-**What a plugin provides (exports):** `init`, `tools`, `call-tool(name, args-json)`, `set-device(id, desired)`, `on-timer(id)`, `on-event(event)`, `render(surface, context)`, `on-action(surface, control, value, context)`, and `stop`. Every export must exist; a plugin with no tools returns an empty list, one with no pages returns an error from `render`.
+**What a plugin provides (exports):** `init`, `tools`, `call-tool(name, args-json)`, `set-device(id, desired)`, `on-timer(id)`, `on-event(event)`, `render(surface, context)`, `on-action(surface, control, value, context)`, from 0.2 `on-mqtt-message(conn, topic, payload)` and `on-mqtt-status(conn, status)`, and `stop`. Every export must exist; a plugin with no tools returns an empty list, one with no pages returns an error from `render`, one with no MQTT leaves the two MQTT exports empty.
 
 `stop` is the shutdown hook. It is not called `shutdown` because a world-level export of that name clashes with a symbol in componentize-py's runtime, and the Python build fails.
 
 Device state uses Niles's own fields and units, as `DeviceState` in `niles-core` does: on, brightness 0–100 percent, colour temperature in kelvin, rgb, temperature in °C, humidity in percent, battery in percent, open, motion, illuminance in lux, and position 0 (shut) to 100 (open). Any other number is a named **reading** with the plugin's own unit — `price` in `kr/kWh`, `power` in `W`, `co2` in `ppm` — which rules follow like a temperature. Every field is optional and reports merge field by field, readings name by name, so `{on: false}` says nothing about brightness and a `power` reading says nothing about `energy`.
 
-**Not in v0.1: local TCP and UDP, and host-managed WebSockets.** The shape is settled enough to write down:
+**Not yet: local TCP and UDP, and host-managed WebSockets.** The shape is settled enough to write down:
 
 ```wit
-// Draft for 0.2. Not part of niles:integration@0.1.0.
+// Draft. Not part of niles:integration@0.2.0.
 interface sockets {
     // Niles holds the connection, reconnects with backoff, and delivers each
     // message to the export on-message(id, message).
@@ -1214,7 +1216,33 @@ interface sockets {
 }
 ```
 
-They are left out because each adds something v0.1 should get right first. A WebSocket is a long-lived connection pushing messages into a plugin whose calls are serialised; the queueing, back-pressure and reconnect rules need real plugins to settle. Raw TCP and UDP widen the `local_network` permission from "talk HTTP to that address" to "speak any protocol to it", which deserves its own wording at approval. And the long tail reachable with polled HTTP is long: most cloud APIs and most local devices with an API at all. The draft above is the starting point for 0.2, not a commitment.
+They are left out because each adds something that should be got right first. Raw TCP and UDP widen the `local_network` permission from "talk HTTP to that address" to "speak any protocol to it", which deserves its own wording at approval. And the long tail reachable with polled HTTP is long: most cloud APIs and most local devices with an API at all. A WebSocket is a long-lived connection pushing messages into a plugin whose calls are serialised, the problem [MQTT](#mqtt) settled in 0.2: Niles holds the connection, reconnects with a backoff, and delivers what arrives to an export through a bounded queue. A WebSocket interface would follow the same rules. The draft above is a starting point, not a commitment.
+
+### MQTT
+
+Interface 0.2 adds MQTT, for devices that speak it rather than HTTP or push their state rather than wait to be asked: 3D printers (a Bambu Lab printer is a broker on port 8883 with its own certificate), Tasmota and Shelly plugs, and the household's own broker. The author guide is [`docs/integrations/mqtt.md`](docs/integrations/mqtt.md).
+
+**The permission** lists the brokers, each named for `connect`:
+
+```toml
+[permissions]
+mqtt = [
+    { name = "printer", host = "setting:address", port = 8883, tls = "trust-device" },
+    { name = "cloud", host = "broker.example.com" },          # port 8883, tls = "verify"
+]
+```
+
+`host` is a host name, an address, or `setting:<key>` (a string setting the household fills in). `port` defaults to 8883, or 1883 without TLS. `tls` is `verify` (the default: the public certificate authorities, for the host's name), `trust-device` (the device's own certificate, below), or `none` (plain text). `trust-device` and `none` are for the home network only: a literal address outside it is refused in the manifest, and every address is checked again when the plugin connects, after DNS, with the HTTP rules ([The sandbox](#the-sandbox)): loopback and the metadata address never; for `trust-device` and `none` only private, link-local and unique-local addresses; for a host name written in the manifest under `verify`, only internet addresses, as for an `http` host, so a name the author controls cannot be pointed into the house; for an address written in the manifest, or one the household typed in, under `verify`, either, since the certificate has to be valid for it. Niles connects to the address it checked. A 0.1 manifest cannot declare `mqtt`. The approval screen says each broker in a line: "Connect to the MQTT broker at the address you enter under Printer address, on your home network, trusting the certificate it shows the first time", "Connect to the MQTT broker at 192.168.1.20, on your home network, unencrypted", "Connect to the MQTT broker at broker.example.com".
+
+**Niles holds the connection.** `connect(broker, options)` checks the broker and the options (client id, username and password, usually from a setting and a secret, keep-alive, clean session), starts a task on the async runtime and returns a connection id at once; nothing in the interface waits on the network. The task resolves and checks the address, connects, does TLS, sends CONNECT, pings at the keep-alive, and when the connection drops reconnects after 1 s, 2 s, 5 s, 10 s, 30 s and then every 60 s (from the start again once a connection lasted a minute), subscribing again to every filter the plugin subscribed to. It speaks MQTT 3.1.1 with rumqttc's packet codec and session state (the crate `niles-mqtt` already uses for Zigbee2MQTT), over a connection it makes itself, because rumqttc's own event loop resolves the host again and so would not connect to the address that was checked. What happens reaches the plugin through two exports: `on-mqtt-status(conn, status)` with `connected`, `disconnected(why)` (Niles is retrying), `failed(why)` (Niles stopped: the broker refused the credentials, the address is not allowed, a `verify` certificate is not valid), or `certificate-changed`; and `on-mqtt-message(conn, topic, payload)`. Each status is also written to the plugin's log. `publish` hands the message to the task and returns; while the connection is down it fails with `unavailable`. Connections belong to the instance: dropping the instance (a trap, a restart, new settings, an update) closes them, and connection ids are never reused, so a message for a closed connection that was already queued is not delivered to its successor.
+
+**Delivery.** Statuses and messages go into a per-plugin queue beside the events, taken in turns with them after jobs and due timers, one call at a time. It holds 256 messages and 8 MiB; past either the oldest messages are dropped (statuses never) and the count is written to the plugin's log, at most every 10 s. A subscription may ask for `latest-only`: while a message on a topic waits, a newer one on the same topic replaces it in place. It is opt-in per subscription because coalescing is right for topics whose messages are each the whole state (a Tasmota `STATE`) and wrong for partial reports that build on each other, as a Bambu Lab printer's are, where dropping one loses that change.
+
+**`trust-device` is trust on first use, pinning the public key.** A device's own certificate cannot be checked against anything, so Niles checks that it stays the same. The first time a connection to a `trust-device` broker gets as far as the broker accepting the username and password, Niles keeps the SHA-256 of the certificate's public key (its SubjectPublicKeyInfo) in the plugin's storage, under `.niles/mqtt-pin/<broker>/<a hash of the address and port>`; storage keys starting with `.niles/` are Niles's own, refused to the plugin's `get`, `set` and `delete` and left out of `list-keys`, and count towards the quota. Every later connection must present the same key, or Niles closes it after the TLS handshake, before CONNECT, so the password is never sent, and tells the plugin `certificate-changed(trusted, presented)`; it then waits, without retrying, until the plugin calls `accept-certificate(conn)`, which pins the key it was shown and connects again. Handshake signatures are verified as usual, so whoever answers holds the key. A new address (the setting changed) is trusted afresh.
+
+The other choice was to accept any certificate, which is what the community integrations for these printers do. It never breaks, but it protects nothing beyond passive eavesdropping: anything that answers at the address (a device that took over the DHCP lease, a spoofed ARP reply) receives the access code, which controls the printer, and can feed the plugin invented reports. Pinning closes that after the first connection, for the price of a question when the key changes. Pinning the key rather than the whole certificate means a device that renews an expiring certificate on the same key, as self-signed devices do, passes silently. Bambu Lab printers can present a new certificate after a firmware update; when that comes with a new key it is a rare, explainable event the household has just caused, which is the right moment to ask, and the plugin asks through its own page (a badge and a "Trust the new certificate" button whose action calls `accept-certificate`) because only it knows how to say what the device is. A plugin that accepted every change itself would defeat the pinning; the guide says not to, and the approval screen says the plugin trusts "the certificate it shows the first time".
+
+**`niles plugin dev`** prints each connect, status, subscription, publish and message, abbreviated to a line (`mqtt 1 < device/01S00A/report {"print":{"nozzle_temper":24.6,…} (31.4 KiB)`), through a watch the runtime calls (`House::with_mqtt_watch`).
 
 ### Pages and widgets
 
@@ -1262,7 +1290,7 @@ WIT has no recursive types, so a tree is a flat list of nodes: node 0 is the roo
 
 **HTTP.** `GET /plugins/{id}/surfaces/{surface}?room=kitchen` answers the tree as JSON, the same flat list with each node's kind as `type` (`{"nodes":[{"type":"stack","children":[1]},{"type":"reading","label":"Now","value":"1.23","unit":"kr/kWh","children":[]}]}`; `niles_plugins::ui::Surface` is the reference). `POST /plugins/{id}/surfaces/{surface}/actions/{control}` takes the value (`{"type":"pressed"}`, `{"type":"toggled","value":true}`, `{"type":"number","value":21.5}`, `{"type":"chosen","value":"DK2"}`, `{"type":"text","value":"…"}`) and answers `{"toast":…,"rerender":…}`. The person is taken from the session, never from the request. The plugin's own error is a 422 with its sentence, a plugin that is down a 503 with its status line; the app shows either in place of the surface.
 
-**Later: a page of its own.** Some plugins will want more than the vocabulary: a floor plan, a camera grid. A possible 0.2+ escape hatch is a separate permission for a page served from the plugin's own static assets in a sandboxed iframe on a separate origin, without the session. It is not in v0.1, and the vocabulary should grow first.
+**Later: a page of its own.** Some plugins will want more than the vocabulary: a floor plan, a camera grid. A possible later escape hatch is a separate permission for a page served from the plugin's own static assets in a sandboxed iframe on a separate origin, without the session. It is not in 0.2, and the vocabulary should grow first.
 
 ### The manifest
 
@@ -1276,7 +1304,7 @@ description = "Hear what power costs hour by hour, and let rules run things when
 authors = ["Jane Doe <jane@example.com>"]
 homepage = "https://github.com/jane/niles-spotprice"
 min_niles = "0.2.0"                  # the oldest Niles it runs on; 0.2.0 is the first with plugins
-interface = "0.1"                    # the niles:integration version it targets
+interface = "0.2"                    # the niles:integration version it targets: "0.2", or "0.1"
 # group = "presence"                 # a catalogue group id; missing or unknown means Custom
 logo = "logo.svg"
 memory_mb = 64
@@ -1290,6 +1318,7 @@ tools = true
 events = []                          # "device_state", "device_action", "presence"
 notify = false                       # true, or "urgent" to speak during quiet hours
 ui = true
+mqtt = []                            # brokers, from interface 0.2; see MQTT
 
 [[settings]]
 key = "area"
@@ -1328,7 +1357,7 @@ Two steps, so that what is installed is exactly what the household saw.
 5. The preview keeps the downloaded files in memory under a random token for 15 minutes (192 MiB of previews at most; past that the oldest goes) and pins the sha256 of the component and of the manifest. **Install** (`POST /plugins/install` with `{"token": …, "sha256": …}`, the sha256 being the one the screen showed) installs exactly those files, after checking them against the pins: nothing is downloaded again, so an asset replaced on GitHub in between changes nothing. A token installs once. The approved manifest, the sanitised logo, the component's bytes and sha256, the manifest's sha256, and the release's tag and page are kept in Postgres: a restart never downloads again.
 6. The plugin appears in its group with its panel, and starts; until required settings are filled in it reads "Not set up".
 
-Only public repos in v0.1; a private one needs a GitHub token, which is a later addition. Plugins need [the database](#persistence); without one, the preview says so and nothing is installed.
+Only public repos for now; a private one needs a GitHub token, which is a later addition. Plugins need [the database](#persistence); without one, the preview says so and nothing is installed.
 
 ### Updates
 
@@ -1371,11 +1400,13 @@ Storage is the plugin's to use as it likes: caches, a cursor, a token it refresh
 
 ### Versioning the interface
 
-The package is `niles:integration@0.1.0`, and a component records the exact version it was built against in its imports. wasmtime treats `0.1.x` versions as compatible with each other, so:
+The package is `niles:integration@0.2.0`, and a component records the exact version it was built against in its imports. wasmtime treats `0.2.x` versions as compatible with each other, so:
 
 - **A patch release** (0.1.1, 0.1.2) may add functions to an imported interface and add new interfaces. Older plugins keep working because they never import what they do not know. It may not change or remove anything that exists, add a case to an existing variant or enum, or add an export.
 - **A minor release** (0.2.0) may change anything. Niles runs plugins built for the previous minor version alongside the new one for at least six months, linking both worlds, and the Integrations page marks the old ones "built for an older Niles" with a link to their repo.
-- **The manifest's `interface`** lets Niles refuse an unsupported plugin before downloading it; the component's own imports are what Niles actually checks.
+- **The manifest's `interface`** lets Niles refuse an unsupported plugin before downloading it; the component's own imports are what Niles actually checks, and the two must agree: a component whose imports say 0.2 (or that exports `on-mqtt-message`) under a manifest that says 0.1, or the reverse, is refused at check and install.
+
+**0.2** is the first minor release: 0.1 plus the `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Adding exports changes the world, so a 0.1 component could not be linked as 0.2; 0.2 is therefore a new package version, and Niles links both. The WIT is two files: `schemas/niles-integration.wit` is 0.2, complete, the file authors copy (so bindings stay `niles::integration::*` from version to version); `schemas/niles-integration-0.1.wit` is 0.1, frozen as it shipped. Every interface the two share is identical in both, under its own package version. In the runtime (`crates/niles-plugins/src/bindings.rs`) each world has its own `bindgen!`, and the 0.2 one is told (`with`) to use the 0.1 bindings' modules for every shared interface instead of generating its own: one Rust type per WIT type and one `Host` trait per interface, implemented once, and the same argument types for the exports of both worlds. Only `mqtt` is generated for 0.2. The linker defines each shared interface under both names, `niles:integration/log@0.1.0` and `…@0.2.0`, with the same host functions behind them, through the per-interface `add_to_linker_instance` bindgen generates (wasmtime type-checks structurally at link time, and the types are the same), plus `mqtt@0.2.0`. A component is prepared as one world or the other by its manifest's `interface`, and a small enum dispatches each export call to the right bindings; a 0.1 plugin has no MQTT to deliver. `niles plugin check` reports which world a component targets, and the "built for an older Niles" note now marks 0.1 plugins.
 - **The UI vocabulary** is part of the interface: a new node type is an addition in a patch release, and a plugin using it needs a Niles that has it, which `min_niles` says.
 
 ### The trust model, honestly
@@ -1384,7 +1415,7 @@ The sandbox limits what a plugin can **reach**. It does not make a plugin **trus
 
 What the sandbox does guarantee: it cannot reach hosts or local addresses it did not declare, read any other integration's secrets, Niles's database, the conversations, the memory or the people, run code in the app, or take the house down with it (memory and time are capped, and a plugin that keeps failing is stopped).
 
-So the approval screen states plainly what is being granted, the repo is shown for anyone who wants to read the code, the component is pinned so it cannot change after approval, and an update with new permissions has to be approved again. Showing GitHub build-provenance attestations ("built by GitHub Actions from commit abc1234") at install is a natural next step; it is not in v0.1.
+So the approval screen states plainly what is being granted, the repo is shown for anyone who wants to read the code, the component is pinned so it cannot change after approval, and an update with new permissions has to be approved again. Showing GitHub build-provenance attestations ("built by GitHub Actions from commit abc1234") at install is a natural next step; it is not built.
 
 ### Developer tooling
 
@@ -1396,12 +1427,12 @@ So the approval screen states plainly what is being granted, the repo is shown f
 
 A new crate, `niles-plugins`:
 
-- The runtime: wasmtime engine and linker, the host side of each interface, the per-plugin instance with its queue, limits and restarts
+- The runtime: wasmtime engine and linker for both interface versions (`bindings`), the host side of each interface, the per-plugin instance with its queue, limits and restarts, and the MQTT connections it holds (`mqtt`)
 - Install, update and remove: GitHub releases, manifest validation, hashing, logo sanitising
 - Adapters that make a running plugin a device source, a set of tools, a relevance group and a provider of UI surfaces, so the rest of Niles meets plugins through the interfaces it already has
 - The `niles plugin dev` and `niles plugin check` subcommands, wired in `niles-bin`
 
-`niles-db` gains the tables above, `niles-api` the `/plugins` routes (the list, pages and actions, install with its preview, update checks, updates and rollback, enable, disable, remove, the logo, the log and the image fetch; settings go through `PATCH /config` and secrets through `PUT /secrets`), and `web/` the Add from GitHub flow, the plugin's row and panel with its generated setup panel and log, the renderer for the UI vocabulary, and the plugins' pages in the menu and widgets on the dashboard. In `niles-plugins`, `log` keeps each plugin's last lines and `images` fetches and keeps a page's pictures. In `niles-plugins`, `github` fetches releases, `permissions` words them, `check` holds the logo sanitiser, and `install` is the two-step flow, the update checks and the rollback watch. The WIT lives at `schemas/niles-integration.wit`, the author guide in `docs/integrations/`.
+`niles-db` gains the tables above, `niles-api` the `/plugins` routes (the list, pages and actions, install with its preview, update checks, updates and rollback, enable, disable, remove, the logo, the log and the image fetch; settings go through `PATCH /config` and secrets through `PUT /secrets`), and `web/` the Add from GitHub flow, the plugin's row and panel with its generated setup panel and log, the renderer for the UI vocabulary, and the plugins' pages in the menu and widgets on the dashboard. In `niles-plugins`, `log` keeps each plugin's last lines and `images` fetches and keeps a page's pictures. In `niles-plugins`, `github` fetches releases, `permissions` words them, `check` holds the logo sanitiser, and `install` is the two-step flow, the update checks and the rollback watch. The WIT lives at `schemas/niles-integration.wit` (0.2) and `schemas/niles-integration-0.1.wit` (0.1, frozen), the author guide in `docs/integrations/`.
 
 The seams the rest of Niles meets plugins through, chosen so nothing outside `niles-plugins` knows about WebAssembly:
 
@@ -1425,7 +1456,7 @@ Somebody who already runs a service with an MCP server (a home lab dashboard, a 
 - A central index of plugins, or any review of them
 - Private repos, and repos hosted anywhere but GitHub
 - Per-plugin CPU budgets beyond the per-call deadline
-- Reading another source's devices on demand: v0.1 has events, not a snapshot
+- Reading another source's devices on demand: the interface has events, not a snapshot
 - `wasi:http/outgoing-handler`, so that language-native HTTP clients (`fetch` in JavaScript) would work under the same checks
 
 ## User recognition
@@ -2566,7 +2597,8 @@ niles/
 │   ├── wyoming-events.json
 │   ├── tool-definitions.json
 │   ├── device-types.json
-│   └── niles-integration.wit  # the plugin interface (WIT), versioned
+│   ├── niles-integration.wit  # the plugin interface (WIT), 0.2
+│   └── niles-integration-0.1.wit  # the 0.1 interface, frozen, still run
 │
 ├── examples/                  # example tools, configs, integrations
 ├── scripts/                   # dev-up, flash-satellite, migrate-from-ha
@@ -2802,7 +2834,7 @@ niles:
 - More device sources (Shelly, Matter, Z-Wave)
 - GPU node for fully-local STT/LLM
 - Satellite-side speaker ID (faster, more private)
-- Third-party integrations: WebAssembly plugins installed from a GitHub repo, with devices, tools, pages and widgets ([spec](#third-party-integrations-plugins), interface v0.1 in `schemas/niles-integration.wit`)
+- Third-party integrations: WebAssembly plugins installed from a GitHub repo, with devices, tools, pages and widgets ([spec](#third-party-integrations-plugins), interface v0.2, with MQTT, in `schemas/niles-integration.wit`)
 - Home Assistant MQTT discovery as a no-code device source (ESPHome, Tasmota, Shelly, rtl_433)
 - MCP servers added by URL, their tools offered to the assistants
 
