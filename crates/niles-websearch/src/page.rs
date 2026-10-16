@@ -13,6 +13,7 @@
 //! between. Without that, a search result could send it to read Niles's
 //! own API, or the router's.
 
+use crate::address::{public_ip, public_name};
 use crate::error::{Error, Result};
 use reqwest::Url;
 use std::net::{IpAddr, SocketAddr};
@@ -58,6 +59,8 @@ impl PageReader {
             let client = reqwest::Client::builder()
                 .timeout(self.timeout)
                 .redirect(reqwest::redirect::Policy::none())
+                // A proxy would look the name up again, itself.
+                .no_proxy()
                 .resolve(&host, addr)
                 .user_agent(&self.user_agent)
                 .build()?;
@@ -160,57 +163,6 @@ async fn public_address(url: &Url) -> Result<SocketAddr> {
     Ok(addrs[0])
 }
 
-/// Names that are never the public internet, whatever they resolve to.
-fn public_name(host: &str) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if host.parse::<IpAddr>().is_ok() || host.starts_with('[') {
-        return true; // judged on the address itself
-    }
-    const PRIVATE_SUFFIXES: [&str; 6] = [
-        ".local",
-        ".localdomain",
-        ".internal",
-        ".lan",
-        ".home.arpa",
-        ".cluster.local",
-    ];
-    host.contains('.')
-        && host != "localhost"
-        && !host.ends_with(".localhost")
-        && !PRIVATE_SUFFIXES.iter().any(|s| host.ends_with(s))
-}
-
-fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            !(v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || o[0] == 0
-                || (o[0] == 100 && (64..128).contains(&o[1])) // carrier-grade NAT
-                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
-                || (o[0] == 198 && (18..20).contains(&o[1]))
-                || o[0] >= 240)
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return public_ip(IpAddr::V4(v4));
-            }
-            let s = v6.segments();
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (s[0] & 0xfe00) == 0xfc00 // unique local
-                || (s[0] & 0xffc0) == 0xfe80) // link local
-        }
-    }
-}
-
 /// The page's title and its readable text, without the markup.
 fn page_text(html: &[u8]) -> Result<(Option<String>, String)> {
     let title = title_of(&String::from_utf8_lossy(html));
@@ -258,43 +210,6 @@ fn clip(text: &str, max: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_house_is_not_the_internet() {
-        for ip in [
-            "127.0.0.1",
-            "10.0.0.5",
-            "192.168.42.1",
-            "172.16.0.1",
-            "169.254.1.1",
-            "100.64.0.1",
-            "::1",
-            "fd00::1",
-            "fe80::1",
-            "::ffff:192.168.1.1",
-        ] {
-            assert!(!public_ip(ip.parse().unwrap()), "{ip}");
-        }
-        for ip in ["93.184.216.34", "1.1.1.1", "2606:4700::1111"] {
-            assert!(public_ip(ip.parse().unwrap()), "{ip}");
-        }
-    }
-
-    #[test]
-    fn internal_names_are_refused_before_any_lookup() {
-        for host in [
-            "localhost",
-            "niles.localhost",
-            "searxng.productivity.svc.cluster.local",
-            "printer.local",
-            "nas.lan",
-            "router",
-            "box.home.arpa",
-        ] {
-            assert!(!public_name(host), "{host}");
-        }
-        assert!(public_name("www.bbc.co.uk"));
-    }
 
     #[tokio::test]
     async fn a_page_inside_the_network_is_not_read() {

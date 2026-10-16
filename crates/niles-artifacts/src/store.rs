@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::images::{Image, ImageData, NewImage};
 use crate::kinds::Preview;
 use crate::model::{
     Artifact, Author, Changes, Filter, NewArtifact, NewRevision, PageChange, Revision,
@@ -59,7 +60,18 @@ pub trait ArtifactStore: Send + Sync {
     /// The chat a job's card goes into, once the turn that started it is
     /// kept and has one.
     async fn set_conversation(&self, person: &str, id: i64, conversation: i64) -> Result<bool>;
-    /// The artifact and every version of it.
+    /// A picture kept for artifact `id` of theirs, if it fits beside the
+    /// ones it keeps ([`crate::images::check_room`]); `None` when there is
+    /// no such artifact of theirs.
+    async fn add_image(&self, person: &str, id: i64, image: NewImage) -> Result<Option<Image>>;
+    /// The pictures artifact `id` of theirs keeps, oldest first.
+    async fn images(&self, person: &str, id: i64) -> Result<Vec<Image>>;
+    /// Picture `image` of artifact `id` of theirs, with its bytes.
+    async fn image(&self, person: &str, id: i64, image: i64) -> Result<Option<ImageData>>;
+    /// Whether there was such a picture of theirs to take away. Content
+    /// that names it is left as it is, and shows nothing there.
+    async fn remove_image(&self, person: &str, id: i64, image: i64) -> Result<bool>;
+    /// The artifact, every version of it, and its pages and pictures.
     async fn delete(&self, person: &str, id: i64) -> Result<bool>;
     /// Every job still `working` that last moved before `before`,
     /// whoever's, marked failed with `reason`: after a restart, nothing
@@ -109,6 +121,9 @@ struct Inner {
     next_page: i64,
     /// Each page by its id, with the artifact it is of.
     pages: HashMap<i64, (i64, String)>,
+    next_image: i64,
+    /// Each picture with the artifact it is of, oldest first.
+    images: Vec<(i64, ImageData)>,
 }
 
 impl Inner {
@@ -410,6 +425,77 @@ impl ArtifactStore for MemoryArtifacts {
         Ok(true)
     }
 
+    async fn add_image(&self, person: &str, id: i64, image: NewImage) -> Result<Option<Image>> {
+        let mut inner = self.lock();
+        if inner.find(person, id).is_none() {
+            return Ok(None);
+        }
+        let kept: Vec<usize> = inner
+            .images
+            .iter()
+            .filter(|(of, _)| *of == id)
+            .map(|(_, i)| i.bytes.len())
+            .collect();
+        crate::images::check_room(kept.len(), kept.iter().sum(), image.picture.bytes.len())?;
+        inner.next_image += 1;
+        let made = Image {
+            id: inner.next_image,
+            mime: image.picture.mime.to_string(),
+            width: image.picture.width,
+            height: image.picture.height,
+            size: image.picture.bytes.len(),
+            alt: image.alt,
+            credit: image.credit,
+            source: image.source,
+            created_at: Utc::now(),
+        };
+        inner.images.push((
+            id,
+            ImageData {
+                image: made.clone(),
+                bytes: image.picture.bytes,
+            },
+        ));
+        Ok(Some(made))
+    }
+
+    async fn images(&self, person: &str, id: i64) -> Result<Vec<Image>> {
+        let mut inner = self.lock();
+        if inner.find(person, id).is_none() {
+            return Ok(Vec::new());
+        }
+        Ok(inner
+            .images
+            .iter()
+            .filter(|(of, _)| *of == id)
+            .map(|(_, i)| i.image.clone())
+            .collect())
+    }
+
+    async fn image(&self, person: &str, id: i64, image: i64) -> Result<Option<ImageData>> {
+        let mut inner = self.lock();
+        if inner.find(person, id).is_none() {
+            return Ok(None);
+        }
+        Ok(inner
+            .images
+            .iter()
+            .find(|(of, i)| *of == id && i.image.id == image)
+            .map(|(_, i)| i.clone()))
+    }
+
+    async fn remove_image(&self, person: &str, id: i64, image: i64) -> Result<bool> {
+        let mut inner = self.lock();
+        if inner.find(person, id).is_none() {
+            return Ok(false);
+        }
+        let before = inner.images.len();
+        inner
+            .images
+            .retain(|(of, i)| !(*of == id && i.image.id == image));
+        Ok(inner.images.len() != before)
+    }
+
     async fn delete(&self, person: &str, id: i64) -> Result<bool> {
         let mut inner = self.lock();
         let before = inner.artifacts.len();
@@ -420,6 +506,7 @@ impl ArtifactStore for MemoryArtifacts {
         if gone {
             inner.revisions.remove(&id);
             inner.pages.retain(|_, (of, _)| *of != id);
+            inner.images.retain(|(of, _)| *of != id);
         }
         Ok(gone)
     }
@@ -881,6 +968,112 @@ mod tests {
         assert!(e.is_err());
         assert!(store.delete("person:mark", a.id).await.unwrap());
         assert!(store.lock().pages.is_empty(), "deleting takes its pages");
+    }
+
+    fn picture(alt: &str) -> NewImage {
+        let picture = crate::images::prepare(&crate::images::tests::jpeg(8, 6)).unwrap();
+        NewImage::new(picture, alt, Some("Photo: J. Doe"), None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_picture_is_kept_listed_served_and_taken_away() {
+        let store = MemoryArtifacts::new();
+        let a = store.create("person:mark", document("Trip")).await.unwrap();
+        let kept = store
+            .add_image("person:mark", a.id, picture("The Grand Palace"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.reference(), format!("niles-image:{}", kept.id));
+        assert_eq!(
+            (kept.width, kept.height, kept.mime.as_str()),
+            (8, 6, "image/jpeg")
+        );
+        let listed = store.images("person:mark", a.id).await.unwrap();
+        assert_eq!(listed, vec![kept.clone()]);
+        let served = store
+            .image("person:mark", a.id, kept.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(served.bytes.len(), kept.size);
+        assert!(
+            store
+                .remove_image("person:mark", a.id, kept.id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .remove_image("person:mark", a.id, kept.id)
+                .await
+                .unwrap()
+        );
+        assert!(store.images("person:mark", a.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_picture_is_never_another_persons_or_another_artifacts() {
+        let store = MemoryArtifacts::new();
+        let his = store.create("person:mark", document("His")).await.unwrap();
+        let other = store
+            .create("person:mark", document("Other"))
+            .await
+            .unwrap();
+        let kept = store
+            .add_image("person:mark", his.id, picture("x"))
+            .await
+            .unwrap()
+            .unwrap();
+        let her = "person:majse";
+        assert!(
+            store
+                .add_image(her, his.id, picture("y"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.images(her, his.id).await.unwrap().is_empty());
+        assert!(store.image(her, his.id, kept.id).await.unwrap().is_none());
+        assert!(!store.remove_image(her, his.id, kept.id).await.unwrap());
+        assert!(
+            store
+                .image("person:mark", other.id, kept.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !store
+                .remove_image("person:mark", other.id, kept.id)
+                .await
+                .unwrap()
+        );
+        assert_eq!(store.images("person:mark", his.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_artifact_keeps_so_many_pictures_and_they_go_with_it() {
+        let store = MemoryArtifacts::new();
+        let a = store.create("person:mark", document("Trip")).await.unwrap();
+        for i in 0..crate::images::MAX_PER_ARTIFACT {
+            store
+                .add_image("person:mark", a.id, picture(&format!("{i}")))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let e = store
+            .add_image("person:mark", a.id, picture("one more"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("artifact_remove_image"), "{e}");
+        assert!(store.delete("person:mark", a.id).await.unwrap());
+        assert!(
+            store.lock().images.is_empty(),
+            "deleting takes its pictures"
+        );
     }
 
     #[tokio::test]

@@ -1576,6 +1576,7 @@ fn build_artifacts(
     let store = niles_db::PostgresArtifacts::new(backend.pool(), backend.describe_target());
     let timezone = cfg.home.timezone.clone();
     let results = cfg.web_search.default_num_results;
+    let image_search = websearch.clone();
     // What writing needs and nothing of the house's: a job cannot turn
     // on a light.
     let extras: artifacts::Extras = Box::new(move |reg: &mut ToolRegistry| {
@@ -1584,6 +1585,20 @@ fn build_artifacts(
         }
         niles_tools::register_datetime_tool(reg, &timezone);
     });
+    // Pictures are found with the house's search, when it has one, and
+    // fetched from the public internet only.
+    let pictures = artifacts::Pictures {
+        search: image_search,
+        download: Arc::new(niles_websearch::PublicFetcher::new(
+            niles_artifacts::images::MAX_DOWNLOAD,
+            artifacts::DOWNLOAD_WITHIN,
+            concat!(
+                "niles/",
+                env!("CARGO_PKG_VERSION"),
+                " (https://github.com/MarkNygaard/niles)"
+            ),
+        )),
+    };
     let artifacts = artifacts::Artifacts::new(
         Arc::new(store),
         bus,
@@ -1594,7 +1609,8 @@ fn build_artifacts(
         },
         chat_log.map(|log| log as Arc<dyn artifacts::Conversations>),
         extras,
-    );
+    )
+    .with_pictures(pictures);
     let artifacts = match (training, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         (Some(store), Ok(tz)) => {
             let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;

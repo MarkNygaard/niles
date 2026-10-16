@@ -26,6 +26,8 @@ export interface Item {
   /** Always https: Niles refuses anything else. */
   link?: string;
   booked?: boolean;
+  /** A picture the trip keeps, `niles-image:12`. */
+  image?: string;
   cost?: Cost;
 }
 
@@ -33,6 +35,7 @@ export interface Day {
   date: string;
   place: string;
   title?: string;
+  image?: string;
   items: Item[];
 }
 
@@ -57,6 +60,7 @@ export interface Trip {
   start: string;
   end: string;
   travellers?: string[];
+  image?: string;
   days: Day[];
   stays?: Stay[];
   packing?: PackingItem[];

@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
+import { ArtifactImagesProvider } from "@/lib/artifactImages";
 import type { ArtifactAuthor, ArtifactDetail, ArtifactPatch } from "@/lib/api";
 import { ARTIFACTS, artifactKey, kindOf } from "@/lib/artifacts";
 import { relativeTime } from "@/lib/skills";
@@ -217,12 +218,16 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
             html={pageHtml}
             content={showing}
             today={a.today ?? localDay()}
+            images={a.images}
+            loadImage={(image) => api.artifactImage(id, image)}
             title={a.title}
             onSave={a.status === "ready" ? edit : undefined}
             onFallback={(why) => setFellBack({ key: pageKey, why })}
           />
         ) : (
-          <kind.View content={showing} busy={patch.isPending} onChange={edit} />
+          <ArtifactImagesProvider artifact={a.id} images={a.images}>
+            <kind.View content={showing} busy={patch.isPending} onChange={edit} />
+          </ArtifactImagesProvider>
         )
       ) : (
         a.status !== "working" &&

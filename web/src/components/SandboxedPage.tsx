@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,15 +15,22 @@ import {
   SANDBOX,
   buildSrcdoc,
   openableUrl,
+  pageImages,
   readMessage,
   readTheme,
 } from "@/lib/sandboxedPage";
+import type { PageImage } from "@/lib/sandboxedPage";
 import { useDarkMode } from "@/lib/theme";
 
 /** How long a page has to say it is ready before the built-in view is
     shown instead. Everything in it is inline, so a page that works is
-    ready in a blink. */
+    ready in a blink. Counted from when its pictures are in, which come
+    from Niles first. */
 export const READY_WITHIN_MS = 4000;
+
+/** However slow Niles is with the pictures, the page is drawn with
+    those that came by then. */
+export const IMAGES_WITHIN_MS = 15_000;
 
 /** The height the frame has before the page says its own. */
 const FIRST_HEIGHT = 240;
@@ -35,6 +42,10 @@ export interface SandboxedPageProps {
   content: unknown;
   /** The house's today, YYYY-MM-DD. */
   today: string;
+  /** The pictures the artifact keeps, handed to the page as `Blob`s. */
+  images?: PageImage[];
+  /** A picture's bytes, from Niles. */
+  loadImage?: (id: number) => Promise<Blob>;
   /** What the frame is, for a screen reader. */
   title: string;
   /** Content the page saved, batched; without it the page is read-only
@@ -47,6 +58,7 @@ export interface SandboxedPageProps {
 /**
  * An artifact's page in its sealed frame. See `lib/sandboxedPage.ts`
  * for what the frame is given and may say; this is the frame's life:
+ * the pictures fetched from Niles and handed in once it is listening,
  * the data and theme sent in as they change, its height taken from it,
  * a link it asks for opened only when the person agrees, its saves
  * batched, and the built-in view called for when it breaks.
@@ -55,6 +67,8 @@ export function SandboxedPage({
   html,
   content,
   today,
+  images,
+  loadImage,
   title,
   onSave,
   onFallback,
@@ -64,10 +78,12 @@ export function SandboxedPage({
   // opens; later data goes in by message, so the frame is not reloaded
   // (and the person's place in it lost) each time a run is marked.
   const [srcdoc] = useState(() =>
-    buildSrcdoc({ html, data: content, theme: readTheme(), today }),
+    buildSrcdoc({ html, data: content, theme: readTheme(), today, images: pageImages(images) }),
   );
   const [height, setHeight] = useState(FIRST_HEIGHT);
   const [ready, setReady] = useState(false);
+  const [listening, setListening] = useState(false);
+  const blobs = usePictures(images, loadImage);
   const [asking, setAsking] = useState<URL>();
   const dark = useDarkMode();
 
@@ -88,6 +104,9 @@ export function SandboxedPage({
       const m = readMessage(event, frame.current?.contentWindow);
       if (!m) return;
       switch (m.type) {
+        case "hello":
+          setListening(true);
+          break;
         case "ready":
           setReady(true);
           break;
@@ -112,13 +131,20 @@ export function SandboxedPage({
   }, [saves]);
 
   useEffect(() => {
-    if (ready) return;
+    if (ready || blobs === undefined) return;
     const timer = setTimeout(
       () => live.current.onFallback("it did not start"),
       READY_WITHIN_MS,
     );
     return () => clearTimeout(timer);
-  }, [ready]);
+  }, [ready, blobs]);
+
+  // Sent once the frame is listening, and again when the pictures
+  // change: one added while the page is open.
+  useEffect(() => {
+    if (!listening || blobs === undefined) return;
+    post({ type: "images", images: blobs.blobs, info: blobs.info });
+  }, [listening, blobs]);
 
   // The first data is in the document; what comes after is sent.
   const sent = useRef(content);
@@ -187,5 +213,53 @@ export function SandboxedPage({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * The pictures' bytes, fetched from Niles: `undefined` while they come,
+ * then those that came (a picture that would not load is left out, and
+ * the page draws without it). Fetched again when the pictures change.
+ */
+function usePictures(
+  images: PageImage[] | undefined,
+  loadImage: ((id: number) => Promise<Blob>) | undefined,
+): { blobs: Record<string, Blob>; info: PageImage[] } | undefined {
+  const info = pageImages(images);
+  const key = JSON.stringify(info);
+  const [got, setGot] = useState<{ key: string; blobs: Record<string, Blob> }>();
+  const load = useRef(loadImage);
+  useEffect(() => {
+    load.current = loadImage;
+  });
+
+  useEffect(() => {
+    const wanted = JSON.parse(key) as PageImage[];
+    const fetchOne = load.current;
+    if (wanted.length === 0 || !fetchOne) {
+      setGot({ key, blobs: {} });
+      return;
+    }
+    let live = true;
+    const blobs: Record<string, Blob> = {};
+    const all = Promise.allSettled(
+      wanted.map((i) =>
+        fetchOne(i.id).then((blob) => {
+          blobs[String(i.id)] = blob;
+        }),
+      ),
+    );
+    const late = new Promise((r) => setTimeout(r, IMAGES_WITHIN_MS));
+    void Promise.race([all, late]).then(() => {
+      if (live) setGot({ key, blobs: { ...blobs } });
+    });
+    return () => {
+      live = false;
+    };
+  }, [key]);
+
+  return useMemo(
+    () => (got?.key === key ? { blobs: got.blobs, info: JSON.parse(key) as PageImage[] } : undefined),
+    [got, key],
   );
 }

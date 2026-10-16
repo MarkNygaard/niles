@@ -1090,8 +1090,35 @@ export interface ArtifactDetail extends Artifact {
   page_html?: string | null;
   /** Newest first. */
   revisions: ArtifactRevisionMeta[];
+  /** The pictures it keeps, oldest first. Absent from a Niles older
+      than pictures. */
+  images?: ArtifactImage[];
   /** The house's today, YYYY-MM-DD. */
   today?: string;
+}
+
+/** A picture an artifact keeps: Niles's own copy, named in its content
+    as `niles-image:{id}` and served by `artifactImageUrl`. Mirrors
+    `Image` in crates/niles-artifacts/src/images.rs. */
+export interface ArtifactImage {
+  id: number;
+  mime: string;
+  width: number;
+  height: number;
+  size: number;
+  /** What it shows, for someone who cannot see it. */
+  alt: string;
+  /** Who took or owns it. */
+  credit: string | null;
+  /** The page it is from, an https address. */
+  source: string | null;
+  created_at: string;
+}
+
+/** Where the app fetches a picture an artifact keeps: Niles, never the
+    site it came from. */
+export function artifactImageUrl(artifact: number, image: number): string {
+  return `/me/artifacts/${artifact}/images/${image}`;
 }
 
 export interface ArtifactList {
@@ -1440,6 +1467,13 @@ export const api = {
     request<Artifact>(`/me/artifacts/${id}/retry`, { method: "POST" }),
   deleteArtifact: (id: number) =>
     request<void>(`/me/artifacts/${id}`, { method: "DELETE" }),
+  /** A picture an artifact keeps, as bytes: for its page's sealed frame,
+      which cannot fetch anything itself. */
+  artifactImage: async (id: number, image: number): Promise<Blob> => {
+    const response = await fetch(artifactImageUrl(id, image));
+    if (!response.ok) throw new ApiError(`picture ${image} did not load`, response.status);
+    return response.blob();
+  },
   trainingToday: () => request<TrainingToday>("/me/training/today"),
   groceries: () => request<GroceryList>("/groceries"),
   addGrocery: (name: string) =>

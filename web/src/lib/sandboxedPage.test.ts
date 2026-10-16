@@ -199,6 +199,81 @@ describe("the runtime, run", async () => {
   });
 });
 
+describe("the runtime's pictures", () => {
+  const PALACE = { id: 12, alt: "The Grand Palace", credit: "J. Doe", source: null, width: 16, height: 9 };
+  const PAGE =
+    "<img id=p><p id=t></p><script>niles.onData(function (d) {" +
+    " var src = niles.image(d.image); p.src = src || ''; p.alt = (niles.imageInfo[12] || {}).alt || '';" +
+    " t.textContent = Object.keys(niles.images).join(',') + ' ' + (niles.image('niles-image:99') === undefined) })</script>";
+
+  function frame(images = [PALACE]) {
+    const posts: Record<string, unknown>[] = [];
+    let made = 0;
+    const dom = new JSDOM(
+      buildSrcdoc({ html: PAGE, data: { image: "niles-image:12" }, theme: THEME, today: "2026-10-16", images }),
+      {
+        runScripts: "dangerously",
+        beforeParse(w) {
+          w.postMessage = ((m: Record<string, unknown>) => posts.push(m)) as typeof w.postMessage;
+          (w.URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = () =>
+            `blob:null/${++made}`;
+          (w.URL as unknown as { revokeObjectURL: () => void }).revokeObjectURL = () => {};
+        },
+      },
+    );
+    const w = dom.window;
+    const hand = (images: Record<string, unknown>, source: unknown = w) =>
+      w.dispatchEvent(
+        new w.MessageEvent("message", {
+          data: { niles: 1, type: "images", images, info: [PALACE] },
+          source: source as Window,
+        }),
+      );
+    return { w, posts, hand, types: () => posts.map((p) => p.type) };
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+
+  it("tells the page what the pictures are before it has them", () => {
+    const init = parse(
+      buildSrcdoc({ html: "<p>x</p>", data: {}, theme: THEME, today: "2026-10-16", images: [PALACE] }),
+    ).head.querySelector("script")!.textContent!;
+    expect(init).toContain('"images":[{"id":12,"alt":"The Grand Palace"');
+  });
+
+  it("says it is listening, and draws once, with its pictures, when they come", async () => {
+    const { w, hand, types } = frame();
+    await settle();
+    expect(types()).toContain("hello");
+    expect(types()).not.toContain("ready");
+    hand({ "12": new w.Blob(["jpeg"], { type: "image/jpeg" }), "x": new w.Blob(["no"]), "13": "not a blob" });
+    await settle();
+    expect(types()).toContain("ready");
+    const img = w.document.getElementById("p") as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("blob:null/1");
+    expect(img.alt).toBe("The Grand Palace");
+    expect(w.document.getElementById("t")?.textContent).toBe("12 true");
+  });
+
+  it("takes pictures only from its parent", async () => {
+    const { w, hand, types } = frame();
+    await settle();
+    hand({ "12": new w.Blob(["jpeg"]) }, null);
+    await settle();
+    expect(types()).not.toContain("ready");
+  });
+
+  it("draws at once when there are no pictures, and draws again with ones handed later", async () => {
+    const { w, hand, types } = frame([]);
+    await settle();
+    expect(types()).toContain("ready");
+    expect(w.document.getElementById("t")?.textContent).toBe(" true");
+    hand({ "12": new w.Blob(["jpeg"]) });
+    expect(w.document.getElementById("t")?.textContent).toBe("12 true");
+    expect((w as unknown as { niles: { images: object } }).niles.images).toEqual({ "12": "blob:null/1" });
+  });
+});
+
 describe("a message from the frame", () => {
   const frame = {} as Window;
   const from = (data: unknown, source: unknown = frame, origin = "null") =>
@@ -206,6 +281,7 @@ describe("a message from the frame", () => {
 
   it("is read only from the frame's own window, with its opaque origin", () => {
     expect(from({ niles: 1, type: "ready" })).toEqual({ type: "ready" });
+    expect(from({ niles: 1, type: "hello" })).toEqual({ type: "hello" });
     expect(from({ niles: 1, type: "ready" }, {} as Window)).toBeNull();
     expect(from({ niles: 1, type: "ready" }, null)).toBeNull();
     expect(from({ niles: 1, type: "ready" }, frame, "https://niles.example")).toBeNull();

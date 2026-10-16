@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ArtifactPicture, imageId, useArtifactImage } from "@/lib/artifactImages";
 import { cn } from "@/lib/utils";
 
 /**
@@ -8,6 +9,11 @@ import { cn } from "@/lib/utils";
  * document needs is read (headings, paragraphs, lists, checklists,
  * simple tables, quotes, code, bold, italic and links), and anything
  * else is a paragraph of its own text.
+ *
+ * A picture is one the artifact keeps, `![alt](niles-image:12)`, drawn
+ * from Niles (see `lib/artifactImages.tsx`). A picture by its web
+ * address is never fetched: it would tell that site who is reading,
+ * and when. Its alt is shown in its place.
  */
 export type Block =
   | { type: "heading"; level: number; text: string }
@@ -16,6 +22,7 @@ export type Block =
   | { type: "table"; head: string[]; rows: string[][] }
   | { type: "code"; text: string }
   | { type: "quote"; text: string }
+  | { type: "image"; alt: string; src: string }
   | { type: "rule" };
 
 export interface ListItem {
@@ -33,6 +40,8 @@ const NUMBER = /^\s*(\d+)[.)]\s+(.*)$/;
 const RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
 const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const DIVIDER = /^\s*\|?(\s*:?-+:?\s*\|)+\s*(:?-+:?\s*)?\|?\s*$/;
+/** A line that is only a picture. */
+const IMAGE_LINE = /^!\[([^\]]*)\]\(([^)\s]+)\)$/;
 
 function lines(source: string): string[] {
   return source.replace(/\r\n?/g, "\n").split("\n");
@@ -60,6 +69,7 @@ function startsBlock(line: string, next: string | undefined): boolean {
     t.startsWith("```") ||
     t.startsWith(">") ||
     HEADING.test(t) ||
+    IMAGE_LINE.test(t) ||
     RULE.test(line) ||
     listKind(line) !== null ||
     (TABLE_ROW.test(line) && next !== undefined && DIVIDER.test(next))
@@ -93,6 +103,12 @@ export function parseMarkdown(source: string): Block[] {
     }
     if (RULE.test(line)) {
       blocks.push({ type: "rule" });
+      i++;
+      continue;
+    }
+    const image = IMAGE_LINE.exec(t);
+    if (image) {
+      blocks.push({ type: "image", alt: image[1], src: image[2] });
       i++;
       continue;
     }
@@ -161,7 +177,25 @@ export function safeHref(href: string): string | undefined {
   return /^(https?:\/\/|mailto:)/i.test(href.trim()) ? href.trim() : undefined;
 }
 
-const INLINE = /`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\*\*(.+?)\*\*|__(.+?)__|\*([^*\s][^*]*?)\*/g;
+const INLINE =
+  /`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|\*\*(.+?)\*\*|__(.+?)__|\*([^*\s][^*]*?)\*/g;
+
+/** A picture within a line of text: small, and without its credit,
+    which a picture on a line of its own has. */
+function InlinePicture({ alt, src }: { alt: string; src: string }) {
+  const kept = useArtifactImage(src);
+  if (!kept) return alt ? <span className="text-muted-foreground italic">{alt}</span> : null;
+  return (
+    <img
+      src={kept.src}
+      alt={alt || kept.image.alt}
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      className="inline-block max-h-40 rounded-md align-middle"
+    />
+  );
+}
 
 /** Bold, italic, code and links within a line, as elements. */
 export function inline(text: string): ReactNode[] {
@@ -171,8 +205,10 @@ export function inline(text: string): ReactNode[] {
   for (const m of text.matchAll(INLINE)) {
     const at = m.index ?? 0;
     if (at > last) out.push(text.slice(last, at));
-    const [, code, label, href, bold, bold2, italic] = m;
-    if (code !== undefined) {
+    const [, code, alt, src, label, href, bold, bold2, italic] = m;
+    if (alt !== undefined) {
+      out.push(<InlinePicture key={key++} alt={alt} src={src} />);
+    } else if (code !== undefined) {
       out.push(
         <code key={key++} className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">
           {code}
@@ -209,6 +245,7 @@ export function inline(text: string): ReactNode[] {
 /** The words of a line without their markup: for a reason, or a label. */
 export function plainText(text: string): string {
   return text
+    .replace(/!\[([^\]]*)\]\([^)\s]+\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)\s]+\)/g, "$1")
     .replace(/[*_`]/g, "")
     .trim();
@@ -274,6 +311,12 @@ function BlockView({
       );
     case "rule":
       return <hr className="border-border" />;
+    case "image":
+      return imageId(block.src) !== undefined ? (
+        <ArtifactPicture name={block.src} alt={block.alt} />
+      ) : block.alt ? (
+        <p className="text-muted-foreground italic">{block.alt}</p>
+      ) : null;
     case "table":
       return (
         <div className="overflow-x-auto">

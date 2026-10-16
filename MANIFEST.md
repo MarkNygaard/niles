@@ -19,6 +19,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `api-events-stream` | WebSocket /events/stream pushes real-time device and system events | [#86](https://github.com/MarkNygaard/niles/pull/86) |
 | `events-artifact-status` | artifact_changed on /events/stream, only to its own person: the status line follows a job as it is written | [#429](https://github.com/MarkNygaard/niles/pull/429) |
+| `api-artifact-images` | GET /me/artifacts/{id}/images/{image}: a picture an artifact keeps, its owner's only; GET lists them | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `api-get-devices` | GET /devices returns the full device registry snapshot | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
@@ -61,6 +62,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
+| `artifacts-pictures` | Pictures in a document, a trip or a page, found with the house's search and kept as Niles's own clean copies | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `artifacts-trip` | A trip planned in the background: days, places, stays and bookings, a countdown, and a packing list to tick | [#434](https://github.com/MarkNygaard/niles/pull/434) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
@@ -96,6 +98,12 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - make a page for my training plan
 - make the packing list into a poster
 
+### `artifacts-pictures` — example phrasings
+
+- add some pictures to my trip
+- put a photo of the beach on day three
+- make a page for our trip with pictures of each place
+
 ### `artifacts-trip` — example phrasings
 
 - plan our trip to Thailand from 3 to 23 January
@@ -116,6 +124,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `ui-artifact-page-frame` | An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
+| `ui-artifact-pictures` | Pictures drawn from Niles's own copies with their credit; a picture by its web address is never fetched | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `ui-training-plan-sessions` | Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan | [#436](https://github.com/MarkNygaard/niles/pull/436) |

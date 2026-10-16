@@ -15,8 +15,14 @@
 //! job of its own on an artifact that is there already
 //! (`start_page_job`), and never the coach's: a look after a run changes
 //! the data, which the page then draws.
+//!
+//! An artifact keeps pictures too, Niles's own copies of ones found on
+//! the web ([`pictures`]), which its content and its page name by id.
 
 mod coach;
+mod pictures;
+
+pub(crate) use pictures::{DOWNLOAD_WITHIN, Pictures};
 
 use crate::approvals::{self, Asker};
 use async_trait::async_trait;
@@ -292,6 +298,8 @@ pub(crate) struct Artifacts {
     reviewing: Arc<Mutex<HashSet<i64>>>,
     /// Artifacts a page is being made for: one at a time each.
     paging: Arc<Mutex<HashSet<i64>>>,
+    /// Where pictures are found and fetched from; none, no pictures.
+    pictures: Option<Pictures>,
     /// Jobs going, per person.
     running: Arc<Mutex<HashMap<String, usize>>>,
     touched: Mutex<Vec<Touch>>,
@@ -435,6 +443,7 @@ impl Artifacts {
             tz: chrono_tz::UTC,
             reviewing: Arc::default(),
             paging: Arc::default(),
+            pictures: None,
             running: Arc::default(),
             touched: Mutex::default(),
             started: chrono::Utc::now(),
@@ -447,6 +456,13 @@ impl Artifacts {
     pub(crate) fn with_training(mut self, register: Extras, tz: chrono_tz::Tz) -> Self {
         self.training = Some(register);
         self.tz = tz;
+        self
+    }
+
+    /// Lets the assistant keep pictures with an artifact: found with
+    /// `pictures.search`, fetched with `pictures.download`.
+    pub(crate) fn with_pictures(mut self, pictures: Pictures) -> Self {
+        self.pictures = Some(pictures);
         self
     }
 
@@ -476,14 +492,16 @@ impl Artifacts {
         }));
         reg.register(Box::new(StartJob(self.clone())));
         reg.register(Box::new(StartPage(self.clone())));
+        pictures::register(self, &mut reg, None);
         reg
     }
 
     /// What a job's run may use: its person's artifacts to read, its own
     /// to write, and what writing needs: for a training plan, their
-    /// workouts. Not the house. A review of a plan saves only what
-    /// leaves the days before `keep_past` as they were, and leaves its
-    /// page alone: it has no way to set one.
+    /// workouts; for a document or a trip, pictures. Not the house. A
+    /// review of a plan saves only what leaves the days before
+    /// `keep_past` as they were, and leaves its page alone: it has no
+    /// way to set one.
     fn job_tools(
         self: &Arc<Self>,
         id: i64,
@@ -508,6 +526,23 @@ impl Artifacts {
         if let (TRAINING_PLAN, Some(training)) = (kind, &self.training) {
             training(&mut reg);
         }
+        if keep_past.is_none() && kind != TRAINING_PLAN {
+            pictures::register(self, &mut reg, Some(id));
+        }
+        reg
+    }
+
+    /// What a page's run may use: the person's artifacts to read, and
+    /// this one's page and pictures to set. No web search: a page draws
+    /// the data, and its pictures are found with `image_search`.
+    fn page_tools(self: &Arc<Self>, id: i64) -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(Get(self.clone())));
+        reg.register(Box::new(SetPage {
+            artifacts: self.clone(),
+            only: Some(id),
+        }));
+        pictures::register(self, &mut reg, Some(id));
         reg
     }
 
@@ -818,12 +853,7 @@ impl Artifacts {
             conversation,
         };
         let (system, prompt) = page_prompts(&artifact, &brief);
-        let mut tools = ToolRegistry::new();
-        tools.register(Box::new(Get(self.clone())));
-        tools.register(Box::new(SetPage {
-            artifacts: self.clone(),
-            only: Some(artifact.id),
-        }));
+        let tools = self.page_tools(artifact.id);
         let outcome =
             tokio::time::timeout(JOB_LIMIT, self.runner.run(asker, &system, &prompt, tools))
                 .await
@@ -1031,6 +1061,11 @@ const TRAVEL: &str = "Find today's date first, and plan the trip in the brief, n
     travel, the budget), assume what is usual and say in notes what you assumed and what \
     you could not check, so they can ask for it changed.";
 
+/// Pictures where they help the person, kept by Niles.
+const PICTURES: &str = "Where a picture helps (the places of a trip, a guide to somewhere, \
+    a recipe), add a few, and only ones that show what the text is about; none is better \
+    than a wrong one.";
+
 /// A job's look is its kind's own view, unless the brief asks for
 /// another.
 const LOOK: &str = "The app shows it with its kind's own view. Only if the brief asks for it \
@@ -1060,8 +1095,10 @@ fn page_prompts(artifact: &Artifact, brief: &str) -> (String, String) {
          artifact_set_page on artifact {id}, with a short reason; if it is refused, the \
          answer says what to fix, so fix that and save again. Then finish with one short \
          sentence saying what you made.\n\nThe data it draws is {help}\n\n{}\n\n{DESIGN} \
-         Write any words on the page in the language of the {label}.",
+         The pictures it keeps are listed by artifact_get; if the brief asks for pictures it \
+         does not have, {}\n\nWrite any words on the page in the language of the {label}.",
         page::HELP,
+        niles_artifacts::images::HELP,
         id = artifact.id,
     );
     let prompt = format!(
@@ -1080,8 +1117,8 @@ fn job_prompts(artifact: &Artifact) -> (String, String) {
     let help = kind.map_or("", |k| k.content_help);
     let craft = match artifact.kind.as_str() {
         TRAINING_PLAN => COACHING.to_string(),
-        TRIP => format!("{TRAVEL} {RESEARCH}"),
-        _ => RESEARCH.to_string(),
+        TRIP => format!("{TRAVEL} {RESEARCH} {PICTURES}"),
+        _ => format!("{RESEARCH} {PICTURES}"),
     };
     let craft = format!("{craft} {LOOK}");
     let system = format!(
@@ -1128,7 +1165,10 @@ pub(crate) const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person w
     artifact's id and a brief of what they want, and answer in one sentence that it is \
     being made; a small change to a page there is (a colour, a heading) you can make \
     yourself with artifact_set_page. The page draws the data, so a change to the data \
-    needs no new page.";
+    needs no new page.\n\nA picture they want on a document, a trip or a page: \
+    image_search finds it, artifact_add_image keeps Niles's own copy and answers its name, \
+    niles-image:ID, which the content or the page then uses. Never a picture's web \
+    address: it is not shown.";
 
 struct List(Arc<Artifacts>);
 
@@ -1215,6 +1255,11 @@ impl Tool for Get {
         };
         let mut out = view(&a);
         out["content"] = content.unwrap_or(Value::Null);
+        let kept = store
+            .images(&asker.person, id)
+            .await
+            .map_err(|e| refused(TOOL, e))?;
+        out["images"] = json!(kept.iter().map(pictures::view).collect::<Vec<_>>());
         if let (Some(true), Some(n)) = (args.get("with_page").and_then(Value::as_bool), a.page) {
             out["page_html"] = store
                 .page(&asker.person, id, n)
@@ -1265,6 +1310,7 @@ impl Tool for Create {
         let content = kind
             .validate(args.get("content").unwrap_or(&Value::Null))
             .map_err(|e| refused(TOOL, e))?;
+        let note = pictures::missing(&content, &[]);
         let a = self
             .0
             .store
@@ -1295,7 +1341,11 @@ impl Tool for Create {
             .map_err(|e| refused(TOOL, e))?;
         self.0.touch(&asker.person, a.id);
         self.0.announce(&a);
-        Ok(view(&a))
+        let mut out = view(&a);
+        if let Some(note) = note {
+            out["note"] = json!(note);
+        }
+        Ok(out)
     }
 }
 
@@ -1363,6 +1413,11 @@ impl Tool for Update {
                 .map_err(|e| refused(TOOL, e))?;
         }
         let reason = niles_artifacts::summary(str_arg(&args, "reason").unwrap_or("Changed"));
+        let kept = store
+            .images(&asker.person, id)
+            .await
+            .map_err(|e| refused(TOOL, e))?;
+        let note = pictures::missing(&content, &kept);
         let a = store
             .revise(
                 &asker.person,
@@ -1383,7 +1438,11 @@ impl Tool for Update {
             self.artifacts.touch(&asker.person, a.id);
             self.artifacts.announce(&a);
         }
-        Ok(view(&a))
+        let mut out = view(&a);
+        if let Some(note) = note {
+            out["note"] = json!(note);
+        }
+        Ok(out)
     }
 }
 

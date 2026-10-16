@@ -9,12 +9,17 @@
 //! each version drawn with it, so a plan Niles marks a run on twenty
 //! times a month keeps one page and not twenty copies. It goes when no
 //! version kept draws with it any more.
+//!
+//! A picture is a row of `artifact_images`: the bytes as Niles wrote
+//! them again (see `niles_artifacts::images`), never as they were
+//! fetched. It goes when its artifact goes, or when it is taken away.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use niles_artifacts::{
-    Artifact, ArtifactStore, Author, Changes, Error, Filter, KEPT_REVISIONS, NewArtifact,
-    NewRevision, PageChange, Result, Revision, RevisionMeta, Status, StatusChange,
+    Artifact, ArtifactStore, Author, Changes, Error, Filter, Image, ImageData, KEPT_REVISIONS,
+    NewArtifact, NewImage, NewRevision, PageChange, Result, Revision, RevisionMeta, Status,
+    StatusChange,
 };
 use sqlx::postgres::{PgPool, PgRow};
 use sqlx::{Postgres, Row, Transaction};
@@ -57,6 +62,19 @@ create table if not exists artifact_pages (
     at          timestamptz not null default now()
 );
 create index if not exists artifact_pages_artifact on artifact_pages (artifact_id);
+create table if not exists artifact_images (
+    id          bigserial primary key,
+    artifact_id bigint not null references artifacts (id) on delete cascade,
+    mime        text not null,
+    bytes       bytea not null,
+    width       integer not null,
+    height      integer not null,
+    alt         text not null,
+    credit      text,
+    source      text,
+    created_at  timestamptz not null default now()
+);
+create index if not exists artifact_images_artifact on artifact_images (artifact_id);
 -- Added after the tables shipped, so `add column if not exists` rather
 -- than in the tables above.
 alter table artifacts add column if not exists page bigint;
@@ -268,6 +286,23 @@ fn artifact(r: &PgRow) -> Artifact {
         // artifact.
         preview: serde_json::from_str(r.get::<&str, _>("preview")).unwrap_or_default(),
         page: r.get("page"),
+    }
+}
+
+const IMAGE_COLUMNS: &str = "i.id, i.mime, i.width, i.height, octet_length(i.bytes) as size, \
+    i.alt, i.credit, i.source, i.created_at";
+
+fn image(r: &PgRow) -> Image {
+    Image {
+        id: r.get("id"),
+        mime: r.get("mime"),
+        width: r.get::<i32, _>("width").max(0) as u32,
+        height: r.get::<i32, _>("height").max(0) as u32,
+        size: r.get::<i32, _>("size").max(0) as usize,
+        alt: r.get("alt"),
+        credit: r.get("credit"),
+        source: r.get("source"),
+        created_at: r.get("created_at"),
     }
 }
 
@@ -539,6 +574,98 @@ impl ArtifactStore for PostgresArtifacts {
                 .execute(&self.pool)
                 .await
                 .map_err(|e| self.storage(e))?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn add_image(&self, person: &str, id: i64, new: NewImage) -> Result<Option<Image>> {
+        self.ensure_schema().await?;
+        let mut tx = self.pool.begin().await.map_err(|e| self.storage(e))?;
+        // Locked, so two pictures added at once are counted one after
+        // the other against the artifact's room.
+        if self.lock(&mut tx, person, id).await?.is_none() {
+            return Ok(None);
+        }
+        let kept = sqlx::query(
+            "select count(*) as n, coalesce(sum(octet_length(bytes)), 0)::bigint as total
+             from artifact_images where artifact_id = $1",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| self.storage(e))?;
+        niles_artifacts::images::check_room(
+            kept.get::<i64, _>("n").max(0) as usize,
+            kept.get::<i64, _>("total").max(0) as usize,
+            new.picture.bytes.len(),
+        )?;
+        let row = sqlx::query(&format!(
+            "insert into artifact_images as i
+                 (artifact_id, mime, bytes, width, height, alt, credit, source)
+             values ($1, $2, $3, $4, $5, $6, $7, $8)
+             returning {IMAGE_COLUMNS}"
+        ))
+        .bind(id)
+        .bind(new.picture.mime)
+        .bind(&new.picture.bytes)
+        .bind(new.picture.width as i32)
+        .bind(new.picture.height as i32)
+        .bind(&new.alt)
+        .bind(&new.credit)
+        .bind(&new.source)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| self.storage(e))?;
+        tx.commit().await.map_err(|e| self.storage(e))?;
+        Ok(Some(image(&row)))
+    }
+
+    async fn images(&self, person: &str, id: i64) -> Result<Vec<Image>> {
+        self.ensure_schema().await?;
+        let rows = sqlx::query(&format!(
+            "select {IMAGE_COLUMNS}
+             from artifact_images i join artifacts a on a.id = i.artifact_id
+             where a.id = $1 and a.person = $2
+             order by i.id"
+        ))
+        .bind(id)
+        .bind(person)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(rows.iter().map(image).collect())
+    }
+
+    async fn image(&self, person: &str, id: i64, picture: i64) -> Result<Option<ImageData>> {
+        self.ensure_schema().await?;
+        let row = sqlx::query(&format!(
+            "select {IMAGE_COLUMNS}, i.bytes
+             from artifact_images i join artifacts a on a.id = i.artifact_id
+             where a.id = $1 and a.person = $2 and i.id = $3"
+        ))
+        .bind(id)
+        .bind(person)
+        .bind(picture)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(row.map(|r| ImageData {
+            image: image(&r),
+            bytes: r.get("bytes"),
+        }))
+    }
+
+    async fn remove_image(&self, person: &str, id: i64, picture: i64) -> Result<bool> {
+        self.ensure_schema().await?;
+        let done = sqlx::query(
+            "delete from artifact_images i using artifacts a
+             where a.id = i.artifact_id and a.id = $1 and a.person = $2 and i.id = $3",
+        )
+        .bind(id)
+        .bind(person)
+        .bind(picture)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
         Ok(done.rows_affected() == 1)
     }
 
