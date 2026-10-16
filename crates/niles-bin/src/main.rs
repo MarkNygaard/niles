@@ -1597,9 +1597,12 @@ fn build_artifacts(
     let artifacts = match (training, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         (Some(store), Ok(tz)) => {
             let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;
-            artifacts.with_training(Box::new(move |reg: &mut ToolRegistry| {
-                training::register(reg, store.clone(), tz, imperial);
-            }))
+            artifacts.with_training(
+                Box::new(move |reg: &mut ToolRegistry| {
+                    training::register(reg, store.clone(), tz, imperial);
+                }),
+                tz,
+            )
         }
         _ => artifacts,
     };
@@ -6525,7 +6528,12 @@ fn build_push(cfg: &Config) -> Option<Arc<niles_webpush::WebPush>> {
 /// Each person's Strava and the workouts it brings, when there is a
 /// database and a secrets key to seal their app secrets and tokens
 /// with. A person connecting their own Strava is the switch.
-fn build_strava(cfg: &Config) -> Option<Arc<niles_training::Strava>> {
+///
+/// What each sync brings goes to `arrivals`, for the training plans.
+fn build_strava(
+    cfg: &Config,
+    arrivals: tokio::sync::mpsc::UnboundedSender<niles_training::Arrived>,
+) -> Option<Arc<niles_training::Strava>> {
     let database = cfg.database.as_ref()?;
     let key = std::env::var(&database.secret_key_env).ok()?;
     if key.trim().is_empty() {
@@ -6534,10 +6542,13 @@ fn build_strava(cfg: &Config) -> Option<Arc<niles_training::Strava>> {
     let url = database.resolve_url().ok()?;
     let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
     match niles_db::PostgresTraining::new(backend.pool(), backend.describe_target(), &key) {
-        Ok(store) => Some(Arc::new(niles_training::Strava::new(
-            Arc::new(store),
-            niles_training::strava::Client::new(reqwest::Client::new()),
-        ))),
+        Ok(store) => Some(Arc::new(
+            niles_training::Strava::new(
+                Arc::new(store),
+                niles_training::strava::Client::new(reqwest::Client::new()),
+            )
+            .with_arrivals(arrivals),
+        )),
         Err(e) => {
             tracing::error!("[strava] unavailable: {e}");
             None
@@ -7172,10 +7183,47 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         let shared = calendar::register(&mut tools, calendars.clone(), store.clone(), tz);
         mail::register(&mut tools, shared, approvals.clone());
     }
-    let strava = build_strava(&cfg);
+    let (arrivals, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+    let strava = build_strava(&cfg, arrivals);
+    let chat_log = build_chat_log(&cfg);
+    let push = build_push(&cfg);
+    // Made by the assistant, which runs their jobs: the runner is handed
+    // the assistant once it has started serving the tools.
+    let artifact_runner = Arc::new(artifacts::AssistantRunner {
+        assistant: std::sync::OnceLock::new(),
+        settings: store.clone(),
+    });
+    let artifacts = build_artifacts(
+        &cfg,
+        bus.clone(),
+        artifact_runner.clone(),
+        chat_log.clone(),
+        websearch_client.clone(),
+        strava.as_ref().map(|s| s.store().clone()),
+        push.clone(),
+    );
     if let (Some(strava), Ok(tz)) = (&strava, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;
         training::register(&mut tools, strava.store().clone(), tz, imperial);
+        if let Some(artifacts) = &artifacts {
+            training::register_plan(
+                &mut tools,
+                strava.store().clone(),
+                artifacts.store().clone(),
+                tz,
+                imperial,
+            );
+        }
+    }
+    // The plans follow the runs from the first sync on, so this listens
+    // before the poll begins.
+    if let Some(artifacts) = &artifacts {
+        let artifacts = artifacts.clone();
+        tokio::spawn(async move {
+            while let Some(runs) = arrived.recv().await {
+                artifacts.runs_arrived(&runs).await;
+            }
+        });
     }
     if let Some(strava) = &strava {
         tokio::spawn(strava.clone().poll());
@@ -7329,23 +7377,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     tools.attach_dynamic(plugin_tools);
 
     let tools = Arc::new(tools);
-    let chat_log = build_chat_log(&cfg);
-    let push = build_push(&cfg);
-    // Made by the assistant, which runs their jobs: the runner is handed
-    // the assistant once it has started serving the tools.
-    let artifact_runner = Arc::new(artifacts::AssistantRunner {
-        assistant: std::sync::OnceLock::new(),
-        settings: store.clone(),
-    });
-    let artifacts = build_artifacts(
-        &cfg,
-        bus.clone(),
-        artifact_runner.clone(),
-        chat_log.clone(),
-        websearch_client.clone(),
-        strava.as_ref().map(|s| s.store().clone()),
-        push.clone(),
-    );
     if let Some(artifacts) = &artifacts {
         let artifacts = artifacts.clone();
         tokio::spawn(async move { artifacts.recover().await });

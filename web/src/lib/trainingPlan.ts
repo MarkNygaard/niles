@@ -27,6 +27,12 @@ export interface Measures {
   pace?: string;
 }
 
+/** What a run that did a session came to. */
+export interface Actual extends Measures {
+  /** The day it was run, when that was not the session's. */
+  date?: string;
+}
+
 export interface Session extends Measures {
   date: string;
   type: SessionType;
@@ -36,7 +42,7 @@ export interface Session extends Measures {
   /** The Strava activity it was done as. */
   activity?: string;
   /** What the run that did it came to. */
-  actual?: Measures;
+  actual?: Actual;
 }
 
 export interface Week {
@@ -45,10 +51,18 @@ export interface Week {
   sessions: Session[];
 }
 
+/** A note in the coach's log: what it changed after a run, and why. */
+export interface Update {
+  date: string;
+  note: string;
+}
+
 export interface Plan {
   goal: { race: string; distance_km: number; date: string; target_time?: string };
   weeks: Week[];
   notes?: string;
+  /** Newest first. */
+  updates?: Update[];
 }
 
 /** The plan in `content`, or undefined when it is not one: Niles
@@ -61,6 +75,7 @@ export function planOf(content: unknown): Plan | undefined {
     ...c,
     goal: c.goal,
     weeks: c.weeks.map((w) => ({ ...w, sessions: Array.isArray(w.sessions) ? w.sessions : [] })),
+    updates: Array.isArray(c.updates) ? c.updates : undefined,
   };
 }
 
@@ -216,4 +231,55 @@ export function planText(plan: Plan): string {
   });
   if (plan.notes) lines.push("", plan.notes);
   return lines.join("\n");
+}
+
+/** What the person can say about a session with a tap: done or skipped,
+    or back to planned. */
+export type Mark = "done" | "skipped" | "planned";
+
+/** The marks a session offers: done once its day has come, skipped
+    whenever, and undoing either. Nothing for a rest day, nor for one
+    that was moved, which is the coach's to change. */
+export function marksFor(s: Session, today: string): Mark[] {
+  if (s.type === "rest") return [];
+  switch (s.status) {
+    case "planned":
+    case "missed":
+      return s.date <= today ? ["done", "skipped"] : ["skipped"];
+    case "done":
+    case "skipped":
+      return ["planned"];
+    default:
+      return [];
+  }
+}
+
+const MARKED: Record<Mark, string> = {
+  done: "done",
+  skipped: "skipped",
+  planned: "back to planned",
+};
+
+/** The plan with session `n` of week `week` marked, and the reason for
+    the version it saves: "Easy run on Tue 20 Oct: done". Only a done
+    session keeps a run, so one that is not done any more loses it. */
+export function withMark(
+  plan: Plan,
+  week: number,
+  n: number,
+  mark: Mark,
+): { plan: Plan; reason: string } {
+  const was = plan.weeks[week].sessions[n];
+  const next: Session = { ...was, status: mark };
+  if (mark !== "done") {
+    delete next.activity;
+    delete next.actual;
+  }
+  const weeks = plan.weeks.map((w, i) =>
+    i === week ? { ...w, sessions: w.sessions.map((s, j) => (j === n ? next : s)) } : w,
+  );
+  return {
+    plan: { ...plan, weeks },
+    reason: `${was.title} on ${dayLabel(was.date)}: ${MARKED[mark]}`,
+  };
 }

@@ -13,7 +13,7 @@
 //! it comes, so the newest kept is always where to carry on from.
 
 use crate::error::{Error, Result};
-use crate::model::{Athlete, StravaLink};
+use crate::model::{Activity, Athlete, StravaLink};
 use crate::store::TrainingStore;
 use crate::strava::{self, Client, PER_PAGE, SOURCE};
 use chrono::{DateTime, Duration, Utc};
@@ -48,9 +48,20 @@ pub struct Synced {
     pub paused_until: Option<DateTime<Utc>>,
 }
 
+/// What one sync brought that was not kept before, for whoever follows
+/// the runs: a training plan marks its sessions from them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Arrived {
+    pub person: String,
+    /// Oldest first. Empty after a sync that found nothing new, which
+    /// is still news: the days gone by without a run are over.
+    pub activities: Vec<Activity>,
+}
+
 pub struct Strava {
     store: Arc<dyn TrainingStore>,
     client: Client,
+    arrivals: Option<tokio::sync::mpsc::UnboundedSender<Arrived>>,
     /// Per person, since each has their own app: until when Strava's
     /// limits say to leave it alone.
     paused: Mutex<HashMap<String, DateTime<Utc>>>,
@@ -81,9 +92,17 @@ impl Strava {
         Self {
             store,
             client,
+            arrivals: None,
             paused: Mutex::default(),
             running: Arc::default(),
         }
+    }
+
+    /// Tells `to` after every sync that got through, and after one that
+    /// did not but kept something first.
+    pub fn with_arrivals(mut self, to: tokio::sync::mpsc::UnboundedSender<Arrived>) -> Self {
+        self.arrivals = Some(to);
+        self
     }
 
     pub fn store(&self) -> &Arc<dyn TrainingStore> {
@@ -228,7 +247,17 @@ impl Strava {
             return Err(Error::RateLimited { until });
         }
         let now = Utc::now();
-        let outcome = self.fetch(person, now).await;
+        let mut new = Vec::new();
+        let outcome = self.fetch(person, now, &mut new).await;
+        if let Some(to) = &self.arrivals
+            && (outcome.is_ok() || !new.is_empty())
+        {
+            // Nobody listening any more is nobody to tell.
+            let _ = to.send(Arrived {
+                person: person.to_string(),
+                activities: new,
+            });
+        }
         let said = match &outcome {
             Ok(synced) => {
                 if let Some(until) = synced.paused_until {
@@ -280,7 +309,14 @@ impl Strava {
         Ok(fresh.access_token)
     }
 
-    async fn fetch(&self, person: &str, now: DateTime<Utc>) -> Result<Synced> {
+    /// Each workout not kept before goes into `new` as it is saved, so
+    /// what a sync cut short did keep is still known.
+    async fn fetch(
+        &self,
+        person: &str,
+        now: DateTime<Utc>,
+        new: &mut Vec<Activity>,
+    ) -> Result<Synced> {
         let link = self
             .store
             .strava(person)
@@ -347,9 +383,15 @@ impl Strava {
                 Err(e) => return Err(e),
             };
             if let Some(activity) = strava::activity(&detail) {
-                let saved = self.store.save_activities(person, &[activity]).await?;
+                let saved = self
+                    .store
+                    .save_activities(person, std::slice::from_ref(&activity))
+                    .await?;
                 synced.added += saved.added;
                 synced.updated += saved.updated;
+                if saved.added > 0 {
+                    new.push(activity);
+                }
             }
             if i + 1 < todo.len()
                 && let Some(until) = budget.exhausted_until(RESERVE, Utc::now())
@@ -816,6 +858,66 @@ mod tests {
         assert_eq!(store.overview(MAJSE).await.unwrap().activities, 1);
         assert_eq!(store.overview(MARK).await.unwrap().activities, 0);
         assert!(matches!(strava.sync(MARK).await, Err(Error::NotConnected)));
+    }
+
+    #[tokio::test]
+    async fn each_sync_tells_who_follows_the_runs_what_was_new() {
+        let server = MockServer::start().await;
+        let (_, store) = connected(&server, Duration::hours(5)).await;
+        let (to, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+        let strava = Strava::new(
+            store.clone(),
+            Client::with_base(reqwest::Client::new(), &server.uri()),
+        )
+        .with_arrivals(to);
+        let start = Utc::now() - BACKFILL;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete/activities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                summary(1, start + Duration::hours(1)),
+                summary(2, start + Duration::hours(2)),
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/v3/activities/\d+$"))
+            .respond_with(detail_for)
+            .mount(&server)
+            .await;
+
+        strava.sync(MAJSE).await.unwrap();
+        let first = arrived.try_recv().unwrap();
+        assert_eq!(first.person, MAJSE);
+        let ids: Vec<&str> = first
+            .activities
+            .iter()
+            .map(|a| a.external_id.as_str())
+            .collect();
+        assert_eq!(ids, ["1", "2"]);
+
+        // Nothing new is still said: the days without a run are over.
+        strava.sync(MAJSE).await.unwrap();
+        assert_eq!(arrived.try_recv().unwrap().activities, vec![]);
+        assert!(arrived.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_sync_that_kept_nothing_and_failed_tells_nobody() {
+        let server = MockServer::start().await;
+        let (_, store) = connected(&server, Duration::hours(5)).await;
+        let (to, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+        let strava = Strava::new(
+            store,
+            Client::with_base(reqwest::Client::new(), &server.uri()),
+        )
+        .with_arrivals(to);
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete/activities"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        assert!(strava.sync(MAJSE).await.is_err());
+        assert!(arrived.try_recv().is_err());
     }
 
     #[tokio::test]

@@ -78,6 +78,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `plugins-update-rollback` | Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `providers-default-elevenlabs-cerebras` | A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `artifacts-training-plan` | A training plan toward a race, made from your own Strava runs: weeks, a countdown and today's session under Saved | [#430](https://github.com/MarkNygaard/niles/pull/430) |
+| `training-plan-follows-runs` | A training plan follows your Strava runs: each marks its session done, and Claude or ChatGPT adjusts what is to come | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `training-strava-sync` | Each person's own Strava: 180 days on connect, then a poll every 15 minutes within Strava's rate limits | [#418](https://github.com/MarkNygaard/niles/pull/418) |
 
 ### `artifacts-documents` — example phrasings
@@ -107,6 +108,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
+| `ui-training-plan-sessions` | Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `plugins-widget-room-setting` | A plugin's widget can start in the room one of its settings names, and moves when the setting changes | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `ui-media-without-sonos` | Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one | [#408](https://github.com/MarkNygaard/niles/pull/408) |
 | `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#391](https://github.com/MarkNygaard/niles/pull/391) |
@@ -163,6 +165,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `timer-list` | List all currently active timers | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `timer-set` | Set a timer for a given duration | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `voice-training-questions` | Ask about your own runs and workouts from your Strava by voice or chat, and have a week or month added up | [#410](https://github.com/MarkNygaard/niles/pull/410) |
+| `voice-training-today` | Ask what your run is today or tomorrow, from your own training plan, with the week's distance and the countdown | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 
 ### `tier-two-escalation` — example phrasings
 
@@ -332,3 +335,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - how was my week
 - how far did I run on Sunday
 - what was my pace on my last run
+
+### `voice-training-today` — example phrasings
+
+- what's my run today
+- what run do I have tomorrow
+- what's on my training plan

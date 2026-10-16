@@ -5,6 +5,7 @@ import {
   dayLabel,
   daysBetween,
   localDay,
+  marksFor,
   measures,
   minutes,
   planOf,
@@ -12,6 +13,7 @@ import {
   weekEnds,
   weekRange,
   weekTotals,
+  withMark,
 } from "@/lib/trainingPlan";
 import type { Plan } from "@/lib/trainingPlan";
 
@@ -146,5 +148,56 @@ describe("planText", () => {
       "- Sun 25 Oct: Long run · 14 km (missed)",
     ]);
     expect(text.endsWith("Assumed four runs a week.")).toBe(true);
+  });
+});
+
+describe("marking a session", () => {
+  const easy = PLAN.weeks[0].sessions[0];
+  const rest = PLAN.weeks[0].sessions[1];
+  const long = PLAN.weeks[1].sessions[1];
+
+  it("offers done once its day has come, and skipped whenever", () => {
+    expect(marksFor({ ...easy, status: "planned" }, "2026-10-22")).toEqual(["done", "skipped"]);
+    expect(marksFor(long, "2026-10-30")).toEqual(["skipped"]);
+    expect(marksFor(PLAN.weeks[0].sessions[2], "2026-10-30")).toEqual(["done", "skipped"]);
+  });
+
+  it("offers undoing what was marked, and nothing for a rest day or a moved one", () => {
+    expect(marksFor(easy, "2026-10-30")).toEqual(["planned"]);
+    expect(marksFor(rest, "2026-10-30")).toEqual([]);
+    expect(marksFor({ ...long, status: "moved" }, "2026-10-30")).toEqual([]);
+  });
+
+  it("changes that one session and says which in the reason", () => {
+    const { plan, reason } = withMark(PLAN, 0, 2, "done");
+    expect(reason).toBe("Long run on Sun 25 Oct: done");
+    expect(plan.weeks[0].sessions[2].status).toBe("done");
+    expect(plan.weeks[0].sessions[0]).toBe(PLAN.weeks[0].sessions[0]);
+    expect(plan.weeks[1]).toBe(PLAN.weeks[1]);
+    expect(PLAN.weeks[0].sessions[2].status).toBe("missed");
+  });
+
+  it("drops the run of a session that is not done any more", () => {
+    const { plan, reason } = withMark(
+      { ...PLAN, weeks: [{ ...PLAN.weeks[0], sessions: [{ ...easy, activity: "123" }] }] },
+      0,
+      0,
+      "planned",
+    );
+    expect(reason).toBe("Easy run on Thu 22 Oct: back to planned");
+    expect(plan.weeks[0].sessions[0]).toEqual({
+      date: "2026-10-22",
+      type: "easy",
+      title: "Easy run",
+      distance_km: 6,
+      status: "planned",
+    });
+  });
+});
+
+describe("planOf", () => {
+  it("keeps the coach's log", () => {
+    const updates = [{ date: "2026-10-23", note: "Easier next week." }];
+    expect(planOf({ ...PLAN, updates })?.updates).toEqual(updates);
   });
 });
