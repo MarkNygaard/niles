@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, LoaderCircle, Mic, Square, SquarePen } from "lucide-react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ArtifactCard } from "@/components/ArtifactCard";
+import { PushNudge } from "@/components/PushNudge";
 import { NilesAvatar } from "@/components/NilesPanel";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,6 +49,9 @@ export interface ChatViewProps {
   onDictate?: (audio: Blob) => Promise<string>;
   /** Open an artifact a reply made, in Niles's panel. */
   onOpenArtifact?: (id: number) => void;
+  /** The artifacts being written now. A card keeps the status it had
+      when its turn was kept, so this is what says a job still runs. */
+  working?: number[];
 }
 
 /** Things worth asking that show what typing to Niles is for. */
@@ -77,6 +81,7 @@ export function ChatView({
   deciding,
   onDictate,
   onOpenArtifact,
+  working,
 }: ChatViewProps) {
   const [draft, setDraft] = useState("");
   const [transcribing, setTranscribing] = useState(false);
@@ -129,6 +134,13 @@ export function ChatView({
     },
     [],
   );
+
+  // The newest card of a job still going is where the offer to notify
+  // goes: once, not under every card that was ever working.
+  const nudgeUnder = turns
+    .flatMap((turn) => turn.artifacts ?? [])
+    .filter((card) => working?.includes(card.id))
+    .at(-1)?.id;
 
   const send = (text: string) => {
     const message = text.trim();
@@ -222,6 +234,8 @@ export function ChatView({
             {turn.artifacts?.map((card) => (
               <ArtifactCard key={card.id} card={card} onOpen={onOpenArtifact} />
             ))}
+            {nudgeUnder !== undefined &&
+              turn.artifacts?.some((card) => card.id === nudgeUnder) && <PushNudge />}
             {turn.approval && (
               <ApprovalCard
                 card={turn.approval}

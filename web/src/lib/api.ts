@@ -1280,6 +1280,26 @@ export interface StravaStatus {
   runs: number;
 }
 
+/** One of the signed-in person's devices that gets notifications.
+    Mirrors `Subscription` in crates/niles-webpush/src/store.rs, which
+    never sends its keys back. */
+export interface PushDevice {
+  endpoint: string;
+  /** "iPhone", "Chrome on Android". */
+  device: string;
+  created_at: string;
+  /** When a push service last took a notification for it. */
+  last_ok_at: string | null;
+}
+
+/** What became of a notification: taken for a device, forgotten as
+    gone, or not taken this time. */
+export interface PushDelivery {
+  sent: number;
+  gone: number;
+  failed: number;
+}
+
 /** A blank secret keeps the saved one, for the same Client ID. */
 export interface StravaAppUpdate {
   client_id: string;
@@ -1547,6 +1567,14 @@ export const api = {
   updateMe: (update: MeUpdate) =>
     request<void>("/me", { method: "PUT", body: JSON.stringify(update) }),
   unpairPhone: () => request<void>("/me/phone", { method: "DELETE" }),
+  /** This Niles's public key, for `applicationServerKey`. */
+  pushKey: () => request<{ key: string }>("/push/key"),
+  pushDevices: () => request<{ devices: PushDevice[] }>("/me/push"),
+  subscribePush: (subscription: PushSubscriptionJSON) =>
+    request<void>("/me/push", { method: "POST", body: JSON.stringify(subscription) }),
+  unsubscribePush: (endpoint: string) =>
+    request<void>("/me/push", { method: "DELETE", body: JSON.stringify({ endpoint }) }),
+  testPush: () => request<PushDelivery>("/me/push/test", { method: "POST" }),
   strava: () => request<StravaStatus>("/me/strava"),
   saveStravaApp: (app: StravaAppUpdate) =>
     request<StravaStatus>("/me/strava/app", { method: "PUT", body: JSON.stringify(app) }),

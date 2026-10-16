@@ -61,6 +61,11 @@ rand_chacha = "0.10"
 parking_lot = "0.12"
 hmac = "0.13"
 sha2 = "0.11"
+# Web Push: P-256 for the message key agreement (RFC 8291) and the
+# VAPID signature (RFC 8292). Pure Rust, the same RustCrypto generation
+# as aes-gcm, sha2 and hmac above, so nothing here brings OpenSSL in.
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "ecdsa", "std", "precomputed-tables"] }
+hkdf = "0.13"
 hex = "0.4"
 roxmltree = "0.20"
 # Third-party plugins are WebAssembly components (component model, WASI
@@ -108,6 +113,7 @@ niles-mcp = { path = "crates/niles-mcp" }
 niles-plugins = { path = "crates/niles-plugins" }
 niles-training = { path = "crates/niles-training" }
 niles-artifacts = { path = "crates/niles-artifacts" }
+niles-webpush = { path = "crates/niles-webpush" }
 
 # Every niles-plugins test compiles a component with Cranelift, and an
 # unoptimised Cranelift made those tests most of CI's `cargo test`.

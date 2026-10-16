@@ -41,20 +41,70 @@ const LEAST_LINES: usize = 3;
 
 const TRAINING_PLAN: &str = "training_plan";
 
-/// Told when a job ends, if the artifact's notify is on. Nothing is
-/// behind it yet: phone push (Web Push) comes as its own piece of work.
+/// Told when a job ends, ready or failed, if the artifact's notify is
+/// on.
 #[async_trait]
 pub(crate) trait Notifier: Send + Sync {
     async fn finished(&self, artifact: &Artifact);
 }
 
-/// Tells nobody. The person still sees the status line, the Saved tab
-/// and the card in the chat.
+/// Tells nobody: there is no push without a database and its secrets
+/// key. The person still sees the status line, the Saved tab and the
+/// card in the chat.
 pub(crate) struct Nobody;
 
 #[async_trait]
 impl Notifier for Nobody {
     async fn finished(&self, _artifact: &Artifact) {}
+}
+
+/// Tells the person on every device where they turned notifications on.
+/// Nobody has to have asked for it: a device that allowed notifications
+/// is the asking.
+pub(crate) struct Devices(pub(crate) Arc<niles_webpush::WebPush>);
+
+#[async_trait]
+impl Notifier for Devices {
+    async fn finished(&self, artifact: &Artifact) {
+        match self
+            .0
+            .send(&artifact.person, &finished_message(artifact))
+            .await
+        {
+            Ok(delivery) if delivery.sent > 0 => tracing::info!(
+                "[artifacts] {}: told {} device(s) about {:?}",
+                artifact.person,
+                delivery.sent,
+                artifact.title
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(
+                "[artifacts] {}: nobody was told about {:?}: {e}",
+                artifact.person,
+                artifact.title
+            ),
+        }
+    }
+}
+
+/// The longest title a notification carries; a lock screen shows less.
+const TITLE_IN_PUSH: usize = 120;
+
+/// What a finished job's notification says, and where tapping it goes:
+/// the artifact, open in the chat's Saved tab. One per artifact, so a
+/// job tried again replaces the notification of the one that failed.
+pub(crate) fn finished_message(artifact: &Artifact) -> niles_webpush::Message {
+    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
+    let body = match artifact.status {
+        Status::Failed => format!("Your {title} didn't finish. Open it to try again."),
+        _ => format!("Your {title} is ready."),
+    };
+    niles_webpush::Message {
+        title: "Niles".into(),
+        body,
+        url: format!("/#/chat?artifact={}", artifact.id),
+        tag: format!("artifact-{}", artifact.id),
+    }
 }
 
 /// Whatever runs a job: the assistant, in the background.
@@ -1805,6 +1855,30 @@ mod tests {
         let id = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
         settled(&f, MARK, id).await;
         assert_eq!(*f.told.0.lock().unwrap(), vec![(id, Status::Failed)]);
+    }
+
+    #[tokio::test]
+    async fn the_notification_names_the_artifact_and_opens_it() {
+        let f = fixture(FakeRunner::doing(vec![Does::Saves("# Plan\n\n- Bangkok")]));
+        let id = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
+        settled(&f, MARK, id).await;
+        let artifact = f.store.get(MARK, id).await.unwrap().unwrap();
+        let message = finished_message(&artifact);
+        assert_eq!(message.title, "Niles");
+        assert_eq!(message.body, "Your Thailand travel plan is ready.");
+        assert_eq!(message.url, format!("/#/chat?artifact={id}"));
+        assert_eq!(message.tag, format!("artifact-{id}"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_s_notification_says_so_under_the_same_tag() {
+        let f = fixture(FakeRunner::doing(vec![Does::Fails("no")]));
+        let id = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
+        settled(&f, MARK, id).await;
+        let artifact = f.store.get(MARK, id).await.unwrap().unwrap();
+        let message = finished_message(&artifact);
+        assert!(message.body.contains("didn't finish"), "{}", message.body);
+        assert_eq!(message.tag, format!("artifact-{id}"));
     }
 
     #[tokio::test]

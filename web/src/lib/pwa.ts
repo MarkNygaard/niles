@@ -17,6 +17,16 @@ const WORKER = "/sw.js";
 export function registerServiceWorker(): void {
   if (!("serviceWorker" in navigator)) return;
 
+  // A tapped notification, when Niles was already open: the worker
+  // focuses this window and says where to go. Only this app's own
+  // addresses are followed.
+  navigator.serviceWorker.addEventListener("message", (event: MessageEvent) => {
+    const url: unknown = event.data?.type === "open" ? event.data.url : undefined;
+    if (typeof url !== "string") return;
+    const target = new URL(url, window.location.origin);
+    if (target.origin === window.location.origin) window.location.assign(target.href);
+  });
+
   // After load, not during it. Registration competes with the first
   // render for the same connection, and nothing on the page is waiting
   // on the worker.

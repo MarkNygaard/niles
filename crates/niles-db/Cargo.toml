@@ -26,6 +26,7 @@ tracing.workspace = true
 sha2.workspace = true
 niles-training.workspace = true
 niles-artifacts.workspace = true
+niles-webpush.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
