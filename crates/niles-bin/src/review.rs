@@ -368,7 +368,7 @@ impl Learning {
         prompt.push_str(&journal_section(&said, self.tz()));
         let system = format!(
             "{REVIEW_PROMPT}\n\n{}",
-            crate::home_context(&self.settings.current().home)
+            crate::prompt::home_context(&self.settings.current().home)
         );
         tracing::info!(
             "[learning] {} is reviewing {} exchange(s)",
@@ -424,7 +424,7 @@ impl Learning {
         );
         let system = format!(
             "{TIDY_PROMPT}\n\n{}",
-            crate::home_context(&self.settings.current().home)
+            crate::prompt::home_context(&self.settings.current().home)
         );
         tracing::info!("[learning] {} is tidying memory and skills", chosen.name());
         match self

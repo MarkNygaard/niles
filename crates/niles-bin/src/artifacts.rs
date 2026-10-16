@@ -234,7 +234,7 @@ impl Runner for AssistantRunner {
         };
         let system = format!(
             "{system}\n\n{}",
-            crate::home_context(&self.settings.current().home)
+            crate::prompt::home_context(&self.settings.current().home)
         );
         assistant
             .background(&chosen, &system, prompt, tools, Some(asker))
