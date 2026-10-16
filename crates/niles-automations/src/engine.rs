@@ -89,6 +89,9 @@ pub struct AutomationEngine {
     notifier: Option<Arc<dyn Notifier>>,
     waker: Option<Arc<dyn Waker>>,
     waits: Option<Arc<dyn WaitStore>>,
+    /// The live config, for how far "open" opens. Without it, "open"
+    /// means all the way.
+    settings: Option<Arc<niles_config::ConfigStore>>,
     dedup: Mutex<HashMap<DedupKey, DateTime<Utc>>>,
     dedup_window: chrono::Duration,
     /// Whether each followed state held when last heard of.
@@ -134,6 +137,7 @@ impl AutomationEngine {
             notifier,
             waker: None,
             waits: None,
+            settings: None,
             dedup: Mutex::new(HashMap::new()),
             dedup_window: chrono::Duration::milliseconds(2_000),
             observed: Mutex::new(HashMap::new()),
@@ -162,6 +166,13 @@ impl AutomationEngine {
     /// forgets them.
     pub fn with_waits(mut self, waits: Option<Arc<dyn WaitStore>>) -> Self {
         self.waits = waits;
+        self
+    }
+
+    /// The live config, for how far "open" opens. Without it, "open"
+    /// means all the way.
+    pub fn with_settings(mut self, settings: Option<Arc<niles_config::ConfigStore>>) -> Self {
+        self.settings = settings;
         self
     }
 
@@ -535,26 +546,37 @@ impl AutomationEngine {
                             self.set(&rule.id, light, &desired, now).await;
                         }
                     }
-                    Action::SetBlinds { target, position } => {
-                        let desired = DeviceState {
-                            position: Some(*position),
-                            ..Default::default()
-                        };
-                        let blinds: Vec<DeviceId> = match target {
-                            BlindTarget::Device(device) => vec![device.clone()],
+                    Action::SetBlinds { target, level } => {
+                        let blinds: Vec<(DeviceId, Option<u8>)> = match target {
+                            // Still sent to a device the registry has not
+                            // seen: the topic comes from the id, and a
+                            // rule must survive running before Z2M's
+                            // device list has arrived.
+                            BlindTarget::Device(id) => vec![(
+                                id.clone(),
+                                self.registry.get(id).and_then(|d| d.state.position),
+                            )],
                             BlindTarget::Room(room) => self
                                 .registry
                                 .list_room(room)
                                 .into_iter()
                                 .filter(|d| d.is_cover())
-                                .map(|d| d.id)
+                                .map(|d| (d.id, d.state.position))
                                 .collect(),
                         };
                         if blinds.is_empty() {
                             return Err("there are no blinds there".into());
                         }
-                        for blind in &blinds {
-                            self.set(&rule.id, blind, &desired, now).await;
+                        let snapshot = self.settings.as_ref().map(|s| s.current());
+                        let fallback = niles_config::BlindsConfig::default();
+                        let cfg = snapshot.as_deref().map(|c| &c.blinds).unwrap_or(&fallback);
+                        let resolved = cfg.targets(*level, blinds.iter().map(|(id, at)| (id, *at)));
+                        for ((id, _), position) in blinds.iter().zip(&resolved.positions) {
+                            let desired = DeviceState {
+                                position: Some(*position),
+                                ..Default::default()
+                            };
+                            self.set(&rule.id, id, &desired, now).await;
                         }
                     }
                     Action::Notify {
@@ -1437,5 +1459,214 @@ mod tests {
         t.engine.seed().await;
         t.send(door(true), noon()).await;
         assert_eq!(t.runs("morning")[0].outcome, Outcome::Failed);
+    }
+
+    /// Two covers in the living room, a door that opens them, and the
+    /// live config. `position` is what each blind currently reports.
+    fn blinds_room(
+        toml: &str,
+        left_at: Option<u8>,
+        right_at: Option<u8>,
+    ) -> (Test, Arc<niles_config::ConfigStore>) {
+        let store = Arc::new(
+            niles_config::ConfigStore::from_str_in_memory(toml).expect("fixture config is valid"),
+        );
+        let registry = Arc::new(DeviceRegistry::new());
+        let cover = |name: &str, position: Option<u8>| {
+            registry.upsert(Device::new(
+                id(name),
+                DeviceState {
+                    position,
+                    ..Default::default()
+                },
+                DeviceClass::Cover,
+            ));
+        };
+        cover("living_room/left_blind", left_at);
+        cover("living_room/right_blind", right_at);
+        let sink = Arc::new(RecordingSink {
+            calls: Mutex::new(Vec::new()),
+        });
+        let said = Arc::new(RecordingNotifier {
+            calls: Mutex::new(Vec::new()),
+        });
+        let kept = store.clone();
+        let engine = Arc::new(
+            AutomationEngine::new(
+                vec![rule(json!({
+                    "id": "blinds",
+                    "triggers": [{ "type": "contact", "device": "living_room/door", "open": true }],
+                    "actions": [{ "do": "set_blinds", "room": "living_room", "position": "open" }],
+                }))],
+                registry.clone(),
+                Tz::UTC,
+                sink.clone(),
+                Some(said.clone()),
+            )
+            .with_dedup_window(Duration::from_millis(0))
+            .with_settings(Some(kept)),
+        );
+        (
+            Test {
+                engine,
+                sink,
+                said,
+                registry,
+            },
+            store,
+        )
+    }
+
+    fn blind_positions(t: &Test) -> Vec<(DeviceId, u8)> {
+        // In call order: each run appends in registry order, so two
+        // runs of the same rule line up index by index.
+        lock(&t.sink.calls)
+            .iter()
+            .map(|(id, s)| (id.clone(), s.position.unwrap()))
+            .collect()
+    }
+
+    fn open_door() -> Event {
+        Event::DeviceStateChanged {
+            id: id("living_room/door"),
+            state: DeviceState {
+                open: Some(true),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn shut_door() -> Event {
+        Event::DeviceStateChanged {
+            id: id("living_room/door"),
+            state: DeviceState {
+                open: Some(false),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn open_sends_each_blind_its_normal_level() {
+        let (t, _store) = blinds_room("[blinds]\nnormal_open = 75\n", Some(0), Some(0));
+        t.engine.seed().await;
+        t.send(open_door(), noon()).await;
+        let mut sent = blind_positions(&t);
+        sent.sort_by_key(|(id, _)| id.to_string());
+        assert_eq!(
+            sent,
+            vec![
+                (id("living_room/left_blind"), 75),
+                (id("living_room/right_blind"), 75)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_level_applies_to_the_next_run() {
+        let (t, store) = blinds_room("[blinds]\nnormal_open = 75\n", Some(0), Some(0));
+        t.engine.seed().await;
+        t.send(open_door(), noon()).await;
+        assert_eq!(blind_positions(&t)[0].1, 75);
+        let patch: toml::Table = toml::from_str("[blinds]\nnormal_open = 60").unwrap();
+        store
+            .apply(&patch, niles_config::ChangeSource::Api)
+            .await
+            .unwrap();
+        assert_eq!(store.current().blinds.normal_open, 60);
+        t.send(shut_door(), noon()).await;
+        t.send(open_door(), noon()).await;
+        let sent = blind_positions(&t);
+        // First run sent 75; after the patch the same rule sends 60 —
+        // the level is not frozen at save time.
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[2].1, 60);
+        assert_eq!(sent[3].1, 60);
+    }
+
+    #[tokio::test]
+    async fn already_at_the_level_opens_all_the_way() {
+        let (t, _store) = blinds_room("[blinds]\nnormal_open = 75\n", Some(75), Some(74));
+        t.engine.seed().await;
+        t.send(open_door(), noon()).await;
+        assert_eq!(blind_positions(&t)[0].1, 100);
+        assert_eq!(blind_positions(&t)[1].1, 100);
+    }
+
+    #[tokio::test]
+    async fn a_mixed_group_each_goes_to_its_own_level() {
+        let (t, _store) = blinds_room("[blinds]\nnormal_open = 75\n", Some(75), Some(10));
+        t.engine.seed().await;
+        t.send(open_door(), noon()).await;
+        assert_eq!(blind_positions(&t)[0].1, 75);
+        assert_eq!(blind_positions(&t)[1].1, 75);
+    }
+
+    #[tokio::test]
+    async fn an_exact_hundred_always_means_a_hundred() {
+        let (mut t, _store) = blinds_room("[blinds]\nnormal_open = 75\n", Some(75), Some(75));
+        t.engine = Arc::new(
+            AutomationEngine::new(
+                vec![rule(json!({
+                    "id": "blinds",
+                    "triggers": [{ "type": "contact", "device": "living_room/door", "open": true }],
+                    "actions": [{ "do": "set_blinds", "room": "living_room", "position": 100 }],
+                }))],
+                t.registry.clone(),
+                Tz::UTC,
+                t.sink.clone(),
+                Some(t.said.clone()),
+            )
+            .with_dedup_window(Duration::from_millis(0)),
+        );
+        t.engine.seed().await;
+        t.send(open_door(), noon()).await;
+        assert_eq!(blind_positions(&t)[0].1, 100);
+    }
+
+    #[tokio::test]
+    async fn without_settings_open_means_all_the_way() {
+        let (mut t, _store) = blinds_room("[blinds]\nnormal_open = 75\n", Some(0), Some(0));
+        t.engine = Arc::new(
+            AutomationEngine::new(
+                vec![rule(json!({
+                    "id": "blinds",
+                    "triggers": [{ "type": "contact", "device": "living_room/door", "open": true }],
+                    "actions": [{ "do": "set_blinds", "room": "living_room", "position": "open" }],
+                }))],
+                t.registry.clone(),
+                Tz::UTC,
+                t.sink.clone(),
+                Some(t.said.clone()),
+            )
+            .with_dedup_window(Duration::from_millis(0)),
+        );
+        t.engine.seed().await;
+        t.send(open_door(), noon()).await;
+        assert_eq!(blind_positions(&t)[0].1, 100);
+    }
+
+    #[tokio::test]
+    async fn a_per_blind_override_is_honoured() {
+        let toml = r#"
+            [blinds]
+            normal_open = 75
+
+            [[blinds.overrides]]
+            device = "living_room/right_blind"
+            normal_open = 60
+        "#;
+        let (t, _store) = blinds_room(toml, Some(0), Some(0));
+        t.engine.seed().await;
+        t.send(open_door(), noon()).await;
+        let mut sent = blind_positions(&t);
+        sent.sort_by_key(|(id, _)| id.to_string());
+        assert_eq!(
+            sent,
+            vec![
+                (id("living_room/left_blind"), 75),
+                (id("living_room/right_blind"), 60)
+            ]
+        );
     }
 }

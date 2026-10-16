@@ -150,6 +150,18 @@ impl<'de> Deserialize<'de> for DeviceId {
     }
 }
 
+/// What a blinds command asks for.
+///
+/// `Open` is not a position. It means the blind's normal open level,
+/// which only the config and the blind's own position can resolve,
+/// so it travels as far as the dispatcher and becomes a position
+/// there — per blind, since each may have its own level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlindsLevel {
+    Open,
+    Exact(u8),
+}
+
 /// Current state of a device.
 ///
 /// Each field is independently optional — a sensor reports only the

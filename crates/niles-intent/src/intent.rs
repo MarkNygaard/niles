@@ -1,5 +1,6 @@
 //! Structured intents produced by the Tier 0 router.
 
+use niles_core::BlindsLevel;
 use std::time::Duration;
 
 /// A structured representation of what the user asked for.
@@ -68,11 +69,13 @@ pub enum Intent {
     /// "close the living room blinds", "open the blinds halfway", "set
     /// the office blind to 40%". `room` is as said; none means the room
     /// the satellite is in, unless `everywhere` ("close all the blinds").
-    /// `position` is `0` shut to `100` open.
+    /// `level` is `Exact(0)` shut to `Exact(100)` open; `Open` — a plain
+    /// "open" — is not a position: it resolves per blind at dispatch,
+    /// against the config's normal open level and each blind's position.
     BlindsSet {
         room: Option<String>,
         everywhere: bool,
-        position: u8,
+        level: BlindsLevel,
     },
 
     /// "dim the kitchen lights to 30%" / "set the bedroom light to 50 percent"

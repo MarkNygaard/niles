@@ -2,7 +2,7 @@
 
 use crate::devices::DeviceIndex;
 use crate::intent::Intent;
-use niles_core::{DeviceId, RoomName};
+use niles_core::{BlindsLevel, DeviceId, RoomName};
 use regex::Regex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -499,9 +499,12 @@ fn blinds_regexes() -> &'static [Regex; 2] {
     RE.get_or_init(|| {
         [
             // "close the living room blinds", "open the blinds in the
-            // office halfway", "lower all the shutters".
+            // office halfway", "lower all the shutters", "open the
+            // blinds fully". The qualifier is accepted before the noun
+            // ("fully open the blinds") or after it ("open the blinds
+            // all the way").
             Regex::new(&format!(
-                r"^(?P<verb>open|close|shut|raise|lower)\s+(?P<all>all\s+)?(?:the\s+)?(?:(?P<room>.+?)\s+)?{BLINDS}(?:\s+in\s+(?:the\s+)?(?P<room2>.+?))?(?:\s+(?P<half>half\s?way))?$"
+                r"^(?:(?P<fully>fully|all\s+the\s+way|completely)\s+)?(?P<verb>open|close|shut|raise|lower)\s+(?P<all>all\s+)?(?:the\s+)?(?:(?P<room>.+?)\s+)?{BLINDS}(?:\s+in\s+(?:the\s+)?(?P<room2>.+?))?(?:\s+(?P<tail>half\s?way|fully|all\s+the\s+way|completely))?$"
             ))
             .expect("blinds regex compiles"),
             // "set the office blind to 40%", "put the blinds at 30 percent".
@@ -516,14 +519,29 @@ fn blinds_regexes() -> &'static [Regex; 2] {
 fn match_blinds(t: &str) -> Option<Intent> {
     let [verb, set] = blinds_regexes();
     let caps = verb.captures(t).or_else(|| set.captures(t))?;
-    let position = match (caps.name("n"), caps.name("half"), caps.name("verb")) {
-        (Some(n), _, _) => n.as_str().parse::<u8>().ok().filter(|n| *n <= 100)?,
-        (None, Some(_), _) => 50,
-        (None, None, Some(verb)) => match verb.as_str() {
-            "open" | "raise" => 100,
-            _ => 0,
+    let tail = caps.name("tail").map(|m| m.as_str());
+    let is_half = matches!(tail, Some("halfway") | Some("half way"));
+    let is_fully = caps.name("fully").is_some()
+        || matches!(
+            tail,
+            Some("fully") | Some("all the way") | Some("completely")
+        );
+    let level = match (caps.name("n"), is_half, is_fully, caps.name("verb")) {
+        (Some(n), _, _, _) => {
+            BlindsLevel::Exact(n.as_str().parse::<u8>().ok().filter(|n| *n <= 100)?)
+        }
+        (None, true, _, _) => BlindsLevel::Exact(50),
+        (None, false, true, Some(verb)) if verb.as_str() == "open" || verb.as_str() == "raise" => {
+            // "fully" with an opening verb is all the way; with a
+            // closing verb it changes nothing ("close the blinds
+            // completely" still means 0).
+            BlindsLevel::Exact(100)
+        }
+        (None, false, _, Some(verb)) => match verb.as_str() {
+            "open" | "raise" => BlindsLevel::Open,
+            _ => BlindsLevel::Exact(0),
         },
-        (None, None, None) => return None,
+        (None, false, _, None) => return None,
     };
     let room = caps
         .name("room")
@@ -536,7 +554,7 @@ fn match_blinds(t: &str) -> Option<Intent> {
     Some(Intent::BlindsSet {
         everywhere: caps.name("all").is_some() && room.is_none(),
         room,
-        position,
+        level,
     })
 }
 
@@ -1900,35 +1918,76 @@ mod tests {
 
     #[test]
     fn blinds_are_opened_and_closed_by_room() {
-        let blinds = |room: Option<&str>, everywhere: bool, position: u8| {
+        let blinds = |room: Option<&str>, everywhere: bool, level: BlindsLevel| {
             Some(Intent::BlindsSet {
                 room: room.map(str::to_string),
                 everywhere,
-                position,
+                level,
             })
         };
         assert_eq!(
             parse("Close the living room blinds."),
-            blinds(Some("living room"), false, 0)
+            blinds(Some("living room"), false, BlindsLevel::Exact(0))
         );
         assert_eq!(
             parse("open the office blind"),
-            blinds(Some("office"), false, 100)
+            blinds(Some("office"), false, BlindsLevel::Open)
         );
-        assert_eq!(parse("open the blinds"), blinds(None, false, 100));
-        assert_eq!(parse("lower the curtains"), blinds(None, false, 0));
+        assert_eq!(
+            parse("open the blinds"),
+            blinds(None, false, BlindsLevel::Open)
+        );
+        assert_eq!(
+            parse("lower the curtains"),
+            blinds(None, false, BlindsLevel::Exact(0))
+        );
         assert_eq!(
             parse("open the blinds in the living room halfway"),
-            blinds(Some("living room"), false, 50)
+            blinds(Some("living room"), false, BlindsLevel::Exact(50))
         );
         assert_eq!(
             parse("set the office blind to 40%"),
-            blinds(Some("office"), false, 40)
+            blinds(Some("office"), false, BlindsLevel::Exact(40))
         );
-        assert_eq!(parse("close all the blinds"), blinds(None, true, 0));
+        assert_eq!(
+            parse("close all the blinds"),
+            blinds(None, true, BlindsLevel::Exact(0))
+        );
         assert_eq!(parse("set the blinds to 140%"), None);
         // A rule, not a command.
         assert_eq!(parse("close the blinds when the sun sets"), None);
+    }
+
+    #[test]
+    fn fully_means_all_the_way() {
+        let blinds = |room: Option<&str>, everywhere: bool, level: BlindsLevel| {
+            Some(Intent::BlindsSet {
+                room: room.map(str::to_string),
+                everywhere,
+                level,
+            })
+        };
+        assert_eq!(
+            parse("open the blinds fully"),
+            blinds(None, false, BlindsLevel::Exact(100))
+        );
+        assert_eq!(
+            parse("open the blinds all the way"),
+            blinds(None, false, BlindsLevel::Exact(100))
+        );
+        assert_eq!(
+            parse("completely open the blinds"),
+            blinds(None, false, BlindsLevel::Exact(100))
+        );
+        assert_eq!(
+            parse("fully open the living room blinds"),
+            blinds(Some("living room"), false, BlindsLevel::Exact(100))
+        );
+        // "fully" with a closing verb changes nothing.
+        assert_eq!(
+            parse("close the blinds completely"),
+            blinds(None, false, BlindsLevel::Exact(0))
+        );
     }
 
     #[test]

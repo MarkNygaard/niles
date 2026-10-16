@@ -10,6 +10,7 @@ pub mod api;
 pub mod auth;
 pub mod automations;
 pub mod backend;
+mod blinds;
 mod capture;
 pub mod catalogue;
 pub mod database;
@@ -48,10 +49,11 @@ pub use ambient_lights::AmbientLightsConfig;
 pub use api::ApiConfig;
 pub use auth::{AllowedPerson, AuthConfig};
 pub use automations::{
-    ActionDto, AutomationRuleDto, AutomationsConfig, ConditionDto, DurationDto, TriggerDto,
-    TriggerKind,
+    ActionDto, AutomationRuleDto, AutomationsConfig, BlindsPositionDto, ConditionDto, DurationDto,
+    TriggerDto, TriggerKind,
 };
 pub use backend::{MemoryBackend, OverrideBackend, StoredState};
+pub use blinds::{BlindOverride, BlindsConfig, BlindsTargets, FULLY_OPEN, OPEN_TOLERANCE};
 pub use capture::CaptureConfig;
 pub use database::DatabaseConfig;
 pub use error::{Error, Result};
@@ -198,6 +200,9 @@ pub fn section_reload(section: &str) -> Reload {
         // Read from the live snapshot by every command that asks which
         // devices are the lights, and by the switch observer per press.
         "lamp_plugs" => Reload::Hot,
+        // Read from the live snapshot by every Open, so a new level
+        // applies to the next press.
+        "blinds" => Reload::Hot,
         // The poll loop reads this every tick rather than at startup,
         // so switching presence on takes hold within half a minute.
         "presence" => Reload::Hot,
@@ -257,6 +262,7 @@ pub const SECTIONS: &[&str] = &[
     "tv",
     "ambient_lights",
     "lamp_plugs",
+    "blinds",
     "history",
     "memory",
     "notifications",
@@ -315,6 +321,8 @@ pub struct Config {
     pub ambient_lights: AmbientLightsConfig,
     #[serde(default)]
     pub lamp_plugs: LampPlugsConfig,
+    #[serde(default)]
+    pub blinds: BlindsConfig,
     #[serde(default)]
     pub history: HistoryConfig,
     #[serde(default)]
@@ -417,6 +425,7 @@ impl Config {
         self.speakers.validate()?;
         self.ambient_lights.validate()?;
         self.lamp_plugs.validate()?;
+        self.blinds.validate()?;
         self.history.validate()?;
         self.memory.validate()?;
         self.notifications.validate()?;
@@ -457,6 +466,12 @@ mod tests {
         assert_eq!(settings["cheap_hours"].as_integer(), Some(6));
         assert_eq!(section_reload("plugins"), Reload::Hot);
         assert!(SECTIONS.contains(&"plugins"));
+    }
+
+    #[test]
+    fn blinds_are_read_live_by_every_open() {
+        assert_eq!(section_reload("blinds"), Reload::Hot);
+        assert!(SECTIONS.contains(&"blinds"));
     }
 
     #[test]

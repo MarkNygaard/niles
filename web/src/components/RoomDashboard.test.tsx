@@ -87,11 +87,42 @@ describe("RoomDashboard", () => {
     );
   });
 
-  it("moves a blind by its name, and shows it moving before it answers", async () => {
+  it("opens a blind through the server and shows the position it answers", async () => {
     const shade: Device = {
       ...light("z2m:kitchen/blind"),
       class: "cover",
       state: { ...light("z2m:kitchen/blind").state, on: null, brightness: null, position: 0 },
+    };
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1"), shade]);
+    // An Open has no position to guess, so the row waits for this
+    // answer and paints it.
+    const openBlinds = vi.spyOn(api, "openBlinds").mockResolvedValue({
+      positions: [{ id: "z2m:kitchen/blind", position: 75 }],
+    });
+
+    renderDashboard();
+    fireEvent.click(await screen.findByRole("button", { name: "Blinds in Kitchen" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Closed");
+    fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
+
+    await waitFor(() =>
+      expect(openBlinds).toHaveBeenCalledWith(["z2m:kitchen/blind"]),
+    );
+    // Twice: the sheet's summary of one blind is that blind's state.
+    expect(await screen.findAllByText("75% open")).not.toHaveLength(0);
+  });
+
+  it("closes a blind through a position, shown before it answers", async () => {
+    const shade: Device = {
+      ...light("z2m:kitchen/blind"),
+      class: "cover",
+      state: {
+        ...light("z2m:kitchen/blind").state,
+        on: null,
+        brightness: null,
+        position: 75,
+      },
     };
     vi.spyOn(api, "scenes").mockResolvedValue([]);
     vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1"), shade]);
@@ -102,11 +133,10 @@ describe("RoomDashboard", () => {
 
     renderDashboard();
     fireEvent.click(await screen.findByRole("button", { name: "Blinds in Kitchen" }));
-    expect(screen.getByRole("dialog")).toHaveTextContent("Closed");
-    fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Blind" }));
 
-    await waitFor(() => expect(setPosition).toHaveBeenCalledWith("kitchen", "blind", 100));
-    expect(await screen.findByText("Open", { selector: "div" })).toBeInTheDocument();
+    await waitFor(() => expect(setPosition).toHaveBeenCalledWith("kitchen", "blind", 0));
+    expect(await screen.findByText("Closed", { selector: "div" })).toBeInTheDocument();
   });
 });
 

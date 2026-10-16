@@ -48,6 +48,17 @@ export interface WledStrip {
   white_balance?: boolean;
 }
 
+/** How far "open" opens one blind: its own normal open level. */
+export interface BlindOverride {
+  device: string;
+  normal_open: number;
+}
+
+/** What `openBlinds` answers: the position each blind was sent to. */
+export interface BlindsOpened {
+  positions: Array<{ id: string; position: number }>;
+}
+
 /**
  * Something Niles knows how to connect to.
  *
@@ -846,8 +857,9 @@ export type Action =
   /** Every light in the room. */
   | { do: "set_room"; room: string; on?: boolean; brightness?: number; kelvin?: number }
   /** Every blind in a room, or one blind: exactly one of the two.
-      `position` is 0 closed to 100 open. */
-  | { do: "set_blinds"; room?: string; device?: string; position: number }
+      `position` is 0 closed to 100 open, or "open" — the normal open
+      level, resolved when the rule runs. */
+  | { do: "set_blinds"; room?: string; device?: string; position: number | "open" }
   /** The morning routine's sunrise, run from a rule: lights that are
       off ramp up from nothing over `minutes` (1 to 120, 45 left out)
       to `brightness` (100 left out), then hold there until changed.
@@ -1686,6 +1698,18 @@ export const api = {
       `/rooms/${encodeURIComponent(room)}/${encodeURIComponent(device)}/position`,
       { method: "POST", body: JSON.stringify({ position }) },
     ),
+
+  /**
+   * Open these blinds — to the house's normal level, or all the way
+   * when every one of them is already there. One request for the
+   * whole set, because that second-press rule is about the set; the
+   * server answers with the position each blind was sent to.
+   */
+  openBlinds: (ids: string[]) =>
+    request<BlindsOpened>("/blinds/open", {
+      method: "POST",
+      body: JSON.stringify({ devices: ids }),
+    }),
 
   /**
    * Set every light in the house at once.

@@ -10,8 +10,8 @@ pub mod event;
 pub mod registry;
 
 pub use device::{
-    Device, DeviceClass, DeviceId, DeviceName, DeviceState, LightCapabilities, Reading, RoomName,
-    validate_reading_name,
+    BlindsLevel, Device, DeviceClass, DeviceId, DeviceName, DeviceState, LightCapabilities,
+    Reading, RoomName, validate_reading_name,
 };
 pub use error::{Error, Result};
 pub use event::{Event, EventBus, PresenceState};

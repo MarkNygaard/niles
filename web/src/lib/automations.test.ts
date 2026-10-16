@@ -649,8 +649,13 @@ describe("blinds", () => {
     expect(of({ do: "set_blinds", room: "living_room", position: 0 })).toBe(
       "Close the living room blinds",
     );
-    expect(of({ do: "set_blinds", room: "living_room", position: 100 })).toBe(
+    expect(of({ do: "set_blinds", room: "living_room", position: "open" })).toBe(
       "Open the living room blinds",
+    );
+    // A rule saved before this existed stores 100 and still reads as
+    // Fully open.
+    expect(of({ do: "set_blinds", room: "living_room", position: 100 })).toBe(
+      "Fully open the living room blinds",
     );
     expect(of({ do: "set_blinds", device: "office/blind", position: 40 })).toBe(
       "Open the office blind to 40%",
@@ -701,11 +706,12 @@ describe("blinds", () => {
     });
   });
 
-  it("reads a position as close, open or part of the way", () => {
+  it("reads a position as close, open, fully or part of the way", () => {
     expect(blindsPosition(0)).toBe("close");
-    expect(blindsPosition(100)).toBe("open");
+    expect(blindsPosition("open")).toBe("open");
+    expect(blindsPosition(100)).toBe("fully");
     expect(blindsPosition(40)).toBe("part");
-    expect(BLINDS_POSITION).toEqual({ close: 0, open: 100, part: 50 });
+    expect(BLINDS_POSITION).toEqual({ close: 0, open: "open", fully: 100, part: 50 });
   });
 
   it("wants one target and a position the server takes", () => {
@@ -720,6 +726,9 @@ describe("blinds", () => {
     expect(
       problems(rule({ do: "set_blinds", room: "bedroom", device: "office/blind", position: 0 })),
     ).toEqual(["Action 1 names a room and a blind; it takes one or the other."]);
+    expect(problems(rule({ do: "set_blinds", room: "bedroom", position: "open" }))).toEqual(
+      [],
+    );
     expect(problems(rule({ do: "set_blinds", room: "bedroom", position: 150 }))).toEqual([
       "Action 1: a blind opens 0 to 100%.",
     ]);

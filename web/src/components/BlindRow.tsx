@@ -7,8 +7,9 @@ import type { Device } from "@/lib/api";
 export interface BlindRowProps {
   blind: Device;
   disabled?: boolean;
-  /** `0` closed, `100` open. */
-  onSet: (position: number) => void;
+  /** `0` closed, `100` open, or "open" — the normal open level, all
+      the way when the blind is already there (the second press). */
+  onSet: (position: number | "open") => void;
 }
 
 /**
@@ -40,7 +41,7 @@ export function BlindRow({ blind, disabled, onSet }: BlindRowProps) {
           size="sm"
           disabled={disabled}
           aria-label={`Open ${name}`}
-          onClick={() => onSet(100)}
+          onClick={() => onSet("open")}
         >
           Open
         </Button>
@@ -74,7 +75,9 @@ export interface AllBlindsProps {
   /** The room's label, for the buttons' names. */
   room: string;
   disabled?: boolean;
-  onSet: (position: number) => void;
+  /** `0` closed, `100` open, or "open" — the normal open level, all
+      the way the second press. */
+  onSet: (position: number | "open") => void;
 }
 
 /** Every blind in a room at once, for a room with more than one. */
@@ -87,7 +90,7 @@ export function AllBlinds({ room, disabled, onSet }: AllBlindsProps) {
         size="sm"
         disabled={disabled}
         aria-label={`Open all blinds in ${room}`}
-        onClick={() => onSet(100)}
+        onClick={() => onSet("open")}
       >
         Open all
       </Button>

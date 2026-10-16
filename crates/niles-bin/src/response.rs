@@ -59,40 +59,63 @@ pub fn light_set(room: &str, on: bool) -> String {
     )
 }
 
+/// What the blinds are doing, as Niles says it. `Open` is resolved
+/// before this is chosen, so the caller never says a level that the
+/// rule then contradicts.
+pub enum BlindsSaid {
+    Closing,
+    Opening,
+    /// Going all the way — an explicit "fully", or the second press
+    /// when they were already at their normal level.
+    Fully,
+    Level(u8),
+}
+
 /// "Closing the living room blinds." / "Office blind to 40%."
 ///
 /// `room` is as said; none is the room the satellite is in, and
 /// `everywhere` every blind in the house.
-pub fn blinds(room: Option<&str>, everywhere: bool, count: usize, position: u8) -> String {
+pub fn blinds(room: Option<&str>, everywhere: bool, count: usize, said: BlindsSaid) -> String {
     let noun = if count == 1 { "blind" } else { "blinds" };
     let what = match (room, everywhere) {
         (_, true) => format!("all the {noun}"),
         (Some(room), false) => format!("the {} {noun}", spoken_room(room)),
         (None, false) => format!("the {noun}"),
     };
-    match position {
-        0 => format!("Closing {what}."),
-        100 => format!("Opening {what}."),
-        p => format!("{} to {p}%.", capitalize_first(&what)),
+    match said {
+        BlindsSaid::Closing => format!("Closing {what}."),
+        BlindsSaid::Opening => format!("Opening {what}."),
+        BlindsSaid::Fully => format!("Opening {what} all the way."),
+        BlindsSaid::Level(p) => format!("{} to {p}%.", capitalize_first(&what)),
     }
 }
 
 #[cfg(test)]
 mod blinds_tests {
-    use super::blinds;
+    use super::{BlindsSaid, blinds};
 
     #[test]
     fn says_what_the_blinds_are_doing() {
         assert_eq!(
-            blinds(Some("living room"), false, 2, 0),
+            blinds(Some("living room"), false, 2, BlindsSaid::Closing),
             "Closing the living room blinds."
         );
         assert_eq!(
-            blinds(Some("office"), false, 1, 100),
+            blinds(Some("office"), false, 1, BlindsSaid::Fully),
+            "Opening the office blind all the way."
+        );
+        assert_eq!(
+            blinds(None, false, 2, BlindsSaid::Level(40)),
+            "The blinds to 40%."
+        );
+        assert_eq!(
+            blinds(None, true, 3, BlindsSaid::Closing),
+            "Closing all the blinds."
+        );
+        assert_eq!(
+            blinds(Some("office"), false, 1, BlindsSaid::Opening),
             "Opening the office blind."
         );
-        assert_eq!(blinds(None, false, 2, 40), "The blinds to 40%.");
-        assert_eq!(blinds(None, true, 3, 0), "Closing all the blinds.");
     }
 }
 
