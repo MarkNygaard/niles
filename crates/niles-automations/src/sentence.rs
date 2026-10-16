@@ -405,6 +405,37 @@ fn action(step: &ActionDto, names: &[(String, String)]) -> String {
             Some(room) => format!("say \"{body}\" in the {}", words(room)),
             None => format!("say \"{body}\""),
         },
+        ActionDto::WakeUp {
+            minutes,
+            rooms,
+            devices,
+            except,
+            brightness,
+            kelvin,
+        } => {
+            let mut lights: Vec<String> = rooms
+                .iter()
+                .map(|r| format!("the {}", words(r)))
+                .chain(devices.iter().map(|d| thing(d)))
+                .collect();
+            if lights.is_empty() {
+                lights.push("the house".into());
+            }
+            let mut out = format!(
+                "wake {} up over {} minutes, to {}%",
+                and_list(&lights),
+                minutes.unwrap_or(crate::rule::WAKE_UP_MINUTES),
+                brightness.unwrap_or(100)
+            );
+            if let Some(k) = kelvin {
+                out.push_str(&format!(" at {k} K"));
+            }
+            if !except.is_empty() {
+                let left: Vec<String> = except.iter().map(|d| thing(d)).collect();
+                out.push_str(&format!(", but not {}", and_list(&left)));
+            }
+            out
+        }
         ActionDto::Delay {
             hours,
             minutes,
@@ -434,6 +465,15 @@ fn action(step: &ActionDto, names: &[(String, String)]) -> String {
             }
             out
         }
+    }
+}
+
+/// "a", "a and b", "a, b and c".
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -476,6 +516,29 @@ mod tests {
                 "actions": [{ "do": "set_room", "room": "office", "on": false }],
             })),
             "When the office door opens, turn off the office lights."
+        );
+    }
+
+    #[test]
+    fn says_a_wake_up() {
+        assert_eq!(
+            said(json!({
+                "id": "r",
+                "triggers": [{ "type": "time", "at": "06:00" }],
+                "actions": [
+                    { "do": "delay", "hours": 1 },
+                    { "do": "wake_up", "minutes": 30, "rooms": ["bedroom"], "except": ["bedroom/lamp"], "brightness": 80 }
+                ],
+            })),
+            "When it is 06:00, wait 1 hour, then wake the bedroom up over 30 minutes, to 80%, but not the bedroom lamp."
+        );
+        assert!(
+            said(json!({
+                "id": "r",
+                "triggers": [{ "type": "time", "at": "06:00" }],
+                "actions": [{ "do": "wake_up" }],
+            }))
+            .contains("wake the house up over 45 minutes, to 100%")
         );
     }
 

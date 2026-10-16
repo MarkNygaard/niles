@@ -72,6 +72,7 @@ export const ACTION_KINDS: ActionKind[] = [
   "set_room",
   "set_device",
   "set_blinds",
+  "wake_up",
   "notify",
   "delay",
   "if",
@@ -110,6 +111,7 @@ export const KIND_LABEL: {
     set_room: "Lights in a room",
     set_device: "One device",
     set_blinds: "Blinds",
+    wake_up: "Wake-up",
     notify: "Say something",
     delay: "Wait",
     if: "If, then, else",
@@ -759,6 +761,11 @@ function conditionText(c: Condition, triggers: Trigger[]): string {
   }
 }
 
+function andList(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 function branchText(actions: Action[], triggers: Trigger[]): string {
   if (actions.length === 0) return "do nothing";
   return actions.map((a) => lowerFirst(actionText(a, triggers))).join(", ");
@@ -779,6 +786,21 @@ function actionText(a: Action, triggers: Trigger[]): string {
       if (a.position <= 0) return `Close ${what}`;
       if (a.position >= 100) return `Open ${what}`;
       return `Open ${what} to ${a.position}%`;
+    }
+    case "wake_up": {
+      const the = (name: string) => `the ${name.toLowerCase()}`;
+      const where = [
+        ...(a.rooms ?? []).map((r) => the(humanize(r))),
+        ...(a.devices ?? []).map((d) => the(deviceLabel(d))),
+      ];
+      const who = where.length > 0 ? andList(where) : "the house";
+      const warmth = a.kelvin !== undefined ? ` at ${a.kelvin} K` : "";
+      const except =
+        a.except && a.except.length > 0
+          ? `, but not ${andList(a.except.map((d) => the(deviceLabel(d))))}`
+          : "";
+      const over = `over ${a.minutes ?? WAKE_UP_MINUTES} minutes, to ${a.brightness ?? 100}%`;
+      return `Wake ${who} up ${over}${warmth}${except}`;
     }
     case "notify": {
       const said = a.body ? `Say "${a.body}"` : "Say something";
@@ -867,6 +889,7 @@ const USE: Partial<Record<StepKind, Use>> = {
   device_is: "switchable",
   set_device: "switchable",
   set_blinds: "blind",
+  wake_up: "switchable",
   device_action: "actions",
   numeric: "reading",
 };
@@ -977,7 +1000,8 @@ export function deviceChoices(
 /**
  * Every room something is in, and `current` even when nothing is.
  *
- * For the blinds action, only rooms with a blind in them. For the
+ * For a wake-up, only rooms with a light to wake anybody with. For the
+ * blinds action, only rooms with a blind in them. For the
  * lights in a room, a room is not offered on the strength of its
  * blinds: the server never counts one as a light.
  */
@@ -987,7 +1011,9 @@ export function roomChoices(devices: Device[], current?: string, kind?: StepKind
       ? devices.filter(isBlind)
       : kind === "set_room"
         ? devices.filter((d) => !isBlind(d))
-        : devices;
+        : kind === "wake_up"
+          ? devices.filter((d) => d.class === "light")
+          : devices;
   const rooms = new Set(counted.map((d) => d.room).filter(Boolean));
   if (current) rooms.add(current);
   return [...rooms]
@@ -1073,6 +1099,8 @@ export function defaultAction(
       return { do: kind, device: first(devices, kind), on: true };
     case "set_blinds":
       return { do: kind, room: roomChoices(devices, undefined, kind)[0]?.value ?? "", position: 0 };
+    case "wake_up":
+      return { do: kind, minutes: WAKE_UP_MINUTES, brightness: 100 };
     case "notify":
       return { do: kind, body: "" };
     case "delay":
@@ -1108,6 +1136,73 @@ export function withBlindsTarget(a: SetBlinds, target: BlindsTarget, devices: De
         room: roomChoices(devices, undefined, "set_blinds")[0]?.value ?? "",
         position: a.position,
       };
+}
+
+/** How long a wake-up takes when a rule does not say: the morning
+    routine's default. */
+export const WAKE_UP_MINUTES = 45;
+const LONGEST_WAKE_UP = 120;
+
+type WakeUp = Extract<Action, { do: "wake_up" }>;
+
+/** What a wake-up is aimed at: every light, the lights in some rooms,
+    or some lights by name. */
+export type WakeTarget = "house" | "rooms" | "lights";
+
+/** By which fields are there, not whether they hold anything: rooms
+    all unticked must ask for a room, not turn into the whole house,
+    which is what the server makes of none. */
+export function wakeTarget(a: WakeUp): WakeTarget {
+  if (a.rooms !== undefined) return "rooms";
+  if (a.devices !== undefined) return "lights";
+  return "house";
+}
+
+/** The wake-up aimed the other way. Rooms and lights start out with
+    the first that fits, so the step never quietly becomes the whole
+    house; the exceptions go with the target they were made for. */
+export function withWakeTarget(a: WakeUp, target: WakeTarget, devices: Device[]): WakeUp {
+  if (wakeTarget(a) === target) return a;
+  const { rooms: _rooms, devices: _devices, except: _except, ...levels } = a;
+  switch (target) {
+    case "house":
+      return levels;
+    case "rooms": {
+      const room = roomChoices(devices, undefined, "wake_up")[0]?.value;
+      return { ...levels, rooms: room ? [room] : [] };
+    }
+    case "lights": {
+      const light = first(devices, "wake_up");
+      return { ...levels, devices: light ? [light] : [] };
+    }
+  }
+}
+
+/** What a wake-up's tick boxes offer. The exceptions are the lights
+    the wake-up would otherwise take — in its rooms, or anywhere for the
+    whole house — and any already ticked, so one never vanishes. */
+export function wakeChoices(
+  devices: Device[],
+  a: WakeUp,
+): { rooms: Choice[]; lights: Choice[]; except: Choice[] } {
+  const ticked = new Set(a.rooms ?? []);
+  const sorted = (values: string[], label: (value: string) => string) =>
+    [...new Set(values)]
+      .map((value) => ({ value, label: label(value) }))
+      .sort((x, y) => x.label.localeCompare(y.label));
+  const lights = (from: Device[], kept: string[] = []) =>
+    sorted([...deviceChoices(from, "wake_up").map((c) => c.value), ...kept], deviceLabel);
+  return {
+    rooms: sorted(
+      [...roomChoices(devices, undefined, "wake_up").map((c) => c.value), ...ticked],
+      humanize,
+    ),
+    lights: lights(devices, a.devices),
+    except: lights(
+      wakeTarget(a) === "rooms" ? devices.filter((d) => ticked.has(d.room)) : devices,
+      a.except,
+    ),
+  };
 }
 
 /** A position the way the picker offers it: the two ends by name,
@@ -1239,6 +1334,24 @@ function actionProblems(
           ...(Number.isInteger(a.position) && a.position >= 0 && a.position <= 100
             ? []
             : [`${where}: a blind opens 0 to 100%.`]),
+        ];
+      case "wake_up":
+        return [
+          ...(a.minutes !== undefined &&
+          (!Number.isInteger(a.minutes) || a.minutes < 1 || a.minutes > LONGEST_WAKE_UP)
+            ? [`${where}: a wake-up takes 1 to ${LONGEST_WAKE_UP} minutes.`]
+            : []),
+          ...(a.brightness !== undefined &&
+          (!Number.isInteger(a.brightness) || a.brightness < 1 || a.brightness > 100)
+            ? [`${where}: a wake-up ends at 1 to 100%.`]
+            : []),
+          ...(wakeTarget(a) === "rooms" && !a.rooms?.length && !a.devices?.length
+            ? [`${where} needs a room.`]
+            : []),
+          ...(wakeTarget(a) === "lights" && !a.devices?.length
+            ? [`${where} needs a light.`]
+            : []),
+          ...levels(where, { on: true, kelvin: a.kelvin }),
         ];
       case "notify":
         return a.body.trim() ? [] : [`${where} needs something to say.`];

@@ -137,7 +137,13 @@ pub fn about_automations(said: &str) -> bool {
     // "Remind me to close the curtains after sunset" is a rule; "remind
     // me in ten minutes" is a timer.
     const MOMENT: &[&str] = &["sunset", "sunrise", "sun", "every", "when", "whenever"];
-    has("remind me") && MOMENT.iter().any(|p| has(p))
+    if has("remind me") && MOMENT.iter().any(|p| has(p)) {
+        return true;
+    }
+    // "Wake me up seven hours after I go to bed" is a rule; "wake me at
+    // six" is an alarm.
+    const LATER: &[&str] = &["after", "when", "whenever", "every"];
+    (has("wake me") || has("wake us")) && LATER.iter().any(|p| has(p))
 }
 
 /// A plain yes or no to a question, and nothing else: `Some(true)` for
@@ -249,9 +255,12 @@ fn rule_schema() -> Value {
     });
     let action = json!({
         "type": "object",
-        "description": "do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=set_blinds: blinds/curtains to a position (0 closed, 100 open), one (device) or every one in a room (room). do=notify: say body in a room (a room with a satellite). do=delay: wait hours/minutes/seconds, then go on. do=if: conditions, then (actions), else (actions) — at most 3 deep.",
+        "description": "do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=set_blinds: blinds/curtains to a position (0 closed, 100 open), one (device) or every one in a room (room). do=notify: say body in a room (a room with a satellite). do=wake_up: the morning routine, now — lights that are off come on at 0% and ramp up over minutes (1-120, default 45) to brightness (default 100) and optional kelvin, then hold there; rooms and devices pick the lights (every light in the house when neither is given), except leaves some out; for 'wake me up', usually after a delay. do=delay: wait hours/minutes/seconds, then go on. do=if: conditions, then (actions), else (actions) — at most 3 deep.",
         "properties": {
-            "do": { "type": "string", "enum": ["set_room", "set_device", "set_blinds", "notify", "delay", "if"] },
+            "do": { "type": "string", "enum": ["set_room", "set_device", "set_blinds", "notify", "wake_up", "delay", "if"] },
+            "rooms": { "type": "array", "items": { "type": "string" } },
+            "devices": { "type": "array", "items": device.clone() },
+            "except": { "type": "array", "items": device.clone() },
             "room": { "type": "string" },
             "device": device,
             "on": { "type": "boolean" },
@@ -442,6 +451,16 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
                 ActionDto::SetDevice { device, .. } => devices.push(device),
                 ActionDto::SetRoom { room, .. } => lit.push(room),
                 ActionDto::SetBlinds { device, .. } => devices.extend(device.as_deref()),
+                ActionDto::WakeUp {
+                    rooms,
+                    devices: named,
+                    except,
+                    ..
+                } => {
+                    lit.extend(rooms.iter().map(String::as_str));
+                    devices.extend(named.iter().map(String::as_str));
+                    devices.extend(except.iter().map(String::as_str));
+                }
                 ActionDto::If {
                     conditions,
                     then,
@@ -1129,6 +1148,7 @@ mod tests {
             "change the curtain rule to an hour after sunset",
             "remind me to take out the bins every Tuesday evening",
             "as soon as Mark comes home turn on the hallway",
+            "wake me up seven hours after I go to bed",
         ] {
             assert!(about_automations(said), "{said}");
         }
@@ -1138,6 +1158,7 @@ mod tests {
             "turn off the office light",
             "what's the weather",
             "set a timer for 5 minutes",
+            "wake me at six",
         ] {
             assert!(!about_automations(said), "{said}");
         }

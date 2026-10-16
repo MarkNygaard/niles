@@ -846,6 +846,19 @@ export type Action =
   /** Every blind in a room, or one blind: exactly one of the two.
       `position` is 0 closed to 100 open. */
   | { do: "set_blinds"; room?: string; device?: string; position: number }
+  /** The morning routine's sunrise, run from a rule: lights that are
+      off ramp up from nothing over `minutes` (1 to 120, 45 left out)
+      to `brightness` (100 left out), then hold there until changed.
+      No rooms and no devices is every light in the house. */
+  | {
+      do: "wake_up";
+      minutes?: number;
+      rooms?: string[];
+      devices?: string[];
+      except?: string[];
+      brightness?: number;
+      kelvin?: number;
+    }
   | {
       do: "notify";
       body: string;

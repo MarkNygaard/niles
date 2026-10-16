@@ -337,6 +337,48 @@ describe("AutomationEditor", () => {
     expect(screen.getByText("Wait 30 seconds")).toBeInTheDocument();
   });
 
+  it("wakes a room up, all but one lamp, and saves the settings with the rule", async () => {
+    const lamps = [...house, device("z2m:office/floor_lamp", "light")];
+    open(undefined, [stored], lamps);
+    const create = vi.spyOn(api, "createAutomation").mockResolvedValue(stored);
+    fireEvent.click(await screen.findByRole("button", { name: "Add action" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Wake-up" }));
+    expect(
+      await screen.findByText("Wake the house up over 45 minutes, to 100%"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Rooms" }));
+    const rooms = screen.getByRole("group", { name: "Every light in" });
+    expect(within(rooms).getByRole("checkbox", { name: "Office" })).toBeChecked();
+    const except = screen.getByRole("group", { name: "But not" });
+    fireEvent.click(within(except).getByRole("checkbox", { name: "Office floor lamp" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Minutes" }), {
+      target: { value: "30" },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Brightness" }), {
+      target: { value: "80" },
+    });
+    expect(
+      screen.getByText("Wake the office up over 30 minutes, to 80%, but not the office floor lamp"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actions: [
+            { do: "set_room", room: "office", on: false },
+            {
+              do: "wake_up",
+              minutes: 30,
+              brightness: 80,
+              rooms: ["office"],
+              except: ["office/floor_lamp"],
+            },
+          ],
+        }),
+      ),
+    );
+  });
+
   it("branches on which trigger started it, and saves the branches nested", async () => {
     open(undefined);
     const create = vi.spyOn(api, "createAutomation").mockResolvedValue(stored);
