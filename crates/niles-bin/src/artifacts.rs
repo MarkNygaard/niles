@@ -166,6 +166,9 @@ pub(crate) struct Artifacts {
     /// Jobs going, per person.
     running: Arc<Mutex<HashMap<String, usize>>>,
     touched: Mutex<Vec<Touch>>,
+    /// When this run began: a job that last moved before it was the
+    /// last run's.
+    started: chrono::DateTime<chrono::Utc>,
 }
 
 /// One person's place among the jobs going, given back when the job
@@ -274,6 +277,7 @@ impl Artifacts {
             extras,
             running: Arc::default(),
             touched: Mutex::default(),
+            started: chrono::Utc::now(),
         }
     }
 
@@ -317,7 +321,7 @@ impl Artifacts {
     /// Mark every job a restart left behind as failed: its run was in
     /// the pod that went.
     pub(crate) async fn recover(&self) {
-        match self.store.fail_abandoned(RESTARTED).await {
+        match self.store.fail_abandoned(RESTARTED, self.started).await {
             Ok(0) => {}
             Ok(n) => tracing::info!("[artifacts] {n} job(s) were cut short by a restart"),
             Err(e) => {
@@ -1653,13 +1657,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_restart_fails_what_was_running() {
+    async fn a_restart_fails_what_the_last_run_was_writing_and_not_its_own() {
+        let store = Arc::new(MemoryArtifacts::new());
+        let left = store
+            .create(
+                MARK,
+                NewArtifact {
+                    kind: "document".into(),
+                    title: "Half written".into(),
+                    summary: String::new(),
+                    notify: true,
+                    status: Status::Working,
+                    status_text: Some("Writing…".into()),
+                    job_id: Some("old".into()),
+                    brief: Some("b".into()),
+                    conversation_id: None,
+                    first: None,
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
         let go = Arc::new(Notify::new());
-        let f = fixture(FakeRunner::doing(vec![Does::Waits(go)]));
-        let id = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
-        f.artifacts.recover().await;
-        let a = f.store.get(MARK, id).await.unwrap().unwrap();
-        assert_eq!(a.status, Status::Failed);
-        assert_eq!(a.error.as_deref(), Some(RESTARTED));
+        let artifacts = Arc::new(Artifacts::new(
+            store.clone(),
+            EventBus::default(),
+            FakeRunner::doing(vec![Does::Waits(go)]),
+            Arc::new(Nobody),
+            None,
+            Box::new(|_| {}),
+        ));
+        let own = artifacts
+            .start(
+                &asking(MARK, None),
+                Job {
+                    kind: kinds::require("document").unwrap(),
+                    title: "New".into(),
+                    summary: String::new(),
+                    brief: "b".into(),
+                    status_text: "Writing…".into(),
+                    notify: true,
+                },
+            )
+            .await
+            .unwrap();
+        artifacts.recover().await;
+        let left = store.get(MARK, left.id).await.unwrap().unwrap();
+        assert_eq!(left.status, Status::Failed);
+        assert_eq!(left.error.as_deref(), Some(RESTARTED));
+        let own = store.get(MARK, own.id).await.unwrap().unwrap();
+        assert_eq!(own.status, Status::Working);
     }
 }

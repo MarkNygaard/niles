@@ -4465,10 +4465,12 @@ async fn ask_assistant(
     let history = ctx.conversation.recent_messages(thread);
     let started = Instant::now();
     let name = chosen.name();
-    // Only for somebody Niles knows: an unrecognised voice has nowhere
-    // to keep one.
+    // Only in the app's chat, where a card can show what was saved, and
+    // for somebody Niles knows: an unrecognised voice has nowhere to
+    // keep one.
     let mut system_prompt = system_prompt.to_string();
     if ctx.artifacts.is_some()
+        && matches!(thread, conversation::Thread::Chat(_))
         && approvals::asker().is_some_and(|a| !a.person.starts_with("satellite:"))
     {
         system_prompt.push_str(artifacts::PROMPT);

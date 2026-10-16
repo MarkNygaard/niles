@@ -5,7 +5,7 @@ use crate::model::{
     StatusChange,
 };
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -44,9 +44,10 @@ pub trait ArtifactStore: Send + Sync {
     async fn set_conversation(&self, person: &str, id: i64, conversation: i64) -> Result<bool>;
     /// The artifact and every version of it.
     async fn delete(&self, person: &str, id: i64) -> Result<bool>;
-    /// Every job still `working`, whoever's, marked failed with
-    /// `reason`: after a restart, nothing is writing them any more.
-    async fn fail_abandoned(&self, reason: &str) -> Result<u64>;
+    /// Every job still `working` that last moved before `before`,
+    /// whoever's, marked failed with `reason`: after a restart, nothing
+    /// is writing them any more. One started since is this run's own.
+    async fn fail_abandoned(&self, reason: &str, before: DateTime<Utc>) -> Result<u64>;
 }
 
 /// Version `n` of an artifact saved again as a new version, by the
@@ -284,13 +285,13 @@ impl ArtifactStore for MemoryArtifacts {
         Ok(gone)
     }
 
-    async fn fail_abandoned(&self, reason: &str) -> Result<u64> {
+    async fn fail_abandoned(&self, reason: &str, before: DateTime<Utc>) -> Result<u64> {
         let mut inner = self.lock();
         let mut n = 0;
         for a in inner
             .artifacts
             .iter_mut()
-            .filter(|a| a.status == Status::Working)
+            .filter(|a| a.status == Status::Working && a.updated_at < before)
         {
             a.status = Status::Failed;
             a.status_text = None;
@@ -495,12 +496,30 @@ mod tests {
         job.first = None;
         job.status = Status::Working;
         job.status_text = Some("Writing…".into());
-        let a = store.create("person:mark", job).await.unwrap();
-        assert_eq!(store.fail_abandoned("Niles restarted").await.unwrap(), 1);
+        let a = store.create("person:mark", job.clone()).await.unwrap();
+        let restarted = Utc::now() + chrono::Duration::milliseconds(1);
+        // Started by this run, after it came up: still its own.
+        let mut later = store.create("person:mark", job).await.unwrap();
+        later.updated_at = restarted + chrono::Duration::seconds(1);
+        store
+            .lock()
+            .find("person:mark", later.id)
+            .unwrap()
+            .updated_at = later.updated_at;
+
+        assert_eq!(
+            store
+                .fail_abandoned("Niles restarted", restarted)
+                .await
+                .unwrap(),
+            1
+        );
         let a = store.get("person:mark", a.id).await.unwrap().unwrap();
         assert_eq!(a.status, Status::Failed);
         assert_eq!(a.status_text, None);
         assert_eq!(a.error.as_deref(), Some("Niles restarted"));
+        let later = store.get("person:mark", later.id).await.unwrap().unwrap();
+        assert_eq!(later.status, Status::Working);
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@
 //! no JSON feature and the conversation log already works this way.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use niles_artifacts::{
     Artifact, ArtifactStore, Author, Changes, Error, Filter, KEPT_REVISIONS, NewArtifact,
     NewRevision, Result, Revision, RevisionMeta, Status, StatusChange,
@@ -396,13 +397,14 @@ impl ArtifactStore for PostgresArtifacts {
         Ok(done.rows_affected() == 1)
     }
 
-    async fn fail_abandoned(&self, reason: &str) -> Result<u64> {
+    async fn fail_abandoned(&self, reason: &str, before: DateTime<Utc>) -> Result<u64> {
         self.ensure_schema().await?;
         let done = sqlx::query(
             "update artifacts set status = 'failed', status_text = null, error = $1, job_id = null
-             where status = 'working'",
+             where status = 'working' and updated_at < $2",
         )
         .bind(reason)
+        .bind(before)
         .execute(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;

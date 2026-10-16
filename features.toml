@@ -624,3 +624,22 @@ category = "voice.training"
 summary = "Ask about your own runs and workouts from your Strava by voice or chat, and have a week or month added up"
 phrasings = ["how was my week", "how far did I run on Sunday", "what was my pace on my last run"]
 since_pr = 410
+
+[[feature]]
+id = "artifacts-documents"
+category = "runtime.assistant"
+summary = "Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background"
+phrasings = ["write a packing list for the cabin", "make a travel plan for our Thailand trip", "add sunscreen to my packing list"]
+since_pr = 9999
+
+[[feature]]
+id = "ui-saved-artifacts"
+category = "ui.chat"
+summary = "Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply"
+since_pr = 9999
+
+[[feature]]
+id = "events-artifact-status"
+category = "api.events"
+summary = "artifact_changed on /events/stream, only to its own person: the status line follows a job as it is written"
+since_pr = 9999
