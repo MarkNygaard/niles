@@ -992,6 +992,92 @@ export interface Turn {
   proposal: Proposal | null;
   /** What this turn left waiting for a yes. */
   approval?: ApprovalCard | null;
+  /** The artifacts this turn made or changed, for a card under the
+      reply. Absent when there are none. */
+  artifacts?: ArtifactRef[];
+}
+
+export type ArtifactStatus = "ready" | "working" | "failed";
+
+/** One line of an artifact's preview, its markup gone. */
+export interface PreviewLine {
+  text: string;
+  style: "heading" | "bullet" | "number" | "check" | "text";
+  /** For a checklist item. */
+  checked?: boolean;
+}
+
+export interface Preview {
+  lines: PreviewLine[];
+}
+
+/** An artifact as a chat turn carries it. Mirrors `ArtifactRef` in
+    crates/niles-artifacts/src/model.rs. */
+export interface ArtifactRef {
+  id: number;
+  kind: string;
+  title: string;
+  summary: string;
+  status: ArtifactStatus;
+  preview: Preview;
+}
+
+/** Something Niles made for the signed-in person, as Saved lists it. */
+export interface Artifact {
+  id: number;
+  kind: string;
+  title: string;
+  summary: string;
+  pinned: boolean;
+  archived: boolean;
+  /** Whether they are told when its job ends. */
+  notify: boolean;
+  status: ArtifactStatus;
+  /** What its job is doing, while it does it. */
+  status_text: string | null;
+  /** Why its job did not finish. */
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  /** The version shown; 0 before there is one. */
+  current_revision: number;
+  preview: Preview;
+}
+
+export type ArtifactAuthor = "person" | "claude" | "chatgpt" | "niles";
+
+export interface ArtifactRevisionMeta {
+  n: number;
+  reason: string;
+  author: ArtifactAuthor;
+  at: string;
+}
+
+export interface ArtifactRevision extends ArtifactRevisionMeta {
+  content: unknown;
+}
+
+export interface ArtifactDetail extends Artifact {
+  /** The current version's content; null before there is one. */
+  content: unknown;
+  /** Newest first. */
+  revisions: ArtifactRevisionMeta[];
+}
+
+export interface ArtifactList {
+  artifacts: Artifact[];
+  /** Which assistant makes them now; null when neither is on. */
+  assistant: AssistantId | null;
+}
+
+export interface ArtifactPatch {
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  notify?: boolean;
+  /** A new version, by the person. */
+  content?: unknown;
+  reason?: string;
 }
 
 export type ApprovalStatus = "pending" | "allowed" | "denied" | "lapsed" | "failed";
@@ -1287,6 +1373,21 @@ export const api = {
       headers: { "content-type": audio.type || "audio/webm" },
       body: audio,
     }),
+  artifacts: () => request<ArtifactList>("/me/artifacts"),
+  artifact: (id: number) => request<ArtifactDetail>(`/me/artifacts/${id}`),
+  artifactRevision: (id: number, n: number) =>
+    request<ArtifactRevision>(`/me/artifacts/${id}/revisions/${n}`),
+  patchArtifact: (id: number, patch: ArtifactPatch) =>
+    request<ArtifactDetail>(`/me/artifacts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  restoreArtifact: (id: number, n: number) =>
+    request<ArtifactDetail>(`/me/artifacts/${id}/restore/${n}`, { method: "POST" }),
+  retryArtifact: (id: number) =>
+    request<Artifact>(`/me/artifacts/${id}/retry`, { method: "POST" }),
+  deleteArtifact: (id: number) =>
+    request<void>(`/me/artifacts/${id}`, { method: "DELETE" }),
   groceries: () => request<GroceryList>("/groceries"),
   addGrocery: (name: string) =>
     request<{ item: GroceryItem; already: boolean }>("/groceries", {

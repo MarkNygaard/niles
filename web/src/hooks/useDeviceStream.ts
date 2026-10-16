@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { mergeReported } from "@/lib/rooms";
-import type { Device, DeviceState } from "@/lib/api";
+import { ARTIFACTS, ARTIFACT_LIST } from "@/lib/artifacts";
+import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState } from "@/lib/api";
 
 /**
  * Keep the device list in step with what the house is actually doing.
@@ -14,7 +15,8 @@ import type { Device, DeviceState } from "@/lib/api";
  * `/events/stream`, so take it from there and patch the cache in place.
  *
  * The same stream says when a plugin's page or widget has changed,
- * which refetches it if it is on screen.
+ * which refetches it if it is on screen, and when one of the signed-in
+ * person's artifacts moves on, which Saved and the status line follow.
  */
 export function useDeviceStream() {
   const queryClient = useQueryClient();
@@ -56,6 +58,14 @@ export function useDeviceStream() {
               queryKey: ["surface", event.plugin, event.surface],
             });
             break;
+          case "artifact_changed":
+            patchArtifact(queryClient, event);
+            void queryClient.invalidateQueries({ queryKey: ARTIFACTS });
+            // A finished job leaves a card in the chat it came from.
+            if (event.status === "ready" || event.status === "failed") {
+              void queryClient.invalidateQueries({ queryKey: ["chat"] });
+            }
+            break;
         }
       };
 
@@ -84,7 +94,60 @@ type WireEvent =
   | { type: "device_added"; id: string }
   | { type: "device_removed"; id: string }
   | { type: "ui_invalidated"; plugin: string; surface: string }
+  | ArtifactChanged
   | { type: "ping" | "close" };
+
+interface ArtifactChanged {
+  type: "artifact_changed";
+  id: number;
+  kind: string;
+  title: string;
+  status: ArtifactStatus | "deleted";
+  status_text: string | null;
+}
+
+/**
+ * Saved as the frame says it is now, before the refetch lands: the
+ * status line says "Writing…" the moment a job starts, not a round trip
+ * later. One the list has not heard of yet joins it from the frame.
+ */
+function patchArtifact(queryClient: ReturnType<typeof useQueryClient>, event: ArtifactChanged) {
+  queryClient.setQueryData<ArtifactList>(ARTIFACT_LIST, (list) => {
+    if (!list) return list;
+    if (event.status === "deleted") {
+      return { ...list, artifacts: list.artifacts.filter((a) => a.id !== event.id) };
+    }
+    const now = new Date().toISOString();
+    const status = event.status;
+    const known = list.artifacts.some((a) => a.id === event.id);
+    const artifacts: Artifact[] = known
+      ? list.artifacts.map((a) =>
+          a.id === event.id
+            ? { ...a, title: event.title, status, status_text: event.status_text, updated_at: now }
+            : a,
+        )
+      : [
+          {
+            id: event.id,
+            kind: event.kind,
+            title: event.title,
+            summary: "",
+            pinned: false,
+            archived: false,
+            notify: true,
+            status,
+            status_text: event.status_text,
+            error: null,
+            created_at: now,
+            updated_at: now,
+            current_revision: 0,
+            preview: { lines: [] },
+          },
+          ...list.artifacts,
+        ];
+    return { ...list, artifacts };
+  });
+}
 
 function parse(raw: unknown): WireEvent | null {
   if (typeof raw !== "string") return null;

@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage, landingOn, panelStatus } from "@/components/ChatPage";
 import { ApiError, api } from "@/lib/api";
-import type { Conversation, ConversationSummary, Turn } from "@/lib/api";
+import type {
+  Artifact,
+  ArtifactDetail,
+  ArtifactList,
+  ArtifactRef,
+  Conversation,
+  ConversationSummary,
+  Turn,
+} from "@/lib/api";
 
 const MINUTE = 60_000;
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -54,7 +62,51 @@ function reply(conversations: Record<number, Conversation>, id: number, answer: 
   };
 }
 
-function show(list: ConversationSummary[], conversations: Record<number, Conversation> = {}) {
+/** A WebSocket that only the test speaks through. */
+class FakeSocket {
+  static last: FakeSocket | null = null;
+  onopen: (() => void) | null = null;
+  onmessage: ((m: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  constructor() {
+    FakeSocket.last = this;
+  }
+  close() {}
+}
+
+function frame(event: object) {
+  act(() => FakeSocket.last!.onmessage!({ data: JSON.stringify(event) }));
+}
+
+const NOTHING_SAVED: ArtifactList = { artifacts: [], assistant: "claude" };
+
+function artifact(id: number, title: string, rest: Partial<Artifact> = {}): Artifact {
+  return {
+    id,
+    kind: "document",
+    title,
+    summary: "",
+    pinned: false,
+    archived: false,
+    notify: true,
+    status: "ready",
+    status_text: null,
+    error: null,
+    created_at: ago(MINUTE),
+    updated_at: ago(MINUTE),
+    current_revision: 1,
+    preview: { lines: [] },
+    ...rest,
+  };
+}
+
+function show(
+  list: ConversationSummary[],
+  conversations: Record<number, Conversation> = {},
+  saved: ArtifactList = NOTHING_SAVED,
+) {
+  vi.stubGlobal("WebSocket", FakeSocket);
+  if (!vi.isMockFunction(api.artifacts)) vi.spyOn(api, "artifacts").mockResolvedValue(saved);
   vi.spyOn(api, "conversations").mockResolvedValue(list);
   vi.spyOn(api, "conversation").mockImplementation(async (id) => {
     if (!conversations[id]) throw new ApiError("no such conversation", 404);
@@ -101,22 +153,125 @@ describe("panelStatus", () => {
   const now = new Date("2026-10-14T12:00:00Z");
 
   it("is thinking while a reply is on its way", () => {
-    expect(panelStatus(true, [summary(1, "a")], now)).toBe("Thinking…");
+    expect(panelStatus(true, [summary(1, "a")], undefined, now)).toBe("Thinking…");
   });
 
   it("says when Niles was last talked to", () => {
     const last = summary(1, "a", { last_at: new Date(now.getTime() - 5 * MINUTE).toISOString() });
-    expect(panelStatus(false, [last], now)).toBe("Last talked 5 minutes ago");
+    expect(panelStatus(false, [last], undefined, now)).toBe("Last talked 5 minutes ago");
+  });
+
+  it("says what is being written in the background", () => {
+    const working = artifact(1, "Thailand travel plan", {
+      status: "working",
+      status_text: "Writing your Thailand travel plan…",
+    });
+    expect(panelStatus(false, [summary(1, "a")], [working], now)).toBe(
+      "✍️ Writing your Thailand travel plan…",
+    );
+    expect(panelStatus(false, [], [artifact(2, "Notes")], now)).toBe("Ready");
   });
 
   it("is ready when nothing has been said yet", () => {
-    expect(panelStatus(false, [], now)).toBe("Ready");
-    expect(panelStatus(false, undefined, now)).toBe("Ready");
+    expect(panelStatus(false, [], undefined, now)).toBe("Ready");
+    expect(panelStatus(false, undefined, undefined, now)).toBe("Ready");
   });
 });
 
 describe("ChatPage", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("opens the panel on an artifact from its card in the chat", async () => {
+    const card: ArtifactRef = {
+      id: 9,
+      kind: "document",
+      title: "Thailand travel plan",
+      summary: "Two weeks in March",
+      status: "ready",
+      preview: { lines: [{ text: "Bangkok", style: "bullet" }] },
+    };
+    show([CURTAINS], {
+      42: conversationOf(CURTAINS, [
+        turn("plan our Thailand trip", "I'm putting it together."),
+        turn("", "Thailand travel plan is ready.", { artifacts: [card] }),
+      ]),
+    });
+    const plan: ArtifactDetail = {
+      ...artifact(9, "Thailand travel plan", { summary: "Two weeks in March" }),
+      content: { markdown: "# Thailand\n\n- Bangkok" },
+      revisions: [{ n: 1, reason: "First draft", author: "claude", at: ago(MINUTE) }],
+    };
+    vi.spyOn(api, "artifact").mockResolvedValue(plan);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open Thailand travel plan" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Niles" }));
+    expect(dialog.getByRole("tab", { name: "Saved" })).toHaveAttribute("aria-selected", "true");
+    expect(
+      await dialog.findByRole("heading", { name: "Thailand travel plan" }),
+    ).toBeInTheDocument();
+    expect(dialog.getByRole("heading", { name: "Thailand" })).toBeInTheDocument();
+    expect(api.artifact).toHaveBeenCalledWith(9);
+
+    fireEvent.click(dialog.getByRole("button", { name: "Saved" }));
+    expect(await dialog.findByText(/Nothing saved yet/)).toBeInTheDocument();
+  });
+
+  it("shows the job being written in the status line, as the stream says", async () => {
+    const working = artifact(3, "Thailand travel plan", {
+      status: "working",
+      status_text: "Writing your Thailand travel plan…",
+    });
+    // What the server would answer now: nothing, until the job starts.
+    let now: ArtifactList = NOTHING_SAVED;
+    vi.spyOn(api, "artifacts").mockImplementation(async () => now);
+    show([MILK]);
+    const dialog = await openPanel();
+    expect(dialog.getByRole("status")).toHaveTextContent("Last talked yesterday");
+    await waitFor(() => expect(FakeSocket.last?.onmessage).toBeTruthy());
+
+    now = { artifacts: [working], assistant: "claude" };
+    frame({
+      type: "artifact_changed",
+      id: 3,
+      kind: "document",
+      title: "Thailand travel plan",
+      status: "working",
+      status_text: "Writing your Thailand travel plan…",
+    });
+    await waitFor(() =>
+      expect(dialog.getByRole("status")).toHaveTextContent(
+        "✍️ Writing your Thailand travel plan…",
+      ),
+    );
+    fireEvent.click(dialog.getByRole("tab", { name: "Saved" }));
+    expect(await dialog.findByText("being written…")).toBeInTheDocument();
+
+    now = { artifacts: [{ ...working, status: "ready", status_text: null }], assistant: "claude" };
+    frame({
+      type: "artifact_changed",
+      id: 3,
+      kind: "document",
+      title: "Thailand travel plan",
+      status: "ready",
+      status_text: null,
+    });
+    await waitFor(() =>
+      expect(dialog.getByRole("status")).toHaveTextContent("Last talked yesterday"),
+    );
+  });
+
+  it("says in Saved that Claude or ChatGPT makes these, when neither is on", async () => {
+    show([MILK], {}, { artifacts: [], assistant: null });
+    const dialog = await openPanel();
+    fireEvent.click(dialog.getByRole("tab", { name: "Saved" }));
+    expect(await dialog.findByText(/Claude or ChatGPT makes these/)).toBeInTheDocument();
+    expect(
+      dialog.getByRole("link", { name: "Switch one on in Settings → Voice & AI" }),
+    ).toBeInTheDocument();
+  });
 
   it("lists past conversations, marking the spoken ones", async () => {
     show([CURTAINS, MILK], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
