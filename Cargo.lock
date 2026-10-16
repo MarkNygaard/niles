@@ -2571,6 +2571,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "niles-artifacts"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "niles-automations"
 version = "0.2.1"
 dependencies = [
@@ -2719,6 +2731,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "chrono-tz",
+ "niles-artifacts",
  "niles-calendar",
  "niles-config",
  "niles-presence",

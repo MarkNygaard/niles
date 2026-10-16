@@ -107,6 +107,7 @@ niles-integration-linear = { path = "crates/niles-integration-linear" }
 niles-mcp = { path = "crates/niles-mcp" }
 niles-plugins = { path = "crates/niles-plugins" }
 niles-training = { path = "crates/niles-training" }
+niles-artifacts = { path = "crates/niles-artifacts" }
 
 # Every niles-plugins test compiles a component with Cranelift, and an
 # unoptimised Cranelift made those tests most of CI's `cargo test`.
