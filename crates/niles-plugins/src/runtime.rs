@@ -11,6 +11,8 @@
 use crate::bindings::niles::integration::types as wit;
 use crate::error::{Error, Result};
 use crate::host::{HostState, class_to_wit, state_to_wit};
+use crate::inbound::{Bucket, HookAnswer, HookRequest, LastHook};
+use crate::kept::{KeptSecrets, MemoryKept};
 use crate::log::{Level, PluginLog};
 use crate::manifest::{EventPermission, Manifest};
 use crate::store::{KnownDevice, Package, PluginStore};
@@ -38,6 +40,9 @@ pub type MqttWatch = Arc<dyn Fn(&crate::mqtt::Trace) + Send + Sync>;
 /// The house's time zone, an IANA name, read each time a plugin asks:
 /// it can change while plugins run.
 pub type TimeZoneFn = Arc<dyn Fn() -> String + Send + Sync>;
+/// Niles's public address, `[api] public_url`, if the household set one:
+/// what a plugin's webhook and callback addresses are built on.
+pub type PublicUrlFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// The largest component Niles will run.
 pub const MAX_COMPONENT: usize = 64 * 1024 * 1024;
@@ -60,6 +65,8 @@ pub struct Limits {
     pub init: Duration,
     pub render: Duration,
     pub stop: Duration,
+    /// `on-webhook`: the caller is still holding the connection.
+    pub webhook: Duration,
     /// Waits before each restart after a trap or a timeout; the last
     /// one repeats.
     pub backoff: Vec<Duration>,
@@ -80,6 +87,7 @@ impl Default for Limits {
             init: Duration::from_secs(30),
             render: Duration::from_secs(3),
             stop: Duration::from_secs(2),
+            webhook: Duration::from_secs(5),
             backoff: vec![
                 Duration::from_secs(5),
                 Duration::from_secs(30),
@@ -105,6 +113,12 @@ pub struct House {
     pub(crate) secrets: SecretsFn,
     pub(crate) mqtt_watch: Option<MqttWatch>,
     pub(crate) time_zone: TimeZoneFn,
+    pub(crate) public_url: PublicUrlFn,
+    /// The credentials plugins keep themselves (`secrets`, 0.3).
+    pub(crate) kept: Arc<dyn KeptSecrets>,
+    /// Held while a webhook token is made or replaced, so two callers
+    /// asking at once are given the same one.
+    pub(crate) hook_tokens: tokio::sync::Mutex<()>,
     /// See [`House::allowing_loopback`].
     pub(crate) loopback: bool,
     pub(crate) handle: tokio::runtime::Handle,
@@ -123,6 +137,9 @@ impl House {
             secrets: Arc::new(|_, _| None),
             mqtt_watch: None,
             time_zone: Arc::new(|| "UTC".to_string()),
+            public_url: Arc::new(|| None),
+            kept: Arc::new(MemoryKept::new()),
+            hook_tokens: tokio::sync::Mutex::new(()),
             loopback: false,
             handle: tokio::runtime::Handle::current(),
         }
@@ -159,6 +176,27 @@ impl House {
     pub fn with_time_zone(mut self, time_zone: TimeZoneFn) -> Self {
         self.time_zone = time_zone;
         self
+    }
+
+    /// Niles's public address, read each time it is needed. None until
+    /// this is set, and then no plugin has a webhook or a callback.
+    pub fn with_public_url(mut self, public_url: PublicUrlFn) -> Self {
+        self.public_url = public_url;
+        self
+    }
+
+    /// Where plugins keep their own credentials. In memory until this
+    /// is set.
+    pub fn with_kept_secrets(mut self, kept: Arc<dyn KeptSecrets>) -> Self {
+        self.kept = kept;
+        self
+    }
+
+    /// The public address, without a trailing slash, if one is set.
+    pub(crate) fn public(&self) -> Option<String> {
+        (self.public_url)()
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
     }
 
     /// Be told each connect, status, subscription, publish and message
@@ -655,6 +693,241 @@ impl Runtime {
         plugin.act(surface, control, value, context).await
     }
 
+    /// The manifest of a plugin that is installed, running or not, as
+    /// its approval kept it.
+    pub async fn installed_manifest(&self, id: &str) -> Option<Manifest> {
+        if let Some(manifest) = self.manifest(id) {
+            return Some(manifest);
+        }
+        let package = self.inner.house.store.package(id).await.ok()??;
+        Manifest::parse(&package.manifest).ok()
+    }
+
+    /// Where a plugin's callback is, to register with the service it
+    /// signs in to: none without the `callback` permission, or until
+    /// Niles's public address is set.
+    pub async fn callback_url(&self, id: &str) -> Option<String> {
+        let manifest = self.installed_manifest(id).await?;
+        if !manifest.permissions.callback {
+            return None;
+        }
+        Some(crate::inbound::callback_url(
+            &self.inner.house.public()?,
+            id,
+        ))
+    }
+
+    /// Whether a plugin takes a browser back from a sign-in page, which
+    /// is all a `HEAD` on its callback is told.
+    pub async fn takes_callbacks(&self, id: &str) -> bool {
+        self.installed_manifest(id)
+            .await
+            .is_some_and(|m| m.permissions.callback)
+    }
+
+    /// Where a plugin's webhook is: none without the `webhook`
+    /// permission, or until Niles's public address is set. Its token is
+    /// made the first time anybody asks.
+    pub async fn hook_url(&self, id: &str) -> Option<String> {
+        let manifest = self.installed_manifest(id).await?;
+        if !manifest.permissions.webhook {
+            return None;
+        }
+        self.hook_address(id, &self.inner.house.public()?).await
+    }
+
+    /// Niles's public address, without a trailing slash, if one is set.
+    pub fn public_url(&self) -> Option<String> {
+        self.inner.house.public()
+    }
+
+    /// `id`'s webhook under `public`, for a plugin known to have one.
+    pub(crate) async fn hook_address(&self, id: &str, public: &str) -> Option<String> {
+        match crate::inbound::token(&self.inner.house, id, true).await {
+            Ok(Some(token)) => Some(crate::inbound::hook_url(public, id, &token)),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(plugin = %id, "no webhook address: {e}");
+                None
+            }
+        }
+    }
+
+    /// When a plugin's webhook was last called, and what it answered.
+    pub fn last_hook(&self, id: &str) -> Option<LastHook> {
+        let plugin = self.inner.plugin(id).ok()?;
+        lock(&plugin.last_hook).clone()
+    }
+
+    /// Give a plugin's webhook a new address. The old one answers 404
+    /// from now on, and the plugin is restarted so its `init` can give
+    /// the service the new one.
+    pub async fn rotate_hook(&self, id: &str) -> Result<()> {
+        let manifest = self
+            .installed_manifest(id)
+            .await
+            .ok_or_else(|| Error::UnknownPlugin(id.to_string()))?;
+        if !manifest.permissions.webhook {
+            return Err(Error::NoWebhook(manifest.name));
+        }
+        crate::inbound::rotate(&self.inner.house, id)
+            .await
+            .map_err(Error::Store)?;
+        if let Ok(plugin) = self.inner.plugin(id) {
+            plugin.note(Level::Info, "The webhook has a new address");
+            // Said now rather than when its thread gets to the restart,
+            // so nothing in between takes the old instance for one that
+            // knows the new address.
+            plugin.set_status(Status::Starting);
+            plugin.queue.restart();
+        }
+        Ok(())
+    }
+
+    /// The sign-in page to send `person`'s browser to, to connect an
+    /// account. `state` is the single-use value the caller checks when
+    /// the browser comes back.
+    pub async fn authorize_url(
+        &self,
+        id: &str,
+        state: &str,
+    ) -> std::result::Result<String, SurfaceError> {
+        let plugin = self.connecting(id).await?;
+        let callback_url = self.connect_callback(&plugin)?;
+        let (reply, answer) = oneshot::channel();
+        plugin.queue.push(Job::Authorize {
+            callback_url,
+            state: state.to_string(),
+            reply,
+        });
+        answer
+            .await
+            .unwrap_or_else(|_| Err(SurfaceError::Unavailable(plugin.status().line())))
+    }
+
+    /// The browser came back from the sign-in page, its `state` already
+    /// checked and taken out of `query`. What the plugin says is shown to
+    /// the person.
+    pub async fn complete_sign_in(
+        &self,
+        id: &str,
+        query: Vec<(String, String)>,
+        person: Option<String>,
+    ) -> std::result::Result<String, SurfaceError> {
+        let plugin = self.connecting(id).await?;
+        let callback_url = self.connect_callback(&plugin)?;
+        let (reply, answer) = oneshot::channel();
+        plugin.queue.push(Job::Callback {
+            callback_url,
+            query,
+            person,
+            reply,
+        });
+        answer
+            .await
+            .unwrap_or_else(|_| Err(SurfaceError::Unavailable(plugin.status().line())))
+    }
+
+    async fn connecting(&self, id: &str) -> std::result::Result<Arc<Plugin>, SurfaceError> {
+        let Some(manifest) = self.installed_manifest(id).await else {
+            return Err(SurfaceError::NotFound(format!(
+                "No add-on {id} is installed."
+            )));
+        };
+        if !manifest.permissions.callback {
+            return Err(SurfaceError::NotFound(format!(
+                "{} does not connect accounts.",
+                manifest.name
+            )));
+        }
+        self.inner
+            .plugin(id)
+            .map_err(|_| SurfaceError::Unavailable(format!("{} is turned off.", manifest.name)))
+    }
+
+    fn connect_callback(&self, plugin: &Plugin) -> std::result::Result<String, SurfaceError> {
+        let public = self.inner.house.public().ok_or_else(|| {
+            SurfaceError::Unavailable(
+                "Set Niles's public address under Settings → API access first.".into(),
+            )
+        })?;
+        Ok(crate::inbound::callback_url(&public, &plugin.id))
+    }
+
+    /// A request to a plugin's webhook, at the address with `token` in
+    /// it. Everything but a `GET` or `POST` the plugin can answer is
+    /// answered here, without calling it; see
+    /// [`crate::inbound`] for the rules.
+    pub async fn hook(&self, id: &str, token: &str, request: HookRequest) -> HookAnswer {
+        use crate::inbound::{WAITING, same_token};
+        use std::sync::atomic::Ordering;
+        let Some(manifest) = self.installed_manifest(id).await else {
+            return HookAnswer::empty(404);
+        };
+        if !manifest.permissions.webhook {
+            return HookAnswer::empty(404);
+        }
+        let stored = match crate::inbound::token(&self.inner.house, id, false).await {
+            Ok(Some(stored)) => stored,
+            Ok(None) => return HookAnswer::empty(404),
+            Err(e) => {
+                tracing::warn!(plugin = %id, "could not read its webhook token: {e}");
+                return HookAnswer::empty(503);
+            }
+        };
+        if !same_token(token, &stored) {
+            return HookAnswer::empty(404);
+        }
+        let method = request.method.clone();
+        if method == "HEAD" {
+            return HookAnswer::empty(200);
+        }
+        if method != "GET" && method != "POST" {
+            return HookAnswer::empty(405);
+        }
+        let plugin = match self.inner.plugin(id) {
+            Ok(plugin) if plugin.status() == Status::Running => plugin,
+            // Turned off, restarting, failing: the service keeps the
+            // request and asks again, rather than being told it arrived.
+            _ => return HookAnswer::empty(503),
+        };
+        let started = Instant::now();
+        let size = request.body.len();
+        let answer = if !lock(&plugin.hook_bucket).take() {
+            HookAnswer::empty(429)
+        } else if plugin.hooks_waiting.fetch_add(1, Ordering::SeqCst) >= WAITING {
+            plugin.hooks_waiting.fetch_sub(1, Ordering::SeqCst);
+            HookAnswer::empty(503)
+        } else {
+            let limit = self.inner.limits.webhook;
+            let (reply, answer) = oneshot::channel();
+            plugin.queue.push(Job::Webhook {
+                request,
+                expires: started + limit,
+                reply,
+            });
+            let answered = tokio::time::timeout(limit * 2, answer).await;
+            plugin.hooks_waiting.fetch_sub(1, Ordering::SeqCst);
+            match answered {
+                Ok(Ok(answer)) => answer,
+                _ => HookAnswer::empty(503),
+            }
+        };
+        *lock(&plugin.last_hook) = Some(LastHook {
+            at: chrono::Utc::now(),
+            status: answer.status,
+        });
+        plugin.note(
+            Level::Info,
+            &format!(
+                "hook {method} {size} B → {} in {} ms",
+                answer.status,
+                started.elapsed().as_millis()
+            ),
+        );
+        answer
+    }
+
     fn declared(&self, id: &str, surface: &str) -> std::result::Result<Arc<Plugin>, SurfaceError> {
         let plugin = self
             .inner
@@ -884,6 +1157,11 @@ pub(crate) struct Plugin {
     /// a message for a connection that is gone cannot reach a new one.
     connections: std::sync::atomic::AtomicU32,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The webhook's rate limit, the requests waiting for the plugin,
+    /// and the last one, for the panel.
+    hook_bucket: Mutex<Bucket>,
+    hooks_waiting: std::sync::atomic::AtomicUsize,
+    last_hook: Mutex<Option<LastHook>>,
 }
 
 struct Record {
@@ -938,6 +1216,9 @@ impl Plugin {
             failures: Default::default(),
             connections: Default::default(),
             thread: Mutex::default(),
+            hook_bucket: Mutex::default(),
+            hooks_waiting: Default::default(),
+            last_hook: Mutex::default(),
         }
     }
 
@@ -1276,6 +1557,26 @@ pub(crate) enum Job {
         value: ActionValue,
         context: Context,
         reply: oneshot::Sender<std::result::Result<ActionOutcome, SurfaceError>>,
+    },
+    /// The sign-in page to send a browser to.
+    Authorize {
+        callback_url: String,
+        state: String,
+        reply: oneshot::Sender<std::result::Result<String, SurfaceError>>,
+    },
+    /// The browser came back from it.
+    Callback {
+        callback_url: String,
+        query: Vec<(String, String)>,
+        person: Option<String>,
+        reply: oneshot::Sender<std::result::Result<String, SurfaceError>>,
+    },
+    /// A request to the webhook. Not called after `expires`: by then the
+    /// caller has been told to try again.
+    Webhook {
+        request: HookRequest,
+        expires: Instant,
+        reply: oneshot::Sender<HookAnswer>,
     },
 }
 

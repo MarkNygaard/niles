@@ -155,6 +155,21 @@ pub fn router(state: AppState) -> Router {
             "/plugins/{id}/surfaces/{surface}/actions/{control}",
             post(crate::plugins::act),
         )
+        .route("/plugins/{id}/connect", get(crate::plugins::connect))
+        .route(
+            "/plugins/{id}/callback",
+            get(crate::plugins::callback).head(crate::plugins::callback_head),
+        )
+        .route(
+            "/plugins/{id}/hook/{token}",
+            axum::routing::any(crate::plugins::hook).layer(axum::extract::DefaultBodyLimit::max(
+                crate::plugins::MAX_HOOK_BODY,
+            )),
+        )
+        .route(
+            "/plugins/{id}/rotate-hook",
+            post(crate::plugins::rotate_hook),
+        )
         .route("/integrations/chatgpt", get(crate::chatgpt::status))
         .route(
             "/integrations/chatgpt/login",

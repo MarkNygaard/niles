@@ -17,7 +17,18 @@
 //! GET    /plugins/{id}/image?src=https://…                   -> a page's picture, fetched by Niles
 //! GET    /plugins/{id}/surfaces/{surface}?room=kitchen       -> the node tree
 //! POST   /plugins/{id}/surfaces/{surface}/actions/{control}  -> {toast, rerender}
+//! GET    /plugins/{id}/connect                               -> 303 to the service's sign-in page
+//! GET    /plugins/{id}/callback?code=…&state=…               -> 303 back to the add-on's panel
+//! HEAD   /plugins/{id}/callback                              -> 200, before sign-in
+//! *      /plugins/{id}/hook/{token}                          -> the plugin's answer, before sign-in
+//! POST   /plugins/{id}/rotate-hook                           -> PluginSummary, with a new hook address
 //! ```
+//!
+//! The last five are interface 0.3's accounts and webhooks; ARCHITECTURE.md
+//! has the rules. Niles owns the sign-in round trip (`state`, the cookie
+//! binding it to the browser, the person) and the webhook's token and
+//! limits; the plugin builds the service's address, exchanges the code,
+//! and answers the webhook.
 //!
 //! An install is two requests so that what is installed is what was
 //! shown: the preview downloads and checks the release and answers with
@@ -97,6 +108,51 @@ pub struct PluginSummary {
     pub interface: String,
     /// Built for an older interface than the newest this Niles runs.
     pub older_interface: bool,
+    /// Its account connection and webhook, for one that asks for
+    /// either.
+    pub inbound: Option<PluginInbound>,
+}
+
+/// What a plugin's panel shows about connecting an account and its
+/// webhook (interface 0.3).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PluginInbound {
+    /// It connects accounts: the panel offers Connect.
+    pub callback: bool,
+    /// It has a webhook.
+    pub webhook: bool,
+    /// The address to register with the service; none until Niles's
+    /// public address is set.
+    pub callback_url: Option<String>,
+    /// The webhook's address, token and all; none until the public
+    /// address is set.
+    pub hook_url: Option<String>,
+    /// The webhook's last request since the plugin started.
+    pub last_hook: Option<PluginHookCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginHookCall {
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub status: u16,
+}
+
+/// A request to a plugin's webhook.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HookRequest {
+    pub method: String,
+    pub query: Vec<(String, String)>,
+    /// Lowercase names, no `cookie`.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// What the webhook answered.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HookResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
 }
 
 /// One of a plugin's settings, for its setup panel.
@@ -302,6 +358,23 @@ pub trait Plugins: Send + Sync {
     async fn secret_settings(&self) -> Vec<(String, String)>;
     /// Start a fresh instance, as a change to its secrets needs.
     fn restart(&self, id: &str);
+
+    /// The service's sign-in page, with `state` in it.
+    async fn authorize(&self, id: &str, state: &str) -> Result<String, SurfaceFailure>;
+    /// The browser came back; `state` is checked and out of `query`.
+    /// What the plugin says is shown to the person.
+    async fn complete(
+        &self,
+        id: &str,
+        query: Vec<(String, String)>,
+        person: Option<String>,
+    ) -> Result<String, SurfaceFailure>;
+    /// Whether it connects accounts, which is all a `HEAD` is told.
+    async fn takes_callbacks(&self, id: &str) -> bool;
+    /// A request to its webhook at the address with `token` in it.
+    async fn hook(&self, id: &str, token: &str, request: HookRequest) -> HookResponse;
+    /// A new webhook address; the old one stops working.
+    async fn rotate_hook(&self, id: &str) -> Result<PluginSummary, PluginFailure>;
 }
 
 fn plugins(state: &AppState) -> Result<&dyn Plugins, Failure> {
@@ -546,6 +619,217 @@ pub async fn act(
     ))
 }
 
+/// The cookie binding a connect to the browser that started it, scoped
+/// to the plugin's own routes.
+const CONNECT_COOKIE: &str = "niles_plugin_connect";
+/// As long as the other sign-ins'.
+const CONNECT_TTL_SECS: u64 = 10 * 60;
+/// Where the browser lands afterwards: the Add-ons page, which opens the
+/// plugin's panel and says how it went. The outcome goes in the query
+/// before the hash, as Strava's does.
+const ADD_ONS: &str = "#/me/settings/addons";
+
+fn connect_cookie(id: &str, value: &str, max_age: u64, secure: bool) -> String {
+    format!(
+        "{CONNECT_COOKIE}={value}; Path=/plugins/{id}; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
+        if secure { "; Secure" } else { "" }
+    )
+}
+
+/// Who is signed in: their address, which the attempt is bound to, and
+/// their slug, which the plugin is told. Neither without sign-in.
+fn signed_in(state: &AppState, headers: &HeaderMap) -> (String, Option<String>) {
+    let Some(store) = state.config.as_ref() else {
+        return (String::new(), None);
+    };
+    let config = store.current();
+    let Some(email) = crate::auth::signed_in_as(headers, &config) else {
+        return (String::new(), None);
+    };
+    let slug = config
+        .auth
+        .person_for(&email)
+        .and_then(|p| p.speaker.clone());
+    (email, slug)
+}
+
+/// Back to the Add-ons page with the plugin's panel open, saying how it
+/// went, and the binding cookie gone.
+fn back_to_panel(id: &str, outcome: Result<String, String>, secure: bool) -> Response {
+    let said = match outcome {
+        Ok(text) => format!("plugin_connected={}", urlencoding::encode(&text)),
+        Err(text) => format!("plugin_error={}", urlencoding::encode(&text)),
+    };
+    (
+        StatusCode::SEE_OTHER,
+        axum::response::AppendHeaders([
+            (
+                header::LOCATION,
+                format!("/?plugin={}&{said}{ADD_ONS}", urlencoding::encode(id)),
+            ),
+            (header::SET_COOKIE, connect_cookie(id, "", 0, secure)),
+        ]),
+    )
+        .into_response()
+}
+
+fn surface_reason(failure: SurfaceFailure) -> String {
+    match failure {
+        SurfaceFailure::NotFound(s)
+        | SurfaceFailure::BadRequest(s)
+        | SurfaceFailure::Refused(s)
+        | SurfaceFailure::Unavailable(s) => s,
+    }
+}
+
+/// `GET /plugins/{id}/connect` — a link the browser follows, not a call
+/// the page makes: it ends at the service's sign-in page.
+pub async fn connect(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let secure = crate::auth::github::is_secure(&headers);
+    let Ok(plugins) = plugins(&state) else {
+        return back_to_panel(&id, Err("This Niles runs no add-ons.".into()), secure);
+    };
+    let (email, _) = signed_in(&state, &headers);
+    let (flow_state, binding) = state.plugin_attempts.begin(format!("{id}\n{email}"));
+    match plugins.authorize(&id, &flow_state).await {
+        Ok(to) => (
+            StatusCode::SEE_OTHER,
+            axum::response::AppendHeaders([
+                (header::LOCATION, to),
+                (
+                    header::SET_COOKIE,
+                    connect_cookie(&id, &binding, CONNECT_TTL_SECS, secure),
+                ),
+            ]),
+        )
+            .into_response(),
+        Err(failure) => {
+            state.plugin_attempts.finish(&flow_state, Some(&binding));
+            back_to_panel(&id, Err(surface_reason(failure)), secure)
+        }
+    }
+}
+
+/// `GET /plugins/{id}/callback` — where the service sends the browser
+/// back. Always ends on the plugin's panel, saying how it went.
+pub async fn callback(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<Vec<(String, String)>>,
+    headers: HeaderMap,
+) -> Response {
+    let secure = crate::auth::github::is_secure(&headers);
+    let Ok(plugins) = plugins(&state) else {
+        return back_to_panel(&id, Err("This Niles runs no add-ons.".into()), secure);
+    };
+    let given = query
+        .iter()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.clone());
+    let (email, slug) = signed_in(&state, &headers);
+    let started = given.as_deref().and_then(|s| {
+        state.plugin_attempts.finish(
+            s,
+            crate::auth::github::cookie(&headers, CONNECT_COOKIE).as_deref(),
+        )
+    });
+    if started.is_none_or(|p| p.next != format!("{id}\n{email}")) {
+        return back_to_panel(
+            &id,
+            Err("That sign-in expired or was started elsewhere; connect again.".into()),
+            secure,
+        );
+    }
+    let rest: Vec<(String, String)> = query.into_iter().filter(|(k, _)| k != "state").collect();
+    let outcome = plugins
+        .complete(&id, rest, slug)
+        .await
+        .map_err(surface_reason);
+    if let Err(why) = &outcome {
+        tracing::warn!("[plugins] {id}: connecting an account failed: {why}");
+    }
+    back_to_panel(&id, outcome, secure)
+}
+
+/// `HEAD /plugins/{id}/callback` — a service checking, from its own
+/// servers, that the address it was given answers. Before sign-in, and
+/// the same answer whoever asks: nothing is read or spent.
+pub async fn callback_head(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    match plugins(&state) {
+        Ok(plugins) if plugins.takes_callbacks(&id).await => StatusCode::OK,
+        _ => StatusCode::NOT_FOUND,
+    }
+}
+
+/// The most headers a webhook request may carry, and their bytes.
+const MAX_HOOK_HEADERS: usize = 32;
+const MAX_HOOK_HEADER_BYTES: usize = 8 * 1024;
+/// The largest webhook request body.
+pub const MAX_HOOK_BODY: usize = 64 * 1024;
+
+/// `/plugins/{id}/hook/{token}`, any method — a plugin's webhook. Before
+/// sign-in: the token is its authentication, checked by the runtime.
+/// Nothing about the request is logged here.
+pub async fn hook(
+    State(state): State<AppState>,
+    Path((id, token)): Path<(String, String)>,
+    method: axum::http::Method,
+    Query(query): Query<Vec<(String, String)>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Ok(plugins) = plugins(&state) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut size = 0;
+    let mut kept = Vec::new();
+    for (name, value) in &headers {
+        if name == header::COOKIE {
+            continue;
+        }
+        let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
+        size += name.as_str().len() + value.len();
+        kept.push((name.as_str().to_string(), value));
+    }
+    if kept.len() > MAX_HOOK_HEADERS || size > MAX_HOOK_HEADER_BYTES {
+        return StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.into_response();
+    }
+    let request = HookRequest {
+        method: method.as_str().to_string(),
+        query,
+        headers: kept,
+        body: body.to_vec(),
+    };
+    let answer = plugins.hook(&id, &token, request).await;
+    let status = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut response = (status, answer.body).into_response();
+    let headers = response.headers_mut();
+    if let Some(kind) = answer
+        .content_type
+        .and_then(|k| HeaderValue::from_str(&k).ok())
+    {
+        headers.insert(header::CONTENT_TYPE, kind);
+    }
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+/// `POST /plugins/{id}/rotate-hook`
+pub async fn rotate_hook(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<PluginSummary>, Failure> {
+    Ok(Json(plugins(&state)?.rotate_hook(&id).await?))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -615,14 +899,20 @@ pub(crate) mod tests {
             widgets: Vec::new(),
             interface: "0.1".into(),
             older_interface: false,
+            inbound: None,
         }
     }
+
+    /// What a sign-in came back with, and who was signed in.
+    pub(crate) type Completed = (Vec<(String, String)>, Option<String>);
 
     /// A stand-in for the binary: one plugin, and every request it gets.
     #[derive(Default)]
     pub(crate) struct Fake {
         pub seen: Mutex<Vec<(String, Viewer)>>,
         pub calls: Mutex<Vec<String>>,
+        pub hooks: Mutex<Vec<HookRequest>>,
+        pub completed: Mutex<Vec<Completed>>,
     }
 
     impl Fake {
@@ -790,6 +1080,61 @@ pub(crate) mod tests {
 
         fn restart(&self, id: &str) {
             self.called(format!("restart {id}"));
+        }
+
+        async fn authorize(&self, id: &str, state: &str) -> Result<String, SurfaceFailure> {
+            match id {
+                "withings" => Ok(format!(
+                    "https://account.withings.com/oauth2_user/authorize2?state={state}"
+                )),
+                "spotprice" => Err(SurfaceFailure::Unavailable(
+                    "Set Niles's public address under Settings → API access first.".into(),
+                )),
+                _ => Err(SurfaceFailure::NotFound(format!(
+                    "No add-on {id} is installed."
+                ))),
+            }
+        }
+
+        async fn complete(
+            &self,
+            _: &str,
+            query: Vec<(String, String)>,
+            person: Option<String>,
+        ) -> Result<String, SurfaceFailure> {
+            self.completed.lock().unwrap().push((query.clone(), person));
+            if query.iter().any(|(k, v)| k == "code" && v == "good") {
+                Ok("Connected to Withings".into())
+            } else {
+                Err(SurfaceFailure::Refused(
+                    "Withings was not given access".into(),
+                ))
+            }
+        }
+
+        async fn takes_callbacks(&self, id: &str) -> bool {
+            id == "withings"
+        }
+
+        async fn hook(&self, id: &str, token: &str, request: HookRequest) -> HookResponse {
+            if id != "withings" || token != "ab12" {
+                return HookResponse {
+                    status: 404,
+                    content_type: None,
+                    body: Vec::new(),
+                };
+            }
+            self.hooks.lock().unwrap().push(request);
+            HookResponse {
+                status: 200,
+                content_type: Some("text/plain".into()),
+                body: b"thanks".to_vec(),
+            }
+        }
+
+        async fn rotate_hook(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
+            self.called(format!("rotate {id}"));
+            Ok(summary())
         }
     }
 
@@ -1097,5 +1442,187 @@ pub(crate) mod tests {
         );
         let (status, _) = send(crate::router(state), get("/plugins")).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    }
+
+    // ---- interface 0.3: accounts and webhooks -----------------------
+
+    fn header_of(response: &Response, name: header::HeaderName) -> String {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// Start a connect, and answer where it sent the browser and the
+    /// binding cookie's value.
+    async fn start_connect(app: axum::Router) -> (String, String) {
+        let response = app.oneshot(get("/plugins/withings/connect")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let to = header_of(&response, header::LOCATION);
+        let cookie = header_of(&response, header::SET_COOKIE);
+        assert!(cookie.contains("Path=/plugins/withings"), "{cookie}");
+        assert!(cookie.contains("HttpOnly"), "{cookie}");
+        let value = cookie
+            .strip_prefix("niles_plugin_connect=")
+            .and_then(|rest| rest.split(';').next())
+            .unwrap()
+            .to_string();
+        (to, value)
+    }
+
+    fn state_in(url: &str) -> String {
+        url.split("state=").nth(1).unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn connecting_sends_the_browser_to_the_sign_in_page_and_back() {
+        let fake = Arc::new(Fake::default());
+        let app = app(fake.clone());
+        let (to, binding) = start_connect(app.clone()).await;
+        assert!(to.starts_with("https://account.withings.com/"), "{to}");
+        let state = state_in(&to);
+
+        let back = Request::get(format!(
+            "/plugins/withings/callback?code=good&state={state}"
+        ))
+        .header(header::COOKIE, format!("niles_plugin_connect={binding}"))
+        .body(Body::empty())
+        .unwrap();
+        let response = app.clone().oneshot(back).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let landed = header_of(&response, header::LOCATION);
+        assert!(
+            landed.starts_with("/?plugin=withings&plugin_connected="),
+            "{landed}"
+        );
+        assert!(landed.ends_with("#/me/settings/addons"), "{landed}");
+        assert!(header_of(&response, header::SET_COOKIE).contains("Max-Age=0"));
+
+        let completed = fake.completed.lock().unwrap().clone();
+        assert_eq!(
+            completed,
+            vec![(vec![("code".to_string(), "good".to_string())], None)],
+            "the plugin hears the code, and never the state"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_callback_without_its_state_and_browser_never_reaches_the_plugin() {
+        let fake = Arc::new(Fake::default());
+        let app = app(fake.clone());
+        let (to, binding) = start_connect(app.clone()).await;
+        let state = state_in(&to);
+        for (query, cookie) in [
+            (format!("code=good&state={state}"), None),
+            (
+                format!("code=good&state={state}"),
+                Some("someone-else".to_string()),
+            ),
+            ("code=good&state=made-up".to_string(), Some(binding.clone())),
+            ("code=good".to_string(), Some(binding.clone())),
+        ] {
+            let mut back = Request::get(format!("/plugins/withings/callback?{query}"));
+            if let Some(cookie) = cookie {
+                back = back.header(header::COOKIE, format!("niles_plugin_connect={cookie}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(back.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let landed = header_of(&response, header::LOCATION);
+            assert!(landed.contains("plugin_error="), "{query}: {landed}");
+        }
+        // Spent by the first try, so the right cookie is too late now.
+        let late = Request::get(format!(
+            "/plugins/withings/callback?code=good&state={state}"
+        ))
+        .header(header::COOKIE, format!("niles_plugin_connect={binding}"))
+        .body(Body::empty())
+        .unwrap();
+        let landed = header_of(&app.oneshot(late).await.unwrap(), header::LOCATION);
+        assert!(landed.contains("plugin_error="), "{landed}");
+        assert!(fake.completed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_plugin_that_cannot_connect_says_why_on_its_panel() {
+        let response = app(Arc::default())
+            .oneshot(get("/plugins/spotprice/connect"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let landed = header_of(&response, header::LOCATION);
+        assert!(landed.contains("plugin_error=Set%20Niles"), "{landed}");
+    }
+
+    #[tokio::test]
+    async fn a_head_on_the_callback_says_only_whether_it_takes_callbacks() {
+        let head = |uri: &str| Request::head(uri).body(Body::empty()).unwrap();
+        let (status, _) = send(app(Arc::default()), head("/plugins/withings/callback")).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(app(Arc::default()), head("/plugins/spotprice/callback")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_webhook_passes_the_request_on_without_its_cookie() {
+        let fake = Arc::new(Fake::default());
+        let request = Request::post("/plugins/withings/hook/ab12?appli=50")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header(header::COOKIE, "niles_session=secret")
+            .body(Body::from("userid=1&appli=50"))
+            .unwrap();
+        let response = app(fake.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header_of(&response, header::CONTENT_TYPE), "text/plain");
+        assert_eq!(header_of(&response, header::CACHE_CONTROL), "no-store");
+        assert_eq!(
+            header_of(&response, header::X_CONTENT_TYPE_OPTIONS),
+            "nosniff"
+        );
+
+        let seen = fake.hooks.lock().unwrap()[0].clone();
+        assert_eq!(seen.method, "POST");
+        assert_eq!(seen.query, vec![("appli".to_string(), "50".to_string())]);
+        assert_eq!(seen.body, b"userid=1&appli=50");
+        assert!(seen.headers.iter().any(|(k, _)| k == "content-type"));
+        assert!(seen.headers.iter().all(|(k, _)| k != "cookie"));
+    }
+
+    #[tokio::test]
+    async fn a_wrong_token_or_a_large_body_goes_no_further() {
+        let fake = Arc::new(Fake::default());
+        let (status, _) = send(
+            app(fake.clone()),
+            Request::post("/plugins/withings/hook/ff00")
+                .body(Body::from("x"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(
+            app(fake.clone()),
+            Request::post("/plugins/withings/hook/ab12")
+                .body(Body::from(vec![b'x'; MAX_HOOK_BODY + 1]))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(fake.hooks.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_webhook_gets_a_new_address_on_request() {
+        let fake = Arc::new(Fake::default());
+        let (status, _) = send(
+            app(fake.clone()),
+            post("/plugins/withings/rotate-hook", serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(*fake.calls.lock().unwrap(), vec!["rotate withings"]);
     }
 }

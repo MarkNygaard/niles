@@ -1,10 +1,13 @@
 # Host API
 
-> Interface 0.2.1: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0), and
-> `config.time-zone` and `devices.set-room-light` (0.2.1). The examples
-> compile against [`niles-integration.wit`](../../schemas/niles-integration.wit)
-> with `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for
-> 0.1 has everything here but MQTT and the 0.2.1 functions; see
+> Interface 0.3: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
+> `config.time-zone` and `devices.set-room-light` (0.2.1), and
+> [`secrets`](#secrets), [`inbound`](#inbound) and three exports for
+> [accounts and webhooks](accounts.md) (0.3). The examples compile against
+> [`niles-integration.wit`](../../schemas/niles-integration.wit) with
+> `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for 0.2
+> has everything here but `secrets`, `inbound` and their exports, and one
+> built for 0.1 not MQTT or the 0.2.1 functions either; see
 > [interface versions](publishing.md#interface-versions).
 
 A plugin **imports** functions Niles provides and **exports** functions Niles
@@ -94,6 +97,13 @@ a change in a connection's state: `connected`, `disconnected(why)` while Niles
 reconnects, `failed(why)` when it stopped trying, `certificate-changed` when a
 device's certificate is not the one trusted before. A plugin that uses no MQTT
 still exports both, empty. See [MQTT](mqtt.md).
+
+### `authorize-url(callback-url, state)`, `on-callback(callback-url, query, person)` and `on-webhook(request)`
+
+New in 0.3: connecting an account through a service's sign-in page, and
+answering a webhook. A plugin that does neither still exports all three:
+`authorize-url` returns an `err`, and `on-webhook` a `404`. See
+[accounts and webhooks](accounts.md).
 
 ### `stop()`
 
@@ -359,6 +369,45 @@ a second. `publish` fails with `unavailable` while the connection is down.
 The full story, with the address rules and `trust-device` certificates, is in
 [MQTT](mqtt.md).
 
+### `secrets`
+
+New in 0.3. Credentials the plugin keeps itself, such as an OAuth token it
+refreshed, in Niles's encrypted secret store. `storage` is plain text in
+Postgres: it is no place for a token.
+
+```rust
+use niles::integration::secrets;
+
+secrets::set("token", &serde_json::to_string(&pair)?).map_err(|e| format!("{e:?}"))?;
+let pair: Option<String> = secrets::get("token");
+secrets::delete("token").map_err(|e| format!("{e:?}"))?;
+```
+
+- **`set` is atomic.** It returns `ok` once the value is kept; on `err` the
+  previous value is still there. Keep what changes together (an access
+  token, its refresh token, when it expires) in one value, as JSON.
+- Keys are `[a-z0-9_]+`, at most 64 bytes; at most 16 keys, of at most 4 KiB
+  each. Past either, `limit`; the store not answering, `unavailable`.
+- Not your settings: nothing here appears on the setup panel, and
+  `config.secret` reads only the `secret` settings the household typed in.
+- Removed with the plugin. Without a secret store (no database) they are
+  kept in memory and lost on a restart.
+
+### `inbound`
+
+New in 0.3, with the `webhook` permission.
+
+```rust
+use niles::integration::inbound;
+
+let address: Option<String> = inbound::hook_url();
+// "https://home.example.dk/plugins/withings/hook/9f2c…"
+```
+
+The webhook's full address, to give the service that calls it, from
+`init`. None until the household sets Niles's public address; say so in
+your status line. See [accounts and webhooks](accounts.md#the-webhook).
+
 ### WASI
 
 Toolchains import parts of WASI 0.2 whether you use them or not, so Niles
@@ -372,11 +421,6 @@ sockets and DNS (refused), `std::process`, threads.
 Not yet, and sketched in
 [ARCHITECTURE.md](../../ARCHITECTURE.md#the-interface):
 
-- **Accounts and webhooks** (interface 0.3, specified in
-  [ARCHITECTURE.md](../../ARCHITECTURE.md#accounts-and-webhooks)):
-  connecting an account through its own sign-in page, an encrypted store
-  for the tokens it hands back, and a secret address the internet may call.
-  `storage` is plain text, so it is no place for a token.
 - **WebSockets**, held by Niles, which reconnects them and delivers each
   message to a new export, for devices and services that push.
 - **Local TCP and UDP**: one request, one reply, to an address under

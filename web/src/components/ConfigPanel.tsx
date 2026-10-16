@@ -38,6 +38,7 @@ import { MorningCard } from "@/components/MorningCard";
 import type { MqttSettings } from "@/components/MqttPanel";
 import { MemoryCard } from "@/components/MemoryCard";
 import { ApiAccessCard } from "@/components/ApiAccessCard";
+import { PublicAddressCard } from "@/components/PublicAddressCard";
 import { MenuCard } from "@/components/MenuCard";
 import { RoomOrderCard } from "@/components/RoomOrderCard";
 import { SatellitesCard } from "@/components/SatellitesCard";
@@ -1235,8 +1236,9 @@ export function ConfigPanel() {
           />
         </TabsContent>
 
-        <TabsContent value="api">
+        <TabsContent value="api" className="flex flex-col gap-4">
           <ApiAccessCard />
+          <PublicAddressCard />
         </TabsContent>
 
         <TabsContent value="history">

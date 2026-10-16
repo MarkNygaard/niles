@@ -28,6 +28,7 @@ fn quick() -> Limits {
         init: Duration::from_secs(10),
         render: Duration::from_secs(3),
         stop: Duration::from_secs(1),
+        webhook: Duration::from_secs(5),
         backoff: vec![Duration::from_millis(50), Duration::from_millis(100)],
         restarts_per_hour: 2,
         init_retry: Duration::from_millis(200),

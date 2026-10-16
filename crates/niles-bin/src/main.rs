@@ -7013,6 +7013,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         registry.clone(),
         bus.clone(),
         plugin_tools.clone(),
+        secret_store.clone(),
     );
     // Remote tool servers put their tools beside the plugins'. After the
     // secrets are loaded, since each connects with its key.

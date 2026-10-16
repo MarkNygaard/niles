@@ -96,6 +96,19 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
             text,
         );
     }
+    if p.callback {
+        add(
+            "callback".into(),
+            "Connect an account through its sign-in page, on a host it declares".into(),
+        );
+    }
+    if p.webhook {
+        add(
+            "webhook".into(),
+            "Receive messages from the internet at a secret address, if you make that address reachable"
+                .into(),
+        );
+    }
     if p.devices {
         add(
             "devices".into(),

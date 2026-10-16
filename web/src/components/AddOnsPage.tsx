@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Bot,
   Calendar,
@@ -65,7 +65,7 @@ import {
   statusOf,
 } from "@/lib/integrations";
 import type { Status } from "@/lib/integrations";
-import { pluginGroupsOf } from "@/lib/plugins";
+import { connectOutcome, pluginGroupsOf } from "@/lib/plugins";
 import type {
   ChatGptStatus,
   Integration,
@@ -190,7 +190,9 @@ export function AddOnsPage({
   effective,
 }: AddOnsPageProps) {
   const [open, setOpen] = useState<string | null>(null);
-  const [openPlugin, setOpenPlugin] = useState<string | null>(null);
+  // Back from a plugin's sign-in page, its panel opens saying how it went.
+  const [returned] = useState(() => connectOutcome(window.location.search));
+  const [openPlugin, setOpenPlugin] = useState<string | null>(returned?.plugin ?? null);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -202,6 +204,13 @@ export function AddOnsPage({
   const available = integrations.filter((i) => !i.added);
   const current = integrations.find((i) => i.id === open);
   const currentPlugin = plugins.find((p) => p.id === openPlugin);
+
+  // Said once, then taken off the address so a refresh does not say it
+  // again.
+  useEffect(() => {
+    if (!returned) return;
+    window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+  }, [returned]);
   // Worked out rather than set once: the list arrives after the first
   // render, and a house with nothing set up yet should land on what it
   // can add rather than on an empty tab.
@@ -577,6 +586,7 @@ export function AddOnsPage({
                 <PluginPanel
                   key={currentPlugin.id}
                   plugin={currentPlugin}
+                  outcome={returned?.plugin === currentPlugin.id ? returned : null}
                   rooms={rooms}
                   secrets={secrets}
                   effective={effective}

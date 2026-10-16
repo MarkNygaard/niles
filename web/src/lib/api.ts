@@ -164,6 +164,20 @@ export interface PluginSummary {
   interface: string;
   /** Built for an older interface than the newest this Niles runs. */
   older_interface: boolean;
+  /** Connecting an account and its webhook, for one that asks for either. */
+  inbound: PluginInbound | null;
+}
+
+/** Mirrors `PluginInbound` in crates/niles-api/src/plugins.rs. */
+export interface PluginInbound {
+  /** It connects accounts: the panel offers Connect. */
+  callback: boolean;
+  webhook: boolean;
+  /** The address to register with the service; null until Niles's public address is set. */
+  callback_url: string | null;
+  /** The webhook's address, token and all; null until the public address is set. */
+  hook_url: string | null;
+  last_hook: { at: string; status: number } | null;
 }
 
 export type SettingType = "string" | "number" | "boolean" | "secret" | "choice" | "room";
@@ -1500,6 +1514,11 @@ export const api = {
     ),
   removePlugin: (id: string) =>
     request<void>(`/plugins/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** A new webhook address; the old one stops working. */
+  rotatePluginHook: (id: string) =>
+    request<PluginSummary>(`/plugins/${encodeURIComponent(id)}/rotate-hook`, {
+      method: "POST",
+    }),
   pluginLog: (id: string) =>
     request<PluginLogLine[]>(`/plugins/${encodeURIComponent(id)}/log`),
   /** The logo as text, to be drawn inline by `PluginLogo`. */

@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { PluginSetting, PluginSummary } from "@/lib/api";
 import {
   choiceOptions,
+  connectHref,
+  connectOutcome,
   draftOf,
   imageUrl,
+  lastHookLine,
+  publicUrlProblem,
   missingRequired,
   pageHref,
   pageRoute,
@@ -64,6 +68,7 @@ const PLUGIN: PluginSummary = {
   ],
   interface: "0.1",
   older_interface: false,
+  inbound: null,
 };
 
 describe("pluginGroupsOf", () => {
@@ -190,6 +195,66 @@ describe("widgets", () => {
       { value: "room:kitchen", label: "Kitchen" },
       { value: "hidden", label: "Hidden" },
     ]);
+  });
+});
+
+describe("publicUrlProblem", () => {
+  it("takes an https address, or nothing", () => {
+    expect(publicUrlProblem("")).toBeNull();
+    expect(publicUrlProblem("https://home.example.dk")).toBeNull();
+    expect(publicUrlProblem("https://home.example.dk/")).toBeNull();
+    expect(publicUrlProblem("https://example.dk/niles")).toBeNull();
+  });
+
+  it("says what is wrong with anything else", () => {
+    expect(publicUrlProblem("http://home.example.dk")).toMatch(/https/);
+    expect(publicUrlProblem("home.example.dk")).toMatch(/https/);
+    expect(publicUrlProblem("https://")).toMatch(/https/);
+    expect(publicUrlProblem("https:///niles")).toMatch(/host/);
+    expect(publicUrlProblem("https://home.example.dk/?x=1")).toMatch(/query/);
+    expect(publicUrlProblem("https://me@home.example.dk")).toMatch(/username/);
+  });
+});
+
+describe("connectHref", () => {
+  it("starts at the public address, beside the callback", () => {
+    expect(connectHref("https://home.example.dk/plugins/withings/callback")).toBe(
+      "https://home.example.dk/plugins/withings/connect",
+    );
+  });
+});
+
+describe("connectOutcome", () => {
+  it("reads what the way back from a sign-in page said", () => {
+    expect(connectOutcome("?plugin=withings&plugin_connected=Connected%20as%20Johan")).toEqual({
+      plugin: "withings",
+      ok: true,
+      text: "Connected as Johan",
+    });
+    expect(connectOutcome("?plugin=withings&plugin_error=Not%20given%20access")).toEqual({
+      plugin: "withings",
+      ok: false,
+      text: "Not given access",
+    });
+  });
+
+  it("is nothing for a page that was not opened by one", () => {
+    expect(connectOutcome("")).toBeNull();
+    expect(connectOutcome("?strava=connected")).toBeNull();
+    expect(connectOutcome("?plugin=withings")).toBeNull();
+  });
+});
+
+describe("lastHookLine", () => {
+  const now = new Date("2026-10-16T22:00:00Z");
+  it("says when and how", () => {
+    expect(lastHookLine(null, now)).toBe("Not called since the add-on started.");
+    expect(lastHookLine({ at: "2026-10-16T21:59:40Z", status: 200 }, now)).toBe(
+      "Last called just now: answered (200).",
+    );
+    expect(lastHookLine({ at: "2026-10-16T21:48:00Z", status: 503 }, now)).toBe(
+      "Last called 12 min ago: refused (503).",
+    );
   });
 });
 

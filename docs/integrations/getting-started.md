@@ -1,6 +1,6 @@
 # Getting started
 
-> Interface 0.2. `niles plugin dev`, `niles plugin check`,
+> Interface 0.3. `niles plugin dev`, `niles plugin check`,
 > installing from GitHub, and the plugin's setup panel, log, pages and widgets
 > in the app are built (Niles 0.2.0). Not yet: `niles plugin dev --live`, and
 > the template repo, which will be published alongside it.
@@ -38,7 +38,7 @@ plugin to copy from.
 ```
 niles-integration.toml       # the manifest: id, name, settings, permissions
 logo.svg                     # 24x24 mark shown on the Add-ons page
-wit/niles-integration.wit    # the interface, copied from Niles (0.2.1)
+wit/niles-integration.wit    # the interface, copied from Niles (0.3.0)
 src/lib.rs                   # every export stubbed out
 Cargo.toml                   # crate-type = ["cdylib"], wit-bindgen
 build.sh                     # builds and copies the component to integration.wasm
@@ -105,9 +105,25 @@ impl Guest for MyPlugin {
     ) -> Result<ActionResult, String> {
         Err("No pages.".into())
     }
+    fn authorize_url(_callback_url: String, _state: String) -> Result<String, String> {
+        Err("No accounts to connect.".into())
+    }
+    fn on_callback(
+        _callback_url: String,
+        _query: Vec<(String, String)>,
+        _person: Option<String>,
+    ) -> Result<String, String> {
+        Err("No accounts to connect.".into())
+    }
+    fn on_webhook(_request: InboundRequest) -> InboundResponse {
+        InboundResponse { status: 404, content_type: None, body: Vec::new() }
+    }
     fn stop() {}
 }
 ```
+
+The manifest says `interface = "0.3"` and `min_niles = "0.3.0"`, the
+interface the copied WIT is.
 
 `generate!` reads `wit/` and writes, inside your crate:
 
@@ -216,7 +232,7 @@ niles plugin check .
 release exactly as an install would download it) checks everything an install
 would: the manifest (including its surfaces,
 settings and permissions), the logo, that the component targets
-the world its manifest's `interface` names (`niles:integration/plugin@0.2.x`)
+the world its manifest's `interface` names (`niles:integration/plugin@0.3.x`)
 and exports every function, and its tools'
 names, descriptions and schemas, asked for with `tools()` before any `init`,
 and that there are keywords if there are tools. Fix whatever it reports before

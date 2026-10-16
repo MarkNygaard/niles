@@ -1,8 +1,11 @@
 # Worked example: spot prices
 
-> Interface 0.2. The Rust below was built with `cargo build --release
-> --target wasm32-wasip2` against
-> [`niles-integration.wit`](../../schemas/niles-integration.wit) and
+> Interface 0.2, which Niles still runs: it connects no account and has no
+> webhook, so 0.3 would add only empty exports (see
+> [publishing](publishing.md#interface-versions) for moving it). The Rust
+> below was built with `cargo build --release --target wasm32-wasip2` against
+> the 0.2 WIT, now kept as
+> [`niles-integration-0.2.wit`](../../schemas/niles-integration-0.2.wit), and
 > `wit-bindgen` 0.63, passes `niles plugin check`, and runs under `niles plugin
 > dev` on Niles 0.2.0 against the live service. The JavaScript and Python
 > snippets were built with `jco componentize` and `componentize-py` against
@@ -51,7 +54,7 @@ niles-spotprice/
 ├── Cargo.toml
 ├── niles-integration.toml
 ├── logo.svg
-├── wit/niles-integration.wit      # copied from Niles
+├── wit/niles-integration.wit      # copied from Niles's niles-integration-0.2.wit
 ├── src/lib.rs
 └── .github/workflows/release.yml  # as in publishing.md, with CRATE: niles_spotprice
 ```
