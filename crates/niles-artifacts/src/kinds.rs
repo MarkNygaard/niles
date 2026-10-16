@@ -50,7 +50,11 @@ impl Kind {
     }
 }
 
-pub const KINDS: &[Kind] = &[crate::document::KIND, crate::training_plan::KIND];
+pub const KINDS: &[Kind] = &[
+    crate::document::KIND,
+    crate::training_plan::KIND,
+    crate::trip::KIND,
+];
 
 pub fn kind(id: &str) -> Option<&'static Kind> {
     KINDS.iter().find(|k| k.id == id)
@@ -115,7 +119,7 @@ mod tests {
 
     #[test]
     fn an_unknown_kind_has_an_empty_preview_rather_than_an_error() {
-        assert_eq!(preview("trip", &json!({})), Preview::default());
+        assert_eq!(preview("spreadsheet", &json!({})), Preview::default());
     }
 
     #[test]

@@ -1,10 +1,12 @@
 import type { ReactNode } from "react";
-import { FileText, Footprints } from "lucide-react";
+import { FileText, Footprints, Luggage } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { TrainingPlanView } from "@/components/TrainingPlanView";
+import { TripView } from "@/components/TripView";
 import type { Artifact } from "@/lib/api";
 import { Markdown, plainText, toggleCheck } from "@/lib/markdown";
 import { planOf, planText } from "@/lib/trainingPlan";
+import { tripOf, tripText } from "@/lib/trip";
 
 /** Every query about artifacts, to refetch them all at once. */
 export const ARTIFACTS = ["artifacts"];
@@ -82,9 +84,22 @@ const TRAINING_PLAN: Kind = {
   },
 };
 
+const TRIP: Kind = {
+  id: "trip",
+  label: "Trip",
+  icon: Luggage,
+  emoji: "🧳",
+  View: TripView,
+  text: (content) => {
+    const trip = tripOf(content);
+    return trip ? tripText(trip) : JSON.stringify(content, null, 2);
+  },
+};
+
 export const KINDS: Record<string, Kind> = {
   document: DOCUMENT,
   training_plan: TRAINING_PLAN,
+  trip: TRIP,
 };
 
 /** The kind named `id`, or one that says this app cannot show it yet:

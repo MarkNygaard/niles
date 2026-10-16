@@ -40,6 +40,7 @@ const TOUCHED_FOR: Duration = Duration::from_secs(60 * 60);
 const LEAST_LINES: usize = 3;
 
 const TRAINING_PLAN: &str = "training_plan";
+const TRIP: &str = "trip";
 
 /// Told when a job ends, ready or failed, if the artifact's notify is
 /// on.
@@ -753,14 +754,31 @@ const COACHING: &str = "Build it from how they run now. Find today's date first.
     the weekend, a rest day after a hard one) and say in notes what you assumed, so they can \
     ask for it changed.";
 
+/// How a trip is planned well: one they could set out on, not a
+/// brochure. Researched as a document is, after this.
+const TRAVEL: &str = "Find today's date first, and plan the trip in the brief, not an ideal \
+    one: the dates, places and pace they asked for. Days are for the travellers, not the \
+    plan: one or two things that matter in a day, with time to eat, rest and get lost, and \
+    a day of travel is mostly that. Get the travel between places right (the flight, train, \
+    bus or ferry there is, how long it really takes door to door, and from where), and put \
+    it on the day as a travel item. Mark nothing as booked unless the brief says it is, \
+    with its confirmation if it gives one. Prefer official links (the attraction's, the \
+    operator's, the hotel's own) to a booking site's or a blog's. Prices are estimates in \
+    the local currency, said as estimates. Make a packing list that fits where they go and \
+    the weather there in that season, grouped (documents, clothes, toiletries, health, \
+    electronics). Where the brief does not say (where they fly from, how they like to \
+    travel, the budget), assume what is usual and say in notes what you assumed and what \
+    you could not check, so they can ask for it changed.";
+
 /// The run's instructions, and what it is to make.
 fn job_prompts(artifact: &Artifact) -> (String, String) {
     let kind = kinds::kind(&artifact.kind);
     let label = kind.map_or("document", |k| k.label).to_lowercase();
     let help = kind.map_or("", |k| k.content_help);
     let craft = match artifact.kind.as_str() {
-        TRAINING_PLAN => COACHING,
-        _ => RESEARCH,
+        TRAINING_PLAN => COACHING.to_string(),
+        TRIP => format!("{TRAVEL} {RESEARCH}"),
+        _ => RESEARCH.to_string(),
     };
     let system = format!(
         "You are writing a {label} for one person in the household Niles serves, in the \
@@ -793,7 +811,11 @@ pub(crate) const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person w
     toward a race is kind training_plan, never a document: start_artifact_job, whose run \
     reads their Strava itself. Ask first for the race and its date if you do not know them; \
     the rest (a target time, which days they can run) the run can assume, and put in the \
-    brief what they said about it.";
+    brief what they said about it.\n\nA travel plan or itinerary is kind trip, never a \
+    document: start_artifact_job, whose run researches it. Ask first for the dates and \
+    roughly where they want to go if you do not know them; put in the brief who is going, \
+    what they have booked already, and what they said about pace, budget and what they \
+    like.";
 
 struct List(Arc<Artifacts>);
 
@@ -1758,6 +1780,22 @@ mod tests {
         assert!(system.contains("writing a document"), "{system}");
         assert!(system.contains("web_search"), "{system}");
         assert!(!system.contains("training_summary"), "{system}");
+    }
+
+    #[test]
+    fn a_trip_s_job_researches_it_and_books_nothing() {
+        let (system, _) = job_prompts(&working("trip"));
+        assert!(system.contains("writing a trip"), "{system}");
+        assert!(system.contains("web_search"), "{system}");
+        assert!(system.contains("Mark nothing as booked"), "{system}");
+        assert!(system.contains("packing list"), "{system}");
+        assert!(system.contains("\"days\""), "the content's shape: {system}");
+        assert!(!system.contains("training_summary"), "{system}");
+    }
+
+    #[test]
+    fn the_chat_is_told_a_travel_plan_is_a_trip() {
+        assert!(PROMPT.contains("itinerary is kind trip"), "{PROMPT}");
     }
 
     #[tokio::test]

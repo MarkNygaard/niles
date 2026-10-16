@@ -67,6 +67,6 @@ describe("kindOf", () => {
   });
 
   it("has an answer for a kind this app does not know yet", () => {
-    expect(kindOf("trip").label).toBe("Saved");
+    expect(kindOf("spreadsheet").label).toBe("Saved");
   });
 });
