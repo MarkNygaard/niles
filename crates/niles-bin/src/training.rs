@@ -3,10 +3,12 @@
 //!
 //! Whose comes from who is asking, never from an argument: the voice
 //! [`profile::SPEAKER`] names, or in the app's chat the person signed
-//! in ([`CHAT_PERSON`]). Somebody else's data cannot be asked for by
-//! name, and an unrecognised voice has none.
+//! in ([`CHAT_PERSON`]), or else the turn's [`approvals::ASKER`]: what
+//! Claude's and ChatGPT's calls carry, a background job's among them,
+//! for somebody signed in without a voice. Somebody else's data cannot
+//! be asked for by name, and an unrecognised voice has none.
 
-use crate::profile;
+use crate::{approvals, profile};
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
 use niles_training::{Activity, Kind, TrainingStore, person_key};
@@ -42,14 +44,18 @@ fn asker(tool: &str) -> Result<String> {
     if let Some(slug) = profile::SPEAKER.try_with(Clone::clone).ok().flatten() {
         return Ok(person_key(Some(&slug), ""));
     }
-    CHAT_PERSON.try_with(Clone::clone).map_err(|_| {
-        invalid(
+    if let Ok(person) = CHAT_PERSON.try_with(Clone::clone) {
+        return Ok(person);
+    }
+    match approvals::asker() {
+        Some(a) if !a.person.starts_with("satellite:") => Ok(a.person),
+        _ => Err(invalid(
             tool,
             "I don't know who is asking, so I can't tell whose training this is. \
              Training data is each person's own, read only when Niles knows their voice \
              or they are signed in to the app",
-        )
-    })
+        )),
+    }
 }
 
 impl Shared {
@@ -407,6 +413,47 @@ mod tests {
     async fn without_knowing_who_asks_there_is_a_polite_no() {
         let tools = shared(store_with_hers().await);
         let err = TrainingSummary(tools).execute(json!({})).await.unwrap_err();
+        assert!(
+            err.to_string().contains("don't know who is asking"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_for_somebody_signed_in_without_a_voice_reads_theirs() {
+        let store = Arc::new(MemoryTraining::new());
+        let run = niles_training::strava::activity(&json!({
+            "id": 2, "name": "Lunch Run", "sport_type": "Run",
+            "start_date": "2026-10-14T11:00:00Z", "distance": 8000.0, "moving_time": 2880
+        }))
+        .unwrap();
+        store
+            .save_activities("email:majse@example.com", &[run])
+            .await
+            .unwrap();
+        let asker = |person: &str| approvals::Asker {
+            person: person.into(),
+            slug: None,
+            satellite: None,
+            conversation: None,
+        };
+        let tools = shared(store);
+        let out = approvals::ASKER
+            .scope(
+                asker("email:majse@example.com"),
+                TrainingSummary(tools.clone()).execute(around_the_run()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["run_distance"]["km"], 8.0);
+
+        let err = approvals::ASKER
+            .scope(
+                asker("satellite:10.0.0.9:5000"),
+                TrainingSummary(tools).execute(around_the_run()),
+            )
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("don't know who is asking"),
             "{err}"

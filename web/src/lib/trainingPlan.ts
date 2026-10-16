@@ -1,0 +1,219 @@
+/**
+ * A training plan's content, as crates/niles-artifacts/src/training_plan.rs
+ * keeps it, and the date arithmetic its view needs: which week is this
+ * one, how long to the race, how far each week goes.
+ *
+ * Days are "YYYY-MM-DD" throughout and counted in UTC, so a day is a day
+ * whatever the clock does in between; "today" comes from the caller.
+ */
+
+export type SessionType =
+  | "easy"
+  | "long"
+  | "tempo"
+  | "intervals"
+  | "recovery"
+  | "race"
+  | "rest"
+  | "strength"
+  | "cross";
+
+export type SessionStatus = "planned" | "done" | "missed" | "skipped" | "moved";
+
+export interface Measures {
+  distance_km?: number;
+  duration_min?: number;
+  /** Per km: "5:40", or "5:30-5:45". */
+  pace?: string;
+}
+
+export interface Session extends Measures {
+  date: string;
+  type: SessionType;
+  title: string;
+  details?: string;
+  status: SessionStatus;
+  /** The Strava activity it was done as. */
+  activity?: string;
+  /** What the run that did it came to. */
+  actual?: Measures;
+}
+
+export interface Week {
+  starts: string;
+  focus?: string;
+  sessions: Session[];
+}
+
+export interface Plan {
+  goal: { race: string; distance_km: number; date: string; target_time?: string };
+  weeks: Week[];
+  notes?: string;
+}
+
+/** The plan in `content`, or undefined when it is not one: Niles
+    validates every version, so this is only a guard. */
+export function planOf(content: unknown): Plan | undefined {
+  if (!content || typeof content !== "object") return undefined;
+  const c = content as Partial<Plan>;
+  if (!c.goal || typeof c.goal.date !== "string" || !Array.isArray(c.weeks)) return undefined;
+  return {
+    ...c,
+    goal: c.goal,
+    weeks: c.weeks.map((w) => ({ ...w, sessions: Array.isArray(w.sessions) ? w.sessions : [] })),
+  };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function toUtc(day: string): Date {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+function fromUtc(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/** The day it is on this device. */
+export function localDay(now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+export function addDays(day: string, n: number): string {
+  return fromUtc(new Date(toUtc(day).getTime() + n * DAY_MS));
+}
+
+/** From `a` to `b` in whole days: positive when `b` is later. */
+export function daysBetween(a: string, b: string): number {
+  return Math.round((toUtc(b).getTime() - toUtc(a).getTime()) / DAY_MS);
+}
+
+/** The Sunday a week reaches: the first may start on any day, and
+    every week runs to the end of its calendar week. */
+export function weekEnds(week: Week): string {
+  const monday = (toUtc(week.starts).getUTCDay() + 6) % 7;
+  return addDays(week.starts, 6 - monday);
+}
+
+/** The week `today` falls in; before the plan the first, after it the
+    last. */
+export function currentWeek(plan: Plan, today: string): number {
+  const last = plan.weeks.length - 1;
+  if (last < 0) return 0;
+  if (today < plan.weeks[0].starts) return 0;
+  const i = plan.weeks.findIndex((w) => today >= w.starts && today <= weekEnds(w));
+  return i === -1 ? last : i;
+}
+
+/** "9 weeks to go", "10 days to go", "Tomorrow", "Race day". */
+export function countdown(raceDay: string, today: string): string {
+  const days = daysBetween(today, raceDay);
+  if (days < 0) return "Race done";
+  if (days === 0) return "Race day";
+  if (days === 1) return "Tomorrow";
+  if (days < 14) return `${days} days to go`;
+  return `${Math.floor(days / 7)} weeks to go`;
+}
+
+/** How far a week was planned to go, and how far has been run of it:
+    a done session counts what was run when that is known. */
+export function weekTotals(week: Week): { planned: number; done: number } {
+  let planned = 0;
+  let done = 0;
+  for (const s of week.sessions) {
+    planned += s.distance_km ?? 0;
+    if (s.status === "done") done += s.actual?.distance_km ?? s.distance_km ?? 0;
+  }
+  return { planned: round1(planned), done: round1(done) };
+}
+
+function round1(x: number): number {
+  return Math.round(x * 10) / 10;
+}
+
+/** 6 as "6 km", 21.1 as "21.1 km". */
+export function km(x: number): string {
+  return `${round1(x)} km`;
+}
+
+/** 40 as "40 min", 95 as "1 h 35 min". */
+export function minutes(x: number): string {
+  const total = Math.round(x);
+  if (total < 60) return `${total} min`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** "6 km · 40 min · 6:30 /km", leaving out what is not there. */
+export function measures(m: Measures): string {
+  return [
+    m.distance_km !== undefined && km(m.distance_km),
+    m.duration_min !== undefined && minutes(m.duration_min),
+    m.pace && `${m.pace} /km`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** "Tue". */
+export function weekday(day: string): string {
+  return WEEKDAYS[toUtc(day).getUTCDay()];
+}
+
+/** "Sun 13 Dec". */
+export function dayLabel(day: string): string {
+  const d = toUtc(day);
+  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+}
+
+/** "19–25 Oct", or "27 Oct – 2 Nov" across a month. */
+export function weekRange(week: Week): string {
+  const a = toUtc(week.starts);
+  const b = toUtc(weekEnds(week));
+  if (a.getUTCMonth() === b.getUTCMonth()) {
+    return a.getUTCDate() === b.getUTCDate()
+      ? `${a.getUTCDate()} ${MONTHS[a.getUTCMonth()]}`
+      : `${a.getUTCDate()}–${b.getUTCDate()} ${MONTHS[b.getUTCMonth()]}`;
+  }
+  return `${a.getUTCDate()} ${MONTHS[a.getUTCMonth()]} – ${b.getUTCDate()} ${MONTHS[b.getUTCMonth()]}`;
+}
+
+export const TYPE_LABELS: Record<SessionType, string> = {
+  easy: "Easy",
+  long: "Long",
+  tempo: "Tempo",
+  intervals: "Intervals",
+  recovery: "Recovery",
+  race: "Race",
+  rest: "Rest",
+  strength: "Strength",
+  cross: "Cross",
+};
+
+/** The plan as text, for Copy. */
+export function planText(plan: Plan): string {
+  const g = plan.goal;
+  const head = [g.race, dayLabel(g.date), km(g.distance_km), g.target_time && `goal ${g.target_time}`]
+    .filter(Boolean)
+    .join(" · ");
+  const lines = [head];
+  plan.weeks.forEach((w, i) => {
+    const total = weekTotals(w).planned;
+    lines.push(
+      "",
+      [`Week ${i + 1}`, weekRange(w), w.focus, total > 0 && km(total)].filter(Boolean).join(" · "),
+    );
+    for (const s of w.sessions) {
+      const done = s.status === "planned" ? "" : ` (${s.status})`;
+      const m = measures(s);
+      lines.push(`- ${dayLabel(s.date)}: ${s.title}${m ? ` · ${m}` : ""}${done}`);
+    }
+  });
+  if (plan.notes) lines.push("", plan.notes);
+  return lines.join("\n");
+}

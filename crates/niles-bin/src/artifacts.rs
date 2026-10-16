@@ -39,6 +39,8 @@ const TOUCHED_FOR: Duration = Duration::from_secs(60 * 60);
 /// document: a job that saved nothing and said "Done." has failed.
 const LEAST_LINES: usize = 3;
 
+const TRAINING_PLAN: &str = "training_plan";
+
 /// Told when a job ends, if the artifact's notify is on. Nothing is
 /// behind it yet: phone push (Web Push) comes as its own piece of work.
 #[async_trait]
@@ -163,6 +165,9 @@ pub(crate) struct Artifacts {
     notifier: Arc<dyn Notifier>,
     conversations: Option<Arc<dyn Conversations>>,
     extras: Extras,
+    /// What a training plan's job reads besides: the person's own
+    /// workouts.
+    training: Option<Extras>,
     /// Jobs going, per person.
     running: Arc<Mutex<HashMap<String, usize>>>,
     touched: Mutex<Vec<Touch>>,
@@ -275,10 +280,18 @@ impl Artifacts {
             notifier,
             conversations,
             extras,
+            training: None,
             running: Arc::default(),
             touched: Mutex::default(),
             started: chrono::Utc::now(),
         }
+    }
+
+    /// Lets a training plan's job read the asker's workouts, with the
+    /// tools `register` adds, which act for whoever the job is for.
+    pub(crate) fn with_training(mut self, register: Extras) -> Self {
+        self.training = Some(register);
+        self
     }
 
     pub(crate) fn store(&self) -> &Arc<dyn ArtifactStore> {
@@ -305,8 +318,9 @@ impl Artifacts {
     }
 
     /// What a job's run may use: its person's artifacts to read, its own
-    /// to write, and what writing needs. Not the house.
-    fn job_tools(self: &Arc<Self>, id: i64) -> ToolRegistry {
+    /// to write, and what writing needs: for a training plan, their
+    /// workouts. Not the house.
+    fn job_tools(self: &Arc<Self>, id: i64, kind: &str) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         reg.register(Box::new(List(self.clone())));
         reg.register(Box::new(Get(self.clone())));
@@ -315,6 +329,9 @@ impl Artifacts {
             only: Some(id),
         }));
         (self.extras)(&mut reg);
+        if let (TRAINING_PLAN, Some(training)) = (kind, &self.training) {
+            training(&mut reg);
+        }
         reg
     }
 
@@ -511,7 +528,7 @@ impl Artifacts {
             conversation: artifact.conversation_id,
         };
         let (system, prompt) = job_prompts(&artifact);
-        let tools = self.job_tools(artifact.id);
+        let tools = self.job_tools(artifact.id, &artifact.kind);
         let outcome =
             tokio::time::timeout(JOB_LIMIT, self.runner.run(asker, &system, &prompt, tools))
                 .await
@@ -664,21 +681,45 @@ fn author(via: Option<&str>) -> Author {
     }
 }
 
+/// How a document is written well.
+const RESEARCH: &str = "Where facts matter (opening times, ferries, prices, the weather in a \
+    season), check them with web_search and read_page when you have them, and say in the \
+    document what you could not check.";
+
+/// How a training plan is made well: from the runs the person has done,
+/// not from a template.
+const COACHING: &str = "Build it from how they run now. Find today's date first. Read \
+    training_summary for the last quarter and the last month, and training_activities for \
+    their runs of the last six weeks: how far they run in a week, their longest run lately, \
+    and the paces of their easy and their faster runs. The first week is close to what they \
+    already do; from there the weekly distance grows by no more than about 10% a week, with \
+    an easier week every third or fourth, the long run growing toward the race (to 16-20 km \
+    for a half marathon), a taper in the last one or two weeks, and the race on its day as \
+    type race. Easy runs make most of the distance, with one quality session a week (tempo \
+    or intervals), two at most. Paces come from their recent runs and the target time, and \
+    are honest about any gap between the two. If Strava has nothing for them, start gently \
+    and say so. Where the brief does not say (the race date, a target, which days they can \
+    run, how many runs a week), assume what is usual (three or four runs, the long run at \
+    the weekend, a rest day after a hard one) and say in notes what you assumed, so they can \
+    ask for it changed.";
+
 /// The run's instructions, and what it is to make.
 fn job_prompts(artifact: &Artifact) -> (String, String) {
     let kind = kinds::kind(&artifact.kind);
-    let label = kind.map_or("document", |k| k.label);
+    let label = kind.map_or("document", |k| k.label).to_lowercase();
     let help = kind.map_or("", |k| k.content_help);
+    let craft = match artifact.kind.as_str() {
+        TRAINING_PLAN => COACHING,
+        _ => RESEARCH,
+    };
     let system = format!(
         "You are writing a {label} for one person in the household Niles serves, in the \
          background. Nobody is waiting on you in a chat: take the time to do it well, and \
          ask nothing, because nobody will answer. When it is written, save it with \
          artifact_update on artifact {id}, the whole content, with the reason \"First \
-         draft\" and a one-line summary. Then finish with one short sentence saying what you \
-         wrote.\n\nThe content is {help}\n\nWhere facts matter (opening times, ferries, \
-         prices, the weather in a season), check them with web_search and read_page when you \
-         have them, and say in the document what you could not check. Write in the language \
-         the brief is in.",
+         draft\" and a one-line summary; if it is refused, the answer says what to fix, so \
+         fix that and save again. Then finish with one short sentence saying what you \
+         wrote.\n\nThe content is {help}\n\n{craft} Write in the language the brief is in.",
         id = artifact.id,
     );
     let prompt = format!(
@@ -698,7 +739,11 @@ pub(crate) const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person w
     find under Saved in the app, with a card in the chat. Change one with artifact_update. \
     For anything big (research, several sections, more than a minute of writing), call \
     start_artifact_job and answer in one sentence that you are putting it together and they \
-    will find it under Saved. Do not write it out in the chat as well.";
+    will find it under Saved. Do not write it out in the chat as well.\n\nA training plan \
+    toward a race is kind training_plan, never a document: start_artifact_job, whose run \
+    reads their Strava itself. Ask first for the race and its date if you do not know them; \
+    the rest (a target time, which days they can run) the run can assume, and put in the \
+    brief what they said about it.";
 
 struct List(Arc<Artifacts>);
 
@@ -1575,7 +1620,7 @@ mod tests {
     async fn a_job_cannot_write_any_artifact_but_its_own() {
         let f = fixture(FakeRunner::doing(vec![]));
         let other = create(&f, MARK, "Packing list").await;
-        let tools = f.artifacts.job_tools(other + 100);
+        let tools = f.artifacts.job_tools(other + 100, "document");
         let e = approvals::ASKER
             .scope(
                 asking(MARK, None),
@@ -1591,6 +1636,126 @@ mod tests {
         assert!(e.contains("only that one"), "{e}");
         assert!(!tools.has("start_artifact_job"));
         assert!(!tools.has("artifact_create"));
+    }
+
+    #[tokio::test]
+    async fn only_a_training_plan_s_job_reads_the_person_s_workouts() {
+        let store = Arc::new(MemoryArtifacts::new());
+        let artifacts = Arc::new(
+            Artifacts::new(
+                store,
+                EventBus::default(),
+                FakeRunner::doing(vec![]),
+                Arc::new(Nobody),
+                None,
+                Box::new(|_| {}),
+            )
+            .with_training(Box::new(|reg: &mut ToolRegistry| {
+                crate::training::register(
+                    reg,
+                    Arc::new(niles_training::MemoryTraining::new()),
+                    chrono_tz::UTC,
+                    false,
+                );
+            })),
+        );
+        let plan = artifacts.job_tools(1, "training_plan");
+        assert!(plan.has("training_summary"));
+        assert!(plan.has("training_activities"));
+        assert!(plan.has("artifact_update"));
+        let document = artifacts.job_tools(2, "document");
+        assert!(!document.has("training_summary"));
+    }
+
+    fn working(kind: &str) -> Artifact {
+        let now = chrono::Utc::now();
+        Artifact {
+            id: 7,
+            person: MAJSE.into(),
+            kind: kind.into(),
+            title: "Half marathon plan".into(),
+            summary: "Twelve weeks to the race".into(),
+            pinned: false,
+            archived: false,
+            notify: true,
+            status: Status::Working,
+            status_text: None,
+            error: None,
+            job_id: Some("j".into()),
+            brief: Some("Copenhagen Half on 13 December, four runs a week".into()),
+            conversation_id: None,
+            created_at: now,
+            updated_at: now,
+            current_revision: 0,
+            preview: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_training_plan_s_job_is_told_to_build_on_her_running() {
+        let (system, prompt) = job_prompts(&working("training_plan"));
+        assert!(system.contains("writing a training plan"), "{system}");
+        assert!(system.contains("training_summary"), "{system}");
+        assert!(system.contains("10%"), "{system}");
+        assert!(
+            system.contains("\"weeks\""),
+            "the content's shape: {system}"
+        );
+        assert!(!system.contains("ferries"), "{system}");
+        assert!(prompt.contains("Copenhagen Half"), "{prompt}");
+
+        let (system, _) = job_prompts(&working("document"));
+        assert!(system.contains("writing a document"), "{system}");
+        assert!(system.contains("web_search"), "{system}");
+        assert!(!system.contains("training_summary"), "{system}");
+    }
+
+    #[tokio::test]
+    async fn a_training_plan_that_is_wrong_says_what_to_fix() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let plan = |starts: &str| {
+            json!({
+                "kind": "training_plan",
+                "title": "Half marathon plan",
+                "summary": "Toward the Copenhagen Half",
+                "content": {
+                    "goal": { "race": "Copenhagen Half", "distance_km": 21.1, "date": "2026-12-13" },
+                    "weeks": [
+                        { "starts": "2026-10-19", "sessions": [
+                            { "date": "2026-10-20", "type": "easy", "title": "Easy run", "distance_km": 6 }
+                        ]},
+                        { "starts": starts, "sessions": [] }
+                    ]
+                }
+            })
+        };
+        let e = call(
+            &f,
+            asking(MAJSE, None),
+            "artifact_create",
+            plan("2026-10-27"),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("must start on 2026-10-26"), "{e}");
+
+        let made = call(
+            &f,
+            asking(MAJSE, None),
+            "artifact_create",
+            plan("2026-10-26"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(made["kind"], "training_plan");
+        assert_eq!(
+            made["preview"],
+            json!([
+                "Copenhagen Half · Sun 13 Dec · 2 weeks",
+                "Tue 20 Oct · Easy run · 6 km"
+            ])
+        );
     }
 
     #[tokio::test]

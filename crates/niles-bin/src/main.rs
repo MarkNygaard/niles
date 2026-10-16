@@ -1566,6 +1566,7 @@ fn build_artifacts(
     runner: Arc<artifacts::AssistantRunner>,
     chat_log: Option<Arc<chat_log::ChatLog>>,
     websearch: Option<Arc<niles_websearch::SearXngClient>>,
+    training: Option<Arc<dyn niles_training::TrainingStore>>,
 ) -> Option<Arc<artifacts::Artifacts>> {
     let database = cfg.database.as_ref()?;
     let url = database.resolve_url().ok()?;
@@ -1581,14 +1582,24 @@ fn build_artifacts(
         }
         niles_tools::register_datetime_tool(reg, &timezone);
     });
-    Some(Arc::new(artifacts::Artifacts::new(
+    let artifacts = artifacts::Artifacts::new(
         Arc::new(store),
         bus,
         runner,
         Arc::new(artifacts::Nobody),
         chat_log.map(|log| log as Arc<dyn artifacts::Conversations>),
         extras,
-    )))
+    );
+    let artifacts = match (training, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
+        (Some(store), Ok(tz)) => {
+            let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;
+            artifacts.with_training(Box::new(move |reg: &mut ToolRegistry| {
+                training::register(reg, store.clone(), tz, imperial);
+            }))
+        }
+        _ => artifacts,
+    };
+    Some(Arc::new(artifacts))
 }
 
 fn build_chat_log(cfg: &Config) -> Option<Arc<chat_log::ChatLog>> {
@@ -7301,6 +7312,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         artifact_runner.clone(),
         chat_log.clone(),
         websearch_client.clone(),
+        strava.as_ref().map(|s| s.store().clone()),
     );
     if let Some(artifacts) = &artifacts {
         let artifacts = artifacts.clone();

@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
-import { FileText } from "lucide-react";
+import { FileText, Footprints } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { TrainingPlanView } from "@/components/TrainingPlanView";
 import type { Artifact } from "@/lib/api";
 import { Markdown, plainText, toggleCheck } from "@/lib/markdown";
+import { planOf, planText } from "@/lib/trainingPlan";
 
 /** Every query about artifacts, to refetch them all at once. */
 export const ARTIFACTS = ["artifacts"];
@@ -68,7 +70,22 @@ const DOCUMENT: Kind = {
   text: markdownOf,
 };
 
-export const KINDS: Record<string, Kind> = { document: DOCUMENT };
+const TRAINING_PLAN: Kind = {
+  id: "training_plan",
+  label: "Training plan",
+  icon: Footprints,
+  emoji: "🏃",
+  View: TrainingPlanView,
+  text: (content) => {
+    const plan = planOf(content);
+    return plan ? planText(plan) : JSON.stringify(content, null, 2);
+  },
+};
+
+export const KINDS: Record<string, Kind> = {
+  document: DOCUMENT,
+  training_plan: TRAINING_PLAN,
+};
 
 /** The kind named `id`, or one that says this app cannot show it yet:
     a Niles newer than the app on the phone. */

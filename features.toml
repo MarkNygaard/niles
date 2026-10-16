@@ -643,3 +643,10 @@ id = "events-artifact-status"
 category = "api.events"
 summary = "artifact_changed on /events/stream, only to its own person: the status line follows a job as it is written"
 since_pr = 429
+
+[[feature]]
+id = "artifacts-training-plan"
+category = "runtime.training"
+summary = "A training plan toward a race, made from your own Strava runs: weeks, a countdown and today's session under Saved"
+phrasings = ["make me a half marathon training plan", "plan my training for the Copenhagen Half on 13 December", "move my long run to Saturday"]
+since_pr = 9999

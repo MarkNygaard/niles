@@ -2017,7 +2017,7 @@ A coach for one person's running, starting with somebody training for a half mar
 ### Phases
 
 1. **Data in** (built): each person's workouts arrive from their own Strava and are kept per person. The assistant answers questions about them: "how was my week?", "how far did I run on Sunday?".
-2. **The plan**: drafted with the assistant in conversation, saved to the person, shown on a Training page.
+2. **The plan** (built): drafted by Claude or ChatGPT from the person's own runs, kept as a `training_plan` artifact (see Artifacts (per person)) that they can pin, with its own view.
 3. **Tracking**: each run is matched to the planned session it fulfils. A weekly background review (the review that already runs when the house is quiet) compares plan with what happened and proposes changes.
 4. **Watch sync**, later: planned sessions sent to the watch as structured workouts.
 
@@ -2078,7 +2078,7 @@ Both routes, like every `/me/strava` route, are behind the sign-in gate and act 
 
 Training data is personal. It is kept under the same person key as the chat history: `person:{slug}` when the person's sign-in is linked to a voice, otherwise `email:{address}`. That way the voice and the app reach the same data. It is visible only to that person, and to the assistant acting for them:
 
-- The tools read whoever is asking: the recognised voice, or in the app's chat the person signed in. Never a name in an argument. An unrecognised voice has no training data, and the assistant says so.
+- The tools read whoever is asking: the recognised voice, or in the app's chat the person signed in, or else the person Claude's or ChatGPT's calls are made for (a background job's too, which is how a training plan's job reads the runs of somebody signed in without a voice). Never a name in an argument. An unrecognised voice has no training data, and the assistant says so.
 - The card shows only the signed-in person's own Strava and counts.
 - No route lists anybody else's, or takes a person to act for.
 
@@ -2118,15 +2118,16 @@ The sums are worked out in code, not by the model. Distances and paces come back
 
 ## Artifacts (per person)
 
-Things Niles makes for one person and keeps for them: a Thailand travel plan, a packing list, later a training plan. The chat is for talking; an artifact is what is left when the talking is done, kept under **Saved** in Niles's panel, opened from a card in the chat, and changed by asking for it to be changed.
+Things Niles makes for one person and keeps for them: a Thailand travel plan, a packing list, a training plan. The chat is for talking; an artifact is what is left when the talking is done, kept under **Saved** in Niles's panel, opened from a card in the chat, and changed by asking for it to be changed.
 
 **Only Claude or ChatGPT make and change them.** Niles's own fast model never sees the artifact tools: a document worth keeping is worth the stronger model, and the fast model's tool list is the most expensive part of its prompt. With no assistant on, nothing new is made; the Saved tab says that Claude or ChatGPT makes these, and links to Settings → Voice & AI.
 
 ### Phases
 
 1. **Artifacts in general, with documents** (2a, built): the model, versions, the Saved tab, chat cards, background jobs. One kind, `document`, which is enough for a travel plan or a packing list from the first day.
-2. **`training_plan`** (2b): the Training section's plan, as a kind with its own view.
-3. **`trip`** (2c): a travel plan with days, places and bookings, as a kind with its own view.
+2. **`training_plan`** (2b, built): the Training section's plan, as a kind with its own view.
+3. **The plan kept up to date** (2c): after each run arrives from Strava, Niles marks the session it was done (with the activity and what was run) or the ones it passed missed, and answers "what's my run today?". No new schema: every session has its status, `activity` and `actual` from 2b.
+4. **`trip`** (2d): a travel plan with days, places and bookings, as a kind with its own view.
 
 ### The model
 
@@ -2151,7 +2152,33 @@ A kind is a row in a small registry, in `niles-artifacts` and its twin in the ap
 - **Validated** on every write: a string, not empty, at most 100,000 characters, with line endings made `\n` and control characters other than tabs and newlines taken out.
 - **Preview:** the first four lines with something in them, without their markup: a heading, a bullet, a checklist item with whether it is ticked, or text, each cut to 120 characters.
 
-`training_plan` and `trip` come with 2b and 2c: each its own content shape (validated as JSON), preview and view.
+**`training_plan`** is a running plan toward a race, as JSON:
+
+```json
+{
+  "goal": { "race": "Copenhagen Half", "distance_km": 21.1, "date": "2026-12-13", "target_time": "1:55:00" },
+  "weeks": [
+    { "starts": "2026-10-19", "focus": "Base", "sessions": [
+      { "date": "2026-10-20", "type": "easy", "title": "Easy run", "distance_km": 6,
+        "duration_min": 40, "pace": "6:30", "details": "Conversational.", "status": "planned" },
+      { "date": "2026-10-25", "type": "long", "title": "Long run", "distance_km": 12, "status": "done",
+        "activity": "12345678901", "actual": { "distance_km": 12.2, "duration_min": 76, "pace": "6:14" } }
+    ]}
+  ],
+  "notes": "Assumed four runs a week, the long run on Sundays."
+}
+```
+
+- **Why JSON and not markdown.** Niles reads it as well as the person: the app counts down to the race and adds up each week, and after each run (2c) Niles marks the session it was. That needs a session with a date, a type and a status to point at, from the first version.
+- **Validated** on every write, strictly, because the model writes it and reads what is wrong: each error names the week and session ("week 3 (2026-11-02), session 2 (2026-11-05) is not in its week, which runs 2026-11-02 to 2026-11-08").
+  - **Unknown fields are refused** by name, not dropped: a misspelt `distance` is fixed rather than a plan quietly losing its kilometres. `null` is as good as left out.
+  - **The goal**: `race` (one line, at most 80 characters), `distance_km` (more than 0, at most 250), `date`; `target_time` optional, kept as `h:mm:ss`.
+  - **Weeks**: 1 to 52. The first starts on any day, the plan's first; every later one on the Monday after the one before, so weeks neither overlap nor leave gaps, and each runs to its Sunday. None starts after the race.
+  - **Sessions**: at most 14 a week, each dated inside its week, in order of date, none after the race. `type` is `easy`, `long`, `tempo`, `intervals`, `recovery`, `race`, `rest`, `strength` or `cross`; `title` one line. `distance_km` more than 0 and at most 100; `duration_min` at most 600; `pace` per km, `m:ss` or a range `m:ss-m:ss` (faster first, "/km" dropped), 2 to 20 minutes. `details` at most 1,000 characters of plain text, `notes` at most 10,000 of markdown.
+  - **Status**: `planned` (written when left out), `done`, `missed`, `skipped` or `moved`. Only a done session has `activity` (the workout's Strava id, as `niles-training` keeps it) and `actual` (distance, duration, pace, each checked as a plan's).
+  - A job that answers with the plan instead of saving it is read out of its answer, code fence and all.
+- **Preview:** the race, its day and the number of weeks ("Copenhagen Half · Sun 13 Dec · 8 weeks"), then the next three sessions still planned, rest days left out ("Tue 20 Oct · Easy run · 6 km"). By status rather than by today's date, because the preview is kept with the version: once 2c marks sessions as they are run, each new version's preview moves on with them.
+- **The view**: the race, its day, distance and target, and a countdown ("8 weeks to go", "10 days to go", "Tomorrow", "Race day"). Then the weeks, each with its days, focus and distance (run of planned, "12 / 32 km", for this week and those before). This week is open, with today marked; the others are folded and open on a tap. Each session: its day, title, type (a colour down its side), distance, time and pace, its details, and done (with what was run) or missed. The notes, as markdown, at the end. It is read only: a plan changes by asking for it. **Copy** gives it as text, week by week.
 
 ### The assistant's tools
 
@@ -2169,9 +2196,9 @@ Each validates the content for its kind before anything is kept, and answers the
 
 A travel plan for two weeks in Thailand takes the assistant minutes, and nobody should watch a chat bubble for that long. So a big request is answered at once ("I'm putting it together; you'll find it under Saved"), and the work goes on as a background run.
 
-- **The assistant decides**, by calling `start_artifact_job` in the turn. A heuristic in Niles (a word count, "plan", "list") would guess wrong both ways: "a list of three things to buy" is quick, "think through what we need for the cabin" is not. The model about to do the work knows best how big it is. Its tool description says when: anything that needs research, several sections, or more than a minute of writing.
+- **The assistant decides**, by calling `start_artifact_job` in the turn. A training plan is always a job, and the turn's instructions say so: kind `training_plan`, never a document, after asking for the race and its date if they are not known. A heuristic in Niles (a word count, "plan", "list") would guess wrong both ways: "a list of three things to buy" is quick, "think through what we need for the cabin" is not. The model about to do the work knows best how big it is. Its tool description says when: anything that needs research, several sections, or more than a minute of writing.
 - **First the artifact**, with `status: working`, the `status_text`, a `job_id` and the brief. The reply then says where it will be.
-- **Then the run**: the same assistant, in the background (the strongest model and the long timeout the review uses), with only what writing needs: `artifact_get` and `artifact_update` for this person, the web search and page reader when there are, and the date. Not the house: a job cannot turn on a light. If it finishes without saving a version, its final answer is taken as the document.
+- **Then the run**: the same assistant, in the background (the strongest model and the long timeout the review uses), with only what writing needs: `artifact_get` and `artifact_update` for this person, the web search and page reader when there are, and the date. For a training plan, also `training_activities` and `training_summary`, read only and for this person, and instructions to build from their recent running: the first week near their weekly distance now, growing by about 10% a week at most, an easier week every third or fourth, the long run growing toward the race, a taper, paces from their runs and the target, and what it assumed (race day, days to run) said in the notes. Not the house: a job cannot turn on a light. If it finishes without saving a version, its final answer is taken as the document.
 - **Finished**: `ready`, with the new version; a card in the conversation it came from ("Thailand travel plan is ready.") with the artifact under it; and the notifier (below) when the artifact's `notify` is on.
 - **Failed**: `failed`, with the reason. The Saved tab shows it, and **Try again** runs the same brief again on the same artifact. A restart fails every job that was running, saying so: the run was in the old pod.
 - **Limits**: two jobs at a time per person; a third is refused with that reason, which the assistant passes on. Each is held to the background runs' timeout, and to half an hour in all.
