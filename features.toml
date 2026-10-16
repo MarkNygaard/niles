@@ -737,16 +737,16 @@ id = "artifacts-pictures"
 category = "runtime.assistant"
 summary = "Pictures in a document, a trip or a page, found with the house's search and kept as Niles's own clean copies"
 phrasings = ["add some pictures to my trip", "put a photo of the beach on day three", "make a page for our trip with pictures of each place"]
-since_pr = 9999
+since_pr = 442
 
 [[feature]]
 id = "ui-artifact-pictures"
 category = "ui.chat"
 summary = "Pictures drawn from Niles's own copies with their credit; a picture by its web address is never fetched"
-since_pr = 9999
+since_pr = 442
 
 [[feature]]
 id = "api-artifact-images"
 category = "api.read"
 summary = "GET /me/artifacts/{id}/images/{image}: a picture an artifact keeps, its owner's only; GET lists them"
-since_pr = 9999
+since_pr = 442
