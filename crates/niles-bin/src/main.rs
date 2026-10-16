@@ -3366,7 +3366,10 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         captures: None,
-        settings: None,
+        // The same store the tool registry above resolves "open"
+        // against: a voice Open here must not answer a different
+        // level than a set_blinds call in this same process.
+        settings: Some(store.clone()),
         journal: Arc::default(),
         conversation: build_conversation_memory(&cfg).await,
         chat_log: None,
