@@ -680,4 +680,4 @@ id = "artifacts-trip"
 category = "runtime.assistant"
 summary = "A trip planned in the background: days, places, stays and bookings, a countdown, and a packing list to tick"
 phrasings = ["plan our trip to Thailand from 3 to 23 January", "make an itinerary for two weeks in Japan", "add a day in Chiang Mai to our Thailand trip"]
-since_pr = 9999
+since_pr = 434
