@@ -686,17 +686,17 @@ since_pr = 434
 id = "training-plan-follows-runs"
 category = "runtime.training"
 summary = "A training plan follows your Strava runs: each marks its session done, and Claude or ChatGPT adjusts what is to come"
-since_pr = 9999
+since_pr = 436
 
 [[feature]]
 id = "voice-training-today"
 category = "voice.training"
 summary = "Ask what your run is today or tomorrow, from your own training plan, with the week's distance and the countdown"
 phrasings = ["what's my run today", "what run do I have tomorrow", "what's on my training plan"]
-since_pr = 9999
+since_pr = 436
 
 [[feature]]
 id = "ui-training-plan-sessions"
 category = "ui.chat"
 summary = "Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan"
-since_pr = 9999
+since_pr = 436
