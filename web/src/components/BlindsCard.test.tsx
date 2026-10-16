@@ -86,9 +86,9 @@ describe("BlindsCard", () => {
     ]);
   });
 
-  it("clears an override when the field is emptied", () => {
+  it("clears a bare-ID override when the field is emptied", () => {
     const overrides: BlindOverride[] = [
-      { device: "z2m:office/blind", normal_open: 60 },
+      { device: "office/blind", normal_open: 60 },
     ];
     const onChange = vi.fn();
     render(
@@ -127,16 +127,25 @@ describe("BlindsCard", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("renders the house level through the injected row helper", () => {
+  it("replaces a bare-ID override without duplicating the device", () => {
+    const onChange = vi.fn();
+    const other = { device: "x_shades:office/blind", normal_open: 80 };
     render(
       <BlindsCard
         blinds={[OFFICE_BLIND]}
         houseLevel={75}
-        overrides={[]}
-        onChange={vi.fn()}
+        overrides={[{ device: "office/blind", normal_open: 60 }, other]}
+        onChange={onChange}
         row={rowStub()}
       />,
     );
-    expect(screen.getByTestId("house-row")).toBeInTheDocument();
+    const field = screen.getByLabelText("Blind opens to");
+    expect(field).toHaveValue("60");
+    fireEvent.change(field, { target: { value: "65" } });
+    fireEvent.blur(field);
+    expect(onChange).toHaveBeenCalledWith([
+      { device: "z2m:office/blind", normal_open: 65 },
+      other,
+    ]);
   });
 });

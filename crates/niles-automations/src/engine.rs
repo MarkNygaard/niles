@@ -115,6 +115,7 @@ struct DedupKey {
     on: Option<bool>,
     brightness: Option<u8>,
     kelvin: Option<u16>,
+    position: Option<u8>,
 }
 
 type Handles = Vec<JoinHandle<()>>;
@@ -691,6 +692,7 @@ impl AutomationEngine {
             on: desired.on,
             brightness: desired.brightness,
             kelvin: desired.color_temp_kelvin,
+            position: desired.position,
         };
         {
             let mut dedup = lock(&self.dedup);
@@ -1503,7 +1505,6 @@ mod tests {
                 sink.clone(),
                 Some(said.clone()),
             )
-            .with_dedup_window(Duration::from_millis(0))
             .with_settings(Some(kept)),
         );
         (

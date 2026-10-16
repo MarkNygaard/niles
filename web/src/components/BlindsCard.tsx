@@ -39,6 +39,13 @@ const BLINDS_ROWS: Setting[] = [
   { path: "blinds.normal_open", kind: "number", caption: "opens to (%)", width: "w-24" },
 ];
 
+function overrideFor(overrides: BlindOverride[], id: string) {
+  // Config accepts bare Zigbee names as well as source-qualified IDs.
+  return overrides.find((o) =>
+    (o.device.includes(":") ? o.device : `z2m:${o.device}`) === id,
+  );
+}
+
 export function BlindsCard({
   blinds,
   houseLevel,
@@ -58,10 +65,10 @@ export function BlindsCard({
   );
 
   function commit(blind: Device, raw: string) {
-    const existing = overrides.find((o) => o.device === blind.id);
+    const existing = overrideFor(overrides, blind.id);
     if (raw === "") {
       setProblem(null);
-      if (existing) onChange(overrides.filter((o) => o.device !== blind.id));
+      if (existing) onChange(overrides.filter((o) => o !== existing));
       return;
     }
     const n = Number(raw);
@@ -73,7 +80,7 @@ export function BlindsCard({
     const next = { device: blind.id, normal_open: n };
     onChange(
       existing
-        ? overrides.map((o) => (o.device === blind.id ? next : o))
+        ? overrides.map((o) => (o === existing ? next : o))
         : [...overrides, next],
     );
   }
@@ -99,7 +106,7 @@ export function BlindsCard({
         <div className="divide-border divide-y">
           {sorted.map((blind) => {
             const name = humanize(blind.name);
-            const override = overrides.find((o) => o.device === blind.id);
+            const override = overrideFor(overrides, blind.id);
             return (
               <div key={blind.id} className="flex items-center gap-3 py-2.5">
                 <span className="min-w-0 flex-1">
