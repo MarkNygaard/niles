@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, CircleX } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleX, Undo2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { KindViewProps } from "@/lib/artifacts";
 import { Markdown } from "@/lib/markdown";
 import {
@@ -10,13 +11,15 @@ import {
   dayLabel,
   km,
   localDay,
+  marksFor,
   measures,
   planOf,
   weekRange,
   weekTotals,
   weekday,
+  withMark,
 } from "@/lib/trainingPlan";
-import type { Session, SessionType, Week } from "@/lib/trainingPlan";
+import type { Mark, Session, SessionType, Update, Week } from "@/lib/trainingPlan";
 import { cn } from "@/lib/utils";
 
 /** Each type's colour, down the left of its row. */
@@ -39,11 +42,17 @@ export interface TrainingPlanViewProps extends KindViewProps {
 
 /**
  * A training plan, open in Niles's panel: the race and how long there
- * is to go, then the weeks, this one open with today marked and the
- * others folded. Read only: the plan changes by asking for it, and
- * after each run by Niles.
+ * is to go, the coach's newest note, then the weeks, this one open with
+ * today marked and the others folded. A tap on a session marks it done
+ * or skipped, or undoes that, as a version by the person; anything
+ * bigger changes by asking for it, and after each run by Niles.
  */
-export function TrainingPlanView({ content, today = localDay() }: TrainingPlanViewProps) {
+export function TrainingPlanView({
+  content,
+  onChange,
+  busy,
+  today = localDay(),
+}: TrainingPlanViewProps) {
   const plan = planOf(content);
   const current = plan ? currentWeek(plan, today) : 0;
   const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set([current]));
@@ -75,6 +84,8 @@ export function TrainingPlanView({ content, today = localDay() }: TrainingPlanVi
         </span>
       </div>
 
+      {plan.updates && plan.updates.length > 0 && <CoachNotes updates={plan.updates} />}
+
       <ol aria-label="Weeks" className="flex flex-col gap-1.5">
         {plan.weeks.map((week, i) => (
           <WeekRow
@@ -86,6 +97,14 @@ export function TrainingPlanView({ content, today = localDay() }: TrainingPlanVi
             past={i < current}
             open={open.has(i)}
             onToggle={() => toggle(i)}
+            busy={busy}
+            onMark={
+              onChange &&
+              ((n, mark) => {
+                const next = withMark(plan, i, n, mark);
+                onChange(next.plan, next.reason);
+              })
+            }
           />
         ))}
       </ol>
@@ -102,6 +121,40 @@ export function TrainingPlanView({ content, today = localDay() }: TrainingPlanVi
   );
 }
 
+/** The coach's log: the newest note, and the earlier ones on a tap. */
+function CoachNotes({ updates }: { updates: Update[] }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? updates : updates.slice(0, 1);
+  return (
+    <section
+      aria-label="From your coach"
+      className="border-border flex flex-col gap-1.5 rounded-xl border px-3 py-2.5"
+    >
+      <h4 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+        From your coach
+      </h4>
+      <ul className="flex flex-col gap-2">
+        {shown.map((u, i) => (
+          <li key={`${u.date}-${i}`} className="flex flex-col gap-0.5">
+            <span className="text-muted-foreground text-[11px]">{dayLabel(u.date)}</span>
+            <span className="text-sm break-words whitespace-pre-line">{u.note}</span>
+          </li>
+        ))}
+      </ul>
+      {updates.length > 1 && (
+        <button
+          type="button"
+          aria-expanded={all}
+          onClick={() => setAll((v) => !v)}
+          className="text-muted-foreground self-start text-xs underline-offset-2 hover:underline"
+        >
+          {all ? "Only the newest" : `Earlier notes (${updates.length - 1})`}
+        </button>
+      )}
+    </section>
+  );
+}
+
 function WeekRow({
   week,
   n,
@@ -110,6 +163,8 @@ function WeekRow({
   past,
   open,
   onToggle,
+  busy,
+  onMark,
 }: {
   week: Week;
   n: number;
@@ -118,6 +173,8 @@ function WeekRow({
   past: boolean;
   open: boolean;
   onToggle: () => void;
+  busy?: boolean;
+  onMark?: (session: number, mark: Mark) => void;
 }) {
   const totals = weekTotals(week);
   const volume =
@@ -163,7 +220,14 @@ function WeekRow({
             <li className="text-muted-foreground px-2 py-1 text-sm">Nothing planned.</li>
           )}
           {week.sessions.map((s, i) => (
-            <SessionRow key={`${s.date}-${i}`} session={s} today={s.date === today} />
+            <SessionRow
+              key={`${s.date}-${i}`}
+              session={s}
+              today={s.date === today}
+              marks={onMark ? marksFor(s, today) : []}
+              busy={busy}
+              onMark={(mark) => onMark?.(i, mark)}
+            />
           ))}
         </ul>
       )}
@@ -171,19 +235,79 @@ function WeekRow({
   );
 }
 
-function SessionRow({ session: s, today }: { session: Session; today: boolean }) {
-  const planned = measures(s);
-  const ran = s.actual ? measures(s.actual) : "";
-  const off = s.status === "missed" || s.status === "skipped" || s.status === "moved";
+const MARK_LABELS: Record<Mark, string> = {
+  done: "Done",
+  skipped: "Skipped",
+  planned: "Undo",
+};
+
+function SessionRow({
+  session: s,
+  today,
+  marks,
+  busy,
+  onMark,
+}: {
+  session: Session;
+  today: boolean;
+  marks: Mark[];
+  busy?: boolean;
+  onMark: (mark: Mark) => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  const body = <SessionBody session={s} today={today} />;
   return (
     <li
       aria-current={today ? "date" : undefined}
       className={cn(
-        "flex gap-3 rounded-lg border-l-4 px-2.5 py-2",
+        "flex flex-col rounded-lg border-l-4",
         COLOURS[s.type] ?? "border-border",
         today ? "bg-accent" : "bg-muted/30",
       )}
     >
+      {marks.length === 0 ? (
+        <div className="flex gap-3 px-2.5 py-2">{body}</div>
+      ) : (
+        <button
+          type="button"
+          aria-expanded={asking}
+          onClick={() => setAsking((v) => !v)}
+          className="flex w-full gap-3 px-2.5 py-2 text-left"
+        >
+          {body}
+        </button>
+      )}
+      {asking && marks.length > 0 && (
+        <div className="flex flex-wrap gap-2 px-2.5 pb-2 pl-13">
+          {marks.map((mark) => (
+            <Button
+              key={mark}
+              size="sm"
+              variant={mark === "done" ? "default" : "outline"}
+              disabled={busy}
+              onClick={() => {
+                setAsking(false);
+                onMark(mark);
+              }}
+            >
+              {mark === "done" && <Check />}
+              {mark === "planned" && <Undo2 />}
+              {MARK_LABELS[mark]}
+            </Button>
+          ))}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function SessionBody({ session: s, today }: { session: Session; today: boolean }) {
+  const planned = measures(s);
+  const ran = s.actual ? measures(s.actual) : "";
+  const elsewhen = s.actual?.date && s.actual.date !== s.date ? ` ${weekday(s.actual.date)}` : "";
+  const off = s.status === "missed" || s.status === "skipped" || s.status === "moved";
+  return (
+    <>
       <span className="flex w-8 shrink-0 flex-col items-center leading-tight">
         <span className="text-muted-foreground text-[11px]">{weekday(s.date)}</span>
         <span className="text-sm font-medium tabular-nums">{Number(s.date.slice(8))}</span>
@@ -205,7 +329,8 @@ function SessionRow({ session: s, today }: { session: Session; today: boolean })
         {s.status === "done" && (
           <span className="text-ok flex items-center gap-1 text-xs font-medium">
             <Check aria-hidden className="size-3.5" />
-            Done{ran && ` · ${ran}`}
+            Done{elsewhen}
+            {ran && ` · ${ran}`}
           </span>
         )}
         {off && (
@@ -220,6 +345,6 @@ function SessionRow({ session: s, today }: { session: Session; today: boolean })
           </span>
         )}
       </span>
-    </li>
+    </>
   );
 }

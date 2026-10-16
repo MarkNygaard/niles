@@ -7,6 +7,10 @@
 //! argument. A big one is a job: the artifact is made at once, marked
 //! working, and a background run of the same assistant writes it while
 //! the chat goes on.
+//!
+//! A training plan then keeps up with the runs ([`coach`]).
+
+mod coach;
 
 use crate::approvals::{self, Asker};
 use async_trait::async_trait;
@@ -18,7 +22,7 @@ use niles_artifacts::{
 use niles_core::EventBus;
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,6 +51,14 @@ const TRIP: &str = "trip";
 #[async_trait]
 pub(crate) trait Notifier: Send + Sync {
     async fn finished(&self, artifact: &Artifact);
+
+    /// A training plan the coach changed after a run, with the note it
+    /// left for the person. Called only when sessions changed, never
+    /// for a look that left them as they were or only added a note, so
+    /// a review after every run does not buzz the phone after every
+    /// run; and only when the artifact's notify is on. Not `finished`,
+    /// whose "ready" would be wrong for a plan that was there already.
+    async fn changed(&self, _artifact: &Artifact, _note: &str) {}
 }
 
 /// Tells nobody: there is no push without a database and its secrets
@@ -64,14 +76,9 @@ impl Notifier for Nobody {
 /// is the asking.
 pub(crate) struct Devices(pub(crate) Arc<niles_webpush::WebPush>);
 
-#[async_trait]
-impl Notifier for Devices {
-    async fn finished(&self, artifact: &Artifact) {
-        match self
-            .0
-            .send(&artifact.person, &finished_message(artifact))
-            .await
-        {
+impl Devices {
+    async fn tell(&self, artifact: &Artifact, message: &niles_webpush::Message) {
+        match self.0.send(&artifact.person, message).await {
             Ok(delivery) if delivery.sent > 0 => tracing::info!(
                 "[artifacts] {}: told {} device(s) about {:?}",
                 artifact.person,
@@ -85,6 +92,17 @@ impl Notifier for Devices {
                 artifact.title
             ),
         }
+    }
+}
+
+#[async_trait]
+impl Notifier for Devices {
+    async fn finished(&self, artifact: &Artifact) {
+        self.tell(artifact, &finished_message(artifact)).await;
+    }
+
+    async fn changed(&self, artifact: &Artifact, note: &str) {
+        self.tell(artifact, &changed_message(artifact, note)).await;
     }
 }
 
@@ -103,6 +121,30 @@ pub(crate) fn finished_message(artifact: &Artifact) -> niles_webpush::Message {
     niles_webpush::Message {
         title: "Niles".into(),
         body,
+        url: format!("/#/chat?artifact={}", artifact.id),
+        tag: format!("artifact-{}", artifact.id),
+    }
+}
+
+/// The longest of the coach's note a notification carries: the rest is
+/// in the plan, a tap away.
+const NOTE_IN_PUSH: usize = 240;
+
+/// What a plan the coach changed after a run says: that it changed, and
+/// the coach's note. The same tag as its job's notification, so the
+/// newest about a plan is the one on the lock screen.
+pub(crate) fn changed_message(artifact: &Artifact, note: &str) -> niles_webpush::Message {
+    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
+    let note = niles_artifacts::summary(note);
+    let note: String = if note.chars().count() > NOTE_IN_PUSH {
+        let cut: String = note.chars().take(NOTE_IN_PUSH - 1).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        note
+    };
+    niles_webpush::Message {
+        title: "Niles".into(),
+        body: format!("Your {title} changed after your run. {note}"),
         url: format!("/#/chat?artifact={}", artifact.id),
         tag: format!("artifact-{}", artifact.id),
     }
@@ -219,6 +261,10 @@ pub(crate) struct Artifacts {
     /// What a training plan's job reads besides: the person's own
     /// workouts.
     training: Option<Extras>,
+    /// The house's, for the days a plan is kept by.
+    tz: chrono_tz::Tz,
+    /// Plans being looked at after a run: one look at a time each.
+    reviewing: Arc<Mutex<HashSet<i64>>>,
     /// Jobs going, per person.
     running: Arc<Mutex<HashMap<String, usize>>>,
     touched: Mutex<Vec<Touch>>,
@@ -332,6 +378,8 @@ impl Artifacts {
             conversations,
             extras,
             training: None,
+            tz: chrono_tz::UTC,
+            reviewing: Arc::default(),
             running: Arc::default(),
             touched: Mutex::default(),
             started: chrono::Utc::now(),
@@ -339,9 +387,11 @@ impl Artifacts {
     }
 
     /// Lets a training plan's job read the asker's workouts, with the
-    /// tools `register` adds, which act for whoever the job is for.
-    pub(crate) fn with_training(mut self, register: Extras) -> Self {
+    /// tools `register` adds, which act for whoever the job is for; and
+    /// keeps plans by the days of `tz`, the house's.
+    pub(crate) fn with_training(mut self, register: Extras, tz: chrono_tz::Tz) -> Self {
         self.training = Some(register);
+        self.tz = tz;
         self
     }
 
@@ -363,6 +413,7 @@ impl Artifacts {
         reg.register(Box::new(Update {
             artifacts: self.clone(),
             only: None,
+            keep_past: None,
         }));
         reg.register(Box::new(StartJob(self.clone())));
         reg
@@ -370,14 +421,21 @@ impl Artifacts {
 
     /// What a job's run may use: its person's artifacts to read, its own
     /// to write, and what writing needs: for a training plan, their
-    /// workouts. Not the house.
-    fn job_tools(self: &Arc<Self>, id: i64, kind: &str) -> ToolRegistry {
+    /// workouts. Not the house. A review of a plan saves only what
+    /// leaves the days before `keep_past` as they were.
+    fn job_tools(
+        self: &Arc<Self>,
+        id: i64,
+        kind: &str,
+        keep_past: Option<chrono::NaiveDate>,
+    ) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         reg.register(Box::new(List(self.clone())));
         reg.register(Box::new(Get(self.clone())));
         reg.register(Box::new(Update {
             artifacts: self.clone(),
             only: Some(id),
+            keep_past,
         }));
         (self.extras)(&mut reg);
         if let (TRAINING_PLAN, Some(training)) = (kind, &self.training) {
@@ -579,7 +637,7 @@ impl Artifacts {
             conversation: artifact.conversation_id,
         };
         let (system, prompt) = job_prompts(&artifact);
-        let tools = self.job_tools(artifact.id, &artifact.kind);
+        let tools = self.job_tools(artifact.id, &artifact.kind, None);
         let outcome =
             tokio::time::timeout(JOB_LIMIT, self.runner.run(asker, &system, &prompt, tools))
                 .await
@@ -811,8 +869,10 @@ pub(crate) const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person w
     toward a race is kind training_plan, never a document: start_artifact_job, whose run \
     reads their Strava itself. Ask first for the race and its date if you do not know them; \
     the rest (a target time, which days they can run) the run can assume, and put in the \
-    brief what they said about it.\n\nA travel plan or itinerary is kind trip, never a \
-    document: start_artifact_job, whose run researches it. Ask first for the dates and \
+    brief what they said about it. Once it is made it keeps up by itself: Niles marks each \
+    run from Strava on it as it comes in, and after a run you look it over in the background \
+    and adjust what is to come if that is needed.\n\nA travel plan or itinerary is kind trip, \
+    never a document: start_artifact_job, whose run researches it. Ask first for the dates and \
     roughly where they want to go if you do not know them; put in the brief who is going, \
     what they have booked already, and what they said about pace, budget and what they \
     like.";
@@ -978,6 +1038,10 @@ struct Update {
     artifacts: Arc<Artifacts>,
     /// In a job, the one artifact it may write.
     only: Option<i64>,
+    /// In a review of a training plan, today: what happened before it,
+    /// and every session no longer planned, stays as it is, whatever
+    /// the model was told ([`niles_artifacts::tracking::keeps_the_past`]).
+    keep_past: Option<chrono::NaiveDate>,
 }
 
 #[async_trait]
@@ -1024,6 +1088,15 @@ impl Tool for Update {
             .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
         let content = kinds::validate(&a.kind, args.get("content").unwrap_or(&Value::Null))
             .map_err(|e| refused(TOOL, e))?;
+        if let Some(today) = self.keep_past {
+            let current = store
+                .revision(&asker.person, id, a.current_revision)
+                .await
+                .map_err(|e| refused(TOOL, e))?
+                .ok_or_else(|| invalid(TOOL, format!("artifact {id} has nothing to change yet")))?;
+            niles_artifacts::tracking::keeps_the_past(&current.content, &content, today)
+                .map_err(|e| refused(TOOL, e))?;
+        }
         let reason = niles_artifacts::summary(str_arg(&args, "reason").unwrap_or("Changed"));
         let a = store
             .revise(
@@ -1692,7 +1765,7 @@ mod tests {
     async fn a_job_cannot_write_any_artifact_but_its_own() {
         let f = fixture(FakeRunner::doing(vec![]));
         let other = create(&f, MARK, "Packing list").await;
-        let tools = f.artifacts.job_tools(other + 100, "document");
+        let tools = f.artifacts.job_tools(other + 100, "document", None);
         let e = approvals::ASKER
             .scope(
                 asking(MARK, None),
@@ -1722,20 +1795,23 @@ mod tests {
                 None,
                 Box::new(|_| {}),
             )
-            .with_training(Box::new(|reg: &mut ToolRegistry| {
-                crate::training::register(
-                    reg,
-                    Arc::new(niles_training::MemoryTraining::new()),
-                    chrono_tz::UTC,
-                    false,
-                );
-            })),
+            .with_training(
+                Box::new(|reg: &mut ToolRegistry| {
+                    crate::training::register(
+                        reg,
+                        Arc::new(niles_training::MemoryTraining::new()),
+                        chrono_tz::UTC,
+                        false,
+                    );
+                }),
+                chrono_tz::UTC,
+            ),
         );
-        let plan = artifacts.job_tools(1, "training_plan");
+        let plan = artifacts.job_tools(1, "training_plan", None);
         assert!(plan.has("training_summary"));
         assert!(plan.has("training_activities"));
         assert!(plan.has("artifact_update"));
-        let document = artifacts.job_tools(2, "document");
+        let document = artifacts.job_tools(2, "document", None);
         assert!(!document.has("training_summary"));
     }
 
@@ -1917,6 +1993,21 @@ mod tests {
         let message = finished_message(&artifact);
         assert!(message.body.contains("didn't finish"), "{}", message.body);
         assert_eq!(message.tag, format!("artifact-{id}"));
+    }
+
+    #[test]
+    fn a_plan_the_coach_changed_says_so_with_its_note() {
+        let plan = working("training_plan");
+        let message = changed_message(&plan, "A little less next week.");
+        assert_eq!(
+            message.body,
+            "Your Half marathon plan changed after your run. A little less next week."
+        );
+        assert_eq!(message.url, "/#/chat?artifact=7");
+        assert_eq!(message.tag, "artifact-7");
+        let long = changed_message(&plan, &"word ".repeat(100));
+        assert!(long.body.ends_with('…'), "{}", long.body);
+        assert!(long.body.chars().count() < 300);
     }
 
     #[tokio::test]

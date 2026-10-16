@@ -24,15 +24,17 @@ pub(crate) const KIND: Kind = Kind::new(
     "{\"goal\": {\"race\", \"distance_km\", \"date\", \"target_time\"?}, \"weeks\": \
      [{\"starts\", \"focus\"?, \"sessions\": [{\"date\", \"type\", \"title\", \
      \"distance_km\"?, \"duration_min\"?, \"pace\"?, \"details\"?, \"status\"?}]}], \
-     \"notes\"?}: a running plan toward a race, week by week. Dates are YYYY-MM-DD. The \
+     \"notes\"?, \"updates\"?}: a running plan toward a race, week by week. Dates are YYYY-MM-DD. The \
      first week starts on the plan's first day and every later week on the Monday after; \
      each session is dated inside its week, in order, and none after the race. type is \
      easy, long, tempo, intervals, recovery, race, rest, strength or cross. pace is per km, \
      \"5:40\" or \"5:30-5:45\"; target_time is \"1:55:00\". details is a line or two of \
      plain text (the reps, the effort); notes is markdown about the whole plan. status is \
      planned (the default), done, missed, skipped or moved; a done session may have \
-     activity (its Strava id) and actual {distance_km, duration_min, pace}. Keep both as \
-     they are when changing a plan.",
+     activity (its Strava id) and actual {distance_km, duration_min, pace, date?}, date \
+     being the day it was run when that was not the session's. Keep both as they are when \
+     changing a plan. updates is the coach's log, newest first: [{\"date\", \"note\"}], \
+     a note of a sentence or three each time the plan is looked at after a run.",
     "Planning",
     validate,
     preview,
@@ -52,6 +54,9 @@ pub const TYPES: &[&str] = &[
 
 pub const STATUSES: &[&str] = &["planned", "done", "missed", "skipped", "moved"];
 
+/// The types that are a run: the ones a run from Strava can be.
+pub(crate) const RUNNING: &[&str] = &["easy", "long", "tempo", "intervals", "recovery", "race"];
+
 /// A year: longer than any plan toward one race.
 const MAX_WEEKS: usize = 52;
 /// Two a day, every day.
@@ -59,19 +64,24 @@ const MAX_SESSIONS: usize = 14;
 const MAX_NAME: usize = 80;
 const MAX_DETAILS: usize = 1_000;
 const MAX_NOTES: usize = 10_000;
+/// The coach's log keeps the newest, the oldest going as a new one is
+/// added, the way versions go: a plan looked at after every run for
+/// months would otherwise grow without end.
+const MAX_UPDATES: usize = 20;
+const MAX_NOTE: usize = 500;
 /// The whole plan as JSON: a year of full weeks with long details is
 /// well under it.
 const MAX_CHARS: usize = 400_000;
 /// A session; a race may be an ultra.
-const MAX_SESSION_KM: f64 = 100.0;
+pub(crate) const MAX_SESSION_KM: f64 = 100.0;
 const MAX_RACE_KM: f64 = 250.0;
-const MAX_MINUTES: f64 = 600.0;
+pub(crate) const MAX_MINUTES: f64 = 600.0;
 
 /// Sessions a card shows, under the line about the race.
 const PREVIEW_SESSIONS: usize = 3;
 
 const GOAL: &[&str] = &["race", "distance_km", "date", "target_time"];
-const PLAN: &[&str] = &["goal", "weeks", "notes"];
+const PLAN: &[&str] = &["goal", "weeks", "notes", "updates"];
 const WEEK: &[&str] = &["starts", "focus", "sessions"];
 const SESSION: &[&str] = &[
     "date",
@@ -85,7 +95,8 @@ const SESSION: &[&str] = &[
     "activity",
     "actual",
 ];
-const ACTUAL: &[&str] = &["distance_km", "duration_min", "pace"];
+const ACTUAL: &[&str] = &["distance_km", "duration_min", "pace", "date"];
+const UPDATE: &[&str] = &["date", "note"];
 
 fn invalid(reason: impl Into<String>) -> Error {
     Error::Invalid {
@@ -150,6 +161,12 @@ fn plan(content: &Value) -> Result<Value> {
     let mut out = json!({ "goal": goal, "weeks": kept });
     if let Some(notes) = text(o, "notes", "the plan", MAX_NOTES)? {
         out["notes"] = json!(notes);
+    }
+    if let Some(list) = present(o, "updates") {
+        let kept = updates(list)?;
+        if !kept.is_empty() {
+            out["updates"] = json!(kept);
+        }
     }
     let n = out.to_string().len();
     if n > MAX_CHARS {
@@ -285,6 +302,9 @@ fn session(value: &Value, at: &str) -> Result<(Value, NaiveDate)> {
             let a = fields(v, &at, ACTUAL)?;
             let mut actual = json!({});
             measures(a, &at, &mut actual)?;
+            if let Some(day) = date(a, "date", &at)? {
+                actual["date"] = json!(day.to_string());
+            }
             actual
                 .as_object()
                 .is_some_and(|m| !m.is_empty())
@@ -303,6 +323,30 @@ fn session(value: &Value, at: &str) -> Result<(Value, NaiveDate)> {
         out["actual"] = actual;
     }
     Ok((out, day))
+}
+
+/// The coach's log, newest first whatever order it came in, without
+/// the empty notes, and only the newest [`MAX_UPDATES`] of it.
+fn updates(value: &Value) -> Result<Vec<Value>> {
+    let list = value
+        .as_array()
+        .ok_or_else(|| invalid("updates is a list, [{\"date\", \"note\"}]"))?;
+    let mut kept = Vec::with_capacity(list.len());
+    for (i, u) in list.iter().enumerate() {
+        let at = format!("updates, note {}", i + 1);
+        let o = fields(u, &at, UPDATE)?;
+        let day = date(o, "date", &at)?
+            .ok_or_else(|| invalid(format!("{at} needs \"date\", the day it was written")))?;
+        if let Some(note) = text(o, "note", &at, MAX_NOTE)? {
+            kept.push((day, note));
+        }
+    }
+    kept.sort_by_key(|u| std::cmp::Reverse(u.0));
+    kept.truncate(MAX_UPDATES);
+    Ok(kept
+        .into_iter()
+        .map(|(day, note)| json!({ "date": day.to_string(), "note": note }))
+        .collect())
 }
 
 /// Distance, duration and pace, as a session plans them or a run did
@@ -458,7 +502,7 @@ fn date(o: &Map<String, Value>, key: &str, at: &str) -> Result<Option<NaiveDate>
 
 /// "5:40", or a range "5:30-5:45" with the faster first; "/km" after it
 /// is allowed and dropped.
-fn pace(raw: &str) -> Option<String> {
+pub(crate) fn pace(raw: &str) -> Option<String> {
     let raw = raw.trim();
     let raw = ["min/km", "/km", "per km"]
         .iter()
@@ -546,7 +590,7 @@ fn preview(content: &Value) -> Preview {
 }
 
 /// "Tue 20 Oct · Easy run · 6 km".
-fn session_line(s: &Value) -> String {
+pub(crate) fn session_line(s: &Value) -> String {
     let mut parts = Vec::new();
     if let Some(day) = s["date"].as_str().and_then(parse_date) {
         parts.push(day.format("%a %-d %b").to_string());
@@ -562,7 +606,7 @@ fn session_line(s: &Value) -> String {
     parts.join(" · ")
 }
 
-fn parse_date(s: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
 }
 
@@ -788,6 +832,41 @@ mod tests {
         p["weeks"] = json!([]);
         assert!(refused(p).contains("no weeks"));
         assert!(refused(json!(42)).contains("object"));
+    }
+
+    #[test]
+    fn the_coach_s_log_is_kept_newest_first_and_only_the_newest() {
+        let mut p = plan_json();
+        let mut notes: Vec<Value> = (1..=25)
+            .map(|d| json!({ "date": format!("2026-09-{d:02}"), "note": format!("Note {d}") }))
+            .collect();
+        notes.push(json!({ "date": "2026-10-01", "note": "  " }));
+        p["updates"] = json!(notes);
+        let v = validate(&p).unwrap();
+        let kept = v["updates"].as_array().unwrap();
+        assert_eq!(kept.len(), MAX_UPDATES);
+        assert_eq!(kept[0], json!({ "date": "2026-09-25", "note": "Note 25" }));
+        assert_eq!(kept[MAX_UPDATES - 1]["note"], "Note 6");
+
+        let mut p = plan_json();
+        p["updates"] = json!([{ "date": "2026-10-15", "text": "Good run" }]);
+        assert!(refused(p).contains("\"text\""));
+        let mut p = plan_json();
+        p["updates"] = json!([{ "date": "2026-10-15", "note": "x".repeat(MAX_NOTE + 1) }]);
+        assert!(refused(p).contains("at most 500"));
+        let mut p = plan_json();
+        p["updates"] = json!([]);
+        assert!(validate(&p).unwrap().get("updates").is_none());
+    }
+
+    #[test]
+    fn a_run_done_on_another_day_keeps_the_day_it_was_run() {
+        let mut p = plan_json();
+        p["weeks"][0]["sessions"][0]["actual"]["date"] = json!("2026-10-16");
+        let v = validate(&p).unwrap();
+        assert_eq!(v["weeks"][0]["sessions"][0]["actual"]["date"], "2026-10-16");
+        p["weeks"][0]["sessions"][0]["actual"]["date"] = json!("Friday");
+        assert!(refused(p).contains("YYYY-MM-DD"));
     }
 
     #[test]

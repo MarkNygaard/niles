@@ -2031,7 +2031,7 @@ A coach for one person's running, starting with somebody training for a half mar
 
 1. **Data in** (built): each person's workouts arrive from their own Strava and are kept per person. The assistant answers questions about them: "how was my week?", "how far did I run on Sunday?".
 2. **The plan** (built): drafted by Claude or ChatGPT from the person's own runs, kept as a `training_plan` artifact (see Artifacts (per person)) that they can pin, with its own view.
-3. **Tracking**: each run is matched to the planned session it fulfils. A weekly background review (the review that already runs when the house is quiet) compares plan with what happened and proposes changes.
+3. **Tracking** (built): each run is matched to the planned session it fulfils as it arrives, and the sessions gone by without one are marked missed. After a run the assistant looks the plan over in the background and may adjust what is still to come. "What's my run today?" is answered from the plan. See Artifacts (per person), Keeping up with the runs.
 4. **Watch sync**, later: planned sessions sent to the watch as structured workouts.
 
 ### Where the data comes from
@@ -2080,6 +2080,7 @@ Both routes, like every `/me/strava` route, are behind the sign-in gate and act 
 - **Then**: a poll every 15 minutes for every connected person, and **Sync now** on the card, which runs the same sync.
 - **Listing:** a sync lists `GET /api/v3/athlete/activities?after=…&per_page=200`, page by page. `after` is the newest kept workout's start, less three days. The overlap catches a watch that syncs a day late, putting an older workout on Strava after a newer one, and one page holds it at no extra cost. The whole list is read before anything is fetched in detail.
 - **Details:** each activity not already kept is fetched with `GET /api/v3/activities/{id}`, oldest first, and saved as it comes. A sync cut short resumes from the newest kept.
+- **What arrived:** after every sync that got through, and after one that failed but kept something first, the workouts it kept that were new go to whoever follows the runs (`Strava::with_arrivals`, a channel): the training plans. A sync that found nothing new still says so, with none, because the days gone by without a run are news to a plan too.
 - **Rate limits** are per app, so per person. By default they are 200 requests per 15 minutes and 2,000 a day overall, and 100 and 1,000 for reads.
   - Every answer reports them in `X-RateLimit-Limit`/`-Usage` and `X-ReadRateLimit-Limit`/`-Usage`, each as "15-minute,daily".
   - A sync stops with three requests to spare in either window, and pauses that person until the window turns. That is the next quarter hour (Strava's windows start at :00, :15, :30 and :45), or midnight UTC for the daily limit.
@@ -2115,10 +2116,11 @@ The tables of the iPhone route (`training_keys`, `training_wellness`) are droppe
 
 ### Asking about it
 
-Two tools, in a relevance group of their own (run, pace, workout, ride, Strava…):
+Three tools, in a relevance group of their own (run, pace, workout, ride, Strava, training plan…):
 
-- `training_activities {from?, to?, type?}`: the workouts.
+- `training_activities {from?, to?, type?}`: the workouts, each with its Strava id, so the model can name the run a plan's session links to.
 - `training_summary {period | from, to}`: runs, distance, longest run, average pace and all workouts.
+- `training_today {day?}`: from the asker's training plan (Artifacts, `training_plan`), a day's sessions, the next one after it, the week's distance planned and run so far, and the countdown to the race. `day` is `YYYY-MM-DD`, `today` or `tomorrow`; today when left out. For "what's my run today?", "what's on my training plan?", "what run do I have tomorrow?". The plan read is the asker's own whose race is still to come: a pinned one first, then the one changed last. With none, it says so.
 
 The sums are worked out in code, not by the model. Distances and paces come back in the house's units.
 
@@ -2127,7 +2129,7 @@ The sums are worked out in code, not by the model. Distances and paces come back
 - `niles-training`: the model, the store trait with an in-memory store for tests, the summary, Strava's API (`strava`), and the sync and poll (`Strava`).
 - `niles-db`: the Postgres store, which creates its tables on first use. Strava is on whenever there is a database and its secrets key; a person connecting is the switch.
 - `niles-api`: `/me/strava`: status, the app, connect, callback, sync now, disconnect.
-- `niles-bin`: the tools, and the poll.
+- `niles-bin`: the tools, the poll, and passing what arrived to the training plans.
 
 ## Artifacts (per person)
 
@@ -2139,7 +2141,7 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
 
 1. **Artifacts in general, with documents** (2a, built): the model, versions, the Saved tab, chat cards, background jobs. One kind, `document`, which is enough for a travel plan or a packing list from the first day.
 2. **`training_plan`** (2b, built): the Training section's plan, as a kind with its own view.
-3. **The plan kept up to date** (2c): after each run arrives from Strava, Niles marks the session it was done (with the activity and what was run) or the ones it passed missed, and answers "what's my run today?". No new schema: every session has its status, `activity` and `actual` from 2b.
+3. **The plan kept up to date** (2c, built): after each run arrives from Strava, Niles marks the session it was done (with the activity and what was run) or the ones it passed missed, the assistant looks the plan over and may adjust what is to come, and Niles answers "what's my run today?". Every session had its status, `activity` and `actual` from 2b; 2c adds the coach's log, `updates`, and the day a run was done on when it was not its session's.
 4. **`trip`** (2d, built): a travel plan with days, places and bookings, as a kind with its own view.
 
 ### The model
@@ -2178,7 +2180,10 @@ A kind is a row in a small registry, in `niles-artifacts` and its twin in the ap
         "activity": "12345678901", "actual": { "distance_km": 12.2, "duration_min": 76, "pace": "6:14" } }
     ]}
   ],
-  "notes": "Assumed four runs a week, the long run on Sundays."
+  "notes": "Assumed four runs a week, the long run on Sundays.",
+  "updates": [
+    { "date": "2026-10-25", "note": "A strong long run. Next Sunday's goes to 14 km." }
+  ]
 }
 ```
 
@@ -2188,10 +2193,31 @@ A kind is a row in a small registry, in `niles-artifacts` and its twin in the ap
   - **The goal**: `race` (one line, at most 80 characters), `distance_km` (more than 0, at most 250), `date`; `target_time` optional, kept as `h:mm:ss`.
   - **Weeks**: 1 to 52. The first starts on any day, the plan's first; every later one on the Monday after the one before, so weeks neither overlap nor leave gaps, and each runs to its Sunday. None starts after the race.
   - **Sessions**: at most 14 a week, each dated inside its week, in order of date, none after the race. `type` is `easy`, `long`, `tempo`, `intervals`, `recovery`, `race`, `rest`, `strength` or `cross`; `title` one line. `distance_km` more than 0 and at most 100; `duration_min` at most 600; `pace` per km, `m:ss` or a range `m:ss-m:ss` (faster first, "/km" dropped), 2 to 20 minutes. `details` at most 1,000 characters of plain text, `notes` at most 10,000 of markdown.
-  - **Status**: `planned` (written when left out), `done`, `missed`, `skipped` or `moved`. Only a done session has `activity` (the workout's Strava id, as `niles-training` keeps it) and `actual` (distance, duration, pace, each checked as a plan's).
+  - **Status**: `planned` (written when left out), `done`, `missed`, `skipped` or `moved`. Only a done session has `activity` (the workout's Strava id, as `niles-training` keeps it) and `actual` (distance, duration, pace, each checked as a plan's, and `date`, the day it was run when that was not the session's).
+  - **`updates`**, the coach's log: `{date, note}`, the note plain text of at most 500 characters. Kept newest first whatever order it came in, empty notes dropped, and only the newest 20: the oldest goes as a new one comes, the way versions go, so a plan looked at after every run for months does not grow without end.
   - A job that answers with the plan instead of saving it is read out of its answer, code fence and all.
 - **Preview:** the race, its day and the number of weeks ("Copenhagen Half · Sun 13 Dec · 8 weeks"), then the next three sessions still planned, rest days left out ("Tue 20 Oct · Easy run · 6 km"). By status rather than by today's date, because the preview is kept with the version: once 2c marks sessions as they are run, each new version's preview moves on with them.
-- **The view**: the race, its day, distance and target, and a countdown ("8 weeks to go", "10 days to go", "Tomorrow", "Race day"). Then the weeks, each with its days, focus and distance (run of planned, "12 / 32 km", for this week and those before). This week is open, with today marked; the others are folded and open on a tap. Each session: its day, title, type (a colour down its side), distance, time and pace, its details, and done (with what was run) or missed. The notes, as markdown, at the end. It is read only: a plan changes by asking for it. **Copy** gives it as text, week by week.
+- **The view**: the race, its day, distance and target, and a countdown ("8 weeks to go", "10 days to go", "Tomorrow", "Race day"). Under it the coach's newest note, with the earlier ones folded. Then the weeks, each with its days, focus and distance (run of planned, "12 / 32 km", for this week and those before). This week is open, with today marked; the others are folded and open on a tap. Each session: its day, title, type (a colour down its side), distance, time and pace, its details, and done (with what was run, and on which day when it was another) or missed. The notes, as markdown, at the end. **Copy** gives it as text, week by week.
+  - **Ticking off a session.** A tap on a session (not a rest day) offers what the person can say about it: **Done** for one that is planned or missed and whose day has come, **Skipped** for one planned or missed, and **Undo** for one done or skipped, back to planned (a done one losing its run). Each saves a version by the person, as ticking a checklist item does: "Easy run on Tue 20 Oct: done". A moved one offers nothing. Anything bigger changes by asking for it.
+
+#### Keeping up with the runs
+
+After every sync of a person's Strava (see Training, Syncing: what arrived), each of their plans still going is brought up to date: not archived, not being written, and with its race at most three days ago, so the race itself is marked however late its upload. This is Niles's own bookkeeping, in code and without a model (`niles_artifacts::tracking`), with today as the house's day:
+
+- **Only what is new.** The workouts the sync brought that were not kept before, and of those any not already linked to a session. A re-sync or a backfill marks nothing twice, and a session the person undid is not linked again to the same run.
+- **A workout stands in for** a running session (easy, long, tempo, intervals, recovery, race) when it is a run; a strength session when it is strength; a cross session when it is a ride or anything else but a walk. A walk is no session.
+- **On its own day first:** the first session there it can stand in for that is planned, missed (an upload that came after the day was given up on) or done by hand without a workout yet. Never one skipped or moved.
+- **Then a day or two off:** a planned or missed session up to two days away, the nearest, the earlier on a tie: a run moved a day, late or early. Never the race, which is on its day or not at all. Only for a workout on a day the plan had nothing of its kind for: on a day that did, a second run is an extra one, and does not take tomorrow's session from the run still to come.
+- **Marked done:** `status: done`, `activity` the workout's Strava id, and `actual` its distance, time (start to finish) and pace (over moving time), each only when the plan would accept it, and `date` when it was run on another day. One workout is one session.
+- **Missed:** every session still planned, other than a rest day, once its day and the day after it are over in the house's time zone. The day after is the grace for a watch that uploads the next morning; a later upload still turns the missed session done.
+- **Kept** as a new version by `niles`, with a reason such as "Done: Easy run on Tue 20 Oct. Missed: Long run on Sun 18 Oct", only when something changed, checked by the kind like any version (so the preview moves on), and announced on the event stream so the app refreshes.
+
+**The coach looks at it.** When the bookkeeping marked a run done, the plan gets one look from the assistant, all of that sync's runs in one look: a background run of the same assistant as the jobs, with the jobs' tools for a plan (`artifact_get`, `artifact_update` for this plan alone, `training_activities`, `training_summary`, the date). Only when Claude or ChatGPT is on, the person has a job free (the same two at a time), and the plan is not being looked at already; otherwise nobody looks, and nothing is said: the runs are marked either way. The plan is not marked working while it is looked at, so a look that fails leaves it as it was, with nothing to try again.
+
+- **What it is told:** today, the race and how long to go; each run beside the session it was done as ("Tue 13 Oct: 6.2 km in 40 min at 6:17 /km (Strava activity …), done as Easy run (easy) on Tue 13 Oct: 6 km, 6:30 /km"); and the sessions missed in the last two weeks.
+- **What it is asked:** to change the plan only if what was run warrants it (a run much slower, faster, shorter or longer than planned, misses one after another, signs of being tired or ahead), and then only the sessions still to come, a little, keeping the plan's shape; to put a note to the person first in `updates`, saying what it changed and why; and, if nothing needs changing, to save nothing, or only a note when a word would really help.
+- **The past is fixed, in code.** Its `artifact_update` is checked against the current version before it is kept (`tracking::keeps_the_past`), and refused with what to fix when it changes the race day, any session before today (they must be exactly as they are, in their order), or any session from today on that is no longer planned (done, missed, skipped or moved, by Niles or the person, perhaps since the look began). It may not mark a session done, missed or skipped itself; it may move one (`moved`, with the new one added). A refusal says to read the plan again, so a run marked during the look is kept.
+- **Telling the person:** only when the look changed sessions, not for a look that saved nothing or only a note, so a routine look after every run does not buzz the phone after every run. Then, if the plan's notify is on, the notifier's `changed` is called with the plan and the note (below).
 
 **`trip`** is a travel plan, day by day, as JSON:
 
@@ -2289,6 +2315,8 @@ Each artifact is one person's, under the same key as their chat and training. On
 
 Each artifact has **notify**, on by default and switched off on the artifact. When a job finishes or fails, Niles calls a `Notifier` with the artifact if notify is on. Behind it is [Web Push](#notifications-on-your-devices): "Your Thailand travel plan is ready." on every device where the person turned notifications on, opening the artifact on a tap. Without a database and its secrets key there is no push, and the person still sees the status line, the Saved tab and the card in the chat. The satellites do not say it: a document is not news for a room.
 
+When the coach changed a training plan's sessions after a run (see Keeping up with the runs), it calls the notifier's `changed` instead, with the coach's note, or else the version's reason: "Your Hellerup 10K plan changed after your run. A little less next week." on the same devices, opening the plan on a tap, and replacing that plan's earlier notification. Not `finished`, which would say the plan is ready when it was there already. Never for a look that saved nothing or only a note, so a routine look after every run does not buzz the phone after every run.
+
 ### API
 
 Every route acts for the person signed in (the operator's key is "anyone", as in the chat):
@@ -2303,10 +2331,10 @@ Every route acts for the person signed in (the operator's key is "anyone", as in
 
 ### Where it lives
 
-- `niles-artifacts`: the model, the kinds with their validators and previews, and the store trait with an in-memory store for tests.
+- `niles-artifacts`: the model, the kinds with their validators and previews, the store trait with an in-memory store for tests, and a training plan's bookkeeping and the rule its review is held to (`tracking`).
 - `niles-db`: the Postgres store, which creates its tables on first use. Artifacts are on whenever there is a database.
 - `niles-api`: `/me/artifacts`, the artifact refs on a chat turn, and `artifact_changed` on the event stream.
-- `niles-bin`: the tools, the jobs, and the notifier, which pushes to the person's devices.
+- `niles-bin`: the tools, the jobs, the notifier, which pushes to the person's devices, and following the runs in the plans and the coach's look (`artifacts::coach`).
 - `web/`: the Saved tab, the artifact view, the chat card, and the status line.
 
 ## Notifications on your devices

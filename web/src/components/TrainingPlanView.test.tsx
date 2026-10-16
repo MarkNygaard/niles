@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { TrainingPlanView } from "@/components/TrainingPlanView";
 import { kindOf } from "@/lib/artifacts";
@@ -38,6 +38,10 @@ const PLAN: Plan = {
     },
   ],
   notes: "Assumed **four** runs a week.",
+  updates: [
+    { date: "2026-10-14", note: "A good tempo. Thursday's intervals stay as they are." },
+    { date: "2026-10-06", note: "A steady start." },
+  ],
 };
 
 function show() {
@@ -90,5 +94,59 @@ describe("TrainingPlanView", () => {
     const kind = kindOf("training_plan");
     expect(kind.label).toBe("Training plan");
     expect(kind.text(PLAN)).toContain("Week 2 · 12–18 Oct · Build · 22 km");
+  });
+
+  it("shows the coach's newest note, and the earlier ones on a tap", () => {
+    show();
+    const coach = screen.getByRole("region", { name: "From your coach" });
+    expect(coach).toHaveTextContent("A good tempo.");
+    expect(coach).not.toHaveTextContent("A steady start.");
+    fireEvent.click(within(coach).getByRole("button", { name: "Earlier notes (1)" }));
+    expect(coach).toHaveTextContent("A steady start.");
+  });
+
+  it("marks today's session done with a tap, as a version by the person", () => {
+    const onChange = vi.fn();
+    render(<TrainingPlanView content={PLAN} today="2026-10-16" onChange={onChange} />);
+    const today = screen.getByRole("list", { name: "Weeks" }).querySelector('[aria-current="date"]')!;
+    fireEvent.click(within(today as HTMLElement).getByRole("button", { name: /6 × 800 m/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    const [content, reason] = onChange.mock.calls[0];
+    expect(reason).toBe("6 × 800 m on Fri 16 Oct: done");
+    expect(content.weeks[1].sessions[1].status).toBe("done");
+    expect(content.weeks[1].sessions[0]).toEqual(PLAN.weeks[1].sessions[0]);
+  });
+
+  it("offers only skipping a session still to come, and nothing when read only", () => {
+    const onChange = vi.fn();
+    const { unmount } = render(
+      <TrainingPlanView content={PLAN} today="2026-10-16" onChange={onChange} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Long run/ }));
+    expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Skipped" }));
+    expect(onChange.mock.calls[0][1]).toBe("Long run on Sun 18 Oct: skipped");
+    unmount();
+
+    show();
+    expect(screen.queryByRole("button", { name: /6 × 800 m/ })).not.toBeInTheDocument();
+  });
+
+  it("says which day a run was done on when it was not its own", () => {
+    const moved: Plan = {
+      ...PLAN,
+      weeks: [
+        {
+          ...PLAN.weeks[0],
+          sessions: [
+            { ...PLAN.weeks[0].sessions[0], actual: { distance_km: 6.2, date: "2026-10-07" } },
+          ],
+        },
+        ...PLAN.weeks.slice(1),
+      ],
+    };
+    render(<TrainingPlanView content={moved} today="2026-10-16" />);
+    fireEvent.click(within(screen.getByRole("list", { name: "Weeks" })).getAllByRole("button")[0]);
+    expect(screen.getByText("Done Wed · 6.2 km")).toBeInTheDocument();
   });
 });

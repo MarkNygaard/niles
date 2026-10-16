@@ -307,8 +307,8 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
-        // The asker's own workouts, from their Strava. English with the
-        // Danish the household slips into.
+        // The asker's own workouts, from their Strava, and their plan.
+        // English with the Danish the household slips into.
         keywords: &[
             "run",
             "runs",
@@ -340,9 +340,11 @@ const GROUPS: &[Group] = &[
             "løbetur",
             "løbet",
             "træning",
+            "træningsplan",
+            "løbeplan",
             "puls",
         ],
-        tools: &["training_activities", "training_summary"],
+        tools: &["training_activities", "training_summary", "training_today"],
     },
     Group {
         // A rule is said as a condition. The yes that saves one needs
@@ -552,6 +554,15 @@ mod tests {
             let names = relevant_tool_names(sentence).expect(sentence);
             assert!(names.contains(&"training_summary"), "{sentence}");
             assert!(names.contains(&"training_activities"), "{sentence}");
+        }
+        for sentence in [
+            "what's my run today",
+            "what's on my training plan",
+            "what run do I have tomorrow",
+            "hvad står der på min træningsplan",
+        ] {
+            let names = relevant_tool_names(sentence).expect(sentence);
+            assert!(names.contains(&"training_today"), "{sentence}");
         }
     }
 

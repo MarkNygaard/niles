@@ -7,9 +7,13 @@
 //! Claude's and ChatGPT's calls carry, a background job's among them,
 //! for somebody signed in without a voice. Somebody else's data cannot
 //! be asked for by name, and an unrecognised voice has none.
+//!
+//! And their training plan's day, [`TrainingToday`]: what they are to
+//! run, from the plan Claude or ChatGPT made them.
 
 use crate::{approvals, profile};
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
+use niles_artifacts::{ArtifactStore, Filter};
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
 use niles_training::{Activity, Kind, TrainingStore, person_key};
 use serde_json::{Value, json};
@@ -119,6 +123,7 @@ impl Shared {
     fn activity(&self, a: &Activity) -> Value {
         let local = a.started_at.with_timezone(&self.tz);
         let mut out = json!({
+            "id": a.external_id,
             "date": local.format("%A %Y-%m-%d %H:%M").to_string(),
             "type": a.kind.as_str(),
             "name": a.name,
@@ -186,9 +191,9 @@ impl Tool for TrainingActivities {
         ToolDescriptor {
             name: "training_activities".into(),
             description: "The workouts of the person asking — runs, walks, rides, strength — \
-                from their Strava, oldest first: date, distance, time, pace, heart rate, \
-                climb. from/to are YYYY-MM-DD in the house's time zone, to inclusive; \
-                without them, the last 30 days."
+                from their Strava, oldest first: their Strava id, date, distance, time, pace, \
+                heart rate, climb. from/to are YYYY-MM-DD in the house's time zone, to \
+                inclusive; without them, the last 30 days."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -319,6 +324,234 @@ fn summary_json(s: &Shared, sum: &niles_training::Summary) -> Value {
     out
 }
 
+/// What to say when there is no plan to read.
+const NO_PLAN: &str = "This person has no training plan with a race still to come. Claude or \
+    ChatGPT makes one when asked (\"make me a plan for the Copenhagen Half\"); it is kept under \
+    Saved in the app, and follows their Strava runs.";
+
+const TRAINING_PLAN: &str = "training_plan";
+
+/// The plan that is theirs now: of those whose race is still to come,
+/// a pinned one first, then the one changed last.
+async fn current_plan(
+    plans: &dyn ArtifactStore,
+    person: &str,
+    today: NaiveDate,
+) -> std::result::Result<Option<(niles_artifacts::Artifact, Value)>, niles_artifacts::Error> {
+    let filter = Filter {
+        archived: Some(false),
+        ..Filter::default()
+    };
+    for a in plans.list(person, filter).await? {
+        if a.kind != TRAINING_PLAN || a.current_revision == 0 {
+            continue;
+        }
+        let Some(r) = plans.revision(person, a.id, a.current_revision).await? else {
+            continue;
+        };
+        if day_of(&r.content["goal"]["date"]).is_some_and(|race| race >= today) {
+            return Ok(Some((a, r.content)));
+        }
+    }
+    Ok(None)
+}
+
+fn day_of(v: &Value) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(v.as_str()?, "%Y-%m-%d").ok()
+}
+
+/// "9 weeks to go", "10 days to go", "tomorrow", "race day".
+fn countdown(days: i64) -> String {
+    match days {
+        ..0 => "the race has been run".into(),
+        0 => "race day".into(),
+        1 => "tomorrow".into(),
+        2..14 => format!("{days} days to go"),
+        _ => format!("{} weeks to go", days / 7),
+    }
+}
+
+impl Shared {
+    /// A plan's pace per km, "5:30-5:45", in the house's units.
+    fn plan_pace(&self, raw: &str) -> Option<String> {
+        let unit = if self.imperial { " /mi" } else { " /km" };
+        let parts: Vec<String> = raw
+            .split('-')
+            .map(|p| {
+                let (m, s) = p.trim().split_once(':')?;
+                let seconds = m.parse::<f64>().ok()? * 60.0 + s.parse::<f64>().ok()?;
+                Some(self.pace(seconds).trim_end_matches(unit).to_string())
+            })
+            .collect::<Option<_>>()?;
+        Some(format!("{}{unit}", parts.join("-")))
+    }
+
+    /// A session as it is said: its day, what it is, how far and how
+    /// fast, and what was run of it.
+    fn session(&self, s: &Value) -> Value {
+        let mut out = json!({
+            "date": day_of(&s["date"]).map(|d| d.format("%A %Y-%m-%d").to_string()),
+            "title": s["title"],
+            "type": s["type"],
+            "status": s["status"],
+        });
+        if let Some(km) = s["distance_km"].as_f64() {
+            out["distance"] = self.distance(km * 1000.0);
+        }
+        if let Some(min) = s["duration_min"].as_f64() {
+            out["duration"] = json!(clock(min * 60.0));
+        }
+        if let Some(pace) = s["pace"].as_str().and_then(|p| self.plan_pace(p)) {
+            out["pace"] = json!(pace);
+        }
+        if let Some(details) = s["details"].as_str() {
+            out["details"] = json!(details);
+        }
+        let actual = &s["actual"];
+        if actual.is_object() {
+            let mut ran = json!({});
+            if let Some(km) = actual["distance_km"].as_f64() {
+                ran["distance"] = self.distance(km * 1000.0);
+            }
+            if let Some(pace) = actual["pace"].as_str().and_then(|p| self.plan_pace(p)) {
+                ran["pace"] = json!(pace);
+            }
+            out["ran"] = ran;
+        }
+        out
+    }
+}
+
+/// Today's run, or another day's, from the asker's own plan.
+struct TrainingToday {
+    shared: Arc<Shared>,
+    plans: Arc<dyn ArtifactStore>,
+}
+
+#[async_trait::async_trait]
+impl Tool for TrainingToday {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "training_today".into(),
+            description: "The training plan of the person asking, for one day: that day's \
+                sessions, the next one after it, the week's distance planned and run so far, \
+                and how long to the race. day is YYYY-MM-DD, today or tomorrow; today when \
+                left out. Use it for \"what's my run today\", \"what's on my training plan\", \
+                \"what run do I have tomorrow\"."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "day": { "type": "string", "description": "YYYY-MM-DD, today or tomorrow" }
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let person = asker(TrainingToday::TOOL)?;
+        self.read(&person, &args, self.shared.today()).await
+    }
+}
+
+impl TrainingToday {
+    const TOOL: &str = "training_today";
+
+    async fn read(&self, person: &str, args: &Value, today: NaiveDate) -> Result<Value> {
+        const TOOL: &str = TrainingToday::TOOL;
+        let s = &self.shared;
+        let day = match args.get("day").and_then(Value::as_str).map(str::trim) {
+            None | Some("" | "today") => today,
+            Some("tomorrow") => today + Duration::days(1),
+            Some(_) => s.date_arg(TOOL, args, "day")?.unwrap_or(today),
+        };
+        let found = current_plan(self.plans.as_ref(), person, today)
+            .await
+            .map_err(|e| Error::Memory(e.to_string()))?;
+        let Some((plan, content)) = found else {
+            return Ok(json!({ "plan": null, "note": NO_PLAN }));
+        };
+
+        let weeks = content["weeks"].as_array().map_or(&[][..], Vec::as_slice);
+        let sessions = || {
+            weeks
+                .iter()
+                .filter_map(|w| w["sessions"].as_array())
+                .flatten()
+        };
+        let on_day: Vec<Value> = sessions()
+            .filter(|x| day_of(&x["date"]) == Some(day))
+            .map(|x| s.session(x))
+            .collect();
+        let next = sessions().find(|x| {
+            day_of(&x["date"]).is_some_and(|d| d > day)
+                && x["status"] == "planned"
+                && x["type"] != "rest"
+        });
+        let race = day_of(&content["goal"]["date"]).unwrap_or(today);
+        let days = (race - today).num_days();
+        let mut out = json!({
+            "plan": plan.title,
+            "race": content["goal"]["race"],
+            "race_day": race.format("%A %Y-%m-%d").to_string(),
+            "days_to_go": days,
+            "countdown": countdown(days),
+            "day": day.format("%A %Y-%m-%d").to_string(),
+            "sessions": on_day,
+        });
+        if on_day.iter().all(|x| x["type"] == "rest") {
+            out["note"] = json!("Nothing to run that day: a rest day.");
+        }
+        if let Some(next) = next {
+            out["next"] = s.session(next);
+        }
+        let week = weeks.iter().find(|w| {
+            day_of(&w["starts"]).is_some_and(|starts| {
+                let sunday =
+                    starts + Duration::days(i64::from(6 - starts.weekday().num_days_from_monday()));
+                starts <= day && day <= sunday
+            })
+        });
+        if let Some(week) = week {
+            let (planned, run) = niles_artifacts::tracking::week_km(week);
+            let left = week["sessions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|x| {
+                    x["status"] == "planned"
+                        && x["type"] != "rest"
+                        && day_of(&x["date"]).is_some_and(|d| d >= day)
+                })
+                .count();
+            out["week"] = json!({
+                "focus": week["focus"],
+                "planned": s.distance(planned * 1000.0),
+                "run": s.distance(run * 1000.0),
+                "sessions_left": left,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// `training_today`, beside the other training tools, reading the plans
+/// in `plans`.
+pub fn register_plan(
+    reg: &mut ToolRegistry,
+    store: Arc<dyn TrainingStore>,
+    plans: Arc<dyn ArtifactStore>,
+    tz: chrono_tz::Tz,
+    imperial: bool,
+) {
+    let shared = Arc::new(Shared {
+        store,
+        tz,
+        imperial,
+    });
+    reg.register(Box::new(TrainingToday { shared, plans }));
+}
+
 pub fn register(
     reg: &mut ToolRegistry,
     store: Arc<dyn TrainingStore>,
@@ -379,6 +612,7 @@ mod tests {
             .await
             .unwrap();
         let run = &out["activities"][0];
+        assert_eq!(run["id"], "1");
         assert_eq!(run["type"], "run");
         assert_eq!(run["distance"]["km"], 5.02);
         assert_eq!(run["date"], "Wednesday 2026-10-14 07:00");
@@ -492,6 +726,127 @@ mod tests {
         assert_eq!(out["average_pace"], "6:23 /km");
     }
 
+    /// Her plan toward a 10K on Sunday 25 October, and somebody else's
+    /// plan, which is never read for her.
+    async fn plans_with_hers() -> TrainingToday {
+        use niles_artifacts::{Author, MemoryArtifacts, NewArtifact, NewRevision, Status};
+        let plans = Arc::new(MemoryArtifacts::new());
+        let content = json!({
+            "goal": { "race": "Hellerup 10K", "distance_km": 10, "date": "2026-10-25" },
+            "weeks": [
+                { "starts": "2026-10-12", "focus": "Build", "sessions": [
+                    { "date": "2026-10-13", "type": "easy", "title": "Easy run", "distance_km": 6,
+                      "status": "done", "activity": "1", "actual": { "distance_km": 6.4, "pace": "6:20" } },
+                    { "date": "2026-10-16", "type": "intervals", "title": "6 × 400 m",
+                      "distance_km": 7, "pace": "4:45-5:00", "details": "Warm up 10 min" },
+                    { "date": "2026-10-17", "type": "rest", "title": "Rest" },
+                    { "date": "2026-10-18", "type": "long", "title": "Long run", "distance_km": 12 }
+                ]},
+                { "starts": "2026-10-19", "sessions": [
+                    { "date": "2026-10-25", "type": "race", "title": "Race day", "distance_km": 10 }
+                ]}
+            ]
+        });
+        for (person, title) in [
+            ("person:mark", "His plan"),
+            ("person:majse", "Hellerup 10K"),
+        ] {
+            plans
+                .create(
+                    person,
+                    NewArtifact {
+                        kind: TRAINING_PLAN.into(),
+                        title: title.into(),
+                        summary: String::new(),
+                        notify: true,
+                        status: Status::Ready,
+                        status_text: None,
+                        job_id: None,
+                        brief: None,
+                        conversation_id: None,
+                        first: Some(NewRevision {
+                            content: niles_artifacts::kinds::validate(TRAINING_PLAN, &content)
+                                .unwrap(),
+                            reason: "First draft".into(),
+                            author: Author::Claude,
+                            summary: None,
+                        }),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        TrainingToday {
+            shared: shared(Arc::new(MemoryTraining::new())),
+            plans,
+        }
+    }
+
+    fn on(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, d).unwrap()
+    }
+
+    async fn asked(tool: &TrainingToday, day: &str, today: NaiveDate) -> Value {
+        tool.read("person:majse", &json!({ "day": day }), today)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn today_s_run_is_read_from_her_plan() {
+        let tool = plans_with_hers().await;
+        let out = asked(&tool, "today", on(16)).await;
+        assert_eq!(out["plan"], "Hellerup 10K");
+        assert_eq!(out["day"], "Friday 2026-10-16");
+        let s = &out["sessions"][0];
+        assert_eq!(s["title"], "6 × 400 m");
+        assert_eq!(s["distance"]["km"], 7.0);
+        assert_eq!(s["pace"], "4:45-5:00 /km");
+        assert_eq!(s["details"], "Warm up 10 min");
+        assert_eq!(out["next"]["title"], "Long run");
+        assert_eq!(out["next"]["date"], "Sunday 2026-10-18");
+        assert_eq!(out["week"]["planned"]["km"], 25.0);
+        assert_eq!(out["week"]["run"]["km"], 6.4);
+        assert_eq!(out["week"]["sessions_left"], 2);
+        assert_eq!(out["race_day"], "Sunday 2026-10-25");
+        assert!(out.get("note").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rest_day_says_so_and_a_done_one_says_what_was_run() {
+        let tool = plans_with_hers().await;
+        let rest = asked(&tool, "tomorrow", on(16)).await;
+        assert_eq!(rest["day"], "Saturday 2026-10-17");
+        assert!(rest["note"].as_str().unwrap().contains("rest day"));
+        let done = asked(&tool, "2026-10-13", on(16)).await;
+        assert_eq!(done["sessions"][0]["status"], "done");
+        assert_eq!(done["sessions"][0]["ran"]["distance"]["km"], 6.4);
+        assert_eq!(done["sessions"][0]["ran"]["pace"], "6:20 /km");
+    }
+
+    #[test]
+    fn the_countdown_is_said_as_people_say_it() {
+        assert_eq!(countdown(63), "9 weeks to go");
+        assert_eq!(countdown(10), "10 days to go");
+        assert_eq!(countdown(1), "tomorrow");
+        assert_eq!(countdown(0), "race day");
+    }
+
+    #[tokio::test]
+    async fn without_a_plan_still_to_run_there_is_none() {
+        let tool = plans_with_hers().await;
+        let guest = tool.read("person:guest", &json!({}), on(16)).await.unwrap();
+        assert_eq!(guest["plan"], Value::Null);
+        assert!(guest["note"].as_str().unwrap().contains("no training plan"));
+        let after = asked(&tool, "today", on(26)).await;
+        assert_eq!(after["plan"], Value::Null, "the race is run");
+        let his = profile::SPEAKER
+            .scope(Some("mark".into()), tool.execute(json!({})))
+            .await
+            .unwrap();
+        assert_ne!(his["plan"], "Hellerup 10K");
+    }
+
     #[test]
     fn an_imperial_house_hears_miles() {
         let s = Shared {
@@ -501,6 +856,7 @@ mod tests {
         };
         assert_eq!(s.distance(21_097.5), json!({ "mi": 13.11 }));
         assert_eq!(s.pace(300.0), "8:03 /mi");
+        assert_eq!(s.plan_pace("5:00-5:30").as_deref(), Some("8:03-8:51 /mi"));
         assert_eq!(clock(5025.0), "1:23:45");
     }
 }

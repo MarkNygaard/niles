@@ -13,6 +13,7 @@ mod error;
 pub mod kinds;
 mod model;
 mod store;
+pub mod tracking;
 mod training_plan;
 mod trip;
 

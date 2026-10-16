@@ -21,4 +21,4 @@ pub use error::{Error, Result};
 pub use model::{Activity, Athlete, Kind, StravaApp, StravaLink, StravaTokens, person_key};
 pub use store::{MemoryTraining, Overview, Saved, TrainingStore};
 pub use summary::{Summary, summarise};
-pub use sync::{BACKFILL, OVERLAP, POLL, Strava, Synced};
+pub use sync::{Arrived, BACKFILL, OVERLAP, POLL, Strava, Synced};
