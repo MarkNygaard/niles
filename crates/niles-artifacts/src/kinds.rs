@@ -1,7 +1,7 @@
 //! The kinds of artifact, and what each one's content is.
 //!
 //! A kind is one entry in [`KINDS`], with its twin in the app's
-//! `web/src/lib/artifacts.ts`: a new kind is a new entry in each and a
+//! `web/src/lib/artifacts.tsx`: a new kind is a new entry in each and a
 //! view for it in the app. Everything else — storage, versions, jobs,
 //! cards — is the same for every kind.
 
@@ -50,7 +50,7 @@ impl Kind {
     }
 }
 
-pub const KINDS: &[Kind] = &[crate::document::KIND];
+pub const KINDS: &[Kind] = &[crate::document::KIND, crate::training_plan::KIND];
 
 pub fn kind(id: &str) -> Option<&'static Kind> {
     KINDS.iter().find(|k| k.id == id)
