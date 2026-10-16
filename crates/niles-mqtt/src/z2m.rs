@@ -420,10 +420,10 @@ pub fn parse_device_list(json: &[u8]) -> crate::Result<Vec<Z2mDevice>> {
 
 /// One entry of `bridge/groups`.
 ///
-/// A Zigbee group is a light in its own right: it has a friendly name
+/// A Zigbee group is a device in its own right: it has a friendly name
 /// shaped like any other, publishes state on that topic, and takes
 /// commands there. What it does not have is a `definition`, so what it
-/// can be told has to be read off its members.
+/// is, and what it can be told, has to be read off its members.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Z2mGroup {
@@ -447,16 +447,24 @@ pub struct Z2mGroupMember {
 }
 
 impl Z2mGroup {
-    /// The group as a device, given what its members can do.
+    /// The id the group would have, if its name is one Niles can use.
+    pub fn id(&self) -> crate::Result<DeviceId> {
+        Ok(DeviceId::parse(&format!("z2m:{}", self.friendly_name))?)
+    }
+
+    /// The group as a device of `class`, given what its members can do.
     ///
     /// Capabilities are the union: a group holding one colour bulb and
     /// one white one can be told a colour, and the white one will
     /// ignore it — which is Z2M's business and exactly what happens if
     /// you send it by hand. Taking the intersection instead would hide
     /// a control the group really does have.
-    pub fn to_device(&self, members: LightCapabilities) -> crate::Result<Device> {
-        let id = DeviceId::parse(&format!("z2m:{}", self.friendly_name))?;
-        Ok(Device::new(id, DeviceState::default(), DeviceClass::Light).with_capabilities(members))
+    pub fn to_device(
+        &self,
+        class: DeviceClass,
+        members: LightCapabilities,
+    ) -> crate::Result<Device> {
+        Ok(Device::new(self.id()?, DeviceState::default(), class).with_capabilities(members))
     }
 }
 

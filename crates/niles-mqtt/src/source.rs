@@ -15,7 +15,9 @@
 use crate::client::{Message, MqttClient};
 use crate::error::Result;
 use crate::z2m::{Z2mGroup, parse_device_list, parse_group_list, parse_state};
-use niles_core::{Device, DeviceId, DeviceRegistry, Event, EventBus, LightCapabilities};
+use niles_core::{
+    Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, LightCapabilities,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, warn};
@@ -98,6 +100,11 @@ pub(crate) struct GroupIndex {
     /// to hand its bulbs back, and the device list that described them
     /// may not be published again for hours.
     devices: Vec<(String, Device)>,
+    /// The last position each blind reported, by ieee address. A blind
+    /// in a group is not in the registry, and Z2M passes a bulb's on and
+    /// off up to its group but not a blind's position, so these are what
+    /// a group of blinds knows about where it is.
+    positions: HashMap<String, u8>,
 }
 
 impl GroupIndex {
@@ -107,29 +114,50 @@ impl GroupIndex {
     /// Groups go in after the devices, so a group that shares a name
     /// with a device is the one that stays.
     fn projection(&self) -> Vec<Device> {
-        let caps: HashMap<&str, LightCapabilities> = self
+        let by_ieee: HashMap<&str, &Device> = self
             .devices
             .iter()
-            .map(|(ieee, device)| (ieee.as_str(), device.capabilities))
+            .map(|(ieee, device)| (ieee.as_str(), device))
             .collect();
         let mut hidden: HashSet<&str> = HashSet::new();
         let mut groups = Vec::new();
         for group in &self.groups {
+            let members: Vec<&Device> = group
+                .members
+                .iter()
+                .filter_map(|m| by_ieee.get(m.ieee_address.as_str()).copied())
+                .collect();
+            // No member in the device list yet, which is every group
+            // while the groups arrive first. Nothing says what it is, and
+            // guessing a light would put a group of blinds among the
+            // lights until the device list corrected it.
+            if members.is_empty() {
+                continue;
+            }
+            let Some(class) = group_class(&members) else {
+                warn!(
+                    "group {:?} mixes devices that cannot share a command, so its members stay separate",
+                    group.friendly_name
+                );
+                continue;
+            };
             // The union of what the members can do. A group holding one
             // colour bulb and one white one can be told a colour; the
             // white one ignores it, exactly as it would if you sent it by
             // hand.
-            let capabilities = group
-                .members
-                .iter()
-                .filter_map(|m| caps.get(m.ieee_address.as_str()))
-                .fold(LightCapabilities::default(), |acc, c| LightCapabilities {
-                    color_temp: acc.color_temp || c.color_temp,
-                    rgb: acc.rgb || c.rgb,
-                });
-            let Ok(device) = group.to_device(capabilities) else {
+            let capabilities =
+                members
+                    .iter()
+                    .fold(LightCapabilities::default(), |acc, d| LightCapabilities {
+                        color_temp: acc.color_temp || d.capabilities.color_temp,
+                        rgb: acc.rgb || d.capabilities.rgb,
+                    });
+            let Ok(mut device) = group.to_device(class, capabilities) else {
                 continue;
             };
+            if class == DeviceClass::Cover {
+                device.state.position = self.group_position(group);
+            }
             hidden.extend(group.members.iter().map(|m| m.ieee_address.as_str()));
             groups.push(device);
         }
@@ -140,6 +168,41 @@ impl GroupIndex {
             .chain(groups)
             .collect()
     }
+
+    /// Where a group of blinds is: the average of what its blinds last
+    /// said, as Home Assistant's cover groups do. Blinds in a group move
+    /// together, so they rarely differ, and when they do the middle is
+    /// where a slider standing for both belongs.
+    fn group_position(&self, group: &Z2mGroup) -> Option<u8> {
+        let known: Vec<u32> = group
+            .members
+            .iter()
+            .filter_map(|m| self.positions.get(&m.ieee_address))
+            .map(|&p| u32::from(p))
+            .collect();
+        let n = known.len() as u32;
+        (n > 0).then(|| ((known.iter().sum::<u32>() + n / 2) / n) as u8)
+    }
+}
+
+/// What a group is, from what is in it: blinds make a blind, plugs a
+/// plug, and bulbs a light, with or without plugs among them, which take
+/// the on and off and ignore the rest. A blind grouped with a bulb is
+/// nothing one command can serve, so it is no device at all.
+fn group_class(members: &[&Device]) -> Option<DeviceClass> {
+    let first = members.first()?.class;
+    if members.iter().all(|d| d.class == first)
+        && matches!(
+            first,
+            DeviceClass::Light | DeviceClass::Outlet | DeviceClass::Cover
+        )
+    {
+        return Some(first);
+    }
+    members
+        .iter()
+        .all(|d| matches!(d.class, DeviceClass::Light | DeviceClass::Outlet))
+        .then_some(DeviceClass::Light)
 }
 
 /// Make the registry's Z2M devices match what the two lists say.
@@ -167,13 +230,25 @@ fn reconcile(index: &GroupIndex, registry: &DeviceRegistry, bus: &EventBus) -> V
         // light was doing, and the curve then skipped them all until
         // each was physically toggled. Whether Z2M can reach it is the
         // same kind of news, and only availability messages carry it.
+        //
+        // Unless it has become something else under the same name, as a
+        // group does when its bulbs are swapped for blinds. What the
+        // light was doing says nothing about the blind, and everything
+        // that sorted it as a light has to hear it is gone.
         let existing = registry.get(&device.id);
         if let Some(known) = &existing {
-            device.state = known.state.clone();
+            if known.class == device.class {
+                device.state = known.state.clone();
+            } else {
+                debug!("{} is no longer a {:?}", device.id, known.class);
+                bus.publish(Event::DeviceRemoved {
+                    id: device.id.clone(),
+                });
+            }
             device.available = known.available;
         }
         registry.upsert(device.clone());
-        if existing.is_none() {
+        if existing.is_none_or(|known| known.class != device.class) {
             debug!("discovered {}", device.id);
             bus.publish(Event::DeviceAdded {
                 device: device.clone(),
@@ -219,22 +294,20 @@ pub(crate) fn handle_group_list(
     };
     let groups = groups
         .into_iter()
-        .filter(
-            |group| match group.to_device(LightCapabilities::default()) {
-                Ok(_) => true,
-                Err(e) => {
-                    // A group named without a room: `table` rather than
-                    // `living_room/table`. Worth saying, because it will
-                    // never appear and nothing else would explain why. Its
-                    // bulbs stay as they are, one by one.
-                    warn!(
-                        "group {:?} is not a usable name, so its members stay separate: {e}",
-                        group.friendly_name
-                    );
-                    false
-                }
-            },
-        )
+        .filter(|group| match group.id() {
+            Ok(_) => true,
+            Err(e) => {
+                // A group named without a room: `table` rather than
+                // `living_room/table`. Worth saying, because it will
+                // never appear and nothing else would explain why. Its
+                // bulbs stay as they are, one by one.
+                warn!(
+                    "group {:?} is not a usable name, so its members stay separate: {e}",
+                    group.friendly_name
+                );
+                false
+            }
+        })
         .collect();
     let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
     index.groups = groups;
@@ -315,9 +388,60 @@ pub(crate) fn dispatch(
         if matches!(device, "availability" | "set" | "get") {
             return Vec::new();
         }
-        handle_device_state(room, device, &msg.payload, registry, bus);
+        if let Some((id, state)) = handle_device_state(room, device, &msg.payload, registry, bus) {
+            follow_member(&id, &state, registry, bus, index);
+        }
     }
     Vec::new()
+}
+
+/// Pass a blind's position on to the groups it is in.
+///
+/// The blind itself is hidden behind its group, so its report reaches no
+/// registry entry, and Z2M does not forward a position to the group's
+/// own topic the way it forwards a bulb's on and off. Without this a
+/// group of blinds would never say where it is.
+fn follow_member(
+    id: &DeviceId,
+    state: &DeviceState,
+    registry: &DeviceRegistry,
+    bus: &EventBus,
+    index: &Mutex<GroupIndex>,
+) {
+    let Some(position) = state.position else {
+        return;
+    };
+    let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ieee) = index
+        .devices
+        .iter()
+        .find(|(_, d)| d.id == *id)
+        .map(|(ieee, _)| ieee.clone())
+    else {
+        return;
+    };
+    index.positions.insert(ieee.clone(), position);
+    for group in &index.groups {
+        if !group.members.iter().any(|m| m.ieee_address == ieee) {
+            continue;
+        }
+        let Ok(group_id) = group.id() else {
+            continue;
+        };
+        if !registry.get(&group_id).is_some_and(|d| d.is_cover()) {
+            continue;
+        }
+        let state = DeviceState {
+            position: index.group_position(group),
+            ..Default::default()
+        };
+        if registry.merge_state(&group_id, state.clone()) {
+            bus.publish(Event::DeviceStateChanged {
+                id: group_id,
+                state,
+            });
+        }
+    }
 }
 
 /// Split `"<room>/<device>"`. Returns `None` if there's no slash or
@@ -451,27 +575,28 @@ pub(crate) fn handle_device_action(room: &str, device: &str, payload: &[u8], bus
 /// `DeviceStateChanged` event regardless of whether the device was
 /// already known — the source of truth is the bridge/devices list,
 /// and state may arrive before the device list in startup race
-/// conditions.
+/// conditions. Returns what the payload said, for a group that stands
+/// in for the device.
 pub(crate) fn handle_device_state(
     room: &str,
     device: &str,
     payload: &[u8],
     registry: &DeviceRegistry,
     bus: &EventBus,
-) {
+) -> Option<(DeviceId, DeviceState)> {
     let id_str = format!("z2m:{room}/{device}");
     let id = match DeviceId::parse(&id_str) {
         Ok(id) => id,
         Err(e) => {
             debug!("ignoring state topic {id_str:?}: {e}");
-            return;
+            return None;
         }
     };
     let z2m_state = match parse_state(payload) {
         Ok(s) => s,
         Err(e) => {
             warn!("failed to parse state payload for {id}: {e}");
-            return;
+            return None;
         }
     };
     // Which numbers are readings, and in what unit, is what the device
@@ -487,7 +612,7 @@ pub(crate) fn handle_device_state(
         // on every press. Those fields aren't tracked state, so skip
         // the merge + event entirely.
         debug!("skipping state payload for {id} (no actionable field)");
-        return;
+        return None;
     }
     let partial = z2m_state.to_device_state(&reading_units);
     if !registry.merge_state(&id, partial.clone()) {
@@ -499,7 +624,11 @@ pub(crate) fn handle_device_state(
         // current state on the next change.
         debug!("state for unknown {id} discarded; awaiting bridge/devices");
     }
-    bus.publish(Event::DeviceStateChanged { id, state: partial });
+    bus.publish(Event::DeviceStateChanged {
+        id: id.clone(),
+        state: partial.clone(),
+    });
+    Some((id, partial))
 }
 
 #[cfg(test)]
@@ -644,14 +773,25 @@ mod tests {
         bus: &EventBus,
         index: &Mutex<GroupIndex>,
     ) {
+        deliver_lists(order, BULBS, groups, registry, bus, index);
+    }
+
+    fn deliver_lists(
+        order: Order,
+        devices: &[u8],
+        groups: &[u8],
+        registry: &DeviceRegistry,
+        bus: &EventBus,
+        index: &Mutex<GroupIndex>,
+    ) {
         match order {
             Order::DevicesFirst => {
-                handle_device_list(BULBS, registry, bus, index);
+                handle_device_list(devices, registry, bus, index);
                 handle_group_list(groups, registry, bus, index);
             }
             Order::GroupsFirst => {
                 handle_group_list(groups, registry, bus, index);
-                handle_device_list(BULBS, registry, bus, index);
+                handle_device_list(devices, registry, bus, index);
             }
         }
     }
@@ -997,6 +1137,209 @@ mod tests {
         handle_group_list(flat, &registry, &bus, &index);
 
         assert_eq!(ids(&registry).len(), 3, "nothing was added or hidden");
+    }
+
+    /// Two blinds, a bulb and two plugs.
+    const BLINDS: &[u8] = br#"[
+        {"ieee_address":"0x1","friendly_name":"living_room/blind_left","type":"EndDevice",
+         "definition":{"exposes":[{"type":"cover","features":[{"property":"position"}]}]}},
+        {"ieee_address":"0x2","friendly_name":"living_room/blind_right","type":"EndDevice",
+         "definition":{"exposes":[{"type":"cover","features":[{"property":"position"}]}]}},
+        {"ieee_address":"0x3","friendly_name":"living_room/bulb","type":"Router",
+         "definition":{"exposes":[{"type":"light"}]}},
+        {"ieee_address":"0x4","friendly_name":"kitchen/plug_1","type":"Router",
+         "definition":{"exposes":[{"type":"switch","features":[{"property":"state"}]}]}},
+        {"ieee_address":"0x5","friendly_name":"kitchen/plug_2","type":"Router",
+         "definition":{"exposes":[{"type":"switch","features":[{"property":"state"}]}]}}
+    ]"#;
+
+    const BLIND_GROUP: &[u8] = br#"[
+        {"id":1,"friendly_name":"living_room/blinds","members":[
+            {"ieee_address":"0x1","endpoint":1},
+            {"ieee_address":"0x2","endpoint":1}
+        ]}
+    ]"#;
+
+    fn get(registry: &DeviceRegistry, id: &str) -> Option<Device> {
+        registry.get(&DeviceId::parse(id).unwrap())
+    }
+
+    #[test]
+    fn a_group_of_blinds_is_a_blind() {
+        for order in ORDERS {
+            let (registry, bus, mut rx) = fixtures();
+            let index = Mutex::default();
+            deliver_lists(order, BLINDS, BLIND_GROUP, &registry, &bus, &index);
+            let group = get(&registry, "z2m:living_room/blinds").expect("the group is a device");
+            assert_eq!(group.class, DeviceClass::Cover, "{order:?}");
+            assert!(!group.is_light(), "{order:?}");
+            assert!(get(&registry, "z2m:living_room/blind_left").is_none());
+            assert!(get(&registry, "z2m:living_room/blind_right").is_none());
+            // Arriving first, the group must wait for the device list
+            // rather than appear as a light in the meantime.
+            for event in drain(&mut rx) {
+                if let Event::DeviceAdded { device } = event {
+                    assert!(!device.is_light() || device.id.name().as_str() == "bulb");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_group_of_plugs_is_a_plug() {
+        let plugs = br#"[{"id":1,"friendly_name":"kitchen/plugs","members":[
+            {"ieee_address":"0x4","endpoint":1},
+            {"ieee_address":"0x5","endpoint":1}
+        ]}]"#;
+        for order in ORDERS {
+            let (registry, bus, _rx) = fixtures();
+            deliver_lists(order, BLINDS, plugs, &registry, &bus, &Mutex::default());
+            let group = get(&registry, "z2m:kitchen/plugs").unwrap();
+            assert_eq!(group.class, DeviceClass::Outlet, "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_group_of_bulbs_and_plugs_is_still_a_light() {
+        let lamps = br#"[{"id":1,"friendly_name":"living_room/lamps","members":[
+            {"ieee_address":"0x3","endpoint":1},
+            {"ieee_address":"0x4","endpoint":1}
+        ]}]"#;
+        let (registry, bus, _rx) = fixtures();
+        deliver_lists(
+            Order::DevicesFirst,
+            BLINDS,
+            lamps,
+            &registry,
+            &bus,
+            &Mutex::default(),
+        );
+        assert!(get(&registry, "z2m:living_room/lamps").unwrap().is_light());
+    }
+
+    #[test]
+    fn a_blind_grouped_with_a_bulb_leaves_both_alone() {
+        // One command cannot both dim a bulb and lower a blind, so the
+        // group is no device, and hiding them behind it would leave both
+        // unreachable.
+        let mixed = br#"[{"id":1,"friendly_name":"living_room/window","members":[
+            {"ieee_address":"0x1","endpoint":1},
+            {"ieee_address":"0x3","endpoint":1}
+        ]}]"#;
+        for order in ORDERS {
+            let (registry, bus, _rx) = fixtures();
+            deliver_lists(order, BLINDS, mixed, &registry, &bus, &Mutex::default());
+            assert!(
+                get(&registry, "z2m:living_room/window").is_none(),
+                "{order:?}"
+            );
+            assert!(
+                get(&registry, "z2m:living_room/blind_left")
+                    .unwrap()
+                    .is_cover()
+            );
+            assert!(get(&registry, "z2m:living_room/bulb").unwrap().is_light());
+        }
+    }
+
+    fn blind_reports(
+        position: u8,
+        blind: &str,
+        registry: &DeviceRegistry,
+        bus: &EventBus,
+        index: &Mutex<GroupIndex>,
+    ) {
+        let msg = Message {
+            topic: format!("zigbee2mqtt/living_room/{blind}"),
+            payload: format!(r#"{{"position":{position}}}"#).into_bytes(),
+        };
+        dispatch(&msg, "zigbee2mqtt", registry, bus, index);
+    }
+
+    #[test]
+    fn a_group_of_blinds_is_where_its_blinds_are() {
+        let (registry, bus, mut rx) = fixtures();
+        let index = Mutex::default();
+        deliver_lists(
+            Order::DevicesFirst,
+            BLINDS,
+            BLIND_GROUP,
+            &registry,
+            &bus,
+            &index,
+        );
+        drain(&mut rx);
+
+        blind_reports(80, "blind_left", &registry, &bus, &index);
+        let group = DeviceId::parse("z2m:living_room/blinds").unwrap();
+        assert_eq!(registry.get(&group).unwrap().state.position, Some(80));
+        assert!(
+            drain(&mut rx).iter().any(|e| matches!(
+                e,
+                Event::DeviceStateChanged { id, state } if *id == group && state.position == Some(80)
+            )),
+            "the app hears the group move"
+        );
+
+        blind_reports(41, "blind_right", &registry, &bus, &index);
+        assert_eq!(
+            registry.get(&group).unwrap().state.position,
+            Some(61),
+            "halfway between the two, rounded"
+        );
+    }
+
+    #[test]
+    fn a_group_made_after_its_blinds_reported_knows_where_they_are() {
+        let (registry, bus, _rx) = fixtures();
+        let index = Mutex::default();
+        handle_device_list(BLINDS, &registry, &bus, &index);
+        blind_reports(20, "blind_left", &registry, &bus, &index);
+        blind_reports(20, "blind_right", &registry, &bus, &index);
+
+        handle_group_list(BLIND_GROUP, &registry, &bus, &index);
+        assert_eq!(
+            get(&registry, "z2m:living_room/blinds")
+                .unwrap()
+                .state
+                .position,
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn a_group_that_becomes_blinds_is_said_again_and_forgets_the_light() {
+        let (registry, bus, mut rx) = fixtures();
+        let index = Mutex::default();
+        let bulbs = br#"[{"id":1,"friendly_name":"living_room/window","members":[
+            {"ieee_address":"0x3","endpoint":1}
+        ]}]"#;
+        deliver_lists(Order::DevicesFirst, BLINDS, bulbs, &registry, &bus, &index);
+        handle_device_state(
+            "living_room",
+            "window",
+            br#"{"state":"ON","brightness":254}"#,
+            &registry,
+            &bus,
+        );
+        drain(&mut rx);
+
+        let blinds = br#"[{"id":1,"friendly_name":"living_room/window","members":[
+            {"ieee_address":"0x1","endpoint":1},
+            {"ieee_address":"0x2","endpoint":1}
+        ]}]"#;
+        handle_group_list(blinds, &registry, &bus, &index);
+
+        let window = get(&registry, "z2m:living_room/window").unwrap();
+        assert!(window.is_cover());
+        assert_eq!(window.state.on, None, "a blind is not on");
+        assert_eq!(window.state.brightness, None);
+        let changes = changes(drain(&mut rx));
+        assert!(
+            changes.contains(&"-z2m:living_room/window".to_string())
+                && changes.contains(&"+z2m:living_room/window".to_string()),
+            "{changes:?}"
+        );
     }
 
     #[test]
