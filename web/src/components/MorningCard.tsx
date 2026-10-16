@@ -190,6 +190,30 @@ export function MorningCard({
                 },
               ],
             })}
+
+            {row({
+              label: "Warmth",
+              description:
+                "Empty, the lights follow the curve's warmth, or keep their colour with the curve off. Set the end to hold one warmth, and the start too to warm from one to the other across the window, like a sunrise.",
+              settings: [
+                {
+                  path: "lighting.morning_routine.start_kelvin",
+                  kind: "number",
+                  caption: "from K",
+                  width: "w-28",
+                  optional: true,
+                  placeholder: "the end's",
+                },
+                {
+                  path: "lighting.morning_routine.kelvin",
+                  kind: "number",
+                  caption: "to K",
+                  width: "w-28",
+                  optional: true,
+                  placeholder: "the curve's",
+                },
+              ],
+            })}
           </div>
         )}
 

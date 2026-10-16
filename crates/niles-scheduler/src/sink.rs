@@ -27,7 +27,7 @@ pub const BRIGHTNESS_DEBOUNCE: u8 = 2;
 /// Same idea, for color temperature. Hue/equivalent bulbs change
 /// kelvin in roughly 50-K steps anyway, so this threshold avoids
 /// publishing a half-step nobody can see.
-pub(crate) const KELVIN_DEBOUNCE_K: u16 = 50;
+pub const KELVIN_DEBOUNCE_K: u16 = 50;
 
 /// Given a device's current state and the curve's target values,
 /// build the minimal `DeviceState` to publish — or return `None`
