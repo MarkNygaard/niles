@@ -74,7 +74,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `plugins-time-zone` | Plugins on interface 0.2.1 are told the house's time zone; 0.2.0 plugins run unchanged | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `plugins-update-rollback` | Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `providers-default-elevenlabs-cerebras` | A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so | [#394](https://github.com/MarkNygaard/niles/pull/394) |
-| `artifacts-training-plan` | A training plan toward a race, made from your own Strava runs: weeks, a countdown and today's session under Saved | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `artifacts-training-plan` | A training plan toward a race, made from your own Strava runs: weeks, a countdown and today's session under Saved | [#430](https://github.com/MarkNygaard/niles/pull/430) |
 | `training-strava-sync` | Each person's own Strava: 180 days on connect, then a poll every 15 minutes within Strava's rate limits | [#418](https://github.com/MarkNygaard/niles/pull/418) |
 
 ### `artifacts-documents` — example phrasings

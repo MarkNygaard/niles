@@ -649,4 +649,4 @@ id = "artifacts-training-plan"
 category = "runtime.training"
 summary = "A training plan toward a race, made from your own Strava runs: weeks, a countdown and today's session under Saved"
 phrasings = ["make me a half marathon training plan", "plan my training for the Copenhagen Half on 13 December", "move my long run to Saturday"]
-since_pr = 9999
+since_pr = 430
