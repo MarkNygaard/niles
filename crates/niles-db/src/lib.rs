@@ -27,6 +27,7 @@
 //! anything twice.
 
 mod artifacts;
+mod automation_waits;
 mod automations;
 mod calendars;
 mod captures;
@@ -46,7 +47,9 @@ mod skills;
 mod tado_tokens;
 mod timers;
 mod training;
+mod wake_ups;
 pub use artifacts::PostgresArtifacts;
+pub use automation_waits::PostgresAutomationWaits;
 pub use automations::PostgresAutomations;
 pub use calendars::PostgresCalendars;
 pub use captures::{Capture, PostgresCaptures};
@@ -68,6 +71,7 @@ pub use skills::PostgresSkills;
 pub use tado_tokens::PostgresTadoTokens;
 pub use timers::PostgresTimers;
 pub use training::PostgresTraining;
+pub use wake_ups::PostgresWakeUps;
 
 use async_trait::async_trait;
 use niles_config::{OverrideBackend, Revision, StoredState};

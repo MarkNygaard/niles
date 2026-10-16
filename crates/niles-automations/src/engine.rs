@@ -8,7 +8,7 @@
 //! runs once at a time: a trigger firing again while a run waits out a
 //! delay replaces that run.
 
-use crate::rule::{Action, BlindTarget, Context, Priority, Rule};
+use crate::rule::{Action, BlindTarget, Context, Priority, Rule, WakePlan};
 use crate::runs::{Outcome, RunLog};
 use crate::sun::Location;
 use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
@@ -33,6 +33,48 @@ pub trait Notifier: Send + Sync {
     async fn notify(&self, body: &str, room: Option<&str>, priority: Priority);
 }
 
+/// Starts the morning routine for a rule's `wake_up`. Answers what it
+/// did, for the run's history, or why it could not.
+#[async_trait::async_trait]
+pub trait Waker: Send + Sync {
+    async fn wake_up(&self, plan: &WakePlan) -> Result<String, String>;
+}
+
+/// Where a run waiting out a `delay` is kept, so the wait outlives a
+/// restart. One per rule: a rule runs once at a time.
+#[async_trait::async_trait]
+pub trait WaitStore: Send + Sync {
+    async fn keep(&self, wait: &Waiting);
+    async fn forget(&self, rule: &str);
+    async fn all(&self) -> Vec<Waiting>;
+}
+
+/// A run, waiting out a delay: enough to carry on from there.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Waiting {
+    pub rule: String,
+    /// The rule as it was: a wait carries on only if it still is.
+    pub fingerprint: String,
+    /// The trigger that started the run, for `triggered_by` after it.
+    pub trigger: String,
+    /// Where in the rule's actions the delay is.
+    pub at: Vec<Step>,
+    /// When the delay ends.
+    pub until: DateTime<Utc>,
+}
+
+/// One step into a rule's actions: which action, and, for an `if`,
+/// which way it went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Step {
+    pub index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<bool>,
+}
+
+/// Where a run picks up: the steps to its delay, and when that ends.
+type Resume = (Vec<Step>, DateTime<Utc>);
+
 /// A rule's trigger, and the thing it concerns: a device, or the house.
 type Followed = (String, String, String);
 
@@ -45,6 +87,8 @@ pub struct AutomationEngine {
     location: Option<Location>,
     device_sink: Arc<dyn DeviceSink>,
     notifier: Option<Arc<dyn Notifier>>,
+    waker: Option<Arc<dyn Waker>>,
+    waits: Option<Arc<dyn WaitStore>>,
     dedup: Mutex<HashMap<DedupKey, DateTime<Utc>>>,
     dedup_window: chrono::Duration,
     /// Whether each followed state held when last heard of.
@@ -88,6 +132,8 @@ impl AutomationEngine {
             location: None,
             device_sink,
             notifier,
+            waker: None,
+            waits: None,
             dedup: Mutex::new(HashMap::new()),
             dedup_window: chrono::Duration::milliseconds(2_000),
             observed: Mutex::new(HashMap::new()),
@@ -103,6 +149,19 @@ impl AutomationEngine {
     /// fire and sun conditions never hold.
     pub fn with_location(mut self, location: Option<Location>) -> Self {
         self.location = location;
+        self
+    }
+
+    /// What starts a wake-up. Without one, a `wake_up` fails its run.
+    pub fn with_waker(mut self, waker: Option<Arc<dyn Waker>>) -> Self {
+        self.waker = waker;
+        self
+    }
+
+    /// Where delays are kept over a restart. Without one, a restart
+    /// forgets them.
+    pub fn with_waits(mut self, waits: Option<Arc<dyn WaitStore>>) -> Self {
+        self.waits = waits;
         self
     }
 
@@ -131,13 +190,20 @@ impl AutomationEngine {
     pub async fn replace(&self, rules: Vec<Rule>) {
         let rules: Vec<Arc<Rule>> = rules.into_iter().map(Arc::new).collect();
         let live = |id: &str| rules.iter().any(|r| r.id == id && r.enabled);
+        let mut stopped = Vec::new();
         lock(&self.running).retain(|rule, (_, handle)| {
             let keep = live(rule);
             if !keep {
                 handle.abort();
+                stopped.push(rule.clone());
             }
             keep
         });
+        if let Some(waits) = &self.waits {
+            for rule in &stopped {
+                waits.forget(rule).await;
+            }
+        }
         for (_, handle) in lock(&self.holds).drain() {
             handle.abort();
         }
@@ -287,6 +353,20 @@ impl AutomationEngine {
         let number = self
             .log
             .begin(&rule.id, Some(trigger), now, Outcome::Running, None);
+        Some(self.launch(rule, trigger, number, now, None))
+    }
+
+    /// Run `rule`'s actions as run `number`: from the start, or from a
+    /// delay it was waiting out when Niles stopped. Replaces the rule's
+    /// run in progress, if there is one.
+    fn launch(
+        self: &Arc<Self>,
+        rule: &Arc<Rule>,
+        trigger: &str,
+        number: u64,
+        now: DateTime<Utc>,
+        resume: Option<Resume>,
+    ) -> JoinHandle<()> {
         let engine = self.clone();
         let run_rule = rule.clone();
         let trigger = trigger.to_string();
@@ -294,8 +374,27 @@ impl AutomationEngine {
         // once cannot clear itself before it is there to be cleared.
         let mut running = lock(&self.running);
         let task = tokio::spawn(async move {
+            // A run this one replaced may have left its wait behind.
+            if resume.is_none()
+                && let Some(waits) = &engine.waits
+            {
+                waits.forget(&run_rule.id).await;
+            }
+            let (from, until) = match &resume {
+                Some((steps, until)) => (Some(steps.as_slice()), Some(*until)),
+                None => (None, None),
+            };
             let ended = engine
-                .perform(&run_rule, &run_rule.actions, &trigger, number, now)
+                .perform(
+                    &run_rule,
+                    &run_rule.actions,
+                    &trigger,
+                    number,
+                    now,
+                    Vec::new(),
+                    from,
+                    until,
+                )
                 .await;
             match ended {
                 Ok(_) => engine.log.finish(&run_rule.id, number, Outcome::Done, None),
@@ -317,11 +416,65 @@ impl AutomationEngine {
             handle.abort();
             self.log.replaced(&rule.id, older);
         }
-        Some(task)
+        task
+    }
+
+    /// Carry on with the runs that were waiting out a delay when Niles
+    /// stopped: the rest of the wait, or at once if it is over. A wait
+    /// whose rule was changed, paused or removed is dropped, and its run
+    /// says so.
+    pub async fn resume(self: &Arc<Self>, now: DateTime<Utc>) -> Handles {
+        let Some(waits) = self.waits.clone() else {
+            return Vec::new();
+        };
+        let rules = self.rules.read().await.clone();
+        let mut handles = Vec::new();
+        for wait in waits.all().await {
+            let rule = rules
+                .iter()
+                .find(|r| r.id == wait.rule && r.enabled && r.fingerprint == wait.fingerprint);
+            let Some(rule) = rule else {
+                tracing::info!(
+                    "automation '{}': a wait from before the restart was dropped",
+                    wait.rule
+                );
+                self.log.begin(
+                    &wait.rule,
+                    Some(&wait.trigger),
+                    now,
+                    Outcome::Stopped,
+                    Some("it was waiting when Niles restarted, and the rule had changed".into()),
+                );
+                waits.forget(&wait.rule).await;
+                continue;
+            };
+            tracing::info!(
+                "automation '{}': carrying on after the restart, until {}",
+                rule.id,
+                wait.until
+            );
+            let number = self
+                .log
+                .begin(&rule.id, Some(&wait.trigger), now, Outcome::Running, None);
+            handles.push(self.launch(
+                rule,
+                &wait.trigger,
+                number,
+                now,
+                Some((wait.at.clone(), wait.until)),
+            ));
+        }
+        handles
     }
 
     /// Run `actions` in order, waiting where a delay says. Returns the
     /// time it got to, for the conditions of an `if` after a delay.
+    ///
+    /// `at` is where `actions` sits in the rule. `from`, picking up after
+    /// a restart, is the way to the delay the run was waiting out, which
+    /// ends at `until`: everything before it is skipped, and the `if`s on
+    /// the way go the way they went.
+    #[allow(clippy::too_many_arguments)]
     fn perform<'a>(
         self: &'a Arc<Self>,
         rule: &'a Rule,
@@ -329,9 +482,14 @@ impl AutomationEngine {
         trigger: &'a str,
         number: u64,
         mut now: DateTime<Utc>,
+        at: Vec<Step>,
+        from: Option<&'a [Step]>,
+        until: Option<DateTime<Utc>>,
     ) -> Pin<Box<dyn Future<Output = Result<DateTime<Utc>, String>> + Send + 'a>> {
         Box::pin(async move {
-            for action in actions {
+            let first = from.and_then(|f| f.first()).map_or(0, |s| s.index);
+            for (index, action) in actions.iter().enumerate().skip(first) {
+                let resuming = from.filter(|_| index == first);
                 match action {
                     Action::SetDevice {
                         device,
@@ -407,29 +565,86 @@ impl AutomationEngine {
                         Some(n) => n.notify(body, room.as_deref(), *priority).await,
                         None => return Err("Niles has nobody to say it through".into()),
                     },
+                    Action::WakeUp(plan) => match &self.waker {
+                        Some(waker) => {
+                            let did = waker.wake_up(plan).await?;
+                            self.log.step(&rule.id, number, did);
+                            continue;
+                        }
+                        None => return Err("Niles has no lights to wake anybody with".into()),
+                    },
                     Action::Delay(wait) => {
-                        tokio::time::sleep(*wait).await;
-                        now += chrono::Duration::from_std(*wait).unwrap_or_default();
+                        let ends = match (resuming, until) {
+                            (Some(_), Some(until)) => until,
+                            _ => now + chrono::Duration::from_std(*wait).unwrap_or_default(),
+                        };
+                        let mut here = at.clone();
+                        here.push(Step {
+                            index,
+                            branch: None,
+                        });
+                        if let Some(waits) = &self.waits {
+                            waits
+                                .keep(&Waiting {
+                                    rule: rule.id.clone(),
+                                    fingerprint: rule.fingerprint.clone(),
+                                    trigger: trigger.to_string(),
+                                    at: here,
+                                    until: ends,
+                                })
+                                .await;
+                        }
+                        let left = (ends - Utc::now()).to_std().unwrap_or_default();
+                        // A wait picked up after a restart has only the
+                        // rest to go; a fresh one, all of it.
+                        let left = if resuming.is_some() { left } else { *wait };
+                        tokio::time::sleep(left).await;
+                        if let Some(waits) = &self.waits {
+                            waits.forget(&rule.id).await;
+                        }
+                        now = ends;
                     }
                     Action::If {
                         conditions,
                         then,
                         otherwise,
                     } => {
-                        let presence = *lock(&self.presence);
-                        let holds = {
-                            let ctx = Context {
-                                registry: &self.registry,
-                                now,
-                                tz: self.tz,
-                                location: self.location,
-                                presence,
-                                trigger: Some(trigger),
-                            };
-                            conditions.iter().all(|c| c.evaluate(&ctx))
+                        // Picking up inside a branch: it went this way
+                        // before the restart, and goes the same way now.
+                        let deeper = resuming.filter(|steps| steps.len() > 1);
+                        let holds = match deeper {
+                            Some(steps) => steps[0].branch.unwrap_or(true),
+                            None => {
+                                let presence = *lock(&self.presence);
+                                let ctx = Context {
+                                    registry: &self.registry,
+                                    now,
+                                    tz: self.tz,
+                                    location: self.location,
+                                    presence,
+                                    trigger: Some(trigger),
+                                };
+                                conditions.iter().all(|c| c.evaluate(&ctx))
+                            }
                         };
                         let branch = if holds { then } else { otherwise };
-                        now = self.perform(rule, branch, trigger, number, now).await?;
+                        let mut here = at.clone();
+                        here.push(Step {
+                            index,
+                            branch: Some(holds),
+                        });
+                        now = self
+                            .perform(
+                                rule,
+                                branch,
+                                trigger,
+                                number,
+                                now,
+                                here,
+                                deeper.map(|steps| &steps[1..]),
+                                until,
+                            )
+                            .await?;
                         continue;
                     }
                 }
@@ -491,6 +706,7 @@ impl AutomationEngine {
         tokio::spawn(async move {
             let mut rx = bus.subscribe();
             self.seed().await;
+            self.resume(Utc::now()).await;
             loop {
                 match rx.recv().await {
                     Ok(ev) => {
@@ -586,6 +802,14 @@ mod tests {
     /// The office: a door to the garden, two lights, a plug and a
     /// thermometer, the door shut.
     fn office(rules: Vec<serde_json::Value>) -> Test {
+        office_with(rules, |engine| engine)
+    }
+
+    /// The office, with more given to the engine.
+    fn office_with(
+        rules: Vec<serde_json::Value>,
+        more: impl FnOnce(AutomationEngine) -> AutomationEngine,
+    ) -> Test {
         let registry = Arc::new(DeviceRegistry::new());
         let device = |name: &str, state: DeviceState, class: DeviceClass| {
             registry.upsert(Device::new(id(name), state, class));
@@ -630,7 +854,7 @@ mod tests {
         let said = Arc::new(RecordingNotifier {
             calls: Mutex::new(Vec::new()),
         });
-        let engine = Arc::new(
+        let engine = Arc::new(more(
             AutomationEngine::new(
                 rules.into_iter().map(rule).collect(),
                 registry.clone(),
@@ -639,7 +863,7 @@ mod tests {
                 Some(said.clone()),
             )
             .with_dedup_window(Duration::from_millis(0)),
-        );
+        ));
         Test {
             engine,
             sink,
@@ -997,5 +1221,221 @@ mod tests {
         t.send(press.clone(), noon()).await;
         t.send(press, noon()).await;
         assert_eq!(t.said().len(), 2, "every press counts");
+    }
+
+    /// Waits kept in memory, standing in for the database.
+    #[derive(Default)]
+    struct MemoryWaits(Mutex<HashMap<String, Waiting>>);
+
+    #[async_trait::async_trait]
+    impl WaitStore for MemoryWaits {
+        async fn keep(&self, wait: &Waiting) {
+            lock(&self.0).insert(wait.rule.clone(), wait.clone());
+        }
+        async fn forget(&self, rule: &str) {
+            lock(&self.0).remove(rule);
+        }
+        async fn all(&self) -> Vec<Waiting> {
+            lock(&self.0).values().cloned().collect()
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingWaker(Mutex<Vec<WakePlan>>);
+
+    #[async_trait::async_trait]
+    impl Waker for RecordingWaker {
+        async fn wake_up(&self, plan: &WakePlan) -> Result<String, String> {
+            lock(&self.0).push(plan.clone());
+            Ok(format!("started a {}-minute wake-up", plan.minutes))
+        }
+    }
+
+    fn seven_hours_after_closing() -> serde_json::Value {
+        json!({
+            "id": "wake",
+            "triggers": [{ "id": "closed", "type": "contact", "device": "office/door", "open": false }],
+            "actions": [
+                { "do": "delay", "hours": 7 },
+                { "do": "set_room", "room": "office", "on": false }
+            ],
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_delay_is_kept_while_it_waits_and_forgotten_after() {
+        let waits = Arc::new(MemoryWaits::default());
+        let kept = waits.clone();
+        let t = office_with(vec![seven_hours_after_closing()], move |e| {
+            e.with_waits(Some(kept as Arc<dyn WaitStore>))
+        });
+        t.engine.seed().await;
+        t.send(door(true), noon()).await;
+        let waiting = t.send_and_go_on(door(false), noon()).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let kept = waits.all().await;
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept[0].at,
+            [Step {
+                index: 0,
+                branch: None
+            }]
+        );
+        assert_eq!(kept[0].trigger, "closed");
+        assert_eq!(kept[0].until, noon() + chrono::Duration::hours(7));
+        for h in waiting {
+            let _ = h.await;
+        }
+        assert!(waits.all().await.is_empty(), "forgotten once over");
+        assert_eq!(t.set().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_carries_on_after_a_restart() {
+        let waits = Arc::new(MemoryWaits::default());
+        let rule = rule(seven_hours_after_closing());
+        // The night: Niles stopped five hours in, and is back after the
+        // seven were up.
+        waits
+            .keep(&Waiting {
+                rule: "wake".into(),
+                fingerprint: rule.fingerprint.clone(),
+                trigger: "closed".into(),
+                at: vec![Step {
+                    index: 0,
+                    branch: None,
+                }],
+                until: noon() - chrono::Duration::minutes(10),
+            })
+            .await;
+        let kept = waits.clone();
+        let t = office_with(vec![seven_hours_after_closing()], move |e| {
+            e.with_waits(Some(kept as Arc<dyn WaitStore>))
+        });
+        for h in t.engine.resume(noon()).await {
+            let _ = h.await;
+        }
+        assert_eq!(t.set().len(), 2, "the rest of the run, at once");
+        assert!(waits.all().await.is_empty());
+        let runs = t.runs("wake");
+        assert_eq!(runs[0].outcome, Outcome::Done);
+        assert_eq!(runs[0].trigger.as_deref(), Some("closed"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_inside_a_branch_goes_the_way_it_went() {
+        let branching = json!({
+            "id": "after-closing",
+            "triggers": [
+                { "id": "closed", "type": "contact", "device": "office/door", "open": false },
+                { "id": "opened", "type": "contact", "device": "office/door", "open": true }
+            ],
+            "actions": [{
+                "do": "if",
+                "conditions": [{ "kind": "triggered_by", "triggers": ["opened"] }],
+                "then": [{ "do": "delay", "hours": 1 }, { "do": "set_room", "room": "office", "on": false }],
+                "else": [{ "do": "notify", "body": "Closed" }],
+            }],
+        });
+        let waits = Arc::new(MemoryWaits::default());
+        // Kept as started by "opened", which the condition asks for; the
+        // trigger is kept with it, but the way it went is what counts.
+        waits
+            .keep(&Waiting {
+                rule: "after-closing".into(),
+                fingerprint: rule(branching.clone()).fingerprint,
+                trigger: "opened".into(),
+                at: vec![
+                    Step {
+                        index: 0,
+                        branch: Some(true),
+                    },
+                    Step {
+                        index: 0,
+                        branch: None,
+                    },
+                ],
+                until: noon() + chrono::Duration::minutes(20),
+            })
+            .await;
+        let kept = waits.clone();
+        let t = office_with(vec![branching], move |e| {
+            e.with_waits(Some(kept as Arc<dyn WaitStore>))
+        });
+        let handles = t.engine.resume(Utc::now()).await;
+        for h in handles {
+            let _ = h.await;
+        }
+        assert_eq!(t.set().len(), 2);
+        assert!(t.said().is_empty(), "not the other branch");
+    }
+
+    #[tokio::test]
+    async fn a_wait_whose_rule_changed_is_dropped_and_said() {
+        let waits = Arc::new(MemoryWaits::default());
+        waits
+            .keep(&Waiting {
+                rule: "wake".into(),
+                fingerprint: "the rule as it was".into(),
+                trigger: "closed".into(),
+                at: vec![Step {
+                    index: 0,
+                    branch: None,
+                }],
+                until: noon(),
+            })
+            .await;
+        let kept = waits.clone();
+        let t = office_with(vec![seven_hours_after_closing()], move |e| {
+            e.with_waits(Some(kept as Arc<dyn WaitStore>))
+        });
+        assert!(t.engine.resume(noon()).await.is_empty());
+        assert!(t.set().is_empty());
+        assert!(waits.all().await.is_empty());
+        let runs = t.runs("wake");
+        assert_eq!(runs[0].outcome, Outcome::Stopped);
+        assert!(
+            runs[0]
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("the rule had changed")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wake_up_starts_the_routine_with_the_rules_settings() {
+        let waker = Arc::new(RecordingWaker::default());
+        let used = waker.clone();
+        let t = office_with(
+            vec![json!({
+                "id": "morning",
+                "triggers": [{ "type": "contact", "device": "office/door", "open": true }],
+                "actions": [{ "do": "wake_up", "minutes": 30, "rooms": ["office"], "except": ["office/lightstrip"], "brightness": 80 }],
+            })],
+            move |e| e.with_waker(Some(used as Arc<dyn Waker>)),
+        );
+        t.engine.seed().await;
+        t.send(door(true), noon()).await;
+        let plans = lock(&waker.0).clone();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].minutes, 30);
+        assert_eq!(plans[0].brightness, 80);
+        assert_eq!(plans[0].rooms[0].as_str(), "office");
+        assert_eq!(plans[0].except, [id("office/lightstrip")]);
+        assert_eq!(t.runs("morning")[0].steps, ["started a 30-minute wake-up"]);
+    }
+
+    #[tokio::test]
+    async fn a_wake_up_without_a_waker_fails_its_run() {
+        let t = office(vec![json!({
+            "id": "morning",
+            "triggers": [{ "type": "contact", "device": "office/door", "open": true }],
+            "actions": [{ "do": "wake_up" }],
+        })]);
+        t.engine.seed().await;
+        t.send(door(true), noon()).await;
+        assert_eq!(t.runs("morning")[0].outcome, Outcome::Failed);
     }
 }

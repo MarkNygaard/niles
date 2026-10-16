@@ -19,6 +19,8 @@ import {
   measureChoices,
   measureHint,
   TRIGGER_KINDS,
+  WAKE_UP_MINUTES,
+  WAKE_UP_WARMTH,
   addAction,
   blindsPosition,
   blindsTarget,
@@ -35,7 +37,10 @@ import {
   stepAt,
   toggleDay,
   triggerChoices,
+  wakeChoices,
+  wakeTarget,
   withBlindsTarget,
+  withWakeTarget,
   withStep,
   withoutStep,
 } from "@/lib/automations";
@@ -47,6 +52,7 @@ import type {
   Draft,
   Step,
   StepKind,
+  WakeTarget,
 } from "@/lib/automations";
 import type { Action, Condition, Day, Device, Duration, Measure, Trigger } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -675,6 +681,127 @@ function ActionFields({
         </>
       );
     }
+    case "wake_up": {
+      const target = wakeTarget(value);
+      const choices = wakeChoices(devices, value);
+      return (
+        <>
+          <Choices
+            label="Wake"
+            value={target}
+            options={[
+              { value: "house", label: "Whole house" },
+              { value: "rooms", label: "Rooms" },
+              { value: "lights", label: "Lights" },
+            ]}
+            onChange={(next) => onChange(withWakeTarget(value, next as WakeTarget, devices))}
+          />
+          {target === "rooms" && (
+            <Ticks
+              label="Every light in"
+              choices={choices.rooms}
+              value={value.rooms ?? []}
+              onChange={(rooms) => onChange({ ...value, rooms })}
+            />
+          )}
+          {(target === "lights" || (value.devices?.length ?? 0) > 0) && (
+            <Ticks
+              label={target === "lights" ? "These lights" : "And these lights"}
+              choices={choices.lights}
+              value={value.devices ?? []}
+              onChange={(picked) => onChange({ ...value, devices: picked })}
+            />
+          )}
+          {target !== "lights" && (
+            <Ticks
+              label="But not"
+              choices={choices.except}
+              value={value.except ?? []}
+              onChange={(except) => onChange({ ...value, except })}
+            />
+          )}
+          <Field label="Over (minutes)">
+            <Input
+              type="number"
+              inputMode="numeric"
+              aria-label="Minutes"
+              min={1}
+              max={120}
+              placeholder={String(WAKE_UP_MINUTES)}
+              value={value.minutes ?? ""}
+              onChange={(e) => onChange({ ...value, minutes: numberOrNothing(e.target.value) })}
+            />
+          </Field>
+          <Field label="Up to (%)">
+            <Input
+              type="number"
+              inputMode="numeric"
+              aria-label="Brightness"
+              min={1}
+              max={100}
+              placeholder="100"
+              value={value.brightness ?? ""}
+              onChange={(e) => onChange({ ...value, brightness: numberOrNothing(e.target.value) })}
+            />
+          </Field>
+          <Choices
+            label="Warmth"
+            value={value.kelvin === undefined ? "curve" : "own"}
+            options={[
+              { value: "curve", label: "Follow the curve" },
+              { value: "own", label: "Its own" },
+            ]}
+            onChange={(next) => {
+              if (next === "own" && value.kelvin === undefined) {
+                onChange({ ...value, ...WAKE_UP_WARMTH });
+              } else if (next === "curve") {
+                onChange({ ...value, start_kelvin: undefined, kelvin: undefined });
+              }
+            }}
+          />
+          {value.kelvin !== undefined && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="From (K)">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  aria-label="Start warmth"
+                  min={2000}
+                  max={6500}
+                  step={100}
+                  placeholder={String(value.kelvin)}
+                  value={value.start_kelvin ?? ""}
+                  onChange={(e) =>
+                    onChange({ ...value, start_kelvin: numberOrNothing(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field label="To (K)">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  aria-label="End warmth"
+                  min={2000}
+                  max={6500}
+                  step={100}
+                  value={value.kelvin}
+                  onChange={(e) => {
+                    const kelvin = numberOrNothing(e.target.value);
+                    // Emptied while typing: keep it on its own warmth
+                    // rather than flipping back to the curve under them.
+                    if (kelvin !== undefined) onChange({ ...value, kelvin });
+                  }}
+                />
+              </Field>
+            </div>
+          )}
+          <p className="text-muted-foreground text-xs">
+            Lights already on are left as they are. At the end they stay up until somebody changes
+            them. Following the curve with the curve switched off leaves the colour as it is.
+          </p>
+        </>
+      );
+    }
     case "notify":
       return (
         <>
@@ -1093,6 +1220,46 @@ function StartedByField({
                 if (e.target.checked) ticked.add(choice.value);
                 else ticked.delete(choice.value);
                 onChange(choices.map((c) => c.value).filter((id) => ticked.has(id)));
+              }}
+            />
+            <span className="min-w-0 truncate" title={choice.label}>
+              {choice.label}
+            </span>
+          </label>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
+/** Tick boxes for a step that takes several of something; the value
+    keeps the order the boxes are in. */
+function Ticks({
+  label,
+  choices,
+  value,
+  onChange,
+}: {
+  label: string;
+  choices: { value: string; label: string }[];
+  value: string[];
+  onChange: (value: string[]) => void;
+}) {
+  const ticked = new Set(value);
+  return (
+    <Field label={label}>
+      <div role="group" aria-label={label} className="flex flex-col gap-1.5">
+        {choices.length === 0 && <p className="text-muted-foreground text-xs">Nothing to pick.</p>}
+        {choices.map((choice) => (
+          <label key={choice.value} className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="accent-primary size-4 shrink-0"
+              checked={ticked.has(choice.value)}
+              onChange={(e) => {
+                if (e.target.checked) ticked.add(choice.value);
+                else ticked.delete(choice.value);
+                onChange(choices.map((c) => c.value).filter((v) => ticked.has(v)));
               }}
             />
             <span className="min-w-0 truncate" title={choice.label}>

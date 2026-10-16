@@ -29,8 +29,11 @@ import {
   toFlow,
   toggleDay,
   triggerChoices,
+  wakeChoices,
+  wakeTarget,
   withBlindsTarget,
   withStep,
+  withWakeTarget,
   withTriggerIds,
   withoutStep,
 } from "./automations";
@@ -719,6 +722,113 @@ describe("blinds", () => {
     ).toEqual(["Action 1 names a room and a blind; it takes one or the other."]);
     expect(problems(rule({ do: "set_blinds", room: "bedroom", position: 150 }))).toEqual([
       "Action 1: a blind opens 0 to 100%.",
+    ]);
+  });
+});
+
+describe("wake-up", () => {
+  const of = (value: Action) => summary({ role: "action", id: "x", index: 0, branch: null, value });
+  const rule = (action: Action): Draft => ({ ...garden, actions: [action] });
+
+  it("reads like the server's sentence", () => {
+    expect(of({ do: "wake_up" })).toBe("Wake the house up over 45 minutes, to 100%");
+    expect(
+      of({
+        do: "wake_up",
+        minutes: 30,
+        rooms: ["office"],
+        except: ["office/desk_lamp"],
+        brightness: 80,
+        kelvin: 2700,
+      }),
+    ).toBe("Wake the office up over 30 minutes, to 80% at 2700 K, but not the office desk lamp");
+    expect(of({ do: "wake_up", devices: ["office/desk_lamp", "living_room/lamp"] })).toBe(
+      "Wake the office desk lamp and the living room lamp up over 45 minutes, to 100%",
+    );
+  });
+
+  it("says a warmth of its own, ramped or level", () => {
+    expect(of({ do: "wake_up", start_kelvin: 2200, kelvin: 4000 })).toBe(
+      "Wake the house up over 45 minutes, to 100%, from 2200 K to 4000 K",
+    );
+    expect(of({ do: "wake_up", kelvin: 3000 })).toBe(
+      "Wake the house up over 45 minutes, to 100% at 3000 K",
+    );
+  });
+
+  it("starts as the routine's: the whole house, over 45 minutes, to full", () => {
+    expect(defaultAction("wake_up", devices)).toEqual({
+      do: "wake_up",
+      minutes: 45,
+      brightness: 100,
+    });
+  });
+
+  it("switches between the house, rooms and lights, keeping the levels", () => {
+    const house: Action = {
+      do: "wake_up",
+      minutes: 30,
+      brightness: 80,
+      except: ["office/desk_lamp"],
+    };
+    expect(wakeTarget(house)).toBe("house");
+    const rooms = withWakeTarget(house, "rooms", devices);
+    expect(rooms).toEqual({ do: "wake_up", minutes: 30, brightness: 80, rooms: ["living_room"] });
+    const lights = withWakeTarget(rooms, "lights", devices);
+    expect(lights).toEqual({
+      do: "wake_up",
+      minutes: 30,
+      brightness: 80,
+      devices: ["kitchen/kettle"],
+    });
+    expect(withWakeTarget(lights, "house", devices)).toEqual({
+      do: "wake_up",
+      minutes: 30,
+      brightness: 80,
+    });
+  });
+
+  it("stays on rooms with every room unticked, rather than becoming the house", () => {
+    const none: Action = { do: "wake_up", rooms: [] };
+    expect(wakeTarget(none)).toBe("rooms");
+    expect(problems(rule(none))).toEqual(["Action 1 needs a room."]);
+    expect(problems(rule({ do: "wake_up", devices: [] }))).toEqual(["Action 1 needs a light."]);
+  });
+
+  it("offers as exceptions only the lights in the rooms ticked", () => {
+    const choices = wakeChoices(devices, { do: "wake_up", rooms: ["living_room"] });
+    expect(choices.except.map((c) => c.value)).toEqual([
+      "living_room/lamp",
+      "wled:living_room/tv",
+    ]);
+    expect(choices.lights.map((c) => c.value)).toContain("office/desk_lamp");
+    expect(choices.rooms.map((c) => c.value)).toContain("living_room");
+  });
+
+  it("keeps a light already ticked even when nothing registered matches it", () => {
+    const gone = wakeChoices(devices, { do: "wake_up", except: ["attic/old_lamp"] });
+    expect(gone.except.map((c) => c.value)).toContain("attic/old_lamp");
+  });
+
+  it("wants the bounds the server takes", () => {
+    expect(problems(rule({ do: "wake_up", minutes: 30, brightness: 80 }))).toEqual([]);
+    expect(problems(rule({ do: "wake_up", minutes: 0 }))).toEqual([
+      "Action 1: a wake-up takes 1 to 120 minutes.",
+    ]);
+    expect(problems(rule({ do: "wake_up", minutes: 121 }))).toEqual([
+      "Action 1: a wake-up takes 1 to 120 minutes.",
+    ]);
+    expect(problems(rule({ do: "wake_up", brightness: 0 }))).toEqual([
+      "Action 1: a wake-up ends at 1 to 100%.",
+    ]);
+    expect(problems(rule({ do: "wake_up", kelvin: 9000 }))).toEqual([
+      "Action 1: colour temperature is 2000 to 6500 K.",
+    ]);
+    expect(problems(rule({ do: "wake_up", start_kelvin: 2200 }))).toEqual([
+      "Action 1: a start warmth needs an end warmth.",
+    ]);
+    expect(problems(rule({ do: "wake_up", start_kelvin: 1000, kelvin: 4000 }))).toEqual([
+      "Action 1's start: colour temperature is 2000 to 6500 K.",
     ]);
   });
 });

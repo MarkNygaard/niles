@@ -24,6 +24,9 @@ pub struct Rule {
     pub triggers: Vec<RuleTrigger>,
     pub conditions: Vec<Condition>,
     pub actions: Vec<Action>,
+    /// What the rule was saved as, hashed: a wait kept over a restart
+    /// carries on only if its rule is still this one.
+    pub fingerprint: String,
 }
 
 /// One of a rule's triggers, with the id `triggered_by` knows it by
@@ -206,6 +209,8 @@ pub enum Action {
         room: Option<String>,
         priority: Priority,
     },
+    /// The morning routine, now.
+    WakeUp(WakePlan),
     Delay(Duration),
     If {
         conditions: Vec<Condition>,
@@ -213,6 +218,29 @@ pub enum Action {
         otherwise: Vec<Action>,
     },
 }
+
+/// A wake-up's settings, as a rule gives them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakePlan {
+    /// How long the ramp takes.
+    pub minutes: u32,
+    pub rooms: Vec<RoomName>,
+    pub devices: Vec<DeviceId>,
+    pub except: Vec<DeviceId>,
+    /// Where the ramp ends.
+    pub brightness: u8,
+    /// The warmth it starts at; `kelvin` when `None`. Only ever set
+    /// with `kelvin`.
+    pub start_kelvin: Option<u16>,
+    /// The warmth it ends at. `None` follows the curve's as it goes, or
+    /// leaves the colour be with the curve off.
+    pub kelvin: Option<u16>,
+}
+
+/// A wake-up's ramp, unless the rule says otherwise.
+pub const WAKE_UP_MINUTES: u32 = 45;
+/// The longest a wake-up's ramp may take.
+pub const MAX_WAKE_UP_MINUTES: u32 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlindTarget {
@@ -324,6 +352,11 @@ impl Rule {
             return Err(Error::NoActions { id });
         }
 
+        let fingerprint = {
+            use sha2::Digest;
+            let saved = serde_json::to_vec(&dto).unwrap_or_default();
+            hex::encode(sha2::Sha256::digest(&saved))
+        };
         Ok(Self {
             id,
             description: dto.description.clone(),
@@ -331,6 +364,7 @@ impl Rule {
             triggers,
             conditions,
             actions,
+            fingerprint,
         })
     }
 
@@ -682,6 +716,10 @@ impl Action {
                 Some(room) => format!("said \"{body}\" in {room}"),
                 None => format!("said \"{body}\""),
             },
+            Action::WakeUp(plan) => format!(
+                "started a {}-minute wake-up to {}%",
+                plan.minutes, plan.brightness
+            ),
             Action::Delay(wait) => format!("waited {}", say_duration(*wait)),
             Action::If { .. } => "checked a condition".into(),
         }
@@ -1068,6 +1106,57 @@ fn parse_action(
             room: room.clone(),
             priority: parse_priority(id, priority.as_deref())?,
         },
+        ActionDto::WakeUp {
+            minutes,
+            rooms,
+            devices,
+            except,
+            brightness,
+            start_kelvin,
+            kelvin,
+        } => {
+            check_light(id, *brightness, *kelvin)?;
+            check_light(id, None, *start_kelvin)?;
+            if start_kelvin.is_some() && kelvin.is_none() {
+                return Err(Error::Invalid {
+                    id: id.into(),
+                    reason: "a wake-up's start warmth needs an end warmth to go to".into(),
+                });
+            }
+            let minutes = minutes.unwrap_or(WAKE_UP_MINUTES);
+            if !(1..=MAX_WAKE_UP_MINUTES).contains(&minutes) {
+                return Err(Error::Invalid {
+                    id: id.into(),
+                    reason: format!(
+                        "a wake-up ramps over 1 to {MAX_WAKE_UP_MINUTES} minutes, not {minutes}"
+                    ),
+                });
+            }
+            let brightness = brightness.unwrap_or(100);
+            if brightness == 0 {
+                return Err(Error::Invalid {
+                    id: id.into(),
+                    reason: "a wake-up has to end above 0%".into(),
+                });
+            }
+            let ids = |list: &[String]| {
+                list.iter()
+                    .map(|d| parse_device_id(id, d, default_source))
+                    .collect::<Result<Vec<_>>>()
+            };
+            Action::WakeUp(WakePlan {
+                minutes,
+                rooms: rooms
+                    .iter()
+                    .map(|r| parse_room_name(id, r))
+                    .collect::<Result<Vec<_>>>()?,
+                devices: ids(devices)?,
+                except: ids(except)?,
+                brightness,
+                start_kelvin: *start_kelvin,
+                kelvin: *kelvin,
+            })
+        }
         ActionDto::Delay {
             hours,
             minutes,
@@ -1232,6 +1321,72 @@ mod tests {
     fn rule(value: serde_json::Value) -> Result<Rule> {
         let dto: AutomationRuleDto = serde_json::from_value(value).unwrap();
         Rule::from_dto(&dto, "z2m")
+    }
+
+    fn waking(action: serde_json::Value) -> Result<Rule> {
+        rule(serde_json::json!({
+            "id": "wake",
+            "triggers": [{ "type": "time", "at": "06:00" }],
+            "actions": [action],
+        }))
+    }
+
+    #[test]
+    fn a_wake_up_takes_its_settings_or_the_routines() {
+        let r = waking(serde_json::json!({ "do": "wake_up" })).unwrap();
+        let Action::WakeUp(plan) = &r.actions[0] else {
+            panic!("a wake-up");
+        };
+        assert_eq!(plan.minutes, WAKE_UP_MINUTES);
+        assert_eq!(plan.brightness, 100);
+        assert!(plan.rooms.is_empty() && plan.devices.is_empty());
+        let r = waking(serde_json::json!({
+            "do": "wake_up", "minutes": 20, "devices": ["bedroom/ceiling"], "kelvin": 3000
+        }))
+        .unwrap();
+        let Action::WakeUp(plan) = &r.actions[0] else {
+            panic!("a wake-up");
+        };
+        assert_eq!(plan.devices[0].to_string(), "z2m:bedroom/ceiling");
+        assert_eq!(plan.kelvin, Some(3000));
+    }
+
+    #[test]
+    fn a_wake_up_out_of_bounds_is_refused() {
+        for bad in [
+            serde_json::json!({ "do": "wake_up", "minutes": 0 }),
+            serde_json::json!({ "do": "wake_up", "minutes": 121 }),
+            serde_json::json!({ "do": "wake_up", "brightness": 0 }),
+            serde_json::json!({ "do": "wake_up", "brightness": 101 }),
+            serde_json::json!({ "do": "wake_up", "start_kelvin": 1500, "kelvin": 4000 }),
+        ] {
+            assert!(waking(bad.clone()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_wake_up_warms_from_its_start_to_its_end() {
+        let r = waking(serde_json::json!({
+            "do": "wake_up", "start_kelvin": 2200, "kelvin": 4000
+        }))
+        .unwrap();
+        let Action::WakeUp(plan) = &r.actions[0] else {
+            panic!("not a wake-up");
+        };
+        assert_eq!((plan.start_kelvin, plan.kelvin), (Some(2200), Some(4000)));
+        let err = waking(serde_json::json!({ "do": "wake_up", "start_kelvin": 2200 }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs an end warmth"), "{err}");
+    }
+
+    #[test]
+    fn a_rule_changed_is_a_different_fingerprint() {
+        let one = waking(serde_json::json!({ "do": "wake_up", "minutes": 20 })).unwrap();
+        let same = waking(serde_json::json!({ "do": "wake_up", "minutes": 20 })).unwrap();
+        let other = waking(serde_json::json!({ "do": "wake_up", "minutes": 25 })).unwrap();
+        assert_eq!(one.fingerprint, same.fingerprint);
+        assert_ne!(one.fingerprint, other.fingerprint);
     }
 
     fn lights_off() -> serde_json::Value {

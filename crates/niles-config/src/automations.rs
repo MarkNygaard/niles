@@ -279,6 +279,28 @@ pub enum ActionDto {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         priority: Option<String>,
     },
+    /// The morning routine, now, with its own settings: lights that are
+    /// off come on at 0% and ramp to `brightness` over `minutes`, then
+    /// hold there. Every curve-managed light when neither `rooms` nor
+    /// `devices` is given.
+    WakeUp {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        minutes: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rooms: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        devices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        except: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        brightness: Option<u8>,
+        /// The warmth the ramp starts at; `kelvin` when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_kelvin: Option<u16>,
+        /// The warmth it ends at. Neither is the curve's, as it goes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kelvin: Option<u16>,
+    },
     /// Wait, then go on with the next action.
     Delay {
         #[serde(default, skip_serializing_if = "Option::is_none")]

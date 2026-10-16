@@ -81,6 +81,7 @@ mod tool_servers;
 mod training;
 mod tv;
 mod vocabulary;
+mod wake_up;
 
 use manifest::{GenerateManifestArgs, generate_manifest};
 use recognition::{SpeakerIdentifier, build_speaker_identifier, pcm_bytes_to_i16};
@@ -6062,6 +6063,76 @@ async fn build_morning_claims(cfg: &Config) -> Arc<MorningClaimTracker> {
     Arc::new(tracker.with_sink(sink))
 }
 
+/// The database the wake-ups and the automations' waits are kept in.
+fn database(cfg: &Config) -> Option<niles_db::PostgresBackend> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()
+}
+
+/// Where wake-ups under way are kept. Without a database they last as
+/// long as Niles runs.
+fn wake_up_store(cfg: &Config) -> Option<Arc<niles_db::PostgresWakeUps>> {
+    match database(cfg) {
+        Some(db) => Some(Arc::new(niles_db::PostgresWakeUps::new(
+            db.pool(),
+            db.describe_target(),
+        ))),
+        None => {
+            tracing::warn!("[wake-up] no database; a wake-up will not survive a restart");
+            None
+        }
+    }
+}
+
+/// Where the automations keep a run waiting out a delay.
+fn automation_waits(cfg: &Config) -> Option<Arc<dyn niles_automations::WaitStore>> {
+    let db = database(cfg)?;
+    Some(Arc::new(KeptWaits(niles_db::PostgresAutomationWaits::new(
+        db.pool(),
+        db.describe_target(),
+    ))))
+}
+
+/// The automations' waits, as JSON in Postgres.
+struct KeptWaits(niles_db::PostgresAutomationWaits);
+
+#[async_trait::async_trait]
+impl niles_automations::WaitStore for KeptWaits {
+    async fn keep(&self, wait: &niles_automations::Waiting) {
+        let kept = match serde_json::to_string(wait) {
+            Ok(document) => self.0.keep(&wait.rule, &document).await,
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = kept {
+            tracing::warn!("automation '{}': its wait is not kept: {e}", wait.rule);
+        }
+    }
+
+    async fn forget(&self, rule: &str) {
+        if let Err(e) = self.0.forget(rule).await {
+            tracing::warn!("automation '{rule}': its wait was not forgotten: {e}");
+        }
+    }
+
+    async fn all(&self) -> Vec<niles_automations::Waiting> {
+        match self.0.all().await {
+            Ok(documents) => documents
+                .iter()
+                .filter_map(|d| {
+                    serde_json::from_str(d)
+                        .inspect_err(|e| tracing::warn!("an automation wait would not read: {e}"))
+                        .ok()
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!("automation waits could not be read: {e}");
+                Vec::new()
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------
 // Automation engine wiring
 // ------------------------------------------------------------------
@@ -6943,6 +7014,18 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         Some(runtime) => command_router(&cfg).with_commander(Arc::new(runtime.clone())),
         None => command_router(&cfg),
     });
+    // Wake-ups automations start, picked up where they were.
+    let wake_ups = wake_up::WakeUps::load(
+        wake_up_store(&cfg),
+        registry.clone(),
+        publisher.clone(),
+        router.clone(),
+        store.clone(),
+        tracker.clone(),
+        claim_tracker.clone(),
+        args.dry_run,
+    )
+    .await;
 
     // Device index: built from the registry at startup and updated
     // on DeviceAdded / DeviceRemoved so Tier 0 matchers can resolve
@@ -6960,6 +7043,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (curve_nudge_tx, mut curve_nudge_rx) = tokio::sync::mpsc::unbounded_channel::<DeviceId>();
     let observer_tracker = tracker.clone();
     let observer_claim_tracker = claim_tracker.clone();
+    let observer_wake_ups = wake_ups.clone();
     let observer_registry = registry.clone();
     let observer_config = store.clone();
     let observer_device_index = Arc::clone(&device_index);
@@ -7000,6 +7084,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     if state.on == Some(false) && observer_claim_tracker.is_claimed(&id) {
                         observer_claim_tracker.release(&id);
                     }
+                    // And a wake-up's, or its hold: off means off.
+                    if state.on == Some(false) && observer_wake_ups.owns(&id) {
+                        observer_wake_ups.let_go(&id).await;
+                    }
                     append_state_history(&observer_state_writer, &id, &state);
                 }
                 Ok(Event::DeviceAdded { device }) => {
@@ -7013,6 +7101,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 Ok(Event::DeviceRemoved { id }) => {
                     observer_tracker.forget(&id);
                     observer_claim_tracker.forget(&id);
+                    observer_wake_ups.let_go(&id).await;
                     observer_device_index
                         .write()
                         .unwrap_or_else(|e| e.into_inner())
@@ -7307,7 +7396,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             Some(automation_notifier),
         )
         .with_location(house_location(&cfg))
-        .with_log(automation_runs.clone()),
+        .with_log(automation_runs.clone())
+        .with_waker(Some(wake_ups.clone() as Arc<dyn niles_automations::Waker>))
+        .with_waits(automation_waits(&cfg)),
     );
     let _automation_handle = automation_engine.clone().spawn(bus.clone());
     if let Some(store) = automations.clone() {
@@ -7642,6 +7733,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
+                    Some(wake_ups.as_ref()),
                 ).await;
             }
             Some(id) = curve_nudge_rx.recv() => {
@@ -7667,6 +7759,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
+                    Some(wake_ups.as_ref()),
                 ).await;
             }
             _ = ticker.tick() => {
@@ -7677,6 +7770,24 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     ));
                 }
                 lighting.refresh(&store);
+                // Wake-ups ramp on, follow the curve's warmth where they
+                // have none of their own, and let go of what the curve
+                // has caught up with. With the curve off, nothing catches
+                // up: a hold then lasts until the light is turned off.
+                let curve_now = match current_minute_of_day(tz) {
+                    Some((minute, now)) if lighting.curve.enabled => {
+                        let at = effective_minute(
+                            &lighting.curve,
+                            WeekInstant::new(now.weekday(), minute),
+                        );
+                        Some(wake_up::CurveNow {
+                            brightness: brightness_at(&lighting.curve, at),
+                            kelvin: color_temp_at(&lighting.curve, at),
+                        })
+                    }
+                    _ => None,
+                };
+                wake_ups.tick(Utc::now(), curve_now, lighting.transition()).await;
                 if let Some(routine) = lighting.routine() {
                     run_morning_routine_tick(
                         &registry,
@@ -7692,6 +7803,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         &claim_tracker,
                         lighting.ambient(),
                         lighting.lamp_plugs(),
+                        Some(wake_ups.as_ref()),
                     ).await;
                 }
                 run_curve_tick(
@@ -7707,6 +7819,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
+                    Some(wake_ups.as_ref()),
                 ).await;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -7808,6 +7921,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
+                    None,
                 )
                 .await;
             }
@@ -7831,6 +7945,7 @@ async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
                     &mut last_published,
                     &tracker,
                     &claim_tracker,
+                    None,
                 )
                 .await;
             }
@@ -7868,6 +7983,7 @@ async fn run_curve_tick(
     last_published: &mut HashMap<DeviceId, DeviceState>,
     tracker: &ManualModeTracker,
     claim_tracker: &MorningClaimTracker,
+    wake_ups: Option<&wake_up::WakeUps>,
 ) {
     // Checked here rather than at each call site, because there are
     // five of them and a sixth would forget. Off means the curve
@@ -7904,6 +8020,10 @@ async fn run_curve_tick(
             continue;
         }
         if claim_tracker.is_claimed(&device.id) {
+            continue;
+        }
+        // A wake-up ramping or holding it.
+        if wake_ups.is_some_and(|w| w.owns(&device.id)) {
             continue;
         }
         // Ambient lights sit out the curve and are held at one fixed
@@ -8016,6 +8136,7 @@ async fn run_morning_routine_tick(
     claim_tracker: &MorningClaimTracker,
     ambient: &HashSet<DeviceId>,
     lamp_plugs: &HashSet<DeviceId>,
+    wake_ups: Option<&wake_up::WakeUps>,
 ) {
     // Deliberately not gated on `lighting.enabled`: that switch governs
     // the curve, and the routine is opted into separately by having a
@@ -8156,7 +8277,7 @@ async fn run_morning_routine_tick(
                 device.is_some(),
                 device.as_ref().is_some_and(|d| d.is_curve_driven(ambient)),
                 device.as_ref().and_then(|d| d.state.on),
-                claim_tracker.is_claimed(id),
+                claim_tracker.is_claimed(id) || wake_ups.is_some_and(|w| w.owns(id)),
             ) {
                 tracing::info!(
                     "[routine {minute_of_day}] skipped {id}: {}",
