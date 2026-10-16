@@ -199,6 +199,7 @@ mod tests {
                         reason: "First draft".into(),
                         author: Author::Claude,
                         summary: None,
+                        page: crate::PageChange::Keep,
                     }),
                 },
             )

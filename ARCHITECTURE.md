@@ -2145,6 +2145,7 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
 3. **The plan kept up to date** (2c, built): after each run arrives from Strava, Niles marks the session it was done (with the activity and what was run) or the ones it passed missed, the assistant looks the plan over and may adjust what is to come, and Niles answers "what's my run today?". Every session had its status, `activity` and `actual` from 2b; 2c adds the coach's log, `updates`, and the day a run was done on when it was not its session's.
 4. **`trip`** (2d, built): a travel plan with days, places and bookings, as a kind with its own view.
 5. **Today's run on the dashboard** (2e, built): a card on the person's dashboard with today's session from their plan, read as `training_today` reads it (see [Today's run](#todays-run)).
+6. **Pages** (2f, built): any artifact may have a page, HTML the assistant writes once that draws the artifact's data, shown in a sealed frame in place of the kind's own view (see [Artifact pages](#artifact-pages)). Pictures in a page (found with the web search, kept by Niles) are the next step.
 
 ### The model
 
@@ -2157,6 +2158,9 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
   - **Restoring version n** saves its content as a new version, with the reason "Restored version n". Nothing is rewritten: what was there before the restore is a version too.
   - **The person's own changes are versions.** Ticking an item on a checklist saves a version by `person`.
 - An artifact without a version yet is one being written for the first time.
+- **`artifact_pages`**: every page an artifact has had. `id`, `artifact_id`, `html`, `at`. A version names the page it is drawn with (`artifact_revisions.page`, null for the kind's own view), and the artifact the current one's (`artifacts.page`).
+  - **A page is kept once**, however many versions draw with it. Niles marks a run on a plan many times a month, and a 200 KB copy of its page in each version would be most of what is kept. A change to the data keeps the page the version before it had.
+  - **A page goes** when no version kept draws with it any more: when the last version that named it is one of the oldest past 50.
 
 ### Kinds
 
@@ -2269,15 +2273,65 @@ The plan is read for one day by `niles_artifacts::plan_day`, which `training_tod
 - **The view**: the destination, its dates, length and travellers, and a countdown ("In 11 weeks", "In 9 days", "Tomorrow", "Day 4 of 21", "Done"). Then the stays, each with its place, dates, nights, booked and reference. Then the days, each with its weekday and date, place and title: while the trip is on, today's is open and marked (or the last before it, on a day with nothing planned); before it, the first; after it, none. Each item: its time, an icon for its type, its title (a link out when it has one), booked, its details, its location as a link to a map search (`https://www.google.com/maps/search/?api=1&query=…`, which a phone opens in its maps app), and its cost, "≈" in front unless booked. The packing list, by group, with how much is packed; the budget, with what the listed costs add up to per currency; the notes, as markdown. **Copy** gives it as text, day by day.
 - **Ticking the packing list** is the one change made in the view, saved as a version by `person` like a document's checklist, but **a run of ticks is one version**: the ticks show at once, and are saved together 1.5 seconds after the last ("Packed 6 things", "Packing list: 3 packed, 1 unpacked"), or at once when the view closes, the app is hidden, or an older version is opened over it. Packing for a trip is thirty ticks in a few minutes, and a version each would push everything Claude wrote out of the last 50. A tick taken back before it is saved saves nothing.
 
+### Artifact pages
+
+The kind's own view is good for most artifacts, and it is the default. Sometimes the look matters more than a built-in view can give: a trip as a poster to show the family, a plan with its weeks drawn as bars, a packing list as big boxes. For that an artifact can have a **page**: one self-contained HTML document the assistant writes once, that the app shows in place of the kind's view.
+
+**The data stays the truth.** A page never holds the data; it draws it. The app hands the page the current content when it opens and again whenever the content changes, so when Niles marks a run done on a plan, the coach changes next week, or the person ticks something, the page simply draws again, and no model is asked. Voice (`training_today`), the dashboard's card, notifications, previews, Copy and the chat cards read the data and never the page. Removing the page leaves the artifact exactly as it was, shown by its kind's view.
+
+**Made by asking.** "Make it look nicer", "make a page for our trip" is `start_page_job {id, brief}`: a background run of the same assistant, with only `artifact_get` (for this person) and `artifact_set_page` (for this artifact alone), and no web search, since nothing on the page needs it. The artifact is not marked working while its page is made: its data goes on being kept up (a run marked, a tick), and the page is set over the content as it is when the page is saved. One page is made at a time for an artifact, and it counts as one of the person's two jobs. When it is there: a card in the chat ("The page for Thailand trip is ready."), the artifact on the event stream, and, if notify is on, a notification ("The page for your Thailand trip is ready.") under the artifact's tag. When it is not, the chat says why; there is nothing to try again, the person asks again. A run that answers with the page instead of saving it has it kept, code fence and all. A small change to a page is `artifact_set_page` in the turn. A job that writes an artifact may give it a page too, only when its brief asks for a look.
+
+**Never the coach's.** The coach's look after a run has no way to set a page (its tools leave `artifact_set_page` out), and its `artifact_update`, like every change to the data by Niles, the person or the assistant, keeps the page the plan has.
+
+**Checked** on every save, for what helps the model get a page that works: not empty, at most 200 KB, line endings made `\n` and control characters other than tabs and newlines taken out, and nothing loaded from elsewhere, which the frame would block anyway: a `<script src>`, a `<link>`, `@import`, a `<meta http-equiv>`, a frame, an object or a `<base>`, `fetch`, XHR, a WebSocket, an EventSource or a beacon, or an image, font or file from a web address. Each refusal says what to do instead (inline, SVG, `niles.data`).
+
+**Versions.** Setting, replacing or removing a page is a version like any other, with the content as it is and its reason ("A page with the route day by day", "Took the page away"), by whoever did it. So a page is undone the way content is: **restoring a version** brings back its content *and* the page it was drawn with, and reading an old version shows it with its page. The person can take the page away themselves (**Remove page**), which is a version by `person`.
+
+#### The frame
+
+The page may have been written by a model that had just read web pages, and a web page can carry text meant to steer the model that reads it. So the page is trusted with nothing: it is shown in a frame that cannot reach Niles, the person's session or the network, and whose only way out is a message to the app, which the app reads as a stranger's.
+
+- **`<iframe sandbox="allow-scripts" srcdoc=…>`.** Scripts, and nothing else: no `allow-same-origin` (so its origin is opaque: no cookies, no storage of the app's, no reaching into the app's window), no `allow-popups`, no `allow-top-navigation`, no `allow-forms`, no `allow-modals`, no `allow-downloads`. `referrerpolicy="no-referrer"`; `allow` delegating no powerful feature (camera, microphone, geolocation, clipboard, payment, USB and the rest each `'none'`); and `credentialless`, where the browser has it, for fresh empty storage besides.
+- **Niles writes the frame's document**, its own `<head>` first: `<meta charset>`, then the policy, then `x-dns-prefetch-control: off` (which, once off, a document cannot turn on again), no referrer, the viewport, a base style, and the runtime with the data. Then the page's markup, in the body, where nothing of its head can come before ours; and nothing of Niles's after it, so there is nothing for unclosed markup in the page to swallow. The data goes into the runtime's script as JSON with `<`, `>`, `&` and the two line separators escaped, so text in the data cannot end the script.
+- **The policy**, first in the head, so a later one can only tighten it: `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; manifest-src 'none'; form-action 'none'; base-uri 'none'; webrtc 'block'`.
+- **The app's own policy**, in `index.html`: only `frame-src 'none'`. A sandboxed frame has no network of its own but may still navigate *itself*, and an address is a way to send what it knows; a child frame's navigations are held to its parent's `frame-src`, so it goes nowhere. A srcdoc frame is not fetched, so the policy does not stop it being shown. And a srcdoc frame inherits its parent's policy: which is why the app's may never restrict scripts (the runtime and the page are inline) and says nothing but `frame-src`. A test keeps it that way.
+- **Taken out of the page's markup** before it goes in, as a second wall: every `<link>` (`dns-prefetch`, `preconnect`, `prefetch`, `preload` are hints a policy does not cover everywhere), every `<meta>` (a refresh is a navigation), `<base>`, frames, `<object>`, `<embed>`, `<portal>`, speculation rules, and `<noscript>` (never shown in a frame that runs scripts, and read differently by the parser that cleans, which is how markup is smuggled past a cleaner), inside `<template>`s too.
+- **Messages.** The app takes a message only from the frame's own window (`event.source`) with the sandbox's opaque origin (`"null"`), only of the kinds below and in their shapes, and ignores anything else. It posts to the frame with target `"*"` (an opaque origin has no name to post to) and sends only the data, the theme and the day: never a token, a cookie or anything of the app's.
+
+Tried in Chrome 155 against a page that attempts every way out (fetch, XHR, WebSocket, EventSource, beacons, images, CSS and fonts from addresses, `@import`, every link hint, a child frame, `<object>`, video, SVG images, speculation rules, workers, a service worker, dynamic `import()`, WebRTC, popups, the top window, a form, `<a ping>`, the parent's document, cookies and storage, and navigating itself): nothing reached the server, and only navigating itself did once the app's `frame-src` was taken away.
+
+**What is left, and why it is small.** A script in the page can still make a `<link rel=dns-prefetch>` or `preconnect` of its own, after the cleaning; DNS prefetch is off for the frame, and browsers do not all hold these hints to a policy, so a lookup of a name could carry a few bytes out to whoever runs that name's DNS. WebRTC is blocked by `webrtc 'block'` where the browser knows it, and the runtime takes the constructors away before the page's script runs; a determined script might find them again in a child frame. What either could carry is what the page has, which is this artifact's own data, of the person looking at it: no session, no other artifact, nothing of the house. A link the page asks to open is shown to the person first, for the same reason.
+
+#### The runtime
+
+Niles's script in the frame, before the page's, gives the page `niles`:
+
+- `niles.data`: the current content, as `artifact_get` has it.
+- `niles.onData(fn)`: `fn(data)` once the page has loaded, and again whenever the data changes. The page draws in it.
+- `niles.theme`: `{dark, vars}`, the app's tokens, also set as CSS variables on the frame's root (`--background`, `--foreground`, `--card`, `--card-foreground`, `--muted`, `--muted-foreground`, `--accent`, `--accent-foreground`, `--primary`, `--primary-foreground`, `--border`, `--destructive`, `--radius`, `--font-sans`), with `color-scheme` and a `dark` class. Read off the app as it is shown, so light or dark follows the app, and sent again when it changes. The app's web font is not there (fonts load only from `data:`), so `--font-sans` falls back to the system's.
+- `niles.today`: the house's day, YYYY-MM-DD.
+- `niles.open(url)`, and every `<a href>` click, which the runtime turns into the same request: the frame itself may go nowhere. The app opens only an `https` address with a named host, no login in it, and not the app itself, and only after showing the person where it goes ("Open a link from this page? It goes to **www.jayfai.com**") and their yes; then in a new tab, `noopener,noreferrer`. A link to `#somewhere` scrolls the page.
+- `niles.save(content, reason)`: new data for this artifact, the whole content (below).
+
+Besides, it tells the app when the page is **ready**, its **height** (from a `ResizeObserver`, so the frame grows to the page; held to 20,000 px), and every **error** (`error` and `unhandledrejection`, and an exception in an `onData`).
+
+**Saving from the page.** A page where the person ticks or changes something saves with `niles.save`. The app takes it only while the current version is shown and the artifact is ready, only as an object of at most 400,000 characters as JSON, and saves it through `PATCH /me/artifacts/{id}` as the person: the server checks it as it checks every save by its kind, and refuses what does not fit. Like the trip's packing ticks, a run of saves is **one version**, 1.5 seconds after the last (and 10 seconds after the first, however often the page keeps saving), or at once when the view closes or the app is hidden, with the reason the page's ("On its page: Packed sunscreen (and 2 more)"). And **at most 10 versions per opening of the page**: a page that keeps saving would otherwise push everything else out of the last 50. A save can change only this artifact, only to content its kind accepts, and every one is a version that can be restored; what it cannot do is carry anything anywhere, since the page has nothing the person does not already have.
+
+**The fallback.** When the page reports an error, or has not said it is ready within four seconds, the view shows the kind's own view instead, saying why ("The page could not be shown: it did not start"). A small **Page / Built-in** switch above it lets the person choose either, and Page tries it again. Chat cards and the Saved list keep their text previews; there is no frame anywhere but the open artifact.
+
+**Pictures, next.** The policy already lets a page show `data:` and `blob:` images. The next step finds pictures with the web search and keeps Niles's own copies, and hands them to the page beside the data, as `niles.images`, a map from a name the page uses to the picture: as `data:` URLs, or as `Blob`s the runtime makes `blob:` URLs of inside the frame (a `blob:` URL the app made belongs to the app's origin and would not load in the opaque one). Nothing the page asks for by address is ever fetched for it.
+
 ### The assistant's tools
 
 Offered only to Claude and ChatGPT, over the same MCP server as the rest of Niles's tools but from a registry of their own, so the fast model never has them and they need no relevance group. Each acts for **the person asking**: the voice that was recognised, or the person signed in to the app. Never a person named in an argument. An unrecognised voice has no artifacts, and is told so.
 
 - `artifact_list {archived?}`: the person's artifacts, newest first, with id, kind, title, summary, status and when each was changed.
-- `artifact_get {id}`: one, with its content.
+- `artifact_get {id, with_page?}`: one, with its content, and whether it has a page (`page`); with `with_page`, the page's HTML as well.
 - `artifact_create {kind, title, summary, content, notify?}`: a small one made at once, in the turn.
 - `artifact_update {id, content, summary?, reason}`: a new version.
 - `start_artifact_job {kind, title, summary, brief, status_text?, notify?}`: a big one, made in the background (below).
+- `artifact_set_page {id, html? | remove?, reason}`: a page for it, a new page, or none (see [Artifact pages](#artifact-pages)); its description carries how a page is written.
+- `start_page_job {id, brief}`: a page made in the background, for "make it look nicer".
 
 Each validates the content for its kind before anything is kept, and answers the id and a short view (title, summary, the preview). An id that is not the asker's is "no such artifact", exactly as one that does not exist.
 
@@ -2333,9 +2387,9 @@ When the coach changed a training plan's sessions after a run (see Keeping up wi
 Every route acts for the person signed in (the operator's key is "anyone", as in the chat):
 
 - `GET /me/artifacts?pinned=&archived=`: the list, and which assistant would make one now (none: what the Saved tab explains).
-- `GET /me/artifacts/{id}`: the current content, and every version's number, reason, author and time.
-- `GET /me/artifacts/{id}/revisions/{n}`: one version's content.
-- `PATCH /me/artifacts/{id}`: `title`, `pinned`, `archived`, `notify`; or `content` (with a `reason`), which saves a version by `person`.
+- `GET /me/artifacts/{id}`: the current content, its page's HTML (`page_html`, null without one), every version's number, page, reason, author and time, and the house's `today`.
+- `GET /me/artifacts/{id}/revisions/{n}`: one version's content, with the HTML of the page it was drawn with.
+- `PATCH /me/artifacts/{id}`: `title`, `pinned`, `archived`, `notify`; or `content` (with a `reason`), which saves a version by `person` drawn with the page it has; or `remove_page: true`, a version by `person` without it.
 - `POST /me/artifacts/{id}/restore/{n}`
 - `POST /me/artifacts/{id}/retry`: a failed job, again.
 - `DELETE /me/artifacts/{id}`
@@ -2343,11 +2397,11 @@ Every route acts for the person signed in (the operator's key is "anyone", as in
 
 ### Where it lives
 
-- `niles-artifacts`: the model, the kinds with their validators and previews, the store trait with an in-memory store for tests, a training plan's bookkeeping and the rule its review is held to (`tracking`), and its day (`plan_day`).
+- `niles-artifacts`: the model, the kinds with their validators and previews, the store trait with an in-memory store for tests, what a page is and how it is checked (`page`), a training plan's bookkeeping and the rule its review is held to (`tracking`), and its day (`plan_day`).
 - `niles-db`: the Postgres store, which creates its tables on first use. Artifacts are on whenever there is a database.
 - `niles-api`: `/me/artifacts`, `/me/training/today`, the artifact refs on a chat turn, and `artifact_changed` on the event stream.
 - `niles-bin`: the tools, the jobs, the notifier, which pushes to the person's devices, and following the runs in the plans and the coach's look (`artifacts::coach`).
-- `web/`: the Saved tab, the artifact view, the chat card, the status line, and the dashboard's `TodaysRunCard`.
+- `web/`: the Saved tab, the artifact view, the chat card, the status line, the dashboard's `TodaysRunCard`, and a page's sealed frame (`SandboxedPage`, with what it is given and may say in `lib/sandboxedPage.ts`).
 
 ## Notifications on your devices
 

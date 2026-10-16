@@ -16,7 +16,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use niles_artifacts::plan_day::{self, PlanDay};
 use niles_artifacts::{
-    Artifact, ArtifactStore, Author, Changes, Filter, NewRevision, Revision, RevisionMeta,
+    Artifact, ArtifactStore, Author, Changes, Filter, NewRevision, PageChange, Revision,
+    RevisionMeta,
 };
 use niles_core::Event;
 use serde::{Deserialize, Serialize};
@@ -134,11 +135,29 @@ pub struct Detail {
     pub artifact: Artifact,
     /// The current version's content; `None` before there is one.
     pub content: Option<Value>,
+    /// The HTML of the page it is drawn with, for the app's sealed frame;
+    /// `None` for the kind's own view.
+    pub page_html: Option<String>,
     /// Newest first.
     pub revisions: Vec<RevisionMeta>,
+    /// The house's today, YYYY-MM-DD: the day a page counts from.
+    pub today: String,
+}
+
+async fn page_html(
+    store: &dyn ArtifactStore,
+    person: &str,
+    id: i64,
+    page: Option<i64>,
+) -> Result<Option<String>, Failure> {
+    match page {
+        Some(page) => store.page(person, id, page).await.map_err(storage),
+        None => Ok(None),
+    }
 }
 
 async fn detail(
+    state: &AppState,
     store: &dyn ArtifactStore,
     person: &str,
     artifact: Artifact,
@@ -151,6 +170,7 @@ async fn detail(
             .map_err(storage)?
             .map(|r| r.content),
     };
+    let page_html = page_html(store, person, artifact.id, artifact.page).await?;
     let revisions = store
         .revisions(person, artifact.id)
         .await
@@ -158,7 +178,9 @@ async fn detail(
     Ok(Detail {
         artifact,
         content,
+        page_html,
         revisions,
+        today: house_today(state).to_string(),
     })
 }
 
@@ -175,7 +197,17 @@ pub async fn get(
         .await
         .map_err(storage)?
         .ok_or_else(not_found)?;
-    Ok(Json(detail(store.as_ref(), &person, artifact).await?))
+    Ok(Json(
+        detail(&state, store.as_ref(), &person, artifact).await?,
+    ))
+}
+
+/// A version as it was, with the page it was drawn with then.
+#[derive(Debug, Serialize)]
+pub struct RevisionDetail {
+    #[serde(flatten)]
+    pub revision: Revision,
+    pub page_html: Option<String>,
 }
 
 /// `GET /me/artifacts/{id}/revisions/{n}`
@@ -183,19 +215,25 @@ pub async fn revision(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((id, n)): Path<(i64, i32)>,
-) -> Result<Json<Revision>, Failure> {
+) -> Result<Json<RevisionDetail>, Failure> {
     let store = store(&state)?;
     let person = crate::chat::person_of(&state, &headers);
-    store
+    let revision = store
         .revision(&person, id, n)
         .await
         .map_err(storage)?
-        .map(Json)
-        .ok_or_else(|| failed(StatusCode::NOT_FOUND, "no such version"))
+        .ok_or_else(|| failed(StatusCode::NOT_FOUND, "no such version"))?;
+    let page_html = page_html(store.as_ref(), &person, id, revision.page).await?;
+    Ok(Json(RevisionDetail {
+        revision,
+        page_html,
+    }))
 }
 
 /// Each field: absent leaves it. `content` saves a version by the
-/// person, with `reason`.
+/// person, with `reason`, drawn with the page it has; `remove_page`
+/// saves one without it, back to the kind's own view (a restore brings
+/// it back).
 #[derive(Debug, Default, Deserialize)]
 pub struct Patch {
     #[serde(default)]
@@ -210,6 +248,8 @@ pub struct Patch {
     pub content: Option<Value>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub remove_page: Option<bool>,
 }
 
 /// `PATCH /me/artifacts/{id}`
@@ -270,14 +310,30 @@ pub async fn patch(
                     reason,
                     author: Author::Person,
                     summary: None,
+                    page: PageChange::Keep,
                 },
             )
             .await
             .map_err(storage)?
             .ok_or_else(not_found)?;
     }
+    if body.remove_page == Some(true) && artifact.page.is_some() {
+        artifact = store
+            .set_page(
+                &person,
+                id,
+                PageChange::Remove,
+                "Took the page away".into(),
+                Author::Person,
+            )
+            .await
+            .map_err(storage)?
+            .ok_or_else(not_found)?;
+    }
     announce(&state.event_bus, &artifact);
-    Ok(Json(detail(store.as_ref(), &person, artifact).await?))
+    Ok(Json(
+        detail(&state, store.as_ref(), &person, artifact).await?,
+    ))
 }
 
 /// `POST /me/artifacts/{id}/restore/{n}`
@@ -293,7 +349,9 @@ pub async fn restore(
         .map_err(storage)?
         .ok_or_else(|| failed(StatusCode::NOT_FOUND, "no such version"))?;
     announce(&state.event_bus, &artifact);
-    Ok(Json(detail(store.as_ref(), &person, artifact).await?))
+    Ok(Json(
+        detail(&state, store.as_ref(), &person, artifact).await?,
+    ))
 }
 
 /// `POST /me/artifacts/{id}/retry`
@@ -576,6 +634,7 @@ allowed = [
                         reason: "First draft".into(),
                         author: Author::Claude,
                         summary: None,
+                        page: PageChange::Keep,
                     }),
                 },
             )
@@ -742,6 +801,7 @@ allowed = [
                     reason: "Rewrote it".into(),
                     author: Author::Claude,
                     summary: None,
+                    page: PageChange::Keep,
                 },
             )
             .await
@@ -773,6 +833,127 @@ allowed = [
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    async fn with_page(store: &MemoryArtifacts, person: &str) -> i64 {
+        let id = make(store, person, "Packing list", "- [ ] passport").await;
+        store
+            .set_page(
+                person,
+                id,
+                PageChange::New("<h1>Packing</h1>".into()),
+                "A page for it".into(),
+                Author::Claude,
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn an_artifact_comes_with_its_page_and_a_tick_keeps_it() {
+        let f = fixture(true);
+        let id = with_page(&f.store, MARK).await;
+        let mark = "mark@example.com";
+        let (status, body) = send(
+            &f.app,
+            by(mark, "GET", &format!("/me/artifacts/{id}"), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["page_html"], "<h1>Packing</h1>");
+        assert!(body["page"].is_i64());
+
+        let (_, ticked) = send(
+            &f.app,
+            by(
+                mark,
+                "PATCH",
+                &format!("/me/artifacts/{id}"),
+                Some(json!({ "content": { "markdown": "- [x] passport" }, "reason": "Page: packed" })),
+            ),
+        )
+        .await;
+        assert_eq!(ticked["content"]["markdown"], "- [x] passport");
+        assert_eq!(ticked["page_html"], "<h1>Packing</h1>");
+
+        let (_, first) = send(
+            &f.app,
+            by(
+                mark,
+                "GET",
+                &format!("/me/artifacts/{id}/revisions/1"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(first["page_html"], Value::Null, "version 1 had no page");
+        let (_, second) = send(
+            &f.app,
+            by(
+                mark,
+                "GET",
+                &format!("/me/artifacts/{id}/revisions/2"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(second["page_html"], "<h1>Packing</h1>");
+    }
+
+    #[tokio::test]
+    async fn the_person_can_take_the_page_away_and_restore_it() {
+        let f = fixture(true);
+        let id = with_page(&f.store, MARK).await;
+        let mark = "mark@example.com";
+        let (status, gone) = send(
+            &f.app,
+            by(
+                mark,
+                "PATCH",
+                &format!("/me/artifacts/{id}"),
+                Some(json!({ "remove_page": true })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{gone}");
+        assert_eq!(gone["page"], Value::Null);
+        assert_eq!(gone["page_html"], Value::Null);
+        assert_eq!(gone["revisions"][0]["reason"], "Took the page away");
+        assert_eq!(gone["content"]["markdown"], "- [ ] passport");
+
+        let (_, back) = send(
+            &f.app,
+            by(mark, "POST", &format!("/me/artifacts/{id}/restore/2"), None),
+        )
+        .await;
+        assert_eq!(back["page_html"], "<h1>Packing</h1>");
+    }
+
+    #[tokio::test]
+    async fn another_persons_page_is_not_found() {
+        let f = fixture(true);
+        let id = with_page(&f.store, MAJSE).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "PATCH",
+                &format!("/me/artifacts/{id}"),
+                Some(json!({ "remove_page": true })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(
+            f.store
+                .get(MAJSE, id)
+                .await
+                .unwrap()
+                .unwrap()
+                .page
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -879,6 +1060,7 @@ allowed = [
                         reason: "First draft".into(),
                         author: Author::Claude,
                         summary: None,
+                        page: PageChange::Keep,
                     }),
                 },
             )

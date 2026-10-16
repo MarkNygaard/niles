@@ -1060,12 +1060,17 @@ export interface Artifact {
   /** The version shown; 0 before there is one. */
   current_revision: number;
   preview: Preview;
+  /** The page the version shown is drawn with, by its id; null for its
+      kind's own view. Absent from a Niles older than pages. */
+  page?: number | null;
 }
 
 export type ArtifactAuthor = "person" | "claude" | "chatgpt" | "niles";
 
 export interface ArtifactRevisionMeta {
   n: number;
+  /** The page it was drawn with then, by its id. */
+  page?: number | null;
   reason: string;
   author: ArtifactAuthor;
   at: string;
@@ -1073,13 +1078,20 @@ export interface ArtifactRevisionMeta {
 
 export interface ArtifactRevision extends ArtifactRevisionMeta {
   content: unknown;
+  /** The page it was drawn with then, for the sealed frame. */
+  page_html?: string | null;
 }
 
 export interface ArtifactDetail extends Artifact {
   /** The current version's content; null before there is one. */
   content: unknown;
+  /** The page it is drawn with, for the sealed frame; null for its
+      kind's own view. */
+  page_html?: string | null;
   /** Newest first. */
   revisions: ArtifactRevisionMeta[];
+  /** The house's today, YYYY-MM-DD. */
+  today?: string;
 }
 
 export interface ArtifactList {
@@ -1096,6 +1108,8 @@ export interface ArtifactPatch {
   /** A new version, by the person. */
   content?: unknown;
   reason?: string;
+  /** A new version without the page, back to its kind's own view. */
+  remove_page?: boolean;
 }
 
 export type ApprovalStatus = "pending" | "allowed" | "denied" | "lapsed" | "failed";

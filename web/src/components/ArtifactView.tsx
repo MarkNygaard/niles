@@ -1,6 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Copy, History, LoaderCircle, RotateCcw, TriangleAlert } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  Copy,
+  History,
+  LoaderCircle,
+  PanelTopClose,
+  RotateCcw,
+  TriangleAlert,
+} from "lucide-react";
+import { SandboxedPage } from "@/components/SandboxedPage";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -8,6 +18,7 @@ import { api } from "@/lib/api";
 import type { ArtifactAuthor, ArtifactDetail, ArtifactPatch } from "@/lib/api";
 import { ARTIFACTS, artifactKey, kindOf } from "@/lib/artifacts";
 import { relativeTime } from "@/lib/skills";
+import { localDay } from "@/lib/trainingPlan";
 import { cn } from "@/lib/utils";
 
 const AUTHORS: Record<ArtifactAuthor, string> = {
@@ -17,6 +28,31 @@ const AUTHORS: Record<ArtifactAuthor, string> = {
   niles: "Niles",
 };
 
+type Look = "page" | "builtin";
+
+/** The two ways an artifact with a page can be shown. */
+function LookSwitch({ look, onChange }: { look: Look; onChange: (look: Look) => void }) {
+  const option = (value: Look, label: string) => (
+    <button
+      type="button"
+      aria-pressed={look === value}
+      onClick={() => onChange(value)}
+      className={cn(
+        "rounded-md px-2 py-0.5",
+        look === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div role="group" aria-label="Show as" className="bg-muted flex self-end rounded-lg p-0.5 text-xs">
+      {option("page", "Page")}
+      {option("builtin", "Built-in")}
+    </div>
+  );
+}
+
 export interface ArtifactViewProps {
   id: number;
   /** Back to the list. */
@@ -24,8 +60,9 @@ export interface ArtifactViewProps {
 }
 
 /**
- * One artifact, open in Niles's panel: its kind's view, the versions it
- * has been through, whether its person is told, and a copy of it.
+ * One artifact, open in Niles's panel: its kind's view, or its page in
+ * a sealed frame when it has one, the versions it has been through,
+ * whether its person is told, and a copy of it.
  */
 export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const queryClient = useQueryClient();
@@ -33,6 +70,10 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const [versions, setVersions] = useState(false);
   const [reading, setReading] = useState<number>();
   const [copied, setCopied] = useState(false);
+  const [look, setLook] = useState<Look>("page");
+  // Why the page shown under this key was swapped for the built-in
+  // view; a new page, or another version, is given its own chance.
+  const [fellBack, setFellBack] = useState<{ key: string; why: string }>();
 
   const saved = (next: ArtifactDetail) => {
     queryClient.setQueryData(artifactKey(id), next);
@@ -94,6 +135,14 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const kind = kindOf(a.kind);
   const failure = patch.error ?? restore.error ?? retry.error;
   const showing = reading !== undefined ? old.data?.content : a.content;
+  const pageHtml = reading !== undefined ? old.data?.page_html : a.page_html;
+  const pageKey = `${reading ?? "current"}:${reading !== undefined ? old.data?.page : a.page}`;
+  const broken = fellBack?.key === pageKey ? fellBack.why : undefined;
+  const onPage = Boolean(pageHtml) && look === "page" && broken === undefined;
+  const edit =
+    reading === undefined
+      ? (content: unknown, reason: string) => patch.mutate({ content, reason })
+      : undefined;
 
   return (
     <div className="flex flex-col gap-3 px-2 pb-2">
@@ -146,16 +195,35 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
         </div>
       )}
 
-      {showing !== undefined && showing !== null ? (
-        <kind.View
-          content={showing}
-          busy={patch.isPending}
-          onChange={
-            reading === undefined
-              ? (content, reason) => patch.mutate({ content, reason })
-              : undefined
-          }
+      {pageHtml && showing !== undefined && showing !== null && (
+        <LookSwitch
+          look={onPage ? "page" : "builtin"}
+          onChange={(next) => {
+            setLook(next);
+            if (next === "page") setFellBack(undefined);
+          }}
         />
+      )}
+      {broken !== undefined && look === "page" && (
+        <p className="text-muted-foreground text-xs" role="status">
+          The page could not be shown: {broken}. This is the built-in view.
+        </p>
+      )}
+
+      {showing !== undefined && showing !== null ? (
+        onPage && pageHtml ? (
+          <SandboxedPage
+            key={pageKey}
+            html={pageHtml}
+            content={showing}
+            today={a.today ?? localDay()}
+            title={a.title}
+            onSave={a.status === "ready" ? edit : undefined}
+            onFallback={(why) => setFellBack({ key: pageKey, why })}
+          />
+        ) : (
+          <kind.View content={showing} busy={patch.isPending} onChange={edit} />
+        )
       ) : (
         a.status !== "working" &&
         reading === undefined && (
@@ -193,6 +261,17 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
             >
               {copied ? <Check /> : <Copy />}
               {copied ? "Copied" : "Copy"}
+            </Button>
+          )}
+          {a.page_html && reading === undefined && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={patch.isPending}
+              onClick={() => patch.mutate({ remove_page: true })}
+            >
+              <PanelTopClose />
+              Remove page
             </Button>
           )}
         </div>
