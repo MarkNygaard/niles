@@ -55,3 +55,6 @@ desktop.ini
 # release, which is where the image build fetches it from.
 *.onnx
 *.onnx.data
+
+# Claude Code worktrees (local, per session).
+.claude/worktrees/

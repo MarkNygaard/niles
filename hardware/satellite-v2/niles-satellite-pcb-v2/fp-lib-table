@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "niles_satellite")(type "KiCad")(uri "${KIPRJMOD}/../niles_satellite.pretty")(options "")(descr "Niles satellite custom footprints"))
+)
