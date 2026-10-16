@@ -4,6 +4,7 @@
 
 # Setting up
 - [Naming your devices](naming.md)
+- [Notifications on your phone](notifications.md)
 
 # Architecture
 - [Overall architecture](architecture.md)

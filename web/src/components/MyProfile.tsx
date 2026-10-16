@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MeCard } from "@/components/MeCard";
+import { Notifications } from "@/components/NotificationsCard";
 import { PersonalAddOns } from "@/components/PersonalAddOns";
 import { api } from "@/lib/api";
 
@@ -49,6 +50,7 @@ export function MyProfile() {
         onUnpair={() => unpair.mutate()}
       />
       {me.data && <PersonalAddOns hasVoice={Boolean(me.data.speaker)} />}
+      {me.data && <Notifications />}
     </div>
   );
 }

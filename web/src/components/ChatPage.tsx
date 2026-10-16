@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, MessagesSquare } from "lucide-react";
 import { ArtifactView } from "@/components/ArtifactView";
@@ -13,6 +13,7 @@ import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { api } from "@/lib/api";
 import type { Artifact, ArtifactPatch, Conversation, ConversationSummary, Decision } from "@/lib/api";
 import { ARTIFACTS, ARTIFACT_LIST, workingLine } from "@/lib/artifacts";
+import { hashQuery } from "@/lib/route";
 import { relativeTime } from "@/lib/skills";
 
 export const CHAT = ["chat"];
@@ -53,6 +54,13 @@ export function panelStatus(
   const latest = conversations?.[0];
   if (!latest) return "Ready";
   return `Last talked ${relativeTime(latest.last_at, now)}`;
+}
+
+/** The artifact a link asks the chat to open: `#/chat?artifact=12`,
+    which is where a notification about it leads. */
+export function linkedArtifact(hash: string): number | null {
+  const id = Number(hashQuery(hash).get("artifact"));
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 /**
@@ -170,6 +178,23 @@ export function ChatPage() {
     setPanelOpen(true);
   };
 
+  // A notification's link, on the way in and while the chat is open:
+  // tapping one focuses this window and sets its hash. Put back to the
+  // bare chat afterwards, or a refresh would open it again.
+  useEffect(() => {
+    const follow = () => {
+      const id = linkedArtifact(window.location.hash);
+      if (id === null) return;
+      setTab("saved");
+      setOpened(id);
+      setPanelOpen(true);
+      window.history.replaceState(null, "", "#/chat");
+    };
+    follow();
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
+  }, []);
+
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteConversation(id),
     onSuccess: async (_, id) => {
@@ -270,6 +295,7 @@ export function ChatPage() {
         deciding={decide.isPending}
         onDictate={async (audio) => (await api.dictate(audio)).text}
         onOpenArtifact={openArtifact}
+        working={saved.data?.artifacts.filter((a) => a.status === "working").map((a) => a.id)}
       />
       <NilesPanel
         open={panelOpen}

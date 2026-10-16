@@ -45,6 +45,7 @@ pub mod places;
 pub mod plugins;
 pub mod presence;
 pub mod publish;
+pub mod push;
 pub mod scenes;
 pub mod secrets;
 pub mod server;

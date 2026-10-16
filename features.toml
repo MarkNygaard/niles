@@ -650,3 +650,27 @@ category = "runtime.training"
 summary = "A training plan toward a race, made from your own Strava runs: weeks, a countdown and today's session under Saved"
 phrasings = ["make me a half marathon training plan", "plan my training for the Copenhagen Half on 13 December", "move my long run to Saturday"]
 since_pr = 430
+
+[[feature]]
+id = "push-artifact-ready"
+category = "runtime.notifications"
+summary = "A notification on your phone or computer when a document written in the background is ready; a tap opens it"
+since_pr = 432
+
+[[feature]]
+id = "ui-push-notifications"
+category = "ui.settings"
+summary = "My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app"
+since_pr = 432
+
+[[feature]]
+id = "ui-push-nudge"
+category = "ui.chat"
+summary = "While a document is being written, one tap on \"Notify me when it's done\" turns notifications on for this device"
+since_pr = 432
+
+[[feature]]
+id = "api-push"
+category = "api.write"
+summary = "GET /push/key; GET, POST and DELETE /me/push for this person's devices; POST /me/push/test"
+since_pr = 432

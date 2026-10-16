@@ -28,6 +28,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
+| `api-push` | GET /push/key; GET, POST and DELETE /me/push for this person's devices; POST /me/push/test | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 
 ## automations
 
@@ -58,6 +59,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
+| `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
@@ -96,6 +98,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-key-made` | Niles makes its own API key on a start with a database, and a new one works at once with no restart | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `plugins-widget-room-setting` | A plugin's widget can start in the room one of its settings names, and moves when the setting changes | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `ui-media-without-sonos` | Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one | [#408](https://github.com/MarkNygaard/niles/pull/408) |
@@ -109,6 +112,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 | `ui-room-hidden` | Hide a room from the dashboard's grid in Settings → Rooms; voice, rules, the API and the house's counts still reach it | [#404](https://github.com/MarkNygaard/niles/pull/404) |
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
+| `ui-push-notifications` | My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-strava-connect` | My profile → Strava: set up your own Strava app, save its keys, connect, last sync, Sync now, disconnect | [#418](https://github.com/MarkNygaard/niles/pull/418) |

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ChatPage, landingOn, panelStatus } from "@/components/ChatPage";
+import { ChatPage, landingOn, linkedArtifact, panelStatus } from "@/components/ChatPage";
 import { ApiError, api } from "@/lib/api";
 import type {
   Artifact,
@@ -178,6 +178,19 @@ describe("panelStatus", () => {
   });
 });
 
+describe("linkedArtifact", () => {
+  it("is the artifact a notification's link names", () => {
+    expect(linkedArtifact("#/chat?artifact=12")).toBe(12);
+  });
+
+  it("is nothing without one, or with one that is not an id", () => {
+    expect(linkedArtifact("#/chat")).toBeNull();
+    expect(linkedArtifact("#/chat?artifact=")).toBeNull();
+    expect(linkedArtifact("#/chat?artifact=abc")).toBeNull();
+    expect(linkedArtifact("#/chat?artifact=-3")).toBeNull();
+  });
+});
+
 describe("ChatPage", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -217,6 +230,22 @@ describe("ChatPage", () => {
 
     fireEvent.click(dialog.getByRole("button", { name: "Saved" }));
     expect(await dialog.findByText(/Nothing saved yet/)).toBeInTheDocument();
+  });
+
+  it("opens the artifact a notification's link names, and puts the address back", async () => {
+    window.history.replaceState(null, "", "#/chat?artifact=9");
+    vi.spyOn(api, "artifact").mockResolvedValue({
+      ...artifact(9, "Thailand travel plan"),
+      content: { markdown: "# Thailand" },
+      revisions: [],
+    });
+    show([MILK]);
+    const dialog = within(await screen.findByRole("dialog", { name: "Niles" }));
+    expect(
+      await dialog.findByRole("heading", { name: "Thailand travel plan" }),
+    ).toBeInTheDocument();
+    expect(api.artifact).toHaveBeenCalledWith(9);
+    expect(window.location.hash).toBe("#/chat");
   });
 
   it("shows the job being written in the status line, as the stream says", async () => {

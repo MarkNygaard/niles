@@ -38,6 +38,7 @@ mod journal;
 mod memory;
 mod morning_claims;
 mod plugins;
+mod push;
 mod room_music;
 mod scenes;
 mod secrets;
@@ -59,6 +60,7 @@ pub use morning_claims::PostgresMorningClaims;
 pub use plugins::{
     PluginDeviceRow, PluginInstall, PluginMeta, PluginRow, PostgresPlugins, hex_digest,
 };
+pub use push::PostgresPush;
 pub use room_music::PostgresRoomMusic;
 pub use scenes::PostgresScenes;
 pub use secrets::{PostgresSecrets, Sealer};

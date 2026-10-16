@@ -2235,9 +2235,7 @@ Each artifact is one person's, under the same key as their chat and training. On
 
 ### Telling the person
 
-Each artifact has **notify**, on by default and switched off on the artifact. When a job finishes or fails, Niles calls an `ArtifactNotifier` with the artifact if notify is on. In 2a nothing is behind it: the person sees the status line, the Saved tab and the card in the chat. The satellites do not say it: a document is not news for a room.
-
-**Next: phone push**, as its own piece of work. Web Push to the installed app: a VAPID key pair for this Niles, a subscription per person and device kept in Postgres, and the service worker showing "Your Thailand travel plan is ready" and opening Saved on a tap. It plugs in as an `ArtifactNotifier`.
+Each artifact has **notify**, on by default and switched off on the artifact. When a job finishes or fails, Niles calls a `Notifier` with the artifact if notify is on. Behind it is [Web Push](#notifications-on-your-devices): "Your Thailand travel plan is ready." on every device where the person turned notifications on, opening the artifact on a tap. Without a database and its secrets key there is no push, and the person still sees the status line, the Saved tab and the card in the chat. The satellites do not say it: a document is not news for a room.
 
 ### API
 
@@ -2256,8 +2254,78 @@ Every route acts for the person signed in (the operator's key is "anyone", as in
 - `niles-artifacts`: the model, the kinds with their validators and previews, and the store trait with an in-memory store for tests.
 - `niles-db`: the Postgres store, which creates its tables on first use. Artifacts are on whenever there is a database.
 - `niles-api`: `/me/artifacts`, the artifact refs on a chat turn, and `artifact_changed` on the event stream.
-- `niles-bin`: the tools, the jobs, and the notifier seam.
+- `niles-bin`: the tools, the jobs, and the notifier, which pushes to the person's devices.
 - `web/`: the Saved tab, the artifact view, the chat card, and the status line.
+
+## Notifications on your devices
+
+A background job takes minutes, and nobody keeps the app open for it. When it is done the person should hear about it where they are: on the iPhone with Niles on its Home Screen, an Android phone, a laptop. That is the browser's own **Web Push**, the mechanism any web app uses for this, and it needs nothing from outside to reach Niles: Niles posts to the push service (Apple's, Google's, Mozilla's) and the service wakes the device. Not a single inbound port.
+
+These are a person's own, not the house's. The satellites speak the house's news ([Notifications](#notifications-niles-speaks-unprompted)); a push goes to one person's devices, for something of theirs.
+
+### On by default
+
+There is no setting per kind of notification and nothing in `niles.toml`. **A device that allowed notifications is the switch**: a person who turned them on on their phone gets them there; one who did not, does not. The browser's own permission prompt is the only question asked, and only when the person taps something that turns them on, never on page load: Safari refuses the prompt otherwise, and a prompt nobody asked for is the one everyone says no to.
+
+What is pushed today:
+
+- **An artifact's job finished**: "Your Thailand travel plan is ready." Or failed: "Your Thailand travel plan didn't finish. Open it to try again." Only when the artifact's `notify` is on, which it is unless the person said otherwise.
+- **A test**, from My profile, to check a device works.
+
+A timer ringing on the phone that set it is the obvious next one, and will use the same sending.
+
+### How a device subscribes
+
+1. The app asks `GET /push/key` for this Niles's public key.
+2. The browser subscribes with it (`pushManager.subscribe` with `applicationServerKey`), and its push service makes an **endpoint**: an address for this browser on this device, with the browser's public key (`p256dh`) and a secret (`auth`) to encrypt for it.
+3. The app posts that to `POST /me/push`, and Niles keeps it under the person's key.
+
+An endpoint subscribed again by somebody else (another person signed in on the same phone) moves to them: a device notifies whoever turned notifications on there last. A browser still holding a subscription made with a different key (the database was replaced) drops it and subscribes again.
+
+### Sending
+
+- **Encrypted for the device** (RFC 8291, `aes128gcm`): a fresh key pair and salt per message, the device's `auth` secret in the key derivation. The push service carries the message and cannot read it.
+- **Signed by this Niles** (VAPID, RFC 8292): an ES256 token with `aud` the push service's origin, `exp` twelve hours out (Apple refuses one more than a day out), and `sub`, a contact. The push service only takes messages for a subscription with a token from the key it was made with.
+- **`sub` is the address the app was open at** when the device subscribed: the browser's `Origin`, or else the `Host` the ingress passes, as https, since TLS ends there (http only for localhost). RFC 8292 makes `sub` optional; Apple does not, and refuses a token without a usable one with 403 BadJwtToken. There is no configured contact to use instead, and a setting for one would be a box nobody knows what to put in. The house's own address is a real https URL, and it is what a push service's operator would look at anyway.
+- **Headers**: `TTL` a day (still news the next morning, not much after), `Urgency: normal`, `Content-Encoding: aes128gcm`, `Authorization: vapid t=…, k=…`.
+- **The payload** is JSON the service worker shows: `{title, body, url, tag}`. `tag` is per artifact (`artifact-{id}`), so a job tried again replaces the notification of the one that failed instead of stacking under it.
+- **A device that is gone is forgotten.** 404 or 410 from the push service means the subscription will never work again (notifications turned off in the browser, the app removed), and its row is deleted. Anything else that goes wrong is a line in the log and the device is kept; one device failing never stops the others, and never fails the job that was telling them.
+
+The encryption and the token are written in `niles-webpush` on RustCrypto (`p256`, `hkdf`, `aes-gcm`, `sha2`, the same generation as the `aes-gcm` and `sha2` the workspace already uses), and tested against RFC 8291's own test vector. The crates that do it for you bring OpenSSL, or an older `p256` and `aes-gcm` and a JWT library, for what is two short functions here; the build has no OpenSSL and should not grow one.
+
+### Kept
+
+- **`push_keys`**: one row, this Niles's VAPID private key, **sealed** with the secrets key like the credentials typed into the app. It signs every push, so whoever holds it can notify every device in the house. Made the first time it is needed and never replaced: a new key would orphan every device already subscribed. Two replicas making one at once keep the first.
+- **`push_subscriptions`**: one row per device. `endpoint` (unique), `person` (the same key as the chat: `person:{slug}` or `email:{address}`), `p256dh`, `auth`, `device` (a short name from the User-Agent: "iPhone", "Chrome on Android"), `origin` (the `sub` above), `created_at`, `last_ok_at` (when a push service last took a message for it).
+
+Both are made on first use. **Without a database and its secrets key there is no push**: the routes say so (501), the profile says so, and a job ends without telling anyone but the chat.
+
+### API
+
+- `GET /push/key`: `{key}`, the public key, base64url.
+- `GET /me/push`: the person's devices, newest first: endpoint, device, when added, when last delivered. Never the keys.
+- `POST /me/push`: a subscription, as `PushSubscription.toJSON()` makes it. Refused (422) unless the endpoint is https and the keys encrypt.
+- `DELETE /me/push`: `{endpoint}`. Done whether or not it was there.
+- `POST /me/push/test`: one notification to each of the person's devices, answering `{sent, gone, failed}`.
+
+Each `/me/push` route acts for the person signed in, by the same key as the chat, never for one named in the request.
+
+### In the app
+
+- **My profile → Notifications**: a switch, **On this device**; the person's devices, each with remove; **Send a test**.
+- **On an iPhone or iPad**, only the app added to the Home Screen can be notified (iOS 16.4 and later); Safari in a tab cannot. There the card says how to add it (Share → Add to Home Screen, then open Niles from there) instead of showing a switch that could not work.
+- **Permission denied** is the browser's to undo, so the card says where: Settings → Notifications → Niles on an iPhone, the site's settings by the address bar on a computer.
+- **While a job is being written**, under its card in the chat: **Notify me when it's done**, when this device can be notified and is not yet, and the person has not said no. One tap subscribes. Dismissed, it is not offered on this device again.
+- **The service worker** shows a push with the app's icon and the payload's tag; a tap focuses an open Niles and takes it to the payload's `url`, or opens one there.
+- **The link** is `/#/chat?artifact={id}`: the chat, with the artifact open in Saved. The app reads `?artifact=` off the hash when the chat opens and whenever the hash changes, opens it, and puts the address back to `#/chat`.
+
+### Where it lives
+
+- `niles-webpush`: encryption, VAPID, the subscription model with its checks, the store trait with an in-memory store for tests, and the sender.
+- `niles-db`: the Postgres store.
+- `niles-api`: `/push/key` and `/me/push`.
+- `niles-bin`: the artifacts' notifier, and building it all when there is a database and a secrets key.
+- `web/`: `public/sw.js`, `src/lib/push.ts`, the Notifications card on My profile, and the nudge in the chat.
 
 ## Runtime configuration
 
@@ -2422,8 +2490,9 @@ It still has to exist, for two reasons. Chrome declines to offer
 installation to a page whose worker has no `fetch` handler — so there
 is one, and it is empty, which leaves every request to the network
 exactly as if it were absent. And a push notification can only be
-received by a service worker, which is where a fired timer will reach a
-phone.
+received by a service worker, which is how a finished document reaches a
+phone ([Notifications on your devices](#notifications-on-your-devices)),
+and how a fired timer will.
 
 There is no install button in the page. Every browser already has one,
 Safari's cannot be triggered from script, and a button that guesses at
@@ -3007,6 +3076,7 @@ niles/
 │   ├── niles-automations/      # when-X-do-Y rules, voice-creatable and config-defined
 │   ├── niles-plugins/          # third-party integrations: wasmtime runtime, GitHub install, sandbox
 │   ├── niles-training/         # per-person training data: Strava sync, store, summary
+│   ├── niles-webpush/          # notifications on a person's devices: Web Push encryption, VAPID, sending
 │   ├── niles-api/              # HTTP/WebSocket API
 │   ├── niles-config/           # config loading and validation
 │   └── niles-bin/              # main binary, wiring (produces `niles`)

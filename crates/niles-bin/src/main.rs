@@ -1567,6 +1567,7 @@ fn build_artifacts(
     chat_log: Option<Arc<chat_log::ChatLog>>,
     websearch: Option<Arc<niles_websearch::SearXngClient>>,
     training: Option<Arc<dyn niles_training::TrainingStore>>,
+    push: Option<Arc<niles_webpush::WebPush>>,
 ) -> Option<Arc<artifacts::Artifacts>> {
     let database = cfg.database.as_ref()?;
     let url = database.resolve_url().ok()?;
@@ -1586,7 +1587,10 @@ fn build_artifacts(
         Arc::new(store),
         bus,
         runner,
-        Arc::new(artifacts::Nobody),
+        match push {
+            Some(push) => Arc::new(artifacts::Devices(push)) as Arc<dyn artifacts::Notifier>,
+            None => Arc::new(artifacts::Nobody),
+        },
         chat_log.map(|log| log as Arc<dyn artifacts::Conversations>),
         extras,
     );
@@ -6492,6 +6496,32 @@ fn build_calendars(cfg: &Config) -> Option<Arc<niles_calendar::Calendars>> {
     }
 }
 
+/// Notifications on each person's devices (Web Push), when there is a
+/// database and a secrets key to seal the server's push key with. A
+/// person turning them on in the app is the switch.
+fn build_push(cfg: &Config) -> Option<Arc<niles_webpush::WebPush>> {
+    let database = cfg.database.as_ref()?;
+    let key = std::env::var(&database.secret_key_env).ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    // A push service that does not answer in this long is not going to;
+    // the job that is waiting to say it finished should not wait longer.
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    match niles_db::PostgresPush::new(backend.pool(), backend.describe_target(), &key) {
+        Ok(store) => Some(Arc::new(niles_webpush::WebPush::new(Arc::new(store), http))),
+        Err(e) => {
+            tracing::error!("[push] unavailable: {e}");
+            None
+        }
+    }
+}
+
 /// Each person's Strava and the workouts it brings, when there is a
 /// database and a secrets key to seal their app secrets and tokens
 /// with. A person connecting their own Strava is the switch.
@@ -7300,6 +7330,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let tools = Arc::new(tools);
     let chat_log = build_chat_log(&cfg);
+    let push = build_push(&cfg);
     // Made by the assistant, which runs their jobs: the runner is handed
     // the assistant once it has started serving the tools.
     let artifact_runner = Arc::new(artifacts::AssistantRunner {
@@ -7313,6 +7344,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         chat_log.clone(),
         websearch_client.clone(),
         strava.as_ref().map(|s| s.store().clone()),
+        push.clone(),
     );
     if let Some(artifacts) = &artifacts {
         let artifacts = artifacts.clone();
@@ -7412,6 +7444,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
     .with_strava(strava.clone())
+    .with_push(push.clone())
     .with_artifacts(
         artifacts.as_ref().map(|a| a.store().clone()),
         artifacts

@@ -212,6 +212,14 @@ pub fn router(state: AppState) -> Router {
             post(crate::artifacts::restore),
         )
         .route("/me/artifacts/{id}/retry", post(crate::artifacts::retry))
+        .route("/push/key", get(crate::push::key))
+        .route(
+            "/me/push",
+            get(crate::push::list)
+                .post(crate::push::subscribe)
+                .delete(crate::push::unsubscribe),
+        )
+        .route("/me/push/test", post(crate::push::test))
         .route(
             "/me/strava",
             get(crate::training::status).delete(crate::training::remove),

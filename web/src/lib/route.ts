@@ -10,9 +10,19 @@ import { useSyncExternalStore } from "react";
  * collide with an endpoint, now or when one is added.
  */
 export function routeOf(hash: string): string {
-  const path = hash.replace(/^#/, "");
+  const path = hash.replace(/^#/, "").split("?")[0];
   if (!path.startsWith("/")) return "/";
   return path.length > 1 ? path.replace(/\/+$/, "") : path;
+}
+
+/**
+ * What a link asks of the page it opens, after a `?` in the hash:
+ * `#/chat?artifact=12` is the chat with artifact 12 open. In the hash
+ * for the same reason the page is, and so a notification can carry it.
+ */
+export function hashQuery(hash: string): URLSearchParams {
+  const at = hash.indexOf("?");
+  return new URLSearchParams(at < 0 ? "" : hash.slice(at + 1));
 }
 
 function subscribe(onChange: () => void): () => void {
