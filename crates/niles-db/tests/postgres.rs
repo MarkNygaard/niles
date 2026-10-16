@@ -415,3 +415,107 @@ async fn a_strava_secret_and_tokens_are_kept_sealed() {
     );
     assert!(store.remove_strava(&person).await.expect("remove"));
 }
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
+    use niles_artifacts::{ArtifactStore, Author, NewArtifact, NewRevision, PageChange, Status};
+    let Some(backend) = backend() else {
+        return;
+    };
+    let store = niles_db::PostgresArtifacts::new(backend.pool(), "test".into());
+    let person = format!("person:test-pages-{}", std::process::id());
+    let version = |markdown: &str, page: PageChange| NewRevision {
+        content: serde_json::json!({ "markdown": markdown }),
+        reason: "because".into(),
+        author: Author::Claude,
+        summary: None,
+        page,
+    };
+    let a = store
+        .create(
+            &person,
+            NewArtifact {
+                kind: "document".into(),
+                title: "Plan".into(),
+                summary: String::new(),
+                notify: true,
+                status: Status::Ready,
+                status_text: None,
+                job_id: None,
+                brief: None,
+                conversation_id: None,
+                first: Some(version("# first", PageChange::New("<h1>one</h1>".into()))),
+            },
+        )
+        .await
+        .expect("create");
+    let page = a.page.expect("made with a page");
+    let marked = store
+        .revise(&person, a.id, version("# marked", PageChange::Keep))
+        .await
+        .expect("revise")
+        .expect("theirs");
+    assert_eq!(marked.page, Some(page), "a data change keeps the page");
+    assert_eq!(
+        store
+            .page(&person, a.id, page)
+            .await
+            .expect("page")
+            .as_deref(),
+        Some("<h1>one</h1>")
+    );
+    assert!(
+        store
+            .page("person:someone-else", a.id, page)
+            .await
+            .expect("page")
+            .is_none()
+    );
+
+    let gone = store
+        .set_page(
+            &person,
+            a.id,
+            PageChange::Remove,
+            "No page".into(),
+            Author::Person,
+        )
+        .await
+        .expect("set_page")
+        .expect("theirs");
+    assert_eq!(gone.page, None);
+    let r = store
+        .revision(&person, a.id, gone.current_revision)
+        .await
+        .expect("revision")
+        .expect("kept");
+    assert_eq!(r.content["markdown"], "# marked", "the content as it was");
+    let back = niles_artifacts::restore(&store, &person, a.id, marked.current_revision)
+        .await
+        .expect("restore")
+        .expect("theirs");
+    assert_eq!(back.page, Some(page));
+
+    for i in 0..niles_artifacts::KEPT_REVISIONS {
+        store
+            .set_page(
+                &person,
+                a.id,
+                PageChange::Remove,
+                format!("{i}"),
+                Author::Person,
+            )
+            .await
+            .expect("set_page");
+    }
+    assert!(
+        store
+            .page(&person, a.id, page)
+            .await
+            .expect("page")
+            .is_none(),
+        "no version kept draws with it"
+    );
+    assert!(store.delete(&person, a.id).await.expect("delete"));
+}

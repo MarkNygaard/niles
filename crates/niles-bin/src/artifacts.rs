@@ -9,6 +9,12 @@
 //! the chat goes on.
 //!
 //! A training plan then keeps up with the runs ([`coach`]).
+//!
+//! Any artifact may have a page: HTML the assistant writes once that
+//! draws the data, shown by the app in a sealed frame. Making one is a
+//! job of its own on an artifact that is there already
+//! (`start_page_job`), and never the coach's: a look after a run changes
+//! the data, which the page then draws.
 
 mod coach;
 
@@ -16,8 +22,8 @@ use crate::approvals::{self, Asker};
 use async_trait::async_trait;
 use niles_api::chat::Turn;
 use niles_artifacts::{
-    Artifact, ArtifactRef, ArtifactStore, Author, Filter, NewArtifact, NewRevision, Status,
-    StatusChange, kinds,
+    Artifact, ArtifactRef, ArtifactStore, Author, Filter, NewArtifact, NewRevision, PageChange,
+    Status, StatusChange, kinds, page,
 };
 use niles_core::EventBus;
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
@@ -51,6 +57,9 @@ const TRIP: &str = "trip";
 #[async_trait]
 pub(crate) trait Notifier: Send + Sync {
     async fn finished(&self, artifact: &Artifact);
+
+    /// An artifact's page, made by a job the person asked for, is there.
+    async fn page_ready(&self, _artifact: &Artifact) {}
 
     /// A training plan the coach changed after a run, with the note it
     /// left for the person. Called only when sessions changed, never
@@ -104,6 +113,10 @@ impl Notifier for Devices {
     async fn changed(&self, artifact: &Artifact, note: &str) {
         self.tell(artifact, &changed_message(artifact, note)).await;
     }
+
+    async fn page_ready(&self, artifact: &Artifact) {
+        self.tell(artifact, &page_message(artifact)).await;
+    }
 }
 
 /// The longest title a notification carries; a lock screen shows less.
@@ -121,6 +134,18 @@ pub(crate) fn finished_message(artifact: &Artifact) -> niles_webpush::Message {
     niles_webpush::Message {
         title: "Niles".into(),
         body,
+        url: format!("/#/chat?artifact={}", artifact.id),
+        tag: format!("artifact-{}", artifact.id),
+    }
+}
+
+/// What a finished page job's notification says: under the artifact's
+/// tag, so it replaces what was said about the artifact before.
+pub(crate) fn page_message(artifact: &Artifact) -> niles_webpush::Message {
+    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
+    niles_webpush::Message {
+        title: "Niles".into(),
+        body: format!("The page for your {title} is ready."),
         url: format!("/#/chat?artifact={}", artifact.id),
         tag: format!("artifact-{}", artifact.id),
     }
@@ -265,6 +290,8 @@ pub(crate) struct Artifacts {
     tz: chrono_tz::Tz,
     /// Plans being looked at after a run: one look at a time each.
     reviewing: Arc<Mutex<HashSet<i64>>>,
+    /// Artifacts a page is being made for: one at a time each.
+    paging: Arc<Mutex<HashSet<i64>>>,
     /// Jobs going, per person.
     running: Arc<Mutex<HashMap<String, usize>>>,
     touched: Mutex<Vec<Touch>>,
@@ -278,6 +305,32 @@ pub(crate) struct Artifacts {
 struct Slot {
     running: Arc<Mutex<HashMap<String, usize>>>,
     person: String,
+}
+
+/// An artifact's place among the ones being looked at, or given a page,
+/// given back when that ends however it ends.
+pub(crate) struct Held {
+    ids: Arc<Mutex<HashSet<i64>>>,
+    id: i64,
+}
+
+impl Held {
+    pub(crate) fn claim(ids: &Arc<Mutex<HashSet<i64>>>, id: i64) -> Option<Self> {
+        let mut held = ids.lock().unwrap_or_else(|e| e.into_inner());
+        held.insert(id).then(|| Self {
+            ids: ids.clone(),
+            id,
+        })
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
 }
 
 impl Drop for Slot {
@@ -344,6 +397,7 @@ fn view(a: &Artifact) -> Value {
         "status_text": a.status_text,
         "error": a.error,
         "version": a.current_revision,
+        "page": a.page.is_some(),
         "changed": a.updated_at.to_rfc3339(),
         "preview": a.preview.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>(),
     })
@@ -380,6 +434,7 @@ impl Artifacts {
             training: None,
             tz: chrono_tz::UTC,
             reviewing: Arc::default(),
+            paging: Arc::default(),
             running: Arc::default(),
             touched: Mutex::default(),
             started: chrono::Utc::now(),
@@ -415,14 +470,20 @@ impl Artifacts {
             only: None,
             keep_past: None,
         }));
+        reg.register(Box::new(SetPage {
+            artifacts: self.clone(),
+            only: None,
+        }));
         reg.register(Box::new(StartJob(self.clone())));
+        reg.register(Box::new(StartPage(self.clone())));
         reg
     }
 
     /// What a job's run may use: its person's artifacts to read, its own
     /// to write, and what writing needs: for a training plan, their
     /// workouts. Not the house. A review of a plan saves only what
-    /// leaves the days before `keep_past` as they were.
+    /// leaves the days before `keep_past` as they were, and leaves its
+    /// page alone: it has no way to set one.
     fn job_tools(
         self: &Arc<Self>,
         id: i64,
@@ -437,6 +498,12 @@ impl Artifacts {
             only: Some(id),
             keep_past,
         }));
+        if keep_past.is_none() {
+            reg.register(Box::new(SetPage {
+                artifacts: self.clone(),
+                only: Some(id),
+            }));
+        }
         (self.extras)(&mut reg);
         if let (TRAINING_PLAN, Some(training)) = (kind, &self.training) {
             training(&mut reg);
@@ -688,11 +755,141 @@ impl Artifacts {
         }
         self.announce(&done);
         if let Ok(via) = ended {
-            self.tell_in_chat(&done, via).await;
+            self.say(
+                &done,
+                done.conversation_id,
+                format!("{} is ready.", done.title),
+                Some(via),
+            )
+            .await;
         }
         if done.notify {
             self.notifier.finished(&done).await;
         }
+    }
+
+    /// Start a run making a page for an artifact of `asker`'s that is
+    /// there already. The artifact is not marked working: its data goes
+    /// on being kept up while the page is made (a run marked on a plan,
+    /// a tick), and the page is set over the data as it is when it is
+    /// saved.
+    async fn start_page(
+        self: &Arc<Self>,
+        asker: &Asker,
+        id: i64,
+        brief: String,
+    ) -> std::result::Result<Artifact, String> {
+        if self.runner.available().is_none() {
+            return Err(NO_ASSISTANT.into());
+        }
+        let artifact = self
+            .store
+            .get(&asker.person, id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("there is no artifact {id}"))?;
+        if artifact.status == Status::Working || artifact.current_revision == 0 {
+            return Err(
+                "it is still being written; a page can be made for it once it is there".into(),
+            );
+        }
+        let held = Held::claim(&self.paging, id)
+            .ok_or_else(|| "a page is being made for it already".to_string())?;
+        let slot = self.take_slot(&asker.person).ok_or_else(busy)?;
+        let this = self.clone();
+        let (made, conversation) = (artifact.clone(), asker.conversation);
+        tokio::spawn(async move { this.run_page(made, brief, conversation, slot, held).await });
+        Ok(artifact)
+    }
+
+    async fn run_page(
+        self: Arc<Self>,
+        artifact: Artifact,
+        brief: String,
+        conversation: Option<i64>,
+        _slot: Slot,
+        _held: Held,
+    ) {
+        let person = artifact.person.clone();
+        let asker = Asker {
+            person: person.clone(),
+            slug: person.strip_prefix("person:").map(str::to_string),
+            satellite: None,
+            conversation,
+        };
+        let (system, prompt) = page_prompts(&artifact, &brief);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(Get(self.clone())));
+        tools.register(Box::new(SetPage {
+            artifacts: self.clone(),
+            only: Some(artifact.id),
+        }));
+        let outcome =
+            tokio::time::timeout(JOB_LIMIT, self.runner.run(asker, &system, &prompt, tools))
+                .await
+                .unwrap_or_else(|_| Err("it took longer than half an hour".into()));
+        let ended = match outcome {
+            Ok((via, answer)) => self.keep_page(&artifact, via, &answer).await.map(|()| via),
+            Err(why) => Err(why),
+        };
+        let now = match self.store.get(&person, artifact.id).await {
+            Ok(Some(now)) => now,
+            // Deleted while the page was being made.
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!("[artifacts] page {} lost its artifact: {e}", artifact.id);
+                return;
+            }
+        };
+        let conversation = conversation.or(now.conversation_id);
+        match ended {
+            Ok(via) => {
+                tracing::info!("[artifacts] {person}: {:?} has a new page", now.title);
+                self.announce(&now);
+                let reply = format!("The page for {} is ready.", now.title);
+                self.say(&now, conversation, reply, Some(via)).await;
+                if now.notify {
+                    self.notifier.page_ready(&now).await;
+                }
+            }
+            Err(why) => {
+                tracing::warn!("[artifacts] {person}: no page for {:?}: {why}", now.title);
+                let reply = format!("The page for {} didn't get made: {why}", now.title);
+                self.say(&now, conversation, reply, None).await;
+            }
+        }
+    }
+
+    /// A page run that saved no page may have answered with it; that is
+    /// kept as the page.
+    async fn keep_page(
+        &self,
+        before: &Artifact,
+        via: &'static str,
+        answer: &str,
+    ) -> std::result::Result<(), String> {
+        let now = self
+            .store
+            .get(&before.person, before.id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("it was deleted")?;
+        if now.page != before.page {
+            return Ok(());
+        }
+        let html = page::from_answer(answer).ok_or("it finished without saving a page")?;
+        let html = page::page(&html).map_err(|e| e.to_string())?;
+        self.store
+            .set_page(
+                &before.person,
+                before.id,
+                PageChange::New(html),
+                "A page for it".into(),
+                author(Some(via)),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// A run that saved nothing may still have answered with the
@@ -721,6 +918,7 @@ impl Artifacts {
                     reason: "First draft".into(),
                     author: author(Some(via)),
                     summary: None,
+                    page: niles_artifacts::PageChange::Keep,
                 },
             )
             .await
@@ -728,20 +926,25 @@ impl Artifacts {
         Ok(())
     }
 
-    /// A card in the conversation the job came from, saying it is ready.
-    async fn tell_in_chat(&self, artifact: &Artifact, via: &'static str) {
-        let (Some(conversations), Some(conversation)) =
-            (&self.conversations, artifact.conversation_id)
-        else {
+    /// A card in the conversation a job came from, with what to say
+    /// about it: that it is ready, or why it is not.
+    async fn say(
+        &self,
+        artifact: &Artifact,
+        conversation: Option<i64>,
+        reply: String,
+        by: Option<&'static str>,
+    ) {
+        let (Some(conversations), Some(conversation)) = (&self.conversations, conversation) else {
             return;
         };
         let turn = Turn {
             at: chrono::Utc::now(),
             said: String::new(),
-            reply: format!("{} is ready.", artifact.title),
+            reply,
             via: "app".into(),
             room: None,
-            by: Some(via.to_string()),
+            by: by.map(str::to_string),
             proposal: None,
             approval: None,
             artifacts: vec![ArtifactRef::of(artifact)],
@@ -828,6 +1031,48 @@ const TRAVEL: &str = "Find today's date first, and plan the trip in the brief, n
     travel, the budget), assume what is usual and say in notes what you assumed and what \
     you could not check, so they can ask for it changed.";
 
+/// A job's look is its kind's own view, unless the brief asks for
+/// another.
+const LOOK: &str = "The app shows it with its kind's own view. Only if the brief asks for it \
+    to look a particular way, give it a page as well with artifact_set_page, once the content \
+    is saved.";
+
+/// How a page is made well: for this artifact and its person, drawing
+/// what the data has.
+const DESIGN: &str = "Make it look made for this, and for a phone: a clear order from the \
+    most important down, generous spacing, the app's colours and radius, readable at a \
+    glance. Draw what the data has rather than repeating it as text: a countdown, a week's \
+    kilometres as bars, the route of a trip day by day. Keep everything the kind's own view \
+    shows that matters to the person (for a training plan each session and whether it is \
+    done, for a trip each day, its bookings and the packing list), and keep what the person \
+    ticks there tickable, saved with niles.save. Do what the brief asks above all of this.";
+
+/// A page run's instructions, and what it is to make.
+fn page_prompts(artifact: &Artifact, brief: &str) -> (String, String) {
+    let kind = kinds::kind(&artifact.kind);
+    let label = kind.map_or("document", |k| k.label).to_lowercase();
+    let help = kind.map_or("", |k| k.content_help);
+    let system = format!(
+        "You are making a page for one person's {label} in the household Niles serves, in \
+         the background. Nobody is waiting on you in a chat: take the time to do it well, \
+         and ask nothing, because nobody will answer. Read it first with artifact_get on \
+         artifact {id}, with with_page: true. Then write the page and save it with \
+         artifact_set_page on artifact {id}, with a short reason; if it is refused, the \
+         answer says what to fix, so fix that and save again. Then finish with one short \
+         sentence saying what you made.\n\nThe data it draws is {help}\n\n{}\n\n{DESIGN} \
+         Write any words on the page in the language of the {label}.",
+        page::HELP,
+        id = artifact.id,
+    );
+    let prompt = format!(
+        "Title: {title}\nSummary: {summary}\n\nWhat they asked the page to be, from the \
+         conversation it was asked for in:\n\n{brief}",
+        title = artifact.title,
+        summary = artifact.summary,
+    );
+    (system, prompt)
+}
+
 /// The run's instructions, and what it is to make.
 fn job_prompts(artifact: &Artifact) -> (String, String) {
     let kind = kinds::kind(&artifact.kind);
@@ -838,6 +1083,7 @@ fn job_prompts(artifact: &Artifact) -> (String, String) {
         TRIP => format!("{TRAVEL} {RESEARCH}"),
         _ => RESEARCH.to_string(),
     };
+    let craft = format!("{craft} {LOOK}");
     let system = format!(
         "You are writing a {label} for one person in the household Niles serves, in the \
          background. Nobody is waiting on you in a chat: take the time to do it well, and \
@@ -875,7 +1121,14 @@ pub(crate) const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person w
     never a document: start_artifact_job, whose run researches it. Ask first for the dates and \
     roughly where they want to go if you do not know them; put in the brief who is going, \
     what they have booked already, and what they said about pace, budget and what they \
-    like.";
+    like.\n\nAn artifact can have a page as well: HTML you write once that draws its data, \
+    shown in place of its kind's own view. Only for when the look matters: they ask for it \
+    to look nicer or different, or want something to show. The kind's own view is good \
+    otherwise, so make no page unasked. For a page, call start_page_job with the \
+    artifact's id and a brief of what they want, and answer in one sentence that it is \
+    being made; a small change to a page there is (a colour, a heading) you can make \
+    yourself with artifact_set_page. The page draws the data, so a change to the data \
+    needs no new page.";
 
 struct List(Arc<Artifacts>);
 
@@ -928,11 +1181,15 @@ impl Tool for Get {
         ToolDescriptor {
             name: "artifact_get".into(),
             description: "One of the asking person's saved artifacts, with its whole current \
-                content. Read it before changing it: they may have ticked items since."
+                content. Read it before changing it: they may have ticked items since. page \
+                says whether it has a page; with_page: true gives the page's HTML as well."
                 .into(),
             parameters: json!({
                 "type": "object",
-                "properties": { "id": { "type": "integer" } },
+                "properties": {
+                    "id": { "type": "integer" },
+                    "with_page": { "type": "boolean", "description": "The page's HTML too, as page_html" }
+                },
                 "required": ["id"]
             }),
         }
@@ -958,6 +1215,13 @@ impl Tool for Get {
         };
         let mut out = view(&a);
         out["content"] = content.unwrap_or(Value::Null);
+        if let (Some(true), Some(n)) = (args.get("with_page").and_then(Value::as_bool), a.page) {
+            out["page_html"] = store
+                .page(&asker.person, id, n)
+                .await
+                .map_err(|e| refused(TOOL, e))?
+                .map_or(Value::Null, Value::String);
+        }
         Ok(out)
     }
 }
@@ -1023,6 +1287,7 @@ impl Tool for Create {
                         reason: "First version".into(),
                         author: author(crate::assistant::via()),
                         summary: None,
+                        page: niles_artifacts::PageChange::Keep,
                     }),
                 },
             )
@@ -1107,6 +1372,7 @@ impl Tool for Update {
                     reason,
                     author: author(crate::assistant::via()),
                     summary: str_arg(&args, "summary").map(niles_artifacts::summary),
+                    page: niles_artifacts::PageChange::Keep,
                 },
             )
             .await
@@ -1118,6 +1384,132 @@ impl Tool for Update {
             self.artifacts.announce(&a);
         }
         Ok(view(&a))
+    }
+}
+
+struct SetPage {
+    artifacts: Arc<Artifacts>,
+    /// In a job, the one artifact it may give a page.
+    only: Option<i64>,
+}
+
+#[async_trait]
+impl Tool for SetPage {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "artifact_set_page".into(),
+            description: format!(
+                "Give one of the asking person's artifacts a page, or a new page, or take it \
+                 away (remove: true, back to the kind's own view). The data is kept as it \
+                 is; the page is a new version, so it can be undone. Read the artifact with \
+                 artifact_get first, with with_page: true to change the page it has. reason \
+                 is for the list of versions (\"A page with the route day by day\"). {}",
+                page::HELP
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "html": { "type": "string", "description": "The whole page" },
+                    "remove": { "type": "boolean", "description": "Take the page away instead" },
+                    "reason": { "type": "string" }
+                },
+                "required": ["id", "reason"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        const TOOL: &str = "artifact_set_page";
+        let asker = asker(TOOL)?;
+        let id = id_arg(TOOL, &args)?;
+        if self.only.is_some_and(|only| only != id) {
+            return Err(invalid(
+                TOOL,
+                format!(
+                    "this job makes the page of artifact {}, and only that one",
+                    self.only.unwrap_or(id)
+                ),
+            ));
+        }
+        let remove = args.get("remove").and_then(Value::as_bool).unwrap_or(false);
+        let (change, fallback) = if remove {
+            (PageChange::Remove, "Took the page away")
+        } else {
+            let html = args
+                .get("html")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid(TOOL, "html is the whole page; or remove: true"))?;
+            let html = page::page(html).map_err(|e| refused(TOOL, e))?;
+            (PageChange::New(html), "A new page")
+        };
+        let reason = niles_artifacts::summary(str_arg(&args, "reason").unwrap_or(fallback));
+        let a = self
+            .artifacts
+            .store
+            .set_page(
+                &asker.person,
+                id,
+                change,
+                reason,
+                author(crate::assistant::via()),
+            )
+            .await
+            .map_err(|e| refused(TOOL, e))?
+            .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
+        if self.only.is_none() {
+            self.artifacts.touch(&asker.person, a.id);
+            self.artifacts.announce(&a);
+        }
+        Ok(view(&a))
+    }
+}
+
+struct StartPage(Arc<Artifacts>);
+
+#[async_trait]
+impl Tool for StartPage {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "start_page_job".into(),
+            description: "Make a page for one of the asking person's artifacts, in the \
+                background: when they ask for it to look nicer or different, or for something \
+                to show. A page is HTML that draws the artifact's data, shown in place of its \
+                kind's own view; the data stays as it is. It returns at once; another run of \
+                you makes the page, and the person is told when it is there. brief is what \
+                they want it to look like, in their own words, because that run will not see \
+                this conversation. Then answer in one sentence that the page is being made."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "brief": { "type": "string" }
+                },
+                "required": ["id", "brief"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        const TOOL: &str = "start_page_job";
+        let asker = asker(TOOL)?;
+        let id = id_arg(TOOL, &args)?;
+        let brief = str_arg(&args, "brief")
+            .unwrap_or("Make it look good: clear on a phone, in the app's colours.")
+            .to_string();
+        let a = self
+            .0
+            .start_page(&asker, id, brief)
+            .await
+            .map_err(|why| invalid(TOOL, why))?;
+        self.0.touch(&asker.person, a.id);
+        let mut out = view(&a);
+        out["note"] = json!(
+            "The page is being made now. Tell the person in one sentence; they will be told \
+             when it is there."
+        );
+        Ok(out)
     }
 }
 
@@ -1244,6 +1636,8 @@ mod tests {
         Fails(&'static str),
         /// Waits to be let go, then saves.
         Waits(Arc<Notify>),
+        /// Gives its artifact this page through the job's own tool.
+        Pages(&'static str),
     }
 
     struct FakeRunner {
@@ -1325,17 +1719,35 @@ mod tests {
                     save(&tools, asker, id, "# done").await?;
                     Ok(("claude", "Wrote it.".into()))
                 }
+                Does::Pages(html) => {
+                    approvals::ASKER
+                        .scope(
+                            asker,
+                            tools.execute(&niles_llm::ToolCall {
+                                id: String::new(),
+                                name: "artifact_set_page".into(),
+                                arguments: json!({ "id": id, "html": html, "reason": "A page" }),
+                            }),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(("claude", "Made it.".into()))
+                }
             }
         }
     }
 
     #[derive(Default)]
-    struct Told(Mutex<Vec<(i64, Status)>>);
+    struct Told(Mutex<Vec<(i64, Status)>>, Mutex<Vec<i64>>);
 
     #[async_trait]
     impl Notifier for Told {
         async fn finished(&self, artifact: &Artifact) {
             self.0.lock().unwrap().push((artifact.id, artifact.status));
+        }
+
+        async fn page_ready(&self, artifact: &Artifact) {
+            self.1.lock().unwrap().push(artifact.id);
         }
     }
 
@@ -1836,6 +2248,7 @@ mod tests {
             updated_at: now,
             current_revision: 0,
             preview: Default::default(),
+            page: None,
         }
     }
 
@@ -2008,6 +2421,259 @@ mod tests {
         let long = changed_message(&plan, &"word ".repeat(100));
         assert!(long.body.ends_with('…'), "{}", long.body);
         assert!(long.body.chars().count() < 300);
+    }
+
+    const PAGE: &str =
+        "<ul id=l></ul><script>niles.onData(function(d){l.textContent=d.markdown})</script>";
+
+    #[tokio::test]
+    async fn a_page_is_set_read_back_kept_through_an_update_and_taken_away() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = create(&f, MARK, "Packing list").await;
+        let set = call(
+            &f,
+            asking(MARK, None),
+            "artifact_set_page",
+            json!({ "id": id, "html": PAGE, "reason": "A page with a list" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(set["page"], true);
+        assert_eq!(set["version"], 2);
+        let r = f.store.revision(MARK, id, 2).await.unwrap().unwrap();
+        assert_eq!(r.reason, "A page with a list");
+        assert_eq!(r.content["markdown"], "- [ ] passport\n- [ ] charger");
+
+        let got = call(&f, asking(MARK, None), "artifact_get", json!({ "id": id }))
+            .await
+            .unwrap();
+        assert_eq!(got["page"], true);
+        assert!(got.get("page_html").is_none(), "only when asked for");
+        let got = call(
+            &f,
+            asking(MARK, None),
+            "artifact_get",
+            json!({ "id": id, "with_page": true }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got["page_html"], PAGE);
+
+        let updated = call(
+            &f,
+            asking(MARK, None),
+            "artifact_update",
+            json!({ "id": id, "content": { "markdown": "- [ ] passport" }, "reason": "Shorter" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated["page"], true, "a change to the data keeps the page");
+
+        let removed = call(
+            &f,
+            asking(MARK, None),
+            "artifact_set_page",
+            json!({ "id": id, "remove": true, "reason": "" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(removed["page"], false);
+        let r = f.store.revision(MARK, id, 4).await.unwrap().unwrap();
+        assert_eq!(r.reason, "Took the page away");
+        assert_eq!(r.content["markdown"], "- [ ] passport");
+    }
+
+    #[tokio::test]
+    async fn a_page_from_elsewhere_too_big_or_for_someone_else_is_refused() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = create(&f, MARK, "Packing list").await;
+        let set = |html: String, person: &'static str| {
+            call(
+                &f,
+                asking(person, None),
+                "artifact_set_page",
+                json!({ "id": id, "html": html, "reason": "x" }),
+            )
+        };
+        let e = set(
+            "<script src=\"https://cdn.example/x.js\"></script>".into(),
+            MARK,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("frame blocks"), "{e}");
+        let e = set(format!("<p>{}</p>", "x".repeat(page::MAX_BYTES)), MARK)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("200 KB"), "{e}");
+        assert!(set(PAGE.into(), MAJSE).await.is_err());
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_set_page",
+            json!({ "id": id, "reason": "x" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("remove: true"), "{e}");
+        let still = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!((still.current_revision, still.page), (1, None));
+    }
+
+    #[tokio::test]
+    async fn a_job_may_give_its_own_artifact_a_page_and_only_its_own() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let other = create(&f, MARK, "Packing list").await;
+        let tools = f.artifacts.job_tools(other + 100, "document", None);
+        assert!(tools.has("artifact_set_page"));
+        let e = approvals::ASKER
+            .scope(
+                asking(MARK, None),
+                tools.execute(&niles_llm::ToolCall {
+                    id: String::new(),
+                    name: "artifact_set_page".into(),
+                    arguments: json!({ "id": other, "html": PAGE, "reason": "y" }),
+                }),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("only that one"), "{e}");
+        assert!(!tools.has("start_page_job"));
+    }
+
+    /// Until no page is being made for `id`, or two seconds pass.
+    async fn paged(f: &Fixture, id: i64) {
+        for _ in 0..200 {
+            if !f.artifacts.paging.lock().unwrap().contains(&id) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("a page was still being made for {id}");
+    }
+
+    async fn start_page(f: &Fixture, person: &str, id: i64) -> Result<Value> {
+        call(
+            f,
+            asking(person, Some(9)),
+            "start_page_job",
+            json!({ "id": id, "brief": "A clean list with big boxes" }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_page_job_makes_the_page_and_says_so_in_its_chat() {
+        let f = fixture(FakeRunner::doing(vec![Does::Pages(PAGE)]));
+        let id = create(&f, MARK, "Packing list").await;
+        let out = start_page(&f, MARK, id).await.unwrap();
+        assert_eq!(out["status"], "ready", "the artifact is not marked working");
+        paged(&f, id).await;
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!(a.status, Status::Ready);
+        let html = f.store.page(MARK, id, a.page.unwrap()).await.unwrap();
+        assert_eq!(html.as_deref(), Some(PAGE));
+        let chats = f.chats.0.lock().unwrap();
+        let (_, conversation, turn) = &chats[0];
+        assert_eq!(*conversation, 9);
+        assert_eq!(turn.reply, "The page for Packing list is ready.");
+        assert_eq!(*f.told.1.lock().unwrap(), vec![id]);
+        assert!(
+            f.told.0.lock().unwrap().is_empty(),
+            "not ready all over again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_job_that_answers_with_the_page_keeps_it() {
+        let f = fixture(FakeRunner::doing(vec![Does::Answers(
+            "Here it is:\n```html\n<h1 id=t></h1><script>niles.onData(function(d){})</script>\n```",
+        )]));
+        let id = create(&f, MARK, "Packing list").await;
+        start_page(&f, MARK, id).await.unwrap();
+        paged(&f, id).await;
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        let html = f.store.page(MARK, id, a.page.unwrap()).await.unwrap();
+        assert!(html.unwrap().starts_with("<h1 id=t>"));
+        let r = f
+            .store
+            .revision(MARK, id, a.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.author, Author::Claude);
+    }
+
+    #[tokio::test]
+    async fn a_page_job_that_makes_nothing_says_why_and_changes_nothing() {
+        let f = fixture(FakeRunner::doing(vec![Does::Answers("Done.")]));
+        let id = create(&f, MARK, "Packing list").await;
+        start_page(&f, MARK, id).await.unwrap();
+        paged(&f, id).await;
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!((a.current_revision, a.page), (1, None));
+        let chats = f.chats.0.lock().unwrap();
+        assert!(
+            chats[0].2.reply.contains("didn't get made"),
+            "{}",
+            chats[0].2.reply
+        );
+        assert!(f.told.1.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_page_job_at_a_time_and_none_for_what_is_being_written() {
+        let (writing, paging) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        let f = fixture(FakeRunner::doing(vec![
+            Does::Waits(writing.clone()),
+            Does::Waits(paging.clone()),
+        ]));
+        let job = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
+        let e = start_page(&f, MARK, job).await.unwrap_err().to_string();
+        assert!(e.contains("still being written"), "{e}");
+        writing.notify_one();
+        settled(&f, MARK, job).await;
+
+        let id = create(&f, MARK, "Packing list").await;
+        start_page(&f, MARK, id).await.unwrap();
+        let e = start_page(&f, MARK, id).await.unwrap_err().to_string();
+        assert!(e.contains("being made for it already"), "{e}");
+        let e = start_page(&f, MAJSE, id).await.unwrap_err().to_string();
+        assert!(e.contains("no artifact"), "{e}");
+        paging.notify_one();
+        paged(&f, id).await;
+    }
+
+    #[test]
+    fn a_page_job_is_told_the_page_api_and_the_chat_when_to_make_one() {
+        let (system, prompt) =
+            page_prompts(&working("training_plan"), "Make it look like a race poster");
+        assert!(
+            system.contains("artifact_set_page on artifact 7"),
+            "{system}"
+        );
+        assert!(system.contains("niles.onData"), "{system}");
+        assert!(system.contains("never to contain it"), "{system}");
+        assert!(system.contains("\"weeks\""), "the data's shape: {system}");
+        assert!(prompt.contains("race poster"), "{prompt}");
+        assert!(PROMPT.contains("start_page_job"), "{PROMPT}");
+        assert!(PROMPT.contains("make no page unasked"), "{PROMPT}");
+        let (system, _) = job_prompts(&working("trip"));
+        assert!(system.contains("Only if the brief asks"), "{system}");
+    }
+
+    #[test]
+    fn a_page_s_notification_names_the_artifact_under_its_tag() {
+        let message = page_message(&working("training_plan"));
+        assert_eq!(
+            message.body,
+            "The page for your Half marathon plan is ready."
+        );
+        assert_eq!(message.tag, "artifact-7");
     }
 
     #[tokio::test]

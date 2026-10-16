@@ -709,6 +709,7 @@ mod tests {
                             reason: "First draft".into(),
                             author: Author::Claude,
                             summary: None,
+                            page: niles_artifacts::PageChange::Keep,
                         }),
                     },
                 )

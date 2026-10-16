@@ -12,15 +12,14 @@
 //! nothing that has happened: the save is refused in code when it
 //! tries ([`tracking::keeps_the_past`]), whatever its prompt says.
 
-use super::{Artifacts, JOB_LIMIT, Slot, TRAINING_PLAN};
+use super::{Artifacts, Held, JOB_LIMIT, Slot, TRAINING_PLAN};
 use crate::approvals::Asker;
 use chrono::{Duration, NaiveDate, Utc};
 use niles_artifacts::tracking::{self, Done, Sport, Workout};
 use niles_artifacts::{Artifact, Author, Filter, NewRevision, Status, kinds};
 use niles_training::{Activity, Kind};
 use serde_json::Value;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// A plan is followed until a few days after its race, so the race is
 /// marked too, however late its upload.
@@ -28,32 +27,6 @@ const AFTER_THE_RACE: i64 = 3;
 
 /// How far back the coach is told of the sessions missed.
 const MISSED_FOR: i64 = 14;
-
-/// A plan's place among the ones being looked at, given back when the
-/// look ends however it ends.
-struct Reviewing {
-    plans: Arc<Mutex<HashSet<i64>>>,
-    id: i64,
-}
-
-impl Reviewing {
-    fn claim(plans: &Arc<Mutex<HashSet<i64>>>, id: i64) -> Option<Self> {
-        let mut held = plans.lock().unwrap_or_else(|e| e.into_inner());
-        held.insert(id).then(|| Self {
-            plans: plans.clone(),
-            id,
-        })
-    }
-}
-
-impl Drop for Reviewing {
-    fn drop(&mut self) {
-        self.plans
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
-    }
-}
 
 /// A workout as a plan's session takes it, on the house's day. A walk
 /// is no session: it is how people get about.
@@ -156,6 +129,7 @@ impl Artifacts {
                     reason: niles_artifacts::summary(&tracked.reason()),
                     author: Author::Niles,
                     summary: None,
+                    page: niles_artifacts::PageChange::Keep,
                 },
             )
             .await
@@ -195,7 +169,7 @@ impl Artifacts {
         if self.runner.available().is_none() {
             return false;
         }
-        let Some(reviewing) = Reviewing::claim(&self.reviewing, plan.id) else {
+        let Some(reviewing) = Held::claim(&self.reviewing, plan.id) else {
             return false;
         };
         let Some(slot) = self.take_slot(&plan.person) else {
@@ -217,7 +191,7 @@ impl Artifacts {
         prompt: &str,
         today: NaiveDate,
         _slot: Slot,
-        _reviewing: Reviewing,
+        _reviewing: Held,
     ) {
         let person = plan.person.clone();
         let asker = Asker {
@@ -447,6 +421,7 @@ mod tests {
     use niles_tools::ToolRegistry;
     use serde_json::json;
     use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     const MAJSE: &str = "person:majse";
     const TZ: chrono_tz::Tz = chrono_tz::Europe::Copenhagen;
@@ -628,6 +603,7 @@ mod tests {
                         reason: "First draft".into(),
                         author: Author::Claude,
                         summary: None,
+                        page: niles_artifacts::PageChange::Keep,
                     }),
                 },
             )
@@ -855,6 +831,43 @@ mod tests {
         let (v, _, _) = content(&f, 3).await;
         assert_eq!(v["updates"][0]["note"], "Lovely pace.");
         assert!(f.told.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_runs_and_the_coach_change_the_data_and_the_page_stays() {
+        let f = fixture(FakeCoach::doing(vec![Does::Saves(|p| {
+            p["weeks"][1]["sessions"][0]["distance_km"] = json!(4);
+            p["updates"] = json!([{ "date": "2026-10-13", "note": "A little less next week." }]);
+        })]));
+        let plan = made(&f, TRAINING_PLAN, plan()).await;
+        let paged = f
+            .store
+            .set_page(
+                MAJSE,
+                plan.id,
+                niles_artifacts::PageChange::New("<h1 id=t></h1>".into()),
+                "A page for it".into(),
+                Author::Claude,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !f.artifacts
+                .job_tools(plan.id, TRAINING_PLAN, Some(day("2026-10-13")))
+                .has("artifact_set_page"),
+            "the coach has no way to touch the page"
+        );
+        f.artifacts
+            .follow(MAJSE, &[tuesday_run()], day("2026-10-13"))
+            .await;
+        looked(&f, 1).await;
+        let now = f.store.get(MAJSE, plan.id).await.unwrap().unwrap();
+        assert_eq!(now.current_revision, 4, "Niles's version, then the coach's");
+        assert_eq!(now.page, paged.page);
+        let (v, author, _) = content(&f, 4).await;
+        assert_eq!(author, Author::Claude);
+        assert_eq!(v["weeks"][1]["sessions"][0]["distance_km"], 4.0);
     }
 
     #[tokio::test]

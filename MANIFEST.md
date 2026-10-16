@@ -25,6 +25,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-plugin-log-image` | GET /plugins/{id}/log for a plugin's last lines, and /plugins/{id}/image for its pages' pictures, fetched by Niles | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `api-training-today` | GET /me/training/today: the signed-in person's training plan read for today, or plan null without one | [#438](https://github.com/MarkNygaard/niles/pull/438) |
+| `api-artifact-pages` | An artifact's page_html and the house's today on GET /me/artifacts/{id}; PATCH remove_page; each version with its page | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
@@ -59,6 +60,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
+| `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `artifacts-trip` | A trip planned in the background: days, places, stays and bookings, a countdown, and a packing list to tick | [#434](https://github.com/MarkNygaard/niles/pull/434) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
@@ -88,6 +90,12 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - make a travel plan for our Thailand trip
 - add sunscreen to my packing list
 
+### `artifacts-pages` — example phrasings
+
+- make my trip plan look nicer
+- make a page for my training plan
+- make the packing list into a poster
+
 ### `artifacts-trip` — example phrasings
 
 - plan our trip to Thailand from 3 to 23 January
@@ -107,6 +115,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-key-made` | Niles makes its own API key on a start with a database, and a new one works at once with no restart | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `ui-artifact-page-frame` | An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `ui-training-plan-sessions` | Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan | [#436](https://github.com/MarkNygaard/niles/pull/436) |

@@ -98,6 +98,9 @@ pub struct Artifact {
     /// The first lines of the version shown, kept with the row so a
     /// list needs no content.
     pub preview: Preview,
+    /// The page the version shown is drawn with, by its id; `None` for
+    /// the kind's own view.
+    pub page: Option<i64>,
 }
 
 /// One version of an artifact's content.
@@ -105,6 +108,8 @@ pub struct Artifact {
 pub struct Revision {
     pub n: i32,
     pub content: Value,
+    /// The page it was drawn with then, by its id.
+    pub page: Option<i64>,
     pub reason: String,
     pub author: Author,
     pub at: DateTime<Utc>,
@@ -114,6 +119,7 @@ pub struct Revision {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RevisionMeta {
     pub n: i32,
+    pub page: Option<i64>,
     pub reason: String,
     pub author: Author,
     pub at: DateTime<Utc>,
@@ -123,6 +129,7 @@ impl From<&Revision> for RevisionMeta {
     fn from(r: &Revision) -> Self {
         Self {
             n: r.n,
+            page: r.page,
             reason: r.reason.clone(),
             author: r.author,
             at: r.at,
@@ -153,6 +160,26 @@ pub struct NewRevision {
     pub author: Author,
     /// A new summary to go with it, if it changes.
     pub summary: Option<String>,
+    /// What becomes of the page. Every change to the data keeps it.
+    pub page: PageChange,
+}
+
+/// What a new version does with the artifact's page. A page is kept
+/// once, however many versions draw with it: Niles marks a run on a
+/// plan many times a month, and a copy of a 200 KB page in each would
+/// be most of what is kept.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum PageChange {
+    /// The page the current version has, if any.
+    #[default]
+    Keep,
+    /// A new page, already checked by [`crate::page::page`].
+    New(String),
+    /// A page of this artifact's that is kept already: a restored
+    /// version's.
+    Use(i64),
+    /// None: the kind's own view.
+    Remove,
 }
 
 /// What the app changes about an artifact other than its content. Each
@@ -317,6 +344,7 @@ mod tests {
             updated_at: now,
             current_revision: 1,
             preview: Preview::default(),
+            page: None,
         };
         let v = serde_json::to_value(&a).unwrap();
         assert!(v.get("person").is_none());

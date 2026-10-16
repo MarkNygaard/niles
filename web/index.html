@@ -2,6 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Only frame-src, and on purpose: an artifact's page runs in a
+      sandboxed srcdoc frame (components/SandboxedPage.tsx), which has
+      no network of its own but could still send itself, and what it
+      knows, to an address by navigating. A child frame's navigations
+      are held to this page's frame-src, so it goes nowhere. A srcdoc
+      frame inherits this policy too, which is why nothing here may
+      restrict scripts: the frame's runtime and the page are inline.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src 'none'" />
     <!-- viewport-fit=cover: installed on iOS the page owns the whole
          screen, including behind the status bar and home indicator, and
          globals.css keeps clear of both with safe-area insets.

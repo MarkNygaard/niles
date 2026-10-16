@@ -1,11 +1,12 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::kinds::Preview;
 use crate::model::{
-    Artifact, Author, Changes, Filter, NewArtifact, NewRevision, Revision, RevisionMeta, Status,
-    StatusChange,
+    Artifact, Author, Changes, Filter, NewArtifact, NewRevision, PageChange, Revision,
+    RevisionMeta, Status, StatusChange,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -32,6 +33,22 @@ pub trait ArtifactStore: Send + Sync {
         id: i64,
         revision: NewRevision,
     ) -> Result<Option<Artifact>>;
+    /// A new version with the content as it is now and `page` for its
+    /// page. As it is when this is kept, not when the page was begun: a
+    /// run Niles marked on a plan while its page was being written stays
+    /// marked. An error for an artifact with nothing written yet, which
+    /// has nothing to draw.
+    async fn set_page(
+        &self,
+        person: &str,
+        id: i64,
+        page: PageChange,
+        reason: String,
+        author: Author,
+    ) -> Result<Option<Artifact>>;
+    /// The HTML of page `page` of an artifact of theirs, while a version
+    /// they still have draws with it.
+    async fn page(&self, person: &str, id: i64, page: i64) -> Result<Option<String>>;
     async fn change(&self, person: &str, id: i64, changes: Changes) -> Result<Option<Artifact>>;
     async fn set_status(
         &self,
@@ -51,7 +68,9 @@ pub trait ArtifactStore: Send + Sync {
 }
 
 /// Version `n` of an artifact saved again as a new version, by the
-/// person. `None` when there is no such artifact or version of theirs.
+/// person, with the page it had then: undoing a new page is restoring
+/// the version before it. `None` when there is no such artifact or
+/// version of theirs.
 pub async fn restore(
     store: &dyn ArtifactStore,
     person: &str,
@@ -70,6 +89,7 @@ pub async fn restore(
                 reason: format!("Restored version {n}"),
                 author: Author::Person,
                 summary: None,
+                page: old.page.map_or(PageChange::Remove, PageChange::Use),
             },
         )
         .await
@@ -86,6 +106,9 @@ struct Inner {
     next: i64,
     artifacts: Vec<Artifact>,
     revisions: HashMap<i64, Vec<Revision>>,
+    next_page: i64,
+    /// Each page by its id, with the artifact it is of.
+    pages: HashMap<i64, (i64, String)>,
 }
 
 impl Inner {
@@ -95,19 +118,83 @@ impl Inner {
             .find(|a| a.id == id && a.person == person)
     }
 
-    fn push_revision(&mut self, id: i64, revision: &NewRevision) -> i32 {
+    /// The page a new version of artifact `id` draws with, when the
+    /// current one draws with `current`.
+    fn page_for(
+        &mut self,
+        id: i64,
+        current: Option<i64>,
+        change: &PageChange,
+    ) -> Result<Option<i64>> {
+        match change {
+            PageChange::Keep => Ok(current),
+            PageChange::Remove => Ok(None),
+            PageChange::New(html) => {
+                self.next_page += 1;
+                self.pages.insert(self.next_page, (id, html.clone()));
+                Ok(Some(self.next_page))
+            }
+            PageChange::Use(page) => match self.pages.get(page) {
+                Some((of, _)) if *of == id => Ok(Some(*page)),
+                _ => Err(Error::Invalid {
+                    kind: "page",
+                    reason: format!("page {page} is not one this artifact keeps"),
+                }),
+            },
+        }
+    }
+
+    /// A new version, numbered after the newest; the oldest past the
+    /// limit goes, and with it any page no version draws with now.
+    fn push_revision(
+        &mut self,
+        id: i64,
+        content: Value,
+        page: Option<i64>,
+        reason: &str,
+        author: Author,
+    ) -> i32 {
         let kept = self.revisions.entry(id).or_default();
         let n = kept.last().map_or(1, |r| r.n + 1);
         kept.push(Revision {
             n,
-            content: revision.content.clone(),
-            reason: revision.reason.clone(),
-            author: revision.author,
+            content,
+            page,
+            reason: reason.to_string(),
+            author,
             at: Utc::now(),
         });
         let excess = kept.len().saturating_sub(KEPT_REVISIONS);
         kept.drain(..excess);
+        let drawn: Vec<i64> = kept.iter().filter_map(|r| r.page).collect();
+        self.pages
+            .retain(|p, (of, _)| *of != id || drawn.contains(p));
         n
+    }
+
+    /// `content` kept as the new current version of artifact `id`.
+    fn keep(
+        &mut self,
+        person: &str,
+        id: i64,
+        content: Value,
+        change: &PageChange,
+        reason: &str,
+        author: Author,
+    ) -> Result<Option<Artifact>> {
+        let Some(current) = self.find(person, id).map(|a| a.page) else {
+            return Ok(None);
+        };
+        let page = self.page_for(id, current, change)?;
+        let preview =
+            crate::kinds::preview(&self.find(person, id).expect("found above").kind, &content);
+        let n = self.push_revision(id, content, page, reason, author);
+        let artifact = self.find(person, id).expect("found above");
+        artifact.current_revision = n;
+        artifact.page = page;
+        artifact.preview = preview;
+        artifact.updated_at = Utc::now();
+        Ok(Some(artifact.clone()))
     }
 }
 
@@ -146,16 +233,30 @@ impl ArtifactStore for MemoryArtifacts {
             updated_at: now,
             current_revision: 0,
             preview: Preview::default(),
+            page: None,
         };
-        if let Some(first) = &new.first {
-            artifact.current_revision = inner.push_revision(artifact.id, first);
-            artifact.preview = crate::kinds::preview(&artifact.kind, &first.content);
-            if let Some(summary) = &first.summary {
-                artifact.summary = summary.clone();
-            }
+        let id = artifact.id;
+        if let Some(summary) = new.first.as_ref().and_then(|f| f.summary.clone()) {
+            artifact.summary = summary;
         }
         inner.artifacts.push(artifact.clone());
-        Ok(artifact)
+        let Some(first) = new.first else {
+            return Ok(artifact);
+        };
+        match inner.keep(
+            person,
+            id,
+            first.content,
+            &first.page,
+            &first.reason,
+            first.author,
+        ) {
+            Ok(made) => Ok(made.expect("just made")),
+            Err(e) => {
+                inner.artifacts.retain(|a| a.id != id);
+                Err(e)
+            }
+        }
     }
 
     async fn list(&self, person: &str, filter: Filter) -> Result<Vec<Artifact>> {
@@ -210,18 +311,55 @@ impl ArtifactStore for MemoryArtifacts {
         revision: NewRevision,
     ) -> Result<Option<Artifact>> {
         let mut inner = self.lock();
+        let Some(mut artifact) = inner.keep(
+            person,
+            id,
+            revision.content,
+            &revision.page,
+            &revision.reason,
+            revision.author,
+        )?
+        else {
+            return Ok(None);
+        };
+        if let Some(summary) = revision.summary {
+            artifact.summary = summary.clone();
+            inner.find(person, id).expect("kept above").summary = summary;
+        }
+        Ok(Some(artifact))
+    }
+
+    async fn set_page(
+        &self,
+        person: &str,
+        id: i64,
+        page: PageChange,
+        reason: String,
+        author: Author,
+    ) -> Result<Option<Artifact>> {
+        let mut inner = self.lock();
+        let Some(n) = inner.find(person, id).map(|a| a.current_revision) else {
+            return Ok(None);
+        };
+        let content = inner
+            .revisions
+            .get(&id)
+            .and_then(|r| r.iter().find(|r| r.n == n))
+            .map(|r| r.content.clone())
+            .ok_or_else(crate::page::nothing_to_draw)?;
+        inner.keep(person, id, content, &page, &reason, author)
+    }
+
+    async fn page(&self, person: &str, id: i64, page: i64) -> Result<Option<String>> {
+        let mut inner = self.lock();
         if inner.find(person, id).is_none() {
             return Ok(None);
         }
-        let n = inner.push_revision(id, &revision);
-        let artifact = inner.find(person, id).expect("found above");
-        artifact.current_revision = n;
-        artifact.preview = crate::kinds::preview(&artifact.kind, &revision.content);
-        artifact.updated_at = Utc::now();
-        if let Some(summary) = revision.summary {
-            artifact.summary = summary;
-        }
-        Ok(Some(artifact.clone()))
+        Ok(inner
+            .pages
+            .get(&page)
+            .filter(|(of, _)| *of == id)
+            .map(|(_, html)| html.clone()))
     }
 
     async fn change(&self, person: &str, id: i64, changes: Changes) -> Result<Option<Artifact>> {
@@ -281,6 +419,7 @@ impl ArtifactStore for MemoryArtifacts {
         let gone = inner.artifacts.len() != before;
         if gone {
             inner.revisions.remove(&id);
+            inner.pages.retain(|_, (of, _)| *of != id);
         }
         Ok(gone)
     }
@@ -329,6 +468,7 @@ mod tests {
             reason: "because".into(),
             author,
             summary: None,
+            page: PageChange::Keep,
         }
     }
 
@@ -520,6 +660,227 @@ mod tests {
         assert_eq!(a.error.as_deref(), Some("Niles restarted"));
         let later = store.get("person:mark", later.id).await.unwrap().unwrap();
         assert_eq!(later.status, Status::Working);
+    }
+
+    async fn with_page(store: &MemoryArtifacts, html: &str) -> Artifact {
+        let a = store.create("person:mark", document("Plan")).await.unwrap();
+        store
+            .set_page(
+                "person:mark",
+                a.id,
+                PageChange::New(html.into()),
+                "A page for it".into(),
+                Author::Claude,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_page_is_a_version_drawing_the_same_content() {
+        let store = MemoryArtifacts::new();
+        let a = with_page(&store, "<h1>Plan</h1>").await;
+        assert_eq!(a.current_revision, 2);
+        let page = a.page.expect("a page");
+        let r = store
+            .revision("person:mark", a.id, 2)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.content["markdown"], "# first");
+        assert_eq!(r.page, Some(page));
+        assert_eq!(r.reason, "A page for it");
+        assert_eq!(
+            store
+                .page("person:mark", a.id, page)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("<h1>Plan</h1>")
+        );
+        let first = store
+            .revision("person:mark", a.id, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.page, None, "the version before it had none");
+    }
+
+    #[tokio::test]
+    async fn changing_the_data_keeps_the_page_without_copying_it() {
+        let store = MemoryArtifacts::new();
+        let a = with_page(&store, "<h1>Plan</h1>").await;
+        for i in 0..5 {
+            let kept = store
+                .revise(
+                    "person:mark",
+                    a.id,
+                    version(&format!("v{i}"), Author::Niles),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(kept.page, a.page);
+        }
+        assert_eq!(
+            store.lock().pages.len(),
+            1,
+            "one page, however many versions"
+        );
+        let now = store.get("person:mark", a.id).await.unwrap().unwrap();
+        assert_eq!(now.page, a.page);
+        assert_eq!(now.preview.lines[0].text, "v4");
+    }
+
+    #[tokio::test]
+    async fn a_page_is_set_over_the_content_as_it_is_when_kept() {
+        let store = MemoryArtifacts::new();
+        let a = store.create("person:mark", document("Plan")).await.unwrap();
+        // A run marked while the page was being written.
+        store
+            .revise("person:mark", a.id, version("marked", Author::Niles))
+            .await
+            .unwrap();
+        let paged = store
+            .set_page(
+                "person:mark",
+                a.id,
+                PageChange::New("<p>x</p>".into()),
+                "Page".into(),
+                Author::Claude,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let r = store
+            .revision("person:mark", a.id, paged.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.content["markdown"], "marked");
+    }
+
+    #[tokio::test]
+    async fn removing_the_page_and_restoring_brings_it_back() {
+        let store = MemoryArtifacts::new();
+        let a = with_page(&store, "<h1>Plan</h1>").await;
+        let gone = store
+            .set_page(
+                "person:mark",
+                a.id,
+                PageChange::Remove,
+                "Took the page away".into(),
+                Author::Person,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(gone.page, None);
+        let back = restore(&store, "person:mark", a.id, a.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.page, a.page);
+        let before = restore(&store, "person:mark", a.id, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.page, None, "the first version had none");
+    }
+
+    #[tokio::test]
+    async fn a_page_goes_once_no_kept_version_draws_with_it() {
+        let store = MemoryArtifacts::new();
+        let a = with_page(&store, "<h1>old</h1>").await;
+        let old = a.page.unwrap();
+        let new = store
+            .set_page(
+                "person:mark",
+                a.id,
+                PageChange::New("<h1>new</h1>".into()),
+                "A new page".into(),
+                Author::Claude,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        for i in 0..KEPT_REVISIONS {
+            store
+                .revise(
+                    "person:mark",
+                    a.id,
+                    version(&format!("v{i}"), Author::Niles),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(
+            store
+                .page("person:mark", a.id, old)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let kept = new.page.unwrap();
+        assert!(
+            store
+                .page("person:mark", a.id, kept)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(store.lock().pages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_needs_something_written_and_is_never_another_persons() {
+        let store = MemoryArtifacts::new();
+        let mut job = document("Being written");
+        job.first = None;
+        let empty = store.create("person:mark", job).await.unwrap();
+        let e = store
+            .set_page(
+                "person:mark",
+                empty.id,
+                PageChange::New("<p>x</p>".into()),
+                "Page".into(),
+                Author::Claude,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("nothing is written"), "{e}");
+
+        let a = with_page(&store, "<h1>his</h1>").await;
+        let page = a.page.unwrap();
+        let her = "person:majse";
+        assert!(store.page(her, a.id, page).await.unwrap().is_none());
+        assert!(
+            store
+                .set_page(her, a.id, PageChange::Remove, "x".into(), Author::Person)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // A page id of another artifact is not this one's to use.
+        let other = store
+            .create("person:mark", document("Other"))
+            .await
+            .unwrap();
+        let e = store
+            .revise(
+                "person:mark",
+                other.id,
+                NewRevision {
+                    page: PageChange::Use(page),
+                    ..version("x", Author::Person)
+                },
+            )
+            .await;
+        assert!(e.is_err());
+        assert!(store.delete("person:mark", a.id).await.unwrap());
+        assert!(store.lock().pages.is_empty(), "deleting takes its pages");
     }
 
     #[tokio::test]
