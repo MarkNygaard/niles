@@ -58,6 +58,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
+| `artifacts-trip` | A trip planned in the background: days, places, stays and bookings, a countdown, and a packing list to tick | [#434](https://github.com/MarkNygaard/niles/pull/434) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
@@ -84,6 +85,12 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - write a packing list for the cabin
 - make a travel plan for our Thailand trip
 - add sunscreen to my packing list
+
+### `artifacts-trip` — example phrasings
+
+- plan our trip to Thailand from 3 to 23 January
+- make an itinerary for two weeks in Japan
+- add a day in Chiang Mai to our Thailand trip
 
 ### `artifacts-training-plan` — example phrasings
 

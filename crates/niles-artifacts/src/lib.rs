@@ -6,7 +6,7 @@
 //! `niles-training`), and every version of its content is kept, up to
 //! [`KEPT_REVISIONS`]. What the content looks like is its kind's
 //! business ([`kinds`]): a document is markdown, a training plan
-//! weeks of dated sessions.
+//! weeks of dated sessions, a trip its days and places.
 
 mod document;
 mod error;
@@ -14,6 +14,7 @@ pub mod kinds;
 mod model;
 mod store;
 mod training_plan;
+mod trip;
 
 pub use error::{Error, Result};
 pub use kinds::{Kind, Preview, PreviewLine, Style};

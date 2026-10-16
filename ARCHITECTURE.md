@@ -2127,7 +2127,7 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
 1. **Artifacts in general, with documents** (2a, built): the model, versions, the Saved tab, chat cards, background jobs. One kind, `document`, which is enough for a travel plan or a packing list from the first day.
 2. **`training_plan`** (2b, built): the Training section's plan, as a kind with its own view.
 3. **The plan kept up to date** (2c): after each run arrives from Strava, Niles marks the session it was done (with the activity and what was run) or the ones it passed missed, and answers "what's my run today?". No new schema: every session has its status, `activity` and `actual` from 2b.
-4. **`trip`** (2d): a travel plan with days, places and bookings, as a kind with its own view.
+4. **`trip`** (2d, built): a travel plan with days, places and bookings, as a kind with its own view.
 
 ### The model
 
@@ -2180,6 +2180,45 @@ A kind is a row in a small registry, in `niles-artifacts` and its twin in the ap
 - **Preview:** the race, its day and the number of weeks ("Copenhagen Half · Sun 13 Dec · 8 weeks"), then the next three sessions still planned, rest days left out ("Tue 20 Oct · Easy run · 6 km"). By status rather than by today's date, because the preview is kept with the version: once 2c marks sessions as they are run, each new version's preview moves on with them.
 - **The view**: the race, its day, distance and target, and a countdown ("8 weeks to go", "10 days to go", "Tomorrow", "Race day"). Then the weeks, each with its days, focus and distance (run of planned, "12 / 32 km", for this week and those before). This week is open, with today marked; the others are folded and open on a tap. Each session: its day, title, type (a colour down its side), distance, time and pace, its details, and done (with what was run) or missed. The notes, as markdown, at the end. It is read only: a plan changes by asking for it. **Copy** gives it as text, week by week.
 
+**`trip`** is a travel plan, day by day, as JSON:
+
+```json
+{
+  "destination": "Thailand",
+  "start": "2027-01-03", "end": "2027-01-23",
+  "travellers": ["Mark", "Majse"],
+  "days": [
+    { "date": "2027-01-03", "place": "Bangkok", "title": "Arrive", "items": [
+      { "time": "07:05", "type": "travel", "title": "Land at BKK", "booked": true },
+      { "time": "19:30", "type": "food", "title": "Dinner at Jay Fai", "location": "327 Maha Chai Rd, Bangkok",
+        "link": "https://www.jayfai.com/", "details": "Queue early. Cash only.",
+        "cost": { "amount": 1500, "currency": "THB" } }
+    ]}
+  ],
+  "stays": [
+    { "name": "Riva Surya", "place": "Bangkok", "check_in": "2027-01-03", "check_out": "2027-01-06",
+      "link": "https://www.rivasurya.com/", "booked": true, "confirmation": "AB123" }
+  ],
+  "packing": [ { "item": "Sunscreen", "group": "Toiletries", "packed": false } ],
+  "budget": { "currency": "THB", "notes": "About 3,000 a day for two." },
+  "notes": "Assumed you fly in to Bangkok and out of Krabi."
+}
+```
+
+- **Why JSON and not markdown.** The app reads it as well as the person: it counts down to the first day, opens today's day while the trip is on, links each place to a map, and keeps the packing list as boxes to tick. That needs a day with a date and a place, and a booking marked as one rather than said in a sentence.
+- **Validated** on every write, as strictly as a training plan and for the same reason, each error naming where it is ("day 4 (2027-01-06), item 2 (08:00) comes before the timed item above it").
+  - **Unknown fields are refused** by name, with the ones there are. `null` is as good as left out.
+  - **The trip**: `destination` (one line, at most 80 characters), `start` and `end` (YYYY-MM-DD, the end not before the start, at most 366 days), `travellers` (at most 12 names, one line each).
+  - **Days**: 1 to 366, each inside the trip, in order of date, one per date (not every date needs one). `place` is the city or area it is spent in ("Bangkok → Chiang Mai" on a day of travel), `title` optional; both one line.
+  - **Items**: at most 30 a day. `type` is `travel`, `stay`, `activity`, `food` or `note`; `title` one line. `time` is `HH:MM` ("9:30" is kept as "09:30"), and a day's timed items are in order (untimed ones can sit anywhere). `details` at most 1,000 characters of plain text; `location` one line of at most 200, a name or an address; `link` an `https://` address with a named host (no `http:`, `javascript:` or `data:`, no login in front of the host, no bare IP or `localhost`), kept as the URL parser writes it; `booked` true or false, kept only when true; `cost` is `{amount, currency}`, the amount 0 or more, the currency three letters as ISO 4217 has them, upper-cased.
+  - **Stays**: at most 60, in the order they begin, each inside the trip and checking out after it checks in: `name`, `place`, `check_in`, `check_out`, and optionally `link`, `booked` and `confirmation` (one line).
+  - **Packing**: at most 300 items, each `item` (one line), optional `group`, and `packed` (written as false when left out). The same item twice in one group, whatever its case, is refused.
+  - **Budget**: `currency`, and `notes` of at most 2,000 characters. **Notes**: at most 10,000 characters of markdown. The whole trip at most 400,000 characters as JSON.
+  - A job that answers with the trip instead of saving it is read out of its answer, code fence and all.
+- **Preview:** the destination, its dates and its length ("Thailand · 3–23 Jan · 21 days"), then the route from the first day, a line for each run of days in one place ("3–5 Jan · Bangkok"), three at most. From the start rather than from today, because the preview is kept with the version: unlike a training plan's sessions, nothing on a trip is marked off as the days pass, so a "next few days" would be the ones of the day it was saved.
+- **The view**: the destination, its dates, length and travellers, and a countdown ("In 11 weeks", "In 9 days", "Tomorrow", "Day 4 of 21", "Done"). Then the stays, each with its place, dates, nights, booked and reference. Then the days, each with its weekday and date, place and title: while the trip is on, today's is open and marked (or the last before it, on a day with nothing planned); before it, the first; after it, none. Each item: its time, an icon for its type, its title (a link out when it has one), booked, its details, its location as a link to a map search (`https://www.google.com/maps/search/?api=1&query=…`, which a phone opens in its maps app), and its cost, "≈" in front unless booked. The packing list, by group, with how much is packed; the budget, with what the listed costs add up to per currency; the notes, as markdown. **Copy** gives it as text, day by day.
+- **Ticking the packing list** is the one change made in the view, saved as a version by `person` like a document's checklist, but **a run of ticks is one version**: the ticks show at once, and are saved together 1.5 seconds after the last ("Packed 6 things", "Packing list: 3 packed, 1 unpacked"), or at once when the view closes, the app is hidden, or an older version is opened over it. Packing for a trip is thirty ticks in a few minutes, and a version each would push everything Claude wrote out of the last 50. A tick taken back before it is saved saves nothing.
+
 ### The assistant's tools
 
 Offered only to Claude and ChatGPT, over the same MCP server as the rest of Niles's tools but from a registry of their own, so the fast model never has them and they need no relevance group. Each acts for **the person asking**: the voice that was recognised, or the person signed in to the app. Never a person named in an argument. An unrecognised voice has no artifacts, and is told so.
@@ -2196,9 +2235,9 @@ Each validates the content for its kind before anything is kept, and answers the
 
 A travel plan for two weeks in Thailand takes the assistant minutes, and nobody should watch a chat bubble for that long. So a big request is answered at once ("I'm putting it together; you'll find it under Saved"), and the work goes on as a background run.
 
-- **The assistant decides**, by calling `start_artifact_job` in the turn. A training plan is always a job, and the turn's instructions say so: kind `training_plan`, never a document, after asking for the race and its date if they are not known. A heuristic in Niles (a word count, "plan", "list") would guess wrong both ways: "a list of three things to buy" is quick, "think through what we need for the cabin" is not. The model about to do the work knows best how big it is. Its tool description says when: anything that needs research, several sections, or more than a minute of writing.
+- **The assistant decides**, by calling `start_artifact_job` in the turn. A training plan is always a job, and the turn's instructions say so: kind `training_plan`, never a document, after asking for the race and its date if they are not known. A travel plan or itinerary likewise: kind `trip`, after asking for the dates and roughly where if they are not known, with who is going, what is booked already and what they said about pace and budget put in the brief. A heuristic in Niles (a word count, "plan", "list") would guess wrong both ways: "a list of three things to buy" is quick, "think through what we need for the cabin" is not. The model about to do the work knows best how big it is. Its tool description says when: anything that needs research, several sections, or more than a minute of writing.
 - **First the artifact**, with `status: working`, the `status_text`, a `job_id` and the brief. The reply then says where it will be.
-- **Then the run**: the same assistant, in the background (the strongest model and the long timeout the review uses), with only what writing needs: `artifact_get` and `artifact_update` for this person, the web search and page reader when there are, and the date. For a training plan, also `training_activities` and `training_summary`, read only and for this person, and instructions to build from their recent running: the first week near their weekly distance now, growing by about 10% a week at most, an easier week every third or fourth, the long run growing toward the race, a taper, paces from their runs and the target, and what it assumed (race day, days to run) said in the notes. Not the house: a job cannot turn on a light. If it finishes without saving a version, its final answer is taken as the document.
+- **Then the run**: the same assistant, in the background (the strongest model and the long timeout the review uses), with only what writing needs: `artifact_get` and `artifact_update` for this person, the web search and page reader when there are, and the date. For a trip, instructions to plan the trip in the brief: one or two things that matter in a day, the travel between places as it really is (what runs there, how long door to door), nothing marked booked unless the brief says it is, official links before a booking site's or a blog's, prices as estimates in the local currency, a packing list for the place and the season, and what it assumed said in the notes; and to check facts with the web search as a document does. For a training plan, also `training_activities` and `training_summary`, read only and for this person, and instructions to build from their recent running: the first week near their weekly distance now, growing by about 10% a week at most, an easier week every third or fourth, the long run growing toward the race, a taper, paces from their runs and the target, and what it assumed (race day, days to run) said in the notes. Not the house: a job cannot turn on a light. If it finishes without saving a version, its final answer is taken as the document.
 - **Finished**: `ready`, with the new version; a card in the conversation it came from ("Thailand travel plan is ready.") with the artifact under it; and the notifier (below) when the artifact's `notify` is on.
 - **Failed**: `failed`, with the reason. The Saved tab shows it, and **Try again** runs the same brief again on the same artifact. A restart fails every job that was running, saying so: the run was in the old pod.
 - **Limits**: two jobs at a time per person; a third is refused with that reason, which the assistant passes on. Each is held to the background runs' timeout, and to half an hour in all.
