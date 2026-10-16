@@ -71,7 +71,10 @@ function fly(from: HTMLElement | null, to: HTMLElement): (() => void) | undefine
   const start = from.getBoundingClientRect();
   const end = to.getBoundingClientRect();
   const box = panel.getBoundingClientRect();
-  if (!end.width || !start.width) return;
+  // Scrolled away up a long conversation, the avatar would fly in from
+  // above the screen; the header's own then simply rides up with the
+  // panel.
+  if (!end.width || !start.width || start.bottom < 0 || start.top > window.innerHeight) return;
   const top = window.innerHeight - panel.offsetHeight + (end.top - box.top);
   const left = end.left - box.left;
 
@@ -110,8 +113,13 @@ function fly(from: HTMLElement | null, to: HTMLElement): (() => void) | undefine
     to.style.visibility = "";
   };
   flight.onfinish = land;
-  flight.oncancel = land;
-  return () => flight.cancel();
+  // Landed at once if the panel goes mid-flight, rather than when the
+  // cancel event gets round to it: the avatar should be back in the
+  // chat before the panel has finished going.
+  return () => {
+    flight.cancel();
+    land();
+  };
 }
 
 /**
@@ -179,7 +187,7 @@ export function NilesPanel({ open, onOpenChange, anchor, status, tabs }: NilesPa
         <Tabs
           value={active?.id}
           onValueChange={(value) => setTab(String(value))}
-          className="min-h-0 flex-1 gap-0"
+          className="min-h-0 flex-1 flex-col gap-0"
         >
           <div className="shrink-0 px-4 pb-2">
             <TabsList className="h-10 w-full rounded-full p-1">
@@ -275,7 +283,9 @@ export function NilesPanel({ open, onOpenChange, anchor, status, tabs }: NilesPa
               "h-[min(80vh,44rem,var(--available-height))] w-[min(28rem,calc(100vw-2rem))]",
               // Grows out of the avatar: Base UI puts the origin where the
               // anchor is. Springs open, and goes quickly and plainly.
-              "origin-(--transform-origin) transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]",
+              // `scale` rather than `transform` in the transition, because
+              // that is the property Tailwind 4's scale utilities set.
+              "origin-(--transform-origin) transition-[scale,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]",
               "data-ending-style:duration-150 data-ending-style:ease-in",
               still
                 ? "data-starting-style:opacity-0 data-ending-style:opacity-0"
