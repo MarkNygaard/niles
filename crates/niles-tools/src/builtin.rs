@@ -929,12 +929,17 @@ impl<P: Publisher> Tool for SetBlinds<P> {
             tool: "set_blinds".into(),
             reason,
         };
-        let level = match (
-            args.get("open").and_then(Value::as_bool),
-            args.get("position"),
-        ) {
+        // A JSON null is the model leaving an argument out, not a
+        // value: `{"open": true, "position": null}` asks for an open.
+        let position = args.get("position").filter(|p| !p.is_null());
+        let level = match (args.get("open").and_then(Value::as_bool), position) {
             (Some(true), None) => BlindsLevel::Open,
-            (None, Some(p)) => {
+            (Some(true), Some(_)) => {
+                return Err(invalid("name a position or open, not both".into()));
+            }
+            // `open: false` beside a position is not a contradiction —
+            // it is the model spelling out that this one is a number.
+            (_, Some(p)) => {
                 let p = p
                     .as_u64()
                     .filter(|p| *p <= 100)
@@ -942,11 +947,8 @@ impl<P: Publisher> Tool for SetBlinds<P> {
                     as u8;
                 BlindsLevel::Exact(p)
             }
-            (None, None) | (Some(false), None) => {
+            (_, None) => {
                 return Err(invalid("name a position or open".into()));
-            }
-            (Some(_), Some(_)) => {
-                return Err(invalid("name a position or open, not both".into()));
             }
         };
         let blinds: Vec<niles_core::Device> = match (
@@ -2470,6 +2472,41 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not both"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn open_false_and_a_null_are_the_argument_left_out() {
+        let registry = fixture_registry();
+        registry.upsert(device(
+            "living_room/left_blind",
+            DeviceClass::Cover,
+            DeviceState::default(),
+        ));
+        let tool = SetBlinds::new(
+            registry,
+            MockPublisher::default(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            None,
+            false,
+        );
+        // An LLM that spells out "not an open, 40%" means 40%.
+        let result = tool
+            .execute(json!({ "room": "living_room", "open": false, "position": 40 }))
+            .await
+            .unwrap();
+        assert!(
+            result["set"].as_array().unwrap()[0]["position"] == 40,
+            "{result}"
+        );
+        // A null argument is one left out, so this is still an open.
+        let result = tool
+            .execute(json!({ "room": "living_room", "open": true, "position": null }))
+            .await
+            .unwrap();
+        assert!(
+            result["set"].as_array().unwrap()[0]["position"] == 100,
+            "{result}"
+        );
     }
 
     // ---- set_room ----

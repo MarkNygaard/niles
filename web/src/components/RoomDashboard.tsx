@@ -117,18 +117,20 @@ export function RoomDashboard() {
     onMutate: async ({ blinds, position }) => {
       setError(null);
       await queryClient.cancelQueries({ queryKey: ["devices"] });
-      const previous = queryClient.getQueryData<Device[]>(["devices"]);
-      const moving = new Set(blinds.map((blind) => blind.id));
       // An Open has no position to guess — guessing 100 would flash
       // the wrong number before settling on 75 — so the row waits for
-      // the answer and onSuccess paints it.
-      if (typeof position === "number") {
-        queryClient.setQueryData<Device[]>(["devices"], (current) =>
-          current?.map((device) =>
-            moving.has(device.id) ? withPosition(device, position) : device,
-          ),
-        );
-      }
+      // the answer and onSuccess paints it. Nothing optimistic is
+      // written, so there is nothing to roll back either: handing
+      // `onError` a snapshot would throw away whatever the event
+      // stream delivered while the request was in flight.
+      if (position === "open") return { previous: undefined };
+      const previous = queryClient.getQueryData<Device[]>(["devices"]);
+      const moving = new Set(blinds.map((blind) => blind.id));
+      queryClient.setQueryData<Device[]>(["devices"], (current) =>
+        current?.map((device) =>
+          moving.has(device.id) ? withPosition(device, position) : device,
+        ),
+      );
       return { previous };
     },
     onSuccess: (opened) => {
