@@ -5,6 +5,10 @@
 //! under, and never for a person named in the request: another
 //! person's id is a 404, the same as one that does not exist.
 //!
+//! An artifact's pictures are served from here and nowhere else: the
+//! copies Niles keeps, by id, to the person they belong to
+//! (`GET /me/artifacts/{id}/images/{image}`).
+//!
 //! And the dashboard's card for today's run, `GET /me/training/today`:
 //! the caller's current training plan read for today, by the same
 //! [`plan_day`] that `training_today` answers from.
@@ -13,10 +17,11 @@ use crate::state::AppState;
 use async_trait::async_trait;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use niles_artifacts::plan_day::{self, PlanDay};
 use niles_artifacts::{
-    Artifact, ArtifactStore, Author, Changes, Filter, NewRevision, PageChange, Revision,
+    Artifact, ArtifactStore, Author, Changes, Filter, Image, NewRevision, PageChange, Revision,
     RevisionMeta,
 };
 use niles_core::Event;
@@ -140,6 +145,9 @@ pub struct Detail {
     pub page_html: Option<String>,
     /// Newest first.
     pub revisions: Vec<RevisionMeta>,
+    /// The pictures it keeps, oldest first, for its views and its page
+    /// to fetch by id.
+    pub images: Vec<Image>,
     /// The house's today, YYYY-MM-DD: the day a page counts from.
     pub today: String,
 }
@@ -175,11 +183,13 @@ async fn detail(
         .revisions(person, artifact.id)
         .await
         .map_err(storage)?;
+    let images = store.images(person, artifact.id).await.map_err(storage)?;
     Ok(Detail {
         artifact,
         content,
         page_html,
         revisions,
+        images,
         today: house_today(state).to_string(),
     })
 }
@@ -352,6 +362,54 @@ pub async fn restore(
     Ok(Json(
         detail(&state, store.as_ref(), &person, artifact).await?,
     ))
+}
+
+/// What a kept picture may be served as: what Niles writes them as.
+const IMAGE_TYPES: [&str; 2] = ["image/jpeg", "image/png"];
+
+/// `GET /me/artifacts/{id}/images/{image}`
+///
+/// One of the caller's pictures, as Niles keeps it. Its id is never
+/// reused for other bytes, so the browser keeps it as long as it likes;
+/// the headers keep it a picture, whatever it is asked to be: not
+/// sniffed, nothing in it run or loaded if it is opened on its own, and
+/// not to be shown by another site.
+pub async fn image(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, image)): Path<(i64, i64)>,
+) -> Result<Response, Failure> {
+    let store = store(&state)?;
+    let person = crate::chat::person_of(&state, &headers);
+    let kept = store
+        .image(&person, id, image)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| failed(StatusCode::NOT_FOUND, "no such picture"))?;
+    let mime = IMAGE_TYPES
+        .into_iter()
+        .find(|t| *t == kept.image.mime)
+        .ok_or_else(|| failed(StatusCode::BAD_GATEWAY, "not a picture Niles serves"))?;
+    let mut response = kept.bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
+    headers.insert(
+        "cross-origin-resource-policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    Ok(response)
 }
 
 /// `POST /me/artifacts/{id}/retry`
@@ -954,6 +1012,105 @@ allowed = [
                 .page
                 .is_some()
         );
+    }
+
+    /// A picture kept for artifact `id`, and its bytes.
+    async fn picture(store: &MemoryArtifacts, person: &str, id: i64) -> (Image, Vec<u8>) {
+        let raw = image_jpeg();
+        let prepared = niles_artifacts::images::prepare(&raw).unwrap();
+        let bytes = prepared.bytes.clone();
+        let new = niles_artifacts::NewImage::new(
+            prepared,
+            "The Grand Palace",
+            Some("J. Doe"),
+            Some("https://commons.wikimedia.org/wiki/File:x.jpg"),
+        )
+        .unwrap();
+        let kept = store.add_image(person, id, new).await.unwrap().unwrap();
+        (kept, bytes)
+    }
+
+    fn image_jpeg() -> Vec<u8> {
+        let picture = ::image::RgbImage::from_pixel(6, 4, ::image::Rgb([200, 30, 30]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        picture
+            .write_to(&mut out, ::image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[tokio::test]
+    async fn an_artifact_comes_with_its_pictures_and_each_is_served_as_a_picture() {
+        let f = fixture(true);
+        let id = make(&f.store, MARK, "Trip", "![Palace](niles-image:1)").await;
+        let (kept, bytes) = picture(&f.store, MARK, id).await;
+        let mark = "mark@example.com";
+        let (_, body) = send(
+            &f.app,
+            by(mark, "GET", &format!("/me/artifacts/{id}"), None),
+        )
+        .await;
+        assert_eq!(body["images"][0]["id"], kept.id);
+        assert_eq!(body["images"][0]["alt"], "The Grand Palace");
+        assert_eq!(body["images"][0]["credit"], "J. Doe");
+        assert_eq!(body["images"][0]["width"], 6);
+        assert!(body["images"][0].get("bytes").is_none());
+
+        let res = f
+            .app
+            .clone()
+            .oneshot(by(
+                mark,
+                "GET",
+                &format!("/me/artifacts/{id}/images/{}", kept.id),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let h = res.headers().clone();
+        assert_eq!(h[header::CONTENT_TYPE], "image/jpeg");
+        assert_eq!(h[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert!(
+            h[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .starts_with("default-src 'none'")
+        );
+        let cache = h[header::CACHE_CONTROL].to_str().unwrap();
+        assert!(cache.starts_with("private, max-age="), "{cache}");
+        assert_eq!(h["cross-origin-resource-policy"], "same-origin");
+        assert!(h.get(header::SET_COOKIE).is_none());
+        let served = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(served.as_ref(), bytes.as_slice());
+    }
+
+    #[tokio::test]
+    async fn a_picture_is_only_its_owners_and_only_under_its_own_artifact() {
+        let f = fixture(true);
+        let hers = make(&f.store, MAJSE, "Her trip", "x").await;
+        let (her_picture, _) = picture(&f.store, MAJSE, hers).await;
+        let his = make(&f.store, MARK, "His trip", "x").await;
+        let mark = "mark@example.com";
+        for uri in [
+            format!("/me/artifacts/{hers}/images/{}", her_picture.id),
+            format!("/me/artifacts/{his}/images/{}", her_picture.id),
+            format!("/me/artifacts/{his}/images/999"),
+        ] {
+            let (status, _) = send(&f.app, by(mark, "GET", &uri, None)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        }
+        let (status, _) = send(
+            &f.app,
+            by(
+                "majse@example.com",
+                "GET",
+                &format!("/me/artifacts/{hers}/images/{}", her_picture.id),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]

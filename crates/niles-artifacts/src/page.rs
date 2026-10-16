@@ -30,7 +30,13 @@ pub const HELP: &str = "A page is one self-contained HTML document, at most 200 
     ticks something), so the page stays true without being written again; niles.data is the \
     data now. Draw every part of it from the data, so a change shows. Everything inline, in \
     <style> and <script>: no scripts, stylesheets, fonts or images from elsewhere and no \
-    fetching (the frame blocks them, and a page that tries is refused); draw pictures in SVG. \
+    fetching (the frame blocks them, and a page that tries is refused); draw shapes in SVG. \
+    Pictures are the ones the artifact keeps, handed to the page: niles.images is {id: url} \
+    for each, niles.image(name) the url for a name in the data such as \"niles-image:12\" \
+    (undefined for one it does not keep: draw without it), and niles.imageInfo[id] its \
+    {alt, credit, source, width, height}; give each <img> its alt and show its credit, \
+    small. A new picture is kept with artifact_add_image, after image_search finds it; a \
+    picture's web address never shows in a page. \
     Use the app's colours as CSS variables, so it matches in light and dark: \
     var(--background), --foreground, --card, --card-foreground, --muted, --muted-foreground, \
     --accent, --accent-foreground, --primary, --primary-foreground, --border, --destructive, \

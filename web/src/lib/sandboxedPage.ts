@@ -207,16 +207,21 @@ const BASE_STYLE =
 
 /**
  * Niles's half of the frame, run before any of the page's script. It
- * gives the page `niles` (the data, the theme, the house's today, and
- * the three things it may ask: to be told of new data, to open a link,
- * to save), sets the theme as CSS variables, and tells this window when
- * it is ready, how tall it is, and when it went wrong. Every link the
- * page has becomes a request to open it, because the frame itself may
- * go nowhere.
+ * gives the page `niles` (the data, the theme, the house's today, the
+ * artifact's pictures, and the three things it may ask: to be told of
+ * new data, to open a link, to save), sets the theme as CSS variables,
+ * and tells this window when it is listening, when it is ready, how
+ * tall it is, and when it went wrong. Every link the page has becomes a
+ * request to open it, because the frame itself may go nowhere.
+ *
+ * Pictures come as `Blob`s in an `images` message, and are made `blob:`
+ * URLs here, in the frame's own opaque origin: one the app made would
+ * belong to the app's origin and not load in here. A page with pictures
+ * is not drawn until they are in, so it draws once, with them.
  *
  * Plain ES5 in a string: it is not part of the bundle, it is what the
- * frame runs. `__INIT__` is the data, theme and today, as `scriptJson`
- * writes them.
+ * frame runs. `__INIT__` is the data, theme, today and what the
+ * pictures are, as `scriptJson` writes them.
  */
 export const RUNTIME = `(function () {
   "use strict";
@@ -224,12 +229,44 @@ export const RUNTIME = `(function () {
   var init = __INIT__;
   var listeners = [];
   var started = false;
+  var loaded = false;
+  var pictures = Object.freeze({});
+  var info = {};
+  var awaiting = describe(init.images);
   function post(message) {
     message.niles = 1;
     try { parent.postMessage(message, "*"); } catch (e) {}
   }
   function text(x) {
     return String(x && x.message ? x.message : x).slice(0, 300);
+  }
+  function describe(list) {
+    if (!Array.isArray(list)) return false;
+    var next = {};
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (!m || typeof m.id !== "number") continue;
+      next[String(m.id)] = Object.freeze({ alt: String(m.alt || ""), credit: m.credit || null,
+        source: m.source || null, width: m.width, height: m.height });
+    }
+    info = Object.freeze(next);
+    return list.length > 0;
+  }
+  function keep(blobs) {
+    var next = {};
+    for (var id in blobs) {
+      if (!Object.prototype.hasOwnProperty.call(blobs, id) || !/^[0-9]+$/.test(id)) continue;
+      if (!(blobs[id] instanceof Blob)) continue;
+      try { next[id] = URL.createObjectURL(blobs[id]); } catch (e) {}
+    }
+    var old = pictures;
+    pictures = Object.freeze(next);
+    return old;
+  }
+  function revoke(urls) {
+    for (var id in urls) {
+      try { URL.revokeObjectURL(urls[id]); } catch (e) {}
+    }
   }
   ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCIceCandidate",
    "RTCSessionDescription", "RTCRtpSender", "RTCRtpReceiver"].forEach(function (name) {
@@ -254,11 +291,17 @@ export const RUNTIME = `(function () {
       listeners.push(fn);
       if (started) fn(niles.data);
     },
+    image: function (name) {
+      var m = /^(?:niles-image:)?([0-9]+)$/.exec(String(name).trim());
+      return m && Object.prototype.hasOwnProperty.call(pictures, m[1]) ? pictures[m[1]] : undefined;
+    },
     open: function (url) { post({ type: "open", url: String(url) }); },
     save: function (content, reason) {
       post({ type: "save", content: content, reason: reason === undefined ? "" : String(reason) });
     }
   };
+  Object.defineProperty(niles, "images", { get: function () { return pictures; }, enumerable: true });
+  Object.defineProperty(niles, "imageInfo", { get: function () { return info; }, enumerable: true });
   Object.defineProperty(window, "niles", { value: niles, writable: false, configurable: false });
   theme(init.theme);
   function deliver() {
@@ -285,6 +328,16 @@ export const RUNTIME = `(function () {
     } else if (m.type === "theme" && m.theme) {
       niles.theme = m.theme;
       theme(m.theme);
+    } else if (m.type === "images" && m.images && typeof m.images === "object") {
+      describe(m.info);
+      var old = keep(m.images);
+      if (awaiting) {
+        awaiting = false;
+        if (loaded) start();
+      } else if (started) {
+        deliver();
+      }
+      revoke(old);
     }
   });
   document.addEventListener("click", function (e) {
@@ -302,6 +355,11 @@ export const RUNTIME = `(function () {
   }, true);
   document.addEventListener("submit", function (e) { e.preventDefault(); }, true);
   function ready() {
+    loaded = true;
+    if (!awaiting) start();
+  }
+  function start() {
+    if (started) return;
     started = true;
     deliver();
     measure();
@@ -309,9 +367,33 @@ export const RUNTIME = `(function () {
     try { new ResizeObserver(measure).observe(document.body); } catch (e) {}
     window.addEventListener("load", measure);
   }
+  post({ type: "hello" });
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready);
   else ready();
 })();`;
+
+/** What the page is told of a picture the artifact keeps, beside the
+    picture itself, which comes as a `Blob`. */
+export interface PageImage {
+  id: number;
+  alt: string;
+  credit: string | null;
+  source: string | null;
+  width: number;
+  height: number;
+}
+
+/** Only what the page is told of each picture, from what the app has. */
+export function pageImages(images: readonly PageImage[] | undefined): PageImage[] {
+  return (images ?? []).map(({ id, alt, credit, source, width, height }) => ({
+    id,
+    alt,
+    credit,
+    source,
+    width,
+    height,
+  }));
+}
 
 export interface PageInput {
   html: string;
@@ -319,6 +401,8 @@ export interface PageInput {
   theme: PageTheme;
   /** The house's today, YYYY-MM-DD. */
   today: string;
+  /** The pictures it will be handed; none when left out. */
+  images?: PageImage[];
 }
 
 /**
@@ -329,8 +413,8 @@ export interface PageInput {
  * head can come before ours. Nothing of Niles's comes after it, so
  * there is nothing for unclosed markup in the page to swallow.
  */
-export function buildSrcdoc({ html, data, theme, today }: PageInput): string {
-  const init = scriptJson({ data, theme, today });
+export function buildSrcdoc({ html, data, theme, today, images = [] }: PageInput): string {
+  const init = scriptJson({ data, theme, today, images });
   return (
     "<!doctype html><html><head><meta charset=\"utf-8\">" +
     `<meta http-equiv="Content-Security-Policy" content="${PAGE_CSP}">` +
@@ -353,6 +437,7 @@ export const MAX_HEIGHT = 20_000;
 export const MAX_SAVE_CHARS = 400_000;
 
 export type FrameMessage =
+  | { type: "hello" }
   | { type: "ready" }
   | { type: "height"; height: number }
   | { type: "error"; message: string }
@@ -382,6 +467,8 @@ export function readMessage(
   const m: unknown = event.data;
   if (!isRecord(m) || m.niles !== 1) return null;
   switch (m.type) {
+    case "hello":
+      return { type: "hello" };
     case "ready":
       return { type: "ready" };
     case "height":

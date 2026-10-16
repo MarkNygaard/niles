@@ -1,7 +1,7 @@
 //! SearXNG HTTP client.
 
 use crate::error::{Error, Result};
-use crate::model::{SearchRequest, SearchResponse, SearchResult};
+use crate::model::{ImageResult, SearchRequest, SearchResponse, SearchResult};
 use crate::transport::{HttpTransport, SearXngTransport};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -74,11 +74,94 @@ impl SearXngClient {
             results,
         })
     }
+
+    /// Pictures for `query`, from the instance's image engines: at most
+    /// `num_results`, each with an https address to the picture. An
+    /// instance with no image engine on finds none, which is an empty
+    /// list rather than an error.
+    pub async fn search_images(&self, query: &str, num_results: u8) -> Result<Vec<ImageResult>> {
+        if query.trim().is_empty() {
+            return Err(Error::InvalidInput {
+                reason: "query must not be empty".into(),
+            });
+        }
+        if !(1..=20).contains(&num_results) {
+            return Err(Error::InvalidInput {
+                reason: "num_results must be between 1 and 20".into(),
+            });
+        }
+        let mut url =
+            reqwest::Url::parse(&self.config.base_url).map_err(|e| Error::InvalidInput {
+                reason: format!("the search address does not read: {e}"),
+            })?;
+        // The instance's address may name a category of its own; this is
+        // a search for pictures whatever it names.
+        let kept: Vec<(String, String)> = url
+            .query_pairs()
+            .filter(|(k, _)| !matches!(k.as_ref(), "q" | "format" | "categories"))
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(kept)
+            .append_pair("q", query)
+            .append_pair("format", "json")
+            .append_pair("categories", "images");
+
+        let body = self.transport.get(url.as_str()).await?;
+        let parsed: RawImages = serde_json::from_str(&body).map_err(|e| Error::Parse {
+            reason: e.to_string(),
+        })?;
+        Ok(parsed
+            .results
+            .iter()
+            .filter_map(image_result)
+            .take(num_results as usize)
+            .collect())
+    }
+}
+
+/// A result of the images category, when it is a picture Niles could
+/// fetch: an engine's general results, mixed in, have no `img_src`.
+fn image_result(raw: &serde_json::Value) -> Option<ImageResult> {
+    let text = |key: &str| {
+        raw.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|s| !s.is_empty())
+    };
+    let address = |key: &str| text(key).and_then(|a| https(&a));
+    Some(ImageResult {
+        image_url: address("img_src")?,
+        title: text("title").unwrap_or_default(),
+        thumbnail_url: address("thumbnail_src"),
+        source: address("url"),
+        size: text("resolution"),
+        author: text("author"),
+        engine: text("engine"),
+    })
+}
+
+/// `address` as an https one: a protocol-relative `//host/…` is taken
+/// as https; plain http, `data:` and anything else is nothing.
+fn https(address: &str) -> Option<String> {
+    let address = match address.strip_prefix("//") {
+        Some(rest) => format!("https://{rest}"),
+        None => address.to_string(),
+    };
+    let url = reqwest::Url::parse(&address).ok()?;
+    (url.scheme() == "https" && url.host_str().is_some()).then(|| url.to_string())
 }
 
 #[derive(Deserialize)]
 struct SearXngResp {
     results: Vec<SearchResult>,
+}
+
+#[derive(Deserialize)]
+struct RawImages {
+    #[serde(default)]
+    results: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -397,6 +480,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.results.len(), 0);
+    }
+
+    fn images_json() -> String {
+        r#"{
+            "query": "grand palace bangkok",
+            "results": [
+                {
+                    "title": "Grand  Palace, Bangkok",
+                    "url": "https://commons.wikimedia.org/wiki/File:Grand_Palace.jpg",
+                    "img_src": "https://upload.wikimedia.org/grand_palace.jpg",
+                    "thumbnail_src": "//upload.wikimedia.org/thumb/grand_palace.jpg",
+                    "resolution": "4000 x 2667",
+                    "author": "J. Doe",
+                    "engine": "wikicommons.images"
+                },
+                { "title": "A page, not a picture", "url": "https://x.example/", "content": "c" },
+                { "title": "Plain http", "url": "https://y.example/", "img_src": "http://y.example/a.jpg" },
+                { "title": "Inline", "url": "https://z.example/", "img_src": "data:image/png;base64,AAAA" },
+                {
+                    "title": "Protocol relative",
+                    "url": "https://w.example/p",
+                    "img_src": "//w.example/b.jpg",
+                    "thumbnail_src": "data:image/jpeg;base64,AAAA",
+                    "engine": "bing images"
+                }
+            ]
+        }"#
+        .into()
+    }
+
+    #[tokio::test]
+    async fn an_image_search_asks_for_images_and_keeps_the_pictures_it_could_fetch() {
+        let mock = MockTransport::new(vec![Ok(images_json())]);
+        let config = SearXngConfig {
+            base_url: "https://search.example.com/search?categories=general&language=da".into(),
+            request_timeout: Duration::from_secs(10),
+            user_agent: "test".into(),
+        };
+        let client = SearXngClient::with_transport(Arc::new(mock.clone()), config);
+        let found = client
+            .search_images("grand palace bangkok", 5)
+            .await
+            .unwrap();
+        let url = mock.last_url().unwrap();
+        assert!(url.contains("categories=images"), "{url}");
+        assert!(!url.contains("categories=general"), "{url}");
+        assert!(url.contains("language=da"), "{url}");
+        assert!(url.contains("format=json"), "{url}");
+        assert!(url.contains("q=grand+palace+bangkok"), "{url}");
+
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].title, "Grand Palace, Bangkok");
+        assert_eq!(
+            found[0].image_url,
+            "https://upload.wikimedia.org/grand_palace.jpg"
+        );
+        assert_eq!(
+            found[0].thumbnail_url.as_deref(),
+            Some("https://upload.wikimedia.org/thumb/grand_palace.jpg")
+        );
+        assert_eq!(
+            found[0].source.as_deref(),
+            Some("https://commons.wikimedia.org/wiki/File:Grand_Palace.jpg")
+        );
+        assert_eq!(found[0].size.as_deref(), Some("4000 x 2667"));
+        assert_eq!(found[0].author.as_deref(), Some("J. Doe"));
+        assert_eq!(found[1].image_url, "https://w.example/b.jpg");
+        assert_eq!(found[1].thumbnail_url, None);
+    }
+
+    #[tokio::test]
+    async fn an_instance_without_image_engines_finds_nothing() {
+        let (_, client) = client_with(vec![Ok(
+            r#"{"results": [], "unresponsive_engines": []}"#.into()
+        )]);
+        assert!(client.search_images("palace", 5).await.unwrap().is_empty());
+        let (_, client) = client_with(vec![]);
+        assert!(client.search_images(" ", 5).await.is_err());
+        assert!(client.search_images("palace", 0).await.is_err());
     }
 
     #[tokio::test]

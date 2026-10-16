@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { ArtifactPicture } from "@/lib/artifactImages";
 import type { KindViewProps } from "@/lib/artifacts";
 import { Markdown } from "@/lib/markdown";
 import {
@@ -70,7 +71,8 @@ export interface TripViewProps extends KindViewProps {
  * starts or which day of it this is, the stays, then the days, today's
  * open while the trip is on and the others folded. The packing list is
  * the one part the person changes here, by ticking it; the rest changes
- * by asking for it.
+ * by asking for it. Pictures are the ones the trip keeps: the trip's
+ * at the top, a day's as it opens, an item's under it.
  */
 export function TripView({ content, onChange, busy, today = localDay() }: TripViewProps) {
   const trip = tripOf(content);
@@ -93,6 +95,7 @@ export function TripView({ content, onChange, busy, today = localDay() }: TripVi
 
   return (
     <div className="flex flex-col gap-3">
+      <ArtifactPicture name={trip.image} />
       <div className="bg-muted/60 flex flex-col gap-1 rounded-xl px-3 py-2.5">
         <div className="flex items-start justify-between gap-2">
           <span className="font-medium break-words">{trip.destination}</span>
@@ -330,6 +333,11 @@ function DayRow({
       </button>
       {open && (
         <ul aria-label={dayLabel(d.date)} className="flex flex-col gap-1.5 px-2 pb-2">
+          {d.image && (
+            <li className="list-none">
+              <ArtifactPicture name={d.image} />
+            </li>
+          )}
           {d.items.length === 0 && (
             <li className="text-muted-foreground px-2 py-1 text-sm">Nothing planned.</li>
           )}
@@ -369,6 +377,7 @@ function ItemRow({ item }: { item: Item }) {
         {item.details && (
           <span className="text-muted-foreground text-xs whitespace-pre-line">{item.details}</span>
         )}
+        <ArtifactPicture name={item.image} className="mt-1" />
         {(item.location || item.cost) && (
           <span className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-xs">
             {item.location && (

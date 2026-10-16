@@ -21,9 +21,10 @@ use std::collections::HashSet;
 pub(crate) const KIND: Kind = Kind::new(
     "trip",
     "Trip",
-    "{\"destination\", \"start\", \"end\", \"travellers\"?, \"days\": [{\"date\", \"place\", \
-     \"title\"?, \"items\": [{\"time\"?, \"type\", \"title\", \"details\"?, \"location\"?, \
-     \"link\"?, \"booked\"?, \"cost\"?: {\"amount\", \"currency\"}}]}], \"stays\"?: [{\"name\", \
+    "{\"destination\", \"start\", \"end\", \"travellers\"?, \"image\"?, \"days\": [{\"date\", \
+     \"place\", \"title\"?, \"image\"?, \"items\": [{\"time\"?, \"type\", \"title\", \
+     \"details\"?, \"location\"?, \"link\"?, \"booked\"?, \"image\"?, \"cost\"?: {\"amount\", \
+     \"currency\"}}]}],\"stays\"?: [{\"name\", \
      \"place\", \"check_in\", \"check_out\", \"link\"?, \"booked\"?, \"confirmation\"?}], \
      \"packing\"?: [{\"item\", \"group\"?, \"packed\"?}], \"budget\"?: {\"currency\", \
      \"notes\"?}, \"notes\"?}: a travel plan, day by day. Dates are YYYY-MM-DD; days are in \
@@ -34,7 +35,9 @@ pub(crate) const KIND: Kind = Kind::new(
      is booked. cost is an estimate unless booked, its currency ISO 4217 (\"THB\"). A stay \
      is inside the trip and checks out after it checks in; stays are in the order they \
      begin. travellers are names; packing is a checklist the person ticks (packed), so keep \
-     what they ticked when changing the trip. notes is markdown about the whole trip.",
+     what they ticked when changing the trip. notes is markdown about the whole trip. image \
+     is a picture the trip keeps, \"niles-image:12\" (for the trip, a day or an item): \
+     artifact_add_image keeps one and answers its name.",
     "Planning",
     validate,
     preview,
@@ -70,15 +73,16 @@ const TRIP: &[&str] = &[
     "start",
     "end",
     "travellers",
+    "image",
     "days",
     "stays",
     "packing",
     "budget",
     "notes",
 ];
-const DAY: &[&str] = &["date", "place", "title", "items"];
+const DAY: &[&str] = &["date", "place", "title", "image", "items"];
 const ITEM: &[&str] = &[
-    "time", "type", "title", "details", "location", "link", "booked", "cost",
+    "time", "type", "title", "details", "location", "link", "booked", "image", "cost",
 ];
 const COST: &[&str] = &["amount", "currency"];
 const STAY: &[&str] = &[
@@ -166,6 +170,10 @@ fn trip(content: &Value) -> Result<Value> {
         if !names.is_empty() {
             out["travellers"] = json!(names);
         }
+    }
+
+    if let Some(image) = image(o, AT)? {
+        out["image"] = json!(image);
     }
 
     let days = present(o, "days")
@@ -315,6 +323,9 @@ fn day(value: &Value, n: usize, start: NaiveDate, end: NaiveDate) -> Result<(Val
     if let Some(title) = name(o, "title", &at)? {
         out["title"] = json!(title);
     }
+    if let Some(image) = image(o, &at)? {
+        out["image"] = json!(image);
+    }
     Ok((out, when))
 }
 
@@ -341,6 +352,9 @@ fn day_item(value: &Value, at: &str) -> Result<Value> {
     }
     if booked(o, at)? {
         out["booked"] = json!(true);
+    }
+    if let Some(image) = image(o, at)? {
+        out["image"] = json!(image);
     }
     if let Some(c) = present(o, "cost") {
         let at = format!("{at}: cost");
@@ -608,6 +622,33 @@ fn link(o: &Map<String, Value>, key: &str, at: &str) -> Result<Option<String>> {
         return Err(refused());
     }
     Ok(Some(url.to_string()))
+}
+
+/// A picture the trip keeps, by its name, `niles-image:12`; its id alone
+/// is taken as the name. Never an address: the app shows only what
+/// Niles keeps. Whether the trip still keeps it is not asked here (see
+/// [`crate::images`]).
+fn image(o: &Map<String, Value>, at: &str) -> Result<Option<String>> {
+    let refused = |what: &Value| {
+        invalid(format!(
+            "{at}: image is a picture the trip keeps, \"niles-image:12\", as artifact_add_image \
+             answers it, not {what}"
+        ))
+    };
+    let named = |id: i64| Some(format!("{}{id}", crate::images::SCHEME));
+    match present(o, "image") {
+        None => Ok(None),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(v @ Value::String(s)) => crate::images::parse_reference(s)
+            .map(named)
+            .ok_or_else(|| refused(v)),
+        Some(v @ Value::Number(n)) => n
+            .as_i64()
+            .filter(|id| *id > 0)
+            .map(named)
+            .ok_or_else(|| refused(v)),
+        Some(v) => Err(refused(v)),
+    }
 }
 
 /// "9:30" or "09:30", kept as "09:30".
@@ -970,6 +1011,38 @@ mod tests {
                 (Style::Bullet, "6 Jan · Chiang Mai".into()),
             ]
         );
+    }
+
+    #[test]
+    fn a_picture_is_one_the_trip_keeps_by_its_name() {
+        let mut t = trip_json();
+        t["image"] = json!(" niles-image:3 ");
+        t["days"][0]["image"] = json!(4);
+        t["days"][0]["items"][2]["image"] = json!("niles-image:5");
+        t["days"][1]["image"] = json!("");
+        let v = validate(&t).unwrap();
+        assert_eq!(v["image"], "niles-image:3");
+        assert_eq!(v["days"][0]["image"], "niles-image:4");
+        assert_eq!(v["days"][0]["items"][2]["image"], "niles-image:5");
+        assert!(v["days"][1].get("image").is_none());
+        assert_eq!(validate(&v).unwrap(), v);
+
+        for bad in [
+            json!("https://upload.wikimedia.org/palace.jpg"),
+            json!("data:image/png;base64,iVBORw0KGgo="),
+            json!("niles-image:x"),
+            json!(-2),
+            json!({ "id": 3 }),
+        ] {
+            let mut t = trip_json();
+            t["days"][0]["items"][0]["image"] = bad.clone();
+            let e = refused(t);
+            assert!(
+                e.contains("day 1 (2027-01-03), item 1: image"),
+                "{bad}: {e}"
+            );
+            assert!(e.contains("artifact_add_image"), "{e}");
+        }
     }
 
     #[test]

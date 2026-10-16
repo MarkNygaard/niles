@@ -249,3 +249,38 @@ describe("ArtifactView", () => {
     });
   });
 });
+
+describe("ArtifactView's pictures", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const PALACE = {
+    id: 12,
+    mime: "image/jpeg",
+    width: 1600,
+    height: 900,
+    size: 200_000,
+    alt: "The Grand Palace",
+    credit: "J. Doe",
+    source: null,
+    created_at: NOW,
+  };
+
+  it("draws a document's kept pictures from Niles", async () => {
+    show(detail({ content: { markdown: "![The palace](niles-image:12)" }, images: [PALACE] }));
+    const img = await screen.findByRole("img", { name: "The palace" });
+    expect(img.getAttribute("src")).toBe("/me/artifacts/5/images/12");
+  });
+
+  it("fetches the pictures for its page from Niles, as bytes", async () => {
+    const artifactImage = vi.spyOn(api, "artifactImage").mockResolvedValue(new Blob(["jpeg"]));
+    show(
+      detail({
+        page: 3,
+        page_html: "<p>poster</p>",
+        images: [PALACE],
+      }),
+    );
+    await screen.findByTitle("Packing list");
+    await waitFor(() => expect(artifactImage).toHaveBeenCalledWith(5, 12));
+  });
+});

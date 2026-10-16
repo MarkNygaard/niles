@@ -15,7 +15,9 @@ pub(crate) const KIND: Kind = Kind::new(
     "Document",
     "{\"markdown\": \"…\"}: the whole document as markdown. Headings, paragraphs, bulleted \
      and numbered lists, checklists (- [ ] and - [x], which the person can tick), simple \
-     tables, bold, italic and links. No HTML: it is shown as text.",
+     tables, bold, italic and links, and pictures the document keeps, each on a line of \
+     its own: ![what it shows](niles-image:12), by the name artifact_add_image answers. No \
+     HTML: it is shown as text. A picture from a web address is not shown.",
     "Writing",
     validate,
     preview,
@@ -79,7 +81,8 @@ fn preview(content: &Value) -> Preview {
             fenced = !fenced;
             continue;
         }
-        if fenced || line.is_empty() || is_rule(line) || is_table_divider(line) {
+        if fenced || line.is_empty() || is_rule(line) || is_table_divider(line) || is_picture(line)
+        {
             continue;
         }
         lines.push(preview_line(line));
@@ -164,6 +167,12 @@ fn is_rule(line: &str) -> bool {
             .any(|c| line.chars().all(|x| x == *c || x == ' '))
 }
 
+/// A line that is only a picture, `![alt](niles-image:12)`: a card
+/// shows words.
+fn is_picture(line: &str) -> bool {
+    line.starts_with("![") && line.ends_with(')') && line.contains("](")
+}
+
 fn is_table_divider(line: &str) -> bool {
     line.starts_with('|') && line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
 }
@@ -180,6 +189,9 @@ fn plain(text: &str) -> String {
             url.find(')').map(|end| (close, close + 2 + end + 1))
         }) {
             Some((close, end)) => {
+                if out.ends_with('!') {
+                    out.pop();
+                }
                 out.push_str(&after[..close]);
                 rest = &after[end..];
             }
@@ -281,6 +293,16 @@ mod tests {
                 (Style::Number, "1. First".into(), None),
             ]
         );
+    }
+
+    #[test]
+    fn a_picture_is_not_a_line_of_the_preview_and_inside_one_is_its_words() {
+        let got = lines(
+            "![The palace](niles-image:3)
+
+See ![the gate](niles-image:4) first.",
+        );
+        assert_eq!(got, vec![(Style::Text, "See the gate first.".into(), None)]);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { ArtifactImagesProvider } from "@/lib/artifactImages";
 import { Markdown, parseMarkdown, plainText, safeHref, toggleCheck } from "@/lib/markdown";
 
 const PLAN = `# Thailand
@@ -119,5 +120,70 @@ describe("Markdown", () => {
 describe("plainText", () => {
   it("is the words without their markup", () => {
     expect(plainText("**Book** [flights](https://x.example)")).toBe("Book flights");
+  });
+});
+
+describe("pictures", () => {
+  const PALACE = {
+    id: 12,
+    mime: "image/jpeg",
+    width: 1600,
+    height: 1067,
+    size: 210_000,
+    alt: "The Grand Palace",
+    credit: "Photo: J. Doe",
+    source: "https://commons.wikimedia.org/wiki/File:Palace.jpg",
+    created_at: "2026-10-16T10:00:00Z",
+  };
+
+  function shown(source: string) {
+    return render(
+      <ArtifactImagesProvider artifact={7} images={[PALACE]}>
+        <Markdown source={source} />
+      </ArtifactImagesProvider>,
+    );
+  }
+
+  it("reads a picture on a line of its own as a block", () => {
+    expect(parseMarkdown("Before\n![The palace](niles-image:12)\nAfter")).toEqual([
+      { type: "paragraph", text: "Before" },
+      { type: "image", alt: "The palace", src: "niles-image:12" },
+      { type: "paragraph", text: "After" },
+    ]);
+  });
+
+  it("draws a kept picture from Niles, with its credit and its page", () => {
+    const { container } = shown("![The palace at dawn](niles-image:12)");
+    const img = screen.getByRole("img", { name: "The palace at dawn" });
+    expect(img.getAttribute("src")).toBe("/me/artifacts/7/images/12");
+    expect(img.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(container.querySelector("figcaption")?.textContent).toBe(
+      "Photo: J. Doe · commons.wikimedia.org",
+    );
+    expect(screen.getByRole("link", { name: "commons.wikimedia.org" }).getAttribute("href")).toBe(
+      PALACE.source,
+    );
+  });
+
+  it("never fetches a picture by its web address, and shows its alt instead", () => {
+    const { container } = shown(
+      "![A tracking pixel](https://tracker.example/p.gif)\n\nSee ![the gate](http://x.example/g.jpg) and ![](//x.example/h.jpg).",
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("A tracking pixel");
+    expect(container.textContent).toContain("the gate");
+    expect(container.innerHTML).not.toContain("x.example");
+  });
+
+  it("shows nothing for a picture the artifact no longer keeps", () => {
+    const { container } = shown("![Gone](niles-image:99)\n\nText ![inline](niles-image:12)");
+    const imgs = container.querySelectorAll("img");
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].getAttribute("src")).toBe("/me/artifacts/7/images/12");
+    expect(container.querySelector("figure")).toBeNull();
+  });
+
+  it("is its alt in plain text", () => {
+    expect(plainText("See ![the gate](niles-image:3) first")).toBe("See the gate first");
   });
 });

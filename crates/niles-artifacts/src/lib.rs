@@ -8,10 +8,12 @@
 //! business ([`kinds`]): a document is markdown, a training plan
 //! weeks of dated sessions, a trip its days and places. An artifact may
 //! also have a [`page`] that draws that content: kept once, and named
-//! by each version drawn with it.
+//! by each version drawn with it, and [`images`]: Niles's own copies of
+//! pictures, which its content and page name by id.
 
 mod document;
 mod error;
+pub mod images;
 pub mod kinds;
 mod model;
 pub mod page;
@@ -22,6 +24,7 @@ mod training_plan;
 mod trip;
 
 pub use error::{Error, Result};
+pub use images::{Image, ImageData, NewImage};
 pub use kinds::{Kind, Preview, PreviewLine, Style};
 pub use model::{
     Artifact, ArtifactRef, Author, Changes, Filter, NewArtifact, NewRevision, PageChange, Revision,

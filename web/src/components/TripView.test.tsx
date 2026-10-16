@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { SAVE_TICKS_AFTER_MS, TripView } from "@/components/TripView";
+import { ArtifactImagesProvider } from "@/lib/artifactImages";
 import { kindOf } from "@/lib/artifacts";
 import type { Trip } from "@/lib/trip";
 
@@ -229,5 +230,58 @@ describe("TripView's packing list", () => {
     rerender(<TripView content={elsewhere} onChange={onChange} today="2026-10-16" />);
     expect(box("Sunscreen")).not.toBeChecked();
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("TripView's pictures", () => {
+  const picture = (id: number, alt: string, credit: string | null = null) => ({
+    id,
+    mime: "image/jpeg",
+    width: 1600,
+    height: 900,
+    size: 200_000,
+    alt,
+    credit,
+    source: null,
+    created_at: "2026-10-16T10:00:00Z",
+  });
+
+  it("shows the trip's, the open day's and an item's, each from Niles", () => {
+    const trip: Trip = {
+      ...TRIP,
+      image: "niles-image:1",
+      days: [
+        { ...TRIP.days[0], image: "niles-image:2", items: [{ ...TRIP.days[0].items[0], image: "niles-image:3" }] },
+        { ...TRIP.days[1], image: "https://tracker.example/day.jpg" },
+        TRIP.days[2],
+      ],
+    };
+    const { container } = render(
+      <ArtifactImagesProvider
+        artifact={5}
+        images={[picture(1, "Thailand's coast", "Photo: A. B."), picture(2, "Bangkok at night"), picture(3, "BKK")]}
+      >
+        <TripView content={trip} today="2026-10-16" />
+      </ArtifactImagesProvider>,
+    );
+    const srcs = [...container.querySelectorAll("img")].map((i) => [
+      i.getAttribute("alt"),
+      i.getAttribute("src"),
+    ]);
+    expect(srcs).toEqual([
+      ["Thailand's coast", "/me/artifacts/5/images/1"],
+      ["Bangkok at night", "/me/artifacts/5/images/2"],
+      ["BKK", "/me/artifacts/5/images/3"],
+    ]);
+    expect(screen.getByText("Photo: A. B.")).toBeInTheDocument();
+    fireEvent.click(within(days()).getByRole("button", { name: /Temples/ }));
+    expect(document.body.innerHTML).not.toContain("tracker.example");
+  });
+
+  it("shows none without the artifact keeping them", () => {
+    const { container } = render(
+      <TripView content={{ ...TRIP, image: "niles-image:1" }} today="2026-10-16" />,
+    );
+    expect(container.querySelector("img")).toBeNull();
   });
 });

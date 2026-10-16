@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { READY_WITHIN_MS, SandboxedPage } from "@/components/SandboxedPage";
+import { IMAGES_WITHIN_MS, READY_WITHIN_MS, SandboxedPage } from "@/components/SandboxedPage";
 import type { SandboxedPageProps } from "@/components/SandboxedPage";
 import { PAGE_CSP, SAVE_AFTER_MS } from "@/lib/sandboxedPage";
 
@@ -142,5 +142,42 @@ describe("SandboxedPage", () => {
     say({ type: "save", content: { a: 1 } }, null);
     act(() => vi.advanceTimersByTime(SAVE_AFTER_MS * 2));
     expect(onSave).not.toHaveBeenCalled();
+  });
+  const PALACE = { id: 12, alt: "The Grand Palace", credit: "J. Doe", source: null, width: 16, height: 9 };
+
+  it("hands the page its pictures, fetched from Niles, once it is listening", async () => {
+    const blob = new Blob(["jpeg"], { type: "image/jpeg" });
+    const loadImage = vi.fn().mockResolvedValue(blob);
+    const { frame, say } = show({ images: [PALACE], loadImage });
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    await act(async () => {});
+    expect(loadImage).toHaveBeenCalledExactlyOnceWith(12);
+    expect(frame.getAttribute("srcdoc")).toContain('"alt":"The Grand Palace"');
+    expect(post).not.toHaveBeenCalled();
+    say({ type: "hello" });
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      { niles: 1, type: "images", images: { "12": blob }, info: [PALACE] },
+      "*",
+    );
+  });
+
+  it("hands the pictures that came, and waits for them before counting to the fallback", async () => {
+    vi.useFakeTimers();
+    const blob = new Blob(["png"]);
+    const loadImage = vi.fn((id: number) =>
+      id === 12 ? Promise.resolve(blob) : new Promise<Blob>(() => {}),
+    );
+    const { frame, say, onFallback } = show({
+      images: [PALACE, { ...PALACE, id: 13 }],
+      loadImage,
+    });
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    say({ type: "hello" });
+    await act(() => vi.advanceTimersByTimeAsync(READY_WITHIN_MS + 10));
+    expect(onFallback).not.toHaveBeenCalled();
+    await act(() => vi.advanceTimersByTimeAsync(IMAGES_WITHIN_MS));
+    expect(post.mock.calls[0][0]).toMatchObject({ type: "images", images: { "12": blob } });
+    await act(() => vi.advanceTimersByTimeAsync(READY_WITHIN_MS));
+    expect(onFallback).toHaveBeenCalledWith("it did not start");
   });
 });
