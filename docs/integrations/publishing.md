@@ -136,18 +136,19 @@ anyone who installed it; publish a new release instead.
 
 ## Which Niles versions you support
 
-- `interface = "0.2"` in the manifest and the WIT your component was built
+- `interface = "0.3"` in the manifest and the WIT your component was built
   with say which interface you target, and they must agree: Niles reads the
   version your component's imports carry, and refuses a component built for
-  0.2 under a manifest that says 0.1, or the reverse. A Niles that runs 0.2
+  0.3 under a manifest that says 0.2, or the reverse. A Niles that runs 0.2
   runs any `0.2.x` component; patch versions of the interface only add.
-- `min_niles` is the oldest Niles your plugin needs: raise it when you use a
-  function or UI node added in a later 0.2.x.
+- `min_niles` is the oldest Niles your plugin needs: `"0.3.0"` for interface
+  0.3, and later when you use a function or UI node added after that.
 
 ### Interface versions
 
 | Interface | Niles | What changed |
 |---|---|---|
+| 0.3 | 0.3.0 | [Accounts and webhooks](accounts.md): the `secrets` and `inbound` interfaces, the exports `authorize-url`, `on-callback` and `on-webhook`, and the `callback` and `webhook` permissions. Nothing 0.2.1 had changed. |
 | 0.2.1 | 0.2.1 | `config.time-zone` and `devices.set-room-light`. Any device class may `report-action`. Nothing 0.2.0 had changed. |
 | 0.2.0 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |
 | 0.1 | 0.2.0 | The first. |
@@ -171,18 +172,34 @@ How a patch version stays compatible, both ways:
   `min_niles` to the first Niles with the patch, so the household is told
   before they install it rather than after.
 
-Niles runs plugins built for the previous interface beside the current one
+Niles runs plugins built for the previous interfaces beside the current one
 for at least six months, and their panel says "Built for an older Niles".
-Moving a plugin from 0.1 to 0.2 takes a copy of the new
-[WIT](../../schemas/niles-integration.wit), `interface = "0.2"`, and the two
-new exports, empty if you use no MQTT:
+Moving a plugin from 0.2 to 0.3 takes a copy of the new
+[WIT](../../schemas/niles-integration.wit), `interface = "0.3"`,
+`min_niles = "0.3.0"`, and the three new exports, answering nothing if you
+connect no account and have no webhook:
+
+```rust
+fn authorize_url(_callback_url: String, _state: String) -> Result<String, String> {
+    Err("This add-on connects no accounts.".into())
+}
+fn on_callback(_: String, _: Vec<(String, String)>, _: Option<String>) -> Result<String, String> {
+    Err("This add-on connects no accounts.".into())
+}
+fn on_webhook(_request: InboundRequest) -> InboundResponse {
+    InboundResponse { status: 404, content_type: None, body: Vec::new() }
+}
+```
+
+From 0.1, add the two MQTT exports as well, empty if you use no MQTT:
 
 ```rust
 fn on_mqtt_message(_conn: u32, _topic: String, _payload: Vec<u8>) {}
 fn on_mqtt_status(_conn: u32, _status: ConnectionStatus) {}
 ```
 
-The 0.1 interface is kept, frozen, as
+The older interfaces are kept, frozen, as
+[`niles-integration-0.2.wit`](../../schemas/niles-integration-0.2.wit) and
 [`niles-integration-0.1.wit`](../../schemas/niles-integration-0.1.wit).
 
 ## Private repos, and GitHub's limit

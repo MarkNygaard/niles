@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PluginInboundSection } from "@/components/PluginInbound";
 import { PluginLog } from "@/components/PluginLog";
 import { PluginLogo, PluginPreviewView, shortRepo } from "@/components/PluginPreview";
 import { PluginSettings } from "@/components/PluginSettings";
@@ -87,8 +88,11 @@ export function PluginPanel({
   onSecretsChanged,
   onPlaceWidget,
   onRemoved,
+  outcome,
 }: {
   plugin: PluginSummary;
+  /** What the way back from its sign-in page said, when it just did. */
+  outcome?: { ok: boolean; text: string } | null;
   /** The house's rooms, for a room setting and a widget's place. */
   rooms?: string[];
   secrets?: SecretsReport;
@@ -254,6 +258,15 @@ export function PluginPanel({
           onSecretsChanged?.();
         }}
       />
+
+      {plugin.inbound && (
+        <PluginInboundSection
+          plugin={plugin}
+          inbound={plugin.inbound}
+          outcome={outcome}
+          onChanged={onChanged}
+        />
+      )}
 
       {plugin.widgets.length > 0 && (
         <section aria-label="Widgets" className="flex flex-col gap-2">

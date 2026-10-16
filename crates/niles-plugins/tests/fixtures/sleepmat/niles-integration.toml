@@ -1,0 +1,16 @@
+id = "sleepmat"
+name = "Sleep mat"
+version = "0.1.0"
+description = "Says when somebody gets into bed and out of it, for Niles's own tests."
+authors = ["Niles"]
+homepage = "https://github.com/MarkNygaard/niles"
+min_niles = "0.2.0"
+interface = "0.3"
+keywords = ["bed", "sleep"]
+
+[permissions]
+http = ["account.example.com", "api.example.com"]
+devices = true
+tools = true
+callback = true
+webhook = true

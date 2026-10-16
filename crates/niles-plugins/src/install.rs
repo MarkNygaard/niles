@@ -247,6 +247,20 @@ pub struct Listed {
     /// Built for an interface older than the newest this Niles runs: it
     /// works, and its panel says so.
     pub older_interface: bool,
+    /// Its account connection and webhook, for one that asks for either.
+    pub inbound: Option<Inbound>,
+}
+
+/// What a plugin's panel shows about connecting an account and its
+/// webhook (interface 0.3).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Inbound {
+    pub callback: bool,
+    pub webhook: bool,
+    /// None until Niles's public address is set.
+    pub callback_url: Option<String>,
+    pub hook_url: Option<String>,
+    pub last_hook: Option<crate::inbound::LastHook>,
 }
 
 /// One of a plugin's settings, as its setup panel shows it.
@@ -830,9 +844,31 @@ impl Installer {
                         .collect(),
                     older_interface: older_interface(&manifest.interface),
                     interface: manifest.interface.clone(),
+                    inbound: (manifest.permissions.callback || manifest.permissions.webhook).then(
+                        || Inbound {
+                            callback: manifest.permissions.callback,
+                            webhook: manifest.permissions.webhook,
+                            ..Default::default()
+                        },
+                    ),
                 })
             })
             .collect();
+        let public = runtime.public_url();
+        for listed in &mut out {
+            let Some(inbound) = &mut listed.inbound else {
+                continue;
+            };
+            if let Some(public) = &public {
+                if inbound.callback {
+                    inbound.callback_url = Some(crate::inbound::callback_url(public, &listed.id));
+                }
+                if inbound.webhook {
+                    inbound.hook_url = runtime.hook_address(&listed.id, public).await;
+                }
+            }
+            inbound.last_hook = runtime.last_hook(&listed.id);
+        }
         // Running without a record: the store could not be read.
         for info in running {
             if out.iter().any(|l| l.id == info.id) {
@@ -865,6 +901,7 @@ impl Installer {
                 widgets: Vec::new(),
                 interface: String::new(),
                 older_interface: false,
+                inbound: None,
             });
         }
         out

@@ -35,6 +35,7 @@ const PLUGIN: PluginSummary = {
   widgets: [],
   interface: "0.1",
   older_interface: false,
+  inbound: null,
 };
 
 const PREVIEW: PluginPreview = {
@@ -589,5 +590,66 @@ describe("the panel", () => {
     expect(
       within(widgets).getByRole("combobox", { name: "Where Electricity now goes" }),
     ).toHaveTextContent("Kitchen");
+  });
+});
+
+describe("accounts and webhooks on the panel", () => {
+  const WITHINGS: PluginSummary = {
+    ...PLUGIN,
+    id: "withings",
+    name: "Withings",
+    inbound: {
+      callback: true,
+      webhook: true,
+      callback_url: "https://home.example.dk/plugins/withings/callback",
+      hook_url: `https://home.example.dk/plugins/withings/hook/${"ab".repeat(32)}`,
+      last_hook: null,
+    },
+  };
+
+  it("gives the addresses to register and connects from the public one", async () => {
+    const { dialog } = await openPanel(WITHINGS);
+    const account = within(dialog).getByRole("region", { name: "Account" });
+    expect(within(account).getByLabelText("Callback address")).toHaveTextContent(
+      "https://home.example.dk/plugins/withings/callback",
+    );
+    expect(within(account).getByRole("link", { name: /Connect account/ })).toHaveAttribute(
+      "href",
+      "https://home.example.dk/plugins/withings/connect",
+    );
+    const webhook = within(dialog).getByRole("region", { name: "Webhook" });
+    expect(within(webhook).getByLabelText("Webhook address")).toHaveTextContent("/hook/abab");
+    expect(within(webhook).getByText("Not called since the add-on started.")).toBeInTheDocument();
+  });
+
+  it("says to set the public address before there is anything to register", async () => {
+    const { dialog } = await openPanel({
+      ...WITHINGS,
+      inbound: { ...WITHINGS.inbound!, callback_url: null, hook_url: null },
+    });
+    expect(within(dialog).getAllByText(/Set Niles's public address/)).toHaveLength(2);
+    expect(within(dialog).queryByRole("link", { name: /Connect account/ })).toBeNull();
+  });
+
+  it("asks before giving the webhook a new address", async () => {
+    const rotate = vi.spyOn(api, "rotatePluginHook").mockResolvedValue(WITHINGS);
+    const { dialog } = await openPanel(WITHINGS);
+    fireEvent.click(within(dialog).getByRole("button", { name: "New address…" }));
+    expect(within(dialog).getByText(/The old address stops working/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "New address" }));
+    await waitFor(() => expect(rotate).toHaveBeenCalledWith("withings"));
+  });
+
+  it("opens on the plugin's panel saying how connecting went", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/?plugin=withings&plugin_connected=Connected%20as%20Johan#/me/settings/addons",
+    );
+    setup([WITHINGS]);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Connected as Johan")).toBeInTheDocument();
+    // Said once, then taken off the address.
+    expect(window.location.search).toBe("");
   });
 });

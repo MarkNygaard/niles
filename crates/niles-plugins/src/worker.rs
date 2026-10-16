@@ -11,14 +11,16 @@
 //! it is the plugin saying what is wrong, and it is asked again in ten
 //! minutes, or as soon as its settings change.
 //!
-//! A component targets the 0.1 world or the 0.2 one, and [`Bindings`]
-//! calls either: the exports they share take the same Rust types (see
-//! [`crate::bindings`]), and a 0.1 plugin has no MQTT to deliver.
+//! A component targets the 0.1, 0.2 or 0.3 world, and [`Bindings`]
+//! calls any of them: the exports they share take the same Rust types
+//! (see [`crate::bindings`]), a 0.1 plugin has no MQTT to deliver, and
+//! only a 0.3 one is ever asked about accounts or its webhook.
 
 use crate::bindings::niles::integration::types::{DeviceState, Event, ToolDef};
 use crate::bindings::niles::integration::ui::{ActionResult, ActionValue, RenderContext, UiTree};
-use crate::bindings::{mqtt, v0_1, v0_2};
+use crate::bindings::{inbound, mqtt, v0_1, v0_2, v0_3};
 use crate::host::HostState;
+use crate::inbound::HookAnswer;
 use crate::log::Level;
 use crate::manifest::{INTERFACES, SettingValue};
 use crate::mqtt::Delivery;
@@ -35,7 +37,7 @@ use wasmtime::{Engine, Store};
 const NOTE_DROPS: Duration = Duration::from_secs(10);
 
 /// The `niles:integration` version a component was built against, by
-/// what it imports and exports: `0.1` or `0.2`.
+/// what it imports and exports: `0.1`, `0.2` or `0.3`.
 pub(crate) fn interface_of(component: &Component, engine: &Engine) -> Result<&'static str, String> {
     let ty = component.component_type();
     let mut found = BTreeSet::new();
@@ -62,10 +64,15 @@ pub(crate) fn interface_of(component: &Component, engine: &Engine) -> Result<&'s
             })?;
         found.insert(*minor);
     }
-    if ty
+    // Exports say it too, for a component that imports nothing of ours.
+    // 0.3 exports the MQTT pair as well, so its own export decides.
+    let exports: BTreeSet<String> = ty
         .exports(engine)
-        .any(|(name, _)| name == "on-mqtt-message")
-    {
+        .map(|(name, _)| name.to_string())
+        .collect();
+    if exports.contains("on-webhook") {
+        found.insert("0.3");
+    } else if exports.contains("on-mqtt-message") {
         found.insert("0.2");
     }
     match found.len() {
@@ -102,15 +109,17 @@ pub(crate) fn prepare(
     };
     Ok(match built {
         "0.1" => Pre::V1(v0_1::PluginPre::new(pre).map_err(missing)?),
-        _ => Pre::V2(v0_2::PluginPre::new(pre).map_err(missing)?),
+        "0.2" => Pre::V2(v0_2::PluginPre::new(pre).map_err(missing)?),
+        _ => Pre::V3(v0_3::PluginPre::new(pre).map_err(missing)?),
     })
 }
 
-/// A component ready to instantiate, as one world or the other.
+/// A component ready to instantiate, as one world or another.
 #[derive(Clone)]
 pub(crate) enum Pre {
     V1(v0_1::PluginPre<HostState>),
     V2(v0_2::PluginPre<HostState>),
+    V3(v0_3::PluginPre<HostState>),
 }
 
 impl Pre {
@@ -118,22 +127,25 @@ impl Pre {
         Ok(match self {
             Pre::V1(pre) => Bindings::V1(pre.instantiate(store)?),
             Pre::V2(pre) => Bindings::V2(pre.instantiate(store)?),
+            Pre::V3(pre) => Bindings::V3(pre.instantiate(store)?),
         })
     }
 }
 
-/// An instance's exports, as one world or the other.
+/// An instance's exports, as one world or another.
 pub(crate) enum Bindings {
     V1(v0_1::Plugin),
     V2(v0_2::Plugin),
+    V3(v0_3::Plugin),
 }
 
-/// The same call on either world's bindings.
+/// The same call on any world's bindings.
 macro_rules! either {
     ($self:ident, $b:ident => $call:expr) => {
         match $self {
             Bindings::V1($b) => $call,
             Bindings::V2($b) => $call,
+            Bindings::V3($b) => $call,
         }
     };
 }
@@ -210,6 +222,7 @@ impl Bindings {
         match self {
             Bindings::V1(_) => Ok(()),
             Bindings::V2(b) => b.call_on_mqtt_message(s, conn, topic, payload),
+            Bindings::V3(b) => b.call_on_mqtt_message(s, conn, topic, payload),
         }
     }
 
@@ -222,6 +235,57 @@ impl Bindings {
         match self {
             Bindings::V1(_) => Ok(()),
             Bindings::V2(b) => b.call_on_mqtt_status(s, conn, status),
+            Bindings::V3(b) => b.call_on_mqtt_status(s, conn, status),
+        }
+    }
+
+    /// Only a 0.3 plugin connects accounts or has a webhook; the manifest
+    /// check keeps the others from being asked, and this says so if
+    /// they are.
+    fn older(&self) -> Option<String> {
+        match self {
+            Bindings::V3(_) => None,
+            _ => Some("it is built for an interface without accounts or webhooks".into()),
+        }
+    }
+
+    pub fn call_authorize_url(
+        &self,
+        s: &mut Store<HostState>,
+        callback_url: &str,
+        state: &str,
+    ) -> Called<Result<String, String>> {
+        match self {
+            Bindings::V3(b) => b.call_authorize_url(s, callback_url, state),
+            _ => Ok(Err(self.older().unwrap_or_default())),
+        }
+    }
+
+    pub fn call_on_callback(
+        &self,
+        s: &mut Store<HostState>,
+        callback_url: &str,
+        query: &[(String, String)],
+        person: Option<&str>,
+    ) -> Called<Result<String, String>> {
+        match self {
+            Bindings::V3(b) => b.call_on_callback(s, callback_url, query, person),
+            _ => Ok(Err(self.older().unwrap_or_default())),
+        }
+    }
+
+    pub fn call_on_webhook(
+        &self,
+        s: &mut Store<HostState>,
+        request: &inbound::InboundRequest,
+    ) -> Called<inbound::InboundResponse> {
+        match self {
+            Bindings::V3(b) => b.call_on_webhook(s, request),
+            _ => Ok(inbound::InboundResponse {
+                status: 404,
+                content_type: None,
+                body: Vec::new(),
+            }),
         }
     }
 }
@@ -581,6 +645,103 @@ impl Worker {
                     },
                 };
                 let _ = reply.send(answer);
+            }
+            Job::Authorize {
+                callback_url,
+                state,
+                reply,
+            } => {
+                let _ = reply.send(self.authorize(&callback_url, &state));
+            }
+            Job::Callback {
+                callback_url,
+                query,
+                person,
+                reply,
+            } => {
+                let answer = match running {
+                    false => Err(SurfaceError::Unavailable(self.plugin.status().line())),
+                    true => match self.call("on-callback", self.limits.call, |b, s| {
+                        b.call_on_callback(s, &callback_url, &query, person.as_deref())
+                    }) {
+                        Some(Ok(said)) => Ok(said),
+                        Some(Err(why)) => Err(SurfaceError::Plugin(why)),
+                        None => Err(SurfaceError::Unavailable(self.plugin.status().line())),
+                    },
+                };
+                let _ = reply.send(answer);
+            }
+            Job::Webhook {
+                request,
+                expires,
+                reply,
+            } => {
+                let _ = reply.send(self.webhook(request, expires));
+            }
+        }
+    }
+
+    fn authorize(&mut self, callback_url: &str, state: &str) -> Result<String, SurfaceError> {
+        let unavailable = |plugin: &Plugin| SurfaceError::Unavailable(plugin.status().line());
+        if self.live.is_none() {
+            return Err(unavailable(&self.plugin));
+        }
+        let url = match self.call("authorize-url", self.limits.call, |b, s| {
+            b.call_authorize_url(s, callback_url, state)
+        }) {
+            None => return Err(unavailable(&self.plugin)),
+            Some(Err(why)) => return Err(SurfaceError::Plugin(why)),
+            Some(Ok(url)) => url,
+        };
+        let live = self
+            .live
+            .as_ref()
+            .ok_or_else(|| unavailable(&self.plugin))?;
+        crate::inbound::check_sign_in_page(&url, live.store.data().policy()).map_err(|why| {
+            self.plugin.note(
+                Level::Warn,
+                &format!(
+                    "authorize-url answered an address Niles will not send a browser to: {why}"
+                ),
+            );
+            SurfaceError::Plugin(format!(
+                "{} named a sign-in page Niles will not open: {why}.",
+                self.plugin.manifest.name
+            ))
+        })?;
+        Ok(url)
+    }
+
+    /// A request to the webhook. One that waited past `expires` is not
+    /// handed over: whoever sent it has been told to try again.
+    fn webhook(&mut self, request: crate::inbound::HookRequest, expires: Instant) -> HookAnswer {
+        if self.live.is_none() || Instant::now() >= expires {
+            return HookAnswer::empty(503);
+        }
+        let request = inbound::InboundRequest {
+            method: request.method,
+            query: request.query,
+            headers: request.headers,
+            body: request.body,
+        };
+        let Some(response) = self.call("on-webhook", self.limits.webhook, |b, s| {
+            b.call_on_webhook(s, &request)
+        }) else {
+            return HookAnswer::empty(503);
+        };
+        let answer = HookAnswer {
+            status: response.status,
+            content_type: response.content_type,
+            body: response.body,
+        };
+        match crate::inbound::check_answer(&answer) {
+            Ok(()) => answer,
+            Err(why) => {
+                self.plugin.note(
+                    Level::Warn,
+                    &format!("on-webhook answered something Niles will not pass on: {why}"),
+                );
+                HookAnswer::empty(502)
             }
         }
     }

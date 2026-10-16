@@ -7,15 +7,14 @@
 /// Spec: ARCHITECTURE.md, "Third-party integrations (plugins)".
 /// Author guide: docs/integrations/.
 ///
-/// Status: v0.2.1, run by Niles 0.2.0 and later (`crates/niles-plugins`).
-/// 0.2.0 is 0.1.0 plus the `mqtt` interface and the exports
-/// `on-mqtt-message` and `on-mqtt-status`; nothing 0.1.0 had changed.
-/// 0.2.1 adds two functions, `config.time-zone` and
-/// `devices.set-room-light`, and changes nothing 0.2.0 had: a component
-/// built against 0.2.0 runs unchanged, and one that calls the new
-/// functions needs a Niles that has them.
-/// Niles still runs plugins built for 0.1.0, whose interface is kept,
-/// frozen, in `niles-integration-0.1.wit` beside this file.
+/// Status: v0.3.0 (`crates/niles-plugins`). 0.3.0 is 0.2.1 plus the
+/// `secrets` and `inbound` interfaces and the exports `authorize-url`,
+/// `on-callback` and `on-webhook`: connecting an account through its
+/// own sign-in page, keeping the tokens it hands back, and a secret
+/// address the internet may call. Nothing 0.2.1 had changed.
+/// Niles still runs plugins built for 0.2 and 0.1, whose interfaces are
+/// kept, frozen, in `niles-integration-0.2.wit` and
+/// `niles-integration-0.1.wit` beside this file.
 ///
 /// Conventions, the same as the rest of Niles:
 /// - brightness and position are percent, 0-100 (position 0 is shut,
@@ -28,7 +27,7 @@
 /// Every call is synchronous from the plugin's point of view. Niles never
 /// calls into a plugin while that plugin is waiting on a host function,
 /// and never makes two calls into the same plugin at once.
-package niles:integration@0.2.1;
+package niles:integration@0.3.0;
 
 /// Types shared by several interfaces and by the exports.
 interface types {
@@ -723,11 +722,65 @@ interface mqtt {
     disconnect: func(conn: conn-id);
 }
 
+/// Credentials the plugin keeps itself, such as an OAuth token it
+/// refreshed, in Niles's encrypted secret store. Since 0.3.0.
+///
+/// Separate from `secret` settings, which the household types in and
+/// `config.secret` reads: nothing here appears on the setup panel, and
+/// saving the panel never overwrites it. Removed with the plugin.
+/// Keys are `[a-z0-9_]+`, at most 64 bytes; at most 16 keys, of at most
+/// 4 KiB each.
+interface secrets {
+    use types.{host-error};
+
+    /// The value under `key`, if any.
+    get: func(key: string) -> option<string>;
+
+    /// Store `value` under `key`, replacing what was there, atomically:
+    /// `ok` once it is kept, and on `err` the previous value is still
+    /// there and `get` still answers it. Keep what must change together
+    /// (an access token, its refresh token, when it expires) in one
+    /// value, as JSON.
+    set: func(key: string, value: string) -> result<_, host-error>;
+
+    /// Remove `key`. Removing a missing key is not an error.
+    delete: func(key: string) -> result<_, host-error>;
+}
+
+/// Requests from outside: the plugin's webhook, and the way back from
+/// a sign-in page. Since 0.3.0; needs the `webhook` or `callback`
+/// permission.
+interface inbound {
+    /// A request to the webhook. `headers` have lowercase names and no
+    /// `cookie`; `query` is the URL's pairs as they came, decoded.
+    record inbound-request {
+        method: string,
+        query: list<tuple<string, string>>,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    /// What the webhook answers. `status` is 200 to 599; the body at
+    /// most 64 KiB.
+    record inbound-response {
+        status: u16,
+        content-type: option<string>,
+        body: list<u8>,
+    }
+
+    /// The webhook's full address, to give the service that calls it:
+    /// `<Niles's public address>/plugins/<id>/hook/<token>`. None
+    /// without the `webhook` permission, or until the household sets
+    /// Niles's public address.
+    hook-url: func() -> option<string>;
+}
+
 /// The world a plugin targets.
 ///
 /// Every export must exist: a plugin that never connects to a broker
 /// still exports `on-mqtt-message` and `on-mqtt-status`, and leaves them
-/// empty.
+/// empty; one without the `callback` permission answers an error from
+/// `authorize-url`, and one without `webhook` a 404 from `on-webhook`.
 ///
 /// Besides these imports, a component may import WASI 0.2 (`wasi:cli`,
 /// `wasi:clocks`, `wasi:random`, `wasi:io`, `wasi:filesystem`,
@@ -740,6 +793,7 @@ world plugin {
     use types.{device-id, device-state, event, tool-def};
     use ui.{action-result, action-value, render-context, ui-tree};
     use mqtt.{conn-id, connection-status};
+    use inbound.{inbound-request, inbound-response};
 
     import log;
     import config;
@@ -751,6 +805,8 @@ world plugin {
     import notify;
     import ui;
     import mqtt;
+    import secrets;
+    import inbound;
 
     /// Called once per instance, after the plugin starts and after every
     /// settings change (each of which starts a fresh instance). Read
@@ -798,6 +854,26 @@ world plugin {
     /// A connection's state changed. Delivered in order with its
     /// messages, so `connected` comes before the messages after it.
     export on-mqtt-status: func(conn: conn-id, status: connection-status);
+
+    /// Somebody asked to connect an account: answer the address of the
+    /// service's sign-in page. Put `callback-url` and `state` in it as
+    /// that service names them (usually `redirect_uri` and `state`).
+    /// Niles sends the browser there only if it is `https` on a host the
+    /// `http` permission declares. Since 0.3.0.
+    export authorize-url: func(callback-url: string, state: string) -> result<string, string>;
+
+    /// The browser came back from the sign-in page. Niles has checked
+    /// `state`, against the browser and the person, and taken it out of
+    /// `query`; the rest is the pairs as the service sent them
+    /// (`code=…`, or `error=access_denied`). Exchange the code here: it
+    /// is often good for seconds only. `person` is who is signed in.
+    /// `ok` or `err` is shown to them. Since 0.3.0.
+    export on-callback: func(callback-url: string, query: list<tuple<string, string>>, person: option<string>) -> result<string, string>;
+
+    /// A request to the webhook, after Niles checked the token in its
+    /// address. Five seconds: answer, then do anything slow from a
+    /// timer. A 5xx makes most services try again later. Since 0.3.0.
+    export on-webhook: func(request: inbound-request) -> inbound-response;
 
     /// The instance is about to be dropped: Niles is stopping, the plugin
     /// is being updated, disabled or removed, or its settings changed.

@@ -48,6 +48,31 @@ fn is_exempt(path: &str) -> bool {
     )
 }
 
+/// A plugin's webhook, and a `HEAD` on its callback (interface 0.3).
+///
+/// The webhook authenticates itself by the token in its path, which the
+/// runtime checks; a service calling it has no session to show. A `HEAD`
+/// on the callback is a service checking the address answers, from its
+/// own servers, and gets an empty answer that reads and spends nothing;
+/// a `GET` there is a person's browser and stays behind the gate.
+///
+/// Matched segment by segment, each held to the characters an id or a
+/// token has, so nothing with a `..`, an encoded slash or a fifth
+/// segment slips through as one.
+fn is_plugin_inbound(method: &Method, path: &str) -> bool {
+    let id = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    let token = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
+    match path.split('/').collect::<Vec<_>>().as_slice() {
+        ["", "plugins", plugin, "hook", given] => id(plugin) && token(given),
+        ["", "plugins", plugin, "callback"] => *method == Method::HEAD && id(plugin),
+        _ => false,
+    }
+}
+
 /// Whether this is a file out of the embedded UI bundle.
 ///
 /// The shell and its assets are not the API — there is no data in
@@ -92,7 +117,11 @@ pub async fn require_sign_in(
     };
     let config = store.current();
     let path = request.uri().path();
-    if !config.auth.is_enabled() || is_exempt(path) || is_ui_asset(path) {
+    if !config.auth.is_enabled()
+        || is_exempt(path)
+        || is_plugin_inbound(request.method(), path)
+        || is_ui_asset(path)
+    {
         return next.run(request).await;
     }
 
@@ -268,6 +297,46 @@ mod tests {
             "/training/ingest",
         ] {
             assert!(!is_exempt(path), "{path} must not be exempt");
+        }
+    }
+
+    #[test]
+    fn a_plugins_webhook_and_a_check_on_its_callback_answer_before_the_gate() {
+        let token = "0123456789abcdef".repeat(4);
+        for method in [Method::GET, Method::POST, Method::HEAD, Method::PUT] {
+            assert!(is_plugin_inbound(
+                &method,
+                &format!("/plugins/withings/hook/{token}")
+            ));
+        }
+        assert!(is_plugin_inbound(
+            &Method::HEAD,
+            "/plugins/withings/callback"
+        ));
+    }
+
+    #[test]
+    fn the_rest_of_a_plugins_routes_stay_behind_the_gate() {
+        let token = "0123456789abcdef".repeat(4);
+        for (method, path) in [
+            // A person's browser coming back: sign-in, state and person checked.
+            (Method::GET, "/plugins/withings/callback".to_string()),
+            (Method::GET, "/plugins/withings/connect".to_string()),
+            (Method::POST, "/plugins/withings/rotate-hook".to_string()),
+            (Method::GET, "/plugins/withings/surfaces/page".to_string()),
+            (Method::DELETE, "/plugins/withings".to_string()),
+            // Not a webhook, however it is dressed up.
+            (Method::POST, "/plugins/withings/hook".to_string()),
+            (Method::POST, "/plugins/withings/hook/rotate".to_string()),
+            (
+                Method::POST,
+                format!("/plugins/withings/hook/{token}/extra"),
+            ),
+            (Method::POST, format!("/plugins/../config/hook/{token}")),
+            (Method::POST, format!("/plugins/With.ings/hook/{token}")),
+            (Method::POST, "/plugins/withings/hook/%2e%2e".to_string()),
+        ] {
+            assert!(!is_plugin_inbound(&method, &path), "{method} {path}");
         }
     }
 

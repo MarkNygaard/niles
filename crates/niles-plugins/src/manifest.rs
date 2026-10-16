@@ -15,7 +15,7 @@ use std::collections::HashSet;
 pub const NILES_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `interface` versions this Niles runs, oldest first.
-pub const INTERFACES: &[&str] = &["0.1", "0.2"];
+pub const INTERFACES: &[&str] = &["0.1", "0.2", "0.3"];
 
 /// Memory a plugin gets unless its manifest asks for more.
 pub const DEFAULT_MEMORY_MB: u32 = 64;
@@ -87,6 +87,12 @@ pub struct Permissions {
     /// MQTT brokers, from interface 0.2.
     #[serde(default)]
     pub mqtt: Vec<MqttBroker>,
+    /// Connect an account through its sign-in page, from interface 0.3.
+    #[serde(default)]
+    pub callback: bool,
+    /// A secret address the internet may call, from interface 0.3.
+    #[serde(default)]
+    pub webhook: bool,
 }
 
 /// One broker a plugin may connect to.
@@ -478,6 +484,21 @@ impl Manifest {
             out.push("pages and widgets need ui = true in [permissions]".into());
         }
         self.check_mqtt(out);
+        let older = matches!(self.interface.as_str(), "0.1" | "0.2");
+        for (asked, name) in [(p.callback, "callback"), (p.webhook, "webhook")] {
+            if asked && older {
+                out.push(format!(
+                    "{name}: accounts and webhooks are in interface 0.3; set interface = \"0.3\" \
+                     and build against its WIT"
+                ));
+            }
+        }
+        if p.callback && p.http.is_empty() {
+            out.push(
+                "callback: the sign-in page has to be on a host the http permission declares"
+                    .into(),
+            );
+        }
     }
 
     fn check_mqtt(&self, out: &mut Vec<String>) {
@@ -889,8 +910,46 @@ room = "setting:room"
             replacing(r#"min_niles = "0.2.0""#, r#"min_niles = "9.0.0""#)[0]
                 .contains("needs Niles")
         );
-        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.3""#)[0].contains("interface"));
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.4""#)[0].contains("interface"));
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#).is_empty());
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.3""#).is_empty());
+    }
+
+    #[test]
+    fn accounts_and_webhooks_need_interface_0_3() {
+        for permission in ["callback = true", "webhook = true"] {
+            let edit = format!("devices = true\n{permission}");
+            let on_0_1 = replacing("devices = true", &edit);
+            assert!(
+                on_0_1.iter().any(|p| p.contains("interface 0.3")),
+                "{permission}: {on_0_1:?}"
+            );
+            let on_0_3 = Manifest::parse(
+                &SPOTPRICE
+                    .replace(r#"interface = "0.1""#, r#"interface = "0.3""#)
+                    .replace("devices = true", &edit),
+            )
+            .unwrap();
+            assert_eq!(on_0_3.problems(), Vec::<String>::new(), "{permission}");
+        }
+    }
+
+    #[test]
+    fn a_sign_in_page_needs_a_host_to_be_on() {
+        let manifest = Manifest::parse(
+            &SPOTPRICE
+                .replace(r#"interface = "0.1""#, r#"interface = "0.3""#)
+                .replace(r#"http = ["api.energidataservice.dk"]"#, "callback = true"),
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .problems()
+                .iter()
+                .any(|p| p.contains("callback") && p.contains("http")),
+            "{:?}",
+            manifest.problems()
+        );
     }
 
     #[test]

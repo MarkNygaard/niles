@@ -212,6 +212,7 @@ describe("RoomDashboard with plugins' widgets", () => {
     ],
     interface: "0.1",
     older_interface: false,
+    inbound: null,
   };
 
   it("draws a front-page widget as a card, and a room's where the room opens", async () => {
