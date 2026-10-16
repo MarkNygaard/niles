@@ -24,7 +24,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-plugin-log-image` | GET /plugins/{id}/log for a plugin's last lines, and /plugins/{id}/image for its pages' pictures, fetched by Niles | [#391](https://github.com/MarkNygaard/niles/pull/391) |
 | `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
-| `api-training-today` | GET /me/training/today: the signed-in person's training plan read for today, or plan null without one | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `api-training-today` | GET /me/training/today: the signed-in person's training plan read for today, or plan null without one | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
@@ -110,7 +110,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `ui-training-plan-sessions` | Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan | [#436](https://github.com/MarkNygaard/niles/pull/436) |
-| `ui-todays-run-card` | Today's run on the dashboard: the session, the next one, the week's km and the coach's note, with Done and Skipped | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `ui-todays-run-card` | Today's run on the dashboard: the session, the next one, the week's km and the coach's note, with Done and Skipped | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `plugins-widget-room-setting` | A plugin's widget can start in the room one of its settings names, and moves when the setting changes | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `ui-media-without-sonos` | Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one | [#408](https://github.com/MarkNygaard/niles/pull/408) |
 | `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#391](https://github.com/MarkNygaard/niles/pull/391) |

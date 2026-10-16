@@ -705,10 +705,10 @@ since_pr = 436
 id = "ui-todays-run-card"
 category = "ui.dashboard"
 summary = "Today's run on the dashboard: the session, the next one, the week's km and the coach's note, with Done and Skipped"
-since_pr = 9999
+since_pr = 438
 
 [[feature]]
 id = "api-training-today"
 category = "api.read"
 summary = "GET /me/training/today: the signed-in person's training plan read for today, or plan null without one"
-since_pr = 9999
+since_pr = 438
