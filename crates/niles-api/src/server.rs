@@ -196,6 +196,22 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me", get(crate::me::get).put(crate::me::update))
         .route("/me/phone", delete(crate::me::forget_phone))
+        .route("/me/artifacts", get(crate::artifacts::list))
+        .route(
+            "/me/artifacts/{id}",
+            get(crate::artifacts::get)
+                .patch(crate::artifacts::patch)
+                .delete(crate::artifacts::delete),
+        )
+        .route(
+            "/me/artifacts/{id}/revisions/{n}",
+            get(crate::artifacts::revision),
+        )
+        .route(
+            "/me/artifacts/{id}/restore/{n}",
+            post(crate::artifacts::restore),
+        )
+        .route("/me/artifacts/{id}/retry", post(crate::artifacts::retry))
         .route(
             "/me/strava",
             get(crate::training::status).delete(crate::training::remove),

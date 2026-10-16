@@ -186,6 +186,10 @@ pub struct Turn {
     /// What this turn left waiting for the person's yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalCard>,
+    /// The artifacts this turn made or changed, for a card under the
+    /// reply. Brought up to date when the conversation is read back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<niles_artifacts::ArtifactRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -456,6 +460,13 @@ fn chat(state: &AppState) -> Result<&Arc<dyn Chat>, Failure> {
     })
 }
 
+/// The key the caller's conversations, and everything else of theirs,
+/// are kept under.
+pub(crate) fn person_of(state: &AppState, headers: &HeaderMap) -> String {
+    let (who, speaker) = caller(state, headers);
+    niles_training::person_key(speaker.as_deref(), &who)
+}
+
 /// Whose conversation this is, and the voice they are linked to.
 ///
 /// The gate has already let the request in, so somebody without a
@@ -521,6 +532,7 @@ mod tests {
             by: None,
             proposal: None,
             approval: None,
+            artifacts: Vec::new(),
         }
     }
 

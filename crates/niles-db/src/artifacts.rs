@@ -31,7 +31,8 @@ create table if not exists artifacts (
     conversation_id  bigint,
     created_at       timestamptz not null default now(),
     updated_at       timestamptz not null default now(),
-    current_revision integer not null default 0
+    current_revision integer not null default 0,
+    preview          jsonb not null default '{\"lines\": []}'
 );
 create index if not exists artifacts_person on artifacts (person, updated_at desc);
 create table if not exists artifact_revisions (
@@ -46,7 +47,7 @@ create table if not exists artifact_revisions (
 ";
 
 const COLUMNS: &str = "id, person, kind, title, summary, pinned, archived, notify, status, \
-    status_text, error, job_id, brief, conversation_id, created_at, updated_at, current_revision";
+    status_text, error, job_id, brief, conversation_id, created_at, updated_at, current_revision,     preview::text as preview";
 
 pub struct PostgresArtifacts {
     pool: PgPool,
@@ -147,7 +148,15 @@ fn artifact(r: &PgRow) -> Artifact {
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
         current_revision: r.get("current_revision"),
+        // A preview that will not read costs the card its lines, not the
+        // artifact.
+        preview: serde_json::from_str(r.get::<&str, _>("preview")).unwrap_or_default(),
     }
+}
+
+fn preview_json(kind: &str, content: &serde_json::Value) -> String {
+    serde_json::to_string(&niles_artifacts::kinds::preview(kind, content))
+        .unwrap_or_else(|_| "{\"lines\": []}".into())
 }
 
 fn author(r: &PgRow) -> Author {
@@ -186,12 +195,16 @@ impl ArtifactStore for PostgresArtifacts {
         .get("id");
         if let Some(first) = &new.first {
             let n = self.push_revision(&mut tx, id, first).await?;
-            sqlx::query("update artifacts set current_revision = $2 where id = $1")
-                .bind(id)
-                .bind(n)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| self.storage(e))?;
+            let preview = preview_json(&new.kind, &first.content);
+            sqlx::query(
+                "update artifacts set current_revision = $2, preview = $3::jsonb where id = $1",
+            )
+            .bind(id)
+            .bind(n)
+            .bind(preview)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| self.storage(e))?;
         }
         tx.commit().await.map_err(|e| self.storage(e))?;
         self.one(person, id)
@@ -283,24 +296,26 @@ impl ArtifactStore for PostgresArtifacts {
         // Locked, so two saves at once number their versions one after
         // the other rather than both taking the same number.
         let theirs =
-            sqlx::query("select id from artifacts where id = $1 and person = $2 for update")
+            sqlx::query("select kind from artifacts where id = $1 and person = $2 for update")
                 .bind(id)
                 .bind(person)
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(|e| self.storage(e))?;
-        if theirs.is_none() {
+        let Some(theirs) = theirs else {
             return Ok(None);
-        }
+        };
         let n = self.push_revision(&mut tx, id, &revision).await?;
         sqlx::query(
             "update artifacts
-             set current_revision = $2, updated_at = now(), summary = coalesce($3, summary)
+             set current_revision = $2, updated_at = now(), summary = coalesce($3, summary),
+                 preview = $4::jsonb
              where id = $1",
         )
         .bind(id)
         .bind(n)
         .bind(&revision.summary)
+        .bind(preview_json(theirs.get("kind"), &revision.content))
         .execute(&mut *tx)
         .await
         .map_err(|e| self.storage(e))?;

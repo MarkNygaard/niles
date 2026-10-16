@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::kinds::Preview;
 use crate::model::{
     Artifact, Author, Changes, Filter, NewArtifact, NewRevision, Revision, RevisionMeta, Status,
     StatusChange,
@@ -143,9 +144,11 @@ impl ArtifactStore for MemoryArtifacts {
             created_at: now,
             updated_at: now,
             current_revision: 0,
+            preview: Preview::default(),
         };
         if let Some(first) = &new.first {
             artifact.current_revision = inner.push_revision(artifact.id, first);
+            artifact.preview = crate::kinds::preview(&artifact.kind, &first.content);
             if let Some(summary) = &first.summary {
                 artifact.summary = summary.clone();
             }
@@ -212,6 +215,7 @@ impl ArtifactStore for MemoryArtifacts {
         let n = inner.push_revision(id, &revision);
         let artifact = inner.find(person, id).expect("found above");
         artifact.current_revision = n;
+        artifact.preview = crate::kinds::preview(&artifact.kind, &revision.content);
         artifact.updated_at = Utc::now();
         if let Some(summary) = revision.summary {
             artifact.summary = summary;

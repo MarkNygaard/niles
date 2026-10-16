@@ -95,6 +95,9 @@ pub struct Artifact {
     pub updated_at: DateTime<Utc>,
     /// The version shown; 0 before there is one.
     pub current_revision: i32,
+    /// The first lines of the version shown, kept with the row so a
+    /// list needs no content.
+    pub preview: Preview,
 }
 
 /// One version of an artifact's content.
@@ -185,6 +188,45 @@ impl Filter {
     }
 }
 
+/// Long enough for "Thailand, two weeks in March: Bangkok and the
+/// islands", short enough for one line of a list.
+pub const MAX_TITLE: usize = 120;
+/// One line under the title.
+pub const MAX_SUMMARY: usize = 240;
+
+/// A title as it is kept: on one line, not empty, not too long.
+pub fn title(raw: &str) -> crate::Result<String> {
+    let t = one_line(raw);
+    if t.is_empty() {
+        return Err(crate::Error::Invalid {
+            kind: "title",
+            reason: "it is empty".into(),
+        });
+    }
+    if t.chars().count() > MAX_TITLE {
+        return Err(crate::Error::Invalid {
+            kind: "title",
+            reason: format!("it is longer than {MAX_TITLE} characters"),
+        });
+    }
+    Ok(t)
+}
+
+/// A summary as it is kept: one line, cut if it runs long rather than
+/// refused, since it only describes what is already saved.
+pub fn summary(raw: &str) -> String {
+    let s = one_line(raw);
+    if s.chars().count() <= MAX_SUMMARY {
+        return s;
+    }
+    let cut: String = s.chars().take(MAX_SUMMARY - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+fn one_line(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// An artifact as a chat turn carries it: enough for a card.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactRef {
@@ -198,18 +240,14 @@ pub struct ArtifactRef {
 }
 
 impl ArtifactRef {
-    /// The card for `artifact`, with the preview of `content` when there
-    /// is a version to show.
-    pub fn of(artifact: &Artifact, content: Option<&Value>) -> Self {
+    pub fn of(artifact: &Artifact) -> Self {
         Self {
             id: artifact.id,
             kind: artifact.kind.clone(),
             title: artifact.title.clone(),
             summary: artifact.summary.clone(),
             status: artifact.status,
-            preview: content
-                .map(|c| crate::kinds::preview(&artifact.kind, c))
-                .unwrap_or_default(),
+            preview: artifact.preview.clone(),
         }
     }
 }
@@ -237,6 +275,27 @@ mod tests {
     }
 
     #[test]
+    fn a_title_is_one_line_and_never_empty() {
+        assert_eq!(
+            title(
+                "  Thailand
+ travel plan "
+            )
+            .unwrap(),
+            "Thailand travel plan"
+        );
+        assert!(title("   ").is_err());
+        assert!(title(&"x".repeat(MAX_TITLE + 1)).is_err());
+    }
+
+    #[test]
+    fn a_long_summary_is_cut_rather_than_refused() {
+        let s = summary(&"word ".repeat(100));
+        assert!(s.ends_with('…'));
+        assert!(s.chars().count() <= MAX_SUMMARY);
+    }
+
+    #[test]
     fn whose_it_is_never_goes_to_the_app() {
         let now = Utc::now();
         let a = Artifact {
@@ -257,6 +316,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             current_revision: 1,
+            preview: Preview::default(),
         };
         let v = serde_json::to_value(&a).unwrap();
         assert!(v.get("person").is_none());

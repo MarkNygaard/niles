@@ -63,6 +63,20 @@ pub enum Event {
         /// The surface id from the plugin's manifest, e.g. `electricity`.
         surface: String,
     },
+    /// One of a person's artifacts was made, changed, or moved on in its
+    /// job. Forwarded only to that person's own connections: the stream
+    /// is the house's, and a title is not.
+    ArtifactChanged {
+        /// The person key, `person:{slug}` or `email:{address}`.
+        person: String,
+        id: i64,
+        kind: String,
+        title: String,
+        /// `ready`, `working`, `failed`, or `deleted`. A string, so the
+        /// bus does not depend on `niles-artifacts`.
+        status: String,
+        status_text: Option<String>,
+    },
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.

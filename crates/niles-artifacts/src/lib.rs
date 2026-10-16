@@ -17,6 +17,6 @@ pub use error::{Error, Result};
 pub use kinds::{Kind, Preview, PreviewLine, Style};
 pub use model::{
     Artifact, ArtifactRef, Author, Changes, Filter, NewArtifact, NewRevision, Revision,
-    RevisionMeta, Status, StatusChange,
+    RevisionMeta, Status, StatusChange, summary, title,
 };
 pub use store::{ArtifactStore, KEPT_REVISIONS, MemoryArtifacts, restore};

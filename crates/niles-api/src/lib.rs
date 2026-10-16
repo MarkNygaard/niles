@@ -21,6 +21,7 @@
 //! ```
 
 pub mod api_token;
+pub mod artifacts;
 pub mod auth;
 pub mod automations;
 pub mod calendars;
