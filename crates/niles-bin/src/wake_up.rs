@@ -22,7 +22,7 @@ use niles_automations::{WakePlan, Waker};
 use niles_config::ConfigStore;
 use niles_core::{DeviceId, DeviceRegistry, DeviceState};
 use niles_mqtt::{CommandRouter, MqttPublisher};
-use niles_scheduler::{ManualModeTracker, MorningClaimTracker, kick_on_skip};
+use niles_scheduler::{KELVIN_DEBOUNCE_K, ManualModeTracker, MorningClaimTracker, kick_on_skip};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -31,9 +31,6 @@ use std::time::Duration;
 /// A ramp step smaller than this is not worth a command: the same
 /// rule the scheduled routine keeps.
 const DEBOUNCE: u8 = 2;
-
-/// The same for warmth, as the curve has it.
-const KELVIN_DEBOUNCE: u16 = 50;
 
 /// The curve's value at the moment, when it is switched on.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,7 +125,7 @@ fn gone(ramp: &Ramp, now: DateTime<Utc>) -> f64 {
 /// Whether a light's reported warmth is far enough from `want` to send.
 /// A light that reports none is sent it with the brightness only.
 fn colour_behind(reported: Option<u16>, want: Option<u16>) -> bool {
-    matches!((reported, want), (Some(now), Some(want)) if now.abs_diff(want) > KELVIN_DEBOUNCE)
+    matches!((reported, want), (Some(now), Some(want)) if now.abs_diff(want) > KELVIN_DEBOUNCE_K)
 }
 
 pub(crate) struct WakeUps {

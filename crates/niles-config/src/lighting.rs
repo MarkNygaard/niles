@@ -134,6 +134,14 @@ pub struct MorningRoutineConfigDto {
     pub exclude_devices: Vec<String>,
     #[serde(default)]
     pub skip_overrides: Vec<String>,
+    /// The warmth the ramp starts at, in Kelvin; `kelvin` when left out.
+    /// Only with `kelvin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_kelvin: Option<u16>,
+    /// The warmth it ends at. Left out, the lights follow the curve's
+    /// warmth, or keep their colour with the curve off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kelvin: Option<u16>,
 }
 
 impl MorningRoutineConfigDto {
@@ -161,11 +169,28 @@ impl MorningRoutineConfigDto {
             .map(|s| parse_naive_date(s))
             .collect::<Result<Vec<_>>>()?;
 
+        for k in [self.start_kelvin, self.kelvin].into_iter().flatten() {
+            if !(2000..=6500).contains(&k) {
+                return Err(Error::InvalidSection {
+                    section: "lighting",
+                    reason: format!("the morning routine's warmth is 2000 to 6500 K, not {k}"),
+                });
+            }
+        }
+        if self.start_kelvin.is_some() && self.kelvin.is_none() {
+            return Err(Error::InvalidSection {
+                section: "lighting",
+                reason: "the morning routine's start warmth needs an end warmth to go to".into(),
+            });
+        }
+
         Ok(MorningRoutineConfig {
             fire_days,
             target_devices,
             exclude_devices,
             skip_overrides,
+            start_kelvin: self.start_kelvin,
+            kelvin: self.kelvin,
         })
     }
 }
@@ -557,6 +582,33 @@ fire_days = [\"sat\", \"sun\"]
         )
         .expect("valid");
         assert!(cfg.lighting.morning_routine.expect("present").enabled);
+    }
+
+    #[test]
+    fn a_routine_can_warm_up_as_it_ramps() {
+        let cfg = Config::load_from_str(
+            "[lighting.morning_routine]
+start_kelvin = 2200
+kelvin = 4000
+",
+        )
+        .expect("valid");
+        let routine = cfg.lighting.morning_routine.expect("present");
+        let typed = routine.to_morning_routine_config().expect("converts");
+        assert_eq!((typed.start_kelvin, typed.kelvin), (Some(2200), Some(4000)));
+    }
+
+    #[test]
+    fn a_routine_warmth_out_of_range_or_with_no_end_is_refused() {
+        for bad in [
+            "start_kelvin = 2200",
+            "kelvin = 9000",
+            "start_kelvin = 1000\nkelvin = 4000",
+        ] {
+            let toml = format!("[lighting.morning_routine]\n{bad}\n");
+            let cfg = Config::load_from_str(&toml).expect("parses");
+            assert!(cfg.validate().is_err(), "{bad}");
+        }
     }
 
     #[test]

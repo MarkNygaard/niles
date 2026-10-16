@@ -56,6 +56,21 @@ describe("MorningCard", () => {
     expect(onDays).toHaveBeenCalledWith(["mon", "sat"]);
   });
 
+  it("offers a warmth from and to, both optional, so empty follows the curve", () => {
+    const rows: { label: string; settings: { path: string; optional?: boolean }[] }[] = [];
+    setup({
+      row: (spec) => {
+        rows.push(spec);
+        return <div key={spec.label}>{spec.label}</div>;
+      },
+    });
+    const warmth = rows.find((r) => r.label === "Warmth");
+    expect(warmth?.settings.map((s) => [s.path, s.optional])).toEqual([
+      ["lighting.morning_routine.start_kelvin", true],
+      ["lighting.morning_routine.kelvin", true],
+    ]);
+  });
+
   it("says outright that no days means it never fires", () => {
     setup({ fireDays: [] });
     expect(screen.getByText(/never fires/)).toBeInTheDocument();

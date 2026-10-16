@@ -24,10 +24,10 @@ use niles_notifications::NotificationCenter;
 use niles_presence::{PresenceAggregator, PresenceSource, TadoConfig, TadoSource};
 use niles_recognition::{EcapaTdnnEmbedder, EmbedderConfig};
 use niles_scheduler::{
-    BRIGHTNESS_DEBOUNCE, ManualModeTracker, MinuteOfDay, MorningClaimTracker, MorningRoutineConfig,
-    SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant, brightness_at,
-    build_ambient_target, build_curve_target, classify_action, color_temp_at, effective_minute,
-    kick_on_skip, routine_brightness_at, should_fire_today,
+    BRIGHTNESS_DEBOUNCE, KELVIN_DEBOUNCE_K, ManualModeTracker, MinuteOfDay, MorningClaimTracker,
+    MorningRoutineConfig, SceneStore, SwitchEffect, TimerEntry, TimerStore, WeekInstant,
+    brightness_at, build_ambient_target, build_curve_target, classify_action, color_temp_at,
+    effective_minute, kick_on_skip, routine_brightness_at, routine_kelvin_at, should_fire_today,
 };
 use niles_skills::{SkillStatus, SkillStore, SkillSummary};
 use niles_speakers::SonosClient;
@@ -7759,6 +7759,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         lighting.ambient(),
                         lighting.lamp_plugs(),
                         Some(wake_ups.as_ref()),
+                        curve_now.map(|c| c.kelvin),
                     ).await;
                 }
                 run_curve_tick(
@@ -8063,6 +8064,13 @@ async fn run_curve_tick(
     );
 }
 
+/// Whether a light's reported warmth is far enough from `want` to send,
+/// by the curve's rule. A light that reports none gets it with the
+/// brightness only.
+fn kelvin_drifted(reported: Option<u16>, want: Option<u16>) -> bool {
+    matches!((reported, want), (Some(now), Some(want)) if now.abs_diff(want) > KELVIN_DEBOUNCE_K)
+}
+
 /// One tick of the morning routine. Behaviour:
 ///
 /// - At `morning_start` on a fire-day: claim every off target device
@@ -8070,7 +8078,8 @@ async fn run_curve_tick(
 /// - During the window: for each currently-claimed device, compute the
 ///   target via `routine_brightness_at` and publish a brightness update
 ///   if it differs from current state by strictly more than
-///   `BRIGHTNESS_DEBOUNCE`.
+///   `BRIGHTNESS_DEBOUNCE`, or its warmth has drifted from
+///   `routine_kelvin_at`'s.
 /// - At `morning_end` or after: release any device the routine still
 ///   has claimed.
 #[allow(clippy::too_many_arguments)]
@@ -8092,6 +8101,9 @@ async fn run_morning_routine_tick(
     ambient: &HashSet<DeviceId>,
     lamp_plugs: &HashSet<DeviceId>,
     wake_ups: Option<&wake_up::WakeUps>,
+    // The curve's warmth now, `None` with the curve off: what the lights
+    // are on when the routine has none of its own.
+    curve_kelvin: Option<u16>,
 ) {
     // Deliberately not gated on `lighting.enabled`: that switch governs
     // the curve, and the routine is opted into separately by having a
@@ -8102,6 +8114,13 @@ async fn run_morning_routine_tick(
         return;
     };
     let today = now.date_naive();
+    let warmth = routine_kelvin_at(
+        routine,
+        minute_of_day,
+        morning_start,
+        morning_end,
+        curve_kelvin,
+    );
 
     // Effective target set: an empty `target_devices` means "every
     // curve-managed light" (all non-ambient lights, same set the curve
@@ -8177,9 +8196,13 @@ async fn run_morning_routine_tick(
                     tracing::info!("[routine {minute_of_day}] released {id}");
                     continue;
                 };
-                if device.is_curve_driven(ambient) && device.state.brightness != Some(100) {
+                if device.is_curve_driven(ambient)
+                    && (device.state.brightness != Some(100)
+                        || kelvin_drifted(device.state.color_temp_kelvin, warmth))
+                {
                     let target = DeviceState {
                         brightness: Some(100),
+                        color_temp_kelvin: warmth,
                         ..Default::default()
                     };
                     if let Some(commander) = router.commander_for(id, &target) {
@@ -8243,6 +8266,7 @@ async fn run_morning_routine_tick(
             let target = DeviceState {
                 on: Some(true),
                 brightness: Some(0),
+                color_temp_kelvin: warmth,
                 ..Default::default()
             };
             if let Some(commander) = router.commander_for(id, &target) {
@@ -8302,12 +8326,13 @@ async fn run_morning_routine_tick(
         let should_publish = match device.state.brightness {
             Some(cur) => cur.abs_diff(target_brightness) > BRIGHTNESS_DEBOUNCE,
             None => true,
-        };
+        } || kelvin_drifted(device.state.color_temp_kelvin, warmth);
         if !should_publish {
             continue;
         }
         let target = DeviceState {
             brightness: Some(target_brightness),
+            color_temp_kelvin: warmth,
             ..Default::default()
         };
         if let Some(commander) = router.commander_for(id, &target) {
