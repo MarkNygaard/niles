@@ -18,7 +18,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `api-events-stream` | WebSocket /events/stream pushes real-time device and system events | [#86](https://github.com/MarkNygaard/niles/pull/86) |
-| `events-artifact-status` | artifact_changed on /events/stream, only to its own person: the status line follows a job as it is written | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `events-artifact-status` | artifact_changed on /events/stream, only to its own person: the status line follows a job as it is written | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `api-get-devices` | GET /devices returns the full device registry snapshot | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-healthz` | GET /healthz returns a liveness probe for load balancers | [#13](https://github.com/MarkNygaard/niles/pull/13) |
@@ -56,7 +56,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
-| `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
@@ -89,7 +89,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-key-made` | Niles makes its own API key on a start with a database, and a new one works at once with no restart | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
-| `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `plugins-widget-room-setting` | A plugin's widget can start in the room one of its settings names, and moves when the setting changes | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `ui-media-without-sonos` | Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one | [#408](https://github.com/MarkNygaard/niles/pull/408) |
 | `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#391](https://github.com/MarkNygaard/niles/pull/391) |
