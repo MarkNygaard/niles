@@ -28,6 +28,11 @@ pub struct MorningRoutineConfig {
     /// Dates on which the routine should be skipped even if the
     /// weekday matches.
     pub skip_overrides: Vec<NaiveDate>,
+    /// The warmth the ramp starts at; `kelvin` when `None`. Only ever
+    /// set with `kelvin`.
+    pub start_kelvin: Option<u16>,
+    /// The warmth it ends at. `None` follows the curve's.
+    pub kelvin: Option<u16>,
 }
 
 /// Whether the routine should fire on the given calendar day.
@@ -140,6 +145,25 @@ pub fn routine_brightness_at(
     let elapsed = (t - start) as u32;
     let pct = (elapsed * 100 / span) as u8;
     Some(pct)
+}
+
+/// The warmth the routine's lights are on at `time`: its own, from its
+/// start warmth to its end across the window, or `curve_kelvin`, the
+/// curve's at the moment (`None` when the curve is off, which leaves the
+/// colour be). `None` before the window, as for the brightness.
+pub fn routine_kelvin_at(
+    routine: &MorningRoutineConfig,
+    time: MinuteOfDay,
+    morning_start: MinuteOfDay,
+    morning_end: MinuteOfDay,
+    curve_kelvin: Option<u16>,
+) -> Option<u16> {
+    let pct = routine_brightness_at(time, morning_start, morning_end)?;
+    let Some(to) = routine.kelvin else {
+        return curve_kelvin;
+    };
+    let (from, to) = (f64::from(routine.start_kelvin.unwrap_or(to)), f64::from(to));
+    Some((from + (to - from) * f64::from(pct) / 100.0).round() as u16)
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -343,6 +367,8 @@ mod tests {
             target_devices: vec![],
             exclude_devices: vec![],
             skip_overrides: vec![],
+            start_kelvin: None,
+            kelvin: None,
         };
         assert!(should_fire_today(
             &cfg,
@@ -357,6 +383,8 @@ mod tests {
             target_devices: vec![],
             exclude_devices: vec![],
             skip_overrides: vec![],
+            start_kelvin: None,
+            kelvin: None,
         };
         assert!(!should_fire_today(
             &cfg,
@@ -372,8 +400,67 @@ mod tests {
             target_devices: vec![],
             exclude_devices: vec![],
             skip_overrides: vec![skip],
+            start_kelvin: None,
+            kelvin: None,
         };
         assert!(!should_fire_today(&cfg, skip));
+    }
+
+    // ------------------------------------------------------------------
+    // routine_kelvin_at
+
+    fn warming(start_kelvin: Option<u16>, kelvin: Option<u16>) -> MorningRoutineConfig {
+        MorningRoutineConfig {
+            fire_days: vec![Weekday::Mon],
+            target_devices: vec![],
+            exclude_devices: vec![],
+            skip_overrides: vec![],
+            start_kelvin,
+            kelvin,
+        }
+    }
+
+    fn at(h: u8, m: u8) -> MinuteOfDay {
+        MinuteOfDay::new(h, m).unwrap()
+    }
+
+    #[test]
+    fn its_own_warmth_ramps_across_the_window() {
+        let r = warming(Some(2200), Some(4000));
+        let (start, end) = (at(6, 0), at(6, 30));
+        assert_eq!(
+            routine_kelvin_at(&r, at(6, 0), start, end, Some(2700)),
+            Some(2200)
+        );
+        assert_eq!(
+            routine_kelvin_at(&r, at(6, 15), start, end, Some(2700)),
+            Some(3100)
+        );
+        assert_eq!(
+            routine_kelvin_at(&r, at(6, 30), start, end, None),
+            Some(4000)
+        );
+        let level = warming(None, Some(3000));
+        assert_eq!(
+            routine_kelvin_at(&level, at(6, 15), start, end, Some(2700)),
+            Some(3000)
+        );
+    }
+
+    #[test]
+    fn without_its_own_warmth_it_follows_the_curve_or_leaves_the_colour_be() {
+        let r = warming(None, None);
+        let (start, end) = (at(6, 0), at(6, 30));
+        assert_eq!(
+            routine_kelvin_at(&r, at(6, 15), start, end, Some(2700)),
+            Some(2700)
+        );
+        assert_eq!(routine_kelvin_at(&r, at(6, 15), start, end, None), None);
+        assert_eq!(
+            routine_kelvin_at(&r, at(5, 0), start, end, Some(2700)),
+            None,
+            "before the window"
+        );
     }
 
     // ------------------------------------------------------------------

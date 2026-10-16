@@ -30,11 +30,11 @@ pub use error::{Error, Result};
 pub use manual_mode::ManualModeTracker;
 pub use morning::{
     MorningClaimTracker, MorningRoutineConfig, Skipped, kick_on_skip, routine_brightness_at,
-    should_fire_today,
+    routine_kelvin_at, should_fire_today,
 };
 pub use persistence::DocumentSink;
 pub use scenes::{SceneEntry, SceneStore};
-pub use sink::{BRIGHTNESS_DEBOUNCE, build_ambient_target, build_curve_target};
+pub use sink::{BRIGHTNESS_DEBOUNCE, KELVIN_DEBOUNCE_K, build_ambient_target, build_curve_target};
 pub use switch::{SwitchEffect, classify_action};
 pub use time::MinuteOfDay;
 pub use timer::{TimerEntry, TimerId, TimerState, TimerStore, canonicalize_name};
