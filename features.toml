@@ -718,16 +718,16 @@ id = "artifacts-pages"
 category = "runtime.assistant"
 summary = "Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes"
 phrasings = ["make my trip plan look nicer", "make a page for my training plan", "make the packing list into a poster"]
-since_pr = 9999
+since_pr = 440
 
 [[feature]]
 id = "ui-artifact-page-frame"
 category = "ui.chat"
 summary = "An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes"
-since_pr = 9999
+since_pr = 440
 
 [[feature]]
 id = "api-artifact-pages"
 category = "api.write"
 summary = "An artifact's page_html and the house's today on GET /me/artifacts/{id}; PATCH remove_page; each version with its page"
-since_pr = 9999
+since_pr = 440
