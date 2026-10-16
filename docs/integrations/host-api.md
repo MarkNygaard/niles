@@ -372,6 +372,12 @@ sockets and DNS (refused), `std::process`, threads.
 Not yet, and sketched in
 [ARCHITECTURE.md](../../ARCHITECTURE.md#the-interface):
 
+- **Accounts and webhooks** (interface 0.3, specified in
+  [ARCHITECTURE.md](../../ARCHITECTURE.md#accounts-and-webhooks)):
+  connecting an account through its own sign-in page, an encrypted store
+  for the tokens it hands back, and a secret address the internet may call.
+  Until then, keep a refreshed token in `storage`, and know that it is
+  plain text there.
 - **WebSockets**, held by Niles, which reconnects them and delivers each
   message to a new export, for devices and services that push.
 - **Local TCP and UDP**: one request, one reply, to an address under
