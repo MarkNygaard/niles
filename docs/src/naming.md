@@ -63,11 +63,20 @@ switch.
 
 A Zigbee2MQTT group follows the same rule: `living_room/ceiling` for a group
 of the living room's ceiling bulbs. Niles then shows and switches the
-**group** as one light, and hides the bulbs in it, so "turn on the living
+**group** as one device, and hides the devices in it, so "turn on the living
 room ceiling" is one command to the group rather than one per bulb.
 
-A group whose name breaks the rule (a flat `table`, say) is ignored, and
-its bulbs stay as they are, each on its own.
+The group is whatever is in it:
+
+- **Bulbs** make a light. Plugs among the bulbs are fine; they take the on
+  and off and ignore the rest.
+- **Blinds** make a blind. Its position is the average of where its blinds
+  last said they were.
+- **Plugs** make a plug.
+
+A group that mixes blinds with bulbs or plugs, or holds anything else, is
+ignored, and so is a group whose name breaks the rule (a flat `table`,
+say). Their devices stay as they are, each on its own.
 
 ## Lamps on plugs
 
