@@ -302,6 +302,92 @@ impl config::Host for HostState {
     }
 }
 
+impl crate::bindings::secrets::Host for HostState {
+    fn get(&mut self, key: String) -> Option<String> {
+        check_kept_key(&key).ok()?;
+        let kept = self.house.kept.clone();
+        let full = crate::kept::full_key(self.id(), &key);
+        self.wait(async { kept.get(&full).await })
+            .unwrap_or_else(|e| {
+                tracing::warn!(plugin = %self.plugin.id, "secrets.get failed: {e}");
+                None
+            })
+    }
+
+    fn set(&mut self, key: String, value: String) -> Result<(), HostError> {
+        use crate::kept::{MAX_KEPT, MAX_KEPT_VALUE};
+        check_kept_key(&key)?;
+        if value.len() > MAX_KEPT_VALUE {
+            return Err(HostError::Limit(format!(
+                "a kept secret is at most {} KiB",
+                MAX_KEPT_VALUE / 1024
+            )));
+        }
+        let kept = self.house.kept.clone();
+        let prefix = crate::kept::prefix(self.id());
+        let full = crate::kept::full_key(self.id(), &key);
+        self.wait(async {
+            let keys = kept.keys(&prefix).await?;
+            if !keys.contains(&full) && keys.len() >= MAX_KEPT {
+                return Ok(Err(HostError::Limit(format!(
+                    "a plugin keeps at most {MAX_KEPT} secrets"
+                ))));
+            }
+            kept.set(&full, &value).await.map(Ok)
+        })
+        .unwrap_or_else(|e| {
+            tracing::warn!(plugin = %self.plugin.id, "secrets.set failed: {e}");
+            Err(HostError::Unavailable(
+                "the secret store could not keep it just now; the previous value is unchanged"
+                    .into(),
+            ))
+        })
+    }
+
+    fn delete(&mut self, key: String) -> Result<(), HostError> {
+        check_kept_key(&key)?;
+        let kept = self.house.kept.clone();
+        let full = crate::kept::full_key(self.id(), &key);
+        self.wait(async { kept.delete(&full).await }).map_err(|e| {
+            tracing::warn!(plugin = %self.plugin.id, "secrets.delete failed: {e}");
+            HostError::Unavailable(
+                "the secret store could not delete it just now; it is still there".into(),
+            )
+        })
+    }
+}
+
+fn check_kept_key(key: &str) -> Result<(), HostError> {
+    use crate::kept::MAX_KEPT_KEY;
+    if !crate::manifest::is_identifier(key) || key.len() > MAX_KEPT_KEY {
+        return Err(HostError::Invalid(format!(
+            "a kept secret's key is [a-z0-9_]+, at most {MAX_KEPT_KEY} bytes"
+        )));
+    }
+    Ok(())
+}
+
+impl crate::bindings::inbound::Host for HostState {
+    fn hook_url(&mut self) -> Option<String> {
+        if !self.plugin.manifest.permissions.webhook {
+            return None;
+        }
+        let public = self.house.public()?;
+        let house = self.house.clone();
+        let id = self.id().to_string();
+        let token = self
+            .wait(async { crate::inbound::token(&house, &id, true).await })
+            .unwrap_or_else(|e| {
+                self.plugin.log(
+                    log::Level::Warn,
+                    &format!("inbound.hook-url: the webhook has no address: {e}"),
+                );
+                None
+            })?;
+        Some(crate::inbound::hook_url(&public, &id, &token))
+    }
+}
+
 fn check_key(key: &str) -> Result<(), HostError> {
     if key.is_empty() || key.len() > MAX_KEY {
         return Err(HostError::Invalid(format!(

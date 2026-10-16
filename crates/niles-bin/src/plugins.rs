@@ -760,12 +760,21 @@ pub(crate) fn start_runtime(
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
     tools: niles_tools::DynamicTools,
+    secrets: Option<Arc<niles_db::PostgresSecrets>>,
 ) -> Option<(Runtime, bool)> {
     let (store, database) = plugin_store(cfg);
     let config = settings.clone();
-    let house = House::new(registry, bus, store)
+    let public = settings.clone();
+    let mut house = House::new(registry, bus, store)
         .with_tools(tools)
         .with_time_zone(Arc::new(move || config.current().home.timezone.clone()))
+        .with_public_url(Arc::new(move || public.current().public.url()));
+    // Without the secret store a refreshed token is kept in memory and
+    // lost on a restart, never written anywhere unsealed.
+    if let Some(secrets) = secrets {
+        house = house.with_kept_secrets(Arc::new(KeptInPostgres(secrets)));
+    }
+    let house = house
         .with_settings(Arc::new(move |id| {
             settings
                 .current()
@@ -795,15 +804,31 @@ pub(crate) fn restart_on_settings(
     tokio::spawn(async move {
         let mut changes = settings.subscribe();
         let mut last = settings.current().plugins.clone();
+        let mut last_public = settings.current().public.url();
         while changes.changed().await.is_ok() {
             let now = settings.current().plugins.clone();
+            let public = settings.current().public.url();
             for plugin in runtime.plugins() {
                 if last.get(&plugin.id) != now.get(&plugin.id) {
                     tracing::info!("[plugins] {}'s settings changed; restarting it", plugin.id);
                     let _ = runtime.restart(&plugin.id);
+                    continue;
+                }
+                // Their webhook and callback addresses are built on it,
+                // and `init` is where a plugin hands them to a service.
+                let inbound = runtime
+                    .manifest(&plugin.id)
+                    .is_some_and(|m| m.permissions.webhook || m.permissions.callback);
+                if public != last_public && inbound {
+                    tracing::info!(
+                        "[plugins] Niles's public address changed; restarting {}",
+                        plugin.id
+                    );
+                    let _ = runtime.restart(&plugin.id);
                 }
             }
             last = now;
+            last_public = public;
         }
     })
 }
@@ -938,6 +963,16 @@ fn summary(listed: niles_plugins::Listed) -> niles_api::plugins::PluginSummary {
             .collect(),
         interface: listed.interface,
         older_interface: listed.older_interface,
+        inbound: listed.inbound.map(|i| niles_api::plugins::PluginInbound {
+            callback: i.callback,
+            webhook: i.webhook,
+            callback_url: i.callback_url,
+            hook_url: i.hook_url,
+            last_hook: i.last_hook.map(|h| niles_api::plugins::PluginHookCall {
+                at: h.at,
+                status: h.status,
+            }),
+        }),
     }
 }
 
@@ -1127,6 +1162,100 @@ impl niles_api::plugins::Plugins for AppPlugins {
 
     fn restart(&self, id: &str) {
         self.0.restart(id);
+    }
+
+    async fn authorize(
+        &self,
+        id: &str,
+        state: &str,
+    ) -> Result<String, niles_api::plugins::SurfaceFailure> {
+        self.0
+            .runtime()
+            .authorize_url(id, state)
+            .await
+            .map_err(failure)
+    }
+
+    async fn complete(
+        &self,
+        id: &str,
+        query: Vec<(String, String)>,
+        person: Option<String>,
+    ) -> Result<String, niles_api::plugins::SurfaceFailure> {
+        self.0
+            .runtime()
+            .complete_sign_in(id, query, person)
+            .await
+            .map_err(failure)
+    }
+
+    async fn takes_callbacks(&self, id: &str) -> bool {
+        self.0.runtime().takes_callbacks(id).await
+    }
+
+    async fn hook(
+        &self,
+        id: &str,
+        token: &str,
+        request: niles_api::plugins::HookRequest,
+    ) -> niles_api::plugins::HookResponse {
+        let request = niles_plugins::HookRequest {
+            method: request.method,
+            query: request.query,
+            headers: request.headers,
+            body: request.body,
+        };
+        let answer = self.0.runtime().hook(id, token, request).await;
+        niles_api::plugins::HookResponse {
+            status: answer.status,
+            content_type: answer.content_type,
+            body: answer.body,
+        }
+    }
+
+    async fn rotate_hook(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
+        self.0
+            .runtime()
+            .rotate_hook(id)
+            .await
+            .map_err(|e| match e {
+                niles_plugins::Error::UnknownPlugin(_) | niles_plugins::Error::NoWebhook(_) => {
+                    PluginFailure::NotFound(e.to_string())
+                }
+                other => PluginFailure::Unavailable(other.to_string()),
+            })?;
+        self.0
+            .list()
+            .await
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(summary)
+            .ok_or_else(|| PluginFailure::NotFound(format!("There is no plugin called {id}.")))
+    }
+}
+
+/// The credentials plugins keep themselves, in the encrypted secret
+/// store: sealed and written in one statement, so a `set` replaces the
+/// value whole or not at all.
+pub(crate) struct KeptInPostgres(pub Arc<niles_db::PostgresSecrets>);
+
+#[async_trait::async_trait]
+impl niles_plugins::KeptSecrets for KeptInPostgres {
+    async fn get(&self, key: &str) -> Result<Option<String>, String> {
+        self.0.get(key).await.map_err(|e| e.to_string())
+    }
+
+    async fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        self.0.set(key, value).await.map_err(|e| e.to_string())
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), String> {
+        self.0.clear(key).await.map_err(|e| e.to_string())
+    }
+
+    async fn keys(&self, prefix: &str) -> Result<Vec<String>, String> {
+        let keys = self.0.keys().await.map_err(|e| e.to_string())?;
+        Ok(keys.into_iter().filter(|k| k.starts_with(prefix)).collect())
     }
 }
 

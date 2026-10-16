@@ -110,6 +110,40 @@ address, on your home network, trusting the certificate it shows the first
 time"**, **"Connect to the MQTT broker at 192.168.1.20, on your home network,
 unencrypted"**, **"Connect to the MQTT broker at broker.example.com"**.
 
+### `callback`
+
+Interface 0.3.
+
+```toml
+callback = true
+```
+
+Connecting an account through the service's own sign-in page: the plugin's
+panel offers **Connect account**, and the browser goes to the page your
+`authorize-url` names, which must be `https` on one of your `http` hosts,
+and comes back to your `on-callback`. Niles checks the way back belongs to
+the browser and the person that started it. See
+[accounts and webhooks](accounts.md#connecting-an-account).
+
+Shown as: **"Connect an account through its sign-in page, on a host it
+declares"**.
+
+### `webhook`
+
+Interface 0.3.
+
+```toml
+webhook = true
+```
+
+One secret address the internet may call, answered by your `on-webhook`.
+Nothing is reachable until the household sets Niles's public address and
+lets `/plugins/*/hook/*` through; the token in the address is what
+authenticates a request. See [accounts and webhooks](accounts.md#the-webhook).
+
+Shown as: **"Receive messages from the internet at a secret address, if you
+make that address reachable"**.
+
 ### `devices`
 
 ```toml

@@ -553,3 +553,35 @@ async fn without_a_database_there_is_no_key_and_none_can_be_made() {
     let (status, _) = send(&app, as_mark("/auth/api-token/rotate", "POST")).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
 }
+
+#[tokio::test]
+async fn a_plugins_webhook_answers_without_a_session_and_its_sign_in_routes_do_not() {
+    let fake = Arc::new(crate::plugins::tests::Fake::default());
+    let app = router(state_allowing(ONE_PERSON, None, None).with_plugins(Some(fake.clone())));
+    let request = |method: &str, uri: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // A service calling: it has the token, and no session to show.
+    let (status, _) = send(&app, request("POST", "/plugins/withings/hook/ab12")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fake.hooks.lock().unwrap().len(), 1);
+    // A service checking the callback address answers.
+    let (status, _) = send(&app, request("HEAD", "/plugins/withings/callback")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A person's browser, and the panel's own buttons, sign in first.
+    for (method, uri) in [
+        ("GET", "/plugins/withings/callback?code=x&state=y"),
+        ("GET", "/plugins/withings/connect"),
+        ("POST", "/plugins/withings/rotate-hook"),
+    ] {
+        let (status, _) = send(&app, request(method, uri)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
+    }
+    assert!(fake.completed.lock().unwrap().is_empty());
+}

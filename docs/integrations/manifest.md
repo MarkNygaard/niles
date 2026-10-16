@@ -1,6 +1,6 @@
 # The manifest
 
-> Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
+> Interface 0.3, and 0.2 and 0.1, which Niles still runs. Niles 0.2.0 runs them and
 > installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
 > dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
 > off and removing, and in the app the generated setup panel, the plugin's
@@ -23,8 +23,8 @@ A complete example is in the [worked example](example-spotprice.md#the-manifest)
 | `description` | yes | One line, at most 120 characters. See below. |
 | `authors` | yes | List of `"Name <email>"` or `"Name"`. |
 | `homepage` | no | Usually the repo. Linked from the setup panel. |
-| `min_niles` | yes | The oldest Niles version it runs on. Niles 0.2.0 is the first with plugins, so `"0.2.0"` or later. |
-| `interface` | yes | The `niles:integration` version the component targets: `"0.2"`, or `"0.1"` for a plugin built before MQTT. It must match the WIT the component was built with. |
+| `min_niles` | yes | The oldest Niles version it runs on. Niles 0.2.0 is the first with plugins, so `"0.2.0"` or later; `"0.3.0"` or later for interface 0.3. |
+| `interface` | yes | The `niles:integration` version the component targets: `"0.3"`, or `"0.2"` or `"0.1"` for a plugin built before accounts and webhooks, or before MQTT. It must match the WIT the component was built with. |
 | `group` | no | Where it sits on the Add-ons page. See [Groups](#groups). |
 | `logo` | no | Path of an SVG in the release, normally `"logo.svg"`. See [Logo](#logo). |
 | `memory_mb` | no | Memory cap, 64 by default, at most 256. JavaScript and Python plugins want 128. |
@@ -115,10 +115,14 @@ ui = true
 mqtt = [                 # interface 0.2
     { name = "printer", host = "setting:address", port = 8883, tls = "trust-device" },
 ]
+callback = true          # interface 0.3
+webhook = true           # interface 0.3
 ```
 
 All are optional; leave out what you do not use. `mqtt` needs
-`interface = "0.2"`; see [MQTT](mqtt.md#declaring-a-broker) for its fields.
+`interface = "0.2"` or later; see [MQTT](mqtt.md#declaring-a-broker) for its
+fields. `callback` and `webhook` need `interface = "0.3"`; see
+[accounts and webhooks](accounts.md).
 
 ## Settings
 

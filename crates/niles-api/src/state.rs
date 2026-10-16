@@ -98,6 +98,8 @@ pub struct AppState {
     pub strava: Option<Arc<niles_training::Strava>>,
     /// Strava sign-ins in flight, apart from the others.
     pub strava_attempts: Arc<crate::auth::flow::Attempts>,
+    /// Plugins' account connections in flight, apart from the others.
+    pub plugin_attempts: Arc<crate::auth::flow::Attempts>,
     /// Each person's artifacts. Absent without a database.
     pub artifacts: Option<Arc<dyn niles_artifacts::ArtifactStore>>,
     /// What runs an artifact's job again, and says whether an assistant
@@ -142,6 +144,7 @@ impl AppState {
             tool_servers: None,
             strava: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
+            plugin_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             artifacts: None,
             artifact_jobs: None,
             push: None,

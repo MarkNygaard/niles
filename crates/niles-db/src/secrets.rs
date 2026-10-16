@@ -184,6 +184,22 @@ impl PostgresSecrets {
         Ok(out)
     }
 
+    /// One secret, decrypted, read from the database rather than the
+    /// in-process copy: for values that change while Niles runs and are
+    /// not part of its configuration, such as a token a plugin refreshed.
+    pub async fn get(&self, key: &str) -> Result<Option<String>> {
+        self.ensure_schema().await?;
+        let sealed: Option<Vec<u8>> =
+            sqlx::query_scalar("select value from secrets where key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| self.storage(e))?;
+        sealed.map(|s| self.sealer.open(&s)).transpose()
+    }
+
+    /// Seal `value` and keep it under `key` in one statement, so it
+    /// replaces the old value whole or, on an error, not at all.
     pub async fn set(&self, key: &str, value: &str) -> Result<()> {
         self.ensure_schema().await?;
         let sealed = self.sealer.seal(value)?;

@@ -257,3 +257,72 @@ export function imageUrl(plugin: string, src: string): string {
   if (src.startsWith("data:image/")) return src;
   return `/plugins/${encodeURIComponent(plugin)}/image?src=${encodeURIComponent(src)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Accounts and webhooks (interface 0.3)
+
+/**
+ * What is wrong with a public address, as `[public] url` would refuse
+ * it, or null. Mirrors `PublicConfig::validate` in niles-config, so the
+ * field can say so before a save does.
+ */
+export function publicUrlProblem(url: string): string | null {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  if (trimmed === "") return null;
+  if (!trimmed.startsWith("https://")) return "It has to start with https://.";
+  const host = trimmed.slice("https://".length).split("/")[0];
+  if (!host) return "It has no host.";
+  if (/\s/.test(trimmed)) return "It has a space in it.";
+  if (/[?#@]/.test(trimmed)) return "Just the address: no query, fragment or username.";
+  return null;
+}
+
+/**
+ * Where a plugin's Connect button goes: its connect route on the public
+ * address, not on whichever address this page was opened at. The
+ * service sends the browser back to the public one, so the attempt has
+ * to start there, with that address's cookie and sign-in.
+ */
+export function connectHref(callbackUrl: string): string {
+  return callbackUrl.replace(/\/callback$/, "/connect");
+}
+
+/**
+ * What a return from a sign-in page says, read from the query Niles
+ * sent the browser back with, `?plugin=withings&plugin_connected=…`.
+ * Null when the page was not opened by one.
+ */
+export function connectOutcome(
+  search: string,
+): { plugin: string; ok: boolean; text: string } | null {
+  const query = new URLSearchParams(search);
+  const plugin = query.get("plugin");
+  if (!plugin) return null;
+  const connected = query.get("plugin_connected");
+  const error = query.get("plugin_error");
+  if (connected !== null) return { plugin, ok: true, text: connected };
+  if (error !== null) return { plugin, ok: false, text: error };
+  return null;
+}
+
+/** When the webhook was last called and what it answered, in words. */
+export function lastHookLine(
+  last: { at: string; status: number } | null,
+  now: Date = new Date(),
+): string {
+  if (!last) return "Not called since the add-on started.";
+  const minutes = Math.round((now.getTime() - new Date(last.at).getTime()) / 60_000);
+  const when =
+    minutes < 1
+      ? "just now"
+      : minutes < 60
+        ? `${minutes} min ago`
+        : new Date(last.at).toLocaleString(undefined, {
+            day: "numeric",
+            month: "short",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+  const ok = last.status >= 200 && last.status < 300;
+  return `Last called ${when}: ${ok ? "answered" : "refused"} (${last.status}).`;
+}

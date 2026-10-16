@@ -30,6 +30,10 @@ pub enum Error {
     #[error("a plugin called {0} is already running")]
     AlreadyRunning(String),
 
+    /// A webhook was asked of a plugin whose manifest does not ask for one.
+    #[error("{0} has no webhook")]
+    NoWebhook(String),
+
     /// Where installed plugins and their data are kept could not be read
     /// or written.
     #[error("plugin storage: {0}")]

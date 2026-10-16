@@ -1199,11 +1199,11 @@ What the project will never carry in-tree — one household's inverter, a region
 
 ## Third-party add-ons (plugins)
 
-> **Status: v0.2.1 of the interface (v0.1 plus [MQTT](#mqtt), and in 0.2.1 the house's time zone and lights kept out of their room's), with v0.2.0 and v0.1 plugins still run beside it; built (Niles 0.2.0).** Built: the runtime and its sandbox, every host interface, devices, tools, timers, events, notifications, the pages' render and action routes, loading the enabled plugins from the `plugins` table at startup, `niles plugin check` (a directory, a `.wasm` or a GitHub repo) and `niles plugin dev`; installing from GitHub with the approval screen, update checks, updates with the permission difference and automatic rollback, turning off and removing ([Install](#install) onwards), with their routes; and in the app, a plugin's row with its Custom badge in its group, its panel with the generated setup panel, its log and where its widgets go, its pages in the menu, its widgets on the front page and the rooms, and the image fetch behind their pictures. Not yet: `niles plugin dev --live`, and interface 0.3, [accounts and webhooks](#accounts-and-webhooks), which is specified and not built. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
+> **Status: v0.3 of the interface (v0.1 plus [MQTT](#mqtt) in 0.2, the house's time zone and lights kept out of their room's in 0.2.1, and [accounts and webhooks](#accounts-and-webhooks) in 0.3), with 0.2 and 0.1 plugins still run beside it; built (Niles 0.2.0, 0.3 since).** Built: the runtime and its sandbox, every host interface, devices, tools, timers, events, notifications, the pages' render and action routes, loading the enabled plugins from the `plugins` table at startup, `niles plugin check` (a directory, a `.wasm` or a GitHub repo) and `niles plugin dev`; installing from GitHub with the approval screen, update checks, updates with the permission difference and automatic rollback, turning off and removing ([Install](#install) onwards), with their routes; and in the app, a plugin's row with its Custom badge in its group, its panel with the generated setup panel, its log and where its widgets go, its pages in the menu, its widgets on the front page and the rooms, and the image fetch behind their pictures. Not yet: `niles plugin dev --live` and `--http`. The interface is [`schemas/niles-integration.wit`](schemas/niles-integration.wit); the guide for people writing one is [`docs/integrations/`](docs/integrations/README.md).
 
 Built-in integrations are crates in this repository, and they stay that way: reviewed, tested and released with Niles. That cannot cover every household. Somebody with an inverter, a pool pump, a local bus timetable or a niche gadget with an HTTP API wants it in Niles without asking for a crate, and without forking. Home Assistant answers this with custom integrations installed from GitHub (HACS). Niles takes the same shape, installing from a GitHub repo, and adds a sandbox around the code.
 
-A third-party integration, a **plugin**, is a **WebAssembly component**: a compiled `.wasm` file that declares in its own metadata which functions it needs from its host and which it provides. Those declarations are written in **WIT**, the component model's interface language, and Niles's is the package `niles:integration@0.2.1`, world `plugin`; plugins built for `niles:integration@0.2.0` and `@0.1.0` still run (see [Versioning the interface](#versioning-the-interface)). Niles runs plugins with **wasmtime**, using the Component Model and WASI 0.2.
+A third-party integration, a **plugin**, is a **WebAssembly component**: a compiled `.wasm` file that declares in its own metadata which functions it needs from its host and which it provides. Those declarations are written in **WIT**, the component model's interface language, and Niles's is the package `niles:integration@0.3.0`, world `plugin`; plugins built for `niles:integration@0.2.1`, `@0.2.0` and `@0.1.0` still run (see [Versioning the interface](#versioning-the-interface)). Niles runs plugins with **wasmtime**, using the Component Model and WASI 0.2.
 
 ### Goals and non-goals
 
@@ -1338,7 +1338,7 @@ The other choice was to accept any certificate, which is what the community inte
 
 ### Accounts and webhooks
 
-> **Status: specified, not built.** Interface 0.3.
+> **Status: built (interface 0.3).** Not yet: `niles plugin dev --http`, below.
 
 Interface 0.3 lets a plugin connect an account through the service's own sign-in page, keep the credentials that sign-in hands back, and be told when something happens rather than poll for it. The first plugin that needs all three is a Withings sleep mat (`withings`, in its own repo like `niles-bambulab`): its bed-in and bed-out notifications (`appli` 50 and 51) are pushed to a URL, its API is reached with OAuth 2.0 tokens, and the refresh token changes on every refresh. Polling cannot stand in for the push: the sleep API has summaries after the night, not whether somebody is in bed now.
 
@@ -1348,33 +1348,33 @@ Three pieces, each usable without the others:
 - **Plugin secrets** (no permission): an encrypted store the plugin writes, for refreshed tokens.
 - **A webhook** (`webhook` permission): one secret address per plugin that the internet may call.
 
-**Connecting an account.** A page offers a `connect` node (`connect(label)`, new in 0.3, only with the `callback` permission), which the app draws as a button that follows a link to `GET /plugins/{id}/connect`. That route, like Strava's `start` ([Connecting](#connecting)), is behind the sign-in gate and is a navigation, not a call the page makes:
+**Connecting an account.** The plugin's panel on the Add-ons page has **Connect account**, for a plugin with the `callback` permission, and Niles draws it itself: no plugin page has to. It is a link to `GET <public address>/plugins/{id}/connect`, on the public address rather than whichever one the app was opened at, because the service sends the browser back to the public address and the attempt's cookie and sign-in have to be that address's. (A household that opens Niles at another address signs in at the public one to connect.) That route, like Strava's `start` ([Connecting](#connecting)), is behind the sign-in gate and is a navigation, not a call the page makes:
 
-1. Niles makes a single-use `state` that expires in 10 minutes, bound to the person signed in and to a cookie (`niles_plugin_connect`, `Path=/plugins/{id}`, `HttpOnly`, `SameSite=Lax`), as the calendars and Strava do.
-2. It works out the **callback URL**, `<public address>/plugins/{id}/callback`, from Niles's public address (below) and from nothing else. Unlike the calendars and Strava, which fall back to the host the browser used, a plugin's callback is never taken from `Host` or `X-Forwarded-Host`: the plugin registers it with a provider and puts it in its own requests, so it has to be an address the household chose. Until the public address is set, `connect` goes no further, and the page says "Set Niles's public address under Settings → System". The household registers the URL with the provider, and the plugin's panel shows it.
-3. It calls the export `authorize-url(callback-url, state)`. The plugin answers with the provider's sign-in address, carrying the two as that provider names them (`redirect_uri`, `state`). Niles checks that it is `https` on a host the `http` permission declares, and redirects the browser there with a 303.
-4. The provider sends the browser back to `GET /plugins/{id}/callback`, also behind the sign-in gate. Niles checks the `state` against the cookie and the person, removes it from the query, and calls `on-callback(callback-url, query, person)` at once, with the query's pairs as they came (`code=…`, or `error=access_denied`). The code is often short-lived (Withings': 30 seconds), so the plugin exchanges it inside that call, through `http.send`. The call has the usual 10 s, and goes ahead of queued timers and events, since somebody is waiting.
-5. `ok(text)` or `err(text)` is shown on the page the person started from, which the browser is sent back to: "Connected to Withings as Mark", "Withings was not given access". A `state` that is missing, spent, expired, from another browser or from another person never reaches the plugin; the page says the attempt expired and to try again.
+1. Niles makes a single-use `state` that expires in 10 minutes, bound to the plugin, to the person signed in and to a cookie (`niles_plugin_connect`, `Path=/plugins/{id}`, `HttpOnly`, `SameSite=Lax`), as the calendars and Strava do.
+2. It works out the **callback URL**, `<public address>/plugins/{id}/callback`, from Niles's public address (below) and from nothing else. Unlike the calendars and Strava, which fall back to the host the browser used, a plugin's callback is never taken from `Host` or `X-Forwarded-Host`: the plugin registers it with a provider and puts it in its own requests, so it has to be an address the household chose. Until the public address is set, `connect` goes no further, and the panel says "Set Niles's public address under Settings → API access first". The household registers the URL with the provider, and the panel shows it, with a copy button.
+3. It calls the export `authorize-url(callback-url, state)`. The plugin answers with the provider's sign-in address, carrying the two as that provider names them (`redirect_uri`, `state`). Niles checks that it is `https` on a host the `http` permission declares, with no username or password in it, and redirects the browser there with a 303; anything else goes back to the panel with the reason, and a line in the plugin's log.
+4. The provider sends the browser back to `GET /plugins/{id}/callback`, also behind the sign-in gate. Niles checks the `state` against the cookie, the plugin and the person, removes it from the query, and calls `on-callback(callback-url, query, person)` at once, with the query's pairs as they came (`code=…`, or `error=access_denied`). The code is often short-lived (Withings': 30 seconds), so the plugin exchanges it inside that call, through `http.send`. The call has the usual 10 s, and goes ahead of queued timers and events, since somebody is waiting.
+5. The browser goes back to the Add-ons page (`/?plugin=<id>&plugin_connected=…#/me/settings/addons`, or `plugin_error=…`), which opens the plugin's panel and shows the plugin's `ok(text)` or `err(text)` there, once: "Connected to Withings as Mark", "Withings was not given access". A `state` that is missing, spent, expired, from another browser, another plugin or another person never reaches the plugin; the panel says the attempt expired and to connect again.
 
-**`HEAD` on the callback** is answered by Niles with an empty `200`, before the sign-in gate, for a plugin that has the `callback` permission (a `404` for one that does not). Providers check that a registered address answers, from their own servers, with no session (Withings does, on the callback as well as the webhook). The answer is the same whoever asks: it reads no `state`, spends none, and does not call the plugin. A `GET` there is still a browser coming back, behind sign-in and checked as above.
+**`HEAD` on the callback** is answered by Niles with an empty `200`, before the sign-in gate, for an installed plugin that has the `callback` permission, running or not (a `404` for any other). Providers check that a registered address answers, from their own servers, with no session (Withings does, on the callback as well as the webhook). The answer is the same whoever asks: it reads no `state`, spends none, and does not call the plugin. A `GET` there is still a browser coming back, behind sign-in and checked as above.
 
 Niles does not run the token exchange itself. Providers differ there more than anywhere else in OAuth (Withings' token endpoint takes `action=requesttoken` and wraps its answer in `{status, body}`), and the plugin already has an HTTP client under the same host checks. What Niles keeps for itself is the part that is easy to get wrong and the same everywhere: `state`, the browser binding and the sign-in.
 
-**Plugin secrets.** A new import interface, `secrets`, with `get(key)`, `set(key, value)` and `delete(key)`, kept in Niles's encrypted secret store as `plugins.<id>.kept.<key>` (`person.<slug>.plugins.<id>.kept.<key>` for a personal plugin's instance). Keys are `[a-z0-9_]+` up to 64 bytes; at most 16, of at most 4 KiB each, per plugin (or per person). They are the plugin's own: no setup panel field, no `PUT /secrets` route, never listed with their values, removed with the plugin. **`set` replaces one value atomically.** The value is sealed first and written in one statement, and `ok` comes back only once the write is committed. On `err` (the store unreachable, a key or size over the limit) nothing is changed: the previous value is still there, and `get` keeps answering it. `delete` is the same. So a plugin keeps everything that must change together (an access token, its refresh token, when it expires) in one value, as JSON, and never sees half of an update; there is no transaction across keys. They are separate from `secret` settings, which the household types in and `config.secret` reads, so a token the plugin refreshed is never mistaken for one the household chose, and the household never overwrites one by saving the form. This is where an OAuth refresh token belongs. `storage` is plain text in Postgres; it stays right for caches and cursors and wrong for a credential, and the guide says so.
+**Plugin secrets.** A new import interface, `secrets`, with `get(key)`, `set(key, value)` and `delete(key)`, kept in Niles's encrypted secret store as `plugins.<id>.kept.<key>` (`person.<slug>.plugins.<id>.kept.<key>` for a personal plugin's instance, once personal plugins are built). Without the secret store (no database or no key) they are kept in memory, and lost when Niles restarts, rather than written anywhere unsealed. Keys are `[a-z0-9_]+` up to 64 bytes; at most 16, of at most 4 KiB each, per plugin (or per person). They are the plugin's own: no setup panel field, no `PUT /secrets` route, never listed with their values, removed with the plugin. **`set` replaces one value atomically.** The value is sealed first and written in one statement, and `ok` comes back only once the write is committed. On `err` (the store unreachable, a key or size over the limit) nothing is changed: the previous value is still there, and `get` keeps answering it. `delete` is the same. So a plugin keeps everything that must change together (an access token, its refresh token, when it expires) in one value, as JSON, and never sees half of an update; there is no transaction across keys. They are separate from `secret` settings, which the household types in and `config.secret` reads, so a token the plugin refreshed is never mistaken for one the household chose, and the household never overwrites one by saving the form. This is where an OAuth refresh token belongs. `storage` is plain text in Postgres; it stays right for caches and cursors and wrong for a credential, and the guide says so.
 
 **The webhook.** With the `webhook` permission a plugin has one address: `<public address>/plugins/{id}/hook/<token>`.
 
-- **The token** is 32 random bytes, base64url, made by Niles when the plugin is installed and kept with Niles's own storage keys (`.niles/hook-token`). It is the webhook's only authentication, compared in constant time. A wrong token is a 404, the same as no plugin. **New address** on the plugin's panel (`POST /plugins/{id}/hook/rotate`) makes a new one and restarts the plugin, whose `init` registers the new address with the provider.
-- **The public address** is `[api] public_url` (`https://niles.example.com`), the one address Niles cannot work out for itself: nothing asks Niles from the internet until the provider has the address, and a `Host` header is not to be trusted with it anyway. It is set under Settings → System, hot, and changing it restarts the plugins that have the permission. The import `inbound.hook-url()` answers the full address, or none until it is set, and the plugin says so in its status line ("Set Niles's public address under Settings → System").
+- **The token** is 32 bytes from the operating system's generator, as hex like the API key, made by Niles the first time the address is asked for (by the plugin or its panel) and kept with Niles's own storage keys (`.niles/hook-token`). It is the webhook's only authentication, compared in constant time. A wrong token is a 404, the same as no plugin. **New address** on the plugin's panel (`POST /plugins/{id}/rotate-hook`, behind sign-in) makes a new one and restarts the plugin, whose `init` registers the new address with the provider.
+- **The public address** is `[public] url` (`https://home.example.dk`), the one address Niles cannot work out for itself: nothing asks Niles from the internet until the provider has the address, and a `Host` header is not to be trusted with it anyway. It must be `https`, with no query, fragment or username. It is set under Settings → API access, as **Public address**, and is hot: its own section rather than part of `[api]`, whose bind address needs a restart. Changing it restarts the plugins that have either permission. The import `inbound.hook-url()` answers the full address, or none until it is set, and the plugin says so in its status line.
 - **Outside the sign-in gate**, as `/webhooks/linear` is ([What stays outside it](#what-stays-outside-it)). Exposing Niles for a webhook means routing that path prefix, `/plugins/*/hook/*`, from the internet to Niles and nothing else; the app, the API and sign-in stay on the house network. Providers ask for a public `https` name on port 443 (Withings refuses an IP address, `localhost` and any other port). How the household arranges that (an ingress path rule, split DNS) is deployment, not Niles.
 - **`HEAD`** with the right token is answered `200` by Niles without calling the plugin: providers use it to check an address before registering it (Withings does).
-- **`GET` and `POST`** call the export `on-webhook(request)` with the method, the query's pairs, the headers (names lowercased, `cookie` removed) and the body, and the plugin answers `inbound-response`: a status, an optional content type and a body. The answer is the plugin's, not a fixed `200`, because some providers check an address by having it echo a challenge, and because a `5xx` makes a provider retry (Withings retries after 10 s and drops a subscription after more than 4 failures in a row in 20 days). A plugin that is down, or that misses the deadline, is a `503`. Other methods are a `405`.
-- **Limits**: a request of at most 64 KiB, 32 headers and 8 KiB of them; an answer of at most 64 KiB; 5 s, so the provider is answered while it is still waiting; 60 requests a minute with bursts of 20, past which Niles answers `429` without calling the plugin; and 8 waiting at a time, past which `503`. Calls go ahead of queued timers and events. Niles adds `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` to the answer.
+- **`GET` and `POST`** call the export `on-webhook(request)` with the method, the query's pairs, the headers (names lowercased, `cookie` removed) and the body, and the plugin answers `inbound-response`: a status, an optional content type and a body. The answer is the plugin's, not a fixed `200`, because some providers check an address by having it echo a challenge, and because a `5xx` makes a provider retry (Withings retries after 10 s and drops a subscription after more than 4 failures in a row in 20 days). A plugin that is down, or that misses the deadline, is a `503`; an answer Niles will not pass on (a status outside 200 to 599, a body over the limit, a content type with a line break in it) is a `502`, with a line in the plugin's log. Other methods are a `405`.
+- **Limits**: a request of at most 64 KiB (past which `413`), 32 headers and 8 KiB of them (past which `431`); an answer of at most 64 KiB; 5 s, so the provider is answered while it is still waiting; 60 requests a minute with bursts of 20, past which Niles answers `429` without calling the plugin; and 8 waiting at a time, past which `503`. Calls go ahead of queued timers and events. Niles adds `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` to the answer.
 - **Nothing is acknowledged that the plugin did not answer.** Niles keeps no queue of its own: a `2xx` is always the plugin's. While the plugin is restarting, updating, turned off or stopped after failures, the address answers `503`, so the provider keeps the notification and retries. The token survives all of those; only **New address** changes it. Removing the plugin deletes it, and the address answers `404` from then on.
 - **Not logged.** Niles never writes the token, the query, the headers or the body to its log or the plugin's. The plugin's log gets a line per request with the method, the size, the status and the time (`hook POST 89 B → 200 in 12 ms`); what the request said is the plugin's to log, or not.
 - **What arrives is not to be trusted.** The token says only that the caller knows the address. Withings signs nothing: a notification has `userid`, `deviceid`, `appli` and `date`. So a plugin checks what it can (the `userid` and `deviceid` it stored when the account was connected; a `date` newer than the last one it acted on), answers quickly, and reports. Withings has no endpoint to confirm that somebody is in bed now, so an unsigned event is acted on as it is, behind the secret address.
 
-**On the Add-ons panel**, a plugin with the `webhook` permission shows its address (or that the public address is not set), the time of the last request and its status, and **New address**. A plugin with `callback` shows its callback URL to register with the provider.
+**On the Add-ons panel**, a plugin with the `callback` permission shows its callback URL to register with the provider and **Connect account**; one with the `webhook` permission shows its address, when the last request came and what it was answered (since the plugin started), and **New address**, which asks first. Either says to set the public address while it is not.
 
 **Permissions at approval:**
 
@@ -1413,30 +1413,30 @@ It reports bed-in and bed-out as actions on a device (`devices.report-action("be
 **In the WIT** (`niles:integration@0.3.0`):
 
 ```wit
-interface inbound {
-    /// The webhook's full address, or none until Niles's public address
-    /// is set, or without the `webhook` permission.
-    hook-url: func() -> option<string>;
-}
-
 interface secrets {
     use types.{host-error};
     get: func(key: string) -> option<string>;
     set: func(key: string, value: string) -> result<_, host-error>;
-    delete: func(key: string);
+    delete: func(key: string) -> result<_, host-error>;
 }
 
-record inbound-request {
-    method: string,
-    query: list<tuple<string, string>>,
-    headers: list<tuple<string, string>>,
-    body: list<u8>,
-}
+interface inbound {
+    record inbound-request {
+        method: string,
+        query: list<tuple<string, string>>,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
 
-record inbound-response {
-    status: u16,
-    content-type: option<string>,
-    body: list<u8>,
+    record inbound-response {
+        status: u16,
+        content-type: option<string>,
+        body: list<u8>,
+    }
+
+    /// The webhook's full address, or none until Niles's public address
+    /// is set, or without the `webhook` permission.
+    hook-url: func() -> option<string>;
 }
 
 // New exports in world `plugin`.
@@ -1447,7 +1447,9 @@ export on-webhook: func(request: inbound-request) -> inbound-response;
 
 A plugin without the permissions exports them anyway, as one without MQTT exports the MQTT pair: `authorize-url` answers an error, `on-webhook` a `404`.
 
-**`niles plugin dev`** serves both routes on a local port (`--http 8787`), so a tunnel can point a provider at the developer's machine, and prints each request and answer in a line (`hook < POST 89 B → 200`).
+**Not built yet: `niles plugin dev --http <port>`**, which would serve both routes on a local port, so a tunnel can point a provider at the developer's machine, and print each request and answer in a line. Until then a plugin's webhook and sign-in are tried on a running Niles, installed from GitHub.
+
+**Tests.** `crates/niles-plugins/tests/inbound.rs` runs a 0.3 component (`fixtures/sleepmat.wasm`, built from `fixtures/sleepmat/`) through all of the above: the sign-in page and its host check, the callback and the token it keeps, a refused write leaving the old value, the webhook's token, methods, `503` while off, `404` once removed, rotation, the deadline and the rate limit. The routes and the gate are tested in `niles-api` with a stand-in for the runtime.
 
 ### Pages and widgets
 
@@ -1479,7 +1481,7 @@ A menu entry joins the [menu](#the-web-ui) like the built-in pages, as `<plugin-
 |---|---|
 | Layout | `stack`, `row` (a stack on a phone), `card` with an optional title |
 | Content | `heading`, `text` (optionally muted), `reading` (label, value, unit), `badge` (label, tone), `items` (a list of title, detail, trailing) |
-| Controls | `button` (id, label, style), `switch` (id, label, value), `slider` (id, min, max, step, value), `choice` (id, options, value), `text-field` (id, placeholder), and from 0.3 `connect` (label), which starts [connecting an account](#accounts-and-webhooks) |
+| Controls | `button` (id, label, style), `switch` (id, label, value), `slider` (id, min, max, step, value), `choice` (id, options, value), `text-field` (id, placeholder) |
 | Charts | `chart`: line or bar, labels and up to 4 series |
 | Images | `image`: an `https` URL on a host the `http` permission declares, which Niles fetches and serves itself so the viewer's browser never contacts that host; or a `data:` URI of at most 64 KiB. PNG, JPEG, WebP or GIF; no SVG. |
 
@@ -1652,7 +1654,7 @@ The package is `niles:integration@0.2.1`, and a component records the exact vers
 
 **0.2.1** is the first patch release: `config.time-zone` and `devices.set-room-light`, and `report-action` accepted from any device class (a doc and behaviour change, not a type change). A 0.2.1 component on a Niles that only has 0.2.0 fails to link, naming the missing function; `min_niles` is how a plugin says it needs the newer one.
 
-**0.3** (specified, not built) is 0.2.1 plus [accounts and webhooks](#accounts-and-webhooks): the `secrets` and `inbound` interfaces, the `connect` UI node, and the exports `authorize-url`, `on-callback` and `on-webhook`. New exports change the world, so it is a minor release, as 0.2 was: `schemas/niles-integration.wit` becomes 0.3, the 0.2.1 world is frozen beside it as `schemas/niles-integration-0.2.wit`, and Niles links all three worlds, sharing every interface they have in common the way 0.2 shares 0.1's. The manifest's `interface = "0.3"` must agree with the component's imports, and only a 0.3 manifest may declare `callback` or `webhook`.
+**0.3** is 0.2.1 plus [accounts and webhooks](#accounts-and-webhooks): the `secrets` and `inbound` interfaces and the exports `authorize-url`, `on-callback` and `on-webhook`. The UI vocabulary is unchanged: Connect is drawn by Niles on the plugin's panel, so `ui` stays the interface 0.1 and 0.2 share. New exports change the world, so it is a minor release, as 0.2 was: `schemas/niles-integration.wit` is 0.3, the 0.2.1 world is frozen beside it as `schemas/niles-integration-0.2.wit`, and Niles links all three worlds. The 0.3 bindings take every shared interface from the older ones (`config`, `devices` and `mqtt` from 0.2's, the rest from 0.1's) and generate only `secrets` and `inbound`, and the linker defines each shared interface a third time, at `@0.3.0`. A component is 0.3 by its imports, or by exporting `on-webhook` (0.3 exports the MQTT pair too, so that export alone no longer says 0.2). The manifest's `interface = "0.3"` must agree with the component's imports, and only a 0.3 manifest may declare `callback` or `webhook`. 0.2 plugins are now the ones marked "built for an older Niles", and run unchanged.
 
 ### The trust model, honestly
 
@@ -1677,7 +1679,7 @@ A new crate, `niles-plugins`:
 - Adapters that make a running plugin a device source, a set of tools, a relevance group and a provider of UI surfaces, so the rest of Niles meets plugins through the interfaces it already has
 - The `niles plugin dev` and `niles plugin check` subcommands, wired in `niles-bin`
 
-`niles-db` gains the tables above, `niles-api` the `/plugins` routes (the list, pages and actions, install with its preview, update checks, updates and rollback, enable, disable, remove, the logo, the log and the image fetch, and from 0.3 `connect`, `callback`, `hook` and `hook/rotate`; settings go through `PATCH /config` and secrets through `PUT /secrets`), and `web/` the Add from GitHub flow, the plugin's row and panel with its generated setup panel and log, the renderer for the UI vocabulary, and the plugins' pages in the menu and widgets on the dashboard. In `niles-plugins`, `log` keeps each plugin's last lines and `images` fetches and keeps a page's pictures. In `niles-plugins`, `github` fetches releases, `permissions` words them, `check` holds the logo sanitiser, and `install` is the two-step flow, the update checks and the rollback watch. The WIT lives at `schemas/niles-integration.wit` (0.2) and `schemas/niles-integration-0.1.wit` (0.1, frozen), the author guide in `docs/integrations/`.
+`niles-db` gains the tables above, `niles-api` the `/plugins` routes (the list, pages and actions, install with its preview, update checks, updates and rollback, enable, disable, remove, the logo, the log and the image fetch, and from 0.3 `connect`, `callback`, `hook/{token}` and `rotate-hook`; settings go through `PATCH /config` and secrets through `PUT /secrets`), and `web/` the Add from GitHub flow, the plugin's row and panel with its generated setup panel and log, the renderer for the UI vocabulary, and the plugins' pages in the menu and widgets on the dashboard. In `niles-plugins`, `log` keeps each plugin's last lines and `images` fetches and keeps a page's pictures. In `niles-plugins`, `github` fetches releases, `permissions` words them, `check` holds the logo sanitiser, and `install` is the two-step flow, the update checks and the rollback watch. In `niles-plugins`, `inbound` holds the webhook's token and limits and `kept` the plugin secrets. The WIT lives at `schemas/niles-integration.wit` (0.3), `schemas/niles-integration-0.2.wit` and `schemas/niles-integration-0.1.wit` (both frozen), the author guide in `docs/integrations/`.
 
 The seams the rest of Niles meets plugins through, chosen so nothing outside `niles-plugins` knows about WebAssembly:
 
@@ -3408,7 +3410,8 @@ niles/
 │   ├── wyoming-events.json
 │   ├── tool-definitions.json
 │   ├── device-types.json
-│   ├── niles-integration.wit  # the plugin interface (WIT), 0.2
+│   ├── niles-integration.wit  # the plugin interface (WIT), 0.3
+│   ├── niles-integration-0.2.wit  # the 0.2 interface, frozen, still run
 │   └── niles-integration-0.1.wit  # the 0.1 interface, frozen, still run
 │
 ├── examples/                  # example tools, configs, integrations
@@ -3646,7 +3649,7 @@ niles:
 - More device sources (Shelly, Matter, Z-Wave)
 - GPU node for fully-local STT/LLM
 - Satellite-side speaker ID (faster, more private)
-- Third-party add-ons: WebAssembly plugins installed from a GitHub repo, with devices, tools, pages and widgets ([spec](#third-party-add-ons-plugins), interface v0.2, with MQTT, in `schemas/niles-integration.wit`)
+- Third-party add-ons: WebAssembly plugins installed from a GitHub repo, with devices, tools, pages and widgets ([spec](#third-party-add-ons-plugins), interface v0.3, with MQTT, accounts and webhooks, in `schemas/niles-integration.wit`)
 - Home Assistant MQTT discovery as a no-code device source (ESPHome, Tasmota, Shelly, rtl_433)
 - MCP servers added by URL, their tools offered to the assistants
 

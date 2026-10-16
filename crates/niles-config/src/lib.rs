@@ -27,6 +27,7 @@ pub mod mqtt;
 pub mod notifications;
 pub mod presence;
 pub mod providers;
+pub mod public;
 pub mod recognition;
 pub mod rooms;
 pub mod satellites;
@@ -69,6 +70,7 @@ pub use mqtt::MqttConfig;
 pub use notifications::NotificationsConfig;
 pub use presence::{PresenceConfig, TadoConfigDto};
 pub use providers::{ProviderConfig, Retired, Role};
+pub use public::PublicConfig;
 pub use recognition::{MatchStrategy, MatcherConfig, RecognitionConfig};
 pub use rooms::RoomsConfig;
 pub use satellites::{SatelliteConfig, SatellitesConfig};
@@ -234,6 +236,9 @@ pub fn section_reload(section: &str) -> Reload {
         // Watched by whoever holds the connections, which connects,
         // disconnects or re-reads a server's tools as its table changes.
         "tool_servers" => Reload::Hot,
+        // Read whenever a plugin's webhook or callback address is
+        // worked out, and a change restarts the plugins that have one.
+        "public" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
@@ -276,6 +281,7 @@ pub const SECTIONS: &[&str] = &[
     "automation",
     "plugins",
     "tool_servers",
+    "public",
 ];
 
 /// Top-level Niles configuration.
@@ -293,6 +299,10 @@ pub struct Config {
     pub mqtt: MqttConfig,
     #[serde(default)]
     pub api: ApiConfig,
+    /// Where the internet reaches this Niles, for plugins' webhooks and
+    /// callbacks.
+    #[serde(default)]
+    pub public: PublicConfig,
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
@@ -407,6 +417,7 @@ impl Config {
         self.home.validate()?;
         self.mqtt.validate()?;
         self.api.validate()?;
+        self.public.validate()?;
         self.auth.validate()?;
         self.capture.validate()?;
         if let Some(database) = &self.database {
