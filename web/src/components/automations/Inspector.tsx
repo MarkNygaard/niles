@@ -20,6 +20,7 @@ import {
   measureHint,
   TRIGGER_KINDS,
   WAKE_UP_MINUTES,
+  WAKE_UP_WARMTH,
   addAction,
   blindsPosition,
   blindsTarget,
@@ -731,38 +732,72 @@ function ActionFields({
               onChange={(e) => onChange({ ...value, minutes: numberOrNothing(e.target.value) })}
             />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Up to (%)">
-              <Input
-                type="number"
-                inputMode="numeric"
-                aria-label="Brightness"
-                min={1}
-                max={100}
-                placeholder="100"
-                value={value.brightness ?? ""}
-                onChange={(e) =>
-                  onChange({ ...value, brightness: numberOrNothing(e.target.value) })
-                }
-              />
-            </Field>
-            <Field label="Warmth (K)">
-              <Input
-                type="number"
-                inputMode="numeric"
-                aria-label="Colour temperature"
-                min={2000}
-                max={6500}
-                step={100}
-                placeholder="The curve's"
-                value={value.kelvin ?? ""}
-                onChange={(e) => onChange({ ...value, kelvin: numberOrNothing(e.target.value) })}
-              />
-            </Field>
-          </div>
+          <Field label="Up to (%)">
+            <Input
+              type="number"
+              inputMode="numeric"
+              aria-label="Brightness"
+              min={1}
+              max={100}
+              placeholder="100"
+              value={value.brightness ?? ""}
+              onChange={(e) => onChange({ ...value, brightness: numberOrNothing(e.target.value) })}
+            />
+          </Field>
+          <Choices
+            label="Warmth"
+            value={value.kelvin === undefined ? "curve" : "own"}
+            options={[
+              { value: "curve", label: "Follow the curve" },
+              { value: "own", label: "Its own" },
+            ]}
+            onChange={(next) => {
+              if (next === "own" && value.kelvin === undefined) {
+                onChange({ ...value, ...WAKE_UP_WARMTH });
+              } else if (next === "curve") {
+                onChange({ ...value, start_kelvin: undefined, kelvin: undefined });
+              }
+            }}
+          />
+          {value.kelvin !== undefined && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="From (K)">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  aria-label="Start warmth"
+                  min={2000}
+                  max={6500}
+                  step={100}
+                  placeholder={String(value.kelvin)}
+                  value={value.start_kelvin ?? ""}
+                  onChange={(e) =>
+                    onChange({ ...value, start_kelvin: numberOrNothing(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field label="To (K)">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  aria-label="End warmth"
+                  min={2000}
+                  max={6500}
+                  step={100}
+                  value={value.kelvin}
+                  onChange={(e) => {
+                    const kelvin = numberOrNothing(e.target.value);
+                    // Emptied while typing: keep it on its own warmth
+                    // rather than flipping back to the curve under them.
+                    if (kelvin !== undefined) onChange({ ...value, kelvin });
+                  }}
+                />
+              </Field>
+            </div>
+          )}
           <p className="text-muted-foreground text-xs">
             Lights already on are left as they are. At the end they stay up until somebody changes
-            them.
+            them. Following the curve with the curve switched off leaves the colour as it is.
           </p>
         </>
       );

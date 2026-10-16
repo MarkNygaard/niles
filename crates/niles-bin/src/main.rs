@@ -7725,15 +7725,22 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     ));
                 }
                 lighting.refresh(&store);
-                // Wake-ups ramp on, and let go of what the curve has
-                // caught up with. With the curve off, nothing catches up:
-                // a hold then lasts until the light is turned off.
+                // Wake-ups ramp on, follow the curve's warmth where they
+                // have none of their own, and let go of what the curve
+                // has caught up with. With the curve off, nothing catches
+                // up: a hold then lasts until the light is turned off.
                 let curve_now = match current_minute_of_day(tz) {
-                    Some((minute, now)) if lighting.curve.enabled => brightness_at(
-                        &lighting.curve,
-                        effective_minute(&lighting.curve, WeekInstant::new(now.weekday(), minute)),
-                    ),
-                    _ => 0,
+                    Some((minute, now)) if lighting.curve.enabled => {
+                        let at = effective_minute(
+                            &lighting.curve,
+                            WeekInstant::new(now.weekday(), minute),
+                        );
+                        Some(wake_up::CurveNow {
+                            brightness: brightness_at(&lighting.curve, at),
+                            kelvin: color_temp_at(&lighting.curve, at),
+                        })
+                    }
+                    _ => None,
                 };
                 wake_ups.tick(Utc::now(), curve_now, lighting.transition()).await;
                 if let Some(routine) = lighting.routine() {

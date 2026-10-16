@@ -294,6 +294,10 @@ pub enum ActionDto {
         except: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         brightness: Option<u8>,
+        /// The warmth the ramp starts at; `kelvin` when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_kelvin: Option<u16>,
+        /// The warmth it ends at. Neither is the curve's, as it goes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kelvin: Option<u16>,
     },

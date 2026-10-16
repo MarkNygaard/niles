@@ -9,6 +9,11 @@
 //! moment it had woken somebody. A hold lets go when the light is turned
 //! off or adjusted, or when the curve's own value comes up to meet it.
 //!
+//! A wake-up with a warmth of its own ramps the colour too, from its
+//! start warmth to its end one, and holds that. Without one it follows
+//! the curve's warmth all the way, held or not; with the curve off it
+//! leaves the colour be.
+//!
 //! Everything under way is kept in Postgres, so a restart mid-ramp or
 //! mid-hold carries on where it was.
 
@@ -27,6 +32,16 @@ use std::time::Duration;
 /// rule the scheduled routine keeps.
 const DEBOUNCE: u8 = 2;
 
+/// The same for warmth, as the curve has it.
+const KELVIN_DEBOUNCE: u16 = 50;
+
+/// The curve's value at the moment, when it is switched on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CurveNow {
+    pub(crate) brightness: u8,
+    pub(crate) kelvin: u16,
+}
+
 /// One wake-up under way.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Ramp {
@@ -37,6 +52,7 @@ struct Ramp {
     /// Plugs it switches on when the ramp ends.
     plugs: Vec<String>,
     brightness: u8,
+    start_kelvin: Option<u16>,
     kelvin: Option<u16>,
 }
 
@@ -44,6 +60,7 @@ struct Ramp {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 struct Hold {
     brightness: u8,
+    /// Its own warmth; the curve's when `None`.
     kelvin: Option<u16>,
 }
 
@@ -73,13 +90,52 @@ impl State {
 
 /// Where a ramp is at `now`: 0% at its start, its end level at its end.
 fn level_at(ramp: &Ramp, now: DateTime<Utc>) -> u8 {
+    (f64::from(ramp.brightness) * gone(ramp, now)).round() as u8
+}
+
+/// The ramp's own warmth at `now`, from its start warmth to its end.
+fn kelvin_at(ramp: &Ramp, now: DateTime<Utc>) -> Option<u16> {
+    let to = f64::from(ramp.kelvin?);
+    let from = ramp.start_kelvin.map_or(to, f64::from);
+    Some((from + (to - from) * gone(ramp, now)).round() as u16)
+}
+
+/// The warmth a light switches on at: the wake-up's start warmth, or
+/// the curve's.
+fn start_warmth(plan: &WakePlan, curve: Option<CurveNow>) -> Option<u16> {
+    plan.start_kelvin
+        .or(plan.kelvin)
+        .or(curve.map(|c| c.kelvin))
+}
+
+/// The warmth a ramping light is on at `now`: its own, or the curve's.
+fn ramp_warmth(ramp: &Ramp, now: DateTime<Utc>, curve: Option<CurveNow>) -> Option<u16> {
+    kelvin_at(ramp, now).or(curve.map(|c| c.kelvin))
+}
+
+/// The warmth to keep a held light on, when anything needs sending: the
+/// curve's, unless the wake-up gave it its own, which it already has.
+fn held_warmth(hold: &Hold, curve: Option<CurveNow>) -> Option<u16> {
+    curve.map(|c| c.kelvin).filter(|_| hold.kelvin.is_none())
+}
+
+/// How far through the ramp `now` is, 0 to 1.
+fn gone(ramp: &Ramp, now: DateTime<Utc>) -> f64 {
     let total = (ramp.ends - ramp.started).num_seconds().max(1) as f64;
-    let gone = (now - ramp.started).num_seconds().clamp(0, total as i64) as f64;
-    (f64::from(ramp.brightness) * gone / total).round() as u8
+    (now - ramp.started).num_seconds().clamp(0, total as i64) as f64 / total
+}
+
+/// Whether a light's reported warmth is far enough from `want` to send.
+/// A light that reports none is sent it with the brightness only.
+fn colour_behind(reported: Option<u16>, want: Option<u16>) -> bool {
+    matches!((reported, want), (Some(now), Some(want)) if now.abs_diff(want) > KELVIN_DEBOUNCE)
 }
 
 pub(crate) struct WakeUps {
     state: Mutex<State>,
+    /// The curve as the last tick had it, for a wake-up starting
+    /// between ticks. `None` with the curve off.
+    curve: Mutex<Option<CurveNow>>,
     store: Option<Arc<niles_db::PostgresWakeUps>>,
     registry: Arc<DeviceRegistry>,
     publisher: MqttPublisher,
@@ -126,6 +182,7 @@ impl WakeUps {
         }
         Arc::new(Self {
             state: Mutex::new(state),
+            curve: Mutex::new(None),
             store,
             registry,
             publisher,
@@ -243,6 +300,8 @@ impl WakeUps {
         if lights.is_empty() && plugs.is_empty() {
             return Err("there are no lights there to wake anybody with".into());
         }
+        let curve = *self.curve.lock().unwrap_or_else(|e| e.into_inner());
+        let warmth = start_warmth(plan, curve);
         let mut took = Vec::new();
         for id in &lights {
             let device = self.registry.get(id);
@@ -260,7 +319,7 @@ impl WakeUps {
             let target = DeviceState {
                 on: Some(true),
                 brightness: Some(0),
-                color_temp_kelvin: plan.kelvin,
+                color_temp_kelvin: warmth,
                 ..Default::default()
             };
             if self.send(id, &target, Duration::ZERO).await {
@@ -285,6 +344,7 @@ impl WakeUps {
             lights: took.clone(),
             plugs: plugs.clone(),
             brightness: plan.brightness,
+            start_kelvin: plan.start_kelvin,
             kelvin: plan.kelvin,
         };
         self.lock().ramps.push(ramp);
@@ -305,10 +365,12 @@ impl WakeUps {
         ))
     }
 
-    /// Drive the ramps on toward `now`, end the ones that are over, and
-    /// let go of held lights the curve has caught up with.
-    /// `curve_brightness` is the curve's value now.
-    pub(crate) async fn tick(&self, now: DateTime<Utc>, curve_brightness: u8, fade: Duration) {
+    /// Drive the ramps on toward `now`, end the ones that are over, keep
+    /// held lights on the curve's warmth when they have none of their
+    /// own, and let go of the ones the curve has caught up with.
+    /// `curve` is the curve's value now, `None` when it is off.
+    pub(crate) async fn tick(&self, now: DateTime<Utc>, curve: Option<CurveNow>, fade: Duration) {
+        *self.curve.lock().unwrap_or_else(|e| e.into_inner()) = curve;
         let (ramps, holds) = {
             let state = self.lock();
             (state.ramps.clone(), state.holds.clone())
@@ -324,6 +386,7 @@ impl WakeUps {
             } else {
                 level_at(ramp, now)
             };
+            let warmth = ramp_warmth(ramp, now, curve);
             for raw in &ramp.lights {
                 let Ok(id) = DeviceId::parse(raw) else {
                     continue;
@@ -340,11 +403,12 @@ impl WakeUps {
                 let behind = device
                     .state
                     .brightness
-                    .is_none_or(|now| now.abs_diff(level) > DEBOUNCE);
+                    .is_none_or(|now| now.abs_diff(level) > DEBOUNCE)
+                    || colour_behind(device.state.color_temp_kelvin, warmth);
                 if behind || over {
                     let target = DeviceState {
                         brightness: Some(level),
-                        color_temp_kelvin: if over { ramp.kelvin } else { None },
+                        color_temp_kelvin: warmth,
                         ..Default::default()
                     };
                     self.send(&id, &target, if over { Duration::ZERO } else { fade })
@@ -385,20 +449,36 @@ impl WakeUps {
             );
         }
         for (raw, hold) in &holds {
-            let caught_up = curve_brightness >= hold.brightness;
-            let adjusted = DeviceId::parse(raw).is_ok_and(|id| self.tracker.is_flagged(&id));
-            if caught_up || adjusted {
-                self.lock().holds.remove(raw);
-                changed = true;
-                tracing::info!(
-                    "[wake-up] {raw} back to the curve ({})",
-                    if caught_up {
-                        "the curve caught up"
-                    } else {
-                        "adjusted by hand"
-                    }
-                );
+            let Ok(id) = DeviceId::parse(raw) else {
+                continue;
+            };
+            let caught_up = curve.is_some_and(|c| c.brightness >= hold.brightness);
+            let adjusted = self.tracker.is_flagged(&id);
+            if !(caught_up || adjusted) {
+                // Held at its brightness, but the colour moves with the
+                // curve unless the wake-up gave it one.
+                let follow = held_warmth(hold, curve);
+                if let Some(device) = self.registry.get(&id)
+                    && colour_behind(device.state.color_temp_kelvin, follow)
+                {
+                    let target = DeviceState {
+                        color_temp_kelvin: follow,
+                        ..Default::default()
+                    };
+                    self.send(&id, &target, fade).await;
+                }
+                continue;
             }
+            self.lock().holds.remove(raw);
+            changed = true;
+            tracing::info!(
+                "[wake-up] {raw} back to the curve ({})",
+                if caught_up {
+                    "the curve caught up"
+                } else {
+                    "adjusted by hand"
+                }
+            );
         }
         if changed {
             self.save().await;
@@ -424,8 +504,82 @@ mod tests {
             lights: vec!["z2m:bedroom/ceiling".into()],
             plugs: vec!["z2m:bedroom/lamp".into()],
             brightness: 80,
+            start_kelvin: None,
             kelvin: None,
         }
+    }
+
+    fn curve(brightness: u8, kelvin: u16) -> Option<CurveNow> {
+        Some(CurveNow { brightness, kelvin })
+    }
+
+    #[test]
+    fn its_own_warmth_ramps_from_the_start_to_the_end() {
+        let r = Ramp {
+            start_kelvin: Some(2200),
+            kelvin: Some(4000),
+            ..ramp()
+        };
+        let half: DateTime<Utc> = "2026-10-16T03:15:00Z".parse().unwrap();
+        assert_eq!(ramp_warmth(&r, r.started, curve(15, 2700)), Some(2200));
+        assert_eq!(ramp_warmth(&r, half, curve(15, 2700)), Some(3100));
+        assert_eq!(ramp_warmth(&r, r.ends, None), Some(4000));
+        let level = Ramp {
+            kelvin: Some(3000),
+            ..ramp()
+        };
+        assert_eq!(ramp_warmth(&level, half, curve(15, 2700)), Some(3000));
+    }
+
+    #[test]
+    fn without_its_own_warmth_it_follows_the_curve_or_leaves_the_colour_be() {
+        let r = ramp();
+        let half: DateTime<Utc> = "2026-10-16T03:15:00Z".parse().unwrap();
+        assert_eq!(ramp_warmth(&r, half, curve(15, 2700)), Some(2700));
+        assert_eq!(ramp_warmth(&r, half, None), None, "the curve is off");
+        assert_eq!(start_warmth(&plan(), curve(15, 2700)), Some(2700));
+        assert_eq!(start_warmth(&plan(), None), None);
+        let own = WakePlan {
+            start_kelvin: Some(2200),
+            kelvin: Some(4000),
+            ..plan()
+        };
+        assert_eq!(start_warmth(&own, curve(15, 2700)), Some(2200));
+        let level = WakePlan {
+            kelvin: Some(3000),
+            ..plan()
+        };
+        assert_eq!(start_warmth(&level, curve(15, 2700)), Some(3000));
+    }
+
+    #[test]
+    fn a_held_light_keeps_its_own_warmth_or_follows_the_curves() {
+        let own = Hold {
+            brightness: 80,
+            kelvin: Some(4000),
+        };
+        let none = Hold {
+            brightness: 80,
+            kelvin: None,
+        };
+        assert_eq!(
+            held_warmth(&own, curve(15, 2700)),
+            None,
+            "it has it already"
+        );
+        assert_eq!(held_warmth(&none, curve(15, 2700)), Some(2700));
+        assert_eq!(held_warmth(&none, None), None);
+    }
+
+    #[test]
+    fn a_colour_is_sent_only_when_it_has_drifted() {
+        assert!(colour_behind(Some(2200), Some(2700)));
+        assert!(!colour_behind(Some(2680), Some(2700)));
+        assert!(
+            !colour_behind(None, Some(2700)),
+            "a light that reports none"
+        );
+        assert!(!colour_behind(Some(2200), None), "nothing wanted");
     }
 
     #[test]
@@ -518,6 +672,7 @@ mod tests {
             devices: vec![id("kitchen/coffee")],
             except: vec![id("bedroom/lamp")],
             brightness: 80,
+            start_kelvin: None,
             kelvin: None,
         }
     }
@@ -537,13 +692,21 @@ mod tests {
         // Half way: still ramping.
         let fade = Duration::from_secs(45);
         wake_ups
-            .tick("2026-10-16T03:15:00Z".parse().unwrap(), 15, fade)
+            .tick(
+                "2026-10-16T03:15:00Z".parse().unwrap(),
+                curve(15, 2200),
+                fade,
+            )
             .await;
         assert_eq!(wake_ups.lock().ramps.len(), 1);
 
         // Over, at 03:31, with the curve at its night floor: held.
         wake_ups
-            .tick("2026-10-16T03:31:00Z".parse().unwrap(), 15, fade)
+            .tick(
+                "2026-10-16T03:31:00Z".parse().unwrap(),
+                curve(15, 2200),
+                fade,
+            )
             .await;
         assert!(wake_ups.lock().ramps.is_empty());
         assert_eq!(
@@ -558,9 +721,19 @@ mod tests {
             "the curve leaves it be"
         );
 
+        // With the curve off nothing comes up to meet it: still held.
+        wake_ups
+            .tick("2026-10-16T05:00:00Z".parse().unwrap(), None, fade)
+            .await;
+        assert!(wake_ups.owns(&id("bedroom/ceiling")));
+
         // The curve's morning comes up to meet it: back to the curve.
         wake_ups
-            .tick("2026-10-16T06:20:00Z".parse().unwrap(), 85, fade)
+            .tick(
+                "2026-10-16T06:20:00Z".parse().unwrap(),
+                curve(85, 4000),
+                fade,
+            )
             .await;
         assert!(!wake_ups.owns(&id("bedroom/ceiling")));
     }

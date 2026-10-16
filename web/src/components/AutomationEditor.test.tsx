@@ -379,6 +379,29 @@ describe("AutomationEditor", () => {
     );
   });
 
+  it("gives a wake-up a sunrise of its own, and back to the curve's", async () => {
+    open(undefined);
+    fireEvent.click(await screen.findByRole("button", { name: "Add action" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Wake-up" }));
+    expect(screen.getByRole("button", { name: "Follow the curve" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Its own" }));
+    expect(
+      screen.getByText("Wake the house up over 45 minutes, to 100%, from 2200 K to 4000 K"),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Start warmth" }), {
+      target: { value: "2000" },
+    });
+    expect(
+      screen.getByText("Wake the house up over 45 minutes, to 100%, from 2000 K to 4000 K"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Follow the curve" }));
+    expect(screen.queryByRole("spinbutton", { name: "Start warmth" })).not.toBeInTheDocument();
+    expect(screen.getByText("Wake the house up over 45 minutes, to 100%")).toBeInTheDocument();
+  });
+
   it("branches on which trigger started it, and saves the branches nested", async () => {
     open(undefined);
     const create = vi.spyOn(api, "createAutomation").mockResolvedValue(stored);

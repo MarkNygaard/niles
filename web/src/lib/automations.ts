@@ -794,7 +794,12 @@ function actionText(a: Action, triggers: Trigger[]): string {
         ...(a.devices ?? []).map((d) => the(deviceLabel(d))),
       ];
       const who = where.length > 0 ? andList(where) : "the house";
-      const warmth = a.kelvin !== undefined ? ` at ${a.kelvin} K` : "";
+      const warmth =
+        a.kelvin === undefined
+          ? ""
+          : a.start_kelvin !== undefined && a.start_kelvin !== a.kelvin
+            ? `, from ${a.start_kelvin} K to ${a.kelvin} K`
+            : ` at ${a.kelvin} K`;
       const except =
         a.except && a.except.length > 0
           ? `, but not ${andList(a.except.map((d) => the(deviceLabel(d))))}`
@@ -1205,6 +1210,10 @@ export function wakeChoices(
   };
 }
 
+/** A wake-up's own warmth, when it is given one: a sunrise, warm to
+    neutral. */
+export const WAKE_UP_WARMTH = { start_kelvin: 2200, kelvin: 4000 };
+
 /** A position the way the picker offers it: the two ends by name,
     anything between as a percentage. */
 export type BlindsPosition = "close" | "open" | "part";
@@ -1352,6 +1361,10 @@ function actionProblems(
             ? [`${where} needs a light.`]
             : []),
           ...levels(where, { on: true, kelvin: a.kelvin }),
+          ...levels(`${where}'s start`, { on: true, kelvin: a.start_kelvin }),
+          ...(a.start_kelvin !== undefined && a.kelvin === undefined
+            ? [`${where}: a start warmth needs an end warmth.`]
+            : []),
         ];
       case "notify":
         return a.body.trim() ? [] : [`${where} needs something to say.`];

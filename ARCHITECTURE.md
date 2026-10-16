@@ -371,11 +371,12 @@ A skip override only disables the auto-on trigger for that day. **The curve itse
 
 - **How long:** the ramp's length, 1 to 120 minutes (default 45), from the moment the action runs.
 - **Which lights:** rooms and devices, or every curve-managed light when neither is given, minus any excepted. A plug in the set is switched on at the end of the ramp, as the scheduled routine does.
-- **Where it ends:** a brightness (default 100%) and, optionally, a colour temperature. Without one the lights keep the curve's warmth for the moment.
+- **Where it ends:** a brightness (default 100%).
+- **Its warmth:** the curve's, as it goes, unless the wake-up is given its own: an end warmth, and optionally a start warmth to ramp from with the brightness, as a sunrise does (2200 K to 4000 K, say). With the curve switched off and no warmth of its own, the colour is left as it is.
 
 Lights that are off come on at 0% and ramp to the end; lights already on are left alone; a light switched off mid-ramp is cancelled for that wake-up, and a light adjusted by hand is left alone — all as for the scheduled routine. The scheduled routine is unchanged and both can be in use; a light the one has taken, the other skips.
 
-**After the ramp the lights hold where it ended.** A wake-up at 03:30 ends while the curve still says night, and handing back to it would dim the room back down the moment it had woken somebody. So the lights stay at the wake-up's end level until they are turned off or adjusted, or until the curve's own value comes up to meet them, when the curve takes them back as usual. A wake-up inside the morning window ends where the curve already is, and the hold changes nothing.
+**After the ramp the lights hold where it ended.** A wake-up at 03:30 ends while the curve still says night, and handing back to it would dim the room back down the moment it had woken somebody. So the lights stay at the wake-up's end level until they are turned off or adjusted, or until the curve's own value comes up to meet them, when the curve takes them back as usual. A wake-up inside the morning window ends where the curve already is, and the hold changes nothing. A held light keeps its own warmth if it was given one, and otherwise goes on following the curve's.
 
 A wake-up under way, and its hold, are kept in the database with the routine's claims, so a restart mid-ramp carries on where it was.
 
@@ -1959,7 +1960,7 @@ The vocabulary is deliberately narrow and grows only as new needs appear:
 |---|---|
 | **Triggers** | `contact` (a door or window opens / closes), `device_state` (a device turns on / off), `numeric` (a number — temperature, humidity, battery, brightness, light level, or any named reading the device reports, such as `price`, `power` or `co2` — goes above or below a value), `device_action` (a button or dimmer press), `presence` (the house becomes occupied / unoccupied), `time` (a time of day, on chosen weekdays), `sun` (sunrise or sunset, with an offset), `timer_fired` |
 | **Conditions** | `time_of_day` (a window, wrapping past midnight, on chosen weekdays), `sun` (after / before sunrise or sunset, with offsets), `device_is`, `contact_is`, `numeric` (a reading above / below a value), `presence_is` (the house occupied / unoccupied), `triggered_by` (which of the rule's triggers started this run) |
-| **Actions** | `set_device`, `set_room` (every light in a room), `set_blinds`, `notify` (spoken in a room), `wake_up` (the [morning routine](#the-morning-routine), now: `minutes`, `rooms`, `devices`, `except`, `brightness`, `kelvin`), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
+| **Actions** | `set_device`, `set_room` (every light in a room), `set_blinds`, `notify` (spoken in a room), `wake_up` (the [morning routine](#the-morning-routine), now: `minutes`, `rooms`, `devices`, `except`, `brightness`, `start_kelvin`, `kelvin`), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
 
 No general scripting language — that would be a security and complexity disaster. Devices are named the way people and the LLM name them (`office/door`); the source prefix (`z2m:`) is filled in by Niles.
 

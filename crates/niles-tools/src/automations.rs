@@ -255,7 +255,7 @@ fn rule_schema() -> Value {
     });
     let action = json!({
         "type": "object",
-        "description": "do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=set_blinds: blinds/curtains to a position (0 closed, 100 open), one (device) or every one in a room (room). do=notify: say body in a room (a room with a satellite). do=wake_up: the morning routine, now — lights that are off come on at 0% and ramp up over minutes (1-120, default 45) to brightness (default 100) and optional kelvin, then hold there; rooms and devices pick the lights (every light in the house when neither is given), except leaves some out; for 'wake me up', usually after a delay. do=delay: wait hours/minutes/seconds, then go on. do=if: conditions, then (actions), else (actions) — at most 3 deep.",
+        "description": "do=set_room: every light in a room (room, on, brightness 0-100, kelvin 2000-6500). do=set_device: one device. do=set_blinds: blinds/curtains to a position (0 closed, 100 open), one (device) or every one in a room (room). do=notify: say body in a room (a room with a satellite). do=wake_up: the morning routine, now — lights that are off come on at 0% and ramp up over minutes (1-120, default 45) to brightness (default 100), then hold there; colour follows the curve unless kelvin (the end warmth) is given, and start_kelvin with it warms from one to the other, e.g. 2200 to 4000 for a sunrise; rooms and devices pick the lights (every light in the house when neither is given), except leaves some out; for 'wake me up', usually after a delay. do=delay: wait hours/minutes/seconds, then go on. do=if: conditions, then (actions), else (actions) — at most 3 deep.",
         "properties": {
             "do": { "type": "string", "enum": ["set_room", "set_device", "set_blinds", "notify", "wake_up", "delay", "if"] },
             "rooms": { "type": "array", "items": { "type": "string" } },
@@ -266,6 +266,7 @@ fn rule_schema() -> Value {
             "on": { "type": "boolean" },
             "brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
             "kelvin": { "type": "integer", "minimum": 2000, "maximum": 6500 },
+            "start_kelvin": { "type": "integer", "minimum": 2000, "maximum": 6500 },
             "position": { "type": "integer", "minimum": 0, "maximum": 100 },
             "body": { "type": "string" },
             "hours": { "type": "integer", "minimum": 0 },

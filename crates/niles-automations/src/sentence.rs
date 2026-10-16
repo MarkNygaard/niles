@@ -411,6 +411,7 @@ fn action(step: &ActionDto, names: &[(String, String)]) -> String {
             devices,
             except,
             brightness,
+            start_kelvin,
             kelvin,
         } => {
             let mut lights: Vec<String> = rooms
@@ -427,8 +428,12 @@ fn action(step: &ActionDto, names: &[(String, String)]) -> String {
                 minutes.unwrap_or(crate::rule::WAKE_UP_MINUTES),
                 brightness.unwrap_or(100)
             );
-            if let Some(k) = kelvin {
-                out.push_str(&format!(" at {k} K"));
+            match (start_kelvin, kelvin) {
+                (Some(from), Some(to)) if from != to => {
+                    out.push_str(&format!(", from {from} K to {to} K"))
+                }
+                (_, Some(k)) => out.push_str(&format!(" at {k} K")),
+                _ => {}
             }
             if !except.is_empty() {
                 let left: Vec<String> = except.iter().map(|d| thing(d)).collect();
@@ -540,6 +545,15 @@ mod tests {
             }))
             .contains("wake the house up over 45 minutes, to 100%")
         );
+        let warming = |start: u16, end: u16| {
+            said(json!({
+                "id": "r",
+                "triggers": [{ "type": "time", "at": "06:00" }],
+                "actions": [{ "do": "wake_up", "start_kelvin": start, "kelvin": end }],
+            }))
+        };
+        assert!(warming(2200, 4000).contains("to 100%, from 2200 K to 4000 K"));
+        assert!(warming(3000, 3000).contains("to 100% at 3000 K"));
     }
 
     fn when_action(device: &str, action: Option<&str>) -> String {

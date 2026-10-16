@@ -849,7 +849,9 @@ export type Action =
   /** The morning routine's sunrise, run from a rule: lights that are
       off ramp up from nothing over `minutes` (1 to 120, 45 left out)
       to `brightness` (100 left out), then hold there until changed.
-      No rooms and no devices is every light in the house. */
+      No rooms and no devices is every light in the house. The colour
+      follows the curve unless `kelvin` is given; `start_kelvin`, only
+      with it, warms from one to the other. */
   | {
       do: "wake_up";
       minutes?: number;
@@ -857,6 +859,7 @@ export type Action =
       devices?: string[];
       except?: string[];
       brightness?: number;
+      start_kelvin?: number;
       kelvin?: number;
     }
   | {

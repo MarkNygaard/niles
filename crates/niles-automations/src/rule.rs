@@ -229,7 +229,11 @@ pub struct WakePlan {
     pub except: Vec<DeviceId>,
     /// Where the ramp ends.
     pub brightness: u8,
-    /// The warmth it ends at; the curve's for the moment when `None`.
+    /// The warmth it starts at; `kelvin` when `None`. Only ever set
+    /// with `kelvin`.
+    pub start_kelvin: Option<u16>,
+    /// The warmth it ends at. `None` follows the curve's as it goes, or
+    /// leaves the colour be with the curve off.
     pub kelvin: Option<u16>,
 }
 
@@ -1108,9 +1112,17 @@ fn parse_action(
             devices,
             except,
             brightness,
+            start_kelvin,
             kelvin,
         } => {
             check_light(id, *brightness, *kelvin)?;
+            check_light(id, None, *start_kelvin)?;
+            if start_kelvin.is_some() && kelvin.is_none() {
+                return Err(Error::Invalid {
+                    id: id.into(),
+                    reason: "a wake-up's start warmth needs an end warmth to go to".into(),
+                });
+            }
             let minutes = minutes.unwrap_or(WAKE_UP_MINUTES);
             if !(1..=MAX_WAKE_UP_MINUTES).contains(&minutes) {
                 return Err(Error::Invalid {
@@ -1141,6 +1153,7 @@ fn parse_action(
                 devices: ids(devices)?,
                 except: ids(except)?,
                 brightness,
+                start_kelvin: *start_kelvin,
                 kelvin: *kelvin,
             })
         }
@@ -1345,9 +1358,26 @@ mod tests {
             serde_json::json!({ "do": "wake_up", "minutes": 121 }),
             serde_json::json!({ "do": "wake_up", "brightness": 0 }),
             serde_json::json!({ "do": "wake_up", "brightness": 101 }),
+            serde_json::json!({ "do": "wake_up", "start_kelvin": 1500, "kelvin": 4000 }),
         ] {
             assert!(waking(bad.clone()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_wake_up_warms_from_its_start_to_its_end() {
+        let r = waking(serde_json::json!({
+            "do": "wake_up", "start_kelvin": 2200, "kelvin": 4000
+        }))
+        .unwrap();
+        let Action::WakeUp(plan) = &r.actions[0] else {
+            panic!("not a wake-up");
+        };
+        assert_eq!((plan.start_kelvin, plan.kelvin), (Some(2200), Some(4000)));
+        let err = waking(serde_json::json!({ "do": "wake_up", "start_kelvin": 2200 }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs an end warmth"), "{err}");
     }
 
     #[test]

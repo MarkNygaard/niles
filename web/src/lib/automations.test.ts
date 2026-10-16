@@ -747,6 +747,15 @@ describe("wake-up", () => {
     );
   });
 
+  it("says a warmth of its own, ramped or level", () => {
+    expect(of({ do: "wake_up", start_kelvin: 2200, kelvin: 4000 })).toBe(
+      "Wake the house up over 45 minutes, to 100%, from 2200 K to 4000 K",
+    );
+    expect(of({ do: "wake_up", kelvin: 3000 })).toBe(
+      "Wake the house up over 45 minutes, to 100% at 3000 K",
+    );
+  });
+
   it("starts as the routine's: the whole house, over 45 minutes, to full", () => {
     expect(defaultAction("wake_up", devices)).toEqual({
       do: "wake_up",
@@ -814,6 +823,12 @@ describe("wake-up", () => {
     ]);
     expect(problems(rule({ do: "wake_up", kelvin: 9000 }))).toEqual([
       "Action 1: colour temperature is 2000 to 6500 K.",
+    ]);
+    expect(problems(rule({ do: "wake_up", start_kelvin: 2200 }))).toEqual([
+      "Action 1: a start warmth needs an end warmth.",
+    ]);
+    expect(problems(rule({ do: "wake_up", start_kelvin: 1000, kelvin: 4000 }))).toEqual([
+      "Action 1's start: colour temperature is 2000 to 6500 K.",
     ]);
   });
 });
