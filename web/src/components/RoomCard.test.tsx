@@ -310,7 +310,7 @@ describe("RoomCard with blinds", () => {
     const { onSetBlinds } = setup([light("ceiling", true), blind("blind", 0)]);
     fireEvent.click(screen.getByRole("button", { name: "Blinds in Kitchen" }));
     fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
-    expect(onSetBlinds).toHaveBeenLastCalledWith([expect.objectContaining({ name: "blind" })], 100);
+    expect(onSetBlinds).toHaveBeenLastCalledWith([expect.objectContaining({ name: "blind" })], "open");
     fireEvent.click(screen.getByRole("button", { name: "Close Blind" }));
     expect(onSetBlinds).toHaveBeenLastCalledWith([expect.objectContaining({ name: "blind" })], 0);
   });
@@ -328,7 +328,7 @@ describe("RoomCard with blinds", () => {
         expect.objectContaining({ name: "left_blind" }),
         expect.objectContaining({ name: "right_blind" }),
       ],
-      100,
+      "open",
     );
   });
 
@@ -422,7 +422,7 @@ describe("RoomCard footer", () => {
         expect.objectContaining({ name: "left_blind" }),
         expect.objectContaining({ name: "right_blind" }),
       ],
-      100,
+      "open",
     );
   });
 

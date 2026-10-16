@@ -8,8 +8,10 @@ use niles_automations::{
     AutomationEngine, DeviceSink, Notifier, Priority as AutomationPriority, Rule,
 };
 use niles_capabilities::CapabilityLoader;
-use niles_config::{Config, ConfigStore, LoadOutcome};
-use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
+use niles_config::{Config, ConfigStore, FULLY_OPEN, LoadOutcome};
+use niles_core::{
+    BlindsLevel, Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName,
+};
 use niles_history::{
     CommandEntry, CommandReader, CommandWriter, StateEntry, StateReader, StateWriter,
 };
@@ -1271,9 +1273,10 @@ fn build_tool_registry(
     websearch_default_num_results: u8,
     presence: Option<Arc<PresenceAggregator>>,
     home: &niles_config::HomeConfig,
+    settings: Option<Arc<niles_config::ConfigStore>>,
     dry_run: bool,
 ) -> ToolRegistry {
-    let mut tools = niles_tools::default_registry(registry, publisher, router, dry_run);
+    let mut tools = niles_tools::default_registry(registry, publisher, router, settings, dry_run);
     if let Some(loader) = capability_loader {
         tools.register(Box::new(LookUpCapability::new(loader)));
     }
@@ -2629,6 +2632,7 @@ async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         cfg.web_search.default_num_results,
         presence_agg,
         &cfg.home,
+        None,
         false,
     );
     let client = build_llm_client(&cfg)?;
@@ -3252,6 +3256,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         cfg.web_search.default_num_results,
         presence_agg.clone(),
         &cfg.home,
+        Some(store.clone()),
         args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -3377,7 +3382,10 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         skill_store,
         home: Arc::new(cfg.home.clone()),
         captures: None,
-        settings: None,
+        // The same store the tool registry above resolves "open"
+        // against: a voice Open here must not answer a different
+        // level than a set_blinds call in this same process.
+        settings: Some(store.clone()),
         journal: Arc::default(),
         conversation: build_conversation_memory(&cfg).await,
         chat_log: None,
@@ -5022,7 +5030,7 @@ async fn dispatch_text(
         Intent::BlindsSet {
             room,
             everywhere,
-            position,
+            level,
         } => {
             let targets: Vec<Device> = match (&room, origin_room) {
                 _ if everywhere => ctx
@@ -5051,16 +5059,32 @@ async fn dispatch_text(
             if targets.is_empty() {
                 return dispatch_tier1(ctx, peer, text, origin_room, thread, speaker).await;
             }
-            let desired = DeviceState {
-                position: Some(position),
-                ..Default::default()
+            // "open" is not a position: resolved per blind against the
+            // live config — a second press, every blind already at its
+            // normal level, goes all the way.
+            let snapshot = ctx.settings.as_ref().map(|s| s.current());
+            let fallback = niles_config::BlindsConfig::default();
+            let cfg = snapshot.as_deref().map(|c| &c.blinds).unwrap_or(&fallback);
+            let resolved = cfg.targets(level, targets.iter().map(|d| (&d.id, d.state.position)));
+            for (device, position) in targets.iter().zip(&resolved.positions) {
+                let desired = DeviceState {
+                    position: Some(*position),
+                    ..Default::default()
+                };
+                dispatch_to_targets(ctx, peer, std::slice::from_ref(device), &desired).await;
+            }
+            let said = match level {
+                BlindsLevel::Exact(0) => response::BlindsSaid::Closing,
+                BlindsLevel::Exact(FULLY_OPEN) => response::BlindsSaid::Fully,
+                BlindsLevel::Exact(p) => response::BlindsSaid::Level(p),
+                BlindsLevel::Open if resolved.all_the_way => response::BlindsSaid::Fully,
+                BlindsLevel::Open => response::BlindsSaid::Opening,
             };
-            dispatch_to_targets(ctx, peer, &targets, &desired).await;
             Some(response::blinds(
                 room.as_deref(),
                 everywhere,
                 targets.len(),
-                position,
+                said,
             ))
         }
         Intent::LightSetLast { on } => {
@@ -7269,6 +7293,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         cfg.web_search.default_num_results,
         presence_agg.clone(),
         &cfg.home,
+        Some(store.clone()),
         args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -7463,7 +7488,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_location(house_location(&cfg))
         .with_log(automation_runs.clone())
         .with_waker(Some(wake_ups.clone() as Arc<dyn niles_automations::Waker>))
-        .with_waits(automation_waits(&cfg)),
+        .with_waits(automation_waits(&cfg))
+        .with_settings(Some(store.clone())),
     );
     let _automation_handle = automation_engine.clone().spawn(bus.clone());
     if let Some(store) = automations.clone() {

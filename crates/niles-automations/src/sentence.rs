@@ -4,7 +4,8 @@
 
 use crate::rule::say_duration;
 use niles_config::{
-    ActionDto, AutomationRuleDto, ConditionDto, DurationDto, TriggerDto, TriggerKind,
+    ActionDto, AutomationRuleDto, BlindsPositionDto, ConditionDto, DurationDto, TriggerDto,
+    TriggerKind,
 };
 use std::time::Duration;
 
@@ -396,9 +397,10 @@ fn action(step: &ActionDto, names: &[(String, String)]) -> String {
                 (None, None) => "the blinds".into(),
             };
             match position {
-                0 => format!("close {what}"),
-                100 => format!("open {what}"),
-                p => format!("open {what} to {p}%"),
+                BlindsPositionDto::Open => format!("open {what}"),
+                BlindsPositionDto::Exact(0) => format!("close {what}"),
+                BlindsPositionDto::Exact(100) => format!("fully open {what}"),
+                BlindsPositionDto::Exact(p) => format!("open {what} to {p}%"),
             }
         }
         ActionDto::Notify { body, room, .. } => match room {
@@ -612,6 +614,22 @@ mod tests {
                 ],
             })),
             "When the sun sets, close the living room blinds, then open the office blind to 30%."
+        );
+        assert_eq!(
+            said(json!({
+                "id": "r",
+                "triggers": [{ "type": "sun", "event": "sunrise" }],
+                "actions": [{ "do": "set_blinds", "room": "living_room", "position": "open" }],
+            })),
+            "When the sun rises, open the living room blinds."
+        );
+        assert_eq!(
+            said(json!({
+                "id": "r",
+                "triggers": [{ "type": "sun", "event": "sunrise" }],
+                "actions": [{ "do": "set_blinds", "room": "living_room", "position": 100 }],
+            })),
+            "When the sun rises, fully open the living room blinds."
         );
     }
 

@@ -20,6 +20,7 @@ export default defineConfig({
       "/chat": "http://localhost:8080",
       "/healthz": "http://localhost:8080",
       "/rooms": "http://localhost:8080",
+      "/blinds": "http://localhost:8080",
       // Leave `changeOrigin` alone. The event stream refuses a
       // handshake whose Origin is not its own Host, and the default
       // (false) forwards this server's Host — so the two agree.

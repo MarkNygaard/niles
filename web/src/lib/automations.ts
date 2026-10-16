@@ -783,8 +783,10 @@ function actionText(a: Action, triggers: Trigger[]): string {
         : a.room
           ? `the ${humanize(a.room).toLowerCase()} blinds`
           : "the blinds";
-      if (a.position <= 0) return `Close ${what}`;
-      if (a.position >= 100) return `Open ${what}`;
+      if (a.position === "open") return `Open ${what}`;
+      if (typeof a.position === "number" && a.position >= 100)
+        return `Fully open ${what}`;
+      if (typeof a.position === "number" && a.position <= 0) return `Close ${what}`;
       return `Open ${what} to ${a.position}%`;
     }
     case "wake_up": {
@@ -1214,21 +1216,24 @@ export function wakeChoices(
     neutral. */
 export const WAKE_UP_WARMTH = { start_kelvin: 2200, kelvin: 4000 };
 
-/** A position the way the picker offers it: the two ends by name,
-    anything between as a percentage. */
-export type BlindsPosition = "close" | "open" | "part";
+/** A position the way the picker offers it: the two ends and "open"
+    by name, anything between as a percentage. A rule saved before
+    this existed stores `100` and still reads as Fully open. */
+export type BlindsPosition = "close" | "open" | "fully" | "part";
 
-export function blindsPosition(position: number): BlindsPosition {
+export function blindsPosition(position: number | "open"): BlindsPosition {
+  if (position === "open") return "open";
   if (position <= 0) return "close";
-  if (position >= 100) return "open";
+  if (position >= 100) return "fully";
   return "part";
 }
 
 /** Where picking each lands. Part-open starts halfway, which is what
     "open them halfway" asks for and the easiest place to move from. */
-export const BLINDS_POSITION: Record<BlindsPosition, number> = {
+export const BLINDS_POSITION: Record<BlindsPosition, number | "open"> = {
   close: 0,
-  open: 100,
+  open: "open",
+  fully: 100,
   part: 50,
 };
 
@@ -1340,7 +1345,8 @@ function actionProblems(
             : a.room || a.device
               ? []
               : [`${where} needs a room or a blind.`]),
-          ...(Number.isInteger(a.position) && a.position >= 0 && a.position <= 100
+          ...(a.position === "open" ||
+          (Number.isInteger(a.position) && a.position >= 0 && a.position <= 100)
             ? []
             : [`${where}: a blind opens 0 to 100%.`]),
         ];

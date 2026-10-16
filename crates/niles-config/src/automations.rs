@@ -241,6 +241,50 @@ pub enum ConditionDto {
     },
 }
 
+/// How far a rule opens a blind: a position, or the blind's normal
+/// open level resolved when the rule runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlindsPositionDto {
+    Open,
+    Exact(u8),
+}
+
+impl Serialize for BlindsPositionDto {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            BlindsPositionDto::Open => s.serialize_str("open"),
+            BlindsPositionDto::Exact(p) => s.serialize_u8(*p),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BlindsPositionDto {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        // Hand-written rather than `#[serde(untagged)]` on the public
+        // enum: untagged's "data did not match any variant" is
+        // unusable in a config error, and a unit variant under
+        // `untagged` serializes as `null`, not `"open"`. `toml` and
+        // `serde_json` are both self-describing, so the inner untagged
+        // read works on both paths.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(i64),
+            Word(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Number(n) if (0..=100).contains(&n) => Ok(BlindsPositionDto::Exact(n as u8)),
+            Raw::Number(n) => Err(serde::de::Error::custom(format!(
+                "a blind's position is 0–100 or \"open\", not {n}"
+            ))),
+            Raw::Word(w) if w == "open" => Ok(BlindsPositionDto::Open),
+            Raw::Word(w) => Err(serde::de::Error::custom(format!(
+                "a blind's position is 0–100 or \"open\", not {w:?}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum ActionDto {
@@ -264,13 +308,14 @@ pub enum ActionDto {
         kelvin: Option<u16>,
     },
     /// One blind (`device`), or every blind in a room (`room`), to a
-    /// position: `0` shut, `100` open.
+    /// position: `0` shut, `100` fully open, `"open"` the normal open
+    /// level as the setting has it when the rule runs.
     SetBlinds {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         room: Option<String>,
-        position: u8,
+        position: BlindsPositionDto,
     },
     Notify {
         body: String,
@@ -370,5 +415,53 @@ mod tests {
         let again: AutomationRuleDto =
             serde_json::from_value(serde_json::to_value(&rule).unwrap()).unwrap();
         assert_eq!(again, rule);
+    }
+
+    #[test]
+    fn a_stored_position_of_100_still_means_fully_open() {
+        let rule: AutomationRuleDto = serde_json::from_str(
+            r#"{"id":"r","actions":[{"do":"set_blinds","room":"living_room","position":100}]}"#,
+        )
+        .unwrap();
+        let ActionDto::SetBlinds { position, .. } = &rule.actions[0] else {
+            panic!("set_blinds");
+        };
+        assert_eq!(*position, BlindsPositionDto::Exact(100));
+    }
+
+    #[test]
+    fn position_open_reads_as_the_normal_level() {
+        let rule: AutomationRuleDto = serde_json::from_str(
+            r#"{"id":"r","actions":[{"do":"set_blinds","device":"office/blind","position":"open"}]}"#,
+        )
+        .unwrap();
+        let ActionDto::SetBlinds { position, .. } = &rule.actions[0] else {
+            panic!("set_blinds");
+        };
+        assert_eq!(*position, BlindsPositionDto::Open);
+    }
+
+    #[test]
+    fn a_garbage_position_names_the_value() {
+        for (given, named) in [(r#""ajar""#, "\"ajar\""), ("150", "150")] {
+            let json = format!(
+                r#"{{"id":"r","actions":[{{"do":"set_blinds","device":"office/blind","position":{given}}}]}}"#
+            );
+            let err = serde_json::from_str::<AutomationRuleDto>(&json).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("position") && msg.contains(named), "{msg}");
+        }
+    }
+
+    #[test]
+    fn open_round_trips_to_the_string_open() {
+        assert_eq!(
+            serde_json::to_string(&BlindsPositionDto::Open).unwrap(),
+            r#""open""#
+        );
+        assert_eq!(
+            serde_json::to_string(&BlindsPositionDto::Exact(40)).unwrap(),
+            "40"
+        );
     }
 }

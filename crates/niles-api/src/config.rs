@@ -280,6 +280,9 @@ fn shipped_defaults() -> serde_json::Value {
             "daytime_brightness": lighting.daytime_brightness,
             "color_temp_anchors": anchors,
         },
+        // The Settings page shows the house level beside each blind's
+        // override, and falls back to this when nobody has set it.
+        "blinds": { "normal_open": cfg.blinds.normal_open },
     })
 }
 

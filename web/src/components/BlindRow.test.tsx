@@ -54,10 +54,12 @@ describe("BlindRow", () => {
     expect(screen.getByText("Not heard from yet")).toBeInTheDocument();
   });
 
-  it("opens all the way and closes all the way", () => {
+  it("asks for an open rather than a position", () => {
+    // Open is not a number: the server resolves it against the
+    // normal open level, all the way on the second press.
     const { onSet } = setup(40);
     fireEvent.click(screen.getByRole("button", { name: "Open Blind" }));
-    expect(onSet).toHaveBeenLastCalledWith(100);
+    expect(onSet).toHaveBeenLastCalledWith("open");
     fireEvent.click(screen.getByRole("button", { name: "Close Blind" }));
     expect(onSet).toHaveBeenLastCalledWith(0);
   });

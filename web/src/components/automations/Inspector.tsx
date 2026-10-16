@@ -652,6 +652,7 @@ function ActionFields({
             options={[
               { value: "close", label: "Close" },
               { value: "open", label: "Open" },
+              { value: "fully", label: "Fully open" },
               { value: "part", label: "Part open" },
             ]}
             onChange={(next) => {
@@ -670,7 +671,7 @@ function ActionFields({
                 aria-label="Open"
                 min={1}
                 max={99}
-                value={value.position}
+                value={typeof value.position === "number" ? value.position : ""}
                 onChange={(e) => {
                   const next = numberOrNothing(e.target.value);
                   if (next !== undefined) onChange({ ...value, position: next });

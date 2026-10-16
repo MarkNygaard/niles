@@ -631,6 +631,36 @@ The LLM is still the right path for anything ambiguous (renaming, deleting, list
 - Whether scenes can include non-light devices (Sonos volume, blinds, etc.): out of scope for v1 — keep scenes lighting-only initially, expand later if the abstraction holds up
 - Transition smoothness: should applying a scene fade or snap? Probably snap by default with an optional "slowly" modifier ("cozy mode, slowly") — left to implementation
 
+## Blinds
+
+### The normal open level
+
+One house-wide level (`[blinds] normal_open`, 1–100, default 100) and
+an optional per-blind override (`[[blinds.overrides]]` with `device` and
+`normal_open`) decide how far "open" opens. Both are edited on the
+Settings page and kept in Postgres through the config store, so no
+`niles.toml` section is needed to turn the feature on. The section is
+read from the live snapshot on every command, so a changed level applies
+to the next press, the next utterance and the next rule run at once.
+
+### What Open means
+
+Open goes to the normal level. A blind already within 3 percentage
+points of its normal level (blinds report 74 or 76 for a level of 75)
+instead goes all the way. A group — a room's blinds, "all the blinds",
+Open all — goes all the way only when **every** blind in it is already
+at its own normal level; otherwise each goes to its own. With the level
+at 100 there is nowhere further to go and Open simply means 100. Close
+is unchanged, and so is any explicit percentage. The rule lives in
+exactly one function in `niles-config`, which the app, voice and
+automations all call.
+
+### Voice
+
+"open the blinds" follows the rule above. "open the blinds fully", "all
+the way" or "completely" always means 100. "halfway" and "to 40%" are
+unchanged.
+
 ## Music and radio
 
 Music playback is one of the most-used voice features in any home assistant. Niles handles it by leveraging Sonos (or any room speaker integration) rather than building per-service integrations. This is a deliberate architectural choice with concrete consequences.
@@ -2084,7 +2114,7 @@ The vocabulary is deliberately narrow and grows only as new needs appear:
 |---|---|
 | **Triggers** | `contact` (a door or window opens / closes), `device_state` (a device turns on / off), `numeric` (a number — temperature, humidity, battery, brightness, light level, or any named reading the device reports, such as `price`, `power` or `co2` — goes above or below a value), `device_action` (a button or dimmer press), `presence` (the house becomes occupied / unoccupied), `time` (a time of day, on chosen weekdays), `sun` (sunrise or sunset, with an offset), `timer_fired` |
 | **Conditions** | `time_of_day` (a window, wrapping past midnight, on chosen weekdays), `sun` (after / before sunrise or sunset, with offsets), `device_is`, `contact_is`, `numeric` (a reading above / below a value), `presence_is` (the house occupied / unoccupied), `triggered_by` (which of the rule's triggers started this run) |
-| **Actions** | `set_device`, `set_room` (every light in a room), `set_blinds`, `notify` (spoken in a room), `wake_up` (the [morning routine](#the-morning-routine), now: `minutes`, `rooms`, `devices`, `except`, `brightness`, `start_kelvin`, `kelvin`), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
+| **Actions** | `set_device`, `set_room` (every light in a room), `set_blinds` (one blind or a room's blinds: `position` `0`–`100`, or `"open"` — the normal open level, resolved when the rule runs, all the way if they are already there; the editor offers Close, Open, Fully open and Part open), `notify` (spoken in a room), `wake_up` (the [morning routine](#the-morning-routine), now: `minutes`, `rooms`, `devices`, `except`, `brightness`, `start_kelvin`, `kelvin`), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
 
 No general scripting language — that would be a security and complexity disaster. Devices are named the way people and the LLM name them (`office/door`); the source prefix (`z2m:`) is filled in by Niles.
 

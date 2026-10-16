@@ -6,7 +6,7 @@ import type { SetZone } from "@/components/RoomCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { ApiError, api, roomOrder, roomsHidden } from "@/lib/api";
-import type { Device, SetLight } from "@/lib/api";
+import type { BlindsOpened, Device, SetLight } from "@/lib/api";
 import { useTvVolume } from "@/hooks/useTvVolume";
 import { BoostButton } from "@/components/BoostButton";
 import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
@@ -98,16 +98,32 @@ export function RoomDashboard() {
     },
   });
 
-  // One request per blind: the server has no room-wide endpoint for
-  // them, and a room has two or three at most.
+  // One request per blind for a position; one request for the whole
+  // set for an Open, because where a second press goes is a property
+  // of the set and only the server resolves it.
   const blinds = useMutation({
-    mutationFn: ({ blinds, position }: { blinds: Device[]; position: number }) =>
-      Promise.all(
-        blinds.map((blind) => api.setPosition(blind.room, blind.name, position)),
-      ).then(() => undefined),
+    mutationFn: ({
+      blinds,
+      position,
+    }: {
+      blinds: Device[];
+      position: number | "open";
+    }): Promise<BlindsOpened | undefined> =>
+      position === "open"
+        ? api.openBlinds(blinds.map((blind) => blind.id))
+        : Promise.all(
+            blinds.map((blind) => api.setPosition(blind.room, blind.name, position)),
+          ).then(() => undefined),
     onMutate: async ({ blinds, position }) => {
       setError(null);
       await queryClient.cancelQueries({ queryKey: ["devices"] });
+      // An Open has no position to guess — guessing 100 would flash
+      // the wrong number before settling on 75 — so the row waits for
+      // the answer and onSuccess paints it. Nothing optimistic is
+      // written, so there is nothing to roll back either: handing
+      // `onError` a snapshot would throw away whatever the event
+      // stream delivered while the request was in flight.
+      if (position === "open") return { previous: undefined };
       const previous = queryClient.getQueryData<Device[]>(["devices"]);
       const moving = new Set(blinds.map((blind) => blind.id));
       queryClient.setQueryData<Device[]>(["devices"], (current) =>
@@ -117,6 +133,18 @@ export function RoomDashboard() {
       );
       return { previous };
     },
+    onSuccess: (opened) => {
+      // An Open's answer, painted where a number would have been
+      // guessed. No refetch: the blind reports its position over the
+      // event stream as it moves.
+      if (!opened) return;
+      queryClient.setQueryData<Device[]>(["devices"], (current) =>
+        current?.map((device) => {
+          const sent = opened.positions.find((p) => p.id === device.id);
+          return sent ? withPosition(device, sent.position) : device;
+        }),
+      );
+    },
     onError: (failure, _variables, context) => {
       if (context?.previous) {
         queryClient.setQueryData(["devices"], context.previous);
@@ -125,10 +153,6 @@ export function RoomDashboard() {
         failure instanceof ApiError ? failure.message : String(failure),
       );
     },
-    // No refetch once the requests settle: a blind takes seconds to
-    // travel, so asking straight away reads where it was and snaps the
-    // slider back. It reports its position over the event stream as it
-    // moves, which corrects a wrong guess on its own.
   });
 
   const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });

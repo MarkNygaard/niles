@@ -7,7 +7,9 @@ use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use niles_capabilities::CapabilityLoader;
-use niles_core::{Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName};
+use niles_core::{
+    BlindsLevel, Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, RoomName,
+};
 use niles_history::{CommandQuery, CommandReader, StateQuery, StateReader};
 use niles_memory::{MemoryStore, Target as MemoryTarget};
 use niles_mqtt::{CommandRouter, MqttPublisher};
@@ -881,6 +883,7 @@ pub struct SetBlinds<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
     publisher: P,
     router: Arc<CommandRouter>,
+    settings: Option<Arc<niles_config::ConfigStore>>,
     dry_run: bool,
 }
 
@@ -889,12 +892,14 @@ impl<P: Publisher> SetBlinds<P> {
         registry: Arc<DeviceRegistry>,
         publisher: P,
         router: Arc<CommandRouter>,
+        settings: Option<Arc<niles_config::ConfigStore>>,
         dry_run: bool,
     ) -> Self {
         Self {
             registry,
             publisher,
             router,
+            settings,
             dry_run,
         }
     }
@@ -905,15 +910,16 @@ impl<P: Publisher> Tool for SetBlinds<P> {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "set_blinds".into(),
-            description: "Open, close or part-open blinds, curtains or shutters: one (device_id) or every one in a room (room). position 0 is closed, 100 fully open, 50 halfway.".into(),
+            description: "Open, close or part-open blinds, curtains or shutters: one (device_id) or every one in a room (room). Either `open: true` — open to the house's normal open level, going all the way if they are already there, which is what a plain 'open the blinds' means — or `position`, an exact 0 (shut) to 100 (fully open), 50 halfway.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "device_id": { "type": "string", "description": "One blind, e.g. 'living_room/left_blind'." },
                     "room": { "type": "string", "description": "Every blind in the room, lower_snake, e.g. 'living_room'." },
-                    "position": { "type": "integer", "minimum": 0, "maximum": 100 }
+                    "position": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "open": { "type": "boolean", "description": "Open to the house's normal open level, going all the way if the blinds are already there. Not with position." }
                 },
-                "required": ["position"]
+                "required": []
             }),
         }
     }
@@ -923,11 +929,28 @@ impl<P: Publisher> Tool for SetBlinds<P> {
             tool: "set_blinds".into(),
             reason,
         };
-        let position = args
-            .get("position")
-            .and_then(Value::as_u64)
-            .filter(|p| *p <= 100)
-            .ok_or_else(|| invalid("position must be 0–100".into()))? as u8;
+        // A JSON null is the model leaving an argument out, not a
+        // value: `{"open": true, "position": null}` asks for an open.
+        let position = args.get("position").filter(|p| !p.is_null());
+        let level = match (args.get("open").and_then(Value::as_bool), position) {
+            (Some(true), None) => BlindsLevel::Open,
+            (Some(true), Some(_)) => {
+                return Err(invalid("name a position or open, not both".into()));
+            }
+            // `open: false` beside a position is not a contradiction —
+            // it is the model spelling out that this one is a number.
+            (_, Some(p)) => {
+                let p = p
+                    .as_u64()
+                    .filter(|p| *p <= 100)
+                    .ok_or_else(|| invalid("position must be 0–100".into()))?
+                    as u8;
+                BlindsLevel::Exact(p)
+            }
+            (_, None) => {
+                return Err(invalid("name a position or open".into()));
+            }
+        };
         let blinds: Vec<niles_core::Device> = match (
             args.get("device_id").and_then(Value::as_str),
             args.get("room").and_then(Value::as_str),
@@ -956,12 +979,18 @@ impl<P: Publisher> Tool for SetBlinds<P> {
             (None, None) => return Err(invalid("name a device_id or a room".into())),
         };
 
-        let target = DeviceState {
-            position: Some(position),
-            ..Default::default()
-        };
+        // "open" resolves per blind against the live config, exactly as
+        // the voice dispatcher and the automation engine resolve it.
+        let snapshot = self.settings.as_ref().map(|s| s.current());
+        let fallback = niles_config::BlindsConfig::default();
+        let cfg = snapshot.as_deref().map(|c| &c.blinds).unwrap_or(&fallback);
+        let resolved = cfg.targets(level, blinds.iter().map(|d| (&d.id, d.state.position)));
         let mut set = Vec::new();
-        for blind in &blinds {
+        for (blind, position) in blinds.iter().zip(&resolved.positions) {
+            let target = DeviceState {
+                position: Some(*position),
+                ..Default::default()
+            };
             if let Some(commander) = self.router.commander_for(&blind.id, &target) {
                 if self.dry_run {
                     tracing::info!("[dry-run] would command {} {target:?}", blind.id);
@@ -971,7 +1000,7 @@ impl<P: Publisher> Tool for SetBlinds<P> {
                         .await
                         .map_err(Error::Plugin)?;
                 }
-                set.push(blind.id.to_string());
+                set.push(json!({ "device": blind.id.to_string(), "position": position }));
                 continue;
             }
             let Some((topic, payload)) = self.router.format(&blind.id, &target) else {
@@ -982,9 +1011,9 @@ impl<P: Publisher> Tool for SetBlinds<P> {
             } else {
                 self.publisher.publish(&topic, payload.into_bytes()).await?;
             }
-            set.push(blind.id.to_string());
+            set.push(json!({ "device": blind.id.to_string(), "position": position }));
         }
-        Ok(json!({ "ok": true, "position": position, "set": set }))
+        Ok(json!({ "ok": true, "set": set }))
     }
 }
 
@@ -1675,6 +1704,7 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
     registry: Arc<DeviceRegistry>,
     publisher: P,
     router: Arc<CommandRouter>,
+    settings: Option<Arc<niles_config::ConfigStore>>,
     dry_run: bool,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
@@ -1698,6 +1728,7 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
         registry.clone(),
         publisher.clone(),
         router.clone(),
+        settings,
         dry_run,
     )));
     reg.register(Box::new(SetDevice::new(
@@ -2228,7 +2259,7 @@ mod tests {
         assert_eq!(result["set"], json!(["x_pool:garden/lamp"]));
         assert_eq!(result["skipped"], json!(["x_pool:garden/pump"]));
 
-        let blinds = SetBlinds::new(registry, mock, router, false);
+        let blinds = SetBlinds::new(registry, mock, router, None, false);
         blinds
             .execute(json!({ "room": "garden", "position": 50 }))
             .await
@@ -2345,13 +2376,20 @@ mod tests {
             registry,
             mock.clone(),
             Arc::new(CommandRouter::z2m_only("z2m")),
+            None,
             false,
         );
         let result = tool
             .execute(json!({ "room": "living_room", "position": 0 }))
             .await
             .unwrap();
-        assert_eq!(result["set"].as_array().unwrap().len(), 2, "{result}");
+        let set = result["set"].as_array().unwrap();
+        assert_eq!(set.len(), 2, "{result}");
+        assert!(
+            set.iter()
+                .all(|e| e["position"] == 0 && e["device"].is_string()),
+            "{result}"
+        );
         let payloads = mock.payloads.lock().await;
         assert!(payloads.iter().all(|p| p == br#"{"position":0}"#));
 
@@ -2360,6 +2398,114 @@ mod tests {
             tool.execute(json!({ "device_id": "living_room/floor_lamp", "position": 0 }))
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn open_uses_the_house_normal_level_and_goes_all_the_way_second() {
+        let registry = fixture_registry();
+        for name in ["left_blind", "right_blind"] {
+            registry.upsert(device(
+                &format!("living_room/{name}"),
+                DeviceClass::Cover,
+                DeviceState {
+                    position: Some(0),
+                    ..Default::default()
+                },
+            ));
+        }
+        let store = Arc::new(
+            niles_config::ConfigStore::from_str_in_memory("[blinds]\nnormal_open = 75\n")
+                .expect("fixture config is valid"),
+        );
+        let tool = SetBlinds::new(
+            registry.clone(),
+            MockPublisher::default(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            Some(store),
+            false,
+        );
+        let result = tool
+            .execute(json!({ "room": "living_room", "open": true }))
+            .await
+            .unwrap();
+        let set = result["set"].as_array().unwrap();
+        assert!(set.iter().all(|e| e["position"] == 75), "{result}");
+
+        // Both already there: the second press goes all the way.
+        for name in ["left_blind", "right_blind"] {
+            let id = DeviceId::parse(&format!("z2m:living_room/{name}")).unwrap();
+            let mut blind = registry.get(&id).unwrap();
+            blind.state.position = Some(75);
+            registry.upsert(blind);
+        }
+        let result = tool
+            .execute(json!({ "room": "living_room", "open": true }))
+            .await
+            .unwrap();
+        let set = result["set"].as_array().unwrap();
+        assert!(set.iter().all(|e| e["position"] == 100), "{result}");
+    }
+
+    #[tokio::test]
+    async fn set_blinds_wants_a_position_or_open_not_neither_not_both() {
+        let registry = fixture_registry();
+        registry.upsert(device(
+            "living_room/left_blind",
+            DeviceClass::Cover,
+            DeviceState::default(),
+        ));
+        let tool = SetBlinds::new(
+            registry,
+            MockPublisher::default(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            None,
+            false,
+        );
+        let err = tool
+            .execute(json!({ "room": "living_room" }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("name a position or open"), "{err}");
+        let err = tool
+            .execute(json!({ "room": "living_room", "open": true, "position": 40 }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not both"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn open_false_and_a_null_are_the_argument_left_out() {
+        let registry = fixture_registry();
+        registry.upsert(device(
+            "living_room/left_blind",
+            DeviceClass::Cover,
+            DeviceState::default(),
+        ));
+        let tool = SetBlinds::new(
+            registry,
+            MockPublisher::default(),
+            Arc::new(CommandRouter::z2m_only("z2m")),
+            None,
+            false,
+        );
+        // An LLM that spells out "not an open, 40%" means 40%.
+        let result = tool
+            .execute(json!({ "room": "living_room", "open": false, "position": 40 }))
+            .await
+            .unwrap();
+        assert!(
+            result["set"].as_array().unwrap()[0]["position"] == 40,
+            "{result}"
+        );
+        // A null argument is one left out, so this is still an open.
+        let result = tool
+            .execute(json!({ "room": "living_room", "open": true, "position": null }))
+            .await
+            .unwrap();
+        assert!(
+            result["set"].as_array().unwrap()[0]["position"] == 100,
+            "{result}"
         );
     }
 
@@ -3118,6 +3264,7 @@ mod tests {
             reg,
             MockPublisher::default(),
             Arc::new(CommandRouter::z2m_only("z2m")),
+            None,
             false,
         );
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
@@ -3130,6 +3277,7 @@ mod tests {
             reg,
             MockPublisher::default(),
             Arc::new(CommandRouter::z2m_only("z2m")),
+            None,
             false,
         );
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();

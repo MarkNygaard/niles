@@ -50,6 +50,73 @@ pub struct PositionBody {
     pub position: u8,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenBlindsBody {
+    /// Canonical ids, e.g. `z2m:living_room/left_blind`.
+    pub devices: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct BlindOpened {
+    pub id: String,
+    pub position: u8,
+}
+
+#[derive(serde::Serialize)]
+pub struct BlindsOpened {
+    pub positions: Vec<BlindOpened>,
+}
+
+/// `POST /blinds/open` — open these blinds to their normal level,
+/// or all the way when every one of them is already there.
+///
+/// The whole set in one request, because the second press is a
+/// property of the set: "open all" goes all the way only when none
+/// of them has anywhere else to go first. Resolved here rather than
+/// in the app so the rule has one implementation, shared with voice
+/// and the automation engine.
+pub async fn open_blinds(
+    State(state): State<AppState>,
+    Json(body): Json<OpenBlindsBody>,
+) -> Result<(StatusCode, Json<BlindsOpened>), Failure> {
+    if body.devices.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "name at least one blind".into()));
+    }
+    let mut blinds = Vec::new();
+    for raw in &body.devices {
+        let id = DeviceId::parse(raw).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        let device = state
+            .registry
+            .get(&id)
+            .ok_or((StatusCode::NOT_FOUND, format!("no device called {raw:?}")))?;
+        if !device.is_cover() {
+            return Err((StatusCode::BAD_REQUEST, format!("{raw} is not a blind")));
+        }
+        blinds.push(device);
+    }
+    let snapshot = state.config.as_ref().map(|c| c.current());
+    let fallback = niles_config::BlindsConfig::default();
+    let cfg = snapshot.as_deref().map(|c| &c.blinds).unwrap_or(&fallback);
+    let resolved = cfg.targets(
+        niles_core::BlindsLevel::Open,
+        blinds.iter().map(|d| (&d.id, d.state.position)),
+    );
+    let mut positions = Vec::new();
+    for (device, position) in blinds.iter().zip(&resolved.positions) {
+        let desired = DeviceState {
+            position: Some(*position),
+            ..Default::default()
+        };
+        send(&state, &device.id, &desired).await?;
+        positions.push(BlindOpened {
+            id: device.id.to_string(),
+            position: *position,
+        });
+    }
+    Ok((StatusCode::ACCEPTED, Json(BlindsOpened { positions })))
+}
+
 /// `POST /rooms/{room}/{device}/position` — a blind to a position.
 ///
 /// Not part of `set_device`, whose every check is about what a light

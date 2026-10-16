@@ -16,6 +16,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(handlers::healthz))
         .route("/devices", get(handlers::list_devices))
         .route("/lights", post(handlers::set_all_lights))
+        .route("/blinds/open", post(handlers::open_blinds))
         .route("/logs", get(crate::logs::get_logs))
         .route(
             "/rooms/{room}",
@@ -1332,6 +1333,114 @@ devices = [\"living_room/corner_lamp\"]
         let app = app_with(registry, mock.clone());
 
         let (status, _) = post(app, "/lights", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(mock.calls().is_empty());
+    }
+
+    // ---- POST /blinds/open ----
+
+    fn make_cover_at(room: &str, name: &str, position: Option<u8>) -> Device {
+        let mut d = make_device(room, name);
+        d.class = DeviceClass::Cover;
+        d.state.position = position;
+        d
+    }
+
+    /// The usual app, with a config store holding a house normal open
+    /// level of 75.
+    fn app_with_blinds_config(
+        registry: Arc<DeviceRegistry>,
+        publisher: Arc<dyn DevicePublisher>,
+    ) -> Router {
+        let toml = format!(
+            "{}
+[blinds]
+normal_open = 75
+",
+            crate::config_tests::base_toml()
+        );
+        let store = Arc::new(niles_config::ConfigStore::from_str_in_memory(&toml).unwrap());
+        router(
+            AppState::new(
+                registry,
+                publisher,
+                Arc::new(CommandRouter::z2m_only("zigbee2mqtt")),
+                EventBus::default(),
+            )
+            .with_config_store(Some(store)),
+        )
+    }
+
+    #[tokio::test]
+    async fn open_resolves_the_whole_set_to_their_normal_level() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_cover_at("kitchen", "blind", Some(0)));
+        let app = app_with_blinds_config(registry, mock.clone());
+
+        let (status, body) = post(
+            app,
+            "/blinds/open",
+            serde_json::json!({ "devices": ["z2m:kitchen/blind"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(
+            body,
+            serde_json::json!({ "positions": [{ "id": "z2m:kitchen/blind", "position": 75 }] })
+        );
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, br#"{"position":75}"#);
+    }
+
+    #[tokio::test]
+    async fn open_goes_all_the_way_when_every_blind_is_already_there() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_cover_at("kitchen", "blind", Some(75)));
+        let app = app_with_blinds_config(registry, mock.clone());
+
+        let (_, body) = post(
+            app,
+            "/blinds/open",
+            serde_json::json!({ "devices": ["z2m:kitchen/blind"] }),
+        )
+        .await;
+        assert_eq!(body["positions"][0]["position"], 100);
+        assert_eq!(mock.calls()[0].1, br#"{"position":100}"#);
+    }
+
+    #[tokio::test]
+    async fn open_blinds_refuses_nobody_an_unknown_id_and_a_light() {
+        let mock = Arc::new(MockPublisher::default());
+        let registry = Arc::new(DeviceRegistry::new());
+        registry.upsert(make_cover_at("kitchen", "blind", Some(0)));
+        registry.upsert(make_light("kitchen", "ceiling"));
+        let app = app_with_blinds_config(registry, mock.clone());
+
+        let (status, _) = post(
+            app.clone(),
+            "/blinds/open",
+            serde_json::json!({ "devices": [] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = post(
+            app.clone(),
+            "/blinds/open",
+            serde_json::json!({ "devices": ["z2m:kitchen/ghost"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _) = post(
+            app,
+            "/blinds/open",
+            serde_json::json!({ "devices": ["z2m:kitchen/ceiling"] }),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(mock.calls().is_empty());
     }

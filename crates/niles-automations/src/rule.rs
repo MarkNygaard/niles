@@ -5,8 +5,12 @@ use crate::error::{Error, Result};
 use crate::sun::{self, Location, SunEvent};
 use chrono::{DateTime, Datelike, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
-use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, DurationDto, TriggerKind};
-use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, PresenceState, RoomName};
+use niles_config::{
+    ActionDto, AutomationRuleDto, BlindsPositionDto, ConditionDto, DurationDto, TriggerKind,
+};
+use niles_core::{
+    BlindsLevel, DeviceId, DeviceRegistry, DeviceState, Event, PresenceState, RoomName,
+};
 use std::time::Duration;
 
 /// The most triggers a rule may have, and the longest it may wait.
@@ -202,7 +206,7 @@ pub enum Action {
     /// One blind, or every blind in a room.
     SetBlinds {
         target: BlindTarget,
-        position: u8,
+        level: BlindsLevel,
     },
     Notify {
         body: String,
@@ -705,12 +709,15 @@ impl Action {
                 brightness,
                 kelvin,
             } => format!("set the {room} lights {}", how(on, brightness, kelvin)),
-            Action::SetBlinds { target, position } => {
+            Action::SetBlinds { target, level } => {
                 let what = match target {
                     BlindTarget::Device(device) => device.to_string(),
                     BlindTarget::Room(room) => format!("the {room} blinds"),
                 };
-                format!("set {what} to {position}% open")
+                match level {
+                    BlindsLevel::Exact(p) => format!("set {what} to {p}% open"),
+                    BlindsLevel::Open => format!("opened {what}"),
+                }
             }
             Action::Notify { body, room, .. } => match room {
                 Some(room) => format!("said \"{body}\" in {room}"),
@@ -1074,12 +1081,20 @@ fn parse_action(
             room,
             position,
         } => {
-            if *position > 100 {
-                return Err(Error::Invalid {
-                    id: id.into(),
-                    reason: format!("a blind opens 0–100%, not {position}"),
-                });
-            }
+            let level = match position {
+                BlindsPositionDto::Open => BlindsLevel::Open,
+                BlindsPositionDto::Exact(p) => {
+                    // The DTO can also be built in Rust, where the
+                    // deserializer never ran — keep the range check.
+                    if *p > 100 {
+                        return Err(Error::Invalid {
+                            id: id.into(),
+                            reason: format!("a blind opens 0–100%, not {p}"),
+                        });
+                    }
+                    BlindsLevel::Exact(*p)
+                }
+            };
             let target = match (device, room) {
                 (Some(device), None) => {
                     BlindTarget::Device(parse_device_id(id, device, default_source)?)
@@ -1092,10 +1107,7 @@ fn parse_action(
                     });
                 }
             };
-            Action::SetBlinds {
-                target,
-                position: *position,
-            }
+            Action::SetBlinds { target, level }
         }
         ActionDto::Notify {
             body,
@@ -1583,14 +1595,35 @@ mod tests {
             &r.actions[0],
             Action::SetBlinds {
                 target: BlindTarget::Room(_),
-                position: 0
+                level: BlindsLevel::Exact(0)
             }
         ));
         assert!(
             blinds(json!({ "do": "set_blinds", "device": "office/blind", "position": 50 })).is_ok()
         );
+        let r = blinds(json!({ "do": "set_blinds", "device": "office/blind", "position": "open" }))
+            .unwrap();
+        assert!(matches!(
+            &r.actions[0],
+            Action::SetBlinds {
+                level: BlindsLevel::Open,
+                ..
+            }
+        ));
         assert!(blinds(json!({ "do": "set_blinds", "position": 50 })).is_err());
-        assert!(blinds(json!({ "do": "set_blinds", "room": "office", "position": 150 })).is_err());
+        // 150 no longer reaches the rule: the DTO refuses it, naming the value.
+        let err = serde_json::from_value::<ActionDto>(json!({
+            "do": "set_blinds", "room": "office", "position": 150
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("150"), "{err}");
+        // Built in Rust, where the deserializer never ran: still refused.
+        let dto = ActionDto::SetBlinds {
+            device: Some("office/blind".into()),
+            room: None,
+            position: BlindsPositionDto::Exact(150),
+        };
+        assert!(parse_action("r", &dto, "z2m", &[], 0).is_err());
     }
 
     #[test]
@@ -1965,6 +1998,22 @@ mod tests {
             }
             .done(),
             "set the office lights off"
+        );
+        assert_eq!(
+            Action::SetBlinds {
+                target: BlindTarget::Room(RoomName::parse("living_room").unwrap()),
+                level: BlindsLevel::Open,
+            }
+            .done(),
+            "opened the living_room blinds"
+        );
+        assert_eq!(
+            Action::SetBlinds {
+                target: BlindTarget::Room(RoomName::parse("living_room").unwrap()),
+                level: BlindsLevel::Exact(40),
+            }
+            .done(),
+            "set the living_room blinds to 40% open"
         );
     }
 

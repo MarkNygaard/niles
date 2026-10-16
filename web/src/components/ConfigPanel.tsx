@@ -33,6 +33,7 @@ import { SetupChecklist } from "@/components/SetupChecklist";
 import { gapsFor, todoByPage } from "@/lib/setup";
 import { useRoute } from "@/lib/route";
 import { WledCard } from "@/components/WledCard";
+import { BlindsCard } from "@/components/BlindsCard";
 import { HomeCard } from "@/components/HomeCard";
 import { MorningCard } from "@/components/MorningCard";
 import type { MqttSettings } from "@/components/MqttPanel";
@@ -50,8 +51,8 @@ import type { Setting } from "@/components/SettingRow";
 import { ApiError, api, patchForAll, roomOrder, roomsHidden, valueAt } from "@/lib/api";
 import { mediaShownOf, menuLayout } from "@/lib/menu";
 import { pluginPages } from "@/lib/plugins";
-import { roomsOf } from "@/lib/rooms";
-import type { Applied, ConfigView, Revision, WledStrip } from "@/lib/api";
+import { isBlind, roomsOf } from "@/lib/rooms";
+import type { Applied, BlindOverride, ConfigView, Revision, WledStrip } from "@/lib/api";
 import type { Satellite } from "@/components/SatellitesCard";
 import { AlertTriangle, ChevronLeft, Undo2 } from "lucide-react";
 
@@ -321,6 +322,12 @@ export function musicByRoom(root: unknown): Record<string, string[]> {
 function stripsAt(root: unknown): WledStrip[] {
   const value = valueAt(root, "wled.devices");
   return Array.isArray(value) ? (value as WledStrip[]) : [];
+}
+
+/** The per-blind normal open levels, as `[blinds.overrides]` has them. */
+function overridesAt(root: unknown): BlindOverride[] {
+  const value = valueAt(root, "blinds.overrides");
+  return Array.isArray(value) ? (value as BlindOverride[]) : [];
 }
 
 export function ConfigPanel() {
@@ -880,6 +887,23 @@ export function ConfigPanel() {
                 entries: [{ path: "wled.devices", value: next }],
               })
             }
+          />
+
+          <BlindsCard
+            blinds={(devices.data ?? []).filter(isBlind)}
+            houseLevel={numberAt(view.effective, "blinds.normal_open") ?? 100}
+            overrides={overridesAt(view.effective)}
+            saving={save.isPending}
+            error={
+              rowError?.row === "blinds.overrides" ? rowError.message : undefined
+            }
+            onChange={(next) =>
+              save.mutate({
+                row: "blinds.overrides",
+                entries: [{ path: "blinds.overrides", value: next }],
+              })
+            }
+            row={row}
           />
         </TabsContent>
 

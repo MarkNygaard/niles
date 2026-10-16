@@ -48,7 +48,7 @@ export interface RoomCardProps {
   onSetRoom: (body: SetLight) => void;
   onSetLight: (light: Device, body: SetLight) => void;
   /** One blind, or all of the room's, to a position: `0` closed. */
-  onSetBlinds: (blinds: Device[], position: number) => void;
+  onSetBlinds: (blinds: Device[], position: number | "open") => void;
   /** Absent when this instance has no tado connection. */
   onSetZone?: (body: SetZone) => void;
   /** The TV, in the room it stands in. */
