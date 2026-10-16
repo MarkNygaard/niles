@@ -2116,6 +2116,122 @@ The sums are worked out in code, not by the model. Distances and paces come back
 - `niles-api`: `/me/strava`: status, the app, connect, callback, sync now, disconnect.
 - `niles-bin`: the tools, and the poll.
 
+## Artifacts (per person)
+
+Things Niles makes for one person and keeps for them: a Thailand travel plan, a packing list, later a training plan. The chat is for talking; an artifact is what is left when the talking is done, kept under **Saved** in Niles's panel, opened from a card in the chat, and changed by asking for it to be changed.
+
+**Only Claude or ChatGPT make and change them.** Niles's own fast model never sees the artifact tools: a document worth keeping is worth the stronger model, and the fast model's tool list is the most expensive part of its prompt. With no assistant on, nothing new is made; the Saved tab says that Claude or ChatGPT makes these, and links to Settings → Voice & AI.
+
+### Phases
+
+1. **Artifacts in general, with documents** (2a, built): the model, versions, the Saved tab, chat cards, background jobs. One kind, `document`, which is enough for a travel plan or a packing list from the first day.
+2. **`training_plan`** (2b): the Training section's plan, as a kind with its own view.
+3. **`trip`** (2c): a travel plan with days, places and bookings, as a kind with its own view.
+
+### The model
+
+- **`artifacts`**: one row per artifact.
+  - `id`, `person` (the same key as the chat history: `person:{slug}` or `email:{address}`), `kind`, `title`, `summary` (one line, shown under the title), `pinned`, `archived`, `notify` (default on), `created_at`, `updated_at`, `current_revision`.
+  - `status`: `ready`, `working` or `failed`, with `status_text` ("Writing your Thailand travel plan…") while working and `error` (why) when failed.
+  - For a background job: `job_id`, the `brief` it was started with (kept, so a failed job can be tried again), and `conversation_id`, the chat it came from.
+- **`artifact_revisions`**: every version of the content. `artifact_id`, `n` (1, 2, 3… per artifact), `content` (JSONB, whose shape is the kind's), `reason` ("First draft", "Added the ferry to Koh Tao"), `author` (`person`, `claude`, `chatgpt` or `niles`), `at`.
+  - **The last 50 are kept.** An older one goes as a new one is saved.
+  - **Restoring version n** saves its content as a new version, with the reason "Restored version n". Nothing is rewritten: what was there before the restore is a version too.
+  - **The person's own changes are versions.** Ticking an item on a checklist saves a version by `person`.
+- An artifact without a version yet is one being written for the first time.
+
+### Kinds
+
+A kind is a row in a small registry, in `niles-artifacts` and its twin in the app: an id, a label, an icon, an emoji for the status line, a **validator** for its content, a **preview** (a few short lines for a card), and **plain text** for copying. A new kind is one more entry in each, with its own view in the app; nothing else changes.
+
+**`document`** is markdown: `{"markdown": "…"}`.
+
+- **Why markdown and not blocks.** Claude and ChatGPT write markdown fluently and in one go, and a change is a whole new text rather than a patch to a block tree the model has to get structurally right. Copying it out is free. What blocks would have given, a checklist item that can be ticked, markdown has as `- [ ]` and `- [x]`, and a tick is that one character on that one line.
+- **Rendered safely.** The app parses the markdown itself into elements: headings, paragraphs, bulleted and numbered lists, checklists, simple tables, bold, italic, inline code, and links to `http`, `https` and `mailto` only. Raw HTML is shown as the text it is; nothing is ever inserted as HTML.
+- **Validated** on every write: a string, not empty, at most 100,000 characters, with line endings made `\n` and control characters other than tabs and newlines taken out.
+- **Preview:** the first four lines with something in them, without their markup: a heading, a bullet, a checklist item with whether it is ticked, or text, each cut to 120 characters.
+
+`training_plan` and `trip` come with 2b and 2c: each its own content shape (validated as JSON), preview and view.
+
+### The assistant's tools
+
+Offered only to Claude and ChatGPT, over the same MCP server as the rest of Niles's tools but from a registry of their own, so the fast model never has them and they need no relevance group. Each acts for **the person asking**: the voice that was recognised, or the person signed in to the app. Never a person named in an argument. An unrecognised voice has no artifacts, and is told so.
+
+- `artifact_list {archived?}`: the person's artifacts, newest first, with id, kind, title, summary, status and when each was changed.
+- `artifact_get {id}`: one, with its content.
+- `artifact_create {kind, title, summary, content, notify?}`: a small one made at once, in the turn.
+- `artifact_update {id, content, summary?, reason}`: a new version.
+- `start_artifact_job {kind, title, summary, brief, status_text?, notify?}`: a big one, made in the background (below).
+
+Each validates the content for its kind before anything is kept, and answers the id and a short view (title, summary, the preview). An id that is not the asker's is "no such artifact", exactly as one that does not exist.
+
+### Background jobs
+
+A travel plan for two weeks in Thailand takes the assistant minutes, and nobody should watch a chat bubble for that long. So a big request is answered at once ("I'm putting it together; you'll find it under Saved"), and the work goes on as a background run.
+
+- **The assistant decides**, by calling `start_artifact_job` in the turn. A heuristic in Niles (a word count, "plan", "list") would guess wrong both ways: "a list of three things to buy" is quick, "think through what we need for the cabin" is not. The model about to do the work knows best how big it is. Its tool description says when: anything that needs research, several sections, or more than a minute of writing.
+- **First the artifact**, with `status: working`, the `status_text`, a `job_id` and the brief. The reply then says where it will be.
+- **Then the run**: the same assistant, in the background (the strongest model and the long timeout the review uses), with only what writing needs: `artifact_get` and `artifact_update` for this person, the web search and page reader when there are, and the date. Not the house: a job cannot turn on a light. If it finishes without saving a version, its final answer is taken as the document.
+- **Finished**: `ready`, with the new version; a card in the conversation it came from ("Thailand travel plan is ready.") with the artifact under it; and the notifier (below) when the artifact's `notify` is on.
+- **Failed**: `failed`, with the reason. The Saved tab shows it, and **Try again** runs the same brief again on the same artifact. A restart fails every job that was running, saying so: the run was in the old pod.
+- **Limits**: two jobs at a time per person; a third is refused with that reason, which the assistant passes on. Each is held to the background runs' timeout, and to half an hour in all.
+
+**Live status.** Every change to an artifact goes out on `/events/stream` as `artifact_changed {id, kind, title, status, status_text}`, **only to the person's own connections**: the stream is otherwise the house's, and a title is not. The app refreshes Saved from it. The panel's status line under Niles's name shows the newest working job, "✍️ Writing your Thailand travel plan…", and with none the usual line.
+
+### In the chat
+
+A chat turn that made or changed an artifact carries it, `artifacts: [{id, kind, title, summary, preview, status}]`, kept in the conversation log with the turn. Read back, each is brought up to date from the store: a renamed one shows its new title, a finished job its content, and a deleted one is left out.
+
+The app draws each as a compact **card** under the reply: the kind's icon, the title, the summary, and the preview's first lines, or "being written…" while the job runs. Tapping it opens Niles's panel on that artifact.
+
+### Saved
+
+The second tab of Niles's panel, so the panel has a tab bar from here on.
+
+- **The list**: pinned first, then the rest by when they last changed, then **Archived**, folded. Each row: the kind's icon, the title, the summary, how long ago, and "being written…" or "didn't finish" when it is.
+- **On a row**: open, pin or unpin, archive or unarchive, rename, delete (asked first, in place of the list, as a conversation's is).
+- **An artifact open**: a back arrow to the list, the title, the kind's view (for a document, the rendered markdown with its checklist items tickable), **Versions** (each with who, when and why; one can be read, and restored), the notify switch, and **Copy** as markdown.
+
+### Pin, archive, delete
+
+- **Pinned** ones stay at the top of the list.
+- **Archived** ones leave the list for the folded Archived section, and `artifact_list` leaves them out unless asked. Nothing is lost; unarchiving puts it back.
+- **Delete** removes the artifact and every version at once. Its cards in the chat go with it. A job still running for it stops at its next save, which finds nothing to save into.
+
+### Who it belongs to
+
+Each artifact is one person's, under the same key as their chat and training. Only they see it, and only the assistant acting for them can read or change it:
+
+- The tools act for the asker, read from the turn, never from an argument. A background job acts for the person it was started for.
+- `/me/artifacts` acts for the person signed in. Another person's artifact is a 404, as if it did not exist.
+- Status events go only to that person's connections.
+
+### Telling the person
+
+Each artifact has **notify**, on by default and switched off on the artifact. When a job finishes or fails, Niles calls an `ArtifactNotifier` with the artifact if notify is on. In 2a nothing is behind it: the person sees the status line, the Saved tab and the card in the chat. The satellites do not say it: a document is not news for a room.
+
+**Next: phone push**, as its own piece of work. Web Push to the installed app: a VAPID key pair for this Niles, a subscription per person and device kept in Postgres, and the service worker showing "Your Thailand travel plan is ready" and opening Saved on a tap. It plugs in as an `ArtifactNotifier`.
+
+### API
+
+Every route acts for the person signed in (the operator's key is "anyone", as in the chat):
+
+- `GET /me/artifacts?pinned=&archived=`: the list, and which assistant would make one now (none: what the Saved tab explains).
+- `GET /me/artifacts/{id}`: the current content, and every version's number, reason, author and time.
+- `GET /me/artifacts/{id}/revisions/{n}`: one version's content.
+- `PATCH /me/artifacts/{id}`: `title`, `pinned`, `archived`, `notify`; or `content` (with a `reason`), which saves a version by `person`.
+- `POST /me/artifacts/{id}/restore/{n}`
+- `POST /me/artifacts/{id}/retry`: a failed job, again.
+- `DELETE /me/artifacts/{id}`
+
+### Where it lives
+
+- `niles-artifacts`: the model, the kinds with their validators and previews, and the store trait with an in-memory store for tests.
+- `niles-db`: the Postgres store, which creates its tables on first use. Artifacts are on whenever there is a database.
+- `niles-api`: `/me/artifacts`, the artifact refs on a chat turn, and `artifact_changed` on the event stream.
+- `niles-bin`: the tools, the jobs, and the notifier seam.
+- `web/`: the Saved tab, the artifact view, the chat card, and the status line.
+
 ## Runtime configuration
 
 "Code/config over UI" is a statement about *structure*, not about every
