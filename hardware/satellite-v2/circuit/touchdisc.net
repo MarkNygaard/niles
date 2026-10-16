@@ -1,0 +1,889 @@
+(export 
+  (version "D")
+  (design
+    (source "touchdisc.py")
+    (date "10/09/2026 09:27 PM")
+    (tool "SKiDL (2.3.0)")
+    (sheet
+      (number 1)
+      (name "/")
+      (tstamps "/")
+      (title_block
+        (title)
+        (company)
+        (rev)
+        (date)
+        (source "touchdisc.py")
+        (comment
+          (number "1")
+          (value ""))
+        (comment
+          (number "2")
+          (value ""))
+        (comment
+          (number "3")
+          (value ""))
+        (comment
+          (number "4")
+          (value ""))
+        (comment
+          (number "5")
+          (value ""))
+        (comment
+          (number "6")
+          (value ""))
+        (comment
+          (number "7")
+          (value ""))
+        (comment
+          (number "8")
+          (value ""))
+        (comment
+          (number "9")
+          (value "")))))
+  (components
+    (comp
+      (ref "C1")
+      (value "1uF")
+      (description "")
+      (footprint "Capacitor_SMD:C_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "Samsung CL05A105KA5NQNC")
+        (field
+          (name "LCSC") "C52923")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Capacitor_SMD:C_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "C1")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "1uF"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "b514d237-c153-5f6d-afe2-53badf97a864"))
+    (comp
+      (ref "C2")
+      (value "1uF")
+      (description "")
+      (footprint "Capacitor_SMD:C_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "Samsung CL05A105KA5NQNC")
+        (field
+          (name "LCSC") "C52923")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Capacitor_SMD:C_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "C2")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "1uF"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "507fddd0-e494-5270-a7e4-2511aa140519"))
+    (comp
+      (ref "C3")
+      (value "100nF")
+      (description "")
+      (footprint "Capacitor_SMD:C_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "Samsung CL05B104KO5NNNC")
+        (field
+          (name "LCSC") "C1525")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Capacitor_SMD:C_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "C3")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "100nF"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "299afff0-b6cf-50c0-a677-db76bcc001ee"))
+    (comp
+      (ref "C4")
+      (value "1uF")
+      (description "")
+      (footprint "Capacitor_SMD:C_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "Samsung CL05A105KA5NQNC")
+        (field
+          (name "LCSC") "C52923")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Capacitor_SMD:C_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "C4")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "1uF"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "6f9a1813-19d4-5d20-adea-8868e7232e30"))
+    (comp
+      (ref "C5")
+      (value "100nF")
+      (description "")
+      (footprint "Capacitor_SMD:C_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "Samsung CL05B104KO5NNNC")
+        (field
+          (name "LCSC") "C1525")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Capacitor_SMD:C_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "C5")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "100nF"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "1d55401a-d19b-530c-b57c-5c75b8c48e01"))
+    (comp
+      (ref "E1")
+      (value "TOUCH_ACTION")
+      (description "")
+      (footprint "niles_satellite:TouchPad_D12mm")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "niles_satellite:TouchPad_D12mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "E1")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "TOUCH_ACTION"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "06bbea7d-a2ce-5fbf-b380-2886d5efa51d"))
+    (comp
+      (ref "E2")
+      (value "TOUCH_MUTE")
+      (description "")
+      (footprint "niles_satellite:TouchPad_D12mm")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "niles_satellite:TouchPad_D12mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "E2")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "TOUCH_MUTE"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "4652dd56-3fc8-5608-86cc-59facb9a785d"))
+    (comp
+      (ref "E3")
+      (value "TOUCH_VOL_DOWN")
+      (description "")
+      (footprint "niles_satellite:TouchPad_D12mm")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "niles_satellite:TouchPad_D12mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "E3")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "TOUCH_VOL_DOWN"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "337d92d5-43e2-5603-a635-316e220724c9"))
+    (comp
+      (ref "E4")
+      (value "TOUCH_VOL_UP")
+      (description "")
+      (footprint "niles_satellite:TouchPad_D12mm")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "niles_satellite:TouchPad_D12mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "E4")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "TOUCH_VOL_UP"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "1d671de3-fde3-5396-ae13-e549ded58814"))
+    (comp
+      (ref "H1")
+      (value "Cover_post_M2")
+      (description "")
+      (footprint "MountingHole:MountingHole_2.2mm_M2")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "MountingHole:MountingHole_2.2mm_M2")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "H1")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "Cover_post_M2"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "4346372e-b487-58d7-bb7a-35d182fa1b2e"))
+    (comp
+      (ref "H2")
+      (value "Cover_post_M2")
+      (description "")
+      (footprint "MountingHole:MountingHole_2.2mm_M2")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "MountingHole:MountingHole_2.2mm_M2")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "H2")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "Cover_post_M2"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "0edb43ef-5ede-5ff4-8b77-07bb3d82b998"))
+    (comp
+      (ref "H3")
+      (value "Cover_post_M2")
+      (description "")
+      (footprint "MountingHole:MountingHole_2.2mm_M2")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "MountingHole:MountingHole_2.2mm_M2")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "H3")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "Cover_post_M2"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "bd944ac4-6bb1-5a9e-8f09-1ff91f139dbd"))
+    (comp
+      (ref "H4")
+      (value "Cover_post_M2")
+      (description "")
+      (footprint "MountingHole:MountingHole_2.2mm_M2")
+      (fields
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "MountingHole:MountingHole_2.2mm_M2")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "H4")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "Cover_post_M2"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "06da5295-48dd-5f5e-a314-66b923e79308"))
+    (comp
+      (ref "J1")
+      (value "Conn_Ring")
+      (description "")
+      (footprint "Connector_JST:JST_SH_BM06B-SRSS-TB_1x06-1MP_P1.00mm_Vertical")
+      (fields
+        (field
+          (name "MPN") "JST BM06B-SRSS-TB(LF)(SN)")
+        (field
+          (name "LCSC") "C160392")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Connector_JST:JST_SH_BM06B-SRSS-TB_1x06-1MP_P1.00mm_Vertical")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "J1")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "Conn_Ring"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "d7608689-a7d2-514c-aa16-0f8bde5cf213"))
+    (comp
+      (ref "R1")
+      (value "47k")
+      (description "")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "UNI-ROYAL 0402WGF4702TCE")
+        (field
+          (name "LCSC") "C25792")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R1")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "47k"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "91628e47-8f83-5ba1-abed-4cb134d83eea"))
+    (comp
+      (ref "R2")
+      (value "10k")
+      (description "")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "UNI-ROYAL 0402WGF1002TCE")
+        (field
+          (name "LCSC") "C25744")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R2")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "10k"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "91c587b0-c855-58aa-84a9-2ba4ce88549e"))
+    (comp
+      (ref "R3")
+      (value "10k")
+      (description "")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "UNI-ROYAL 0402WGF1002TCE")
+        (field
+          (name "LCSC") "C25744")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R3")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "10k"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "9000ab58-0faa-55db-ba96-c3a9c048b920"))
+    (comp
+      (ref "R4")
+      (value "10k")
+      (description "")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "UNI-ROYAL 0402WGF1002TCE")
+        (field
+          (name "LCSC") "C25744")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R4")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "10k"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "a3a00a8b-c8d1-582e-9de2-300987de8d24"))
+    (comp
+      (ref "R5")
+      (value "10k")
+      (description "")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "MPN") "UNI-ROYAL 0402WGF1002TCE")
+        (field
+          (name "LCSC") "C25744")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R5")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "10k"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "29f79588-e279-5ce8-b215-982a9074cc1e"))
+    (comp
+      (ref "U1")
+      (value "AT42QT1070-SSUR")
+      (description "")
+      (footprint "Package_SO:SOIC-14_3.9x8.7mm_P1.27mm")
+      (fields
+        (field
+          (name "MPN") "Microchip AT42QT1070-SSUR")
+        (field
+          (name "LCSC") "C461610")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Package_SO:SOIC-14_3.9x8.7mm_P1.27mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "U1")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "AT42QT1070-SSUR"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "f8fce87b-acde-5341-b554-4e93a034d648"))
+    (comp
+      (ref "U2")
+      (value "TLV75533PDBVR")
+      (description "")
+      (footprint "Package_TO_SOT_SMD:SOT-23-5")
+      (fields
+        (field
+          (name "MPN") "TI TLV75533PDBVR")
+        (field
+          (name "LCSC") "C404027")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "Package_TO_SOT_SMD:SOT-23-5")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "U2")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "TLV75533PDBVR"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "7a03e947-39e7-5554-99eb-b5f6bb184fae"))
+    (comp
+      (ref "U3")
+      (value "LTR-303ALS-01")
+      (description "")
+      (footprint "OptoDevice:Lite-On_LTR-303ALS-01")
+      (fields
+        (field
+          (name "MPN") "LTR-303ALS-01")
+        (field
+          (name "LCSC") "C364577")
+        (field
+          (name "Description"))
+        (field
+          (name "Footprint") "OptoDevice:Lite-On_LTR-303ALS-01")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "U3")
+        (field
+          (name "SKiDL Line") "parts.py:22"))
+      (libsource
+        (lib "NO_LIB")
+        (part "LTR-303ALS-01"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "d29b9cd6-156c-5987-b6f9-a6a085b1d5a7")))
+  (nets
+    (net
+      (code 1)
+      (name "+3V3")
+      (class "Default")
+      (node
+        (ref "C4")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "C5")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "J1")
+        (pin "3")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U3")
+        (pin "1")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 2)
+      (name "+3V3_TOUCH")
+      (class "Default")
+      (node
+        (ref "C2")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "C3")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "R1")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "4")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U2")
+        (pin "5")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 3)
+      (name "+5V")
+      (class "Default")
+      (node
+        (ref "C1")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "J1")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U2")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U2")
+        (pin "3")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 4)
+      (name "GND")
+      (class "Default")
+      (node
+        (ref "C1")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "C2")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "C3")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "C4")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "C5")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "J1")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "J1")
+        (pin "MP")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "14")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U2")
+        (pin "2")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U3")
+        (pin "3")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 5)
+      (name "I2C_SCL")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "5")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "6")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U3")
+        (pin "4")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 6)
+      (name "I2C_SDA")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "4")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "3")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U3")
+        (pin "6")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 7)
+      (name "N$1")
+      (class "Default")
+      (node
+        (ref "R2")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "13")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 8)
+      (name "N$2")
+      (class "Default")
+      (node
+        (ref "R3")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "12")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 9)
+      (name "N$3")
+      (class "Default")
+      (node
+        (ref "R4")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "11")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 10)
+      (name "N$4")
+      (class "Default")
+      (node
+        (ref "R5")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "10")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 11)
+      (name "TOUCH_ACTION")
+      (class "Default")
+      (node
+        (ref "E1")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "R2")
+        (pin "2")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 12)
+      (name "TOUCH_CHANGE")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "6")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "R1")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "U1")
+        (pin "5")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 13)
+      (name "TOUCH_MUTE")
+      (class "Default")
+      (node
+        (ref "E2")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "R3")
+        (pin "2")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 14)
+      (name "TOUCH_VOL_DOWN")
+      (class "Default")
+      (node
+        (ref "E3")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "R4")
+        (pin "2")
+        (pintype "UNSPECIFIED")))
+    (net
+      (code 15)
+      (name "TOUCH_VOL_UP")
+      (class "Default")
+      (node
+        (ref "E4")
+        (pin "1")
+        (pintype "UNSPECIFIED"))
+      (node
+        (ref "R5")
+        (pin "2")
+        (pintype "UNSPECIFIED")))))

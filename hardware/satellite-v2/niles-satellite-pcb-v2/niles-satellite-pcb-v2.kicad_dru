@@ -1,0 +1,41 @@
+(version 1)
+
+# PoE input side (cable, bridges, Ag5412 input) is isolated from everything else.
+(rule "PoE isolation"
+  (condition "A.NetClass == 'PoE' && B.NetClass != 'PoE' && B.NetName != ''")
+  (constraint clearance (min 2.0mm)))
+
+# TPS25730D (0.4 mm pitch, merged pads) and the USB-C receptacle: the land
+# patterns are the manufacturers', so their own pads may sit closer than the board default.
+(rule "U11 fine pitch"
+  (condition "A.memberOfFootprint('U11') && B.memberOfFootprint('U11')")
+  (constraint clearance (min 0.1mm)))
+(rule "J2 receptacle"
+  (condition "A.memberOfFootprint('J2') && B.memberOfFootprint('J2')")
+  (constraint hole_clearance (min 0.1mm)))
+
+# The PD sink's DRAIN pads: their own copper only (TI SLVSGP9 layout guide).
+(rule "PD drain"
+  (condition "A.NetName == 'PD_DRAIN' && B.NetName != 'PD_DRAIN'")
+  (constraint clearance (min 0.15mm)))
+# Small GND pads also have their own via or track to the plane, so one spoke into a pour is enough.
+(rule "GND thermal spokes"
+  (condition "A.NetName == 'GND'")
+  (constraint min_resolved_spokes 1))
+
+
+# The Ag5412's "IC" pins (4-6, no net) are on the primary side: same 2 mm isolation as the PoE nets.
+(rule "PS1 IC pins"
+  (condition "A.memberOfFootprint('PS1') && A.Type == 'Pad' && A.NetName == '' && B.NetName != '' && B.NetClass != 'PoE'")
+  (constraint clearance (min 2.0mm)))
+
+# Cable shield to the rest: the 2 kV Bob Smith cap (C67) and R66 bridge it; keep the copper apart too.
+(rule "Shield isolation"
+  (condition "A.NetName == 'CHASSIS' && B.NetName != 'CHASSIS'")
+  (constraint clearance (min 1.5mm)))
+
+# The PoE primary area and the Ag5412's primary half carry PoE copper only (no secondary signals
+# without a reference plane, nothing under the module's primary side).
+(rule "Primary side: PoE copper only"
+  (condition "(A.intersectsArea('PoE primary: no pour') || A.intersectsArea('PS1 primary side')) && A.NetClass != 'PoE' && A.NetName != ''")
+  (constraint disallow track via))
