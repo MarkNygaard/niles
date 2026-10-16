@@ -2144,6 +2144,7 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
 2. **`training_plan`** (2b, built): the Training section's plan, as a kind with its own view.
 3. **The plan kept up to date** (2c, built): after each run arrives from Strava, Niles marks the session it was done (with the activity and what was run) or the ones it passed missed, the assistant looks the plan over and may adjust what is to come, and Niles answers "what's my run today?". Every session had its status, `activity` and `actual` from 2b; 2c adds the coach's log, `updates`, and the day a run was done on when it was not its session's.
 4. **`trip`** (2d, built): a travel plan with days, places and bookings, as a kind with its own view.
+5. **Today's run on the dashboard** (2e, built): a card on the person's dashboard with today's session from their plan, read as `training_today` reads it (see [Today's run](#todays-run)).
 
 ### The model
 
@@ -2219,6 +2220,15 @@ After every sync of a person's Strava (see Training, Syncing: what arrived), eac
 - **What it is asked:** to change the plan only if what was run warrants it (a run much slower, faster, shorter or longer than planned, misses one after another, signs of being tired or ahead), and then only the sessions still to come, a little, keeping the plan's shape; to put a note to the person first in `updates`, saying what it changed and why; and, if nothing needs changing, to save nothing, or only a note when a word would really help.
 - **The past is fixed, in code.** Its `artifact_update` is checked against the current version before it is kept (`tracking::keeps_the_past`), and refused with what to fix when it changes the race day, any session before today (they must be exactly as they are, in their order), or any session from today on that is no longer planned (done, missed, skipped or moved, by Niles or the person, perhaps since the look began). It may not mark a session done, missed or skipped itself; it may move one (`moved`, with the new one added). A refusal says to read the plan again, so a run marked during the look is kept.
 - **Telling the person:** only when the look changed sessions, not for a look that saved nothing or only a note, so a routine look after every run does not buzz the phone after every run. Then, if the plan's notify is on, the notifier's `changed` is called with the plan and the note (below).
+
+#### Today's run
+
+The plan is read for one day by `niles_artifacts::plan_day`, which `training_today` and the dashboard both use, so the voice and the card never disagree about which plan or which day:
+
+- **Which plan:** the person's own, not archived, whose race is today or later: a pinned one first, then the one changed last.
+- **The day:** its sessions, rest days among them; the next session after it still planned and not a rest day; the week it falls in, with its focus, the km planned and run (a done session counting what was run), and the sessions from that day on still to run; the countdown from today; and the coach's newest note.
+
+**The card** sits on the dashboard under the house's buttons, for the person signed in, and only when they have such a plan: no plan, or no database, is no card, not a card asking for one. It shows the race and the countdown; today's session large (title, type, distance and pace, details), or "Rest day", or once it is not to run any more what came of it ("Done ✓ 6.2 km at 5:41", "Skipped"); the next session small ("Next: Sun 18 Oct · Long run · 12 km"); a thin bar of the week's km run of planned; and the coach's note while it is at most three days old. A tap opens the plan in Niles's panel, on the Saved tab (`#/chat?artifact={id}`). Under it, for a session planned or missed whose day it is, **Done** and **Skipped**: the same mark as a tap in the plan's view, saved on the plan as it is when tapped (read again first, the session found by its day and title) so a run that marked another session meanwhile is kept. The card refreshes with the Saved tab, on every `artifact_changed`, and every half hour for a page left open over midnight.
 
 **`trip`** is a travel plan, day by day, as JSON:
 
@@ -2329,14 +2339,15 @@ Every route acts for the person signed in (the operator's key is "anyone", as in
 - `POST /me/artifacts/{id}/restore/{n}`
 - `POST /me/artifacts/{id}/retry`: a failed job, again.
 - `DELETE /me/artifacts/{id}`
+- `GET /me/training/today`: the dashboard card's day, `{"plan": null}` without a plan whose race is still to come, else `{"plan": {id, title, race, today, days_to_go, sessions, next, week, update}}`: `race` the plan's goal, `today` the house's day, the sessions as the plan keeps them (km, paces per km, `actual` once run), `week` `{focus, planned_km, run_km, sessions_left}` or null, `update` the coach's newest note or null. 501 without a database, as the rest.
 
 ### Where it lives
 
-- `niles-artifacts`: the model, the kinds with their validators and previews, the store trait with an in-memory store for tests, and a training plan's bookkeeping and the rule its review is held to (`tracking`).
+- `niles-artifacts`: the model, the kinds with their validators and previews, the store trait with an in-memory store for tests, a training plan's bookkeeping and the rule its review is held to (`tracking`), and its day (`plan_day`).
 - `niles-db`: the Postgres store, which creates its tables on first use. Artifacts are on whenever there is a database.
-- `niles-api`: `/me/artifacts`, the artifact refs on a chat turn, and `artifact_changed` on the event stream.
+- `niles-api`: `/me/artifacts`, `/me/training/today`, the artifact refs on a chat turn, and `artifact_changed` on the event stream.
 - `niles-bin`: the tools, the jobs, the notifier, which pushes to the person's devices, and following the runs in the plans and the coach's look (`artifacts::coach`).
-- `web/`: the Saved tab, the artifact view, the chat card, and the status line.
+- `web/`: the Saved tab, the artifact view, the chat card, the status line, and the dashboard's `TodaysRunCard`.
 
 ## Notifications on your devices
 

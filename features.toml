@@ -700,3 +700,15 @@ id = "ui-training-plan-sessions"
 category = "ui.chat"
 summary = "Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan"
 since_pr = 436
+
+[[feature]]
+id = "ui-todays-run-card"
+category = "ui.dashboard"
+summary = "Today's run on the dashboard: the session, the next one, the week's km and the coach's note, with Done and Skipped"
+since_pr = 438
+
+[[feature]]
+id = "api-training-today"
+category = "api.read"
+summary = "GET /me/training/today: the signed-in person's training plan read for today, or plan null without one"
+since_pr = 438

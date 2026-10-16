@@ -12,6 +12,7 @@ mod document;
 mod error;
 pub mod kinds;
 mod model;
+pub mod plan_day;
 mod store;
 pub mod tracking;
 mod training_plan;

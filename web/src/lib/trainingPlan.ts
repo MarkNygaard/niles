@@ -283,3 +283,92 @@ export function withMark(
     reason: `${was.title} on ${dayLabel(was.date)}: ${MARKED[mark]}`,
   };
 }
+
+/** The week a day is in, so far, as the dashboard's card shows it. */
+export interface WeekToday {
+  focus: string | null;
+  planned_km: number;
+  run_km: number;
+  /** Sessions from today on still to run, rest days not counted. */
+  sessions_left: number;
+}
+
+/**
+ * The person's current plan read for today: `GET /me/training/today`,
+ * the twin of `PlanToday` in crates/niles-api/src/artifacts.rs. Sessions
+ * are as the plan keeps them.
+ */
+export interface PlanToday {
+  id: number;
+  title: string;
+  race: Plan["goal"];
+  /** The house's today. */
+  today: string;
+  days_to_go: number;
+  sessions: Session[];
+  next: Session | null;
+  week: WeekToday | null;
+  /** The coach's newest note. */
+  update: Update | null;
+}
+
+/** No plan with a race still to come is `plan: null`. */
+export interface TrainingToday {
+  plan: PlanToday | null;
+}
+
+/** How old a coach's note may be and still be news on the dashboard:
+    one written after a run, read in the days after it. */
+export const RECENT_NOTE_DAYS = 3;
+
+/** The coach's note, while it is recent. */
+export function recentNote(update: Update | null | undefined, today: string): Update | undefined {
+  if (!update) return undefined;
+  const age = daysBetween(update.date, today);
+  return age >= 0 && age <= RECENT_NOTE_DAYS ? update : undefined;
+}
+
+/** Whether a day has nothing to run: no session, or only rest. */
+export function isRestDay(sessions: Session[]): boolean {
+  return sessions.every((s) => s.type === "rest");
+}
+
+/** What came of a session that is not to run any more: "Done ✓ 6.2 km
+    at 5:41", "Skipped". Undefined while it is still planned. */
+export function outcome(s: Session): string | undefined {
+  switch (s.status) {
+    case "done": {
+      const ran = [
+        s.actual?.distance_km !== undefined && km(s.actual.distance_km),
+        s.actual?.pace && `at ${s.actual.pace}`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return ran ? `Done ✓ ${ran}` : "Done ✓";
+    }
+    case "missed":
+      return "Missed";
+    case "skipped":
+      return "Skipped";
+    case "moved":
+      return "Moved";
+    default:
+      return undefined;
+  }
+}
+
+/** How much of the week has been run, 0 to 1. */
+export function weekShare(week: WeekToday): number {
+  if (week.planned_km <= 0) return 0;
+  return Math.min(1, Math.max(0, week.run_km / week.planned_km));
+}
+
+/** Where `s` is in `plan`, found by its day and title: the plan may have
+    changed since `s` was read, and a mark is saved on the newest one. */
+export function locate(plan: Plan, s: Session): { week: number; n: number } | undefined {
+  for (let week = 0; week < plan.weeks.length; week++) {
+    const n = plan.weeks[week].sessions.findIndex((x) => x.date === s.date && x.title === s.title);
+    if (n !== -1) return { week, n };
+  }
+  return undefined;
+}
