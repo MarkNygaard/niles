@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, LoaderCircle, Mic, Square, SquarePen } from "lucide-react";
 import { ApprovalCard } from "@/components/ApprovalCard";
+import { ArtifactCard } from "@/components/ArtifactCard";
 import { NilesAvatar } from "@/components/NilesPanel";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -45,6 +46,8 @@ export interface ChatViewProps {
   deciding?: boolean;
   /** Words from a recording. Without it there is no microphone. */
   onDictate?: (audio: Blob) => Promise<string>;
+  /** Open an artifact a reply made, in Niles's panel. */
+  onOpenArtifact?: (id: number) => void;
 }
 
 /** Things worth asking that show what typing to Niles is for. */
@@ -73,6 +76,7 @@ export function ChatView({
   onDecide,
   deciding,
   onDictate,
+  onOpenArtifact,
 }: ChatViewProps) {
   const [draft, setDraft] = useState("");
   const [transcribing, setTranscribing] = useState(false);
@@ -209,10 +213,15 @@ export function ChatView({
       <ol className="mt-auto flex flex-col gap-3" aria-label="Conversation">
         {turns.map((turn, i) => (
           <li key={i} className="flex flex-col gap-3">
-            <Bubble from="you">{turn.said}</Bubble>
+            {/* Nothing said is Niles speaking first: a job that was
+                asked for earlier, finished. */}
+            {turn.said && <Bubble from="you">{turn.said}</Bubble>}
             {turn.via === "voice" && <Spoken room={turn.room} />}
             <Bubble from="niles">{turn.reply}</Bubble>
             {(turn.by || turn.fallback) && <Credit turn={turn} />}
+            {turn.artifacts?.map((card) => (
+              <ArtifactCard key={card.id} card={card} onOpen={onOpenArtifact} />
+            ))}
             {turn.approval && (
               <ApprovalCard
                 card={turn.approval}

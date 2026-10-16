@@ -26,6 +26,7 @@
 //! replacement, so a retry after a connection dies mid-write cannot apply
 //! anything twice.
 
+mod artifacts;
 mod automations;
 mod calendars;
 mod captures;
@@ -44,6 +45,7 @@ mod skills;
 mod tado_tokens;
 mod timers;
 mod training;
+pub use artifacts::PostgresArtifacts;
 pub use automations::PostgresAutomations;
 pub use calendars::PostgresCalendars;
 pub use captures::{Capture, PostgresCaptures};

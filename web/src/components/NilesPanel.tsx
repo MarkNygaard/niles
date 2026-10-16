@@ -30,6 +30,10 @@ export interface NilesPanelProps {
   /** One line under the name. */
   status: string;
   tabs: PanelTab[];
+  /** The tab shown, when whoever opens the panel decides: a card in
+      the chat opens it on Saved. Without it the panel keeps its own. */
+  tab?: string;
+  onTabChange?: (id: string) => void;
 }
 
 /**
@@ -132,10 +136,23 @@ function fly(from: HTMLElement | null, to: HTMLElement): (() => void) | undefine
  * that grows out of the avatar rather than a dialog in the middle of the
  * screen: it belongs to the thing that was clicked.
  */
-export function NilesPanel({ open, onOpenChange, anchor, status, tabs }: NilesPanelProps) {
+export function NilesPanel({
+  open,
+  onOpenChange,
+  anchor,
+  status,
+  tabs,
+  tab: chosenTab,
+  onTabChange,
+}: NilesPanelProps) {
   const phone = useMediaQuery("(max-width: 639px)");
   const still = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const [tab, setTab] = useState(tabs[0]?.id);
+  const [ownTab, setOwnTab] = useState(tabs[0]?.id);
+  const tab = chosenTab ?? ownTab;
+  const setTab = (id: string) => {
+    setOwnTab(id);
+    onTabChange?.(id);
+  };
   const active = tabs.find((t) => t.id === tab) ?? tabs[0];
   // The panel itself takes focus on opening, not its first button: the
   // first button is the X, and a ring round it after a tap reads as

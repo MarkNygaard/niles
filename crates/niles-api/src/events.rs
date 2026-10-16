@@ -46,6 +46,15 @@ pub enum WireEvent {
         plugin: String,
         surface: String,
     },
+    /// One of the viewer's own artifacts changed: the Saved tab and the
+    /// panel's status line follow it.
+    ArtifactChanged {
+        id: i64,
+        kind: String,
+        title: String,
+        status: String,
+        status_text: Option<String>,
+    },
     Ping {
         ts: String,
     },
@@ -56,6 +65,28 @@ pub enum WireEvent {
 }
 
 impl WireEvent {
+    /// `event` as `viewer` (a person key) may see it. An artifact's goes
+    /// only to its own person.
+    fn for_viewer(event: Event, viewer: &str) -> Option<Self> {
+        match event {
+            Event::ArtifactChanged {
+                person,
+                id,
+                kind,
+                title,
+                status,
+                status_text,
+            } => (person == viewer).then_some(WireEvent::ArtifactChanged {
+                id,
+                kind,
+                title,
+                status,
+                status_text,
+            }),
+            other => Self::from_event(other),
+        }
+    }
+
     fn from_event(event: Event) -> Option<Self> {
         match event {
             Event::DeviceStateChanged { id, state } => Some(WireEvent::DeviceStateChanged {
@@ -103,7 +134,8 @@ pub async fn events_stream(
         )
             .into_response();
     }
-    ws.on_upgrade(|socket| handle_socket(socket, state.event_bus))
+    let viewer = crate::chat::person_of(&state, &headers);
+    ws.on_upgrade(|socket| handle_socket(socket, state.event_bus, viewer))
 }
 
 /// Whether this handshake came from a page Niles itself served.
@@ -150,7 +182,7 @@ fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
-async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
+async fn handle_socket(mut socket: WebSocket, bus: EventBus, viewer: String) {
     let mut rx = bus.subscribe();
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut dropped: u64 = 0;
@@ -168,7 +200,7 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
-                        if let Some(wire) = WireEvent::from_event(event)
+                        if let Some(wire) = WireEvent::for_viewer(event, &viewer)
                             && send_json(&mut socket, &wire).await.is_err()
                         {
                             break "send_error";
@@ -381,6 +413,47 @@ mod tests {
         assert_eq!(v["type"], "ui_invalidated");
         assert_eq!(v["plugin"], "spotprice");
         assert_eq!(v["surface"], "electricity");
+    }
+
+    fn changed(person: &str) -> Event {
+        Event::ArtifactChanged {
+            person: person.into(),
+            id: 7,
+            kind: "document".into(),
+            title: "Thailand travel plan".into(),
+            status: "working".into(),
+            status_text: Some("Writing your Thailand travel plan…".into()),
+        }
+    }
+
+    #[test]
+    fn an_artifact_goes_to_its_own_person() {
+        let wire = WireEvent::for_viewer(changed("person:mark"), "person:mark").expect("theirs");
+        let v = serde_json::to_value(&wire).unwrap();
+        assert_eq!(v["type"], "artifact_changed");
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["status"], "working");
+        assert_eq!(v["status_text"], "Writing your Thailand travel plan…");
+        assert!(v.get("person").is_none());
+    }
+
+    #[test]
+    fn an_artifact_never_goes_to_anybody_else() {
+        assert!(WireEvent::for_viewer(changed("person:mark"), "person:majse").is_none());
+        assert!(WireEvent::for_viewer(changed("person:mark"), "email:anyone").is_none());
+        assert!(WireEvent::from_event(changed("person:mark")).is_none());
+    }
+
+    #[test]
+    fn the_house_s_events_go_to_every_viewer() {
+        let wire = WireEvent::for_viewer(
+            Event::UiInvalidated {
+                plugin: "spotprice".into(),
+                surface: "electricity".into(),
+            },
+            "person:majse",
+        );
+        assert!(wire.is_some());
     }
 
     #[test]

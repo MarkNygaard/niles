@@ -1,14 +1,18 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessagesSquare } from "lucide-react";
+import { Bookmark, MessagesSquare } from "lucide-react";
+import { ArtifactView } from "@/components/ArtifactView";
 import { ChatView } from "@/components/ChatView";
 import type { ShownTurn } from "@/components/ChatView";
 import { ConversationList } from "@/components/ConversationList";
 import { NilesPanel } from "@/components/NilesPanel";
 import type { PanelTab } from "@/components/NilesPanel";
+import { SavedList } from "@/components/SavedList";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { api } from "@/lib/api";
-import type { Conversation, ConversationSummary, Decision } from "@/lib/api";
+import type { Artifact, ArtifactPatch, Conversation, ConversationSummary, Decision } from "@/lib/api";
+import { ARTIFACTS, ARTIFACT_LIST, workingLine } from "@/lib/artifacts";
 import { relativeTime } from "@/lib/skills";
 
 export const CHAT = ["chat"];
@@ -33,15 +37,19 @@ export function landingOn(
 
 /**
  * The line under Niles's name in its panel: thinking while a reply is
- * on its way, else when it was last talked to, which is the one thing
- * about it this page knows for certain.
+ * on its way, else what it is writing in the background, else when it
+ * was last talked to, which is the one thing about it this page knows
+ * for certain.
  */
 export function panelStatus(
   thinking: boolean,
   conversations: ConversationSummary[] | undefined,
+  artifacts?: Artifact[],
   now: Date = new Date(),
 ): string {
   if (thinking) return "Thinking…";
+  const writing = workingLine(artifacts);
+  if (writing) return writing;
   const latest = conversations?.[0];
   if (!latest) return "Ready";
   return `Last talked ${relativeTime(latest.last_at, now)}`;
@@ -55,6 +63,9 @@ export function panelStatus(
 export function ChatPage() {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: LIST, queryFn: api.conversations });
+  const saved = useQuery({ queryKey: ARTIFACT_LIST, queryFn: api.artifacts });
+  // Saved, and the status line, follow the jobs as they go.
+  useDeviceStream();
   // `null` is an empty new chat; undefined is "not chosen yet", settled
   // once from the list. Settled rather than worked out on every render,
   // or a refetch after five quiet minutes would empty the screen under
@@ -70,6 +81,9 @@ export function ChatPage() {
     enabled: current !== null,
   });
   const [panelOpen, setPanelOpen] = useState(false);
+  const [tab, setTab] = useState("conversations");
+  // The artifact open in Saved; null is the list.
+  const [opened, setOpened] = useState<number | null>(null);
   const avatar = useRef<HTMLButtonElement>(null);
   // Kept here because the server does not: only a reply just sent says
   // which assistant did not write it, and why. Keyed by conversation and
@@ -134,6 +148,28 @@ export function ChatPage() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: CHAT }),
   });
 
+  const changeArtifact = useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: ArtifactPatch }) =>
+      api.patchArtifact(id, patch),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ARTIFACTS }),
+  });
+
+  const removeArtifact = useMutation({
+    mutationFn: (id: number) => api.deleteArtifact(id),
+    onSuccess: async (_, id) => {
+      queryClient.removeQueries({ queryKey: [...ARTIFACTS, "one", id] });
+      await queryClient.invalidateQueries({ queryKey: ARTIFACTS });
+      // Its cards in the chat go with it.
+      void queryClient.invalidateQueries({ queryKey: CHAT });
+    },
+  });
+
+  const openArtifact = (id: number) => {
+    setTab("saved");
+    setOpened(id);
+    setPanelOpen(true);
+  };
+
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteConversation(id),
     onSuccess: async (_, id) => {
@@ -171,6 +207,24 @@ export function ChatPage() {
           onDelete={(id) => remove.mutateAsync(id)}
         />
       ),
+    },
+    {
+      id: "saved",
+      label: "Saved",
+      icon: Bookmark,
+      render: () =>
+        opened !== null ? (
+          <ArtifactView id={opened} onBack={() => setOpened(null)} />
+        ) : (
+          <SavedList
+            artifacts={saved.data?.artifacts}
+            assistant={saved.data?.assistant}
+            error={saved.error?.message}
+            onOpen={setOpened}
+            onChange={(id, patch) => changeArtifact.mutateAsync({ id, patch })}
+            onDelete={(id) => removeArtifact.mutateAsync(id)}
+          />
+        ),
     },
   ];
 
@@ -215,13 +269,16 @@ export function ChatPage() {
         }
         deciding={decide.isPending}
         onDictate={async (audio) => (await api.dictate(audio)).text}
+        onOpenArtifact={openArtifact}
       />
       <NilesPanel
         open={panelOpen}
         onOpenChange={setPanelOpen}
         anchor={avatar}
-        status={panelStatus(send.isPending, list.data)}
+        status={panelStatus(send.isPending, list.data, saved.data?.artifacts)}
         tabs={tabs}
+        tab={tab}
+        onTabChange={setTab}
       />
     </>
   );

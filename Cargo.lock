@@ -2535,6 +2535,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body-util",
  "mime_guess",
+ "niles-artifacts",
  "niles-automations",
  "niles-calendar",
  "niles-config",
@@ -2571,6 +2572,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "niles-artifacts"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "niles-automations"
 version = "0.2.1"
 dependencies = [
@@ -2601,6 +2614,7 @@ dependencies = [
  "hound",
  "iana-time-zone",
  "niles-api",
+ "niles-artifacts",
  "niles-automations",
  "niles-calendar",
  "niles-capabilities",
@@ -2719,6 +2733,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "chrono-tz",
+ "niles-artifacts",
  "niles-calendar",
  "niles-config",
  "niles-presence",

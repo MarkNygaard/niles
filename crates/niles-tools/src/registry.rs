@@ -231,6 +231,11 @@ impl ToolRegistry {
         mentioned
     }
 
+    /// Whether a tool by this name is offered here, built in or added.
+    pub fn has(&self, name: &str) -> bool {
+        self.tools.contains_key(name) || self.dynamic.find(name).is_some()
+    }
+
     /// Dispatch a `ToolCall`. Returns the JSON value the tool produced;
     /// the caller wraps it in `Message::Tool { tool_call_id, content }`.
     pub async fn execute(&self, call: &niles_llm::ToolCall) -> Result<serde_json::Value> {

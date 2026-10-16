@@ -283,9 +283,13 @@ mod tests {
         let store = Arc::new(niles_groceries::GroceryStore::new());
         let mut registry = niles_tools::ToolRegistry::new();
         niles_tools::register_grocery_tools(&mut registry, store.clone(), Some("DK".into()));
-        let assistant = crate::assistant::Assistant::start(Arc::new(registry), None)
-            .await
-            .unwrap();
+        let assistant = crate::assistant::Assistant::start(
+            Arc::new(registry),
+            niles_tools::ToolRegistry::new(),
+            None,
+        )
+        .await
+        .unwrap();
         let mut cfg = cfg();
         cfg.model = "haiku".into();
         let chosen = crate::assistant::Chosen::ClaudeCode {

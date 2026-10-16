@@ -98,6 +98,11 @@ pub struct AppState {
     pub strava: Option<Arc<niles_training::Strava>>,
     /// Strava sign-ins in flight, apart from the others.
     pub strava_attempts: Arc<crate::auth::flow::Attempts>,
+    /// Each person's artifacts. Absent without a database.
+    pub artifacts: Option<Arc<dyn niles_artifacts::ArtifactStore>>,
+    /// What runs an artifact's job again, and says whether an assistant
+    /// is there to. Answered by the binary.
+    pub artifact_jobs: Option<Arc<dyn crate::artifacts::Jobs>>,
 }
 
 impl AppState {
@@ -133,6 +138,8 @@ impl AppState {
             tool_servers: None,
             strava: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
+            artifacts: None,
+            artifact_jobs: None,
             music: None,
             tado: None,
             voices: None,
@@ -238,6 +245,16 @@ impl AppState {
 
     pub fn with_strava(mut self, strava: Option<Arc<niles_training::Strava>>) -> Self {
         self.strava = strava;
+        self
+    }
+
+    pub fn with_artifacts(
+        mut self,
+        store: Option<Arc<dyn niles_artifacts::ArtifactStore>>,
+        jobs: Option<Arc<dyn crate::artifacts::Jobs>>,
+    ) -> Self {
+        self.artifacts = store;
+        self.artifact_jobs = jobs;
         self
     }
 

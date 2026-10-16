@@ -20,9 +20,10 @@ const KNOWN_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 /// Niles's own tiers, and means nothing to anybody else.
 const HIDDEN: &[&str] = &[crate::escalate::ESCALATE_TOOL_NAME];
 
-/// Answer one JSON-RPC message. `None` for a notification, which gets no
-/// reply.
-pub async fn handle(registry: &ToolRegistry, message: &Value) -> Option<Value> {
+/// Answer one JSON-RPC message, offering the tools of every registry in
+/// `registries`; a name in more than one is the first one's. `None` for
+/// a notification, which gets no reply.
+pub async fn handle(registries: &[&ToolRegistry], message: &Value) -> Option<Value> {
     let id = message.get("id").cloned()?;
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -30,8 +31,8 @@ pub async fn handle(registry: &ToolRegistry, message: &Value) -> Option<Value> {
     let result = match method {
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(list(registry)),
-        "tools/call" => call(registry, &params).await,
+        "tools/list" => Ok(list(registries)),
+        "tools/call" => call(registries, &params).await,
         other => Err((-32601, format!("method not found: {other}"))),
     };
     Some(match result {
@@ -56,11 +57,13 @@ fn initialize(params: &Value) -> Value {
     })
 }
 
-fn list(registry: &ToolRegistry) -> Value {
-    let tools: Vec<Value> = registry
-        .llm_tools()
-        .into_iter()
+fn list(registries: &[&ToolRegistry]) -> Value {
+    let mut seen = std::collections::HashSet::new();
+    let tools: Vec<Value> = registries
+        .iter()
+        .flat_map(|r| r.llm_tools())
         .filter(|t| !HIDDEN.contains(&t.name.as_str()))
+        .filter(|t| seen.insert(t.name.clone()))
         .map(|t| {
             json!({
                 "name": t.name,
@@ -75,7 +78,7 @@ fn list(registry: &ToolRegistry) -> Value {
 /// A tool that fails is a result, not a protocol error: the agent reads
 /// `isError` and can try something else, where an error response would
 /// look like the server breaking.
-async fn call(registry: &ToolRegistry, params: &Value) -> Result<Value, (i64, String)> {
+async fn call(registries: &[&ToolRegistry], params: &Value) -> Result<Value, (i64, String)> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -93,6 +96,11 @@ async fn call(registry: &ToolRegistry, params: &Value) -> Result<Value, (i64, St
         name: name.to_string(),
         arguments,
     };
+    let registry = registries
+        .iter()
+        .find(|r| r.has(name))
+        .or(registries.first())
+        .ok_or((-32602, format!("no tool called {name}")))?;
     Ok(match registry.execute(&call).await {
         Ok(value) => json!({
             "content": [{ "type": "text", "text": value.to_string() }],
@@ -143,7 +151,7 @@ mod tests {
 
     async fn ask(method: &str, params: Value) -> Value {
         handle(
-            &registry(),
+            &[&registry()],
             &json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }),
         )
         .await
@@ -214,10 +222,34 @@ mod tests {
     #[tokio::test]
     async fn a_notification_gets_no_reply() {
         let reply = handle(
-            &registry(),
+            &[&registry()],
             &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
         )
         .await;
         assert!(reply.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_second_registry_s_tools_are_listed_and_called_too() {
+        let mut first = ToolRegistry::new();
+        crate::escalate::register_escalate_tool(&mut first);
+        let mut second = ToolRegistry::new();
+        second.register(Box::new(Echo));
+        let both = [&first, &second];
+        let listed = handle(
+            &both,
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["result"]["tools"][0]["name"], "echo");
+        let called = handle(
+            &both,
+            &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                     "params": { "name": "echo", "arguments": { "say": "hej" } } }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(called["result"]["isError"], false);
     }
 }

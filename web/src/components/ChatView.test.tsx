@@ -24,7 +24,61 @@ function renderChat(props: Partial<ChatViewProps> = {}) {
 
 const field = () => screen.getByRole("textbox", { name: "Message Niles" });
 
+const PLAN = {
+  id: 9,
+  kind: "document",
+  title: "Thailand travel plan",
+  summary: "Two weeks in March",
+  status: "ready" as const,
+  preview: {
+    lines: [
+      { text: "Thailand, two weeks", style: "heading" as const },
+      { text: "Bangkok", style: "bullet" as const },
+      { text: "Book flights", style: "check" as const, checked: true },
+      { text: "Ferry to Koh Tao", style: "check" as const, checked: false },
+    ],
+  },
+};
+
 describe("ChatView", () => {
+  it("shows an artifact a reply made as a card with its first lines, and opens it", () => {
+    const onOpenArtifact = vi.fn();
+    renderChat({
+      turns: [turn("plan our Thailand trip", "Here it is.", { artifacts: [PLAN] })],
+      onOpenArtifact,
+    });
+    const card = screen.getByRole("button", { name: "Open Thailand travel plan" });
+    expect(card).toHaveTextContent("Two weeks in March");
+    expect(card).toHaveTextContent("Thailand, two weeks");
+    expect(card).toHaveTextContent("• Bangkok");
+    expect(card).toHaveTextContent("☑ Book flights");
+    // Three lines at most: a card, not the document.
+    expect(card).not.toHaveTextContent("Ferry to Koh Tao");
+    fireEvent.click(card);
+    expect(onOpenArtifact).toHaveBeenCalledWith(9);
+  });
+
+  it("says a card's artifact is being written instead of its lines", () => {
+    renderChat({
+      turns: [
+        turn("plan it", "I'm putting it together.", {
+          artifacts: [{ ...PLAN, status: "working", preview: { lines: [] } }],
+        }),
+      ],
+    });
+    expect(screen.getByRole("button", { name: "Open Thailand travel plan" })).toHaveTextContent(
+      "being written…",
+    );
+  });
+
+  it("shows a turn nobody said anything in as Niles alone", () => {
+    renderChat({ turns: [turn("", "Thailand travel plan is ready.", { artifacts: [PLAN] })] });
+    expect(screen.getByText("Thailand travel plan is ready.")).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Conversation" });
+    // The reply's bubble and the card; no empty bubble from the person.
+    expect(list.querySelectorAll(".bg-primary")).toHaveLength(0);
+  });
+
   it("shows both sides of the conversation", () => {
     renderChat({ turns: [turn("Is anyone home?", "Only you, Sir.")] });
     expect(screen.getByText("Is anyone home?")).toBeInTheDocument();

@@ -377,7 +377,7 @@ impl Learning {
         );
         match self
             .assistant
-            .background(&chosen, &system, &prompt, tools)
+            .background(&chosen, &system, &prompt, tools, None)
             .await
         {
             Ok(summary) => tracing::info!("[learning] review: {summary}"),
@@ -429,7 +429,7 @@ impl Learning {
         tracing::info!("[learning] {} is tidying memory and skills", chosen.name());
         match self
             .assistant
-            .background(&chosen, &system, &prompt, tools)
+            .background(&chosen, &system, &prompt, tools, None)
             .await
         {
             Ok(summary) => {
