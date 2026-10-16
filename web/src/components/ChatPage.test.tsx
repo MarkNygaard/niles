@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ChatPage, landingOn } from "@/components/ChatPage";
+import { ChatPage, landingOn, panelStatus } from "@/components/ChatPage";
 import { ApiError, api } from "@/lib/api";
 import type { Conversation, ConversationSummary, Turn } from "@/lib/api";
 
@@ -68,9 +68,9 @@ function show(list: ConversationSummary[], conversations: Record<number, Convers
   );
 }
 
-async function openList() {
-  fireEvent.click(await screen.findByRole("button", { name: "Conversations" }));
-  return within(await screen.findByRole("dialog"));
+async function openPanel() {
+  fireEvent.click(await screen.findByRole("button", { name: "Open Niles" }));
+  return within(await screen.findByRole("dialog", { name: "Niles" }));
 }
 
 const field = () => screen.getByRole("textbox", { name: "Message Niles" });
@@ -97,12 +97,30 @@ describe("landingOn", () => {
   });
 });
 
+describe("panelStatus", () => {
+  const now = new Date("2026-10-14T12:00:00Z");
+
+  it("is thinking while a reply is on its way", () => {
+    expect(panelStatus(true, [summary(1, "a")], now)).toBe("Thinking…");
+  });
+
+  it("says when Niles was last talked to", () => {
+    const last = summary(1, "a", { last_at: new Date(now.getTime() - 5 * MINUTE).toISOString() });
+    expect(panelStatus(false, [last], now)).toBe("Last talked 5 minutes ago");
+  });
+
+  it("is ready when nothing has been said yet", () => {
+    expect(panelStatus(false, [], now)).toBe("Ready");
+    expect(panelStatus(false, undefined, now)).toBe("Ready");
+  });
+});
+
 describe("ChatPage", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("lists past conversations, marking the spoken ones", async () => {
     show([CURTAINS, MILK], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
-    const dialog = await openList();
+    const dialog = await openPanel();
     const rows = within(dialog.getByRole("list", { name: "Conversations" })).getAllByRole("listitem");
     expect(rows).toHaveLength(2);
 
@@ -124,12 +142,41 @@ describe("ChatPage", () => {
   it("opens a conversation from the list, with the room of each spoken turn", async () => {
     show([MILK], { 7: conversationOf(MILK, [turn("add milk to the list", "Milk is on the list.")]) });
     // MILK is a day old, so the tab opens on an empty chat.
-    const dialog = await openList();
+    const dialog = await openPanel();
     expect(api.conversation).not.toHaveBeenCalled();
     fireEvent.click(dialog.getByText(MILK.title));
 
     expect(await screen.findByText("Milk is on the list.")).toBeInTheDocument();
     expect(screen.queryByText("Living room")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("starts a new chat from the panel, and closes it", async () => {
+    const conversations = { 42: conversationOf(CURTAINS, CURTAINS_TURNS) };
+    show([CURTAINS], conversations);
+    const send = vi.spyOn(api, "sendChat").mockImplementation(reply(conversations, 44, "Hello."));
+    await screen.findByText("Only you, Sir.");
+
+    const dialog = await openPanel();
+    fireEvent.click(dialog.getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByText("Only you, Sir.")).toBeNull();
+    type("hello");
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][1]).toEqual({ new: true });
+  });
+
+  it("says Niles is thinking while a reply is on its way", async () => {
+    show([MILK]);
+    vi.spyOn(api, "sendChat").mockReturnValue(new Promise(() => {}));
+    const before = await openPanel();
+    expect(before.getByText("Last talked yesterday")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    type("Is anyone home?");
+    const during = await openPanel();
+    expect(during.getByRole("status")).toHaveTextContent("Thinking…");
   });
 
   it("shows the room a turn was spoken in", async () => {
@@ -142,7 +189,7 @@ describe("ChatPage", () => {
     const conversations: Record<number, Conversation> = {};
     show([MILK], conversations);
     const send = vi.spyOn(api, "sendChat").mockImplementation(reply(conversations, 43, "Nobody, Sir."));
-    await screen.findByRole("button", { name: "Conversations" });
+    await screen.findByRole("button", { name: "Open Niles" });
     type("Is anyone home?");
 
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
@@ -168,7 +215,7 @@ describe("ChatPage", () => {
     const conversations: Record<number, Conversation> = {};
     show([], conversations);
     const send = vi.spyOn(api, "sendChat").mockImplementation(reply(conversations, 45, "Yes, Sir."));
-    await screen.findByRole("button", { name: "Conversations" });
+    await screen.findByRole("button", { name: "Open Niles" });
 
     type("hello");
     expect(await screen.findByText("Yes, Sir.")).toBeInTheDocument();
@@ -186,7 +233,7 @@ describe("ChatPage", () => {
       fallback: "ChatGPT is not signed in",
       fallback_from: "chatgpt" as const,
     }));
-    await screen.findByRole("button", { name: "Conversations" });
+    await screen.findByRole("button", { name: "Open Niles" });
     type("Is anyone home?");
     expect(
       await screen.findByText("Answered without ChatGPT — ChatGPT is not signed in"),
@@ -240,7 +287,7 @@ describe("ChatPage", () => {
     show([CURTAINS, MILK], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
     const remove = vi.spyOn(api, "deleteConversation").mockResolvedValue(undefined);
     await screen.findByText("Only you, Sir.");
-    const dialog = await openList();
+    const dialog = await openPanel();
     const row = dialog.getByText(MILK.title).closest("li")!;
     fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
 
@@ -259,7 +306,7 @@ describe("ChatPage", () => {
   it("keeps a conversation when the delete is called off", async () => {
     show([MILK]);
     const remove = vi.spyOn(api, "deleteConversation").mockResolvedValue(undefined);
-    const dialog = await openList();
+    const dialog = await openPanel();
     fireEvent.click(dialog.getByRole("button", { name: "Delete" }));
     fireEvent.click(await dialog.findByRole("button", { name: "Keep it" }));
     expect(await dialog.findByText(MILK.title)).toBeInTheDocument();

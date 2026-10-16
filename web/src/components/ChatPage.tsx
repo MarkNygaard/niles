@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { MessagesSquare } from "lucide-react";
 import { ChatView } from "@/components/ChatView";
 import type { ShownTurn } from "@/components/ChatView";
 import { ConversationList } from "@/components/ConversationList";
+import { NilesPanel } from "@/components/NilesPanel";
+import type { PanelTab } from "@/components/NilesPanel";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import type { Conversation, ConversationSummary, Decision } from "@/lib/api";
+import { relativeTime } from "@/lib/skills";
 
 export const CHAT = ["chat"];
 const LIST = [...CHAT, "conversations"];
@@ -25,6 +29,22 @@ export function landingOn(
   const latest = conversations[0];
   if (!latest) return null;
   return now - new Date(latest.last_at).getTime() < QUIET_MS ? latest.id : null;
+}
+
+/**
+ * The line under Niles's name in its panel: thinking while a reply is
+ * on its way, else when it was last talked to, which is the one thing
+ * about it this page knows for certain.
+ */
+export function panelStatus(
+  thinking: boolean,
+  conversations: ConversationSummary[] | undefined,
+  now: Date = new Date(),
+): string {
+  if (thinking) return "Thinking…";
+  const latest = conversations?.[0];
+  if (!latest) return "Ready";
+  return `Last talked ${relativeTime(latest.last_at, now)}`;
 }
 
 /**
@@ -49,7 +69,8 @@ export function ChatPage() {
     queryFn: () => api.conversation(current!),
     enabled: current !== null,
   });
-  const [browsing, setBrowsing] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const avatar = useRef<HTMLButtonElement>(null);
   // Kept here because the server does not: only a reply just sent says
   // which assistant did not write it, and why. Keyed by conversation and
   // turn.
@@ -124,10 +145,34 @@ export function ChatPage() {
 
   const startNew = () => {
     setChosen(null);
-    setBrowsing(false);
+    setPanelOpen(false);
     send.reset();
     answer.reset();
   };
+
+  const pick = (id: number) => {
+    setChosen(id);
+    setPanelOpen(false);
+    send.reset();
+    answer.reset();
+  };
+
+  const tabs: PanelTab[] = [
+    {
+      id: "conversations",
+      label: "Conversations",
+      icon: MessagesSquare,
+      render: () => (
+        <ConversationList
+          conversations={list.data}
+          current={current}
+          onPick={pick}
+          onNew={startNew}
+          onDelete={(id) => remove.mutateAsync(id)}
+        />
+      ),
+    },
+  ];
 
   if (list.isLoading) {
     return <Skeleton className="h-64 w-full" />;
@@ -160,7 +205,9 @@ export function ChatPage() {
         }
         onSend={(text) => send.mutate({ text, to: current })}
         onNew={startNew}
-        onBrowse={() => setBrowsing(true)}
+        onOpenPanel={() => setPanelOpen(true)}
+        avatarRef={avatar}
+        panelOpen={panelOpen}
         onAnswer={(turn, save) => current !== null && answer.mutate({ id: current, turn, save })}
         answering={answer.isPending}
         onDecide={(approval, decision) =>
@@ -169,19 +216,12 @@ export function ChatPage() {
         deciding={decide.isPending}
         onDictate={async (audio) => (await api.dictate(audio)).text}
       />
-      <ConversationList
-        open={browsing}
-        onOpenChange={setBrowsing}
-        conversations={list.data}
-        current={current}
-        onPick={(id) => {
-          setChosen(id);
-          setBrowsing(false);
-          send.reset();
-          answer.reset();
-        }}
-        onNew={startNew}
-        onDelete={(id) => remove.mutateAsync(id)}
+      <NilesPanel
+        open={panelOpen}
+        onOpenChange={setPanelOpen}
+        anchor={avatar}
+        status={panelStatus(send.isPending, list.data)}
+        tabs={tabs}
       />
     </>
   );
