@@ -655,22 +655,22 @@ since_pr = 430
 id = "push-artifact-ready"
 category = "runtime.notifications"
 summary = "A notification on your phone or computer when a document written in the background is ready; a tap opens it"
-since_pr = 9999
+since_pr = 432
 
 [[feature]]
 id = "ui-push-notifications"
 category = "ui.settings"
 summary = "My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app"
-since_pr = 9999
+since_pr = 432
 
 [[feature]]
 id = "ui-push-nudge"
 category = "ui.chat"
 summary = "While a document is being written, one tap on \"Notify me when it's done\" turns notifications on for this device"
-since_pr = 9999
+since_pr = 432
 
 [[feature]]
 id = "api-push"
 category = "api.write"
 summary = "GET /push/key; GET, POST and DELETE /me/push for this person's devices; POST /me/push/test"
-since_pr = 9999
+since_pr = 432
