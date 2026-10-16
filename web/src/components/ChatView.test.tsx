@@ -17,7 +17,7 @@ function turn(said: string, reply: string, rest: Partial<ShownTurn> = {}): Shown
 }
 
 function renderChat(props: Partial<ChatViewProps> = {}) {
-  const handlers = { onSend: vi.fn(), onNew: vi.fn(), onBrowse: vi.fn(), onAnswer: vi.fn() };
+  const handlers = { onSend: vi.fn(), onNew: vi.fn(), onOpenPanel: vi.fn(), onAnswer: vi.fn() };
   render(<ChatView turns={[]} {...handlers} {...props} />);
   return handlers;
 }
@@ -105,10 +105,12 @@ describe("ChatView", () => {
     expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
   });
 
-  it("opens the past conversations", () => {
-    const { onBrowse } = renderChat();
-    fireEvent.click(screen.getByRole("button", { name: "Conversations" }));
-    expect(onBrowse).toHaveBeenCalled();
+  it("opens Niles's panel from the avatar", () => {
+    const { onOpenPanel } = renderChat();
+    const avatar = screen.getByRole("button", { name: "Open Niles" });
+    expect(avatar).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(avatar);
+    expect(onOpenPanel).toHaveBeenCalled();
   });
 
   it("says which room a spoken turn was said in", () => {
@@ -172,7 +174,7 @@ describe("ChatView", () => {
 
   it("gives the tab bar back when it unmounts mid-typing", () => {
     const { unmount } = render(
-      <ChatView turns={[]} onSend={vi.fn()} onNew={vi.fn()} onBrowse={vi.fn()} onAnswer={vi.fn()} />,
+      <ChatView turns={[]} onSend={vi.fn()} onNew={vi.fn()} onOpenPanel={vi.fn()} onAnswer={vi.fn()} />,
     );
     fireEvent.focus(field());
     expect(document.documentElement.dataset.typing).toBe("");

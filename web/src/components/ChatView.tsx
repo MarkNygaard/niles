@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, History, LoaderCircle, Mic, Square, SquarePen } from "lucide-react";
+import { ArrowUp, LoaderCircle, Mic, Square, SquarePen } from "lucide-react";
 import { ApprovalCard } from "@/components/ApprovalCard";
+import { NilesAvatar } from "@/components/NilesPanel";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,8 +29,12 @@ export interface ChatViewProps {
   onSend: (text: string) => void;
   /** Leave this conversation for an empty one. */
   onNew: () => void;
-  /** Open the list of past conversations. */
-  onBrowse: () => void;
+  /** Open Niles's panel, which holds the past conversations. */
+  onOpenPanel: () => void;
+  /** The avatar that opens it, for the panel to grow from. */
+  avatarRef?: React.Ref<HTMLButtonElement>;
+  /** Whether the panel is open. */
+  panelOpen?: boolean;
   /** Save, or not, what the last turn proposed; `turn` is its index. */
   onAnswer: (turn: number, save: boolean) => void;
   /** An answer to a proposal is on its way. */
@@ -60,7 +65,9 @@ export function ChatView({
   error,
   onSend,
   onNew,
-  onBrowse,
+  onOpenPanel,
+  avatarRef,
+  panelOpen,
   onAnswer,
   answering,
   onDecide,
@@ -132,15 +139,37 @@ export function ChatView({
     // 1.5rem from `sm`, the header 2.25rem, the gap under it 0.5rem on a
     // phone and 1rem from `sm`.
     <div className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]">
-      <div className="flex justify-between gap-2">
-        <Button variant="ghost" size="sm" onClick={onBrowse}>
-          <History />
-          Conversations
-        </Button>
+      {/* Niles at the head of the conversation, the way a messages app
+          puts the other person there; tapping the face opens what it
+          keeps. New chat stays out here as well, for the one thing done
+          often enough not to want a panel in the way. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <span aria-hidden />
+        <button
+          ref={avatarRef}
+          type="button"
+          aria-label="Open Niles"
+          aria-haspopup="dialog"
+          aria-expanded={panelOpen ?? false}
+          onClick={onOpenPanel}
+          className={cn(
+            "rounded-full transition-transform active:scale-95",
+            "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+          )}
+        >
+          <NilesAvatar className="size-10" />
+        </button>
         {(turns.length > 0 || busy) && (
-          <Button variant="ghost" size="sm" onClick={onNew} disabled={busy}>
-            <SquarePen />
-            New chat
+          <Button
+            variant="ghost"
+            size="icon-lg"
+            onClick={onNew}
+            disabled={busy}
+            aria-label="New chat"
+            title="New chat"
+            className="text-muted-foreground justify-self-end"
+          >
+            <SquarePen className="size-5" />
           </Button>
         )}
       </div>
