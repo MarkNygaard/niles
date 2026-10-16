@@ -34,8 +34,29 @@ struct Grant {
     speaker: Option<String>,
     tools: Option<Arc<ToolRegistry>>,
     /// Whose turn this run answers, so a tool that waits for a yes holds
-    /// its call for them.
+    /// its call for them, and a saved artifact is theirs.
     asker: Option<crate::approvals::Asker>,
+    /// Which assistant is running: `claude` or `chatgpt`. What a version
+    /// it saves is marked as written by.
+    via: &'static str,
+}
+
+tokio::task_local! {
+    /// The assistant whose tool call this is, for the length of the call.
+    static VIA: &'static str;
+}
+
+/// The assistant making the tool call this runs in, if one is.
+pub(crate) fn via() -> Option<&'static str> {
+    VIA.try_with(|v| *v).ok()
+}
+
+#[cfg(test)]
+pub(crate) mod tests_support {
+    /// Run `f` as though `via` were making the tool call.
+    pub(crate) async fn as_assistant<F: std::future::Future>(via: &'static str, f: F) -> F::Output {
+        super::VIA.scope(via, f).await
+    }
 }
 
 /// Live run tokens, and what each grants.
@@ -143,8 +164,12 @@ fn pick(preferred: Preferred, claude: Candidate, chatgpt: Candidate) -> Choice {
 impl Assistant {
     /// Serve the tools on a loopback port, so only a process in this pod
     /// can reach them — and only with a run's token.
+    ///
+    /// `own` are the tools only an assistant is offered, beside the
+    /// house's: the artifacts, which the fast model never sees.
     pub(crate) async fn start(
         tools: Arc<ToolRegistry>,
+        own: ToolRegistry,
         secrets: Option<Arc<niles_db::PostgresSecrets>>,
     ) -> anyhow::Result<Self> {
         let turns: Turns = Arc::default();
@@ -159,6 +184,7 @@ impl Assistant {
             )
             .with_state(McpState {
                 tools,
+                own: Arc::new(own),
                 turns: turns.clone(),
             });
         tokio::spawn(async move {
@@ -188,6 +214,7 @@ impl Assistant {
                 speaker,
                 tools: None,
                 asker: crate::approvals::asker(),
+                via: chosen.via(),
             },
         );
         let prompt = transcript(history, text);
@@ -218,20 +245,24 @@ impl Assistant {
     }
 
     /// A job nobody waits for, with only `tools` to work with: the
-    /// house's devices are not among them.
+    /// house's devices are not among them. `for_whom` is the person a
+    /// job is done for, whose own tools it then reaches; `None` for the
+    /// household's.
     pub(crate) async fn background(
         &self,
         chosen: &Chosen,
         system_prompt: &str,
         prompt: &str,
         tools: ToolRegistry,
+        for_whom: Option<crate::approvals::Asker>,
     ) -> anyhow::Result<String> {
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
-                speaker: None,
+                speaker: for_whom.as_ref().and_then(|a| a.slug.clone()),
                 tools: Some(Arc::new(tools)),
-                asker: None,
+                asker: for_whom,
+                via: chosen.via(),
             },
         );
         match chosen {
@@ -287,6 +318,7 @@ impl Drop for TurnToken {
 #[derive(Clone)]
 struct McpState {
     tools: Arc<ToolRegistry>,
+    own: Arc<ToolRegistry>,
     turns: Turns,
 }
 
@@ -312,17 +344,24 @@ async fn serve_mcp(
     };
     // A background job lists and calls only its own tools: asking for
     // `set_device` by name finds nothing.
-    let tools = grant.tools.unwrap_or_else(|| state.tools.clone());
-    let handled = crate::profile::SPEAKER.scope(grant.speaker, async {
-        match grant.asker {
-            Some(asker) => {
-                crate::approvals::ASKER
-                    .scope(asker, niles_tools::mcp::handle(&tools, &message))
-                    .await
+    let registries: Vec<Arc<ToolRegistry>> = match grant.tools {
+        Some(own) => vec![own],
+        None => vec![state.tools.clone(), state.own.clone()],
+    };
+    let handled = VIA.scope(
+        grant.via,
+        crate::profile::SPEAKER.scope(grant.speaker, async {
+            let registries: Vec<&ToolRegistry> = registries.iter().map(|r| r.as_ref()).collect();
+            match grant.asker {
+                Some(asker) => {
+                    crate::approvals::ASKER
+                        .scope(asker, niles_tools::mcp::handle(&registries, &message))
+                        .await
+                }
+                None => niles_tools::mcp::handle(&registries, &message).await,
             }
-            None => niles_tools::mcp::handle(&tools, &message).await,
-        }
-    });
+        }),
+    );
     match handled.await {
         Some(reply) => Json(reply).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
@@ -515,6 +554,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
                 speaker: Some("mark".into()),
                 tools: None,
                 asker: None,
+                via: "claude",
             },
         );
         let key = token.0.clone();
@@ -528,7 +568,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
 
     #[tokio::test]
     async fn the_mcp_port_wants_a_live_token() {
-        let assistant = Assistant::start(Arc::new(ToolRegistry::new()), None)
+        let assistant = Assistant::start(Arc::new(ToolRegistry::new()), ToolRegistry::new(), None)
             .await
             .unwrap();
         let client = reqwest::Client::new();
@@ -548,6 +588,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
                 speaker: None,
                 tools: None,
                 asker: None,
+                via: "claude",
             },
         );
         let answered = client
@@ -603,13 +644,16 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
     /// house's: the review must not be able to turn on a light.
     #[tokio::test]
     async fn a_background_grant_sees_only_its_own_tools() {
-        let assistant = Assistant::start(Arc::new(house()), None).await.unwrap();
+        let assistant = Assistant::start(Arc::new(house()), ToolRegistry::new(), None)
+            .await
+            .unwrap();
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
                 asker: None,
+                via: "claude",
             },
         );
         let names = tool_names(&assistant.mcp_url, &token.0).await;
@@ -617,18 +661,53 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         assert!(!names.iter().any(|n| n.contains("grocer")), "{names:?}");
     }
 
+    /// The tools only an assistant has (the artifacts) are offered with
+    /// the house's in a turn; a background job sees only its own.
+    #[tokio::test]
+    async fn the_assistant_s_own_tools_join_a_turn_s_but_not_a_job_s() {
+        let assistant = Assistant::start(Arc::new(house()), review_tools(), None)
+            .await
+            .unwrap();
+        let turn = TurnToken::issue(
+            &assistant.turns,
+            Grant {
+                speaker: None,
+                tools: None,
+                asker: None,
+                via: "claude",
+            },
+        );
+        let names = tool_names(&assistant.mcp_url, &turn.0).await;
+        assert!(names.iter().any(|n| n == "view_skill"), "{names:?}");
+        assert!(names.iter().any(|n| n.contains("grocer")), "{names:?}");
+
+        let job = TurnToken::issue(
+            &assistant.turns,
+            Grant {
+                speaker: None,
+                tools: Some(Arc::new(ToolRegistry::new())),
+                asker: None,
+                via: "claude",
+            },
+        );
+        assert!(tool_names(&assistant.mcp_url, &job.0).await.is_empty());
+    }
+
     /// pi reaches the tools through the variables Niles hands it, the
     /// way `deploy/pi/niles.ts` does: the same grant holds there, and
     /// ends with the run.
     #[tokio::test]
     async fn pi_is_held_to_the_same_grant() {
-        let assistant = Assistant::start(Arc::new(house()), None).await.unwrap();
+        let assistant = Assistant::start(Arc::new(house()), ToolRegistry::new(), None)
+            .await
+            .unwrap();
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
                 asker: None,
+                via: "claude",
             },
         );
         let env: HashMap<String, String> = crate::chatgpt::environment(

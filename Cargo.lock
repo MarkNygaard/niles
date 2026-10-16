@@ -2614,6 +2614,7 @@ dependencies = [
  "hound",
  "iana-time-zone",
  "niles-api",
+ "niles-artifacts",
  "niles-automations",
  "niles-calendar",
  "niles-capabilities",

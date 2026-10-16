@@ -52,6 +52,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 mod approvals;
+mod artifacts;
 mod assistant;
 mod calendar;
 mod chat_log;
@@ -1557,6 +1558,39 @@ async fn build_journal(cfg: &Config) -> Arc<review::Journal> {
 
 /// Every conversation, kept per person for the app's chat. Nothing
 /// without a database: the chat then remembers only the one going on.
+/// Each person's artifacts, whenever there is a database: no switch, a
+/// person asking for one is the switch.
+fn build_artifacts(
+    cfg: &Config,
+    bus: EventBus,
+    runner: Arc<artifacts::AssistantRunner>,
+    chat_log: Option<Arc<chat_log::ChatLog>>,
+    websearch: Option<Arc<niles_websearch::SearXngClient>>,
+) -> Option<Arc<artifacts::Artifacts>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    let store = niles_db::PostgresArtifacts::new(backend.pool(), backend.describe_target());
+    let timezone = cfg.home.timezone.clone();
+    let results = cfg.web_search.default_num_results;
+    // What writing needs and nothing of the house's: a job cannot turn
+    // on a light.
+    let extras: artifacts::Extras = Box::new(move |reg: &mut ToolRegistry| {
+        if let Some(client) = &websearch {
+            niles_tools::register_web_search_tool(reg, client.clone(), results);
+        }
+        niles_tools::register_datetime_tool(reg, &timezone);
+    });
+    Some(Arc::new(artifacts::Artifacts::new(
+        Arc::new(store),
+        bus,
+        runner,
+        Arc::new(artifacts::Nobody),
+        chat_log.map(|log| log as Arc<dyn artifacts::Conversations>),
+        extras,
+    )))
+}
+
 fn build_chat_log(cfg: &Config) -> Option<Arc<chat_log::ChatLog>> {
     let database = cfg.database.as_ref()?;
     let url = database.resolve_url().ok()?;
@@ -3320,6 +3354,7 @@ async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
         follow_ups: Arc::default(),
         automations: None,
         approvals: Arc::default(),
+        artifacts: None,
     };
 
     // Keep the device index in sync so Tier-0 device-name matchers
@@ -3640,6 +3675,10 @@ impl niles_api::chat::Chat for AppChat {
                     by: via.map(str::to_string),
                     proposal: proposal_since(ctx, started),
                     approval: ctx.approvals.for_turn(&person, started),
+                    artifacts: match &ctx.artifacts {
+                        Some(artifacts) => artifacts.for_turn(&person, started).await,
+                        None => Vec::new(),
+                    },
                 };
                 let kept = log
                     .record(&person, target, &turn)
@@ -3650,6 +3689,9 @@ impl niles_api::chat::Chat for AppChat {
                     });
                 if let (Some(card), Some(id)) = (&turn.approval, kept) {
                     ctx.approvals.place(&card.id, id);
+                }
+                if let (Some(artifacts), Some(id)) = (&ctx.artifacts, kept) {
+                    artifacts.placed(&person, started, id).await;
                 }
                 kept
             }
@@ -3695,6 +3737,11 @@ impl niles_api::chat::Chat for AppChat {
                 tracing::warn!("[chat-log] {e}");
                 None
             })?;
+        if let Some(artifacts) = &ctx.artifacts {
+            artifacts
+                .refresh(&chat_log::person(speaker, who), &mut conversation.turns)
+                .await;
+        }
         // A card the store no longer holds lapsed, or was held by a Niles
         // that has since restarted: either way nothing is waiting.
         for card in conversation
@@ -3775,6 +3822,7 @@ impl niles_api::chat::Chat for AppChat {
             by: None,
             proposal: None,
             approval: None,
+            artifacts: Vec::new(),
         };
         if let Err(e) = log.record(&person, Some(id), &answered).await {
             tracing::warn!("[chat-log] the answer was not kept: {e}");
@@ -3838,6 +3886,7 @@ impl niles_api::chat::Chat for AppChat {
             by: None,
             proposal: None,
             approval: None,
+            artifacts: Vec::new(),
         };
         if let Err(e) = log.record(&person, Some(id), &answered).await {
             tracing::warn!("[chat-log] the answer was not kept: {e}");
@@ -3974,6 +4023,9 @@ struct DispatchCtx {
     )>,
     /// What is waiting for somebody's yes.
     approvals: Arc<approvals::Approvals>,
+    /// Each person's artifacts, and the jobs that write them. Absent
+    /// without a database, and outside `serve`.
+    artifacts: Option<Arc<artifacts::Artifacts>>,
 }
 
 impl DispatchCtx {
@@ -4131,6 +4183,7 @@ async fn handle_transcript(
                 approval: ctx
                     .approvals
                     .for_turn(&chat_log::person(Some(slug), ""), started),
+                artifacts: Vec::new(),
             };
             let (log, person) = (log.clone(), chat_log::person(Some(slug), ""));
             tokio::spawn(async move { log.record_spoken(&person, &turn).await });
@@ -4412,8 +4465,16 @@ async fn ask_assistant(
     let history = ctx.conversation.recent_messages(thread);
     let started = Instant::now();
     let name = chosen.name();
+    // Only for somebody Niles knows: an unrecognised voice has nowhere
+    // to keep one.
+    let mut system_prompt = system_prompt.to_string();
+    if ctx.artifacts.is_some()
+        && approvals::asker().is_some_and(|a| !a.person.starts_with("satellite:"))
+    {
+        system_prompt.push_str(artifacts::PROMPT);
+    }
     match assistant
-        .answer(&chosen, system_prompt, &history, text, slug)
+        .answer(&chosen, &system_prompt, &history, text, slug)
         .await
     {
         Ok(reply) => {
@@ -7225,16 +7286,46 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     tools.attach_dynamic(plugin_tools);
 
     let tools = Arc::new(tools);
+    let chat_log = build_chat_log(&cfg);
+    // Made by the assistant, which runs their jobs: the runner is handed
+    // the assistant once it has started serving the tools.
+    let artifact_runner = Arc::new(artifacts::AssistantRunner {
+        assistant: std::sync::OnceLock::new(),
+        settings: store.clone(),
+    });
+    let artifacts = build_artifacts(
+        &cfg,
+        bus.clone(),
+        artifact_runner.clone(),
+        chat_log.clone(),
+        websearch_client.clone(),
+    );
+    if let Some(artifacts) = &artifacts {
+        let artifacts = artifacts.clone();
+        tokio::spawn(async move { artifacts.recover().await });
+    }
+    let assistant_only = artifacts
+        .as_ref()
+        .map_or_else(ToolRegistry::new, |a| a.tools());
     // Started whether or not an assistant is switched on: the switch is
     // in the app and read per message, and a port bound only at startup
     // would leave turning it on waiting for a restart.
-    let assistant = match assistant::Assistant::start(tools.clone(), secret_store.clone()).await {
+    let assistant = match assistant::Assistant::start(
+        tools.clone(),
+        assistant_only,
+        secret_store.clone(),
+    )
+    .await
+    {
         Ok(assistant) => Some(Arc::new(assistant)),
         Err(e) => {
             tracing::warn!("[assistant] unavailable: {e:#}");
             None
         }
     };
+    if let Some(assistant) = &assistant {
+        let _ = artifact_runner.assistant.set(assistant.clone());
+    }
 
     // What Niles learns: the assistant reviews what was said once the
     // house is quiet, and tidies memory and skills weekly. Which one, if
@@ -7307,6 +7398,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
     .with_strava(strava.clone())
+    .with_artifacts(
+        artifacts.as_ref().map(|a| a.store().clone()),
+        artifacts
+            .clone()
+            .map(|a| Arc::new(artifacts::AppJobs(a)) as Arc<dyn niles_api::artifacts::Jobs>),
+    )
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
     .with_chat(Some(Arc::new(AppChat {
@@ -7434,7 +7531,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         settings: Some(store.clone()),
         journal: journal.clone(),
         conversation: build_conversation_memory(&cfg).await,
-        chat_log: build_chat_log(&cfg),
+        chat_log: chat_log.clone(),
         last_target: Arc::new(last_target::LastTarget::default()),
         weather: weather_client.clone(),
         tado: tado.clone(),
@@ -7443,6 +7540,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         follow_ups: Arc::default(),
         automations: automations.clone().map(|store| (store, proposals.clone())),
         approvals: approvals.clone(),
+        artifacts: artifacts.clone(),
     };
     // The API is already up; from here on the chat has something to
     // answer with.
