@@ -367,6 +367,18 @@ Both are stored in config and consulted by the routine at trigger time.
 
 A skip override only disables the auto-on trigger for that day. **The curve itself is unchanged** — the curve's morning ramp still runs from 15% → 100% between 05:45 and 06:30, sunset still happens, color temperature still cycles. The only difference is that no lights are automatically turned on, so the bedroom stays dark while you sleep in. If you wake up later and manually turn on a light, you get the curve value for whatever time it currently is (typically 100% if you're up past 06:30).
 
+**A wake-up from an automation.** The same routine can be started by an [automation](#automations), at whatever moment its trigger and waits arrive at — "seven hours after I went to bed" — with its settings in the automation rather than here: the `wake_up` action. It does what the scheduled routine does, with its own numbers:
+
+- **How long:** the ramp's length, 1 to 120 minutes (default 45), from the moment the action runs.
+- **Which lights:** rooms and devices, or every curve-managed light when neither is given, minus any excepted. A plug in the set is switched on at the end of the ramp, as the scheduled routine does.
+- **Where it ends:** a brightness (default 100%) and, optionally, a colour temperature. Without one the lights keep the curve's warmth for the moment.
+
+Lights that are off come on at 0% and ramp to the end; lights already on are left alone; a light switched off mid-ramp is cancelled for that wake-up, and a light adjusted by hand is left alone — all as for the scheduled routine. The scheduled routine is unchanged and both can be in use; a light the one has taken, the other skips.
+
+**After the ramp the lights hold where it ended.** A wake-up at 03:30 ends while the curve still says night, and handing back to it would dim the room back down the moment it had woken somebody. So the lights stay at the wake-up's end level until they are turned off or adjusted, or until the curve's own value comes up to meet them, when the curve takes them back as usual. A wake-up inside the morning window ends where the curve already is, and the hold changes nothing.
+
+A wake-up under way, and its hold, are kept in the database with the routine's claims, so a restart mid-ramp carries on where it was.
+
 ### Manual interactions
 
 Manual control always wins, immediately, and persists until the user signals release (an off→on cycle).
@@ -407,7 +419,7 @@ Six rules, all consistent:
 
 1. **The curve always defines state for on lights.** No exceptions, no fighting between layers.
 2. **The curve never turns lights off.** Only manual actions and the morning routine's start affect on/off state.
-3. **The morning routine is the only auto-on event.** It only fires when target lights are off.
+3. **The morning routine is the only auto-on event.** It only fires when target lights are off — whether started by its schedule or by an automation's `wake_up`.
 4. **Manual turn-on = curve value, with click-to-escalate.** Same rule all day, every day.
 5. **Any manual adjustment to brightness or color temp → manual mode until next off→on.**
 6. **Manual off during a ramp cancels the routine.** No system override of explicit user intent.
@@ -1912,7 +1924,7 @@ Several places in Niles benefit from "when X happens, do Y" logic: presence-trig
 
 Automations come in two forms:
 
-**Code automations** — complex, foundational behaviors implemented as Rust. Examples: the ambient lighting curve, the morning routine, timer escalation. These are too rich (state, hysteresis, interactions with other subsystems) for a rule and are part of the core.
+**Code automations** — complex, foundational behaviors implemented as Rust. Examples: the ambient lighting curve, the morning routine, timer escalation. These are too rich (state, hysteresis, interactions with other subsystems) for a rule and are part of the core. A rule can still start one where that makes sense: `wake_up` starts the [morning routine](#the-morning-routine) with the rule's own settings.
 
 **Rules** — simple "when X, do Y" automations, made by voice or on the Automations page and stored in Postgres. Examples: "when the office door opens, turn off the office lights"; "when home becomes occupied after sunset, turn on the hallway light." These cover the long tail of household-specific behaviors.
 
@@ -1947,7 +1959,7 @@ The vocabulary is deliberately narrow and grows only as new needs appear:
 |---|---|
 | **Triggers** | `contact` (a door or window opens / closes), `device_state` (a device turns on / off), `numeric` (a number — temperature, humidity, battery, brightness, light level, or any named reading the device reports, such as `price`, `power` or `co2` — goes above or below a value), `device_action` (a button or dimmer press), `presence` (the house becomes occupied / unoccupied), `time` (a time of day, on chosen weekdays), `sun` (sunrise or sunset, with an offset), `timer_fired` |
 | **Conditions** | `time_of_day` (a window, wrapping past midnight, on chosen weekdays), `sun` (after / before sunrise or sunset, with offsets), `device_is`, `contact_is`, `numeric` (a reading above / below a value), `presence_is` (the house occupied / unoccupied), `triggered_by` (which of the rule's triggers started this run) |
-| **Actions** | `set_device`, `set_room` (every light in a room), `notify` (spoken in a room), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
+| **Actions** | `set_device`, `set_room` (every light in a room), `set_blinds`, `notify` (spoken in a room), `wake_up` (the [morning routine](#the-morning-routine), now: `minutes`, `rooms`, `devices`, `except`, `brightness`, `kelvin`), `delay` (wait, then go on), `if` (conditions, then one list of actions, else another) |
 
 No general scripting language — that would be a security and complexity disaster. Devices are named the way people and the LLM name them (`office/door`); the source prefix (`z2m:`) is filled in by Niles.
 
@@ -1965,7 +1977,7 @@ A rule saved before triggers were a list — `"trigger": {…}` — reads as a l
 
 - **One run at a time, the newest wins.** A rule that is still running — waiting out a `delay` — when one of its triggers fires again stops where it is and starts over. That is what "turn the lights off five minutes after the door closes" needs: if the door opens again in the meantime, the lights are left alone.
 - **The clock.** `time` and `sun` triggers fire on the minute. Sunrise and sunset are worked out each day for the house's location, in its time zone.
-- **What is pending is forgotten on a restart.** A `delay` under way, or a `for` not yet held long enough, does not survive Niles restarting; the next change starts it again.
+- **A `delay` survives a restart.** A run waiting out a `delay` is kept in the database — the rule, where in its actions it is, and when the wait ends — so "seven hours after, wake me" still wakes you after a deploy in the night. On start Niles picks each one up: still to come, it waits the rest; already past, it goes on at once. A wait whose rule was changed, paused or removed in the meantime is dropped, and its run says so. A `for` not yet held long enough is not kept: the next change starts it again.
 - **Every run is kept**, the last twenty per rule, for as long as Niles runs: when it started, which trigger, and how it ended — done (and what it did), stopped by a condition (and which one: "it was before 07:00"), replaced by a newer run, or failed. A trigger that matched but whose conditions did not hold is a run too, because "why didn't it turn off?" is exactly the question it answers. The Automations page shows them under each rule, and Niles answers it by voice.
 
 ### Seeing and editing rules
