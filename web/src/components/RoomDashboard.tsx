@@ -15,6 +15,7 @@ import { PairPhoneCard } from "@/components/PairPhoneCard";
 import { PluginWidgetCard } from "@/components/PluginWidgets";
 import { placeWidgets } from "@/lib/plugins";
 import { SceneBar } from "@/components/SceneBar";
+import { TodaysRunCard } from "@/components/TodaysRunCard";
 import {
   boostEndsAt,
   boosted,
@@ -313,6 +314,7 @@ export function RoomDashboard() {
           />
         </div>
       </div>
+      <TodaysRunCard />
       <GroceryDeliveryCard
         order={delivery.data}
         // Local today: the order's times are Danish, and so is the house.

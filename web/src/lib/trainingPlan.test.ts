@@ -4,18 +4,23 @@ import {
   currentWeek,
   dayLabel,
   daysBetween,
+  isRestDay,
   localDay,
+  locate,
   marksFor,
   measures,
   minutes,
+  outcome,
   planOf,
   planText,
+  recentNote,
   weekEnds,
   weekRange,
+  weekShare,
   weekTotals,
   withMark,
 } from "@/lib/trainingPlan";
-import type { Plan } from "@/lib/trainingPlan";
+import type { Plan, Session } from "@/lib/trainingPlan";
 
 /** Three weeks to a half on Sunday 8 November; the first starts on a
     Thursday. */
@@ -199,5 +204,45 @@ describe("planOf", () => {
   it("keeps the coach's log", () => {
     const updates = [{ date: "2026-10-23", note: "Easier next week." }];
     expect(planOf({ ...PLAN, updates })?.updates).toEqual(updates);
+  });
+});
+
+describe("today's run", () => {
+  const run: Session = { date: "2026-10-23", type: "easy", title: "Easy run", status: "planned" };
+
+  it("says what came of a session once it is not to run any more", () => {
+    expect(outcome(run)).toBeUndefined();
+    expect(
+      outcome({ ...run, status: "done", actual: { distance_km: 6.2, pace: "5:41" } }),
+    ).toBe("Done ✓ 6.2 km at 5:41");
+    expect(outcome({ ...run, status: "done" })).toBe("Done ✓");
+    expect(outcome({ ...run, status: "skipped" })).toBe("Skipped");
+    expect(outcome({ ...run, status: "missed" })).toBe("Missed");
+  });
+
+  it("is a rest day with nothing but rest, or nothing at all", () => {
+    expect(isRestDay([])).toBe(true);
+    expect(isRestDay([{ ...run, type: "rest", title: "Rest" }])).toBe(true);
+    expect(isRestDay([run])).toBe(false);
+  });
+
+  it("shows the coach's note only while it is news", () => {
+    const update = { date: "2026-10-20", note: "Easier next week." };
+    expect(recentNote(update, "2026-10-23")).toBe(update);
+    expect(recentNote(update, "2026-10-24")).toBeUndefined();
+    expect(recentNote(update, "2026-10-19")).toBeUndefined();
+    expect(recentNote(null, "2026-10-23")).toBeUndefined();
+  });
+
+  it("fills the week's bar with what was run, never past full", () => {
+    const week = { focus: null, planned_km: 25, run_km: 10, sessions_left: 2 };
+    expect(weekShare(week)).toBe(0.4);
+    expect(weekShare({ ...week, run_km: 30 })).toBe(1);
+    expect(weekShare({ ...week, planned_km: 0 })).toBe(0);
+  });
+
+  it("finds a session in the plan by its day and title", () => {
+    expect(locate(PLAN, PLAN.weeks[0].sessions[2])).toEqual({ week: 0, n: 2 });
+    expect(locate(PLAN, { ...PLAN.weeks[0].sessions[2], title: "Renamed" })).toBeUndefined();
   });
 });

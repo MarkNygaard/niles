@@ -12,8 +12,9 @@
 //! run, from the plan Claude or ChatGPT made them.
 
 use crate::{approvals, profile};
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
-use niles_artifacts::{ArtifactStore, Filter};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
+use niles_artifacts::ArtifactStore;
+use niles_artifacts::plan_day::{self, PlanDay};
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
 use niles_training::{Activity, Kind, TrainingStore, person_key};
 use serde_json::{Value, json};
@@ -329,33 +330,6 @@ const NO_PLAN: &str = "This person has no training plan with a race still to com
     ChatGPT makes one when asked (\"make me a plan for the Copenhagen Half\"); it is kept under \
     Saved in the app, and follows their Strava runs.";
 
-const TRAINING_PLAN: &str = "training_plan";
-
-/// The plan that is theirs now: of those whose race is still to come,
-/// a pinned one first, then the one changed last.
-async fn current_plan(
-    plans: &dyn ArtifactStore,
-    person: &str,
-    today: NaiveDate,
-) -> std::result::Result<Option<(niles_artifacts::Artifact, Value)>, niles_artifacts::Error> {
-    let filter = Filter {
-        archived: Some(false),
-        ..Filter::default()
-    };
-    for a in plans.list(person, filter).await? {
-        if a.kind != TRAINING_PLAN || a.current_revision == 0 {
-            continue;
-        }
-        let Some(r) = plans.revision(person, a.id, a.current_revision).await? else {
-            continue;
-        };
-        if day_of(&r.content["goal"]["date"]).is_some_and(|race| race >= today) {
-            return Ok(Some((a, r.content)));
-        }
-    }
-    Ok(None)
-}
-
 fn day_of(v: &Value) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(v.as_str()?, "%Y-%m-%d").ok()
 }
@@ -465,70 +439,35 @@ impl TrainingToday {
             Some("tomorrow") => today + Duration::days(1),
             Some(_) => s.date_arg(TOOL, args, "day")?.unwrap_or(today),
         };
-        let found = current_plan(self.plans.as_ref(), person, today)
+        let found = plan_day::current_plan(self.plans.as_ref(), person, today)
             .await
             .map_err(|e| Error::Memory(e.to_string()))?;
         let Some((plan, content)) = found else {
             return Ok(json!({ "plan": null, "note": NO_PLAN }));
         };
 
-        let weeks = content["weeks"].as_array().map_or(&[][..], Vec::as_slice);
-        let sessions = || {
-            weeks
-                .iter()
-                .filter_map(|w| w["sessions"].as_array())
-                .flatten()
-        };
-        let on_day: Vec<Value> = sessions()
-            .filter(|x| day_of(&x["date"]) == Some(day))
-            .map(|x| s.session(x))
-            .collect();
-        let next = sessions().find(|x| {
-            day_of(&x["date"]).is_some_and(|d| d > day)
-                && x["status"] == "planned"
-                && x["type"] != "rest"
-        });
-        let race = day_of(&content["goal"]["date"]).unwrap_or(today);
-        let days = (race - today).num_days();
+        let d = PlanDay::of(&content, day, today);
         let mut out = json!({
             "plan": plan.title,
             "race": content["goal"]["race"],
-            "race_day": race.format("%A %Y-%m-%d").to_string(),
-            "days_to_go": days,
-            "countdown": countdown(days),
+            "race_day": d.race_day.format("%A %Y-%m-%d").to_string(),
+            "days_to_go": d.days_to_go,
+            "countdown": countdown(d.days_to_go),
             "day": day.format("%A %Y-%m-%d").to_string(),
-            "sessions": on_day,
+            "sessions": d.sessions.iter().map(|x| s.session(x)).collect::<Vec<_>>(),
         });
-        if on_day.iter().all(|x| x["type"] == "rest") {
+        if d.rest_day() {
             out["note"] = json!("Nothing to run that day: a rest day.");
         }
-        if let Some(next) = next {
+        if let Some(next) = d.next {
             out["next"] = s.session(next);
         }
-        let week = weeks.iter().find(|w| {
-            day_of(&w["starts"]).is_some_and(|starts| {
-                let sunday =
-                    starts + Duration::days(i64::from(6 - starts.weekday().num_days_from_monday()));
-                starts <= day && day <= sunday
-            })
-        });
-        if let Some(week) = week {
-            let (planned, run) = niles_artifacts::tracking::week_km(week);
-            let left = week["sessions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|x| {
-                    x["status"] == "planned"
-                        && x["type"] != "rest"
-                        && day_of(&x["date"]).is_some_and(|d| d >= day)
-                })
-                .count();
+        if let Some(week) = &d.week {
             out["week"] = json!({
-                "focus": week["focus"],
-                "planned": s.distance(planned * 1000.0),
-                "run": s.distance(run * 1000.0),
-                "sessions_left": left,
+                "focus": week.focus,
+                "planned": s.distance(week.planned_km * 1000.0),
+                "run": s.distance(week.run_km * 1000.0),
+                "sessions_left": week.sessions_left,
             });
         }
         Ok(out)
@@ -755,7 +694,7 @@ mod tests {
                 .create(
                     person,
                     NewArtifact {
-                        kind: TRAINING_PLAN.into(),
+                        kind: "training_plan".into(),
                         title: title.into(),
                         summary: String::new(),
                         notify: true,
@@ -765,7 +704,7 @@ mod tests {
                         brief: None,
                         conversation_id: None,
                         first: Some(NewRevision {
-                            content: niles_artifacts::kinds::validate(TRAINING_PLAN, &content)
+                            content: niles_artifacts::kinds::validate("training_plan", &content)
                                 .unwrap(),
                             reason: "First draft".into(),
                             author: Author::Claude,

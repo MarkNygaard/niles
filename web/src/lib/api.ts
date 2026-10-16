@@ -6,6 +6,8 @@
  * kept in step with that file.
  */
 
+import type { TrainingToday } from "@/lib/trainingPlan";
+
 /** Whether a section is picked up by the running process. */
 export type Reload = "hot" | "boot";
 
@@ -1424,6 +1426,7 @@ export const api = {
     request<Artifact>(`/me/artifacts/${id}/retry`, { method: "POST" }),
   deleteArtifact: (id: number) =>
     request<void>(`/me/artifacts/${id}`, { method: "DELETE" }),
+  trainingToday: () => request<TrainingToday>("/me/training/today"),
   groceries: () => request<GroceryList>("/groceries"),
   addGrocery: (name: string) =>
     request<{ item: GroceryItem; already: boolean }>("/groceries", {

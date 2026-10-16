@@ -4,12 +4,17 @@
 //! Every route acts for the caller, by the key their chat is kept
 //! under, and never for a person named in the request: another
 //! person's id is a 404, the same as one that does not exist.
+//!
+//! And the dashboard's card for today's run, `GET /me/training/today`:
+//! the caller's current training plan read for today, by the same
+//! [`plan_day`] that `training_today` answers from.
 
 use crate::state::AppState;
 use async_trait::async_trait;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use niles_artifacts::plan_day::{self, PlanDay};
 use niles_artifacts::{
     Artifact, ArtifactStore, Author, Changes, Filter, NewRevision, Revision, RevisionMeta,
 };
@@ -337,6 +342,93 @@ pub async fn delete(
         status_text: None,
     });
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The caller's training plan on one day: `plan` is `None` when they
+/// have none with a race still to come, which the card shows as no card.
+#[derive(Debug, Serialize)]
+pub struct TrainingToday {
+    pub plan: Option<PlanToday>,
+}
+
+/// Sessions are as the plan keeps them — km, per-km paces, `actual`
+/// once run — for the app to show as its plan view does.
+#[derive(Debug, Serialize)]
+pub struct PlanToday {
+    pub id: i64,
+    pub title: String,
+    /// The plan's goal: race, distance_km, date, target_time.
+    pub race: Value,
+    /// The house's today, YYYY-MM-DD: what the card counts from and
+    /// marks a session done on.
+    pub today: String,
+    pub days_to_go: i64,
+    pub sessions: Vec<Value>,
+    pub next: Option<Value>,
+    pub week: Option<WeekToday>,
+    /// The coach's newest note, `{date, note}`.
+    pub update: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WeekToday {
+    pub focus: Option<String>,
+    pub planned_km: f64,
+    pub run_km: f64,
+    pub sessions_left: usize,
+}
+
+/// Today in the house's time zone; UTC's for a Niles without a config.
+fn house_today(state: &AppState) -> chrono::NaiveDate {
+    let tz = state
+        .config
+        .as_ref()
+        .and_then(|c| c.current().home.timezone.parse::<chrono_tz::Tz>().ok())
+        .unwrap_or(chrono_tz::UTC);
+    chrono::Utc::now().with_timezone(&tz).date_naive()
+}
+
+/// `GET /me/training/today`
+pub async fn training_today(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<TrainingToday>, Failure> {
+    let store = store(&state)?;
+    let person = crate::chat::person_of(&state, &headers);
+    Ok(Json(
+        plan_today(store.as_ref(), &person, house_today(&state)).await?,
+    ))
+}
+
+async fn plan_today(
+    store: &dyn ArtifactStore,
+    person: &str,
+    today: chrono::NaiveDate,
+) -> Result<TrainingToday, Failure> {
+    let Some((plan, content)) = plan_day::current_plan(store, person, today)
+        .await
+        .map_err(storage)?
+    else {
+        return Ok(TrainingToday { plan: None });
+    };
+    let d = PlanDay::of(&content, today, today);
+    let plan = PlanToday {
+        id: plan.id,
+        title: plan.title,
+        race: content["goal"].clone(),
+        today: today.to_string(),
+        days_to_go: d.days_to_go,
+        sessions: d.sessions.into_iter().cloned().collect(),
+        next: d.next.cloned(),
+        week: d.week.map(|w| WeekToday {
+            focus: w.focus.map(str::to_string),
+            planned_km: w.planned_km,
+            run_km: w.run_km,
+            sessions_left: w.sessions_left,
+        }),
+        update: d.update.cloned(),
+    };
+    Ok(TrainingToday { plan: Some(plan) })
 }
 
 #[cfg(test)]
@@ -733,11 +825,129 @@ allowed = [
             niles_core::EventBus::default(),
         );
         let app = crate::server::router(state);
-        let req = Request::builder()
-            .uri("/me/artifacts")
-            .body(Body::empty())
-            .unwrap();
-        let (status, _) = send(&app, req).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        for uri in ["/me/artifacts", "/me/training/today"] {
+            let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            let (status, _) = send(&app, req).await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{uri}");
+        }
+    }
+
+    /// A plan toward a race 30 days from `today`, with a session today
+    /// and a note from the coach; and with `later`, a long run two days
+    /// on, which must then still be in today's week.
+    async fn plan_for(
+        store: &MemoryArtifacts,
+        person: &str,
+        title: &str,
+        today: chrono::NaiveDate,
+        later: bool,
+    ) -> i64 {
+        let day = |n: i64| (today + chrono::Duration::days(n)).to_string();
+        let mut sessions = vec![json!({
+            "date": day(0), "type": "intervals", "title": "6 × 400 m",
+            "distance_km": 7, "pace": "4:45-5:00", "details": "Warm up 10 min",
+        })];
+        if later {
+            sessions.push(json!({
+                "date": day(2), "type": "long", "title": "Long run", "distance_km": 12,
+            }));
+        }
+        let content = niles_artifacts::kinds::validate(
+            "training_plan",
+            &json!({
+                "goal": { "race": "Hellerup 10K", "distance_km": 10, "date": day(30) },
+                "weeks": [{ "starts": day(0), "focus": "Build", "sessions": sessions }],
+                "updates": [{ "date": day(0), "note": "Eased the week a little." }]
+            }),
+        )
+        .unwrap();
+        store
+            .create(
+                person,
+                NewArtifact {
+                    kind: "training_plan".into(),
+                    title: title.into(),
+                    summary: String::new(),
+                    notify: true,
+                    status: Status::Ready,
+                    status_text: None,
+                    job_id: None,
+                    brief: None,
+                    conversation_id: None,
+                    first: Some(NewRevision {
+                        content,
+                        reason: "First draft".into(),
+                        author: Author::Claude,
+                        summary: None,
+                    }),
+                },
+            )
+            .await
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn today_s_run_is_the_callers_own_plan_read_for_the_house_s_today() {
+        let f = fixture(true);
+        // The fixture's house is in Copenhagen.
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::Copenhagen)
+            .date_naive();
+        let id = plan_for(&f.store, MARK, "My 10K", today, false).await;
+        plan_for(&f.store, MAJSE, "Her 10K", today, false).await;
+        let (status, body) = send(
+            &f.app,
+            by("mark@example.com", "GET", "/me/training/today", None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let plan = &body["plan"];
+        assert_eq!(plan["id"], id);
+        assert_eq!(plan["title"], "My 10K");
+        assert_eq!(plan["race"]["race"], "Hellerup 10K");
+        assert_eq!(plan["days_to_go"], 30);
+        assert_eq!(plan["sessions"][0]["title"], "6 × 400 m");
+        assert_eq!(plan["sessions"][0]["pace"], "4:45-5:00");
+        assert_eq!(plan["sessions"][0]["status"], "planned");
+        assert_eq!(plan["week"]["focus"], "Build");
+        assert_eq!(plan["week"]["run_km"], 0.0);
+        assert_eq!(plan["update"]["note"], "Eased the week a little.");
+    }
+
+    #[tokio::test]
+    async fn without_a_plan_still_to_run_the_plan_is_null() {
+        let f = fixture(true);
+        make(&f.store, MARK, "Packing list", "- [ ] passport").await;
+        let (status, body) = send(
+            &f.app,
+            by("mark@example.com", "GET", "/me/training/today", None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body, json!({ "plan": null }));
+    }
+
+    #[tokio::test]
+    async fn the_day_is_read_with_its_week_and_the_next_session() {
+        let store = MemoryArtifacts::new();
+        // A Wednesday: Friday is in the same week.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        plan_for(&store, MARK, "My 10K", today, true).await;
+        let out = plan_today(&store, MARK, today).await.unwrap();
+        let plan = out.plan.unwrap();
+        assert_eq!(plan.today, "2026-10-14");
+        assert_eq!(plan.next.unwrap()["title"], "Long run");
+        let week = plan.week.unwrap();
+        assert_eq!((week.planned_km, week.run_km), (19.0, 0.0));
+        assert_eq!(week.sessions_left, 2);
+        let after = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        assert!(
+            plan_today(&store, MARK, after)
+                .await
+                .unwrap()
+                .plan
+                .is_none()
+        );
     }
 }
