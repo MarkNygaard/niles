@@ -6,8 +6,9 @@
 .git
 .github
 .claude
-.agents
 .vscode
+# Not .agents: the assistant's writing rules are compiled in from
+# .agents/skills/unslop.
 
 # Firmware (ESP-IDF / Arduino) — unrelated to the Rust build.
 firmware

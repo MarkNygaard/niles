@@ -63,7 +63,7 @@ Skills live in `.agents/skills/`, where Codex, Hermes and the skills CLI look. `
 
 Hermes users run `hermes skills trust` once in the repo to load them.
 
-`shadcn` is pinned by hash in `skills-lock.json`, which the skills CLI (`npx skills`) writes. Updating it means updating both copies and the lock. `unslop` lists the AI tells to cut from docs, PR bodies and user-facing text.
+`shadcn` is pinned by hash in `skills-lock.json`, which the skills CLI (`npx skills`) writes. Updating it means updating both copies and the lock. `unslop` lists the AI tells to cut from docs, PR bodies and user-facing text. Niles's own assistant (Claude Code or ChatGPT, in the chat and in artifact jobs) is told the same rules: `niles-bin` compiles `.agents/skills/unslop/SKILL.md` into its system prompt, so an edit there changes how Niles writes.
 
 ## Branches, PRs and releases
 
