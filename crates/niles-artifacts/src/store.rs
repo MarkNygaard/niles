@@ -107,6 +107,9 @@ pub trait ArtifactStore: Send + Sync {
     /// whoever's, marked failed with `reason`: after a restart, nothing
     /// is writing them any more. One started since is this run's own.
     async fn fail_abandoned(&self, reason: &str, before: DateTime<Utc>) -> Result<u64>;
+    /// Every artifact of `kind` made before `before`, whoever's, oldest
+    /// first: what a kind kept only for a while has outlived.
+    async fn made_before(&self, kind: &str, before: DateTime<Utc>) -> Result<Vec<Artifact>>;
 }
 
 /// Version `n` of an artifact of `owner`'s saved again as a new version,
@@ -682,6 +685,18 @@ impl ArtifactStore for MemoryArtifacts {
         }
         Ok(n)
     }
+
+    async fn made_before(&self, kind: &str, before: DateTime<Utc>) -> Result<Vec<Artifact>> {
+        let mut out: Vec<Artifact> = self
+            .lock()
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == kind && a.created_at < before)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -713,6 +728,42 @@ mod tests {
             summary: None,
             page: PageChange::Keep,
         }
+    }
+
+    #[tokio::test]
+    async fn made_before_finds_only_that_kind_made_before_then_whoever_s() {
+        let store = MemoryArtifacts::new();
+        let mark = store
+            .create("person:mark", document("Old document"))
+            .await
+            .unwrap();
+        let mut hers = document("Her document");
+        hers.kind = "document".into();
+        let majse = store.create("person:majse", hers).await.unwrap();
+        let mut pod = document("Episode one");
+        pod.kind = "podcast".into();
+        let episode = store.create("person:mark", pod).await.unwrap();
+        let cutoff = Utc::now() + chrono::Duration::days(1);
+        let found = store.made_before("podcast", cutoff).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, episode.id);
+        assert_eq!(found[0].person, "person:mark");
+        // Too recent to be outlived, and other kinds never are.
+        assert!(
+            store
+                .made_before("podcast", Utc::now() - chrono::Duration::seconds(1))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.made_before("document", cutoff).await.unwrap().len(),
+            2
+        );
+        // Sorting is oldest first across owners.
+        let docs = store.made_before("document", cutoff).await.unwrap();
+        assert_eq!(docs[0].id, mark.id.min(majse.id));
+        let _ = (mark, majse);
     }
 
     #[tokio::test]

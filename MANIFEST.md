@@ -212,6 +212,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `media-play-pause` | Play or pause media playback on the active speaker | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-set` | Set the speaker volume to a specific level | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-step` | Raise or lower the speaker volume by one step | [#65](https://github.com/MarkNygaard/niles/pull/65) |
+| `podcasts` | A researched two-host episode, voiced by the house's own Kokoro, played in the app or on a Sonos | [#457](https://github.com/MarkNygaard/niles/pull/457) |
 | `tv-volume` | The LG TV's own speakers by voice, and a room's volume on its TV when the room has no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tv-wake-connected-interface` | Turning on the LG TV wakes the interface it is connected by, and every other MAC it reported too | [#409](https://github.com/MarkNygaard/niles/pull/409) |
 | `memory-add` | Append a note to the user's persistent memory | [#77](https://github.com/MarkNygaard/niles/pull/77) |
@@ -302,6 +303,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 - turn it up
 - make it quieter
+
+### `podcasts` — example phrasings
+
+- make me a quick podcast about the Øresund bridge
+- play the podcast about the bridge in the kitchen
 
 ### `tv-volume` — example phrasings
 

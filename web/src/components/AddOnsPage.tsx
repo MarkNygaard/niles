@@ -7,6 +7,7 @@ import {
   ListTodo,
   Music,
   Plug,
+  Podcast,
   Search,
   ShoppingBasket,
   Speaker,
@@ -50,11 +51,13 @@ import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
 import { WebSearchPanel } from "@/components/WebSearchPanel";
+import { PodcastsPanel } from "@/components/PodcastsPanel";
 import { AddPluginDialog } from "@/components/AddPluginDialog";
 import { PluginPanel, PluginRow } from "@/components/PluginPanel";
 import { PluginLogo } from "@/components/PluginPreview";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { DEFAULT_KEEP_DAYS, type PodcastsSettings } from "@/lib/podcasts";
 import {
   LINEAR_KEYWORDS,
   LINEAR_URL,
@@ -118,6 +121,8 @@ export interface AddOnsPageProps {
   unifiHost?: string;
   /** The SearXNG address, empty until one is typed in. */
   webSearchAddress?: string;
+  /** The `integrations.podcasts` section as the config has it, if added. */
+  podcasts?: PodcastsSettings;
   /** `[speakers]` as the config has it: Sonos's switch and address. */
   sonos?: { enabled?: boolean; host?: string };
   /** What the speaker at that address described. */
@@ -180,6 +185,7 @@ export function AddOnsPage({
   google,
   unifiHost,
   webSearchAddress,
+  podcasts,
   sonos,
   sonosFound,
   tvConfig,
@@ -242,6 +248,7 @@ export function AddOnsPage({
       google,
       unifiHost,
       webSearchAddress,
+      podcasts,
       sonos,
       tv,
     });
@@ -284,6 +291,11 @@ export function AddOnsPage({
       case "spotify":
         return onChange("integrations.spotify", [
           { path: "integrations.spotify.enabled", value: true },
+        ]);
+      // Empty tables are not persisted, so seed the retention default.
+      case "podcasts":
+        return onChange("integrations.podcasts", [
+          { path: "integrations.podcasts.keep_days", value: DEFAULT_KEEP_DAYS },
         ]);
       // The redirect as this browser reaches Niles, written down rather
       // than worked out from forwarded headers on every sign-in:
@@ -367,6 +379,11 @@ export function AddOnsPage({
       // Like Claude Code: gone from the config, and the login with it.
       case "nemlig":
         return onReset("integrations.nemlig", ["integrations.nemlig"]);
+      // Like Claude Code: gone from the config, and the keys with it.
+      // The keys were already cleared by the generic storedKeys code
+      // above.
+      case "podcasts":
+        return onReset("integrations.podcasts", ["integrations.podcasts"]);
       case "spotify":
         return onReset("integrations.spotify", ["integrations.spotify"]);
       case "linear":
@@ -852,6 +869,18 @@ export function AddOnsPage({
                   />
                 )}
 
+                {current.id === "podcasts" && (
+                  <PodcastsPanel
+                    settings={podcasts}
+                    accessKeyId={secretFor("integrations.podcasts.access_key_id")}
+                    secretAccessKey={secretFor("integrations.podcasts.secret_access_key")}
+                    writable={secrets?.writable ?? false}
+                    saving={saving}
+                    onChange={(entries) => onChange("integrations.podcasts", entries)}
+                    onSecretsChanged={onSecretsChanged}
+                  />
+                )}
+
                 {current.id === "unifi" && (
                   <UnifiPanel
                     host={unifiHost ?? ""}
@@ -930,6 +959,7 @@ const ICONS: Record<string, LucideIcon> = {
   bot: Bot,
   "list-todo": ListTodo,
   search: Search,
+  podcast: Podcast,
 };
 
 /** The service's own mark; the catalogue's icon only where there is

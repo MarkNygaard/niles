@@ -99,6 +99,11 @@ const KNOWN: &[(&str, &str)] = &[
     ("integrations.chatgpt.expires_at", "ChatGPT sign-in: expiry"),
     ("integrations.nemlig.username", "nemlig.com email"),
     ("integrations.nemlig.password", "nemlig.com password"),
+    ("integrations.podcasts.access_key_id", "R2 access key ID"),
+    (
+        "integrations.podcasts.secret_access_key",
+        "R2 secret access key",
+    ),
     ("integrations.spotify.client_id", "Spotify app Client ID"),
     (
         "integrations.spotify.client_secret",

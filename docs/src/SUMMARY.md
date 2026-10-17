@@ -17,6 +17,7 @@
 - [Add-ons and accounts](add-ons.md)
 - [People and voices](people.md)
 - [Notifications](notifications.md)
+- [Podcasts](podcasts.md)
 - [Security and privacy](security.md)
 
 # Architecture

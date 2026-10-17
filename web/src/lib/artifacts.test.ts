@@ -45,6 +45,18 @@ describe("workingLine", () => {
     expect(workingLine([artifact(1, "Notes")])).toBeUndefined();
     expect(workingLine(undefined)).toBeUndefined();
   });
+
+  it("uses the podcast kind's emoji", () => {
+    expect(
+      workingLine([
+        artifact(1, "The sky", {
+          kind: "podcast",
+          status: "working",
+          status_text: "Recording “The sky”…",
+        }),
+      ]),
+    ).toBe("🎙️ Recording “The sky”…");
+  });
 });
 
 describe("arrange", () => {
@@ -64,6 +76,30 @@ describe("arrange", () => {
 describe("kindOf", () => {
   it("copies a document as its markdown", () => {
     expect(kindOf("document").text({ markdown: "- a" })).toBe("- a");
+  });
+
+  it("knows the podcast kind", () => {
+    const kind = kindOf("podcast");
+    expect(kind.label).toBe("Podcast");
+    expect(
+      kind.text({
+        topic: "Why the sky is blue",
+        minutes: 5,
+        hosts: ["Heart", "Michael"],
+        lines: [{ host: "Heart", text: "Why is it blue?" }],
+        sources: [{ title: "Rayleigh scattering", url: "https://example.com" }],
+      }),
+    ).toBe(
+      [
+        "Why the sky is blue",
+        "5 min · Heart and Michael",
+        "",
+        "Heart: Why is it blue?",
+        "",
+        "Sources:",
+        "- Rayleigh scattering (https://example.com)",
+      ].join("\n"),
+    );
   });
 
   it("has an answer for a kind this app does not know yet", () => {

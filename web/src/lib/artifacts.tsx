@@ -1,10 +1,12 @@
 import type { ReactNode } from "react";
-import { FileText, Footprints, Luggage } from "lucide-react";
+import { FileText, Footprints, Luggage, Podcast } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { PodcastView } from "@/components/PodcastView";
 import { TrainingPlanView } from "@/components/TrainingPlanView";
 import { TripView } from "@/components/TripView";
 import type { Artifact } from "@/lib/api";
 import { Markdown, plainText, toggleCheck } from "@/lib/markdown";
+import { podcastOf, podcastText } from "@/lib/podcast";
 import { planOf, planText } from "@/lib/trainingPlan";
 import { tripOf, tripText } from "@/lib/trip";
 
@@ -96,10 +98,23 @@ const TRIP: Kind = {
   },
 };
 
+const PODCAST: Kind = {
+  id: "podcast",
+  label: "Podcast",
+  icon: Podcast,
+  emoji: "🎙️",
+  View: PodcastView,
+  text: (content) => {
+    const podcast = podcastOf(content);
+    return podcast ? podcastText(podcast) : JSON.stringify(content, null, 2);
+  },
+};
+
 export const KINDS: Record<string, Kind> = {
   document: DOCUMENT,
   training_plan: TRAINING_PLAN,
   trip: TRIP,
+  podcast: PODCAST,
 };
 
 /** The kind named `id`, or one that says this app cannot show it yet:

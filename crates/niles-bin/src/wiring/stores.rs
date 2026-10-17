@@ -58,6 +58,7 @@ pub(crate) fn build_artifacts(
         extras,
     )
     .with_pictures(pictures)
+    .with_podcasts(artifacts::Podcasts::live(settings.clone()))
     .with_household(settings as Arc<dyn artifacts::Household>);
     let artifacts = match (training, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         (Some(store), Ok(tz)) => {

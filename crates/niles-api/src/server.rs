@@ -185,6 +185,11 @@ pub fn router(state: AppState) -> Router {
             "/integrations/web_search/test",
             post(crate::web_search::test),
         )
+        .route("/integrations/podcasts/test", post(crate::podcasts::test))
+        .route(
+            "/integrations/podcasts/voices",
+            get(crate::podcasts::voices),
+        )
         .route("/integrations/chatgpt", get(crate::chatgpt::status))
         .route(
             "/integrations/chatgpt/login",
@@ -245,6 +250,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::artifacts::restore),
         )
         .route("/me/artifacts/{id}/retry", post(crate::artifacts::retry))
+        .route("/me/artifacts/{id}/audio", get(crate::artifacts::audio))
         .route(
             "/me/artifacts/{id}/shares",
             get(crate::artifacts::shares)

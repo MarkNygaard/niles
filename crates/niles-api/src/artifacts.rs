@@ -452,6 +452,13 @@ pub async fn patch(
     let store = store(&state)?;
     let person = crate::chat::person_of(&state, &headers);
     let opened = opened(store.as_ref(), &person, id, &body.needs()).await?;
+    // A podcast is kept as it was recorded; before anything is written.
+    if body.content.is_some() && opened.artifact.kind == niles_artifacts::podcast::ID {
+        return Err(failed(
+            StatusCode::CONFLICT,
+            "a podcast's script is kept as it was recorded; ask for a new episode instead",
+        ));
+    }
     let owner = opened.owner().to_string();
     let mine = opened.access == Access::Owner;
     // Everything checked before anything is written, so a bad title does
@@ -547,6 +554,12 @@ pub async fn restore(
     let store = store(&state)?;
     let person = crate::chat::person_of(&state, &headers);
     let opened = opened(store.as_ref(), &person, id, &[Operation::Edit]).await?;
+    if opened.artifact.kind == niles_artifacts::podcast::ID {
+        return Err(failed(
+            StatusCode::CONFLICT,
+            "a podcast is kept as it was recorded, so an older version can't be restored",
+        ));
+    }
     let artifact = niles_artifacts::restore(store.as_ref(), opened.owner(), id, n, &person)
         .await
         .map_err(storage)?
@@ -558,6 +571,113 @@ pub async fn restore(
 
 /// What a kept picture may be served as: what Niles writes them as.
 const IMAGE_TYPES: [&str; 2] = ["image/jpeg", "image/png"];
+
+/// A podcast's recording is deleted within this, whatever the bucket's
+/// mood: the person is waiting on the answer.
+const FORGET_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A time-limited address for a podcast's recording: the bucket is
+/// private, and the player fetches it there.
+#[derive(Debug, Serialize)]
+pub struct EpisodeAudio {
+    pub url: String,
+    /// When the address stops working, RFC 3339.
+    pub expires_at: String,
+    /// When the episode itself goes, RFC 3339: `created_at` + the
+    /// add-on's keep-days.
+    pub kept_until: String,
+}
+
+/// `GET /me/artifacts/{id}/audio`
+pub async fn audio(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<(HeaderMap, Json<EpisodeAudio>), Failure> {
+    let store = store(&state)?;
+    let person = crate::chat::person_of(&state, &headers);
+    let opened = opened(store.as_ref(), &person, id, &[Operation::Read]).await?;
+    let artifact = &opened.artifact;
+    if artifact.kind != niles_artifacts::podcast::ID {
+        return Err(failed(StatusCode::NOT_FOUND, "it has no recording"));
+    }
+    if artifact.status != niles_artifacts::Status::Ready {
+        return Err(failed(StatusCode::CONFLICT, "it is not recorded yet"));
+    }
+    let podcasts = state
+        .config
+        .as_ref()
+        .map(|c| c.current())
+        .and_then(|cfg| cfg.integrations.podcasts.clone());
+    let bucket = podcasts
+        .as_ref()
+        .and_then(|p| niles_podcasts::Bucket::from_config(p).ok());
+    let (Some(podcasts), Some(bucket)) = (podcasts, bucket) else {
+        return Err(failed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Podcasts are not set up, so its recording can't be reached",
+        ));
+    };
+    let now = chrono::Utc::now();
+    let valid_for = niles_podcasts::PLAY_FOR;
+    let url = bucket.presign_get(&niles_podcasts::episode_key(id), valid_for, now);
+    let expires_at = now + chrono::Duration::from_std(valid_for).unwrap_or(chrono::Duration::MAX);
+    let kept_until = artifact.created_at + chrono::Duration::days(podcasts.keep_days.max(1) as i64);
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok((
+        response_headers,
+        Json(EpisodeAudio {
+            url,
+            expires_at: expires_at.to_rfc3339(),
+            kept_until: kept_until.to_rfc3339(),
+        }),
+    ))
+}
+
+/// Delete a podcast's recording before its row. Refused while the
+/// bucket can't be reached, so the row stays to try again; only with
+/// the add-on gone does the row go alone, its object left to the
+/// bucket's lifecycle rule.
+async fn forget_recording(state: &AppState, id: i64) -> Result<(), Failure> {
+    let podcasts = state
+        .config
+        .as_ref()
+        .map(|c| c.current())
+        .and_then(|cfg| cfg.integrations.podcasts.clone());
+    let Some(podcasts) = podcasts else {
+        tracing::warn!(
+            artifact = id,
+            "the Podcasts add-on is gone; its recording stays until the bucket's lifecycle \
+             rule clears it"
+        );
+        return Ok(());
+    };
+    // Only the bucket is needed to delete: a Kokoro address being
+    // edited must not leave an object behind its row.
+    let bucket = niles_podcasts::Bucket::from_config(&podcasts).map_err(|e| {
+        failed(
+            StatusCode::BAD_GATEWAY,
+            format!("its recording could not be deleted from the bucket, so it was kept: {e}"),
+        )
+    })?;
+    match tokio::time::timeout(
+        FORGET_WITHIN,
+        niles_podcasts::Storage::delete(&bucket, &niles_podcasts::episode_key(id)),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(failed(
+            StatusCode::BAD_GATEWAY,
+            format!("its recording could not be deleted from the bucket, so it was kept: {e}"),
+        )),
+        Err(_) => Err(failed(
+            StatusCode::BAD_GATEWAY,
+            "its recording could not be deleted from the bucket in time, so it was kept",
+        )),
+    }
+}
 
 /// `GET /me/artifacts/{id}/images/{image}`
 ///
@@ -643,6 +763,11 @@ pub async fn delete(
     let store = store(&state)?;
     let person = crate::chat::person_of(&state, &headers);
     let opened = opened(store.as_ref(), &person, id, &[Operation::Delete]).await?;
+    // A podcast's recording goes first: a row without its object is a
+    // thing the sweep can fix; an object without its row is a leak.
+    if opened.artifact.kind == niles_artifacts::podcast::ID {
+        forget_recording(&state, id).await?;
+    }
     if !store.delete(&person, id).await.map_err(storage)? {
         return Err(not_found());
     }
@@ -2263,5 +2388,426 @@ allowed = [
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body, json!({ "plan": null }));
+    }
+
+    /// A podcast the fixture's owner can be asked about: valid script,
+    /// a status, and the config pointing at the wiremock bucket.
+    async fn episode(f: &Fixture, status: Status, working_text: Option<&str>) -> i64 {
+        let script = json!({
+            "topic": "The Øresund bridge",
+            "minutes": 5,
+            "hosts": ["Maya", "Leo"],
+            "lines": [
+                { "host": "Maya", "text": "Twenty years ago this month, the first car drove across." },
+                { "host": "Leo", "text": "And by car number ten million, it had made one region of two cities." },
+            ],
+            "sources": [{ "title": "Øresundsbron", "url": "https://www.oresundsbron.com/" }],
+        });
+        f.store
+            .create(
+                MARK,
+                NewArtifact {
+                    kind: niles_artifacts::podcast::ID.into(),
+                    title: "The Øresund bridge".into(),
+                    summary: "a summary".into(),
+                    notify: true,
+                    status,
+                    status_text: working_text.map(str::to_string),
+                    job_id: None,
+                    brief: None,
+                    conversation_id: None,
+                    first: Some(niles_artifacts::NewRevision {
+                        content: script,
+                        reason: "First draft".into(),
+                        author: Author::Chatgpt,
+                        by: Some(MARK.into()),
+                        summary: None,
+                        page: PageChange::Keep,
+                    }),
+                },
+            )
+            .await
+            .unwrap()
+            .id
+    }
+
+    /// The config store the fixture built, with `[integrations.podcasts]`
+    /// added, pointing at the mock bucket.
+    async fn with_podcasts_config(f: Fixture, server: &wiremock::MockServer) -> Fixture {
+        // SAFETY: test-only variables nothing else reads.
+        unsafe {
+            std::env::set_var("NILES_TEST_ARTIFACTS_PODCASTS_AKID", "AKIDEXAMPLE");
+            std::env::set_var(
+                "NILES_TEST_ARTIFACTS_PODCASTS_SECRET",
+                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            );
+        }
+        let toml = format!(
+            r#"{}
+[auth]
+github_client_id_env = "NILES_TEST_ARTIFACTS_CLIENT_ID"
+github_client_secret_env = "NILES_TEST_ARTIFACTS_CLIENT_SECRET"
+session_secret_env = "{SECRET_VAR}"
+allowed = [
+  {{ email = "mark@example.com", speaker = "mark" }},
+  {{ email = "majse@example.com", speaker = "majse" }},
+  {{ email = "anna@example.com" }},
+]
+[integrations.podcasts]
+kokoro_url = "http://kokoro:8880"
+endpoint = "{}"
+bucket = "episodes"
+region = "auto"
+access_key_id_env = "NILES_TEST_ARTIFACTS_PODCASTS_AKID"
+secret_access_key_env = "NILES_TEST_ARTIFACTS_PODCASTS_SECRET"
+keep_days = 14
+"#,
+            crate::config_tests::base_toml(),
+            server.uri()
+        );
+        let config = Arc::new(niles_config::ConfigStore::from_str_in_memory(&toml).unwrap());
+        let state = AppState::new(
+            Arc::new(niles_core::DeviceRegistry::new()),
+            Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
+            Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
+            f.bus.clone(),
+        )
+        .with_config_store(Some(config))
+        .with_artifacts(Some(f.store.clone() as Arc<dyn ArtifactStore>), None);
+        Fixture {
+            app: crate::server::router(state),
+            store: f.store,
+            jobs: f.jobs,
+            bus: f.bus,
+        }
+    }
+
+    async fn bucket() -> wiremock::MockServer {
+        wiremock::MockServer::start().await
+    }
+
+    #[tokio::test]
+    async fn the_owner_gets_a_presigned_address_for_a_ready_episode() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let server = bucket().await;
+        let f = with_podcasts_config(f, &server).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "GET",
+                &format!("/me/artifacts/{id}/audio"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let url = body["url"].as_str().expect("a url");
+        assert!(
+            url.starts_with(&format!(
+                "{}/episodes/podcasts/{id}.mp3?X-Amz-Algorithm=AWS4-HMAC-SHA256",
+                server.uri()
+            )),
+            "unexpected: {url}"
+        );
+        assert!(
+            url.contains("%2Fauto%2Fs3%2Faws4_request"),
+            "unexpected: {url}"
+        );
+        assert!(url.contains("X-Amz-Expires=14400"), "unexpected: {url}");
+        for key in ["expires_at", "kept_until"] {
+            let at = body[key].as_str().expect("a timestamp");
+            chrono::DateTime::parse_from_rfc3339(at).expect("RFC 3339");
+        }
+    }
+
+    #[tokio::test]
+    async fn someone_it_is_shared_with_to_view_gets_one_too() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        share_with(&f, id, MAJSE, Level::View).await;
+        let server = bucket().await;
+        let f = with_podcasts_config(f, &server).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "majse@example.com",
+                "GET",
+                &format!("/me/artifacts/{id}/audio"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body["url"]
+                .as_str()
+                .expect("a url")
+                .contains("X-Amz-Signature=")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stranger_gets_nothing() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let server = bucket().await;
+        let f = with_podcasts_config(f, &server).await;
+        let (status, _) = send(
+            &f.app,
+            by(
+                "anna@example.com",
+                "GET",
+                &format!("/me/artifacts/{id}/audio"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_working_episode_says_it_is_not_recorded_yet() {
+        let f = fixture(true);
+        let id = episode(
+            &f,
+            Status::Working,
+            Some("Researching “The Øresund bridge”…"),
+        )
+        .await;
+        let server = bucket().await;
+        let f = with_podcasts_config(f, &server).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "GET",
+                &format!("/me/artifacts/{id}/audio"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_document_has_no_recording() {
+        let f = fixture(true);
+        let id = make(&f.store, MARK, "Notes", "# notes").await;
+        let server = bucket().await;
+        let f = with_podcasts_config(f, &server).await;
+        let (status, _) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "GET",
+                &format!("/me/artifacts/{id}/audio"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn without_the_add_on_the_recording_cant_be_reached() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "GET",
+                &format!("/me/artifacts/{id}/audio"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_podcasts_content_cant_be_patched_and_nothing_changes() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "PATCH",
+                &format!("/me/artifacts/{id}"),
+                Some(json!({
+                    "content": { "topic": "Changed", "minutes": 5, "hosts": ["Maya", "Leo"],
+                        "lines": [{ "host": "Maya", "text": "one two three four five" },
+                                  { "host": "Leo", "text": "six seven eight nine ten" }],
+                        "sources": [{ "title": "T", "url": "https://example.com/" }] },
+                    "reason": "tried",
+                })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let current = f
+            .store
+            .revision(
+                MARK,
+                id,
+                f.store
+                    .get(MARK, id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .current_revision,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.content["topic"], json!("The Øresund bridge"));
+    }
+
+    #[tokio::test]
+    async fn a_podcast_cant_be_restored() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "POST",
+                &format!("/me/artifacts/{id}/restore/1"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_podcast_reaches_the_bucket_before_the_row() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let server = bucket().await;
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path(format!(
+                "/episodes/podcasts/{id}.mp3"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let f = with_podcasts_config(f, &server).await;
+        let (status, _) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "DELETE",
+                &format!("/me/artifacts/{id}"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(f.store.get(MARK, id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_bucket_refusal_keeps_the_row_and_says_so() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let server = bucket().await;
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path(format!(
+                "/episodes/podcasts/{id}.mp3"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let f = with_podcasts_config(f, &server).await;
+        let (status, body) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "DELETE",
+                &format!("/me/artifacts/{id}"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("an error")
+                .contains("its recording could not be deleted"),
+            "{body}"
+        );
+        assert!(f.store.get(MARK, id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn deleting_an_episode_with_incomplete_settings_does_not_orphan_its_audio() {
+        for (patch, bucket_deletes, expected) in [
+            (json!({ "kokoro_url": "" }), 1, StatusCode::NO_CONTENT),
+            (json!({ "bucket": "" }), 0, StatusCode::BAD_GATEWAY),
+        ] {
+            let f = fixture(true);
+            let id = episode(&f, Status::Ready, None).await;
+            let server = bucket().await;
+            wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+                .and(wiremock::matchers::path(format!(
+                    "/episodes/podcasts/{id}.mp3"
+                )))
+                .respond_with(wiremock::ResponseTemplate::new(204))
+                .expect(bucket_deletes)
+                .mount(&server)
+                .await;
+            let f = with_podcasts_config(f, &server).await;
+            let (status, body) = send(
+                &f.app,
+                by(
+                    "mark@example.com",
+                    "PATCH",
+                    "/config",
+                    Some(json!({ "integrations": { "podcasts": patch } })),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (status, body) = send(
+                &f.app,
+                by(
+                    "mark@example.com",
+                    "DELETE",
+                    &format!("/me/artifacts/{id}"),
+                    None,
+                ),
+            )
+            .await;
+            assert_eq!(status, expected, "{body}");
+            assert_eq!(
+                f.store.get(MARK, id).await.unwrap().is_none(),
+                expected == StatusCode::NO_CONTENT
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn without_the_add_on_the_row_still_goes() {
+        let f = fixture(true);
+        let id = episode(&f, Status::Ready, None).await;
+        let (status, _) = send(
+            &f.app,
+            by(
+                "mark@example.com",
+                "DELETE",
+                &format!("/me/artifacts/{id}"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(f.store.get(MARK, id).await.unwrap().is_none());
     }
 }

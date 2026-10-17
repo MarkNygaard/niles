@@ -209,6 +209,27 @@ impl Music {
             .await
     }
 
+    /// Play one address — a podcast episode's presigned URL — on the
+    /// room's Sonos, with DIDL metadata so the speaker shows its title.
+    /// Never remembered: an `https:` address is not radio, so it cannot
+    /// be "the last station".
+    pub async fn play_url(&self, room: &RoomName, url: &str, title: &str) -> Outcome {
+        let players = self.speakers.in_room(room).await;
+        if players.is_empty() {
+            return Outcome::NoSpeaker;
+        }
+        self.start(
+            room,
+            &players,
+            Content::Stream {
+                uri: url.into(),
+                metadata: niles_speakers::track_metadata(title, url),
+            },
+            title,
+        )
+        .await
+    }
+
     /// "Play it in the kitchen too" / "play it everywhere": what plays
     /// where it was said — or, said from a room playing nothing, the one
     /// thing playing anywhere — joined by `to`, or by every room.
@@ -1041,7 +1062,7 @@ use niles_tools::{Error as ToolError, Result as ToolResult, Tool, ToolDescriptor
 use niles_webos::VolumeChange;
 use serde_json::{Value, json};
 
-fn room_arg(tool: &str, args: &Value, key: &str) -> ToolResult<Option<RoomName>> {
+pub(crate) fn room_arg(tool: &str, args: &Value, key: &str) -> ToolResult<Option<RoomName>> {
     let Some(raw) = args.get(key).and_then(Value::as_str) else {
         return Ok(None);
     };
@@ -1054,7 +1075,7 @@ fn room_arg(tool: &str, args: &Value, key: &str) -> ToolResult<Option<RoomName>>
         })
 }
 
-fn required_room(tool: &str, args: &Value) -> ToolResult<RoomName> {
+pub(crate) fn required_room(tool: &str, args: &Value) -> ToolResult<RoomName> {
     room_arg(tool, args, "room")?.ok_or_else(|| ToolError::InvalidArgs {
         tool: tool.into(),
         reason: "which room? Use the room the person is in unless they named one".into(),
@@ -1575,6 +1596,53 @@ room = "kitchen"
             music.radio(&room("kitchen"), None).await,
             Outcome::Playing("DR P3".into())
         );
+    }
+
+    #[tokio::test]
+    async fn a_url_plays_with_its_metadata_and_is_not_remembered() {
+        let house = House::new();
+        let music = music(&house).await;
+        let url = "https://bucket.example.com/podcasts/7.mp3?X-Amz-Signature=ab&cd=1";
+        let outcome = music
+            .play_url(&room("kitchen"), url, "The Øresund bridge")
+            .await;
+        assert_eq!(outcome, Outcome::Playing("The Øresund bridge".into()));
+        // The URL is escaped inside the DIDL, and the DIDL is escaped
+        // again inside the SOAP body.
+        assert!(house.did(
+            "10.0.0.4",
+            "SetAVTransportURI",
+            "https://bucket.example.com/podcasts/7.mp3?X-Amz-Signature=ab&amp;amp;cd=1"
+        ));
+        assert!(house.did("10.0.0.4", "SetAVTransportURI", "The Øresund bridge"));
+        let asked = house.asked("10.0.0.4");
+        let actions: Vec<_> = asked.iter().map(|(a, _)| a.as_str()).collect();
+        assert!(
+            actions.ends_with(&["SetAVTransportURI", "Play"]),
+            "{actions:?}"
+        );
+        // Not remembered: asking for "the radio" later is still asked.
+        assert_eq!(
+            music.radio(&room("kitchen"), None).await,
+            Outcome::WhichStation
+        );
+    }
+
+    #[tokio::test]
+    async fn a_url_in_a_room_without_sonos_says_so_and_sends_nothing() {
+        let house = House::new();
+        let music = music(&house).await;
+        let outcome = music
+            .play_url(
+                &room("bedroom"),
+                "https://bucket.example.com/podcasts/7.mp3",
+                "An episode",
+            )
+            .await;
+        assert_eq!(outcome, Outcome::NoSpeaker);
+        for (.., ip, _) in SONOS {
+            assert!(house.asked(ip).is_empty(), "{ip} was asked");
+        }
     }
 
     #[tokio::test]

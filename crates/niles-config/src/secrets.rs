@@ -122,6 +122,16 @@ impl crate::Config {
                 .nemlig
                 .as_ref()
                 .map(|n| n.password_env.clone()),
+            "integrations.podcasts.access_key_id" => self
+                .integrations
+                .podcasts
+                .as_ref()
+                .map(|p| p.access_key_id_env.clone()),
+            "integrations.podcasts.secret_access_key" => self
+                .integrations
+                .podcasts
+                .as_ref()
+                .map(|p| p.secret_access_key_env.clone()),
             "integrations.spotify.client_id" => self
                 .integrations
                 .spotify
@@ -193,6 +203,12 @@ impl crate::Config {
             | "integrations.chatgpt.expires_at" => Some("chatgpt.com".into()),
             "integrations.nemlig.username" | "integrations.nemlig.password" => {
                 Some("nemlig.com".into())
+            }
+            "integrations.podcasts.access_key_id" | "integrations.podcasts.secret_access_key" => {
+                self.integrations
+                    .podcasts
+                    .as_ref()
+                    .and_then(|p| host_of(&p.endpoint))
             }
             "integrations.spotify.client_id" | "integrations.spotify.client_secret" => {
                 Some("api.spotify.com".into())

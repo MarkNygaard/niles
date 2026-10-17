@@ -31,7 +31,7 @@ What Niles is not:
 
 ## The crate map
 
-A Cargo workspace of 35 crates; `niles-bin` is the only binary and wires the rest together.
+A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the rest together.
 
 **Core and state**
 
@@ -76,6 +76,7 @@ A Cargo workspace of 35 crates; `niles-bin` is the only binary and wires the res
 | `niles-weather` | Open-Meteo forecasts and geocoding. |
 | `niles-groceries` | The shopping list, and the catalogue of what the house actually buys. |
 | `niles-nemlig` | nemlig.com's basket and delivery times, through its website's JSON. Never payment. |
+| `niles-podcasts` | A podcast after the assistant's research: two Kokoro voices, MP3 frames joined without re-encoding, the file in the house's R2 bucket, presigned for playback. |
 
 **People's own things**
 
@@ -205,6 +206,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - SearXNG as the house's search; Claude's own `WebSearch` when there is none; `WebFetch` never (#451).
 - Chat attachments, sniffed by content and always answered by the assistant (#449).
 - Blinds open to a normal level, and a second Open goes all the way (#441).
+- Podcasts: the assistant researches and writes the script; the house's own Kokoro voices it, and the episode lives in a private R2 bucket the household set up, not on a hosted voice or storage service (#457).
 - Release flow: `development` is the default branch, release-please cuts releases, images are built from `main` (#456).
 
 ## Security notes

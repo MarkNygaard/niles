@@ -62,6 +62,7 @@ pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
 pub use integrations::{
     Assistant, ChatGptConfig, ChatGptSignIn, ClaudeCodeConfig, IntegrationsConfig, NemligConfig,
+    PodcastsConfig,
 };
 pub use lamp_plugs::LampPlugsConfig;
 pub use lighting::{AmbientTarget, ColorTempAnchor, LightingConfig, MorningRoutineConfigDto};
