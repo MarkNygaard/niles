@@ -126,10 +126,21 @@ is released, and images are built from it.
 5. Wait for CI green. The user reviews, may push fixup commits.
 6. Squash-merge with `--delete-branch` once approved — the only merge method `development` takes.
 
-A release is one PR from `development` into `main`, merged as a merge
-commit (the only method `main` takes), so `main` keeps `development`'s
-history and the next release has nothing to reconcile. Images are built
-from `main` after it.
+Releases are release-please's (`.github/workflows/release-please.yml`,
+`release-please-config.json`): it keeps a release PR open against
+`development` with the next version, worked out from the
+Conventional-Commits titles merged since the last release, and the
+`CHANGELOG.md` entry. PR titles are what it reads, so they keep the
+`feat:`/`fix:` form. Merging that PR tags `vX.Y.Z` and publishes the
+GitHub release. The version lives in `Cargo.toml`'s `[workspace.package]`
+(the `x-release-please-version` marker), and the release PR's branch gets
+the matching `Cargo.lock`.
+
+Then one PR from `development` into `main`, merged as a merge commit (the
+only method `main` takes), so `main` keeps `development`'s history and
+the next release has nothing to reconcile. That merge builds the image
+(`image.yml`): `sha-…` and `latest`, and the version when what was
+merged is a release.
 
 Both branches are protected by repository rulesets: no direct pushes, no
 force-pushes, no deletion, and CI's two jobs must pass. The repository
