@@ -27,6 +27,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `api-training-today` | GET /me/training/today: the signed-in person's training plan read for today, or plan null without one | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `api-artifact-pages` | An artifact's page_html and the house's today on GET /me/artifacts/{id}; PATCH remove_page; each version with its page | [#440](https://github.com/MarkNygaard/niles/pull/440) |
+| `api-chat-attachments` | POST /chat takes a multipart body with up to 5 files of 10 MB; GET …/attachments/{a} serves one to its owner | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
@@ -73,6 +74,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `artifacts-pictures` | Pictures in a document, a trip or a page, found with the house's search and kept as Niles's own clean copies | [#442](https://github.com/MarkNygaard/niles/pull/442) |
 | `artifacts-trip` | A trip planned in the background: days, places, stays and bookings, a countdown, and a packing list to tick | [#434](https://github.com/MarkNygaard/niles/pull/434) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
+| `assistant-reads-attachments` | Claude or ChatGPT answers about an attached photo or PDF; a message with files always goes to the assistant | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
@@ -118,6 +120,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - make an itinerary for two weeks in Japan
 - add a day in Chiang Mai to our Thailand trip
 
+### `assistant-reads-attachments` — example phrasings
+
+- what's this plant
+- add what's on this receipt to the shopping list
+
 ### `artifacts-training-plan` — example phrasings
 
 - make me a half marathon training plan
@@ -131,6 +138,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-key-made` | Niles makes its own API key on a start with a database, and a new one works at once with no restart | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `chat-attachments` | Attach photos and PDFs to a chat message by dragging, the paperclip or a paste; chips before sending, thumbnails after | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `ui-artifact-page-frame` | An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `ui-artifact-pictures` | Pictures drawn from Niles's own copies with their credit; a picture by its web address is never fetched | [#442](https://github.com/MarkNygaard/niles/pull/442) |
 | `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |

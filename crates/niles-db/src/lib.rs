@@ -53,7 +53,9 @@ pub use automation_waits::PostgresAutomationWaits;
 pub use automations::PostgresAutomations;
 pub use calendars::PostgresCalendars;
 pub use captures::{Capture, PostgresCaptures};
-pub use conversation_log::{ConversationRow, KEPT_PER_PERSON, PostgresConversationLog};
+pub use conversation_log::{
+    AttachmentBytes, ConversationRow, KEPT_PER_PERSON, PostgresConversationLog,
+};
 pub use conversations::PostgresConversations;
 pub use enrollments::PostgresEnrollments;
 pub use groceries::PostgresGroceries;

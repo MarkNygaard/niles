@@ -27,6 +27,7 @@ pub mod automations;
 pub mod calendars;
 pub mod captures;
 pub mod chat;
+pub mod chat_attachments;
 pub mod chatgpt;
 pub mod climate;
 pub mod config;

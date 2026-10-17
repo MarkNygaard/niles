@@ -12,7 +12,7 @@ use crate::state::AppState;
 use async_trait::async_trait;
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{FromRequest, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -39,12 +39,15 @@ pub enum Where {
 /// somebody said to a satellite is theirs in the app too.
 #[async_trait]
 pub trait Chat: Send + Sync {
-    /// Answer one message, in the conversation `into` names.
+    /// Answer one message, in the conversation `into` names. The
+    /// files on it were checked and prepared before they got here;
+    /// a message with any always reaches the assistant.
     async fn reply(
         &self,
         who: &str,
         speaker: Option<&str>,
         text: &str,
+        attachments: Vec<Upload>,
         into: Where,
     ) -> Result<Reply, String>;
 
@@ -54,6 +57,16 @@ pub trait Chat: Send + Sync {
     /// One of theirs, every turn of it.
     async fn conversation(&self, who: &str, speaker: Option<&str>, id: i64)
     -> Option<Conversation>;
+
+    /// One attachment of theirs, bytes and all. `None` when it is not
+    /// theirs, not in that conversation, or not there at all.
+    async fn attachment(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        conversation: i64,
+        id: i64,
+    ) -> Option<Served>;
 
     /// Save, or not, the rule Niles read back in turn `turn` — the tap
     /// on the button under it.
@@ -190,6 +203,73 @@ pub struct Turn {
     /// reply. Brought up to date when the conversation is read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<niles_artifacts::ArtifactRef>,
+    /// The files the person attached to this turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+}
+
+/// What kind of file is attached. More may follow, so a match on it
+/// downstream must not assume these two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AttachmentKind {
+    Image,
+    Pdf,
+}
+
+impl AttachmentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Pdf => "pdf",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "image" => Some(Self::Image),
+            "pdf" => Some(Self::Pdf),
+            _ => None,
+        }
+    }
+}
+
+/// A file on a turn, as the app sees it. The bytes come from
+/// `GET /chat/conversations/{id}/attachments/{a}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: i64,
+    pub kind: AttachmentKind,
+    /// What the person called it.
+    pub name: String,
+    /// Its size as kept, in bytes.
+    pub size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+/// A file on its way in: checked and, for a picture, already written
+/// again by `niles_artifacts::images`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Upload {
+    pub kind: AttachmentKind,
+    pub mime: String,
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// One attachment on its way out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Served {
+    pub kind: AttachmentKind,
+    pub mime: String,
+    pub name: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -255,6 +335,10 @@ pub struct Reply {
     /// The conversation it went into; absent where nothing is kept.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<i64>,
+    /// The files that went with the message, as kept: shown on the
+    /// bubble without waiting for a refetch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Deserialize)]
@@ -278,7 +362,7 @@ pub struct Dictated {
 pub const MAX_DICTATION_BYTES: usize = 8 * 1024 * 1024;
 
 /// JSON, so the app can show why.
-type Failure = (StatusCode, Json<serde_json::Value>);
+pub(crate) type Failure = (StatusCode, Json<serde_json::Value>);
 
 /// `GET /chat/conversations` — theirs, newest first.
 pub async fn conversations(
@@ -388,14 +472,32 @@ pub async fn delete(
 }
 
 /// `POST /chat` — say something, and get Niles's answer.
+///
+/// Two body shapes: the usual JSON, and `multipart/form-data` carrying
+/// `text`, `conversation_id`, `new` and repeated `files` parts when the
+/// message has files on it.
 pub async fn send(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(message): Json<Message>,
+    request: axum::extract::Request,
 ) -> Result<Json<Reply>, Failure> {
     let chat = chat(&state)?;
+    let headers = request.headers().clone();
+    let multipart = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.trim_start().starts_with("multipart/form-data"));
+    let (message, uploads) = if multipart {
+        crate::chat_attachments::read(request, &state).await?
+    } else {
+        let Json(message) = Json::<Message>::from_request(request, &state)
+            .await
+            .map_err(|e| failed(StatusCode::BAD_REQUEST, e.body_text()))?;
+        (message, Vec::new())
+    };
+    // `headers` was cloned before the body was consumed: `caller`
+    // below still needs it.
     let text = message.text.trim();
-    if text.is_empty() {
+    if text.is_empty() && uploads.is_empty() {
         return Err(failed(
             StatusCode::UNPROCESSABLE_ENTITY,
             "say something first".into(),
@@ -413,7 +515,7 @@ pub async fn send(
         (None, true) => Where::New,
         (None, false) => Where::Latest,
     };
-    chat.reply(&who, speaker.as_deref(), text, into)
+    chat.reply(&who, speaker.as_deref(), text, uploads, into)
         .await
         .map(Json)
         .map_err(|e| failed(StatusCode::SERVICE_UNAVAILABLE, e))
@@ -459,7 +561,7 @@ fn filename_for(content_type: &str) -> &'static str {
     }
 }
 
-fn chat(state: &AppState) -> Result<&Arc<dyn Chat>, Failure> {
+pub(crate) fn chat(state: &AppState) -> Result<&Arc<dyn Chat>, Failure> {
     state.chat.as_ref().ok_or_else(|| {
         failed(
             StatusCode::NOT_IMPLEMENTED,
@@ -480,7 +582,7 @@ pub(crate) fn person_of(state: &AppState, headers: &HeaderMap) -> String {
 /// The gate has already let the request in, so somebody without a
 /// session is the operator's token or a Niles with sign-in off. They
 /// share one conversation between them, and nobody's profile.
-fn caller(state: &AppState, headers: &HeaderMap) -> (String, Option<String>) {
+pub(crate) fn caller(state: &AppState, headers: &HeaderMap) -> (String, Option<String>) {
     let Some(config) = state.config.as_ref().map(|c| c.current()) else {
         return (ANYONE.into(), None);
     };
@@ -498,7 +600,7 @@ fn caller(state: &AppState, headers: &HeaderMap) -> (String, Option<String>) {
 
 const ANYONE: &str = "anyone";
 
-fn failed(status: StatusCode, message: String) -> Failure {
+pub(crate) fn failed(status: StatusCode, message: String) -> Failure {
     (status, Json(serde_json::json!({ "error": message })))
 }
 
@@ -525,9 +627,18 @@ mod tests {
     }
 
     /// Echoes, and keeps each caller's conversations as a real one would.
+    /// Records the uploads and the target of the last `reply`, for the
+    /// multipart tests.
     #[derive(Default)]
     struct Echo {
         conversations: Mutex<Vec<(String, Conversation)>>,
+        uploads: Mutex<Vec<Upload>>,
+        last_where: Mutex<Option<Where>>,
+        /// `(conversation, id)` the stub says it owns, and the file
+        /// there: both must match the ask, the way the real check
+        /// matches person, conversation and id.
+        served: Mutex<Option<Served>>,
+        served_for: Mutex<Option<(i64, i64)>>,
     }
 
     fn turn(said: &str) -> Turn {
@@ -541,6 +652,7 @@ mod tests {
             proposal: None,
             approval: None,
             artifacts: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -551,8 +663,11 @@ mod tests {
             who: &str,
             _speaker: Option<&str>,
             text: &str,
+            attachments: Vec<Upload>,
             into: Where,
         ) -> Result<Reply, String> {
+            *self.uploads.lock().unwrap() = attachments;
+            *self.last_where.lock().unwrap() = Some(into);
             let mut all = self.conversations.lock().unwrap();
             let target = match into {
                 Where::Continue(id) => Some(id),
@@ -589,7 +704,21 @@ mod tests {
                 fallback: None,
                 fallback_from: None,
                 conversation_id: Some(id),
+                attachments: Vec::new(),
             })
+        }
+
+        async fn attachment(
+            &self,
+            _who: &str,
+            _speaker: Option<&str>,
+            conversation: i64,
+            id: i64,
+        ) -> Option<Served> {
+            if self.served_for.lock().unwrap().as_ref() == Some(&(conversation, id)) {
+                return self.served.lock().unwrap().clone();
+            }
+            None
         }
 
         async fn conversations(&self, who: &str, _speaker: Option<&str>) -> Vec<Summary> {
@@ -874,5 +1003,381 @@ mod tests {
         let app = app(None);
         let (status, _) = call(&app, "GET", "/chat/conversations", None).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    }
+
+    // A real JPEG, tiny; its SOF0 dimensions patched when a test wants
+    // a header the decoder will refuse.
+    fn jpeg(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([9, 9, 9, 255]),
+        ));
+        image::codecs::jpeg::JpegEncoder::new(&mut bytes)
+            .encode_image(&image)
+            .unwrap();
+        if (width, height) != (2, 2) {
+            let i = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+            // SOF0: length, precision, height, width — two bytes each.
+            bytes[i + 5..i + 7].copy_from_slice(&(height as u16).to_be_bytes());
+            bytes[i + 7..i + 9].copy_from_slice(&(width as u16).to_be_bytes());
+        }
+        bytes
+    }
+
+    /// `(name, filename, bytes)` parts as one multipart body.
+    fn multipart(parts: &[(&str, Option<&str>, &[u8])]) -> (String, Vec<u8>) {
+        let boundary = "niles-test-boundary";
+        let mut body = Vec::new();
+        for (name, filename, bytes) in parts {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            let disposition = match filename {
+                Some(f) => {
+                    format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{f}\"")
+                }
+                None => format!("Content-Disposition: form-data; name=\"{name}\""),
+            };
+            body.extend_from_slice(disposition.as_bytes());
+            body.extend_from_slice(b"\r\n\r\n");
+            body.extend_from_slice(bytes);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
+    async fn send_files(
+        app: &axum::Router,
+        parts: &[(&str, Option<&str>, &[u8])],
+    ) -> (StatusCode, Value) {
+        let (content_type, body) = multipart(parts);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/chat")
+            .header("content-type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// One attachment GET, with its headers: the body is bytes, not
+    /// JSON.
+    async fn fetch_attachment(app: &axum::Router, uri: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let request = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, bytes.to_vec())
+    }
+
+    #[tokio::test]
+    async fn a_message_with_a_picture_is_answered() {
+        let echo = Arc::new(Echo::default());
+        let app = app(Some(echo.clone()));
+        let (status, reply) = send_files(
+            &app,
+            &[
+                ("text", None, b"what is this"),
+                ("files", Some("plant.jpg"), &jpeg(2, 2)),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply["reply"], "you said what is this");
+        let uploads = echo.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].kind, AttachmentKind::Image);
+        assert_eq!(uploads[0].mime, "image/jpeg");
+        assert_eq!(uploads[0].name, "plant.jpg");
+        assert_eq!(uploads[0].width, Some(2));
+        assert_eq!(uploads[0].height, Some(2));
+    }
+
+    #[tokio::test]
+    async fn a_pdf_is_kept_byte_for_byte() {
+        let echo = Arc::new(Echo::default());
+        let app = app(Some(echo.clone()));
+        let pdf = b"%PDF-1.7\nfake but well-formed\n%%EOF";
+        let (status, _) = send_files(
+            &app,
+            &[
+                ("text", None, b"file this"),
+                ("files", Some("ticket.pdf"), pdf),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let uploads = echo.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].kind, AttachmentKind::Pdf);
+        assert_eq!(uploads[0].mime, "application/pdf");
+        assert_eq!(uploads[0].bytes, pdf.to_vec());
+        assert_eq!(uploads[0].width, None);
+    }
+
+    #[tokio::test]
+    async fn a_picture_on_its_own_is_a_message() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let (status, reply) = send_files(&app, &[("files", Some("p.jpg"), &jpeg(2, 2))]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply["reply"], "you said ");
+    }
+
+    #[tokio::test]
+    async fn a_sixth_file_is_refused() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let pic = jpeg(2, 2);
+        let mut parts: Vec<(&str, Option<&str>, &[u8])> = vec![("text", None, b"look at these")];
+        for _ in 0..6 {
+            parts.push(("files", Some("p.jpg"), &pic));
+        }
+        let (status, body) = send_files(&app, &parts).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("Five files at most")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_over_ten_megabytes_is_refused() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let big = vec![0u8; 11 * 1024 * 1024];
+        let (status, body) = send_files(
+            &app,
+            &[("text", None, b"look"), ("files", Some("big.jpg"), &big)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains("10 MB"), "{error}");
+        assert!(error.contains("big.jpg"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_picture_header_claiming_a_huge_size_is_refused() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let bomb = jpeg(20_000, 20_000);
+        let (status, body) = send_files(
+            &app,
+            &[("text", None, b"look"), ("files", Some("bomb.jpg"), &bomb)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body["error"].as_str().unwrap().contains("smaller picture"));
+    }
+
+    #[tokio::test]
+    async fn a_file_that_is_not_a_picture_or_pdf_is_refused() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let (status, body) = send_files(
+            &app,
+            &[
+                ("text", None, b"look"),
+                ("files", Some("page.html"), b"<html><body>hi</body></html>"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("not a JPEG, PNG, WebP, GIF or PDF")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_heic_photo_is_refused_with_what_to_change() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let mut heic = Vec::new();
+        heic.extend_from_slice(&24u32.to_be_bytes());
+        heic.extend_from_slice(b"ftypheic");
+        heic.extend_from_slice(&0u32.to_be_bytes());
+        heic.extend_from_slice(b"heicmif1");
+        let (status, body) = send_files(
+            &app,
+            &[
+                ("text", None, b"look"),
+                ("files", Some("photo.heic"), &heic),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains("HEIC"), "{error}");
+        assert!(error.contains("Most Compatible"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn conversation_id_and_new_are_read_off_the_form() {
+        let echo = Arc::new(Echo::default());
+        let app = app(Some(echo.clone()));
+        let (status, _) = send_files(
+            &app,
+            &[
+                ("text", None, b"hello"),
+                ("conversation_id", None, b"7"),
+                ("files", Some("p.jpg"), &jpeg(2, 2)),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(*echo.last_where.lock().unwrap(), Some(Where::Continue(7)));
+
+        let (status, _) =
+            send_files(&app, &[("text", None, b"hello"), ("new", None, b"true")]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(*echo.last_where.lock().unwrap(), Some(Where::New));
+    }
+
+    #[tokio::test]
+    async fn a_multipart_conversation_id_that_is_not_a_number_is_a_422() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let (status, body) = send_files(
+            &app,
+            &[("text", None, b"hello"), ("conversation_id", None, b"soon")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"], "conversation_id must be a number");
+    }
+
+    #[tokio::test]
+    async fn a_field_the_app_does_not_know_yet_is_skipped() {
+        let echo = Arc::new(Echo::default());
+        let app = app(Some(echo.clone()));
+        let (status, reply) = send_files(
+            &app,
+            &[
+                ("text", None, b"hello"),
+                ("future-thing", None, b"whatever"),
+                ("files", Some("p.jpg"), &jpeg(2, 2)),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply["reply"], "you said hello");
+        assert_eq!(echo.uploads.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_json_body_is_answered_as_before() {
+        let echo = Arc::new(Echo::default());
+        let app = app(Some(echo.clone()));
+        let (status, reply) = send(&app, "POST", Some(json!({ "text": "hello" }))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply["reply"], "you said hello");
+        assert!(echo.uploads.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_served_to_its_owner_with_picture_headers() {
+        let echo = Arc::new(Echo::default());
+        *echo.served.lock().unwrap() = Some(Served {
+            kind: AttachmentKind::Image,
+            mime: "image/jpeg".into(),
+            name: "the plant.jpg".into(),
+            bytes: vec![1, 2, 3],
+        });
+        *echo.served_for.lock().unwrap() = Some((1, 7));
+        let app = app(Some(echo));
+        let (status, headers, bytes) =
+            fetch_attachment(&app, "/chat/conversations/1/attachments/7").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, vec![1, 2, 3]);
+        assert_eq!(headers["content-type"], "image/jpeg");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(
+            headers["content-security-policy"],
+            "default-src 'none'; sandbox"
+        );
+        assert_eq!(
+            headers["cache-control"],
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(headers["cross-origin-resource-policy"], "same-origin");
+        // The name is percent-encoded in the disposition, so a quote or
+        // a space in it cannot split or mangle the header.
+        let disposition = headers["content-disposition"].to_str().unwrap();
+        assert!(disposition.starts_with("inline;"));
+        assert!(disposition.contains("the%20plant.jpg"), "{disposition}");
+    }
+
+    #[tokio::test]
+    async fn a_pdf_is_served_as_a_pdf_with_the_same_headers() {
+        let echo = Arc::new(Echo::default());
+        *echo.served.lock().unwrap() = Some(Served {
+            kind: AttachmentKind::Pdf,
+            mime: "application/pdf".into(),
+            name: "ticket.pdf".into(),
+            bytes: b"%PDF-1.7".to_vec(),
+        });
+        *echo.served_for.lock().unwrap() = Some((1, 3));
+        let app = app(Some(echo));
+        let (status, headers, bytes) =
+            fetch_attachment(&app, "/chat/conversations/1/attachments/3").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["content-type"], "application/pdf");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(bytes, b"%PDF-1.7".to_vec());
+        assert!(
+            headers["content-disposition"]
+                .to_str()
+                .unwrap()
+                .starts_with("inline;")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_not_found_under_another_conversation_or_another_person() {
+        let echo = Arc::new(Echo::default());
+        *echo.served.lock().unwrap() = Some(Served {
+            kind: AttachmentKind::Image,
+            mime: "image/jpeg".into(),
+            name: "a.jpg".into(),
+            bytes: vec![1],
+        });
+        *echo.served_for.lock().unwrap() = Some((1, 7));
+        let app = app(Some(echo));
+        // The stub only owns conversation 1: another of its own
+        // conversations, and the wrong id entirely, are both 404.
+        let (status, _, _) = fetch_attachment(&app, "/chat/conversations/2/attachments/7").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, _) = fetch_attachment(&app, "/chat/conversations/1/attachments/8").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_turn_with_attachments_round_trips_and_one_without_omits_them() {
+        let mut kept = turn("look at this");
+        kept.attachments = vec![Attachment {
+            id: 3,
+            kind: AttachmentKind::Image,
+            name: "plant.jpg".into(),
+            size: 1234,
+            width: Some(1600),
+            height: Some(1200),
+        }];
+        let json = serde_json::to_string(&kept).unwrap();
+        let back: Turn = serde_json::from_str(&json).unwrap();
+        assert_eq!(kept, back);
+
+        let bare = serde_json::to_string(&turn("just words")).unwrap();
+        assert!(!bare.contains("attachments"), "{bare}");
     }
 }

@@ -978,6 +978,7 @@ impl Artifacts {
             proposal: None,
             approval: None,
             artifacts: vec![ArtifactRef::of(artifact)],
+            attachments: Vec::new(),
         };
         if let Err(e) = conversations
             .append(&artifact.person, conversation, &turn)
@@ -2082,6 +2083,7 @@ mod tests {
             proposal: None,
             approval: None,
             artifacts: cards,
+            attachments: Vec::new(),
         }];
         f.artifacts.refresh(MARK, &mut turns).await;
         assert_eq!(turns[0].artifacts.len(), 1);

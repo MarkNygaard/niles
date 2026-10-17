@@ -2,9 +2,13 @@
 //! subscription: one `claude -p` per run, pointed at Niles's tools over
 //! MCP (see [`crate::assistant`]).
 //!
-//! Claude Code's own tools are switched off — no shell, no files, no
-//! web — and only Niles's are allowed. It runs inside the Niles pod,
-//! next to every credential the house has.
+//! Claude Code's own tools are switched off — no shell, no web, no
+//! files — except when the person attached files to the message: then
+//! `Read` is allowed, for that run only, and `--restricted` confines it
+//! to the directory the run works in, which holds nothing but this
+//! turn's files. `--permission-mode dontAsk` means a path outside it is
+//! refused rather than waiting on a prompt nobody will see. It runs
+//! inside the Niles pod, next to every credential the house has.
 
 use anyhow::{Context, anyhow, bail};
 use serde_json::{Value, json};
@@ -58,9 +62,18 @@ pub(crate) async fn run(
     turn_token: &str,
     system_prompt: &str,
     prompt: &str,
+    attachments: &[crate::assistant::Attached],
 ) -> anyhow::Result<String> {
     let state = state_dir()?;
     let work = state.join("work");
+    let staged = if attachments.is_empty() {
+        None
+    } else {
+        Some(crate::assistant::stage(&work, attachments)?)
+    };
+    let cwd = staged
+        .as_ref()
+        .map_or_else(|| work.clone(), |s| s.dir.clone());
 
     let mut command = tokio::process::Command::new("claude");
     command
@@ -69,6 +82,7 @@ pub(crate) async fn run(
             system_prompt,
             prompt,
             &mcp_config(mcp_url, turn_token),
+            !attachments.is_empty(),
         ))
         .env("CLAUDE_CODE_OAUTH_TOKEN", oauth_token)
         .env("CLAUDE_CONFIG_DIR", &state)
@@ -79,8 +93,9 @@ pub(crate) async fn run(
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .env("DISABLE_AUTOUPDATER", "1")
         // An empty directory, so there is no CLAUDE.md or project
-        // settings for it to pick up.
-        .current_dir(&work)
+        // settings for it to pick up — or, with files attached, the
+        // staging directory holding exactly those files.
+        .current_dir(&cwd)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
 
@@ -88,6 +103,8 @@ pub(crate) async fn run(
         .await
         .map_err(|_| anyhow!("no answer within {}s", run.timeout.as_secs()))?
         .context("starting `claude` — is Claude Code installed in this image?")?;
+    // `staged` drops here, after the run has ended, taking the
+    // directory and its files with it.
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() && stdout.trim().is_empty() {
@@ -141,8 +158,20 @@ fn mcp_config(url: &str, token: &str) -> String {
     .to_string()
 }
 
-fn arguments(run: &Run<'_>, system_prompt: &str, prompt: &str, mcp_config: &str) -> Vec<String> {
-    [
+fn arguments(
+    run: &Run<'_>,
+    system_prompt: &str,
+    prompt: &str,
+    mcp_config: &str,
+    with_files: bool,
+) -> Vec<String> {
+    let tools = if with_files { "Read" } else { "" };
+    let allowed = if with_files {
+        format!("mcp__{SERVER_NAME},Read")
+    } else {
+        format!("mcp__{SERVER_NAME}")
+    };
+    let mut args: Vec<String> = [
         "-p",
         prompt,
         "--output-format",
@@ -153,14 +182,15 @@ fn arguments(run: &Run<'_>, system_prompt: &str, prompt: &str, mcp_config: &str)
         // writing software in a repository.
         "--system-prompt",
         system_prompt,
-        // No built-in tools at all, and only this server's.
+        // No built-in tools at all, and only this server's — or, with
+        // files attached, `Read` as well, confined by `--restricted`.
         "--tools",
-        "",
+        tools,
         "--mcp-config",
         mcp_config,
         "--strict-mcp-config",
         "--allowedTools",
-        &format!("mcp__{SERVER_NAME}"),
+        &allowed,
         // Anything not allowed above is refused rather than waiting on
         // a prompt nobody will see.
         "--permission-mode",
@@ -170,7 +200,11 @@ fn arguments(run: &Run<'_>, system_prompt: &str, prompt: &str, mcp_config: &str)
     ]
     .into_iter()
     .map(str::to_string)
-    .collect()
+    .collect();
+    if with_files {
+        args.push("--restricted".into());
+    }
+    args
 }
 
 /// The answer out of `--output-format json`.
@@ -222,7 +256,7 @@ mod tests {
     #[test]
     fn claude_code_gets_no_tools_of_its_own() {
         let cfg = cfg();
-        let args = arguments(&Run::chat(&cfg), "You are Niles.", "hi", "{}");
+        let args = arguments(&Run::chat(&cfg), "You are Niles.", "hi", "{}", false);
         let after = |flag: &str| {
             let i = args.iter().position(|a| a == flag).expect(flag);
             args[i + 1].as_str()
@@ -234,11 +268,31 @@ mod tests {
         assert_eq!(after("--model"), "sonnet");
         assert_eq!(after("--max-turns"), "12");
         assert!(args.contains(&"--strict-mcp-config".to_string()));
+        assert!(!args.contains(&"--restricted".to_string()));
+    }
+
+    #[test]
+    fn files_bring_read_confined_to_the_run_directory() {
+        let cfg = cfg();
+        let args = arguments(&Run::chat(&cfg), "s", "p", "{}", true);
+        let after = |flag: &str| {
+            let i = args.iter().position(|a| a == flag).expect(flag);
+            args[i + 1].as_str()
+        };
+        assert_eq!(after("--tools"), "Read");
+        assert_eq!(after("--allowedTools"), "mcp__niles,Read");
+        assert!(args.contains(&"--restricted".to_string()));
+        // Everything else is as it was: the rest of the run is
+        // unchanged by having files.
+        assert_eq!(after("--permission-mode"), "dontAsk");
+        assert_eq!(after("--system-prompt"), "s");
+        assert_eq!(after("--model"), "sonnet");
+        assert_eq!(after("--max-turns"), "12");
     }
 
     #[test]
     fn the_background_gets_the_strongest_model() {
-        let args = arguments(&Run::background(), "s", "p", "{}");
+        let args = arguments(&Run::background(), "s", "p", "{}", false);
         let i = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[i + 1], "opus");
     }
@@ -304,6 +358,7 @@ mod tests {
                 &[],
                 "Add milk to the shopping list.",
                 None,
+                &[],
             )
             .await
             .expect("an answer");

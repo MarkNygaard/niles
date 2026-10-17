@@ -89,7 +89,7 @@ describe("ChatView", () => {
     const { onSend } = renderChat();
     fireEvent.change(field(), { target: { value: "  add milk to the list " } });
     fireEvent.keyDown(field(), { key: "Enter" });
-    expect(onSend).toHaveBeenCalledWith("add milk to the list");
+    expect(onSend).toHaveBeenCalledWith("add milk to the list", []);
     expect(field()).toHaveValue("");
   });
 
@@ -318,6 +318,93 @@ describe("ChatView", () => {
       fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
       fireEvent.click(await screen.findByRole("button", { name: "Stop dictating" }));
       expect(await screen.findByText("could not transcribe that")).toBeInTheDocument();
+    });
+  });
+
+  describe("attachments", () => {
+    function image(name = "plant.jpg", size = 2048): File {
+      return new File([new Uint8Array(size)], name, { type: "image/jpeg" });
+    }
+
+    it("has a paperclip that opens the file picker", () => {
+      const click = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
+      renderChat();
+      fireEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+      expect(click).toHaveBeenCalled();
+      click.mockRestore();
+    });
+
+    it("shows the drop zone while a file is over it, and a chip after", () => {
+      const { onSend } = renderChat();
+      // dragEnter bubbles from the field to the conversation's outer
+      // div, the drop zone.
+      fireEvent.dragEnter(field(), { dataTransfer: { types: ["Files"] } });
+      expect(screen.getByText("Drop a photo or a PDF here")).toBeInTheDocument();
+      fireEvent.drop(field(), { dataTransfer: { files: [image()] } });
+      expect(screen.queryByText("Drop a photo or a PDF here")).toBeNull();
+      expect(screen.getByTestId("attachment-chips")).toHaveTextContent("plant.jpg");
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("shows no drop zone for text dragged out of a reply", () => {
+      renderChat();
+      fireEvent.dragEnter(field(), { dataTransfer: { types: ["text/plain"] } });
+      expect(screen.queryByText("Drop a photo or a PDF here")).toBeNull();
+    });
+
+    it("takes a file off the message by its chip's remove button", () => {
+      renderChat();
+      fireEvent.drop(field(), { dataTransfer: { files: [image()] } });
+      fireEvent.click(screen.getByRole("button", { name: "Remove plant.jpg" }));
+      expect(screen.queryByTestId("attachment-chips")).toBeNull();
+    });
+
+    it("sends a file with no words on it, and Send stays where the mic was", () => {
+      class FakeRecorder {
+        static isTypeSupported = () => false;
+      }
+      vi.stubGlobal("MediaRecorder", FakeRecorder);
+      const { onSend } = renderChat({ onDictate: vi.fn() });
+      fireEvent.drop(field(), { dataTransfer: { files: [image()] } });
+      const send = screen.getByRole("button", { name: "Send" });
+      expect(send).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Dictate" })).toBeNull();
+      fireEvent.click(send);
+      expect(onSend).toHaveBeenCalledWith("", [expect.any(File)]);
+      vi.unstubAllGlobals();
+    });
+
+    it("refuses a drop of a file that is not a photo or a PDF, in a sentence", () => {
+      renderChat();
+      const note = new File(["words"], "notes.txt", { type: "text/plain" });
+      fireEvent.drop(field(), { dataTransfer: { files: [note] } });
+      expect(screen.queryByTestId("attachment-chips")).toBeNull();
+      expect(screen.getByText("notes.txt is not a photo or a PDF.")).toBeInTheDocument();
+    });
+
+    it("shows a turn's image from its own URL, and a PDF as a link out", () => {
+      renderChat({
+        conversationId: 9,
+        turns: [
+          turn("look at this", "A fern.", {
+            attachments: [
+              { id: 3, kind: "image", name: "plant.jpg", size: 2048, width: 1600, height: 1200 },
+              { id: 4, kind: "pdf", name: "ticket.pdf", size: 88_000 },
+            ],
+          }),
+        ],
+      });
+      const img = screen.getByRole("img", { name: "plant.jpg" });
+      expect(img).toHaveAttribute("src", "/chat/conversations/9/attachments/3");
+      const pdf = screen.getByRole("link", { name: "ticket.pdf" });
+      expect(pdf).toHaveAttribute("href", "/chat/conversations/9/attachments/4");
+      expect(pdf).toHaveAttribute("target", "_blank");
+      expect(pdf).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    });
+
+    it("shows the files of the message on its way", () => {
+      renderChat({ pending: "look", pendingAttachments: [image("plant.jpg")] });
+      expect(screen.getByTestId("attachment-chips")).toHaveTextContent("plant.jpg");
     });
   });
 });

@@ -5,6 +5,10 @@
 //! One row per conversation; its turns are a JSON array appended to in
 //! place, so a turn is one statement rather than a rewrite. What a turn
 //! holds is the binary's business: here it is opaque JSON.
+//!
+//! The files on a message live in `chat_attachments`, created in the
+//! same `ensure_schema` so one pass makes the conversation log and its
+//! child table in order.
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, postgres::PgPool};
@@ -20,6 +24,23 @@ create table if not exists conversation_log (
     turns      jsonb not null default '[]'
 );
 create index if not exists conversation_log_person on conversation_log (person, last_at desc);
+create table if not exists chat_attachments (
+    id              bigserial primary key,
+    person          text not null,
+    conversation_id bigint references conversation_log (id) on delete cascade,
+    turn            integer,
+    kind            text not null,
+    mime            text not null,
+    name            text not null,
+    bytes           bytea not null,
+    width           integer,
+    height          integer,
+    created_at      timestamptz not null default now()
+);
+create index if not exists chat_attachments_conversation
+    on chat_attachments (conversation_id);
+create index if not exists chat_attachments_unbound
+    on chat_attachments (created_at) where conversation_id is null;
 ";
 
 /// How many conversations one person keeps. Older ones go as new ones
@@ -35,6 +56,15 @@ pub struct ConversationRow {
     pub last_at: DateTime<Utc>,
     pub turns: usize,
     pub spoken: bool,
+}
+
+/// One attachment as it is served: what it is, and the bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttachmentBytes {
+    pub kind: String,
+    pub mime: String,
+    pub name: String,
+    pub bytes: Vec<u8>,
 }
 
 pub struct PostgresConversationLog {
@@ -235,5 +265,90 @@ impl PostgresConversationLog {
             .await
             .map_err(|e| self.storage(e))?;
         Ok(deleted.rows_affected() == 1)
+    }
+
+    /// Keep one file, owned by `person` from the moment it is stored.
+    /// The turn it belongs to does not exist yet, so `conversation_id`
+    /// and `turn` stay null until `bind` ties them. Answers the row id.
+    pub async fn attach(
+        &self,
+        person: &str,
+        kind: &str,
+        mime: &str,
+        name: &str,
+        bytes: &[u8],
+        dims: Option<(i32, i32)>,
+    ) -> Result<i64, String> {
+        self.ensure_schema().await?;
+        sqlx::query(
+            "delete from chat_attachments
+             where conversation_id is null and created_at < now() - interval '1 day'",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        let row = sqlx::query(
+            "insert into chat_attachments (person, kind, mime, name, bytes, width, height)
+             values ($1, $2, $3, $4, $5, $6, $7) returning id",
+        )
+        .bind(person)
+        .bind(kind)
+        .bind(mime)
+        .bind(name)
+        .bind(bytes)
+        .bind(dims.map(|(w, _)| w))
+        .bind(dims.map(|(_, h)| h))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(row.get("id"))
+    }
+
+    /// Tie stored files to the conversation's most recent turn — the
+    /// one that was just appended. Files already bound, or another
+    /// person's, are left alone.
+    pub async fn bind(&self, person: &str, ids: &[i64], conversation: i64) -> Result<(), String> {
+        self.ensure_schema().await?;
+        sqlx::query(
+            "update chat_attachments
+             set conversation_id = $1,
+                 turn = (select jsonb_array_length(turns) - 1
+                           from conversation_log where id = $1)
+             where id = any($2) and person = $3 and conversation_id is null",
+        )
+        .bind(conversation)
+        .bind(ids)
+        .bind(person)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(())
+    }
+
+    /// One attachment's bytes, when it is the person's, in that
+    /// conversation. Anything else is "no such attachment".
+    pub async fn attachment(
+        &self,
+        person: &str,
+        conversation: i64,
+        id: i64,
+    ) -> Result<Option<AttachmentBytes>, String> {
+        self.ensure_schema().await?;
+        let row = sqlx::query(
+            "select kind, mime, name, bytes from chat_attachments
+             where id = $1 and conversation_id = $2 and person = $3",
+        )
+        .bind(id)
+        .bind(conversation)
+        .bind(person)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(row.map(|r| AttachmentBytes {
+            kind: r.get("kind"),
+            mime: r.get("mime"),
+            name: r.get("name"),
+            bytes: r.get("bytes"),
+        }))
     }
 }
