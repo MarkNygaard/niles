@@ -769,3 +769,22 @@ id = "api-artifact-images"
 category = "api.read"
 summary = "GET /me/artifacts/{id}/images/{image}: a picture an artifact keeps, its owner's only; GET lists them"
 since_pr = 442
+
+[[feature]]
+id = "chat-attachments"
+category = "ui.chat"
+summary = "Attach photos and PDFs to a chat message by dragging, the paperclip or a paste; chips before sending, thumbnails after"
+since_pr = 449
+
+[[feature]]
+id = "api-chat-attachments"
+category = "api.write"
+summary = "POST /chat takes a multipart body with up to 5 files of 10 MB; GET /chat/conversations/{id}/attachments/{a} serves one to its owner"
+since_pr = 449
+
+[[feature]]
+id = "assistant-reads-attachments"
+category = "runtime.assistant"
+summary = "Claude or ChatGPT answers about an attached photo or PDF; a message with files always goes to the assistant"
+phrasings = ["what's this plant", "add what's on this receipt to the shopping list"]
+since_pr = 449
