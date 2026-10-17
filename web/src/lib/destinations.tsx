@@ -35,7 +35,7 @@ export const PROFILE: Destination = {
   href: "#/me/profile",
   label: "My profile",
   icon: <UserRound />,
-  owns: (r) => r === "/me/profile",
+  owns: (r) => r === "/me/profile" || r.startsWith("/me/profile/"),
 };
 
 /** The ones that move, wherever they are put. One table for both menus

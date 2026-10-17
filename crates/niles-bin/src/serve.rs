@@ -23,8 +23,8 @@ use crate::wiring::automations::{
 };
 use crate::wiring::llm::{build_llm_client, build_tier2_client, build_tool_registry};
 use crate::wiring::memory::{
-    append_state_history, build_chat_log, build_conversation_memory, build_journal,
-    build_memory_store, build_skill_store, build_state_reader, build_state_writer,
+    append_state_history, build_approval_log, build_chat_log, build_conversation_memory,
+    build_journal, build_memory_store, build_skill_store, build_state_reader, build_state_writer,
     spawn_skill_curator,
 };
 use crate::wiring::mqtt::{command_router, connect_with_config, spawn_wled_source};
@@ -183,7 +183,11 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
     // Remote tool servers put their tools beside the plugins'. After the
     // secrets are loaded, since each connects with its key.
-    let approvals = Arc::new(approvals::Approvals::default());
+    let approvals = Arc::new(approvals::Approvals::new(
+        bus.clone(),
+        build_approval_log(&cfg),
+    ));
+    let _approvals_sweep = approvals.clone().spawn_sweep();
     let tool_servers =
         tool_servers::ToolServers::start(store.clone(), plugin_tools.clone(), approvals.clone());
     let plugin_database = plugin_host.as_ref().is_some_and(|(_, database)| *database);
@@ -721,6 +725,12 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     // HTTP API
     let chat_ctx = Arc::new(std::sync::OnceLock::new());
+    // The chat and Approvals are one: the panel answers the cards the
+    // chat shows, through the same dispatch.
+    let app_chat = Arc::new(AppChat {
+        ctx: chat_ctx.clone(),
+        stt: whisper.clone(),
+    });
     let api_state = AppState::new(
         registry.clone(),
         Arc::new(publisher.clone()) as Arc<dyn DevicePublisher>,
@@ -747,10 +757,8 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     )
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
-    .with_chat(Some(Arc::new(AppChat {
-        ctx: chat_ctx.clone(),
-        stt: whisper.clone(),
-    })))
+    .with_chat(Some(app_chat.clone()))
+    .with_approvals(Some(app_chat))
     .with_tado(tado.clone())
     .with_voices(voices.clone())
     .with_captures(captures.clone())

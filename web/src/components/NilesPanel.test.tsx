@@ -202,4 +202,13 @@ describe("NilesPanel", () => {
     expect(await panel.findByText("What Niles saved")).toBeInTheDocument();
     expect(panel.queryByText("The conversations")).toBeNull();
   });
+
+  it("counts on a tab's icon what waits there, and says so", async () => {
+    const panel = within(await openPanel([CONVERSATIONS, { ...SAVED, badge: 2 }]));
+    const tab = panel.getByRole("tab", { name: "Saved, 2 waiting" });
+    expect(tab.querySelector("[data-slot=tab-badge]")).toHaveTextContent("2");
+    expect(
+      panel.getByRole("tab", { name: "Conversations" }).querySelector("[data-slot=tab-badge]"),
+    ).toBeNull();
+  });
 });

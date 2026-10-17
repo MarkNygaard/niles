@@ -250,6 +250,10 @@ function screenFor(route: string, pages: PluginPageEntry[]): Screen {
     case "/skills":
       return { at: route, title: "Skills", body: <SkillsPage /> };
   }
+  // A section of My profile, by its id: `#/me/profile/strava`.
+  if (route.startsWith("/me/profile/")) {
+    return { at: route, title: "My profile", body: <MyProfile /> };
+  }
   // A section of Settings, by its id: `#/me/settings/voice`.
   if (route.startsWith("/me/settings/")) {
     return { at: route, title: "Settings", body: <ConfigPanel /> };

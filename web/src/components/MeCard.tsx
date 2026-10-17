@@ -101,6 +101,25 @@ export function MeCard({ me, device, saving, error, onSave, onPair, onUnpair }: 
 
   return (
     <div className="flex flex-col gap-4">
+      <AboutYou me={me} saving={saving} error={error} onSave={onSave} />
+      <PhoneCard device={device} phone={me.phone} saving={saving} onPair={onPair} onUnpair={onUnpair} />
+    </div>
+  );
+}
+
+/**
+ * About you, on My profile: what Niles knows, and how it speaks to you.
+ * Both belong to a voice, so somebody without one is told how to get
+ * one instead.
+ */
+export function AboutYou({
+  me,
+  saving,
+  error,
+  onSave,
+}: Pick<MeCardProps, "saving" | "error" | "onSave"> & { me: Me }) {
+  return (
+    <div className="flex flex-col gap-4">
       {me.speaker === null ? (
         <Card>
           <CardHeader>
@@ -160,7 +179,6 @@ export function MeCard({ me, device, saving, error, onSave, onPair, onUnpair }: 
           </Card>
         </>
       )}
-      <PhoneCard device={device} phone={me.phone} saving={saving} onPair={onPair} onUnpair={onUnpair} />
     </div>
   );
 }
@@ -333,7 +351,7 @@ function BirthdayField({
 }
 
 /** Which phone presence follows you by. */
-function PhoneCard({
+export function PhoneCard({
   device,
   phone,
   saving,

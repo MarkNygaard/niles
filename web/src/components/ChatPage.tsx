@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bookmark, MessagesSquare } from "lucide-react";
+import { Bookmark, MessagesSquare, ShieldCheck } from "lucide-react";
+import { Approvals } from "@/components/ApprovalsList";
 import { ArtifactView } from "@/components/ArtifactView";
 import { ChatView } from "@/components/ChatView";
 import type { ShownTurn } from "@/components/ChatView";
@@ -12,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { api } from "@/lib/api";
 import type { Artifact, ArtifactPatch, Conversation, ConversationSummary, Decision } from "@/lib/api";
+import { APPROVALS, PENDING } from "@/lib/approvals";
 import { ARTIFACTS, ARTIFACT_LIST, workingLine } from "@/lib/artifacts";
 import { hashQuery } from "@/lib/route";
 import { relativeTime } from "@/lib/skills";
@@ -72,6 +74,8 @@ export function ChatPage() {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: LIST, queryFn: api.conversations });
   const saved = useQuery({ queryKey: ARTIFACT_LIST, queryFn: api.artifacts });
+  // For the count on the Approvals tab; the tab itself asks the same.
+  const pending = useQuery({ queryKey: PENDING, queryFn: api.approvals, retry: false });
   // Saved, and the status line, follow the jobs as they go.
   useDeviceStream();
   // `null` is an empty new chat; undefined is "not chosen yet", settled
@@ -156,8 +160,11 @@ export function ChatPage() {
     mutationFn: ({ id, approval, decision }: { id: number; approval: string; decision: Decision }) =>
       api.decideApproval(id, approval, decision),
     // Refetched either way: a 409 means it lapsed or was answered
-    // elsewhere, and the card should say so.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: CHAT }),
+    // elsewhere, and the card should say so — and the panel with it.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: APPROVALS });
+      return queryClient.invalidateQueries({ queryKey: CHAT });
+    },
   });
 
   const changeArtifact = useMutation({
@@ -254,6 +261,13 @@ export function ChatPage() {
             onDelete={(id) => removeArtifact.mutateAsync(id)}
           />
         ),
+    },
+    {
+      id: "approvals",
+      label: "Approvals",
+      icon: ShieldCheck,
+      badge: pending.data?.approvals.length ?? 0,
+      render: () => <Approvals onOpenConversation={pick} />,
     },
   ];
 

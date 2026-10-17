@@ -1,6 +1,6 @@
 //! Memory, the journal, conversations, skills and device history, kept in Postgres.
 
-use crate::{chat_log, conversation, review};
+use crate::{approvals, chat_log, conversation, review};
 use anyhow::Context;
 use chrono::Utc;
 use niles_config::Config;
@@ -155,6 +155,19 @@ pub(crate) fn build_chat_log(cfg: &Config) -> Option<Arc<chat_log::ChatLog>> {
     let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
     Some(Arc::new(chat_log::ChatLog::new(
         niles_db::PostgresConversationLog::new(backend.pool(), backend.describe_target()),
+    )))
+}
+
+/// What each person was asked to approve, and decided, kept for the
+/// history under Approvals. Absent without a database, and the history
+/// then says it keeps none.
+pub(crate) fn build_approval_log(cfg: &Config) -> Option<Arc<dyn approvals::Ledger>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    Some(Arc::new(niles_db::PostgresApprovalLog::new(
+        backend.pool(),
+        backend.describe_target(),
     )))
 }
 

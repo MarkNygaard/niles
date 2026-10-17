@@ -160,6 +160,10 @@ export interface SettingsNavProps {
   onPick: (id: string) => void;
   /** How many things each section still has to set up, by its id. */
   todo?: Record<string, number>;
+  /** What a count is of, for a screen reader: "to set up", "waiting". */
+  counting?: string;
+  /** The groups to list. Settings's own unless My profile lends its. */
+  sections?: { group: string; items: Section[] }[];
 }
 
 /**
@@ -170,12 +174,19 @@ export interface SettingsNavProps {
  * and a list can carry a line saying what each one is, which a tab
  * cannot. On a phone it is the whole screen and tapping pushes in; from
  * `sm` it sits beside the section it opened, which is the same shape
- * once there is room for both.
+ * once there is room for both. My profile is laid out by the same list,
+ * so the two pages behind the avatar work alike.
  */
-export function SettingsNav({ current, onPick, todo = {} }: SettingsNavProps) {
+export function SettingsNav({
+  current,
+  onPick,
+  todo = {},
+  counting = "to set up",
+  sections = SECTIONS,
+}: SettingsNavProps) {
   return (
     <nav className="flex w-full shrink-0 flex-col gap-5 sm:w-64">
-      {SECTIONS.map((group) => (
+      {sections.map((group) => (
         <div key={group.group}>
           <div className="text-muted-foreground mb-1 px-1 text-xs font-medium tracking-wide uppercase">
             {group.group}
@@ -216,7 +227,7 @@ export function SettingsNav({ current, onPick, todo = {} }: SettingsNavProps) {
                   {(todo[item.id] ?? 0) > 0 && (
                     <span className="bg-destructive/10 text-destructive flex size-5 shrink-0 items-center justify-center rounded-full text-xs font-medium tabular-nums">
                       {todo[item.id]}
-                      <span className="sr-only"> to set up</span>
+                      <span className="sr-only"> {counting}</span>
                     </span>
                   )}
                   {/* Only on a phone, where tapping goes somewhere. Beside

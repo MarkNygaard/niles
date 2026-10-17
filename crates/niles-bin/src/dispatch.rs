@@ -227,7 +227,16 @@ pub(crate) async fn handle_transcript(
                 attachments: Vec::new(),
             };
             let (log, person) = (log.clone(), chat_log::person(Some(slug), ""));
-            tokio::spawn(async move { log.record_spoken(&person, &turn).await });
+            // Its card learns its conversation, as a typed turn's does, so
+            // the panel can answer it and the card in the chat follows.
+            let approvals = ctx.approvals.clone();
+            tokio::spawn(async move {
+                if let Some(id) = log.record_spoken(&person, &turn).await
+                    && let Some(card) = &turn.approval
+                {
+                    approvals.place(&card.id, id);
+                }
+            });
         }
         let place = room.as_ref().map_or_else(
             || "a room".to_string(),
@@ -678,7 +687,16 @@ pub(crate) async fn answer_to_approval(
     let yes = niles_tools::automations::answer(text)?;
     let held = ctx.approvals.take(&id, &asker.person)?;
     let tool = held.tool_name().to_string();
-    let (_, reply) = if yes { held.run().await } else { held.deny() };
+    let decision = if yes {
+        niles_api::chat::Decision::Once
+    } else {
+        niles_api::chat::Decision::Deny
+    };
+    let (card, reply) = ctx
+        .approvals
+        .settle(held, decision, approvals::Via::Voice, None)
+        .await;
+    ctx.approvals.changed(&asker.person, &card);
     tracing::info!(
         "[{peer}] {tool}: {} by voice",
         if yes { "allowed" } else { "denied" }

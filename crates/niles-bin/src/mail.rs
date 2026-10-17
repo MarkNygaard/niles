@@ -301,7 +301,9 @@ impl Tool for SendMail {
             draft: draft.clone(),
             original,
         });
-        let held = m.approvals.hold(&in_the_app, deliver, Value::Null, card);
+        let held = m
+            .approvals
+            .hold(&in_the_app, deliver, "Mail", Value::Null, card);
         tracing::info!(
             "[mail] a mail to {} is waiting in the app",
             draft.to.join(", ")

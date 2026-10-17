@@ -79,6 +79,18 @@ pub enum Event {
         status: String,
         status_text: Option<String>,
     },
+    /// Something waiting for a person's yes was asked, answered, or
+    /// lapsed. Forwarded only to that person's own connections, as an
+    /// artifact's change is: what Niles is holding for somebody is
+    /// theirs.
+    ApprovalChanged {
+        /// The person key, `person:{slug}` or `email:{address}`.
+        person: String,
+        /// The card's id.
+        id: String,
+        /// `pending`, `allowed`, `denied`, `lapsed` or `failed`.
+        status: String,
+    },
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.

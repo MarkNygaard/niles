@@ -225,6 +225,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me", get(crate::me::get).put(crate::me::update))
         .route("/me/phone", delete(crate::me::forget_phone))
+        .route("/me/approvals", get(crate::approvals::list))
+        .route("/me/approvals/history", get(crate::approvals::history))
+        .route("/me/approvals/{approval}", post(crate::approvals::decide))
         .route("/me/artifacts", get(crate::artifacts::list))
         .route(
             "/me/artifacts/{id}",

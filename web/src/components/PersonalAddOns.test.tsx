@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { PersonalAddOns, personalAddOns, returningTo } from "@/components/PersonalAddOns";
+import {
+  PersonalAddOnPage,
+  addOnHint,
+  personalAddOns,
+  returningTo,
+} from "@/components/PersonalAddOns";
+import type { PersonalAddOn } from "@/components/PersonalAddOns";
 import { api } from "@/lib/api";
 import type { CalendarsView, StravaStatus } from "@/lib/api";
 
@@ -34,12 +40,12 @@ const ONE_CALENDAR: CalendarsView = {
   ],
 };
 
-function page(hasVoice = true) {
+function page(addOn: PersonalAddOn) {
   vi.spyOn(api, "calendars").mockResolvedValue(ONE_CALENDAR);
   vi.spyOn(api, "strava").mockResolvedValue(NO_STRAVA);
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <PersonalAddOns hasVoice={hasVoice} />
+      <PersonalAddOnPage addOn={addOn} />
     </QueryClientProvider>,
   );
 }
@@ -101,34 +107,33 @@ describe("returningTo", () => {
   });
 });
 
-describe("PersonalAddOns", () => {
+describe("addOnHint", () => {
+  it("says what is connected, or that nothing is yet", () => {
+    const [calendars, mail, strava] = personalAddOns(true, ONE_CALENDAR, NO_STRAVA);
+    expect(addOnHint(calendars)).toBe("Private");
+    expect(addOnHint(mail)).toBe("Not connected yet");
+    expect(addOnHint(strava)).toBe("Not connected yet");
+  });
+});
+
+describe("PersonalAddOnPage", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    window.history.replaceState(null, "", "/");
   });
 
-  it("is one line on the page, naming what is connected", async () => {
-    page();
-    const line = await screen.findByRole("button", { name: /Add-ons\s*Calendars/ });
-    expect(line).toBeInTheDocument();
-    expect(screen.queryByText("Connect a calendar")).toBeNull();
-  });
-
-  it("lists yours like Settings lists the house's, and opens each", async () => {
-    page();
-    fireEvent.click(await screen.findByRole("button", { name: /Add-ons\s*Calendars/ }));
-    const connected = screen.getByRole("region", { name: "Connected" });
-    expect(within(connected).getByText("Private")).toBeInTheDocument();
-    const available = screen.getByRole("region", { name: "Available" });
-    fireEvent.click(within(available).getByRole("button", { name: "Connect Strava" }));
+  it("is a page of its own, not a dialog", async () => {
+    const [, , strava] = personalAddOns(true, ONE_CALENDAR, NO_STRAVA);
+    page(strava);
+    expect(screen.getByText("Strava")).toBeInTheDocument();
+    expect(screen.getByText(/Yours alone/)).toBeInTheDocument();
     expect(await screen.findByText(/everyone makes their own/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Back to your add-ons" }));
-    expect(screen.getByRole("region", { name: "Connected" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("opens on the add-on a sign-in has just come back for", async () => {
-    window.history.replaceState(null, "", "/?strava_error=denied");
-    page();
-    expect(await screen.findByRole("heading", { name: "Strava" })).toBeInTheDocument();
+  it("shows a calendar's accounts in place", async () => {
+    const [calendars] = personalAddOns(true, ONE_CALENDAR, NO_STRAVA);
+    page(calendars);
+    expect(await screen.findByText("Private")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

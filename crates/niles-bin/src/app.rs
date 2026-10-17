@@ -412,18 +412,17 @@ impl niles_api::chat::Chat for AppChat {
             .take(approval, &person)
             .ok_or(Undecidable::NotWaiting)?;
         let tool = held.tool_name().to_string();
-        let (card, reply) = match decision {
-            Decision::Deny => held.deny(),
-            Decision::Once => held.run().await,
-            Decision::Conversation => {
-                ctx.approvals.grant(&person, id, &tool);
-                held.run().await
-            }
-        };
+        let (card, reply) = ctx
+            .approvals
+            .settle(held, decision, approvals::Via::App, Some(id))
+            .await;
         tracing::info!("[approvals] {tool}: {:?} by {person}", card.status);
         if let Err(e) = log.update_approval(&person, id, &card).await {
             tracing::warn!("[chat-log] the answered card was not kept: {e}");
         }
+        // Once the card is back where it was asked: the panel and the
+        // chat refetch on hearing this, and should find it answered.
+        ctx.approvals.changed(&person, &card);
         let said = match decision {
             Decision::Once => "Allow once",
             Decision::Conversation => "Allow for this conversation",
@@ -534,6 +533,75 @@ impl niles_api::chat::Chat for AppChat {
             .await
             .map(|t| t.text.trim().to_string())
             .map_err(|e| format!("could not transcribe that: {e}"))
+    }
+}
+
+/// Approvals in Niles's panel and on My profile: the same held calls the
+/// chat's cards answer, by the same key their conversations are kept
+/// under.
+#[async_trait::async_trait]
+impl niles_api::approvals::Approvals for AppChat {
+    async fn waiting(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+    ) -> Vec<niles_api::approvals::Waiting> {
+        let Some(ctx) = self.ctx.get() else {
+            return Vec::new();
+        };
+        ctx.approvals.pending(&chat_log::person(speaker, who))
+    }
+
+    async fn decide(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        approval: &str,
+        decision: niles_api::chat::Decision,
+    ) -> Result<String, niles_api::chat::Undecidable> {
+        use niles_api::chat::{Chat, Decision, Undecidable};
+        let ctx = self.ctx.get().ok_or(Undecidable::NoSuchApproval)?;
+        let person = chat_log::person(speaker, who);
+        let placed = ctx.approvals.placed(approval, &person)?;
+        if decision == Decision::Conversation && !placed.allow_conversation {
+            return Err(Undecidable::OnceOnly);
+        }
+        // A card in a conversation is answered the way its own button
+        // answers it, so the card there says what became of it.
+        if let Some(conversation) = placed.conversation {
+            return Chat::decide(self, who, speaker, conversation, approval, decision).await;
+        }
+        // Asked aloud, it has no card: only the satellite was waiting.
+        let held = ctx
+            .approvals
+            .take(approval, &person)
+            .ok_or(Undecidable::NotWaiting)?;
+        let tool = held.tool_name().to_string();
+        let (card, reply) = ctx
+            .approvals
+            .settle(held, decision, approvals::Via::App, None)
+            .await;
+        tracing::info!(
+            "[approvals] {tool}: {:?} by {person}, from the panel",
+            card.status
+        );
+        ctx.approvals.changed(&person, &card);
+        Ok(reply)
+    }
+
+    async fn history(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        before: Option<i64>,
+    ) -> Result<niles_api::approvals::History, String> {
+        let ctx = self
+            .ctx
+            .get()
+            .ok_or_else(|| "Niles is still starting; try again in a moment".to_string())?;
+        ctx.approvals
+            .history(&chat_log::person(speaker, who), before)
+            .await
     }
 }
 
