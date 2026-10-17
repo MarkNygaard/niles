@@ -819,22 +819,22 @@ id = "artifacts-sharing"
 category = "runtime.assistant"
 summary = "Share a saved artifact with someone in the house, to read or to edit; an editor's own Claude or ChatGPT can change it"
 phrasings = ["share the Thailand trip with Majse so she can edit it", "let Majse see my training plan", "add Chiang Mai to our Thailand trip", "stop sharing the packing list with Majse"]
-since_pr = 9999
+since_pr = 452
 
 [[feature]]
 id = "ui-artifact-sharing"
 category = "ui.chat"
 summary = "Share from an open artifact: None, View or Edit for each person; Saved marks what is shared and who changed it last"
-since_pr = 9999
+since_pr = 452
 
 [[feature]]
 id = "api-artifact-shares"
 category = "api.write"
 summary = "GET/PUT/DELETE /me/artifacts/{id}/shares, its owner's only; every artifact route answers by owner, edit or view"
-since_pr = 9999
+since_pr = 452
 
 [[feature]]
 id = "push-artifact-shared"
 category = "runtime.notifications"
 summary = "A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you"
-since_pr = 9999
+since_pr = 452
