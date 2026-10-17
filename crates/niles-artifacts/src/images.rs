@@ -64,8 +64,8 @@ const MAX_SOURCE: usize = 2_000;
 
 /// What the model is told about pictures: how one is found, kept and
 /// named, for each kind's help and the jobs' instructions.
-pub const HELP: &str = "Pictures: find one with image_search, then keep a copy with \
-    artifact_add_image {id, url, alt, credit, source}, which answers its name, \
+pub const HELP: &str = "Pictures: find one with image_search where it is offered, then keep a \
+    copy with artifact_add_image {id, url, alt, credit, source}, which answers its name, \
     niles-image:ID. Use that name, never a web address: a picture from an address is never \
     shown. Always give alt (what the picture shows, for someone who cannot see it) and \
     credit (who took or owns it, as the result says, or the site it is from). A few good \

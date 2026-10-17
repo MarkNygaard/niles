@@ -59,6 +59,7 @@ pub mod tv;
 pub mod voices;
 #[cfg(feature = "ui")]
 pub mod web;
+pub mod web_search;
 pub mod webhook;
 
 pub use publish::DevicePublisher;

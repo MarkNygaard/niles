@@ -142,6 +142,8 @@ fn is_added(cfg: &Config, id: &str) -> bool {
         // An address, as with UniFi and Sonos: `[tv]` always exists.
         "lg_tv" => !cfg.tv.host.trim().is_empty(),
         "mqtt" => !cfg.mqtt.host.trim().is_empty(),
+        // An address again, whether the app or a ConfigMap wrote it.
+        "web_search" => cfg.web_search.address().is_some(),
         other => cfg.providers.iter().any(|p| p.name == other),
     }
 }
@@ -235,6 +237,20 @@ team = \"niles\"
         // falling through to that arm would call it missing forever.
         assert!(is_added(&cfg("[mqtt]\nhost = \"10.0.0.2\"\n"), "mqtt"));
         assert!(!is_added(&cfg(""), "mqtt"));
+    }
+
+    #[test]
+    fn web_search_is_added_by_its_address_from_the_app_or_a_config_map() {
+        assert!(is_added(
+            &cfg("[web_search]\nbase_url = \"https://search.example/search\"\n"),
+            "web_search"
+        ));
+        assert!(!is_added(&cfg(""), "web_search"));
+        // What removing it writes over an address a ConfigMap names.
+        assert!(!is_added(
+            &cfg("[web_search]\nbase_url = \"\"\n"),
+            "web_search"
+        ));
     }
 
     #[test]

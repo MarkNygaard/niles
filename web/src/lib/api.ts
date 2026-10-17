@@ -514,6 +514,24 @@ export interface TvVolume {
   sound_output?: string;
 }
 
+/** One of the two searches the web search test runs. */
+export interface WebSearchOutcome {
+  ok: boolean;
+  /** How many came back, at most 20. */
+  results: number;
+  /** Why it did not answer, in words for the page. Never the address. */
+  error: string | null;
+}
+
+/** `POST /integrations/web_search/test`: a web query and an image query
+    through the SearXNG the config names. */
+export interface WebSearchTest {
+  /** Whether there is an address to test. */
+  configured: boolean;
+  web: WebSearchOutcome | null;
+  images: WebSearchOutcome | null;
+}
+
 /** The Sonos household as a speaker described it just now. */
 export interface SpeakersReport {
   /** Whether Niles has an address to ask. */
@@ -1666,6 +1684,8 @@ export const api = {
       { method: "POST", body: JSON.stringify(value) },
     ),
   speakers: () => request<SpeakersReport>("/speakers"),
+  testWebSearch: () =>
+    request<WebSearchTest>("/integrations/web_search/test", { method: "POST" }),
   tv: () => request<TvInfo>("/tv"),
   music: () => request<RoomMusic[]>("/music"),
   musicControl: (room: string, control: MusicControl) =>

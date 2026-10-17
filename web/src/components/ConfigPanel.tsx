@@ -1233,6 +1233,7 @@ export function ConfigPanel() {
                 | undefined)?.google
             }
             unifiHost={stringAt(view.effective, "presence.unifi.host")}
+            webSearchAddress={stringAt(view.effective, "web_search.base_url")}
             sonos={{
               enabled: valueAt(view.effective, "speakers.enabled") !== false,
               host: sonosHost,

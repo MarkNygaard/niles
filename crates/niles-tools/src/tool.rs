@@ -27,4 +27,11 @@ impl ToolDescriptor {
 pub trait Tool: Send + Sync {
     fn descriptor(&self) -> ToolDescriptor;
     async fn execute(&self, args: Value) -> Result<Value>;
+
+    /// Whether the model is offered it now. Asked at every request, so a
+    /// tool that hangs on a setting — the web search on its add-on —
+    /// comes and goes with it without the registry being built again.
+    fn offered(&self) -> bool {
+        true
+    }
 }

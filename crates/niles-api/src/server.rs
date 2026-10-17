@@ -180,6 +180,10 @@ pub fn router(state: AppState) -> Router {
             "/plugins/{id}/rotate-hook",
             post(crate::plugins::rotate_hook),
         )
+        .route(
+            "/integrations/web_search/test",
+            post(crate::web_search::test),
+        )
         .route("/integrations/chatgpt", get(crate::chatgpt::status))
         .route(
             "/integrations/chatgpt/login",

@@ -244,6 +244,10 @@ pub fn section_reload(section: &str) -> Reload {
         // Read whenever a plugin's webhook or callback address is
         // worked out, and a change restarts the plugins that have one.
         "public" => Reload::Hot,
+        // Every search reads the address and the numbers from the live
+        // snapshot, and the client is rebuilt when they change; whether
+        // Claude gets its own search instead is decided per run.
+        "web_search" => Reload::Hot,
         _ => Reload::Boot,
     }
 }
@@ -1653,20 +1657,23 @@ exclude_devices = ["wled:living_room/tv_light"]
     }
 
     #[test]
-    fn rejects_empty_web_search_base_url() {
+    fn an_empty_web_search_address_is_no_search() {
+        // What removing the add-on writes, over a ConfigMap that may
+        // still name one.
         let toml = format!(
-            "{}\n[web_search]\nbase_url = \"\"\n",
+            "{}\n[web_search]\nbase_url = \"  \"\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "web_search",
-                ..
-            }
-        ));
+        cfg.validate().unwrap();
+        assert_eq!(cfg.web_search.address(), None);
+        assert_eq!(WebSearchConfig::default().address(), None);
+    }
+
+    #[test]
+    fn the_web_search_address_is_read_live() {
+        assert_eq!(section_reload("web_search"), Reload::Hot);
+        assert!(SECTIONS.contains(&"web_search"));
     }
 
     #[test]

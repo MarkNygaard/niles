@@ -48,9 +48,10 @@ impl Download for niles_websearch::PublicFetcher {
 
 /// Where pictures are found and how they are fetched.
 pub(crate) struct Pictures {
-    /// None without a search instance: a picture can still be kept from
-    /// an address `web_search` or `read_page` turned up.
-    pub(crate) search: Option<Arc<niles_websearch::SearXngClient>>,
+    /// The house's search: `image_search` is offered while it has a
+    /// SearXNG, and only then. Without one a picture can still be kept
+    /// from an address the person gave or a page turned up.
+    pub(crate) search: niles_tools::Search,
     pub(crate) download: Arc<dyn Download>,
 }
 
@@ -60,9 +61,7 @@ pub(super) fn register(artifacts: &Arc<Artifacts>, reg: &mut ToolRegistry, only:
     let Some(pictures) = &artifacts.pictures else {
         return;
     };
-    if let Some(search) = &pictures.search {
-        reg.register(Box::new(ImageSearch(search.clone())));
-    }
+    reg.register(Box::new(ImageSearch(pictures.search.clone())));
     reg.register(Box::new(AddImage {
         artifacts: artifacts.clone(),
         only,
@@ -113,10 +112,14 @@ fn only_this(tool: &str, only: Option<i64>, id: i64) -> Result<()> {
     }
 }
 
-struct ImageSearch(Arc<niles_websearch::SearXngClient>);
+struct ImageSearch(niles_tools::Search);
 
 #[async_trait]
 impl Tool for ImageSearch {
+    fn offered(&self) -> bool {
+        self.0.configured()
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "image_search".into(),
@@ -146,7 +149,14 @@ impl Tool for ImageSearch {
             .get("num_results")
             .and_then(Value::as_u64)
             .map_or(RESULTS, |n| n.clamp(1, 20) as u8);
-        let found = self.0.search_images(query, n).await.map_err(|e| {
+        let client = self.0.client().ok_or_else(|| {
+            invalid(
+                TOOL,
+                "there is no image search any more: the SearXNG add-on was removed; do \
+                 without pictures this time",
+            )
+        })?;
+        let found = client.search_images(query, n).await.map_err(|e| {
             invalid(
                 TOOL,
                 format!("the image search did not answer ({e}); do without pictures this time"),
@@ -186,8 +196,8 @@ impl Tool for AddImage {
             name: "artifact_add_image".into(),
             description: format!(
                 "Keep a copy of a picture with one of the asking person's artifacts: Niles \
-                 fetches it from url (an https address of the picture itself, such as an \
-                 image_search result's url) and keeps its own copy, made smaller and without \
+                 fetches it from url (an https address of the picture itself: an \
+                 image_search result's url, or one the person gave) and keeps its own copy, made smaller and without \
                  its metadata. Answers its name, niles-image:ID, to use in the content (a \
                  document's ![alt](niles-image:ID), a trip's image) or a page \
                  (niles.image(name)). alt says what it shows, for someone who cannot see it; \
@@ -428,7 +438,7 @@ mod tests {
                 Box::new(|_| {}),
             )
             .with_pictures(Pictures {
-                search,
+                search: niles_tools::Search::fixed(search, 5),
                 download: files.clone(),
             }),
         );
@@ -764,11 +774,11 @@ mod tests {
         assert!(page.has("image_search") && page.has("artifact_add_image"));
 
         let without = fixture(None);
+        let trip = without.artifacts.job_tools(1, "trip", None);
+        assert!(!trip.has("image_search"));
         assert!(
-            !without
-                .artifacts
-                .job_tools(1, "trip", None)
-                .has("image_search")
+            !trip.llm_tools().iter().any(|t| t.name == "image_search"),
+            "not offered without SearXNG"
         );
         assert!(
             without

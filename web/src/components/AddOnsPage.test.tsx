@@ -193,6 +193,16 @@ const LINEAR: Integration = {
   secret_key: "tool_servers.linear.api_key",
 };
 
+const WEB_SEARCH: Integration = {
+  ...TADO,
+  id: "web_search",
+  label: "Web search (SearXNG)",
+  blurb: "Your own SearXNG.",
+  needs: "A SearXNG instance.",
+  group: ASSISTANTS,
+  icon: "search",
+};
+
 function setup(
   integrations: Integration[],
   secrets: SecretsReport = unifiKey(),
@@ -449,6 +459,63 @@ describe("AddOnsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
     expect(onReset).toHaveBeenCalledWith("integrations.nemlig", ["integrations.nemlig"]);
+  });
+});
+
+describe("AddOnsPage web search", () => {
+  it("asks for the address when it is added, and writes nothing yet", () => {
+    const tested = vi.spyOn(api, "testWebSearch");
+    const { onChange } = setup([WEB_SEARCH], unifiKey());
+    fireEvent.click(screen.getByRole("button", { name: "Connect Web search (SearXNG)" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("SearXNG address")).toBeTruthy();
+    expect(screen.getByText(/ChatGPT can't search the web without SearXNG/)).toBeTruthy();
+    expect(tested).not.toHaveBeenCalled();
+  });
+
+  it("is in use on its row once it has an address, from the app or a ConfigMap", () => {
+    vi.spyOn(api, "testWebSearch").mockResolvedValue({
+      configured: true,
+      web: { ok: true, results: 3, error: null },
+      images: { ok: true, results: 0, error: null },
+    });
+    setup([{ ...WEB_SEARCH, added: true }], unifiKey(), undefined, {
+      webSearchAddress: "https://search.example/search",
+    });
+    const row = screen.getByRole("button", { name: "Configure Web search (SearXNG)" });
+    expect(within(row).getByText("In use")).toBeTruthy();
+  });
+
+  it("says when the one added is not reachable", async () => {
+    vi.spyOn(api, "testWebSearch").mockResolvedValue({
+      configured: true,
+      web: { ok: false, results: 0, error: "SearXNG did not answer within 15s." },
+      images: { ok: false, results: 0, error: "SearXNG did not answer within 15s." },
+    });
+    setup([{ ...WEB_SEARCH, added: true }], unifiKey(), undefined, {
+      webSearchAddress: "https://search.example/search",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Configure Web search (SearXNG)" }));
+    expect(
+      await screen.findByText("Not reachable: SearXNG did not answer within 15s."),
+    ).toBeTruthy();
+  });
+
+  it("removing it empties the address, so Claude goes back to its own search", () => {
+    vi.spyOn(api, "testWebSearch").mockResolvedValue({
+      configured: true,
+      web: { ok: true, results: 3, error: null },
+      images: { ok: true, results: 2, error: null },
+    });
+    const { onChange, onReset } = setup([{ ...WEB_SEARCH, added: true }], unifiKey(), undefined, {
+      webSearchAddress: "https://search.example/search",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Configure Web search (SearXNG)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
+    expect(onChange).toHaveBeenCalledWith("web_search", [
+      { path: "web_search.base_url", value: "" },
+    ]);
+    expect(onReset).not.toHaveBeenCalled();
   });
 });
 

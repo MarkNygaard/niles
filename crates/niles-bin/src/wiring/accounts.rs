@@ -1,9 +1,8 @@
-//! Secrets, sign-in sessions and the outside accounts: calendars, push, Strava, Tado, weather, search.
+//! Secrets, sign-in sessions and the outside accounts: calendars, push, Strava, Tado, weather.
 
 use anyhow::Context;
 use niles_config::Config;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Build an `OpenMeteoClient`.
 /// Returns `None` when client construction fails.
@@ -11,28 +10,6 @@ pub(crate) fn build_weather_client() -> Option<Arc<niles_weather::OpenMeteoClien
     niles_weather::OpenMeteoClient::new(niles_weather::OpenMeteoConfig::default())
         .inspect_err(|e| {
             tracing::warn!("Failed to build Open-Meteo client: {e}; weather tool disabled")
-        })
-        .ok()
-        .map(Arc::new)
-}
-
-pub(crate) fn build_websearch_client(
-    cfg: &niles_config::WebSearchConfig,
-) -> Option<Arc<niles_websearch::SearXngClient>> {
-    let base_url = cfg.base_url.as_ref()?;
-    let config = niles_websearch::SearXngConfig {
-        base_url: base_url.clone(),
-        request_timeout: Duration::from_secs(cfg.timeout_seconds),
-        user_agent: concat!(
-            "niles/",
-            env!("CARGO_PKG_VERSION"),
-            " (https://github.com/MarkNygaard/niles)"
-        )
-        .into(),
-    };
-    niles_websearch::SearXngClient::new(config)
-        .inspect_err(|e| {
-            tracing::warn!("Failed to build SearXNG client: {e}; web_search tool disabled")
         })
         .ok()
         .map(Arc::new)

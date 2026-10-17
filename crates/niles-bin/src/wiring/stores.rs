@@ -17,7 +17,7 @@ pub(crate) fn build_artifacts(
     bus: EventBus,
     runner: Arc<artifacts::AssistantRunner>,
     chat_log: Option<Arc<chat_log::ChatLog>>,
-    websearch: Option<Arc<niles_websearch::SearXngClient>>,
+    search: niles_tools::Search,
     training: Option<Arc<dyn niles_training::TrainingStore>>,
     push: Option<Arc<niles_webpush::WebPush>>,
 ) -> Option<Arc<artifacts::Artifacts>> {
@@ -26,28 +26,21 @@ pub(crate) fn build_artifacts(
     let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
     let store = niles_db::PostgresArtifacts::new(backend.pool(), backend.describe_target());
     let timezone = cfg.home.timezone.clone();
-    let results = cfg.web_search.default_num_results;
-    let image_search = websearch.clone();
+    let web = search.clone();
     // What writing needs and nothing of the house's: a job cannot turn
     // on a light.
     let extras: artifacts::Extras = Box::new(move |reg: &mut ToolRegistry| {
-        if let Some(client) = &websearch {
-            niles_tools::register_web_search_tool(reg, client.clone(), results);
-        }
+        niles_tools::register_web_tools(reg, web.clone());
         niles_tools::register_datetime_tool(reg, &timezone);
     });
-    // Pictures are found with the house's search, when it has one, and
+    // Pictures are found with the house's search, while it has one, and
     // fetched from the public internet only.
     let pictures = artifacts::Pictures {
-        search: image_search,
+        search,
         download: Arc::new(niles_websearch::PublicFetcher::new(
             niles_artifacts::images::MAX_DOWNLOAD,
             artifacts::DOWNLOAD_WITHIN,
-            concat!(
-                "niles/",
-                env!("CARGO_PKG_VERSION"),
-                " (https://github.com/MarkNygaard/niles)"
-            ),
+            niles_websearch::USER_AGENT,
         )),
     };
     let artifacts = artifacts::Artifacts::new(

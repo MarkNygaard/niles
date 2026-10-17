@@ -564,11 +564,13 @@ pub(crate) async fn ask_assistant(
     // for somebody Niles knows: an unrecognised voice has nowhere to
     // keep one.
     let mut system_prompt = system_prompt.to_string();
-    if ctx.artifacts.is_some()
+    if let Some(artifacts) = &ctx.artifacts
         && matches!(thread, conversation::Thread::Chat(_))
         && approvals::asker().is_some_and(|a| !a.person.starts_with("satellite:"))
     {
-        system_prompt.push_str(artifacts::PROMPT);
+        system_prompt.push_str(&artifacts::turn_prompt(
+            artifacts.searching(Some(chosen.via())),
+        ));
     }
     system_prompt.push_str(&assistant::attachments_section(attachments));
     match assistant

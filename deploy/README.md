@@ -183,7 +183,7 @@ The following are intentionally out of scope for v1. You may add them in your ow
 - **HPA / VPA** — Niles runs single-replica
 - **Secrets management** — raw `kubectl create secret` is used
 - **Ingress / TLS** — wire via your existing ingress controller out-of-band
-- **Mosquitto, SearXNG, Piper manifests** — deploy independently
+- **Mosquitto, SearXNG, Piper manifests** — deploy independently. SearXNG is then added in the app, under Settings → Add-ons → Web search (SearXNG), with no ConfigMap edit or restart; without it Claude uses its own web search
 
 ## Ports
 

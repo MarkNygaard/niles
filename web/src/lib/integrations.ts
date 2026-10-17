@@ -71,6 +71,7 @@ export interface StatusInputs {
   microsoft?: { enabled?: boolean };
   google?: { enabled?: boolean };
   unifiHost?: string;
+  webSearchAddress?: string;
   sonos?: { enabled?: boolean; host?: string };
   tv?: TvInfo;
 }
@@ -142,6 +143,11 @@ export function statusOf(integration: Integration, inputs: StatusInputs): Status
     case "unifi":
       if (!inputs.unifiHost?.trim()) return needs("Needs its address");
       return missing(integration.secret_key) ? needs("Needs its API key") : WORKING;
+    // Whether it answers is the panel's to say, from a real search.
+    case "web_search":
+      return inputs.webSearchAddress?.trim()
+        ? { ok: true, text: "In use" }
+        : needs("Needs its address");
     default:
       return missing(integration.secret_key) ? needs("Needs its API key") : WORKING;
   }

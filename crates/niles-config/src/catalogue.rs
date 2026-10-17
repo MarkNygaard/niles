@@ -116,7 +116,7 @@ pub const GROUPS: &[GroupInfo] = &[
     GroupInfo {
         id: Group::Assistants,
         label: "Assistants & tools",
-        blurb: "Claude or ChatGPT in the chat, on your own subscription, and work handed to Niles from Linear.",
+        blurb: "Claude or ChatGPT in the chat, on your own subscription, work handed to Niles from Linear, and the web search they use.",
         requirement: None,
     },
 ];
@@ -444,6 +444,23 @@ pub const KNOWN: &[Known] = &[
         api: Api::OpenAi,
         models: &[],
     },
+    Known {
+        id: "web_search",
+        label: "Web search (SearXNG)",
+        blurb: "Your own SearXNG, for Claude and ChatGPT to search the web through, and to find pictures for what they save.",
+        needs: "A SearXNG instance Niles can reach, with the JSON format on in its settings. Pictures need its image engines on too. Without it Claude uses its own search, and ChatGPT cannot search.",
+        kind: Kind::Service,
+        group: Group::Assistants,
+        importance: Importance::Optional,
+        icon: "search",
+        // An address, not a key: one with a password in it stays in
+        // the config like any other address.
+        secrets: &[],
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
 ];
 
 pub fn find(id: &str) -> Option<&'static Known> {
@@ -751,13 +768,16 @@ mod tests {
     }
 
     #[test]
-    fn both_assistants_sit_together_before_linear() {
+    fn both_assistants_sit_together_before_their_tools() {
         let assistants: Vec<&str> = KNOWN
             .iter()
             .filter(|k| k.group == Group::Assistants)
             .map(|k| k.id)
             .collect();
-        assert_eq!(assistants, ["claude_code", "chatgpt", "linear"]);
+        assert_eq!(
+            assistants,
+            ["claude_code", "chatgpt", "linear", "web_search"]
+        );
         let chatgpt = find("chatgpt").expect("in the catalogue");
         assert_eq!(chatgpt.kind, Kind::Service);
         assert_eq!(chatgpt.importance, Importance::Optional);

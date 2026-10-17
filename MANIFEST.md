@@ -33,6 +33,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 | `api-push` | GET /push/key; GET, POST and DELETE /me/push for this person's devices; POST /me/push/test | [#432](https://github.com/MarkNygaard/niles/pull/432) |
+| `api-web-search-test` | POST /integrations/web_search/test runs a web and an image query through the saved SearXNG and counts the results | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 
 ## automations
 
@@ -63,7 +64,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `tool-timer` | Set, cancel, and list timers via structured tool calls | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tool-weather` | Fetch current weather and forecast via Open-Meteo | [#81](https://github.com/MarkNygaard/niles/pull/81) |
-| `tool-web-search` | Search the web via SearXNG and return summarized results | [#83](https://github.com/MarkNygaard/niles/pull/83) |
+| `tool-web-search` | Search the web via SearXNG and return summarized results; offered while the SearXNG add-on is set up | [#83](https://github.com/MarkNygaard/niles/pull/83) |
 
 ## runtime
 
@@ -73,8 +74,10 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `artifacts-pictures` | Pictures in a document, a trip or a page, found with the house's search and kept as Niles's own clean copies | [#442](https://github.com/MarkNygaard/niles/pull/442) |
 | `artifacts-trip` | A trip planned in the background: days, places, stays and bookings, a countdown, and a packing list to tick | [#434](https://github.com/MarkNygaard/niles/pull/434) |
+| `assistant-built-in-search` | Without SearXNG, Claude searches with Claude Code's own WebSearch (never WebFetch); ChatGPT is told it has no search | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `assistant-reads-attachments` | Claude or ChatGPT answers about an attached photo or PDF; a message with files always goes to the assistant | [#449](https://github.com/MarkNygaard/niles/pull/449) |
+| `web-search-live` | Adding, changing or removing the SearXNG address takes hold with the next search, without a restart | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
@@ -120,6 +123,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - make an itinerary for two weeks in Japan
 - add a day in Chiang Mai to our Thailand trip
 
+### `assistant-built-in-search` — example phrasings
+
+- what's the news today
+- when does the ferry to Samsø leave
+
 ### `assistant-reads-attachments` — example phrasings
 
 - what's this plant
@@ -152,6 +160,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-plugins` | Add-ons page: add-on from GitHub, and a panel per plugin to turn it off, update, roll back or remove it | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `ui-tv-volume` | The TV row has volume down and up, a slider and mute while it is on, where the TV is the speaker; POST /tv/volume | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `ui-tv-wake-mac` | TV panel: the wake MAC, detected or set by hand and kept through pairing; power-on says when the TV did not answer | [#409](https://github.com/MarkNygaard/niles/pull/409) |
+| `ui-web-search-addon` | Web search (SearXNG) as an add-on: its address saved in the app, its status, a Test of web and image search, Remove | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 | `ui-installable` | Install the dashboard to a phone's Home Screen as an app | [#179](https://github.com/MarkNygaard/niles/pull/179) |
 | `ui-room-card-blinds` | A room card with lights and blinds has separate Lights and Blinds buttons beside Heating, each opening its own sheet | [#404](https://github.com/MarkNygaard/niles/pull/404) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
