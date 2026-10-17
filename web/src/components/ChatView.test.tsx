@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { ChatView, SUGGESTIONS } from "@/components/ChatView";
+import { ChatView } from "@/components/ChatView";
 import type { ChatViewProps, ShownTurn } from "@/components/ChatView";
 
 function turn(said: string, reply: string, rest: Partial<ShownTurn> = {}): ShownTurn {
@@ -110,10 +110,13 @@ describe("ChatView", () => {
     expect(screen.getByLabelText("Niles is answering")).toBeInTheDocument();
   });
 
-  it("offers something to ask on an empty chat", () => {
-    const { onSend } = renderChat();
-    fireEvent.click(screen.getByRole("button", { name: SUGGESTIONS[0] }));
-    expect(onSend).toHaveBeenCalledWith(SUGGESTIONS[0]);
+  it("starts empty: no examples and no explanation", () => {
+    renderChat();
+    expect(screen.queryByText(/out loud works here too/)).toBeNull();
+    expect(screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"))).not.toContain(
+      "What's on the shopping list?",
+    );
+    expect(screen.getByRole("list", { name: "Conversation" })).toBeEmptyDOMElement();
   });
 
   it("says when Claude wrote a reply", () => {

@@ -31,7 +31,7 @@ export interface ChatViewProps {
   onSend: (text: string) => void;
   /** Leave this conversation for an empty one. */
   onNew: () => void;
-  /** Open Niles's panel, which holds the past conversations. */
+  /** Open Niles's panel, which holds the past conversations, or close it. */
   onOpenPanel: () => void;
   /** The avatar that opens it, for the panel to grow from. */
   avatarRef?: React.Ref<HTMLButtonElement>;
@@ -53,13 +53,6 @@ export interface ChatViewProps {
       when its turn was kept, so this is what says a job still runs. */
   working?: number[];
 }
-
-/** Things worth asking that show what typing to Niles is for. */
-export const SUGGESTIONS = [
-  "What's on the shopping list?",
-  "Is anyone home?",
-  "Turn off the lights downstairs",
-];
 
 /**
  * One conversation with Niles, spoken to a satellite or typed here, and
@@ -173,7 +166,7 @@ export function ChatView({
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
           )}
         >
-          <NilesAvatar className="size-10" />
+          <NilesAvatar className="size-12" />
         </button>
         {(turns.length > 0 || busy) && (
           <Button
@@ -196,29 +189,6 @@ export function ChatView({
           <Skeleton className="h-16 w-3/4 rounded-2xl" />
         </div>
       )}
-      {!loading && turns.length === 0 && !busy && (
-        <div className="flex flex-col gap-3 px-1">
-          <p className="text-muted-foreground text-sm">
-            Anything you would say to Niles out loud works here too.
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {SUGGESTIONS.map((text) => (
-              <button
-                key={text}
-                type="button"
-                onClick={() => send(text)}
-                className={cn(
-                  "bg-card rounded-full px-3 py-1.5 text-sm transition-colors",
-                  "hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-                )}
-              >
-                {text}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* At the bottom, just above the field, the way a messages app
           has it. At the top, a short conversation was what iOS slid off
           the screen when it lifted the field above the keyboard. */}
@@ -298,6 +268,8 @@ export function ChatView({
         }}
         className={cn(
           "bg-background fixed inset-x-0 z-30",
+          // Over the left half only, while Niles's panel has the right.
+          "md:in-data-panel:right-1/2 md:transition-[right] md:duration-300 md:ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           "bottom-[calc(env(safe-area-inset-bottom)+3rem)] in-data-typing:bottom-0",
           "sm:bottom-0 sm:pb-[env(safe-area-inset-bottom)]",
         )}

@@ -1,7 +1,6 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { X } from "lucide-react";
-import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import {
   Drawer,
   DrawerClose,
@@ -132,9 +131,10 @@ function fly(from: HTMLElement | null, to: HTMLElement): (() => void) | undefine
  * conversations first, with more to come.
  *
  * Full screen in a hand, risen from the bottom like any sheet there and
- * dismissed the same way, by swiping it down. On a desk, a tall panel
- * that grows out of the avatar rather than a dialog in the middle of the
- * screen: it belongs to the thing that was clicked.
+ * dismissed the same way, by swiping it down. On a desk, the right half
+ * of the screen: it slides in while the page moves over into the left
+ * half, and the chat there stays live, so a plan or a trip can be read
+ * on one side while Niles is asked about it on the other.
  */
 export function NilesPanel({
   open,
@@ -145,7 +145,8 @@ export function NilesPanel({
   tab: chosenTab,
   onTabChange,
 }: NilesPanelProps) {
-  const phone = useMediaQuery("(max-width: 639px)");
+  // A half of a narrower screen is too little for either side.
+  const phone = useMediaQuery("(max-width: 767px)");
   const still = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [ownTab, setOwnTab] = useState(tabs[0]?.id);
   const tab = chosenTab ?? ownTab;
@@ -170,26 +171,35 @@ export function NilesPanel({
     [anchor, phone, still],
   );
 
-  const Title = phone ? DrawerTitle : PopoverPrimitive.Title;
-  const Description = phone ? DrawerDescription : PopoverPrimitive.Description;
-  const Close = phone ? DrawerClose : PopoverPrimitive.Close;
+  const titleId = useId();
+  const Title = phone ? DrawerTitle : "h2";
+  const Description = phone ? DrawerDescription : "p";
+  const closeClass = cn(
+    "text-muted-foreground hover:text-foreground hover:bg-muted absolute top-2 left-2 flex size-9 items-center justify-center rounded-full transition-colors",
+    "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+  );
 
   const inside = (
     <div ref={top} tabIndex={-1} className="flex min-h-0 flex-1 flex-col outline-none">
       <div className="relative flex shrink-0 flex-col items-center gap-0.5 px-12 pt-4 pb-3">
-        <Close
-          aria-label="Close"
-          className={cn(
-            "text-muted-foreground hover:text-foreground hover:bg-muted absolute top-2 left-2 flex size-9 items-center justify-center rounded-full transition-colors",
-            "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-          )}
-        >
-          <X aria-hidden className="size-5" />
-        </Close>
+        {phone ? (
+          <DrawerClose aria-label="Close" className={closeClass}>
+            <X aria-hidden className="size-5" />
+          </DrawerClose>
+        ) : (
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => onOpenChange(false)}
+            className={closeClass}
+          >
+            <X aria-hidden className="size-5" />
+          </button>
+        )}
         <span ref={land} className={cn("mb-1.5 inline-flex", phone ? "size-20" : "size-16")}>
           <NilesAvatar className="size-full" />
         </span>
-        <Title className="font-wordmark text-foreground text-2xl leading-tight font-medium tracking-wide">
+        <Title id={phone ? undefined : titleId} className="font-wordmark text-foreground text-2xl leading-tight font-medium tracking-wide">
           Niles
         </Title>
         <Description
@@ -279,40 +289,94 @@ export function NilesPanel({
   }
 
   return (
-    // Modal, so focus stays in it and a click outside closes it rather
-    // than landing on the chat underneath.
-    <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange} modal>
-      <PopoverPrimitive.Portal>
-        <PopoverPrimitive.Positioner
-          anchor={anchor}
-          side="bottom"
-          align="center"
-          sideOffset={8}
-          collisionPadding={16}
-          className="z-50"
-        >
-          <PopoverPrimitive.Popup
-            data-slot="niles-panel"
-            initialFocus={top}
-            finalFocus={anchor}
-            className={cn(
-              "bg-popover text-popover-foreground ring-foreground/10 flex flex-col overflow-hidden rounded-xl shadow-xl ring-1 outline-none",
-              "h-[min(80vh,44rem,var(--available-height))] w-[min(28rem,calc(100vw-2rem))]",
-              // Grows out of the avatar: Base UI puts the origin where the
-              // anchor is. Springs open, and goes quickly and plainly.
-              // `scale` rather than `transform` in the transition, because
-              // that is the property Tailwind 4's scale utilities set.
-              "origin-(--transform-origin) transition-[scale,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]",
-              "data-ending-style:duration-150 data-ending-style:ease-in",
-              still
-                ? "data-starting-style:opacity-0 data-ending-style:opacity-0"
-                : "data-starting-style:scale-[0.4] data-starting-style:opacity-0 data-ending-style:scale-[0.6] data-ending-style:opacity-0",
-            )}
-          >
-            {inside}
-          </PopoverPrimitive.Popup>
-        </PopoverPrimitive.Positioner>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+    <SidePane
+      open={open}
+      onOpenChange={onOpenChange}
+      anchor={anchor}
+      top={top}
+      still={still}
+      titleId={titleId}
+    >
+      {inside}
+    </SidePane>
+  );
+}
+
+/** The page's share of the screen while the pane is open, set on the
+    root so the page and the composer pinned over it can both follow. */
+const SPLIT = "panel";
+
+/**
+ * The pane on a desk: fixed to the right half of the screen, with the
+ * page moved over into the left half for as long as it is open (see
+ * `[data-panel]` in globals.css).
+ *
+ * Not modal: the chat beside it is the point. It is there or not, and
+ * while it slides out it keeps what it showed, then lets it go, so an
+ * open page's frame is not kept running off screen.
+ */
+function SidePane({
+  open,
+  onOpenChange,
+  anchor,
+  top,
+  still,
+  titleId,
+  children,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  anchor: React.RefObject<HTMLButtonElement | null>;
+  top: React.RefObject<HTMLDivElement | null>;
+  still: boolean;
+  titleId: string;
+  children: React.ReactNode;
+}) {
+  const pane = useRef<HTMLElement>(null);
+  const [kept, setKept] = useState(open);
+  if (open && !kept) setKept(true);
+
+  useEffect(() => {
+    if (!open) return;
+    const root = document.documentElement;
+    root.dataset[SPLIT] = "";
+    top.current?.focus({ preventScroll: true });
+    return () => {
+      delete root.dataset[SPLIT];
+      // Back to the avatar only from inside the pane: closing it from the
+      // avatar, or while typing in the chat, leaves focus where it is.
+      if (pane.current?.contains(document.activeElement)) anchor.current?.focus();
+    };
+  }, [open, top, anchor]);
+
+  return (
+    <aside
+      ref={pane}
+      role="dialog"
+      aria-modal={false}
+      aria-labelledby={titleId}
+      aria-hidden={!open}
+      inert={!open}
+      data-slot="niles-panel"
+      data-open={open ? "" : undefined}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onOpenChange(false);
+        }
+      }}
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && !open) setKept(false);
+      }}
+      className={cn(
+        "bg-background text-foreground border-border fixed inset-y-0 right-0 z-40 flex w-1/2 flex-col border-l shadow-xl outline-none",
+        "pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+        open ? "translate-x-0" : "translate-x-full",
+        // The same speed and curve as the page making room for it.
+        still ? "transition-none" : "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
+      )}
+    >
+      {(open || kept) && children}
+    </aside>
   );
 }

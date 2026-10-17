@@ -71,11 +71,27 @@ describe("NilesPanel", () => {
     expect(panel.className).toMatch(/\bh-dvh\b/);
   });
 
-  it("opens as a panel under the avatar on a desktop", async () => {
+  it("opens as the right half of the screen on a desktop, and moves the page over", async () => {
     viewport({ phone: false });
     const panel = await openPanel();
     expect(panel).toHaveAttribute("data-slot", "niles-panel");
-    expect(panel.className).toContain("origin-(--transform-origin)");
+    expect(panel.className).toContain("w-1/2");
+    expect(document.documentElement).toHaveAttribute("data-panel");
+  });
+
+  it("leaves the chat beside it usable on a desktop", async () => {
+    viewport({ phone: false });
+    const panel = await openPanel();
+    expect(panel).toHaveAttribute("aria-modal", "false");
+    // Nothing covers the page: the button behind is still a button.
+    expect(screen.getByRole("button", { name: "Open Niles" })).toBeVisible();
+  });
+
+  it("gives the page its width back when it closes", async () => {
+    viewport({ phone: false });
+    const panel = await openPanel();
+    fireEvent.click(within(panel).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(document.documentElement).not.toHaveAttribute("data-panel"));
   });
 
   it("carries the name and the status line", async () => {
@@ -106,17 +122,18 @@ describe("NilesPanel", () => {
     expect(screen.getByRole("button", { name: "Open Niles" })).toHaveFocus();
   });
 
-  it("grows out of the avatar", async () => {
+  it("slides in from the right on a desk", async () => {
     viewport({ still: false });
     const moving = await openPanel();
-    expect(moving.className).toMatch(/data-starting-style:scale-/);
+    expect(moving.className).toContain("translate-x-0");
+    expect(moving.className).toContain("transition-transform");
   });
 
-  it("only fades when movement is turned down, on a desk", async () => {
+  it("does not slide when movement is turned down, on a desk", async () => {
     viewport({ still: true });
     const panel = await openPanel();
-    expect(panel.className).not.toMatch(/scale-|translate/);
-    expect(panel.className).toContain("data-starting-style:opacity-0");
+    expect(panel.className).toContain("transition-none");
+    expect(panel.className).not.toContain("transition-transform");
   });
 
   it("only fades when movement is turned down, in a hand", async () => {

@@ -284,7 +284,7 @@ export function ChatPage() {
         }
         onSend={(text) => send.mutate({ text, to: current })}
         onNew={startNew}
-        onOpenPanel={() => setPanelOpen(true)}
+        onOpenPanel={() => setPanelOpen((open) => !open)}
         avatarRef={avatar}
         panelOpen={panelOpen}
         onAnswer={(turn, save) => current !== null && answer.mutate({ id: current, turn, save })}
