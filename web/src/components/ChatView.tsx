@@ -296,7 +296,7 @@ export function ChatView({
             <Bubble from="niles">
               {/* Replies come as markdown — bold, lists, a link —
                   where what the person typed is shown as typed. */}
-              <Markdown source={turn.reply} breaks className="gap-2 leading-normal" />
+              <Markdown source={turn.reply} breaks className="gap-2 text-base leading-normal sm:text-sm" />
             </Bubble>
             {(turn.by || turn.fallback) && <Credit turn={turn} />}
             {turn.artifacts?.map((card) => (
@@ -568,7 +568,9 @@ function Bubble({ from, children }: { from: "you" | "niles"; children: React.Rea
   return (
     <div
       className={cn(
-        "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm",
+        // A size up in a hand, where the chat is read at arm's length
+        // and the field below is already 16px (smaller, iOS zooms in).
+        "max-w-[85%] rounded-2xl px-3.5 py-2 text-base sm:text-sm",
         // What was typed is shown as typed, line breaks and all; a
         // reply's lines are its markdown's business.
         from === "you"
