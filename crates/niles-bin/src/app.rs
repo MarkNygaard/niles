@@ -192,9 +192,9 @@ impl niles_api::chat::Chat for AppChat {
         let mut kept_ids = Vec::new();
         let mut metas = Vec::new();
         let mut attached = Vec::new();
-        for (n, upload) in attachments.iter().enumerate() {
+        for (n, upload) in attachments.into_iter().enumerate() {
             let log = ctx.chat_log.as_ref().expect("checked above");
-            let id = log.attach(&person, upload).await?;
+            let id = log.attach(&person, &upload).await?;
             kept_ids.push(id);
             metas.push(niles_api::chat::Attachment {
                 id,
@@ -205,9 +205,9 @@ impl niles_api::chat::Chat for AppChat {
                 height: upload.height,
             });
             attached.push(crate::assistant::Attached {
-                name: upload.name.clone(),
+                name: upload.name,
                 file: crate::assistant::file_name(n + 1, &upload.mime),
-                bytes: Arc::new(upload.bytes.clone()),
+                bytes: Arc::new(upload.bytes),
             });
         }
         let (reply, note) = CHAT_NOTE
