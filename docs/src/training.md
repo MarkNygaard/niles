@@ -1,0 +1,123 @@
+# Training and Strava
+
+Niles reads your workouts from your own Strava. You can ask how your
+training is going, have Claude or ChatGPT make a plan for a race, and the
+plan marks itself as you run.
+
+Strava is personal. Niles reads your workouts only for you, and nobody
+else in the house can ask for them.
+
+## Connecting Strava
+
+Each person connects their own, from **My profile → Strava**. Strava only
+lets a new app work for the person who made it, so everyone makes their
+own Strava app first. It takes a few minutes. The steps are on the card,
+under **Set up your own Strava app**:
+
+1. On strava.com/settings/api, create an app. Any name and website will do.
+2. Set its **Authorization Callback Domain** to the address the card shows
+   under **Callback domain**. That is your Niles's host name only, with no
+   `https://`. The copy button next to it copies it.
+3. Copy the app's **Client ID** and **Client Secret** into the card, and
+   press **Save**.
+4. Press **Connect Strava**, and leave "View data about your private
+   activities" ticked on Strava's page.
+
+You come back to your profile, which says "Connected as {name}. Fetching
+your last half year…".
+
+You have to be signed in to the app to connect. Strava also needs Niles's
+database and its secrets key.
+
+If something goes wrong on the way back, the card says why. The usual
+ones are:
+
+- "Strava was not allowed to share your activities; connect again and
+  leave them ticked"
+- "Strava refused the sign-in with this app's Client ID and Secret; check
+  them against strava.com/settings/api"
+- "that sign-in expired or was started elsewhere; try again"
+
+## Syncing
+
+When you connect, Niles fetches the last 180 days. After that it checks
+every 15 minutes for new workouts. **Sync now** checks at once.
+
+The card shows when it last synced and how many activities and runs it
+has. Strava limits how often Niles may ask. If the limit is reached, the
+card says when the rest will follow.
+
+Niles sorts each activity into runs (including trail and virtual runs),
+walks and hikes, rides of every kind, strength (weight training and
+CrossFit) and other.
+
+**Disconnect** stops Niles reading and takes the access back at Strava.
+The workouts already fetched stay, and so does your Strava app, so you
+can connect again. **Remove app** also forgets the Client ID and Secret.
+
+## What you can ask
+
+- "how far did I run on Sunday"
+- "how was my week", "how many workouts did I do this month"
+- "what was my pace on my last run", "what was my heart rate on that run"
+- "what's my run today", "what run do I have tomorrow"
+- "what's on my training plan", "how far is my long run on Sunday"
+
+Niles knows whose training you mean from your voice, or from who is
+signed in to the chat. Sleep, heart rate variability, resting heart rate
+and weight are not available.
+
+## A training plan
+
+Ask Claude or ChatGPT for one: "make me a plan for the Copenhagen Half".
+If it does not know the race date, it asks. It looks at your last few
+months of training, then writes the plan in the background and keeps it
+under [Saved](saved.md).
+
+The plan follows common coaching habits: weekly distance up by about 10%
+at most, an easier week every third or fourth week, one hard session a
+week, two at most, and a taper before the race. Where you did not say,
+it assumes three or four runs a week with the long run at the weekend,
+and writes down what it assumed in the plan's notes.
+
+A plan can be up to 52 weeks long.
+
+## How the plan follows your runs
+
+After every sync, Niles matches your new workouts to the plan:
+
+- A run marks the planned session it was, on the same day first.
+- A run up to two days from its session's day still counts, as long as
+  that day had nothing of its kind planned. A run is never matched to the
+  race this way.
+- A strength workout can mark a strength session, and a ride or other
+  activity a cross-training session. Walks never match.
+- A session nobody did is marked missed once its day and one more day
+  have passed.
+
+Then the assistant may look the plan over and adjust what is still to
+come, a little, with a note on why. It does this only after a run, and
+only when an assistant is switched on and free. It can move sessions, but
+it cannot change the race day, anything before today, or anything already
+marked. If it changed sessions, you get a notification: "Your {plan}
+changed after your run."
+
+You can mark sessions yourself too. Tap one in the plan and choose
+**Done**, **Skipped** or **Undo**. A plan stops following your runs three
+days after the race, and an archived plan is not followed at all.
+
+## Today's run
+
+With a plan whose race is still to come, the **Home** page shows a card
+for today: the race and how long until it, today's session large (or
+**Rest day**), the next session, this week's distance against the plan,
+and the coach's latest note while it is less than three days old.
+
+**Done** and **Skipped** on the card mark today's session. Tap the card to
+open the whole plan. If you have more than one plan, a pinned one is
+shown first.
+
+## Garmin and Apple Health
+
+Niles reads Strava only. Garmin, Apple Watch and most other devices sync
+to Strava, so connecting Strava covers them.

@@ -1,32 +1,81 @@
 # Voice loop
 
-Niles processes every voice command through a tiered pipeline that trades latency against capability. The loop is deterministic at the bottom, intelligent at the top, and always streaming.
+Niles processes every command, spoken or typed, through a tiered pipeline
+that trades latency against capability. The loop is deterministic at the
+bottom and a language model above it. The share of commands each tier
+takes and the timings below are design targets, not measurements.
 
-## Tier 0 — regex router
+For what a person can say, see [Talking to Niles](talking.md).
 
-Tier 0 is a deterministic regex router that catches roughly 80 % of common household commands in sub-100 milliseconds. It matches literal patterns such as "turn on the kitchen light" or "set a timer for five minutes" without touching an LLM. Because it is stateless and runs locally, it is the default path for speed-critical interactions.
+## Tier 0: regex router
 
-## Tier 1 — fast LLM with tool registry
+Tier 0 is a deterministic regex router in `niles-intent`. It matches
+anchored phrasings such as "turn on the kitchen lights" or "set a timer for
+five minutes" and acts without touching an LLM. It covers lights, blinds,
+scenes, music and the TV, timers, heating, the weather, the clock, and
+introducing a voice. The target is most everyday commands, end to end in
+around half a second.
 
-When Tier 0 misses, the request falls through to Tier 1: a fast LLM (Cerebras, by default) armed with the tool registry. This tier handles roughly 19 % of commands that need light reasoning — parsing intent, selecting tools, and filling parameters — while staying within a ~1-second budget. The tool registry exposes every device command, scene, timer, and skill as a structured call, so the LLM does not guess; it picks.
+Courtesy ("please", "can you", "thanks") is stripped before matching. A
+sentence phrased as a condition ("when the door opens...") is never matched
+here, so it reaches the model as a rule to make.
 
-## Tier 2 — OpenAI escalation
+## Tier 1: fast LLM with tools
 
-The remaining ~1 % of requests exceed Tier 1's reasoning depth or tool set. Tier 2 escalates to OpenAI via the `escalate_to_tier2` tool, carrying full conversation context and the capability references the model needs to answer correctly. This tier is slower but unconstrained in reasoning complexity.
+When Tier 0 misses, the request goes to Tier 1: a fast LLM (Cerebras, by
+default, set under Settings → Voice & AI) with the tool registry. Tools are
+offered by topic, from keywords in the request, so a turn carries only the
+tools it is likely to need. The default request timeout is 30 seconds.
+
+In the app's chat, and by voice for rules and handed-off tool servers, the
+assistant (Claude Code or ChatGPT) answers instead when one is switched
+on. See [Chat](chat.md).
+
+## Tier 2: optional escalation
+
+Tier 2 is off unless the config file has an `[llm.tier2]` section. There
+is no setting for it in the app. When configured it defaults to OpenAI's
+`gpt-5.5` with a 30-second timeout, and Tier 1 reaches it only by calling
+the `escalate_to_tier2` tool.
 
 ## System prompt layout
 
-The system prompt is assembled in a stable-to-volatile order so that common commands never pay the cost of carrying full documentation:
+The system prompt is assembled from stable to volatile, so a provider's
+prefix cache keeps as much of it as possible:
 
-1. **Persona** — who Niles is and how it speaks.
-2. **Household context** — rooms, devices, and their current states.
-3. **User / agent memory** — persistent notes about preferences and habits.
-4. **Available skills** — user-defined shortcuts loaded dynamically.
-5. **Capability references** — full documentation for tools the LLM can call.
-6. **Origin room** — which satellite heard the command, grounding spatial references.
+1. **Persona**: who Niles is and how it speaks.
+2. **Tool guidance**: how to use capability references and skills, when
+   those tools are registered.
+3. **Household context**: the home's name, country, locale, timezone,
+   units and language. Not devices or their states; those come from tools.
+4. **User memory**: notes about the household.
+5. **Agent memory**: what Niles has noted.
+6. **Skills**: the available skills, by name and description.
+7. **Capability references**: the reference for each topic detected in
+   the request, and only those.
+8. **Origin room**: which satellite heard the command.
+9. **Speaker context**: who is speaking, when the voice is recognised.
+10. **Current time**: last, because it changes every turn.
 
-## Background-review fork
+## Background review
 
-After every Tier 1 turn, a background-review fork evaluates the conversation for lessons learned. If a command was mis-routed, a skill could have handled it, or the user corrected Niles, the fork extracts a suggestion and queues it for review. The user can accept, edit, or reject these suggestions via the `skill-background-review` tool.
+Every exchange goes into a journal. Once the house has been quiet for 5
+minutes, the assistant reads what was said since the last review and
+decides what is worth keeping: a fact for memory, a note about a person,
+or a skill. Most of the time it keeps nothing. Once a week, after two
+hours of quiet, it tidies memory and skills. It merges notes that say the
+same thing, takes out what is finished, and folds overlapping skills
+together.
 
-For the deep dive on every subsystem, see the canonical [Overall architecture](./architecture.md) chapter.
+The review only adds. The tidy-up may remove, and what it removes can be
+restored from the app (Settings → Memory, Recently forgotten, and the
+Skills page). Neither can touch the house. Their only tools are memory,
+skills and the list of automations. It needs Claude Code or ChatGPT; with
+"Niles's own model" chosen as the assistant, nothing runs in the
+background.
+
+The skill tools are `mint_skill`, `patch_skill`, `view_skill`,
+`list_skills`, `retire_skill` and `delete_skill`.
+
+For the deep dive on every subsystem, see the canonical
+[Overall architecture](./architecture.md) chapter.
