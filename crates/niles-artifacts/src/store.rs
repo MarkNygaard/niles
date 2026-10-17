@@ -5,6 +5,7 @@ use crate::model::{
     Artifact, Author, Changes, Filter, NewArtifact, NewRevision, PageChange, Revision,
     RevisionMeta, Status, StatusChange,
 };
+use crate::share::{Level, Share};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -17,7 +18,10 @@ pub const KEPT_REVISIONS: usize = 50;
 
 /// Every person's artifacts. Each call names the person, and finds only
 /// theirs: another person's id is the same as no id at all, so a bug
-/// upstream that passes the wrong id reads nothing.
+/// upstream that passes the wrong id reads nothing. What is shared with
+/// a person is found only by the calls that say so ([`Self::shared`],
+/// [`Self::shared_with`]), and changed under its owner's key once
+/// [`crate::share::open`] has said they may.
 #[async_trait]
 pub trait ArtifactStore: Send + Sync {
     async fn create(&self, person: &str, new: NewArtifact) -> Result<Artifact>;
@@ -46,6 +50,7 @@ pub trait ArtifactStore: Send + Sync {
         page: PageChange,
         reason: String,
         author: Author,
+        by: Option<String>,
     ) -> Result<Option<Artifact>>;
     /// The HTML of page `page` of an artifact of theirs, while a version
     /// they still have draws with it.
@@ -71,35 +76,63 @@ pub trait ArtifactStore: Send + Sync {
     /// Whether there was such a picture of theirs to take away. Content
     /// that names it is left as it is, and shows nothing there.
     async fn remove_image(&self, person: &str, id: i64, image: i64) -> Result<bool>;
-    /// The artifact, every version of it, and its pages and pictures.
+    /// The artifact, every version of it, its pages and pictures, and
+    /// whoever it was shared with.
     async fn delete(&self, person: &str, id: i64) -> Result<bool>;
+    /// Artifact `id` of someone else's that is shared with `person`,
+    /// with `person`'s own pin, and how it is shared.
+    async fn shared(&self, person: &str, id: i64) -> Result<Option<(Artifact, Level)>>;
+    /// Everything of others' shared with `person`, each with their own
+    /// pin, ordered as [`Self::list`] orders.
+    async fn shared_with(&self, person: &str, filter: Filter) -> Result<Vec<(Artifact, Level)>>;
+    /// Who artifact `id` of `owner`'s is shared with, in the order they
+    /// were shared with; nobody for an artifact that is not theirs.
+    async fn shares(&self, owner: &str, id: i64) -> Result<Vec<Share>>;
+    /// Share artifact `id` of `owner`'s with `person` at `level`, or a
+    /// new level; with `None`, stop. False when there is no such
+    /// artifact of `owner`'s. Someone shared with keeps when they were
+    /// first shared with, and their pin, through a change of level. It
+    /// is refused for the owner themselves.
+    async fn set_share(
+        &self,
+        owner: &str,
+        id: i64,
+        person: &str,
+        level: Option<Level>,
+    ) -> Result<bool>;
+    /// `person`'s own pin on an artifact shared with them. False when it
+    /// is not.
+    async fn pin_shared(&self, person: &str, id: i64, pinned: bool) -> Result<bool>;
     /// Every job still `working` that last moved before `before`,
     /// whoever's, marked failed with `reason`: after a restart, nothing
     /// is writing them any more. One started since is this run's own.
     async fn fail_abandoned(&self, reason: &str, before: DateTime<Utc>) -> Result<u64>;
 }
 
-/// Version `n` of an artifact saved again as a new version, by the
-/// person, with the page it had then: undoing a new page is restoring
-/// the version before it. `None` when there is no such artifact or
-/// version of theirs.
+/// Version `n` of an artifact of `owner`'s saved again as a new version,
+/// by person `by` (the owner, or someone it is shared with to edit),
+/// with the page it had then: undoing a new page is restoring the
+/// version before it. `None` when there is no such artifact or version
+/// of `owner`'s.
 pub async fn restore(
     store: &dyn ArtifactStore,
-    person: &str,
+    owner: &str,
     id: i64,
     n: i32,
+    by: &str,
 ) -> Result<Option<Artifact>> {
-    let Some(old) = store.revision(person, id, n).await? else {
+    let Some(old) = store.revision(owner, id, n).await? else {
         return Ok(None);
     };
     store
         .revise(
-            person,
+            owner,
             id,
             NewRevision {
                 content: old.content,
                 reason: format!("Restored version {n}"),
                 author: Author::Person,
+                by: Some(by.to_string()),
                 summary: None,
                 page: old.page.map_or(PageChange::Remove, PageChange::Use),
             },
@@ -124,6 +157,14 @@ struct Inner {
     next_image: i64,
     /// Each picture with the artifact it is of, oldest first.
     images: Vec<(i64, ImageData)>,
+    /// Who each artifact is shared with, oldest share first.
+    shares: Vec<Shared>,
+}
+
+struct Shared {
+    artifact: i64,
+    share: Share,
+    pinned: bool,
 }
 
 impl Inner {
@@ -131,6 +172,17 @@ impl Inner {
         self.artifacts
             .iter_mut()
             .find(|a| a.id == id && a.person == person)
+    }
+
+    /// Artifact `id` as `person`, who it is shared with, has it.
+    fn shared(&self, person: &str, id: i64) -> Option<(Artifact, Level)> {
+        let row = self
+            .shares
+            .iter()
+            .find(|s| s.artifact == id && s.share.person == person)?;
+        let mut artifact = self.artifacts.iter().find(|a| a.id == id)?.clone();
+        artifact.pinned = row.pinned;
+        Some((artifact, row.share.level))
     }
 
     /// The page a new version of artifact `id` draws with, when the
@@ -168,6 +220,7 @@ impl Inner {
         page: Option<i64>,
         reason: &str,
         author: Author,
+        by: Option<String>,
     ) -> i32 {
         let kept = self.revisions.entry(id).or_default();
         let n = kept.last().map_or(1, |r| r.n + 1);
@@ -177,6 +230,7 @@ impl Inner {
             page,
             reason: reason.to_string(),
             author,
+            by,
             at: Utc::now(),
         });
         let excess = kept.len().saturating_sub(KEPT_REVISIONS);
@@ -188,6 +242,7 @@ impl Inner {
     }
 
     /// `content` kept as the new current version of artifact `id`.
+    #[allow(clippy::too_many_arguments)]
     fn keep(
         &mut self,
         person: &str,
@@ -196,6 +251,7 @@ impl Inner {
         change: &PageChange,
         reason: &str,
         author: Author,
+        by: Option<String>,
     ) -> Result<Option<Artifact>> {
         let Some(current) = self.find(person, id).map(|a| a.page) else {
             return Ok(None);
@@ -203,11 +259,12 @@ impl Inner {
         let page = self.page_for(id, current, change)?;
         let preview =
             crate::kinds::preview(&self.find(person, id).expect("found above").kind, &content);
-        let n = self.push_revision(id, content, page, reason, author);
+        let n = self.push_revision(id, content, page, reason, author, by.clone());
         let artifact = self.find(person, id).expect("found above");
         artifact.current_revision = n;
         artifact.page = page;
         artifact.preview = preview;
+        artifact.changed_by = by;
         artifact.updated_at = Utc::now();
         Ok(Some(artifact.clone()))
     }
@@ -249,6 +306,8 @@ impl ArtifactStore for MemoryArtifacts {
             current_revision: 0,
             preview: Preview::default(),
             page: None,
+            changed_by: None,
+            shared_with: Vec::new(),
         };
         let id = artifact.id;
         if let Some(summary) = new.first.as_ref().and_then(|f| f.summary.clone()) {
@@ -265,6 +324,7 @@ impl ArtifactStore for MemoryArtifacts {
             &first.page,
             &first.reason,
             first.author,
+            first.by,
         ) {
             Ok(made) => Ok(made.expect("just made")),
             Err(e) => {
@@ -333,6 +393,7 @@ impl ArtifactStore for MemoryArtifacts {
             &revision.page,
             &revision.reason,
             revision.author,
+            revision.by,
         )?
         else {
             return Ok(None);
@@ -351,6 +412,7 @@ impl ArtifactStore for MemoryArtifacts {
         page: PageChange,
         reason: String,
         author: Author,
+        by: Option<String>,
     ) -> Result<Option<Artifact>> {
         let mut inner = self.lock();
         let Some(n) = inner.find(person, id).map(|a| a.current_revision) else {
@@ -362,7 +424,7 @@ impl ArtifactStore for MemoryArtifacts {
             .and_then(|r| r.iter().find(|r| r.n == n))
             .map(|r| r.content.clone())
             .ok_or_else(crate::page::nothing_to_draw)?;
-        inner.keep(person, id, content, &page, &reason, author)
+        inner.keep(person, id, content, &page, &reason, author, by)
     }
 
     async fn page(&self, person: &str, id: i64, page: i64) -> Result<Option<String>> {
@@ -507,8 +569,101 @@ impl ArtifactStore for MemoryArtifacts {
             inner.revisions.remove(&id);
             inner.pages.retain(|_, (of, _)| *of != id);
             inner.images.retain(|(of, _)| *of != id);
+            inner.shares.retain(|s| s.artifact != id);
         }
         Ok(gone)
+    }
+
+    async fn shared(&self, person: &str, id: i64) -> Result<Option<(Artifact, Level)>> {
+        Ok(self.lock().shared(person, id))
+    }
+
+    async fn shared_with(&self, person: &str, filter: Filter) -> Result<Vec<(Artifact, Level)>> {
+        let inner = self.lock();
+        let mut out: Vec<(Artifact, Level)> = inner
+            .shares
+            .iter()
+            .filter(|s| s.share.person == person)
+            .filter_map(|s| inner.shared(person, s.artifact))
+            .filter(|(a, _)| filter.admits(a))
+            .collect();
+        out.sort_by(|(a, _), (b, _)| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.updated_at.cmp(&a.updated_at))
+                .then(b.id.cmp(&a.id))
+        });
+        Ok(out)
+    }
+
+    async fn shares(&self, owner: &str, id: i64) -> Result<Vec<Share>> {
+        let mut inner = self.lock();
+        if inner.find(owner, id).is_none() {
+            return Ok(Vec::new());
+        }
+        Ok(inner
+            .shares
+            .iter()
+            .filter(|s| s.artifact == id)
+            .map(|s| s.share.clone())
+            .collect())
+    }
+
+    async fn set_share(
+        &self,
+        owner: &str,
+        id: i64,
+        person: &str,
+        level: Option<Level>,
+    ) -> Result<bool> {
+        let mut inner = self.lock();
+        if inner.find(owner, id).is_none() {
+            return Ok(false);
+        }
+        if person == owner {
+            return Err(crate::share::with_the_owner());
+        }
+        let at = inner
+            .shares
+            .iter()
+            .position(|s| s.artifact == id && s.share.person == person);
+        match (level, at) {
+            (Some(level), Some(at)) => inner.shares[at].share.level = level,
+            (Some(level), None) => inner.shares.push(Shared {
+                artifact: id,
+                share: Share {
+                    person: person.to_string(),
+                    level,
+                    shared_at: Utc::now(),
+                },
+                pinned: false,
+            }),
+            (None, Some(at)) => {
+                inner.shares.remove(at);
+            }
+            (None, None) => {}
+        }
+        let with: Vec<String> = inner
+            .shares
+            .iter()
+            .filter(|s| s.artifact == id)
+            .map(|s| s.share.person.clone())
+            .collect();
+        inner.find(owner, id).expect("found above").shared_with = with;
+        Ok(true)
+    }
+
+    async fn pin_shared(&self, person: &str, id: i64, pinned: bool) -> Result<bool> {
+        let mut inner = self.lock();
+        let Some(row) = inner
+            .shares
+            .iter_mut()
+            .find(|s| s.artifact == id && s.share.person == person)
+        else {
+            return Ok(false);
+        };
+        row.pinned = pinned;
+        Ok(true)
     }
 
     async fn fail_abandoned(&self, reason: &str, before: DateTime<Utc>) -> Result<u64> {
@@ -554,6 +709,7 @@ mod tests {
             content: json!({ "markdown": markdown }),
             reason: "because".into(),
             author,
+            by: None,
             summary: None,
             page: PageChange::Keep,
         }
@@ -613,7 +769,7 @@ mod tests {
             .revise("person:mark", a.id, version("second", Author::Claude))
             .await
             .unwrap();
-        let restored = restore(&store, "person:mark", a.id, 1)
+        let restored = restore(&store, "person:mark", a.id, 1, "person:mark")
             .await
             .unwrap()
             .unwrap();
@@ -627,7 +783,7 @@ mod tests {
         assert_eq!(r.reason, "Restored version 1");
         assert_eq!(r.author, Author::Person);
         assert!(
-            restore(&store, "person:mark", a.id, 9)
+            restore(&store, "person:mark", a.id, 9, "person:mark")
                 .await
                 .unwrap()
                 .is_none()
@@ -665,7 +821,7 @@ mod tests {
                 .is_none()
         );
         assert!(!store.delete(her, a.id).await.unwrap());
-        assert!(restore(&store, her, a.id, 1).await.unwrap().is_none());
+        assert!(restore(&store, her, a.id, 1, her).await.unwrap().is_none());
         let still = store.get("person:mark", a.id).await.unwrap().unwrap();
         assert_eq!(still.title, "His");
         assert_eq!(still.current_revision, 1);
@@ -758,6 +914,7 @@ mod tests {
                 PageChange::New(html.into()),
                 "A page for it".into(),
                 Author::Claude,
+                None,
             )
             .await
             .unwrap()
@@ -836,6 +993,7 @@ mod tests {
                 PageChange::New("<p>x</p>".into()),
                 "Page".into(),
                 Author::Claude,
+                None,
             )
             .await
             .unwrap()
@@ -859,17 +1017,24 @@ mod tests {
                 PageChange::Remove,
                 "Took the page away".into(),
                 Author::Person,
+                None,
             )
             .await
             .unwrap()
             .unwrap();
         assert_eq!(gone.page, None);
-        let back = restore(&store, "person:mark", a.id, a.current_revision)
-            .await
-            .unwrap()
-            .unwrap();
+        let back = restore(
+            &store,
+            "person:mark",
+            a.id,
+            a.current_revision,
+            "person:mark",
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(back.page, a.page);
-        let before = restore(&store, "person:mark", a.id, 1)
+        let before = restore(&store, "person:mark", a.id, 1, "person:mark")
             .await
             .unwrap()
             .unwrap();
@@ -888,6 +1053,7 @@ mod tests {
                 PageChange::New("<h1>new</h1>".into()),
                 "A new page".into(),
                 Author::Claude,
+                None,
             )
             .await
             .unwrap()
@@ -933,6 +1099,7 @@ mod tests {
                 PageChange::New("<p>x</p>".into()),
                 "Page".into(),
                 Author::Claude,
+                None,
             )
             .await
             .unwrap_err()
@@ -945,7 +1112,14 @@ mod tests {
         assert!(store.page(her, a.id, page).await.unwrap().is_none());
         assert!(
             store
-                .set_page(her, a.id, PageChange::Remove, "x".into(), Author::Person)
+                .set_page(
+                    her,
+                    a.id,
+                    PageChange::Remove,
+                    "x".into(),
+                    Author::Person,
+                    None
+                )
                 .await
                 .unwrap()
                 .is_none()

@@ -429,6 +429,7 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
         content: serde_json::json!({ "markdown": markdown }),
         reason: "because".into(),
         author: Author::Claude,
+        by: None,
         summary: None,
         page,
     };
@@ -480,6 +481,7 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
             PageChange::Remove,
             "No page".into(),
             Author::Person,
+            None,
         )
         .await
         .expect("set_page")
@@ -491,7 +493,7 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
         .expect("revision")
         .expect("kept");
     assert_eq!(r.content["markdown"], "# marked", "the content as it was");
-    let back = niles_artifacts::restore(&store, &person, a.id, marked.current_revision)
+    let back = niles_artifacts::restore(&store, &person, a.id, marked.current_revision, &person)
         .await
         .expect("restore")
         .expect("theirs");
@@ -505,6 +507,7 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
                 PageChange::Remove,
                 format!("{i}"),
                 Author::Person,
+                None,
             )
             .await
             .expect("set_page");
@@ -518,4 +521,118 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
         "no version kept draws with it"
     );
     assert!(store.delete(&person, a.id).await.expect("delete"));
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn an_artifact_is_shared_with_its_own_pin_and_goes_with_it() {
+    use niles_artifacts::{
+        Access, ArtifactStore, Author, Changes, Filter, Level, NewArtifact, NewRevision,
+        PageChange, Status,
+    };
+    let Some(backend) = backend() else {
+        return;
+    };
+    let store = niles_db::PostgresArtifacts::new(backend.pool(), "test".into());
+    let owner = format!("person:test-owner-{}", std::process::id());
+    let her = format!("person:test-shared-{}", std::process::id());
+    let a = store
+        .create(
+            &owner,
+            NewArtifact {
+                kind: "document".into(),
+                title: "Thailand trip".into(),
+                summary: String::new(),
+                notify: true,
+                status: Status::Ready,
+                status_text: None,
+                job_id: None,
+                brief: None,
+                conversation_id: None,
+                first: Some(NewRevision {
+                    content: serde_json::json!({ "markdown": "- [ ] passport" }),
+                    reason: "First draft".into(),
+                    author: Author::Claude,
+                    by: Some(owner.clone()),
+                    summary: None,
+                    page: PageChange::Keep,
+                }),
+            },
+        )
+        .await
+        .expect("create");
+    assert_eq!(a.changed_by.as_deref(), Some(owner.as_str()));
+    assert!(
+        store
+            .set_share(&owner, a.id, &her, Some(Level::View))
+            .await
+            .expect("share")
+    );
+    assert!(
+        store
+            .set_share(&owner, a.id, &owner, Some(Level::View))
+            .await
+            .is_err()
+    );
+    assert!(
+        !store
+            .set_share(&her, a.id, "person:nobody", Some(Level::View))
+            .await
+            .expect("share"),
+        "only the owner shares"
+    );
+    let opened = niles_artifacts::open(&store, &her, a.id)
+        .await
+        .expect("open")
+        .expect("shared");
+    assert_eq!(opened.access, Access::View);
+    assert_eq!(opened.artifact.shared_with, vec![her.clone()]);
+
+    store
+        .set_share(&owner, a.id, &her, Some(Level::Edit))
+        .await
+        .expect("share");
+    store
+        .change(
+            &owner,
+            a.id,
+            Changes {
+                pinned: Some(true),
+                ..Changes::default()
+            },
+        )
+        .await
+        .expect("pin");
+    assert!(store.pin_shared(&her, a.id, false).await.expect("pin"));
+    let listed = store
+        .shared_with(&her, Filter::default())
+        .await
+        .expect("shared with");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].1, Level::Edit);
+    assert!(!listed[0].0.pinned, "her pin, not his");
+    assert_eq!(store.shares(&owner, a.id).await.expect("shares").len(), 1);
+
+    let kept = store
+        .revise(
+            &owner,
+            a.id,
+            NewRevision {
+                content: serde_json::json!({ "markdown": "- [x] passport" }),
+                reason: "Ticked passport".into(),
+                author: Author::Person,
+                by: Some(her.clone()),
+                summary: None,
+                page: PageChange::Keep,
+            },
+        )
+        .await
+        .expect("revise")
+        .expect("his");
+    assert_eq!(kept.changed_by.as_deref(), Some(her.as_str()));
+    let meta = store.revisions(&owner, a.id).await.expect("revisions");
+    assert_eq!(meta[0].by.as_deref(), Some(her.as_str()));
+
+    assert!(store.delete(&owner, a.id).await.expect("delete"));
+    assert!(store.shared(&her, a.id).await.expect("shared").is_none());
 }

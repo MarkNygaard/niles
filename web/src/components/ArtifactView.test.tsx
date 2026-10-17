@@ -250,6 +250,118 @@ describe("ArtifactView", () => {
   });
 });
 
+describe("ArtifactView, shared", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const PAGED = { page: 3, page_html: "<h1>A poster of the packing</h1>", today: "2026-10-16" };
+
+  it("shared to read, shows it with nothing to change", async () => {
+    const { patch } = show(
+      detail({
+        access: "view",
+        owner: "Mark",
+        status: "failed",
+        error: "it timed out",
+        revisions: [{ n: 2, reason: "Added the charger", author: "claude", by: "Mark", at: NOW }],
+      }),
+    );
+    expect(await screen.findByText("Shared by Mark · read only")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Passport" })).toBeDisabled();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Versions (1)" }));
+    expect(screen.getByText(/^Claude for Mark ·/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Passport" }));
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("shared to read, its page cannot save and cannot be taken away", async () => {
+    const { patch } = show(detail({ access: "view", owner: "Mark", ...PAGED }));
+    const frame = (await screen.findByTitle("Packing list")) as HTMLIFrameElement;
+    expect(screen.queryByRole("button", { name: "Remove page" })).toBeNull();
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { niles: 1, type: "save", content: { markdown: "- [x] Passport" }, reason: "x" },
+            origin: "null",
+            source: frame.contentWindow,
+          }),
+        );
+      });
+      act(() => vi.advanceTimersByTime(12_000));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("shared to edit, ticks and takes the page away, but is not theirs to share", async () => {
+    const { patch } = show(detail({ access: "edit", owner: "Mark", ...PAGED }));
+    expect(await screen.findByText("Shared by Mark")).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remove page" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(5, { remove_page: true }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Passport" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  });
+
+  it("names who else made a version", async () => {
+    show(
+      detail({
+        revisions: [
+          { n: 2, reason: "Ticked passport", author: "person", by: "Majse", at: NOW },
+          { n: 1, reason: "First version", author: "claude", at: NOW },
+        ],
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Versions (2)" }));
+    const versions = within(screen.getByRole("list", { name: "Versions" }));
+    expect(versions.getByText(/^Majse ·/)).toBeInTheDocument();
+    expect(versions.getByText(/^Claude ·/)).toBeInTheDocument();
+  });
+
+  it("lets its owner share it with someone, to view or to edit", async () => {
+    vi.spyOn(api, "artifactShares").mockResolvedValue({
+      people: [
+        { person: "person:majse", name: "Majse", level: null },
+        { person: "person:gone", name: null, level: "view" },
+      ],
+    });
+    const share = vi.spyOn(api, "shareArtifact").mockResolvedValue({
+      people: [
+        { person: "person:majse", name: "Majse", level: "edit" },
+        { person: "person:gone", name: null, level: "view" },
+      ],
+    });
+    show(detail({ access: "owner", shared_with: 1 }));
+    expect(await screen.findByText("Shared with 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    const majse = await screen.findByRole("radiogroup", { name: "Majse" });
+    expect(within(majse).getByRole("radio", { name: "None" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    const gone = screen.getByRole("radiogroup", { name: "Someone no longer in the household" });
+    expect(within(gone).getAllByRole("radio").map((r) => r.textContent)).toEqual(["None", "View"]);
+
+    fireEvent.click(within(majse).getByRole("radio", { name: "Edit" }));
+    await waitFor(() => expect(share).toHaveBeenCalledWith(5, "person:majse", "edit"));
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("radiogroup", { name: "Majse" })).getByRole("radio", {
+          name: "Edit",
+        }),
+      ).toHaveAttribute("aria-checked", "true"),
+    );
+    fireEvent.click(within(gone).getByRole("radio", { name: "None" }));
+    await waitFor(() => expect(share).toHaveBeenCalledWith(5, "person:gone", null));
+  });
+});
+
 describe("ArtifactView's pictures", () => {
   afterEach(() => vi.restoreAllMocks());
 

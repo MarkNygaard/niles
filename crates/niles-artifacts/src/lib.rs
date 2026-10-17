@@ -9,7 +9,8 @@
 //! weeks of dated sessions, a trip its days and places. An artifact may
 //! also have a [`page`] that draws that content: kept once, and named
 //! by each version drawn with it, and [`images`]: Niles's own copies of
-//! pictures, which its content and page name by id.
+//! pictures, which its content and page name by id. Its owner may
+//! [`share`] it with others in the household, to read or to edit.
 
 mod document;
 mod error;
@@ -18,6 +19,7 @@ pub mod kinds;
 mod model;
 pub mod page;
 pub mod plan_day;
+pub mod share;
 mod store;
 pub mod tracking;
 mod training_plan;
@@ -30,4 +32,5 @@ pub use model::{
     Artifact, ArtifactRef, Author, Changes, Filter, NewArtifact, NewRevision, PageChange, Revision,
     RevisionMeta, Status, StatusChange, summary, title,
 };
+pub use share::{Access, Level, Opened, Operation, Share, open};
 pub use store::{ArtifactStore, KEPT_REVISIONS, MemoryArtifacts, restore};

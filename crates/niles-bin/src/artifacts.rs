@@ -28,9 +28,10 @@ use crate::approvals::{self, Asker};
 use crate::assistant::Searching;
 use async_trait::async_trait;
 use niles_api::chat::Turn;
+use niles_api::household::{Member, Unresolved};
 use niles_artifacts::{
-    Artifact, ArtifactRef, ArtifactStore, Author, Filter, NewArtifact, NewRevision, PageChange,
-    Status, StatusChange, kinds, page,
+    Access, Artifact, ArtifactRef, ArtifactStore, Author, Filter, NewArtifact, NewRevision, Opened,
+    Operation, PageChange, Status, StatusChange, kinds, page,
 };
 use niles_core::EventBus;
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
@@ -60,21 +61,26 @@ const TRAINING_PLAN: &str = "training_plan";
 const TRIP: &str = "trip";
 
 /// Told when a job ends, ready or failed, if the artifact's notify is
-/// on.
+/// on; and when something is shared with someone.
 #[async_trait]
 pub(crate) trait Notifier: Send + Sync {
-    async fn finished(&self, artifact: &Artifact);
+    /// A job `person` started (its owner, or someone it is shared with
+    /// to edit) is over.
+    async fn finished(&self, person: &str, artifact: &Artifact);
 
-    /// An artifact's page, made by a job the person asked for, is there.
-    async fn page_ready(&self, _artifact: &Artifact) {}
+    /// An artifact's page, made by a job `person` asked for, is there.
+    async fn page_ready(&self, _person: &str, _artifact: &Artifact) {}
 
     /// A training plan the coach changed after a run, with the note it
-    /// left for the person. Called only when sessions changed, never
+    /// left for its owner. Called only when sessions changed, never
     /// for a look that left them as they were or only added a note, so
     /// a review after every run does not buzz the phone after every
     /// run; and only when the artifact's notify is on. Not `finished`,
     /// whose "ready" would be wrong for a plan that was there already.
     async fn changed(&self, _artifact: &Artifact, _note: &str) {}
+
+    /// `by`, its owner, shared `artifact` with `person`.
+    async fn shared(&self, _person: &str, _artifact: &Artifact, _by: &str) {}
 }
 
 /// Tells nobody: there is no push without a database and its secrets
@@ -84,7 +90,7 @@ pub(crate) struct Nobody;
 
 #[async_trait]
 impl Notifier for Nobody {
-    async fn finished(&self, _artifact: &Artifact) {}
+    async fn finished(&self, _person: &str, _artifact: &Artifact) {}
 }
 
 /// Tells the person on every device where they turned notifications on.
@@ -93,18 +99,16 @@ impl Notifier for Nobody {
 pub(crate) struct Devices(pub(crate) Arc<niles_webpush::WebPush>);
 
 impl Devices {
-    async fn tell(&self, artifact: &Artifact, message: &niles_webpush::Message) {
-        match self.0.send(&artifact.person, message).await {
+    async fn tell(&self, person: &str, artifact: &Artifact, message: &niles_webpush::Message) {
+        match self.0.send(person, message).await {
             Ok(delivery) if delivery.sent > 0 => tracing::info!(
-                "[artifacts] {}: told {} device(s) about {:?}",
-                artifact.person,
+                "[artifacts] {person}: told {} device(s) about {:?}",
                 delivery.sent,
                 artifact.title
             ),
             Ok(_) => {}
             Err(e) => tracing::warn!(
-                "[artifacts] {}: nobody was told about {:?}: {e}",
-                artifact.person,
+                "[artifacts] {person}: nobody was told about {:?}: {e}",
                 artifact.title
             ),
         }
@@ -113,16 +117,23 @@ impl Devices {
 
 #[async_trait]
 impl Notifier for Devices {
-    async fn finished(&self, artifact: &Artifact) {
-        self.tell(artifact, &finished_message(artifact)).await;
+    async fn finished(&self, person: &str, artifact: &Artifact) {
+        self.tell(person, artifact, &finished_message(artifact))
+            .await;
     }
 
     async fn changed(&self, artifact: &Artifact, note: &str) {
-        self.tell(artifact, &changed_message(artifact, note)).await;
+        self.tell(&artifact.person, artifact, &changed_message(artifact, note))
+            .await;
     }
 
-    async fn page_ready(&self, artifact: &Artifact) {
-        self.tell(artifact, &page_message(artifact)).await;
+    async fn page_ready(&self, person: &str, artifact: &Artifact) {
+        self.tell(person, artifact, &page_message(artifact)).await;
+    }
+
+    async fn shared(&self, person: &str, artifact: &Artifact, by: &str) {
+        self.tell(person, artifact, &shared_message(artifact, by))
+            .await;
     }
 }
 
@@ -153,6 +164,19 @@ pub(crate) fn page_message(artifact: &Artifact) -> niles_webpush::Message {
     niles_webpush::Message {
         title: "Niles".into(),
         body: format!("The page for your {title} is ready."),
+        url: format!("/#/chat?artifact={}", artifact.id),
+        tag: format!("artifact-{}", artifact.id),
+    }
+}
+
+/// What someone hears when an artifact is shared with them: who shared
+/// what, opening it on a tap. Under the artifact's tag, as everything
+/// said about it is.
+pub(crate) fn shared_message(artifact: &Artifact, by: &str) -> niles_webpush::Message {
+    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
+    niles_webpush::Message {
+        title: "Niles".into(),
+        body: format!("{by} shared “{title}” with you."),
         url: format!("/#/chat?artifact={}", artifact.id),
         tag: format!("artifact-{}", artifact.id),
     }
@@ -307,6 +331,13 @@ pub(crate) struct Artifacts {
     /// When this run began: a job that last moved before it was the
     /// last run's.
     started: chrono::DateTime<chrono::Utc>,
+    /// Who is in the household, to name whose a shared artifact is and
+    /// to share one with. Without it, a key is named by itself, and
+    /// there is nobody to share with.
+    household: Option<Arc<dyn Household>>,
+    /// The voices, for the names people go by; set once recognition is
+    /// up, which is after the tools are.
+    voices: std::sync::OnceLock<Arc<dyn niles_recognition::VoiceRoster>>,
 }
 
 /// One person's place among the jobs going, given back when the job
@@ -395,6 +426,35 @@ fn id_arg(tool: &str, args: &Value) -> Result<i64> {
         .ok_or_else(|| invalid(tool, "id is the artifact's number, from artifact_list"))
 }
 
+/// Whose a shared artifact is, when the household does not have them
+/// any more.
+const NO_LONGER_HERE: &str = "someone no longer in the household";
+
+/// Who is in the household: everyone `[auth] allowed` names, with the
+/// names their voices go by when `voices` knows them.
+#[async_trait]
+pub(crate) trait Household: Send + Sync {
+    async fn members(&self, voices: Option<&dyn niles_recognition::VoiceRoster>) -> Vec<Member>;
+}
+
+#[async_trait]
+impl Household for niles_config::ConfigStore {
+    async fn members(&self, voices: Option<&dyn niles_recognition::VoiceRoster>) -> Vec<Member> {
+        niles_api::household::household(Some(self), voices).await
+    }
+}
+
+/// What a tool answers about an artifact the asker has: what [`view`]
+/// says, how they have it, and whose it is when it is not theirs.
+fn view_as(opened: &Opened, owner: Option<&str>) -> Value {
+    let mut out = view(&opened.artifact);
+    out["access"] = json!(opened.access);
+    if let Some(owner) = owner {
+        out["owner"] = json!(owner);
+    }
+    out
+}
+
 /// What a tool answers about an artifact: enough to say what it is.
 fn view(a: &Artifact) -> Value {
     json!({
@@ -448,7 +508,72 @@ impl Artifacts {
             running: Arc::default(),
             touched: Mutex::default(),
             started: chrono::Utc::now(),
+            household: None,
+            voices: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Shares with, and names, the people `household` has.
+    pub(crate) fn with_household(mut self, household: Arc<dyn Household>) -> Self {
+        self.household = Some(household);
+        self
+    }
+
+    /// Names people by the names their voices go by.
+    pub(crate) fn know_voices(&self, roster: Arc<dyn niles_recognition::VoiceRoster>) {
+        let _ = self.voices.set(roster);
+    }
+
+    /// Everybody in the household; nobody without one.
+    async fn members(&self) -> Vec<Member> {
+        match &self.household {
+            Some(household) => {
+                household
+                    .members(self.voices.get().map(|v| v.as_ref()))
+                    .await
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// What `person` is called, for telling the assistant whose a shared
+    /// artifact is.
+    async fn name_of(&self, person: &str) -> String {
+        if self.household.is_none() {
+            return niles_api::household::name_from_key(person);
+        }
+        niles_api::household::name_of(&self.members().await, person)
+            .map_or_else(|| NO_LONGER_HERE.to_string(), str::to_string)
+    }
+
+    /// Artifact `id` as `person` has it, when they may do `op` with it;
+    /// otherwise what to tell the model, which it can pass on.
+    async fn opened(&self, tool: &str, person: &str, id: i64, op: Operation) -> Result<Opened> {
+        let opened = niles_artifacts::open(self.store.as_ref(), person, id)
+            .await
+            .map_err(|e| refused(tool, e))?
+            .ok_or_else(|| invalid(tool, format!("there is no artifact {id}")))?;
+        if opened.allows(op) {
+            return Ok(opened);
+        }
+        let owner = self.name_of(opened.owner()).await;
+        Err(invalid(
+            tool,
+            match (op, opened.access) {
+                (Operation::Share, _) => format!(
+                    "only {owner}, whose “{}” it is, can share it. Tell them so: they can ask \
+                     {owner} to",
+                    opened.artifact.title
+                ),
+                (_, Access::View) => format!(
+                    "{owner} shared “{}” with this person to read only, so it cannot be \
+                     changed. Tell them: {owner} shared it with you to read only, and can \
+                     share it with you to edit",
+                    opened.artifact.title
+                ),
+                _ => format!("only {owner}, whose it is, can do that"),
+            },
+        ))
     }
 
     /// Lets a training plan's job read the asker's workouts, with the
@@ -504,6 +629,8 @@ impl Artifacts {
         }));
         reg.register(Box::new(StartJob(self.clone())));
         reg.register(Box::new(StartPage(self.clone())));
+        reg.register(Box::new(ShareTool(self.clone())));
+        reg.register(Box::new(People(self.clone())));
         pictures::register(self, &mut reg, None);
         reg
     }
@@ -597,12 +724,12 @@ impl Artifacts {
     }
 
     /// The cards for what a turn of `person`'s that began at `since`
-    /// made or changed.
+    /// made or changed: theirs, or shared with them.
     pub(crate) async fn for_turn(&self, person: &str, since: Instant) -> Vec<ArtifactRef> {
         let mut out = Vec::new();
         for id in self.touched_since(person, since) {
-            if let Ok(Some(a)) = self.store.get(person, id).await {
-                out.push(ArtifactRef::of(&a));
+            if let Ok(Some(a)) = niles_artifacts::open(self.store.as_ref(), person, id).await {
+                out.push(ArtifactRef::of(&a.artifact));
             }
         }
         out
@@ -625,13 +752,13 @@ impl Artifacts {
     }
 
     /// The cards in a conversation, as the artifacts are now: renamed,
-    /// finished, or gone.
+    /// finished, or gone (deleted, or no longer shared with them).
     pub(crate) async fn refresh(&self, person: &str, turns: &mut [Turn]) {
         for turn in turns.iter_mut().filter(|t| !t.artifacts.is_empty()) {
             let mut now = Vec::with_capacity(turn.artifacts.len());
             for card in &turn.artifacts {
-                match self.store.get(person, card.id).await {
-                    Ok(Some(a)) => now.push(ArtifactRef::of(&a)),
+                match niles_artifacts::open(self.store.as_ref(), person, card.id).await {
+                    Ok(Some(a)) => now.push(ArtifactRef::of(&a.artifact)),
                     Ok(None) => {}
                     // Unreadable now is not gone: the card stays as it was.
                     Err(_) => now.push(card.clone()),
@@ -684,11 +811,13 @@ impl Artifacts {
             .await
             .map_err(|e| e.to_string())?;
         self.announce(&artifact);
-        self.spawn(artifact.clone(), slot);
+        self.spawn(artifact.clone(), slot, asker.person.clone());
         Ok(artifact)
     }
 
-    /// A failed job, run again on the same artifact with its brief.
+    /// A failed job, run again on the same artifact with its brief, as
+    /// `person`: its owner, or someone it is shared with to edit, whose
+    /// job it then is, counted among theirs.
     pub(crate) async fn retry(
         self: &Arc<Self>,
         person: &str,
@@ -696,12 +825,17 @@ impl Artifacts {
     ) -> std::result::Result<Artifact, niles_api::artifacts::Refused> {
         use niles_api::artifacts::Refused;
         let storage = |e: niles_artifacts::Error| Refused::Storage(e.to_string());
-        let artifact = self
-            .store
-            .get(person, id)
+        let opened = niles_artifacts::open(self.store.as_ref(), person, id)
             .await
             .map_err(storage)?
             .ok_or(Refused::NotFound)?;
+        if !opened.allows(Operation::Edit) {
+            return Err(Refused::ReadOnly(
+                "it is shared with you to read only".into(),
+            ));
+        }
+        let artifact = opened.artifact;
+        let owner = artifact.person.clone();
         if artifact.status != Status::Failed || artifact.brief.is_none() {
             return Err(Refused::NotRetryable(
                 "only a job that did not finish can be tried again".into(),
@@ -720,7 +854,7 @@ impl Artifacts {
         let artifact = self
             .store
             .set_status(
-                person,
+                &owner,
                 id,
                 StatusChange {
                     status: Status::Working,
@@ -733,22 +867,26 @@ impl Artifacts {
             .map_err(storage)?
             .ok_or(Refused::NotFound)?;
         self.announce(&artifact);
-        self.spawn(artifact.clone(), slot);
+        self.spawn(artifact.clone(), slot, person.to_string());
         Ok(artifact)
     }
 
-    fn spawn(self: &Arc<Self>, artifact: Artifact, slot: Slot) {
+    fn spawn(self: &Arc<Self>, artifact: Artifact, slot: Slot, person: String) {
         let this = self.clone();
-        tokio::spawn(async move { this.run(artifact, slot).await });
+        tokio::spawn(async move { this.run(artifact, slot, person).await });
     }
 
-    async fn run(self: Arc<Self>, artifact: Artifact, _slot: Slot) {
-        let person = artifact.person.clone();
+    /// The job, run as `person`, who started it: their assistant writes
+    /// into the artifact, whoever's it is. Its card goes into the chat it
+    /// came from only when that chat is theirs, which an owner's is and
+    /// someone trying their job again is not.
+    async fn run(self: Arc<Self>, artifact: Artifact, _slot: Slot, person: String) {
+        let owner = artifact.person.clone();
         let asker = Asker {
             person: person.clone(),
             slug: person.strip_prefix("person:").map(str::to_string),
             satellite: None,
-            conversation: artifact.conversation_id,
+            conversation: artifact.conversation_id.filter(|_| person == owner),
         };
         let (system, prompt) = job_prompts(&artifact, self.searching(self.runner.available()));
         let tools = self.job_tools(artifact.id, &artifact.kind, None);
@@ -757,7 +895,7 @@ impl Artifacts {
                 .await
                 .unwrap_or_else(|_| Err("it took longer than half an hour".into()));
 
-        let now = match self.store.get(&person, artifact.id).await {
+        let now = match self.store.get(&owner, artifact.id).await {
             Ok(Some(now)) => now,
             // Deleted while it was being written: nothing to finish.
             Ok(None) => return,
@@ -771,7 +909,10 @@ impl Artifacts {
             return;
         }
         let ended = match outcome {
-            Ok((via, answer)) => self.keep_answer(&now, via, &answer).await.map(|()| via),
+            Ok((via, answer)) => self
+                .keep_answer(&now, via, &answer, &person)
+                .await
+                .map(|()| via),
             Err(why) => Err(why),
         };
         let change = match &ended {
@@ -788,7 +929,7 @@ impl Artifacts {
                 job_id: None,
             },
         };
-        let done = match self.store.set_status(&person, now.id, change).await {
+        let done = match self.store.set_status(&owner, now.id, change).await {
             Ok(Some(done)) => done,
             Ok(None) => return,
             Err(e) => {
@@ -803,38 +944,35 @@ impl Artifacts {
         self.announce(&done);
         if let Ok(via) = ended {
             self.say(
+                &person,
                 &done,
-                done.conversation_id,
+                done.conversation_id.filter(|_| person == owner),
                 format!("{} is ready.", done.title),
                 Some(via),
             )
             .await;
         }
         if done.notify {
-            self.notifier.finished(&done).await;
+            self.notifier.finished(&person, &done).await;
         }
     }
 
-    /// Start a run making a page for an artifact of `asker`'s that is
-    /// there already. The artifact is not marked working: its data goes
-    /// on being kept up while the page is made (a run marked on a plan,
-    /// a tick), and the page is set over the data as it is when it is
-    /// saved.
+    /// Start a run making a page for an artifact `asker` may change
+    /// (theirs, or shared with them to edit) that is there already. The
+    /// artifact is not marked working: its data goes on being kept up
+    /// while the page is made (a run marked on a plan, a tick), and the
+    /// page is set over the data as it is when it is saved. It is the
+    /// asker's job, run by their assistant and counted among theirs.
     async fn start_page(
         self: &Arc<Self>,
         asker: &Asker,
-        id: i64,
+        artifact: Artifact,
         brief: String,
     ) -> std::result::Result<Artifact, String> {
         if self.runner.available().is_none() {
             return Err(NO_ASSISTANT.into());
         }
-        let artifact = self
-            .store
-            .get(&asker.person, id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("there is no artifact {id}"))?;
+        let id = artifact.id;
         if artifact.status == Status::Working || artifact.current_revision == 0 {
             return Err(
                 "it is still being written; a page can be made for it once it is there".into(),
@@ -844,8 +982,9 @@ impl Artifacts {
             .ok_or_else(|| "a page is being made for it already".to_string())?;
         let slot = self.take_slot(&asker.person).ok_or_else(busy)?;
         let this = self.clone();
-        let (made, conversation) = (artifact.clone(), asker.conversation);
-        tokio::spawn(async move { this.run_page(made, brief, conversation, slot, held).await });
+        let made = artifact.clone();
+        let asker = asker.clone();
+        tokio::spawn(async move { this.run_page(made, brief, asker, slot, held).await });
         Ok(artifact)
     }
 
@@ -853,16 +992,15 @@ impl Artifacts {
         self: Arc<Self>,
         artifact: Artifact,
         brief: String,
-        conversation: Option<i64>,
+        asker: Asker,
         _slot: Slot,
         _held: Held,
     ) {
-        let person = artifact.person.clone();
+        let (person, conversation) = (asker.person.clone(), asker.conversation);
+        let owner = artifact.person.clone();
         let asker = Asker {
-            person: person.clone(),
-            slug: person.strip_prefix("person:").map(str::to_string),
             satellite: None,
-            conversation,
+            ..asker
         };
         let (system, prompt) =
             page_prompts(&artifact, &brief, self.searching(self.runner.available()));
@@ -872,10 +1010,13 @@ impl Artifacts {
                 .await
                 .unwrap_or_else(|_| Err("it took longer than half an hour".into()));
         let ended = match outcome {
-            Ok((via, answer)) => self.keep_page(&artifact, via, &answer).await.map(|()| via),
+            Ok((via, answer)) => self
+                .keep_page(&artifact, via, &answer, &person)
+                .await
+                .map(|()| via),
             Err(why) => Err(why),
         };
-        let now = match self.store.get(&person, artifact.id).await {
+        let now = match self.store.get(&owner, artifact.id).await {
             Ok(Some(now)) => now,
             // Deleted while the page was being made.
             Ok(None) => return,
@@ -884,32 +1025,34 @@ impl Artifacts {
                 return;
             }
         };
-        let conversation = conversation.or(now.conversation_id);
+        let conversation = conversation.or(now.conversation_id.filter(|_| person == owner));
         match ended {
             Ok(via) => {
                 tracing::info!("[artifacts] {person}: {:?} has a new page", now.title);
                 self.announce(&now);
                 let reply = format!("The page for {} is ready.", now.title);
-                self.say(&now, conversation, reply, Some(via)).await;
+                self.say(&person, &now, conversation, reply, Some(via))
+                    .await;
                 if now.notify {
-                    self.notifier.page_ready(&now).await;
+                    self.notifier.page_ready(&person, &now).await;
                 }
             }
             Err(why) => {
                 tracing::warn!("[artifacts] {person}: no page for {:?}: {why}", now.title);
                 let reply = format!("The page for {} didn't get made: {why}", now.title);
-                self.say(&now, conversation, reply, None).await;
+                self.say(&person, &now, conversation, reply, None).await;
             }
         }
     }
 
     /// A page run that saved no page may have answered with it; that is
-    /// kept as the page.
+    /// kept as the page, by `person`'s assistant.
     async fn keep_page(
         &self,
         before: &Artifact,
         via: &'static str,
         answer: &str,
+        person: &str,
     ) -> std::result::Result<(), String> {
         let now = self
             .store
@@ -929,6 +1072,7 @@ impl Artifacts {
                 PageChange::New(html),
                 "A page for it".into(),
                 author(Some(via)),
+                Some(person.to_string()),
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -936,12 +1080,14 @@ impl Artifacts {
     }
 
     /// A run that saved nothing may still have answered with the
-    /// document itself; that is kept as the first version.
+    /// document itself; that is kept as the first version, by `person`'s
+    /// assistant.
     async fn keep_answer(
         &self,
         artifact: &Artifact,
         via: &'static str,
         answer: &str,
+        person: &str,
     ) -> std::result::Result<(), String> {
         if artifact.current_revision > 0 {
             return Ok(());
@@ -960,6 +1106,7 @@ impl Artifacts {
                     content,
                     reason: "First draft".into(),
                     author: author(Some(via)),
+                    by: Some(person.to_string()),
                     summary: None,
                     page: niles_artifacts::PageChange::Keep,
                 },
@@ -969,10 +1116,11 @@ impl Artifacts {
         Ok(())
     }
 
-    /// A card in the conversation a job came from, with what to say
-    /// about it: that it is ready, or why it is not.
+    /// A card in `person`'s conversation a job came from, with what to
+    /// say about it: that it is ready, or why it is not.
     async fn say(
         &self,
+        person: &str,
         artifact: &Artifact,
         conversation: Option<i64>,
         reply: String,
@@ -993,10 +1141,7 @@ impl Artifacts {
             artifacts: vec![ArtifactRef::of(artifact)],
             attachments: Vec::new(),
         };
-        if let Err(e) = conversations
-            .append(&artifact.person, conversation, &turn)
-            .await
-        {
+        if let Err(e) = conversations.append(person, conversation, &turn).await {
             tracing::warn!("[artifacts] the card for {} was not kept: {e}", artifact.id);
         }
     }
@@ -1238,7 +1383,12 @@ const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person will want to
     artifact's id and a brief of what they want, and answer in one sentence that it is \
     being made; a small change to a page there is (a colour, a heading) you can make \
     yourself with artifact_set_page. The page draws the data, so a change to the data \
-    needs no new page.";
+    needs no new page.\n\nSomeone else in the household can share an artifact with \
+    the person: artifact_list has those too, with access edit (change it as you would their \
+    own) or view (read only; say so if they ask for a change). When the person asks to share \
+    one of their own (\"share the Thailand trip with Majse so she can edit it\", \"let Majse \
+    see my plan\"), call artifact_share with the person as they named them; none stops \
+    sharing. artifact_people says who there is. Never share unasked.";
 
 struct List(Arc<Artifacts>);
 
@@ -1248,8 +1398,11 @@ impl Tool for List {
         ToolDescriptor {
             name: "artifact_list".into(),
             description: "The saved artifacts of the person asking (documents, lists, plans), \
-                newest first: id, kind, title, summary, status, and when each changed. \
-                Archived ones only with archived: true."
+                and those others in the household shared with them, newest first: id, kind, \
+                title, summary, status, when each changed, and access: owner for their own, \
+                edit for one shared with them to change (owner says whose it is; change it as \
+                you would their own), view for one shared to read only. Archived ones only \
+                with archived: true."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -1267,19 +1420,43 @@ impl Tool for List {
             .get("archived")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let found = self
-            .0
-            .store
-            .list(
-                &asker.person,
-                Filter {
-                    archived: Some(archived),
-                    ..Filter::default()
-                },
-            )
+        let filter = Filter {
+            archived: Some(archived),
+            ..Filter::default()
+        };
+        let store = &self.0.store;
+        let own = store
+            .list(&asker.person, filter)
             .await
             .map_err(|e| refused(TOOL, e))?;
-        Ok(json!({ "artifacts": found.iter().map(view).collect::<Vec<_>>() }))
+        let shared = store
+            .shared_with(&asker.person, filter)
+            .await
+            .map_err(|e| refused(TOOL, e))?;
+        let mut found: Vec<Value> = own
+            .into_iter()
+            .map(|artifact| {
+                view_as(
+                    &Opened {
+                        artifact,
+                        access: Access::Owner,
+                    },
+                    None,
+                )
+            })
+            .collect();
+        for (artifact, level) in shared {
+            let owner = self.0.name_of(&artifact.person).await;
+            found.push(view_as(
+                &Opened {
+                    artifact,
+                    access: level.into(),
+                },
+                Some(&owner),
+            ));
+        }
+        found.sort_by(|a, b| b["changed"].as_str().cmp(&a["changed"].as_str()));
+        Ok(json!({ "artifacts": found }))
     }
 }
 
@@ -1290,9 +1467,10 @@ impl Tool for Get {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "artifact_get".into(),
-            description: "One of the asking person's saved artifacts, with its whole current \
-                content. Read it before changing it: they may have ticked items since. page \
-                says whether it has a page; with_page: true gives the page's HTML as well."
+            description: "One of the asking person's saved artifacts, or one shared with them, \
+                with its whole current content and access (owner, edit or view). Read it \
+                before changing it: they may have ticked items since. page says whether it \
+                has a page; with_page: true gives the page's HTML as well."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -1310,29 +1488,33 @@ impl Tool for Get {
         let asker = asker(TOOL)?;
         let id = id_arg(TOOL, &args)?;
         let store = &self.0.store;
-        let a = store
-            .get(&asker.person, id)
-            .await
-            .map_err(|e| refused(TOOL, e))?
-            .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
+        let opened = self
+            .0
+            .opened(TOOL, &asker.person, id, Operation::Read)
+            .await?;
+        let (a, owner) = (&opened.artifact, opened.owner());
         let content = match a.current_revision {
             0 => None,
             n => store
-                .revision(&asker.person, id, n)
+                .revision(owner, id, n)
                 .await
                 .map_err(|e| refused(TOOL, e))?
                 .map(|r| r.content),
         };
-        let mut out = view(&a);
+        let owner_name = match opened.access {
+            Access::Owner => None,
+            _ => Some(self.0.name_of(owner).await),
+        };
+        let mut out = view_as(&opened, owner_name.as_deref());
         out["content"] = content.unwrap_or(Value::Null);
         let kept = store
-            .images(&asker.person, id)
+            .images(owner, id)
             .await
             .map_err(|e| refused(TOOL, e))?;
         out["images"] = json!(kept.iter().map(pictures::view).collect::<Vec<_>>());
         if let (Some(true), Some(n)) = (args.get("with_page").and_then(Value::as_bool), a.page) {
             out["page_html"] = store
-                .page(&asker.person, id, n)
+                .page(owner, id, n)
                 .await
                 .map_err(|e| refused(TOOL, e))?
                 .map_or(Value::Null, Value::String);
@@ -1402,6 +1584,7 @@ impl Tool for Create {
                         content,
                         reason: "First version".into(),
                         author: author(crate::assistant::via()),
+                        by: Some(asker.person.clone()),
                         summary: None,
                         page: niles_artifacts::PageChange::Keep,
                     }),
@@ -1434,10 +1617,11 @@ impl Tool for Update {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "artifact_update".into(),
-            description: "Save a new version of one of the asking person's artifacts: the \
-                whole new content (not a change to it), and a short reason for the list of \
-                versions (\"Added the ferry to Koh Tao\"). Read it with artifact_get first, \
-                and keep what they ticked. summary, if it should change, is one line."
+            description: "Save a new version of one of the asking person's artifacts, or of \
+                one shared with them to edit: the whole new content (not a change to it), and \
+                a short reason for the list of versions (\"Added the ferry to Koh Tao\"). Read \
+                it with artifact_get first, and keep what they ticked. summary, if it should \
+                change, is one line."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -1466,16 +1650,16 @@ impl Tool for Update {
             ));
         }
         let store = &self.artifacts.store;
-        let a = store
-            .get(&asker.person, id)
-            .await
-            .map_err(|e| refused(TOOL, e))?
-            .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
+        let opened = self
+            .artifacts
+            .opened(TOOL, &asker.person, id, Operation::Edit)
+            .await?;
+        let (a, owner) = (&opened.artifact, opened.owner());
         let content = kinds::validate(&a.kind, args.get("content").unwrap_or(&Value::Null))
             .map_err(|e| refused(TOOL, e))?;
         if let Some(today) = self.keep_past {
             let current = store
-                .revision(&asker.person, id, a.current_revision)
+                .revision(owner, id, a.current_revision)
                 .await
                 .map_err(|e| refused(TOOL, e))?
                 .ok_or_else(|| invalid(TOOL, format!("artifact {id} has nothing to change yet")))?;
@@ -1484,18 +1668,19 @@ impl Tool for Update {
         }
         let reason = niles_artifacts::summary(str_arg(&args, "reason").unwrap_or("Changed"));
         let kept = store
-            .images(&asker.person, id)
+            .images(owner, id)
             .await
             .map_err(|e| refused(TOOL, e))?;
         let note = pictures::missing(&content, &kept);
         let a = store
             .revise(
-                &asker.person,
+                owner,
                 id,
                 NewRevision {
                     content,
                     reason,
                     author: author(crate::assistant::via()),
+                    by: Some(asker.person.clone()),
                     summary: str_arg(&args, "summary").map(niles_artifacts::summary),
                     page: niles_artifacts::PageChange::Keep,
                 },
@@ -1508,7 +1693,13 @@ impl Tool for Update {
             self.artifacts.touch(&asker.person, a.id);
             self.artifacts.announce(&a);
         }
-        let mut out = view(&a);
+        let mut out = view_as(
+            &Opened {
+                artifact: a,
+                access: opened.access,
+            },
+            None,
+        );
         if let Some(note) = note {
             out["note"] = json!(note);
         }
@@ -1528,8 +1719,9 @@ impl Tool for SetPage {
         ToolDescriptor {
             name: "artifact_set_page".into(),
             description: format!(
-                "Give one of the asking person's artifacts a page, or a new page, or take it \
-                 away (remove: true, back to the kind's own view). The data is kept as it \
+                "Give one of the asking person's artifacts, or one shared with them to edit, \
+                 a page, or a new page, or take it away (remove: true, back to the kind's own \
+                 view). The data is kept as it \
                  is; the page is a new version, so it can be undone. Read the artifact with \
                  artifact_get first, with with_page: true to change the page it has. reason \
                  is for the list of versions (\"A page with the route day by day\"). {}",
@@ -1561,6 +1753,10 @@ impl Tool for SetPage {
                 ),
             ));
         }
+        let opened = self
+            .artifacts
+            .opened(TOOL, &asker.person, id, Operation::Edit)
+            .await?;
         let remove = args.get("remove").and_then(Value::as_bool).unwrap_or(false);
         let (change, fallback) = if remove {
             (PageChange::Remove, "Took the page away")
@@ -1577,11 +1773,12 @@ impl Tool for SetPage {
             .artifacts
             .store
             .set_page(
-                &asker.person,
+                opened.owner(),
                 id,
                 change,
                 reason,
                 author(crate::assistant::via()),
+                Some(asker.person.clone()),
             )
             .await
             .map_err(|e| refused(TOOL, e))?
@@ -1601,8 +1798,9 @@ impl Tool for StartPage {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "start_page_job".into(),
-            description: "Make a page for one of the asking person's artifacts, in the \
-                background: when they ask for it to look nicer or different, or for something \
+            description: "Make a page for one of the asking person's artifacts, or one shared \
+                with them to edit, in the background: when they ask for it to look nicer or \
+                different, or for something \
                 to show. A page is HTML that draws the artifact's data, shown in place of its \
                 kind's own view; the data stays as it is. It returns at once; another run of \
                 you makes the page, and the person is told when it is there. brief is what \
@@ -1627,9 +1825,13 @@ impl Tool for StartPage {
         let brief = str_arg(&args, "brief")
             .unwrap_or("Make it look good: clear on a phone, in the app's colours.")
             .to_string();
+        let opened = self
+            .0
+            .opened(TOOL, &asker.person, id, Operation::Edit)
+            .await?;
         let a = self
             .0
-            .start_page(&asker, id, brief)
+            .start_page(&asker, opened.artifact, brief)
             .await
             .map_err(|why| invalid(TOOL, why))?;
         self.0.touch(&asker.person, a.id);
@@ -1639,6 +1841,223 @@ impl Tool for StartPage {
              when it is there."
         );
         Ok(out)
+    }
+}
+
+/// The household but the asker, by name, for saying who there is.
+fn others(members: &[Member], asker: &str) -> Vec<String> {
+    members
+        .iter()
+        .filter(|m| m.person != asker)
+        .map(|m| m.name.clone())
+        .collect()
+}
+
+fn who_there_is(names: &[String]) -> String {
+    match names {
+        [] => "there is nobody else in the household to share with".into(),
+        names => format!("it can be shared with {}", names.join(", ")),
+    }
+}
+
+struct ShareTool(Arc<Artifacts>);
+
+#[async_trait]
+impl Tool for ShareTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "artifact_share".into(),
+            description: "Share one of the asking person's own artifacts with someone else in \
+                the household, change how, or stop, when they ask for it (\"share the Thailand \
+                trip with Majse so she can edit it\", \"let Majse see my plan\"). level edit \
+                lets them change it and ask their own assistant to; view lets them read it; \
+                none stops sharing. person is who, as the asker named them (a name, or an \
+                email); artifact_people says who there is. They are told on their phone when \
+                something is newly shared with them. Only its owner can share an artifact. \
+                Never share unasked."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "person": { "type": "string", "description": "Who, as the asker named them" },
+                    "level": { "type": "string", "enum": ["view", "edit", "none"] }
+                },
+                "required": ["id", "person", "level"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        const TOOL: &str = "artifact_share";
+        let asker = asker(TOOL)?;
+        let id = id_arg(TOOL, &args)?;
+        let level = match str_arg(&args, "level") {
+            Some("view") => Some(niles_artifacts::Level::View),
+            Some("edit") => Some(niles_artifacts::Level::Edit),
+            Some("none") => None,
+            _ => return Err(invalid(TOOL, "level is view, edit or none")),
+        };
+        let said = str_arg(&args, "person")
+            .ok_or_else(|| invalid(TOOL, "person is who to share it with, by name"))?;
+        let opened = self
+            .0
+            .opened(TOOL, &asker.person, id, Operation::Share)
+            .await?;
+        let members = self.0.members().await;
+        let names = others(&members, &asker.person);
+        let member = niles_api::household::resolve(&members, said).map_err(|why| {
+            invalid(
+                TOOL,
+                match why {
+                    Unresolved::Nobody => format!(
+                        "nobody in the household goes by “{said}”: {}. Ask them who they meant",
+                        who_there_is(&names)
+                    ),
+                    Unresolved::Several(could) => {
+                        format!("“{said}” could be {}: ask them which", could.join(" or "))
+                    }
+                },
+            )
+        })?;
+        if member.person == asker.person {
+            return Err(invalid(
+                TOOL,
+                format!(
+                    "it is theirs already; an artifact is shared with someone else: {}",
+                    who_there_is(&names)
+                ),
+            ));
+        }
+        let store = &self.0.store;
+        let owner = opened.owner();
+        let was = store
+            .shares(owner, id)
+            .await
+            .map_err(|e| refused(TOOL, e))?
+            .into_iter()
+            .find(|s| s.person == member.person)
+            .map(|s| s.level);
+        store
+            .set_share(owner, id, &member.person, level)
+            .await
+            .map_err(|e| refused(TOOL, e))?;
+        let now = store
+            .get(owner, id)
+            .await
+            .map_err(|e| refused(TOOL, e))?
+            .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
+        let (title, name) = (&now.title, &member.name);
+        let said = match (was, level) {
+            (None, Some(level)) => {
+                let by = self.0.name_of(owner).await;
+                self.0.notifier.shared(&member.person, &now, &by).await;
+                format!(
+                    "Shared “{title}” with {name}, who can now {} it.",
+                    verb(level)
+                )
+            }
+            (Some(was), Some(level)) if was == level => format!(
+                "“{title}” was shared with {name} to {} already; nothing changed.",
+                verb(level)
+            ),
+            (Some(_), Some(niles_artifacts::Level::View)) => {
+                format!("{name} can now only read “{title}”.")
+            }
+            (Some(_), Some(niles_artifacts::Level::Edit)) => {
+                format!("{name} can now edit “{title}”.")
+            }
+            (Some(_), None) => {
+                niles_api::artifacts::gone(&self.0.bus, &now, &member.person);
+                format!("Stopped sharing “{title}” with {name}.")
+            }
+            (None, None) => format!("“{title}” was not shared with {name}; nothing changed."),
+        };
+        self.0.announce(&now);
+        self.0.touch(&asker.person, id);
+        let mut shared_with = Vec::new();
+        for person in &now.shared_with {
+            shared_with.push(self.0.name_of(person).await);
+        }
+        Ok(json!({
+            "id": id,
+            "title": now.title,
+            "person": member.name,
+            "level": level.map_or("none", |l| l.as_str()),
+            "shared_with": shared_with,
+            "said": said,
+        }))
+    }
+}
+
+/// What a level lets someone do, for saying so.
+fn verb(level: niles_artifacts::Level) -> &'static str {
+    match level {
+        niles_artifacts::Level::View => "read",
+        niles_artifacts::Level::Edit => "edit",
+    }
+}
+
+struct People(Arc<Artifacts>);
+
+#[async_trait]
+impl Tool for People {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "artifact_people".into(),
+            description: "Who else in the household the asking person can share an artifact \
+                with, by name. With id, one of their own, how it is shared with each now: \
+                view, edit or none."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" }
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        const TOOL: &str = "artifact_people";
+        let asker = asker(TOOL)?;
+        let members = self.0.members().await;
+        let Some(id) = args.get("id").filter(|v| !v.is_null()) else {
+            let people: Vec<Value> = others(&members, &asker.person)
+                .into_iter()
+                .map(|name| json!({ "name": name }))
+                .collect();
+            return Ok(json!({ "people": people }));
+        };
+        let id = id_arg(TOOL, &json!({ "id": id }))?;
+        let opened = self
+            .0
+            .opened(TOOL, &asker.person, id, Operation::Share)
+            .await?;
+        let shares = self
+            .0
+            .store
+            .shares(opened.owner(), id)
+            .await
+            .map_err(|e| refused(TOOL, e))?;
+        let level_of = |person: &str| {
+            shares
+                .iter()
+                .find(|s| s.person == person)
+                .map_or("none", |s| s.level.as_str())
+        };
+        let mut people: Vec<Value> = members
+            .iter()
+            .filter(|m| m.person != asker.person)
+            .map(|m| json!({ "name": m.name, "level": level_of(&m.person) }))
+            .collect();
+        people.extend(
+            shares
+                .iter()
+                .filter(|s| niles_api::household::name_of(&members, &s.person).is_none())
+                .map(|s| json!({ "name": NO_LONGER_HERE, "level": s.level.as_str() })),
+        );
+        Ok(json!({ "people": people }))
     }
 }
 
@@ -1733,6 +2152,10 @@ impl niles_api::artifacts::Jobs for AppJobs {
     ) -> std::result::Result<Artifact, niles_api::artifacts::Refused> {
         self.0.retry(person, id).await
     }
+
+    async fn shared(&self, person: &str, artifact: &Artifact, by: &str) {
+        self.0.notifier.shared(person, artifact, by).await;
+    }
 }
 
 #[cfg(test)]
@@ -1772,6 +2195,8 @@ mod tests {
     struct FakeRunner {
         on: bool,
         jobs: Mutex<VecDeque<Does>>,
+        /// Whom each job ran for.
+        ran_for: Mutex<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -1779,6 +2204,7 @@ mod tests {
             Arc::new(Self {
                 on: true,
                 jobs: Mutex::new(jobs.into()),
+                ran_for: Mutex::default(),
             })
         }
     }
@@ -1835,6 +2261,7 @@ mod tests {
             tools: ToolRegistry,
         ) -> std::result::Result<(&'static str, String), String> {
             let does = self.jobs.lock().unwrap().pop_front().expect("a job to do");
+            self.ran_for.lock().unwrap().push(asker.person.clone());
             let id = job_artifact(system);
             match does {
                 Does::Saves(markdown) => {
@@ -1866,17 +2293,30 @@ mod tests {
         }
     }
 
+    /// Jobs ended; pages made; who was told of either; and who was told
+    /// something was shared with them, by whom.
     #[derive(Default)]
-    struct Told(Mutex<Vec<(i64, Status)>>, Mutex<Vec<i64>>);
+    struct Told(
+        Mutex<Vec<(i64, Status)>>,
+        Mutex<Vec<i64>>,
+        Mutex<Vec<String>>,
+        Mutex<Vec<(String, String)>>,
+    );
 
     #[async_trait]
     impl Notifier for Told {
-        async fn finished(&self, artifact: &Artifact) {
+        async fn finished(&self, person: &str, artifact: &Artifact) {
             self.0.lock().unwrap().push((artifact.id, artifact.status));
+            self.2.lock().unwrap().push(person.into());
         }
 
-        async fn page_ready(&self, artifact: &Artifact) {
+        async fn page_ready(&self, person: &str, artifact: &Artifact) {
             self.1.lock().unwrap().push(artifact.id);
+            self.2.lock().unwrap().push(person.into());
+        }
+
+        async fn shared(&self, person: &str, _artifact: &Artifact, by: &str) {
+            self.3.lock().unwrap().push((person.into(), by.into()));
         }
     }
 
@@ -1908,18 +2348,56 @@ mod tests {
     }
 
     fn fixture(runner: Arc<dyn Runner>) -> Fixture {
+        fixture_in(runner, None)
+    }
+
+    #[async_trait]
+    impl Household for Vec<Member> {
+        async fn members(
+            &self,
+            _voices: Option<&dyn niles_recognition::VoiceRoster>,
+        ) -> Vec<Member> {
+            self.clone()
+        }
+    }
+
+    fn member(person: &str, name: &str, email: &str) -> Member {
+        Member {
+            person: person.into(),
+            name: name.into(),
+            email: email.into(),
+        }
+    }
+
+    /// Mark, Majse, Anna (who has no voice), and two called Sam.
+    fn housed() -> Fixture {
+        let house = vec![
+            member(MARK, "Mark", "mark@example.com"),
+            member(MAJSE, "Majse", "majse@example.com"),
+            member("email:anna@example.com", "Anna", "anna@example.com"),
+            member("person:sam-b", "Sam Berg", "samb@example.com"),
+            member("person:sam-h", "Sam Holm", "samh@example.com"),
+        ];
+        fixture_in(FakeRunner::doing(vec![]), Some(Arc::new(house)))
+    }
+
+    fn fixture_in(runner: Arc<dyn Runner>, household: Option<Arc<dyn Household>>) -> Fixture {
         let store = Arc::new(MemoryArtifacts::new());
         let told = Arc::new(Told::default());
         let chats = Arc::new(Chats::default());
         let bus = EventBus::default();
-        let artifacts = Arc::new(Artifacts::new(
+        let mut made = Artifacts::new(
             store.clone(),
             bus.clone(),
             runner,
             told.clone(),
             Some(chats.clone() as Arc<dyn Conversations>),
             Box::new(|_| {}),
-        ));
+        );
+        if let Some(household) = household {
+            made = made.with_household(household);
+        }
+        let artifacts = Arc::new(made);
         Fixture {
             artifacts,
             store,
@@ -2379,6 +2857,8 @@ mod tests {
             current_revision: 0,
             preview: Default::default(),
             page: None,
+            changed_by: None,
+            shared_with: Vec::new(),
         }
     }
 
@@ -2527,6 +3007,7 @@ mod tests {
         let f = fixture(Arc::new(FakeRunner {
             on: false,
             jobs: Mutex::default(),
+            ran_for: Mutex::default(),
         }));
         let e = start(&f, MARK, None).await.unwrap_err().to_string();
         assert!(e.contains("Voice & AI"), "{e}");
@@ -2931,5 +3412,484 @@ mod tests {
         assert_eq!(left.error.as_deref(), Some(RESTARTED));
         let own = store.get(MARK, own.id).await.unwrap().unwrap();
         assert_eq!(own.status, Status::Working);
+    }
+
+    const ANNA: &str = "email:anna@example.com";
+
+    /// His packing list for the trip, shared with her at `level`.
+    async fn his_shared(f: &Fixture, level: niles_artifacts::Level) -> i64 {
+        let id = create(f, MARK, "Thailand trip").await;
+        assert!(
+            f.store
+                .set_share(MARK, id, MAJSE, Some(level))
+                .await
+                .unwrap()
+        );
+        id
+    }
+
+    fn heard(events: &mut tokio::sync::broadcast::Receiver<Event>) -> Vec<String> {
+        let mut who: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|e| match e {
+                Event::ArtifactChanged { person, .. } => Some(person),
+                _ => None,
+            })
+            .collect();
+        who.sort();
+        who
+    }
+
+    #[tokio::test]
+    async fn her_list_has_what_is_shared_with_her_with_how_and_whose() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = his_shared(&f, niles_artifacts::Level::View).await;
+        create(&f, MAJSE, "Her notes").await;
+        let hers = asking(MAJSE, None);
+        let listed = call(&f, hers.clone(), "artifact_list", json!({}))
+            .await
+            .unwrap();
+        let all = listed["artifacts"].as_array().unwrap();
+        assert_eq!(all.len(), 2);
+        let trip = all.iter().find(|a| a["id"] == id).unwrap();
+        assert_eq!(trip["access"], "view");
+        assert_eq!(trip["owner"], "Mark");
+        let notes = all.iter().find(|a| a["id"] != id).unwrap();
+        assert_eq!(notes["access"], "owner");
+        assert!(notes.get("owner").is_none());
+
+        let got = call(&f, hers, "artifact_get", json!({ "id": id }))
+            .await
+            .unwrap();
+        assert_eq!(got["content"]["markdown"], "- [ ] passport\n- [ ] charger");
+        assert_eq!(
+            (&got["access"], &got["owner"]),
+            (&json!("view"), &json!("Mark"))
+        );
+        let e = call(&f, asking(ANNA, None), "artifact_get", json!({ "id": id }))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("there is no artifact"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn shared_to_read_her_assistant_changes_nothing_and_says_why() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = his_shared(&f, niles_artifacts::Level::View).await;
+        let hers = asking(MAJSE, None);
+        for (tool, args) in [
+            (
+                "artifact_update",
+                json!({ "id": id, "content": { "markdown": "- [x] passport" }, "reason": "Packed" }),
+            ),
+            (
+                "artifact_set_page",
+                json!({ "id": id, "html": PAGE, "reason": "A page" }),
+            ),
+            (
+                "artifact_set_page",
+                json!({ "id": id, "remove": true, "reason": "No page" }),
+            ),
+            ("start_page_job", json!({ "id": id, "brief": "Nicer" })),
+        ] {
+            let e = call(&f, hers.clone(), tool, args)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.contains("Mark shared it with you to read only"),
+                "{tool}: {e}"
+            );
+        }
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!((a.current_revision, a.page), (1, None));
+    }
+
+    #[tokio::test]
+    async fn shared_to_edit_her_assistant_changes_it_and_the_version_is_hers() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = his_shared(&f, niles_artifacts::Level::Edit).await;
+        let mut events = f.bus.subscribe();
+        let before = Instant::now();
+        let out = crate::assistant::tests_support::as_assistant(
+            "claude",
+            call(
+                &f,
+                asking(MAJSE, None),
+                "artifact_update",
+                json!({
+                    "id": id,
+                    "content": { "markdown": "- [ ] passport\n- [ ] Chiang Mai" },
+                    "reason": "Added Chiang Mai",
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (&out["version"], &out["access"]),
+            (&json!(2), &json!("edit"))
+        );
+        let r = f.store.revision(MARK, id, 2).await.unwrap().unwrap();
+        assert_eq!((r.author, r.by.as_deref()), (Author::Claude, Some(MAJSE)));
+        assert_eq!(heard(&mut events), vec![MAJSE, MARK]);
+        let cards = f.artifacts.for_turn(MAJSE, before).await;
+        assert_eq!(cards.len(), 1, "her turn's card");
+        assert_eq!(cards[0].id, id);
+    }
+
+    #[tokio::test]
+    async fn her_page_job_on_his_trip_is_hers() {
+        let runner = FakeRunner::doing(vec![Does::Pages(PAGE)]);
+        let f = fixture(runner.clone());
+        let id = his_shared(&f, niles_artifacts::Level::Edit).await;
+        start_page(&f, MAJSE, id).await.unwrap();
+        paged(&f, id).await;
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert!(a.page.is_some());
+        assert_eq!(a.changed_by.as_deref(), Some(MAJSE));
+        assert_eq!(*runner.ran_for.lock().unwrap(), vec![MAJSE]);
+        let chats = f.chats.0.lock().unwrap();
+        assert_eq!((chats[0].0.as_str(), chats[0].1), (MAJSE, 9), "in her chat");
+        assert_eq!(*f.told.2.lock().unwrap(), vec![MAJSE]);
+    }
+
+    #[tokio::test]
+    async fn her_try_again_of_his_job_is_hers_and_counted_as_hers() {
+        let go = Arc::new(Notify::new());
+        let runner = FakeRunner::doing(vec![Does::Fails("no"), Does::Waits(go.clone())]);
+        let f = fixture(runner.clone());
+        let id = start(&f, MARK, Some(3)).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(settled(&f, MARK, id).await.status, Status::Failed);
+        f.store
+            .set_share(MARK, id, MAJSE, Some(niles_artifacts::Level::Edit))
+            .await
+            .unwrap();
+        f.artifacts.retry(MAJSE, id).await.unwrap();
+        {
+            let running = f.artifacts.running.lock().unwrap();
+            assert_eq!(running.get(MAJSE), Some(&1));
+            assert_eq!(running.get(MARK), None);
+        }
+        go.notify_one();
+        assert_eq!(settled(&f, MARK, id).await.status, Status::Ready);
+        assert_eq!(*runner.ran_for.lock().unwrap(), vec![MARK, MAJSE]);
+        let r = f.store.revision(MARK, id, 1).await.unwrap().unwrap();
+        assert_eq!(r.by.as_deref(), Some(MAJSE));
+        assert!(
+            f.chats.0.lock().unwrap().is_empty(),
+            "his chat is not hers to write in"
+        );
+        assert_eq!(*f.told.2.lock().unwrap(), vec![MARK, MAJSE]);
+    }
+
+    #[tokio::test]
+    async fn only_someone_who_may_change_it_tries_it_again() {
+        use niles_api::artifacts::Refused;
+        let f = fixture(FakeRunner::doing(vec![Does::Fails("no")]));
+        let id = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
+        settled(&f, MARK, id).await;
+        f.store
+            .set_share(MARK, id, MAJSE, Some(niles_artifacts::Level::View))
+            .await
+            .unwrap();
+        assert!(matches!(
+            f.artifacts.retry(MAJSE, id).await,
+            Err(Refused::ReadOnly(_))
+        ));
+        assert!(matches!(
+            f.artifacts.retry(ANNA, id).await,
+            Err(Refused::NotFound)
+        ));
+    }
+
+    async fn share(f: &Fixture, who: &str, id: i64, person: &str, level: &str) -> Result<Value> {
+        call(
+            f,
+            asking(who, Some(4)),
+            "artifact_share",
+            json!({ "id": id, "person": person, "level": level }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn asking_to_share_shares_it_says_so_and_tells_her() {
+        let f = housed();
+        let id = create(&f, MARK, "Thailand trip").await;
+        let mut events = f.bus.subscribe();
+        let out = share(&f, MARK, id, "Majse's", "edit").await.unwrap();
+        assert_eq!(
+            out["said"],
+            "Shared “Thailand trip” with Majse, who can now edit it."
+        );
+        assert_eq!(out["shared_with"], json!(["Majse"]));
+        let hers = niles_artifacts::open(f.store.as_ref(), MAJSE, id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(hers.access, Access::Edit);
+        assert_eq!(
+            *f.told.3.lock().unwrap(),
+            vec![(MAJSE.to_string(), "Mark".to_string())]
+        );
+        assert_eq!(heard(&mut events), vec![MAJSE, MARK]);
+    }
+
+    #[tokio::test]
+    async fn asking_again_changes_the_level_or_stops_and_is_no_news_to_push() {
+        let f = housed();
+        let id = create(&f, MARK, "Thailand trip").await;
+        share(&f, MARK, id, "Majse", "edit").await.unwrap();
+        let said = |out: Value| out["said"].as_str().unwrap().to_string();
+        assert_eq!(
+            said(share(&f, MARK, id, "majse", "view").await.unwrap()),
+            "Majse can now only read “Thailand trip”."
+        );
+        assert_eq!(
+            said(share(&f, MARK, id, "Majse", "view").await.unwrap()),
+            "“Thailand trip” was shared with Majse to read already; nothing changed."
+        );
+        let mut events = f.bus.subscribe();
+        assert_eq!(
+            said(share(&f, MARK, id, "Majse", "none").await.unwrap()),
+            "Stopped sharing “Thailand trip” with Majse."
+        );
+        let gone: Vec<(String, String)> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|e| match e {
+                Event::ArtifactChanged { person, status, .. } => Some((person, status)),
+                _ => None,
+            })
+            .collect();
+        assert!(gone.contains(&(MAJSE.into(), "deleted".into())), "{gone:?}");
+        assert!(
+            niles_artifacts::open(f.store.as_ref(), MAJSE, id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            said(share(&f, MARK, id, "Majse", "none").await.unwrap()),
+            "“Thailand trip” was not shared with Majse; nothing changed."
+        );
+        assert_eq!(
+            f.told.3.lock().unwrap().len(),
+            1,
+            "told once, when it was new"
+        );
+    }
+
+    #[tokio::test]
+    async fn who_to_share_with_is_whoever_the_name_means_and_never_oneself() {
+        let f = housed();
+        let id = create(&f, MARK, "Thailand trip").await;
+        let out = share(&f, MARK, id, "anna@example.com", "view")
+            .await
+            .unwrap();
+        assert_eq!(out["person"], "Anna");
+        let e = share(&f, MARK, id, "Bob", "view")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("nobody in the household goes by “Bob”")
+                && e.contains("Majse, Anna, Sam Berg, Sam Holm"),
+            "{e}"
+        );
+        let e = share(&f, MARK, id, "Sam", "view")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("could be Sam Berg or Sam Holm"), "{e}");
+        let e = share(&f, MARK, id, "Mark", "view")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("theirs already"), "{e}");
+        let e = share(&f, MARK, id, "Majse", "admin")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("view, edit or none"), "{e}");
+        assert_eq!(
+            f.store.get(MARK, id).await.unwrap().unwrap().shared_with,
+            vec!["email:anna@example.com"]
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_shares_and_someone_it_is_not_shared_with_learns_nothing() {
+        let f = housed();
+        let id = create(&f, MARK, "Thailand trip").await;
+        share(&f, MARK, id, "Majse", "edit").await.unwrap();
+        let e = share(&f, MAJSE, id, "Anna", "view")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("only Mark, whose “Thailand trip” it is, can share it"),
+            "{e}"
+        );
+        let e = share(&f, ANNA, id, "Majse", "none")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("Mark") && !e.contains("Thailand"), "{e}");
+        assert_eq!(
+            f.store.get(MARK, id).await.unwrap().unwrap().shared_with,
+            vec![MAJSE]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_people_it_can_be_shared_with_and_how_it_is_now() {
+        let f = housed();
+        let id = create(&f, MARK, "Thailand trip").await;
+        share(&f, MARK, id, "Majse", "view").await.unwrap();
+        let all = call(&f, asking(MARK, None), "artifact_people", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            all["people"],
+            json!([
+                { "name": "Majse" }, { "name": "Anna" }, { "name": "Sam Berg" }, { "name": "Sam Holm" }
+            ])
+        );
+        let now = call(
+            &f,
+            asking(MARK, None),
+            "artifact_people",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            now["people"][0],
+            json!({ "name": "Majse", "level": "view" })
+        );
+        assert_eq!(now["people"][1], json!({ "name": "Anna", "level": "none" }));
+        assert!(PROMPT.contains("artifact_share"), "{PROMPT}");
+        assert!(PROMPT.contains("Never share unasked"), "{PROMPT}");
+    }
+
+    /// What `tool` answers `who` about `id`, with the id itself taken out.
+    async fn answer(f: &Fixture, who: &str, tool: &str, id: i64) -> String {
+        let args = match tool {
+            "artifact_update" => {
+                json!({ "id": id, "content": { "markdown": "- x" }, "reason": "x" })
+            }
+            "artifact_set_page" => json!({ "id": id, "html": PAGE, "reason": "x" }),
+            "start_page_job" => json!({ "id": id, "brief": "x" }),
+            "artifact_share" => json!({ "id": id, "person": "Majse", "level": "view" }),
+            _ => json!({ "id": id }),
+        };
+        call(f, asking(who, None), tool, args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .replace(&id.to_string(), "N")
+    }
+
+    #[tokio::test]
+    async fn one_not_shared_with_them_is_exactly_one_that_is_not_there() {
+        let f = housed();
+        let his = create(&f, MARK, "Thailand trip").await;
+        share(&f, MARK, his, "Majse", "edit").await.unwrap();
+        let missing = his + 100;
+        for tool in [
+            "artifact_get",
+            "artifact_update",
+            "artifact_set_page",
+            "start_page_job",
+            "artifact_share",
+            "artifact_people",
+        ] {
+            assert_eq!(
+                answer(&f, ANNA, tool, his).await,
+                answer(&f, ANNA, tool, missing).await,
+                "{tool}"
+            );
+        }
+        let listed = call(&f, asking(ANNA, None), "artifact_list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(listed, json!({ "artifacts": [] }));
+    }
+
+    #[tokio::test]
+    async fn an_unrecognised_voice_reaches_nothing_shared_or_not() {
+        let f = housed();
+        let id = create(&f, MARK, "Thailand trip").await;
+        share(&f, MARK, id, "Majse", "edit").await.unwrap();
+        let stranger = Asker {
+            person: "satellite:10.0.0.9:1234".into(),
+            slug: None,
+            satellite: Some("10.0.0.9:1234".parse().unwrap()),
+            conversation: None,
+        };
+        for (tool, args) in [
+            ("artifact_list", json!({})),
+            ("artifact_get", json!({ "id": id })),
+            (
+                "artifact_share",
+                json!({ "id": id, "person": "Anna", "level": "view" }),
+            ),
+            ("artifact_people", json!({})),
+        ] {
+            let e = call(&f, stranger.clone(), tool, args)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.contains("who is asking") && !e.contains("Thailand"),
+                "{tool}: {e}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_card_for_an_artifact_never_lands_with_someone_who_cannot_see_it() {
+        let f = housed();
+        let before = Instant::now();
+        let id = create(&f, MARK, "Thailand trip").await;
+        share(&f, MARK, id, "Majse", "view").await.unwrap();
+        assert!(f.artifacts.for_turn(ANNA, before).await.is_empty());
+        assert!(
+            f.artifacts.for_turn(MAJSE, before).await.is_empty(),
+            "his turn's cards are his"
+        );
+        let card = ArtifactRef::of(&f.store.get(MARK, id).await.unwrap().unwrap());
+        let turn = |cards: Vec<ArtifactRef>| Turn {
+            at: chrono::Utc::now(),
+            said: String::new(),
+            reply: String::new(),
+            via: "app".into(),
+            room: None,
+            by: None,
+            proposal: None,
+            approval: None,
+            artifacts: cards,
+            attachments: Vec::new(),
+        };
+        let mut hers = vec![turn(vec![card.clone()])];
+        f.artifacts.refresh(MAJSE, &mut hers).await;
+        assert_eq!(hers[0].artifacts.len(), 1, "shared with her, it shows");
+        share(&f, MARK, id, "Majse", "none").await.unwrap();
+        f.artifacts.refresh(MAJSE, &mut hers).await;
+        assert!(hers[0].artifacts.is_empty(), "no longer shared, it goes");
+        let mut annas = vec![turn(vec![card])];
+        f.artifacts.refresh(ANNA, &mut annas).await;
+        assert!(annas[0].artifacts.is_empty());
+    }
+
+    #[test]
+    fn being_shared_with_says_who_shared_what_and_opens_it() {
+        let trip = working("trip");
+        let message = shared_message(&trip, "Mark");
+        assert_eq!(message.body, "Mark shared “Half marathon plan” with you.");
+        assert_eq!(message.url, "/#/chat?artifact=7");
+        assert_eq!(message.tag, "artifact-7");
     }
 }

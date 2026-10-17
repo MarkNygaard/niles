@@ -128,6 +128,7 @@ impl Artifacts {
                     content: content.clone(),
                     reason: niles_artifacts::summary(&tracked.reason()),
                     author: Author::Niles,
+                    by: None,
                     summary: None,
                     page: niles_artifacts::PageChange::Keep,
                 },
@@ -526,7 +527,7 @@ mod tests {
 
     #[async_trait]
     impl Notifier for Told {
-        async fn finished(&self, _artifact: &Artifact) {}
+        async fn finished(&self, _person: &str, _artifact: &Artifact) {}
 
         async fn changed(&self, artifact: &Artifact, note: &str) {
             self.0.lock().unwrap().push((artifact.id, note.into()));
@@ -602,6 +603,7 @@ mod tests {
                         content: kinds::validate(kind, &content).unwrap(),
                         reason: "First draft".into(),
                         author: Author::Claude,
+                        by: None,
                         summary: None,
                         page: niles_artifacts::PageChange::Keep,
                     }),
@@ -671,6 +673,45 @@ mod tests {
             events.try_recv(),
             Ok(Event::ArtifactChanged { id: 1, .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_plan_follows_its_owners_runs_and_never_those_it_is_shared_with() {
+        let f = fixture(Arc::new(FakeCoach {
+            off: true,
+            ..FakeCoach::default()
+        }));
+        made(&f, TRAINING_PLAN, plan()).await;
+        let mark = "person:mark";
+        f.store
+            .set_share(MAJSE, 1, mark, Some(niles_artifacts::Level::Edit))
+            .await
+            .unwrap();
+        f.artifacts
+            .follow(mark, &[tuesday_run()], day("2026-10-13"))
+            .await;
+        assert_eq!(
+            f.store
+                .get(MAJSE, 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_revision,
+            1,
+            "his run is not her session"
+        );
+        f.artifacts
+            .follow(MAJSE, &[tuesday_run()], day("2026-10-13"))
+            .await;
+        assert_eq!(
+            f.store
+                .get(MAJSE, 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_revision,
+            2
+        );
     }
 
     #[tokio::test]
@@ -848,6 +889,7 @@ mod tests {
                 niles_artifacts::PageChange::New("<h1 id=t></h1>".into()),
                 "A page for it".into(),
                 Author::Claude,
+                None,
             )
             .await
             .unwrap()

@@ -9,15 +9,18 @@ import {
   PanelTopClose,
   RotateCcw,
   TriangleAlert,
+  Users,
 } from "lucide-react";
 import { SandboxedPage } from "@/components/SandboxedPage";
+import { ShareDialog } from "@/components/ShareDialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { ArtifactImagesProvider } from "@/lib/artifactImages";
-import type { ArtifactAuthor, ArtifactDetail, ArtifactPatch } from "@/lib/api";
+import type { ArtifactAuthor, ArtifactDetail, ArtifactPatch, ArtifactRevisionMeta } from "@/lib/api";
 import { ARTIFACTS, artifactKey, kindOf } from "@/lib/artifacts";
+import { canEdit, changedNote, isOwner, sharingNote } from "@/lib/sharing";
 import { relativeTime } from "@/lib/skills";
 import { localDay } from "@/lib/trainingPlan";
 import { cn } from "@/lib/utils";
@@ -28,6 +31,14 @@ const AUTHORS: Record<ArtifactAuthor, string> = {
   chatgpt: "ChatGPT",
   niles: "Niles",
 };
+
+/** Who made a version: "You", "Claude", or someone else in the
+    household, "Majse" or "Claude for Majse". */
+function authorOf(r: ArtifactRevisionMeta): string {
+  const what = AUTHORS[r.author] ?? r.author;
+  if (!r.by) return what;
+  return r.author === "person" ? r.by : `${what} for ${r.by}`;
+}
 
 type Look = "page" | "builtin";
 
@@ -64,6 +75,10 @@ export interface ArtifactViewProps {
  * One artifact, open in Niles's panel: its kind's view, or its page in
  * a sealed frame when it has one, the versions it has been through,
  * whether its person is told, and a copy of it.
+ *
+ * Shared with them to read, it is only that: no ticks, no marks, no
+ * saves from its page, no restoring. Its owner alone shares it, and
+ * says whether they are told.
  */
 export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const queryClient = useQueryClient();
@@ -71,6 +86,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const [versions, setVersions] = useState(false);
   const [reading, setReading] = useState<number>();
   const [copied, setCopied] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [look, setLook] = useState<Look>("page");
   // Why the page shown under this key was swapped for the built-in
   // view; a new page, or another version, is given its own chance.
@@ -140,10 +156,13 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const pageKey = `${reading ?? "current"}:${reading !== undefined ? old.data?.page : a.page}`;
   const broken = fellBack?.key === pageKey ? fellBack.why : undefined;
   const onPage = Boolean(pageHtml) && look === "page" && broken === undefined;
+  const editable = canEdit(a);
+  const mine = isOwner(a);
   const edit =
-    reading === undefined
+    reading === undefined && editable
       ? (content: unknown, reason: string) => patch.mutate({ content, reason })
       : undefined;
+  const whose = [sharingNote(a), changedNote(a)].filter(Boolean).join(" · ");
 
   return (
     <div className="flex flex-col gap-3 px-2 pb-2">
@@ -153,6 +172,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
         <div className="min-w-0">
           <h3 className="font-heading text-lg leading-snug font-medium break-words">{a.title}</h3>
           {a.summary && <p className="text-muted-foreground text-sm">{a.summary}</p>}
+          {whose && <p className="text-muted-foreground text-xs">{whose}</p>}
         </div>
       </div>
 
@@ -168,16 +188,18 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
             <TriangleAlert aria-hidden className="text-destructive mt-0.5 size-4 shrink-0" />
             <span>It didn't finish: {a.error ?? "nobody said why"}</span>
           </p>
-          <Button
-            size="sm"
-            variant="outline"
-            className="self-start"
-            disabled={retry.isPending}
-            onClick={() => retry.mutate()}
-          >
-            <RotateCcw />
-            Try again
-          </Button>
+          {editable && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="self-start"
+              disabled={retry.isPending}
+              onClick={() => retry.mutate()}
+            >
+              <RotateCcw />
+              Try again
+            </Button>
+          )}
         </div>
       )}
       {failure && <p className="text-destructive text-sm">{failure.message}</p>}
@@ -185,7 +207,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
       {reading !== undefined && (
         <div className="bg-muted/60 flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-sm">
           <span className="flex-1">Version {reading}, as it was</span>
-          {reading !== a.current_revision && (
+          {reading !== a.current_revision && editable && (
             <Button size="sm" disabled={restore.isPending} onClick={() => restore.mutate(reading)}>
               Restore this version
             </Button>
@@ -237,15 +259,23 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
       )}
 
       <div className="border-border flex flex-col gap-3 border-t pt-3">
-        <label className="flex items-center justify-between gap-3 text-sm">
-          Tell me when it's ready
-          <Switch
-            checked={a.notify}
-            disabled={patch.isPending}
-            onCheckedChange={(notify) => patch.mutate({ notify })}
-          />
-        </label>
+        {mine && (
+          <label className="flex items-center justify-between gap-3 text-sm">
+            Tell me when it's ready
+            <Switch
+              checked={a.notify}
+              disabled={patch.isPending}
+              onCheckedChange={(notify) => patch.mutate({ notify })}
+            />
+          </label>
+        )}
         <div className="flex flex-wrap gap-2">
+          {mine && (
+            <Button size="sm" variant="outline" onClick={() => setSharing(true)}>
+              <Users />
+              Share
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -268,7 +298,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
               {copied ? "Copied" : "Copy"}
             </Button>
           )}
-          {a.page_html && reading === undefined && (
+          {a.page_html && reading === undefined && editable && (
             <Button
               size="sm"
               variant="outline"
@@ -297,7 +327,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
                     {r.n === a.current_revision && " (current)"} · {r.reason}
                   </span>
                   <span className="text-muted-foreground text-xs">
-                    {AUTHORS[r.author] ?? r.author} · {relativeTime(r.at)}
+                    {authorOf(r)} · {relativeTime(r.at)}
                   </span>
                 </button>
               </li>
@@ -305,6 +335,9 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
           </ol>
         )}
       </div>
+      {mine && (
+        <ShareDialog id={id} title={a.title} open={sharing} onClose={() => setSharing(false)} />
+      )}
     </div>
   );
 }

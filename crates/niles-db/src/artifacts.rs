@@ -13,13 +13,17 @@
 //! A picture is a row of `artifact_images`: the bytes as Niles wrote
 //! them again (see `niles_artifacts::images`), never as they were
 //! fetched. It goes when its artifact goes, or when it is taken away.
+//!
+//! A share is a row of `artifact_shares`: who else in the household
+//! has the artifact, to view or to edit, with their own pin on it. It
+//! goes when its artifact goes, or when the owner stops sharing.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use niles_artifacts::{
     Artifact, ArtifactStore, Author, Changes, Error, Filter, Image, ImageData, KEPT_REVISIONS,
-    NewArtifact, NewImage, NewRevision, PageChange, Result, Revision, RevisionMeta, Status,
-    StatusChange,
+    Level, NewArtifact, NewImage, NewRevision, PageChange, Result, Revision, RevisionMeta, Share,
+    Status, StatusChange,
 };
 use sqlx::postgres::{PgPool, PgRow};
 use sqlx::{Postgres, Row, Transaction};
@@ -80,11 +84,31 @@ create index if not exists artifact_images_artifact on artifact_images (artifact
 alter table artifacts add column if not exists page bigint;
 alter table artifact_revisions add column if not exists page bigint
     references artifact_pages (id);
+-- Whose change a version is, when a person's: the owner's, or someone
+-- it is shared with to edit.
+alter table artifacts add column if not exists changed_by text;
+alter table artifact_revisions add column if not exists by_person text;
+create table if not exists artifact_shares (
+    artifact_id bigint not null references artifacts (id) on delete cascade,
+    person      text not null,
+    level       text not null,
+    pinned      boolean not null default false,
+    shared_at   timestamptz not null default now(),
+    primary key (artifact_id, person)
+);
+create index if not exists artifact_shares_person on artifact_shares (person);
 ";
 
-const COLUMNS: &str = "id, person, kind, title, summary, pinned, archived, notify, status, \
-    status_text, error, job_id, brief, conversation_id, created_at, updated_at, current_revision, \
-    preview::text as preview, page";
+/// Qualified, so a query joining `artifact_shares` (which has a `person`
+/// and a `pinned` of its own) reads the artifact's.
+const COLUMNS: &str = "artifacts.id, artifacts.person, artifacts.kind, artifacts.title, \
+    artifacts.summary, artifacts.pinned, artifacts.archived, artifacts.notify, artifacts.status, \
+    artifacts.status_text, artifacts.error, artifacts.job_id, artifacts.brief, \
+    artifacts.conversation_id, artifacts.created_at, artifacts.updated_at, \
+    artifacts.current_revision, artifacts.preview::text as preview, artifacts.page, \
+    artifacts.changed_by, \
+    array(select sw.person from artifact_shares sw where sw.artifact_id = artifacts.id \
+          order by sw.shared_at, sw.person) as shared_with";
 
 pub struct PostgresArtifacts {
     pool: PgPool,
@@ -120,7 +144,7 @@ impl PostgresArtifacts {
 
     async fn one(&self, person: &str, id: i64) -> Result<Option<Artifact>> {
         let row = sqlx::query(&format!(
-            "select {COLUMNS} from artifacts where id = $1 and person = $2"
+            "select {COLUMNS} from artifacts where artifacts.id = $1 and artifacts.person = $2"
         ))
         .bind(id)
         .bind(person)
@@ -185,15 +209,16 @@ impl PostgresArtifacts {
         content: &str,
         page: Option<i64>,
         reason: &str,
-        author: Author,
+        (author, by): (Author, Option<&str>),
         preview: Option<String>,
         summary: Option<&str>,
     ) -> Result<()> {
         let n: i32 = sqlx::query(
-            "insert into artifact_revisions (artifact_id, n, content, page, reason, author)
+            "insert into artifact_revisions
+                 (artifact_id, n, content, page, reason, author, by_person)
              values ($1,
                      coalesce((select max(n) from artifact_revisions where artifact_id = $1), 0) + 1,
-                     $2::jsonb, $3, $4, $5)
+                     $2::jsonb, $3, $4, $5, $6)
              returning n",
         )
         .bind(id)
@@ -201,6 +226,7 @@ impl PostgresArtifacts {
         .bind(page)
         .bind(reason)
         .bind(author.as_str())
+        .bind(by)
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| self.storage(e))?
@@ -224,7 +250,8 @@ impl PostgresArtifacts {
         sqlx::query(
             "update artifacts
              set current_revision = $2, page = $3, updated_at = now(),
-                 preview = coalesce($4::jsonb, preview), summary = coalesce($5, summary)
+                 preview = coalesce($4::jsonb, preview), summary = coalesce($5, summary),
+                 changed_by = $6
              where id = $1",
         )
         .bind(id)
@@ -232,6 +259,7 @@ impl PostgresArtifacts {
         .bind(page)
         .bind(preview)
         .bind(summary)
+        .bind(by)
         .execute(&mut **tx)
         .await
         .map_err(|e| self.storage(e))?;
@@ -286,7 +314,17 @@ fn artifact(r: &PgRow) -> Artifact {
         // artifact.
         preview: serde_json::from_str(r.get::<&str, _>("preview")).unwrap_or_default(),
         page: r.get("page"),
+        changed_by: r.get("changed_by"),
+        shared_with: r.get("shared_with"),
     }
+}
+
+/// An artifact as someone it is shared with has it: with their pin.
+fn shared(r: &PgRow) -> Option<(Artifact, Level)> {
+    let level = Level::parse(r.get::<&str, _>("level"))?;
+    let mut a = artifact(r);
+    a.pinned = r.get("my_pin");
+    Some((a, level))
 }
 
 const IMAGE_COLUMNS: &str = "i.id, i.mime, i.width, i.height, octet_length(i.bytes) as size, \
@@ -354,7 +392,7 @@ impl ArtifactStore for PostgresArtifacts {
                 &content,
                 page,
                 &first.reason,
-                first.author,
+                (first.author, first.by.as_deref()),
                 Some(preview_json(&new.kind, &first.content)),
                 None,
             )
@@ -370,10 +408,10 @@ impl ArtifactStore for PostgresArtifacts {
         self.ensure_schema().await?;
         let rows = sqlx::query(&format!(
             "select {COLUMNS} from artifacts
-             where person = $1
-               and ($2::boolean is null or pinned = $2)
-               and ($3::boolean is null or archived = $3)
-             order by pinned desc, updated_at desc, id desc"
+             where artifacts.person = $1
+               and ($2::boolean is null or artifacts.pinned = $2)
+               and ($3::boolean is null or artifacts.archived = $3)
+             order by artifacts.pinned desc, artifacts.updated_at desc, artifacts.id desc"
         ))
         .bind(person)
         .bind(filter.pinned)
@@ -392,7 +430,7 @@ impl ArtifactStore for PostgresArtifacts {
     async fn revision(&self, person: &str, id: i64, n: i32) -> Result<Option<Revision>> {
         self.ensure_schema().await?;
         let row = sqlx::query(
-            "select r.n, r.content::text as content, r.page, r.reason, r.author, r.at
+            "select r.n, r.content::text as content, r.page, r.reason, r.author, r.by_person, r.at
              from artifact_revisions r join artifacts a on a.id = r.artifact_id
              where a.id = $1 and a.person = $2 and r.n = $3",
         )
@@ -410,6 +448,7 @@ impl ArtifactStore for PostgresArtifacts {
                 page: r.get("page"),
                 reason: r.get("reason"),
                 author: author(&r),
+                by: r.get("by_person"),
                 at: r.get("at"),
             })
         })
@@ -419,7 +458,7 @@ impl ArtifactStore for PostgresArtifacts {
     async fn revisions(&self, person: &str, id: i64) -> Result<Vec<RevisionMeta>> {
         self.ensure_schema().await?;
         let rows = sqlx::query(
-            "select r.n, r.page, r.reason, r.author, r.at
+            "select r.n, r.page, r.reason, r.author, r.by_person, r.at
              from artifact_revisions r join artifacts a on a.id = r.artifact_id
              where a.id = $1 and a.person = $2
              order by r.n desc",
@@ -436,6 +475,7 @@ impl ArtifactStore for PostgresArtifacts {
                 page: r.get("page"),
                 reason: r.get("reason"),
                 author: author(r),
+                by: r.get("by_person"),
                 at: r.get("at"),
             })
             .collect())
@@ -460,7 +500,7 @@ impl ArtifactStore for PostgresArtifacts {
             &content,
             page,
             &revision.reason,
-            revision.author,
+            (revision.author, revision.by.as_deref()),
             Some(preview_json(&kind, &revision.content)),
             revision.summary.as_deref(),
         )
@@ -476,6 +516,7 @@ impl ArtifactStore for PostgresArtifacts {
         page: PageChange,
         reason: String,
         author: Author,
+        by: Option<String>,
     ) -> Result<Option<Artifact>> {
         self.ensure_schema().await?;
         let mut tx = self.pool.begin().await.map_err(|e| self.storage(e))?;
@@ -494,8 +535,17 @@ impl ArtifactStore for PostgresArtifacts {
         .ok_or_else(niles_artifacts::page::nothing_to_draw)?
         .get("content");
         let page = self.page_for(&mut tx, id, current, &page).await?;
-        self.keep(&mut tx, id, &content, page, &reason, author, None, None)
-            .await?;
+        self.keep(
+            &mut tx,
+            id,
+            &content,
+            page,
+            &reason,
+            (author, by.as_deref()),
+            None,
+            None,
+        )
+        .await?;
         tx.commit().await.map_err(|e| self.storage(e))?;
         self.one(person, id).await
     }
@@ -524,7 +574,7 @@ impl ArtifactStore for PostgresArtifacts {
                  pinned = coalesce($4, pinned),
                  archived = coalesce($5, archived),
                  notify = coalesce($6, notify)
-             where id = $1 and person = $2
+             where artifacts.id = $1 and artifacts.person = $2
              returning {COLUMNS}"
         ))
         .bind(id)
@@ -549,7 +599,7 @@ impl ArtifactStore for PostgresArtifacts {
         let row = sqlx::query(&format!(
             "update artifacts set status = $3, status_text = $4, error = $5, job_id = $6,
                  updated_at = now()
-             where id = $1 and person = $2
+             where artifacts.id = $1 and artifacts.person = $2
              returning {COLUMNS}"
         ))
         .bind(id)
@@ -692,5 +742,113 @@ impl ArtifactStore for PostgresArtifacts {
         .await
         .map_err(|e| self.storage(e))?;
         Ok(done.rows_affected())
+    }
+
+    async fn shared(&self, person: &str, id: i64) -> Result<Option<(Artifact, Level)>> {
+        self.ensure_schema().await?;
+        let row = sqlx::query(&format!(
+            "select {COLUMNS}, s.level, s.pinned as my_pin
+             from artifacts join artifact_shares s on s.artifact_id = artifacts.id
+             where artifacts.id = $1 and s.person = $2"
+        ))
+        .bind(id)
+        .bind(person)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(row.as_ref().and_then(shared))
+    }
+
+    async fn shared_with(&self, person: &str, filter: Filter) -> Result<Vec<(Artifact, Level)>> {
+        self.ensure_schema().await?;
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS}, s.level, s.pinned as my_pin
+             from artifacts join artifact_shares s on s.artifact_id = artifacts.id
+             where s.person = $1
+               and ($2::boolean is null or s.pinned = $2)
+               and ($3::boolean is null or artifacts.archived = $3)
+             order by s.pinned desc, artifacts.updated_at desc, artifacts.id desc"
+        ))
+        .bind(person)
+        .bind(filter.pinned)
+        .bind(filter.archived)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(rows.iter().filter_map(shared).collect())
+    }
+
+    async fn shares(&self, owner: &str, id: i64) -> Result<Vec<Share>> {
+        self.ensure_schema().await?;
+        let rows = sqlx::query(
+            "select s.person, s.level, s.shared_at
+             from artifact_shares s join artifacts a on a.id = s.artifact_id
+             where a.id = $1 and a.person = $2
+             order by s.shared_at, s.person",
+        )
+        .bind(id)
+        .bind(owner)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                Some(Share {
+                    person: r.get("person"),
+                    level: Level::parse(r.get::<&str, _>("level"))?,
+                    shared_at: r.get("shared_at"),
+                })
+            })
+            .collect())
+    }
+
+    async fn set_share(
+        &self,
+        owner: &str,
+        id: i64,
+        person: &str,
+        level: Option<Level>,
+    ) -> Result<bool> {
+        self.ensure_schema().await?;
+        if self.one(owner, id).await?.is_none() {
+            return Ok(false);
+        }
+        if person == owner {
+            return Err(niles_artifacts::share::with_the_owner());
+        }
+        let query = match level {
+            Some(level) => sqlx::query(
+                "insert into artifact_shares (artifact_id, person, level) values ($1, $2, $3)
+                 on conflict (artifact_id, person) do update set level = excluded.level",
+            )
+            .bind(id)
+            .bind(person)
+            .bind(level.as_str()),
+            None => {
+                sqlx::query("delete from artifact_shares where artifact_id = $1 and person = $2")
+                    .bind(id)
+                    .bind(person)
+            }
+        };
+        query
+            .execute(&self.pool)
+            .await
+            .map_err(|e| self.storage(e))?;
+        Ok(true)
+    }
+
+    async fn pin_shared(&self, person: &str, id: i64, pinned: bool) -> Result<bool> {
+        self.ensure_schema().await?;
+        let done = sqlx::query(
+            "update artifact_shares set pinned = $3 where artifact_id = $1 and person = $2",
+        )
+        .bind(id)
+        .bind(person)
+        .bind(pinned)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(done.rows_affected() == 1)
     }
 }

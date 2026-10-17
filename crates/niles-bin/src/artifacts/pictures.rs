@@ -12,7 +12,7 @@
 use super::{Artifacts, asker, id_arg, invalid, refused, str_arg};
 use async_trait::async_trait;
 use niles_artifacts::images::{self, NewImage};
-use niles_artifacts::{Image, kinds};
+use niles_artifacts::{Image, Operation, kinds};
 use niles_tools::{Result, Tool, ToolDescriptor, ToolRegistry};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -55,8 +55,9 @@ pub(crate) struct Pictures {
     pub(crate) download: Arc<dyn Download>,
 }
 
-/// The picture tools, for `only` artifact in a job, or any of the
-/// asker's in a turn. Nothing without [`Pictures`].
+/// The picture tools, for `only` artifact in a job, or in a turn any
+/// the asker may change: theirs, or shared with them to edit. Nothing
+/// without [`Pictures`].
 pub(super) fn register(artifacts: &Arc<Artifacts>, reg: &mut ToolRegistry, only: Option<i64>) {
     let Some(pictures) = &artifacts.pictures else {
         return;
@@ -237,15 +238,15 @@ impl Tool for AddImage {
             return Err(invalid(TOOL, "this Niles keeps no pictures"));
         };
         let store = &self.artifacts.store;
-        let artifact = store
-            .get(&asker.person, id)
-            .await
-            .map_err(|e| refused(TOOL, e))?
-            .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
+        let opened = self
+            .artifacts
+            .opened(TOOL, &asker.person, id, Operation::Edit)
+            .await?;
+        let (artifact, owner) = (&opened.artifact, opened.owner());
         // Room is asked before the download, so a full artifact costs no
         // fetch; the store asks again as it keeps it.
         let kept = store
-            .images(&asker.person, id)
+            .images(owner, id)
             .await
             .map_err(|e| refused(TOOL, e))?;
         images::check_room(kept.len(), kept.iter().map(|i| i.size).sum(), 0)
@@ -269,7 +270,7 @@ impl Tool for AddImage {
         )
         .map_err(|e| refused(TOOL, e))?;
         let image = store
-            .add_image(&asker.person, id, new)
+            .add_image(owner, id, new)
             .await
             .map_err(|e| refused(TOOL, e))?
             .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
@@ -332,10 +333,14 @@ impl Tool for RemoveImage {
             _ => None,
         }
         .ok_or_else(|| invalid(TOOL, "image is the picture's name, niles-image:ID"))?;
+        let opened = self
+            .artifacts
+            .opened(TOOL, &asker.person, id, Operation::Edit)
+            .await?;
         let gone = self
             .artifacts
             .store
-            .remove_image(&asker.person, id, image)
+            .remove_image(opened.owner(), id, image)
             .await
             .map_err(|e| refused(TOOL, e))?;
         if !gone {
@@ -467,6 +472,7 @@ mod tests {
                         content: json!({ "markdown": "# Bangkok" }),
                         reason: "First draft".into(),
                         author: niles_artifacts::Author::Claude,
+                        by: None,
                         summary: None,
                         page: niles_artifacts::PageChange::Keep,
                     }),
@@ -609,6 +615,55 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn a_picture_is_kept_on_hers_shared_to_edit_and_never_on_one_shared_to_read() {
+        use niles_artifacts::Level;
+        let f = fixture(None);
+        let majse = "person:majse";
+        let to_edit = document(&f.store, majse).await;
+        let to_read = document(&f.store, majse).await;
+        f.store
+            .set_share(majse, to_edit, MARK, Some(Level::Edit))
+            .await
+            .unwrap();
+        f.store
+            .set_share(majse, to_read, MARK, Some(Level::View))
+            .await
+            .unwrap();
+        let tools = f.artifacts.tools();
+        let url = "https://upload.wikimedia.org/palace.jpg";
+        let kept = call(&tools, MARK, "artifact_add_image", add(to_edit, url))
+            .await
+            .unwrap();
+        assert_eq!(f.store.images(majse, to_edit).await.unwrap().len(), 1);
+
+        let e = call(&tools, MARK, "artifact_add_image", add(to_read, url))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("to read only"), "{e}");
+        assert_eq!(
+            f.files.asked.lock().unwrap().len(),
+            1,
+            "nothing fetched for one he may only read"
+        );
+        f.store
+            .set_share(majse, to_edit, MARK, Some(Level::View))
+            .await
+            .unwrap();
+        let e = call(
+            &tools,
+            MARK,
+            "artifact_remove_image",
+            json!({ "id": to_edit, "image": kept["name"] }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("to read only"), "{e}");
+        assert_eq!(f.store.images(majse, to_edit).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

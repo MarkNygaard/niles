@@ -540,6 +540,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let voices = recogniser.map(|r| r as Arc<dyn niles_recognition::VoiceRoster>);
     if let Some(roster) = &voices {
         profile::register(&mut tools, roster.clone());
+        if let Some(artifacts) = &artifacts {
+            artifacts.know_voices(roster.clone());
+        }
     }
     let (server, mut rx, mut disconnects_rx) = WyomingServer::bind(wyoming_bind)
         .await

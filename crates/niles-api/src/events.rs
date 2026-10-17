@@ -46,8 +46,8 @@ pub enum WireEvent {
         plugin: String,
         surface: String,
     },
-    /// One of the viewer's own artifacts changed: the Saved tab and the
-    /// panel's status line follow it.
+    /// One of the viewer's artifacts changed, their own or one shared
+    /// with them: the Saved tab and the panel's status line follow it.
     ArtifactChanged {
         id: i64,
         kind: String,
@@ -66,7 +66,8 @@ pub enum WireEvent {
 
 impl WireEvent {
     /// `event` as `viewer` (a person key) may see it. An artifact's goes
-    /// only to its own person.
+    /// only to the person it was published for: its owner and each one
+    /// it is shared with get one of their own.
     fn for_viewer(event: Event, viewer: &str) -> Option<Self> {
         match event {
             Event::ArtifactChanged {
