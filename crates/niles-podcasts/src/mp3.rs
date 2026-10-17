@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use std::time::Duration;
 
 /// An episode at most about 12 MB; 64 is already nonsense.
-const MOST_JOINED: usize = 64 << 20;
+pub(crate) const MOST_JOINED: usize = 64 << 20;
 /// The first frame is looked for within this much of the start, past
 /// an ID3v2 tag and any junk before the audio.
 const FIRST_FRAME_WITHIN: usize = 64 << 10;
@@ -315,6 +315,16 @@ pub fn join(segments: &[Vec<u8>], lead_in: Duration, pause: Duration) -> Result<
             reason: "there is nothing to join".into(),
         });
     }
+    let too_big = || Error::Audio {
+        reason: "the recording came out bigger than an episode can be".into(),
+    };
+    let mut input_bytes = 0usize;
+    for segment in segments {
+        if segment.len() > MOST_JOINED - input_bytes {
+            return Err(too_big());
+        }
+        input_bytes += segment.len();
+    }
     let parsed = segments
         .iter()
         .map(|segment| frames(segment))
@@ -340,64 +350,70 @@ pub fn join(segments: &[Vec<u8>], lead_in: Duration, pause: Duration) -> Result<
     let lead_in_frames = silence_count(lead_in);
     let pause_frames = silence_count(pause);
 
-    let body_frames_count: usize = parsed.iter().map(|(_, frames)| frames.len()).sum::<usize>()
-        + lead_in_frames
-        + pause_frames.saturating_mul(segments.len().saturating_sub(1));
-    let mut body: Vec<u8> = Vec::with_capacity(body_frames_count * parsed[0].1[0].len());
-    for _ in 0..lead_in_frames {
-        body.extend_from_slice(&silent_frame(&reference, reference.bitrate_index));
-    }
-    for (i, (_, segment_frames)) in parsed.iter().enumerate() {
-        if i > 0 {
-            for _ in 0..pause_frames {
-                body.extend_from_slice(&silent_frame(&reference, reference.bitrate_index));
-            }
-        }
-        for frame in segment_frames {
-            body.extend_from_slice(frame);
-        }
-    }
-
-    // One bitrate through the whole body is worth an "Info" tag, which
-    // players trust as constant-bitrate; mixed bitrates need "Xing".
-    let mut one_bitrate = true;
-    let mut at = 0;
-    while at + 4 <= body.len() {
-        let Some(header) = Header::parse(&body[at..]) else {
-            one_bitrate = false;
-            break;
-        };
-        if header.bitrate_index != reference.bitrate_index {
-            one_bitrate = false;
-            break;
-        }
-        at += header.frame_len();
-    }
-    let tag_id: &[u8] = if one_bitrate { b"Info" } else { b"Xing" };
+    let silence_frames = pause_frames
+        .checked_mul(segments.len() - 1)
+        .and_then(|pauses| pauses.checked_add(lead_in_frames))
+        .ok_or_else(too_big)?;
+    let silence = silent_frame(&reference, reference.bitrate_index);
     let xing_room = 4 + reference.version.side_info(reference.mono) + 16;
-    let tag_index = if silent_frame(&reference, reference.bitrate_index).len() >= xing_room {
+    let tag_index = if silence.len() >= xing_room {
         reference.bitrate_index
     } else {
-        // The smallest bitrate whose frame has room for the tag.
         (1..=14)
-            .find(|&index| silent_frame(&reference, index).len() >= xing_room)
+            .find(|&bitrate_index| {
+                Header {
+                    bitrate_index,
+                    padding: 0,
+                    crc: false,
+                    ..reference
+                }
+                .frame_len()
+                    >= xing_room
+            })
             .expect("the top MPEG-1 rate, 320 kbps, always has room")
     };
     let mut tag = silent_frame(&reference, tag_index);
+    let mut bytes = silence_frames
+        .checked_mul(silence.len())
+        .and_then(|body| body.checked_add(tag.len()))
+        .filter(|&size| size <= MOST_JOINED)
+        .ok_or_else(too_big)?;
+    let mut body_frames_count = silence_frames;
+    let mut one_bitrate = true;
+    for (_, segment_frames) in &parsed {
+        body_frames_count += segment_frames.len();
+        for frame in segment_frames {
+            if frame.len() > MOST_JOINED - bytes {
+                return Err(too_big());
+            }
+            bytes += frame.len();
+            one_bitrate &= Header::parse(frame)
+                .expect("frames() validated it")
+                .bitrate_index
+                == reference.bitrate_index;
+        }
+    }
+    let tag_id: &[u8] = if one_bitrate { b"Info" } else { b"Xing" };
     let at = 4 + reference.version.side_info(reference.mono);
     tag[at..at + 4].copy_from_slice(tag_id);
     tag[at + 4..at + 8].copy_from_slice(&3u32.to_be_bytes());
     tag[at + 8..at + 12].copy_from_slice(&(body_frames_count as u32).to_be_bytes());
-    let bytes = (tag.len() + body.len()) as u32;
-    tag[at + 12..at + 16].copy_from_slice(&bytes.to_be_bytes());
+    tag[at + 12..at + 16].copy_from_slice(&(bytes as u32).to_be_bytes());
 
-    let mut mp3 = Vec::with_capacity(tag.len() + body.len());
+    let mut mp3 = Vec::with_capacity(bytes);
     mp3.extend_from_slice(&tag);
-    mp3.extend_from_slice(&body);
-    if mp3.len() > MOST_JOINED {
-        return Err(Error::Audio {
-            reason: "the recording came out bigger than an episode can be".into(),
-        });
+    for _ in 0..lead_in_frames {
+        mp3.extend_from_slice(&silence);
+    }
+    for (i, (_, segment_frames)) in parsed.iter().enumerate() {
+        if i > 0 {
+            for _ in 0..pause_frames {
+                mp3.extend_from_slice(&silence);
+            }
+        }
+        for frame in segment_frames {
+            mp3.extend_from_slice(frame);
+        }
     }
     Ok(Joined {
         seconds: body_frames_count as f64 * spf / rate,

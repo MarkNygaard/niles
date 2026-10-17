@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { ARTIFACTS } from "@/lib/artifacts";
 import { dayLabel } from "@/lib/trainingPlan";
 
 /**
@@ -18,9 +17,12 @@ export function EpisodePlayer({ artifact, title }: { artifact: number; title: st
   const [askedAgain, setAskedAgain] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const audio = useQuery({
-    queryKey: [...ARTIFACTS, "audio", artifact],
+    // Artifact metadata changes must not replace the source during playback.
+    queryKey: ["episode-audio", artifact],
     queryFn: () => api.episodeAudio(artifact),
     staleTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   if (audio.isPending) return <Skeleton className="h-10 w-full" />;

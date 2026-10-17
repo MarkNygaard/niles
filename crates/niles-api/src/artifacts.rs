@@ -609,10 +609,10 @@ pub async fn audio(
         .as_ref()
         .map(|c| c.current())
         .and_then(|cfg| cfg.integrations.podcasts.clone());
-    let studio = podcasts
+    let bucket = podcasts
         .as_ref()
-        .and_then(|p| niles_podcasts::Studio::from_config(p).ok());
-    let (Some(podcasts), Some(studio)) = (podcasts, studio) else {
+        .and_then(|p| niles_podcasts::Bucket::from_config(p).ok());
+    let (Some(podcasts), Some(bucket)) = (podcasts, bucket) else {
         return Err(failed(
             StatusCode::SERVICE_UNAVAILABLE,
             "Podcasts are not set up, so its recording can't be reached",
@@ -620,9 +620,7 @@ pub async fn audio(
     };
     let now = chrono::Utc::now();
     let valid_for = niles_podcasts::PLAY_FOR;
-    let url = studio
-        .storage
-        .presign_get(&niles_podcasts::episode_key(id), valid_for, now);
+    let url = bucket.presign_get(&niles_podcasts::episode_key(id), valid_for, now);
     let expires_at = now + chrono::Duration::from_std(valid_for).unwrap_or(chrono::Duration::MAX);
     let kept_until = artifact.created_at + chrono::Duration::days(podcasts.keep_days.max(1) as i64);
     let mut response_headers = HeaderMap::new();
@@ -637,9 +635,10 @@ pub async fn audio(
     ))
 }
 
-/// Delete a podcast's recording, best effort: the row goes whatever
-/// happens here; a leftover object is the bucket's lifecycle rule's to
-/// clear, and is said so.
+/// Delete a podcast's recording before its row. Refused while the
+/// bucket can't be reached, so the row stays to try again; only with
+/// the add-on gone does the row go alone, its object left to the
+/// bucket's lifecycle rule.
 async fn forget_recording(state: &AppState, id: i64) -> Result<(), Failure> {
     let podcasts = state
         .config
@@ -654,17 +653,17 @@ async fn forget_recording(state: &AppState, id: i64) -> Result<(), Failure> {
         );
         return Ok(());
     };
-    let Ok(studio) = niles_podcasts::Studio::from_config(&podcasts) else {
-        tracing::warn!(
-            artifact = id,
-            "the Podcasts add-on is not complete; its recording stays until the bucket's \
-             lifecycle rule clears it"
-        );
-        return Ok(());
-    };
+    // Only the bucket is needed to delete: a Kokoro address being
+    // edited must not leave an object behind its row.
+    let bucket = niles_podcasts::Bucket::from_config(&podcasts).map_err(|e| {
+        failed(
+            StatusCode::BAD_GATEWAY,
+            format!("its recording could not be deleted from the bucket, so it was kept: {e}"),
+        )
+    })?;
     match tokio::time::timeout(
         FORGET_WITHIN,
-        studio.storage.delete(&niles_podcasts::episode_key(id)),
+        niles_podcasts::Storage::delete(&bucket, &niles_podcasts::episode_key(id)),
     )
     .await
     {
@@ -2745,6 +2744,53 @@ keep_days = 14
             "{body}"
         );
         assert!(f.store.get(MARK, id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn deleting_an_episode_with_incomplete_settings_does_not_orphan_its_audio() {
+        for (patch, bucket_deletes, expected) in [
+            (json!({ "kokoro_url": "" }), 1, StatusCode::NO_CONTENT),
+            (json!({ "bucket": "" }), 0, StatusCode::BAD_GATEWAY),
+        ] {
+            let f = fixture(true);
+            let id = episode(&f, Status::Ready, None).await;
+            let server = bucket().await;
+            wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+                .and(wiremock::matchers::path(format!(
+                    "/episodes/podcasts/{id}.mp3"
+                )))
+                .respond_with(wiremock::ResponseTemplate::new(204))
+                .expect(bucket_deletes)
+                .mount(&server)
+                .await;
+            let f = with_podcasts_config(f, &server).await;
+            let (status, body) = send(
+                &f.app,
+                by(
+                    "mark@example.com",
+                    "PATCH",
+                    "/config",
+                    Some(json!({ "integrations": { "podcasts": patch } })),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (status, body) = send(
+                &f.app,
+                by(
+                    "mark@example.com",
+                    "DELETE",
+                    &format!("/me/artifacts/{id}"),
+                    None,
+                ),
+            )
+            .await;
+            assert_eq!(status, expected, "{body}");
+            assert_eq!(
+                f.store.get(MARK, id).await.unwrap().is_none(),
+                expected == StatusCode::NO_CONTENT
+            );
+        }
     }
 
     #[tokio::test]

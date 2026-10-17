@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CommitField } from "@/components/CommitField";
 import { SecretField } from "@/components/SecretField";
@@ -66,12 +66,15 @@ export function PodcastsPanel({
 }: PodcastsPanelProps) {
   const [probe, setProbe] = useState<Probe>({ state: "idle" });
   const [daysProblem, setDaysProblem] = useState<string | null>(null);
+  const request = useRef(0);
+  const [secretsVersion, setSecretsVersion] = useState(0);
 
   const kokoro = settings?.kokoro_url?.trim() ?? "";
   const endpoint = settings?.endpoint?.trim() ?? "";
   const bucket = settings?.bucket ?? "";
   const firstVoice = settings?.first_voice ?? DEFAULT_VOICES[0];
   const secondVoice = settings?.second_voice ?? DEFAULT_VOICES[1];
+  const region = settings?.region ?? DEFAULT_REGION;
 
   const voices = useQuery({
     queryKey: ["podcasts", "voices", kokoro],
@@ -79,21 +82,58 @@ export function PodcastsPanel({
     enabled: kokoro !== "",
   });
 
+  const invalidate = useCallback(() => {
+    request.current += 1;
+    setProbe({ state: "idle" });
+  }, []);
+
+  const change = (entries: { path: string; value: unknown }[]) => {
+    invalidate();
+    onChange(entries);
+  };
+
+  const secretsChanged = () => {
+    invalidate();
+    setSecretsVersion((version) => version + 1);
+    onSecretsChanged();
+  };
+
   const run = useCallback(() => {
+    const current = ++request.current;
     setProbe({ state: "running" });
     api
       .testPodcasts()
-      .then((result) => setProbe({ state: "done", result }))
-      .catch((e: unknown) =>
-        setProbe({ state: "failed", message: e instanceof Error ? e.message : String(e) }),
-      );
+      .then((result) => {
+        if (request.current === current) setProbe({ state: "done", result });
+      })
+      .catch((e: unknown) => {
+        if (request.current === current) {
+          setProbe({ state: "failed", message: e instanceof Error ? e.message : String(e) });
+        }
+      });
   }, []);
 
   // As it opens, when there is something to test with. Again for new
   // values: the last one's answer says nothing of them.
   useEffect(() => {
+    invalidate();
     if (kokoro && endpoint && bucket.trim()) run();
-  }, [kokoro, endpoint, bucket, run]);
+    return () => {
+      request.current += 1;
+    };
+  }, [
+    kokoro,
+    endpoint,
+    bucket,
+    region,
+    firstVoice,
+    secondVoice,
+    accessKeyId?.source,
+    secretAccessKey?.source,
+    secretsVersion,
+    invalidate,
+    run,
+  ]);
 
   const status = statusLine(probe);
 
@@ -108,7 +148,7 @@ export function PodcastsPanel({
           value={current}
           disabled={saving}
           onValueChange={(next: string | null) => {
-            if (next) onChange([{ path: `integrations.podcasts.${which}_voice`, value: next }]);
+            if (next) change([{ path: `integrations.podcasts.${which}_voice`, value: next }]);
           }}
         >
           <SelectTrigger aria-label={label} className="w-full">
@@ -152,7 +192,7 @@ export function PodcastsPanel({
         placeholder="http://kokoro.ns.svc:8880"
         disabled={saving}
         onCommit={(typed) =>
-          onChange([{ path: "integrations.podcasts.kokoro_url", value: kokoroAddress(typed) }])
+          change([{ path: "integrations.podcasts.kokoro_url", value: kokoroAddress(typed) }])
         }
       />
 
@@ -172,7 +212,7 @@ export function PodcastsPanel({
         placeholder="https://<account-id>.r2.cloudflarestorage.com"
         disabled={saving}
         onCommit={(typed) =>
-          onChange([{ path: "integrations.podcasts.endpoint", value: r2Endpoint(typed) }])
+          change([{ path: "integrations.podcasts.endpoint", value: r2Endpoint(typed) }])
         }
       />
       <div className="flex flex-wrap gap-3">
@@ -182,28 +222,28 @@ export function PodcastsPanel({
           placeholder="niles-podcasts"
           disabled={saving}
           onCommit={(typed) =>
-            onChange([
+            change([
               { path: "integrations.podcasts.bucket", value: typed.trim().toLowerCase() },
             ])
           }
         />
         <CommitField
           label="Region"
-          value={settings?.region ?? DEFAULT_REGION}
+          value={region}
           placeholder={DEFAULT_REGION}
           disabled={saving}
           onCommit={(typed) =>
-            onChange([{ path: "integrations.podcasts.region", value: typed.trim() }])
+            change([{ path: "integrations.podcasts.region", value: typed.trim() }])
           }
         />
       </div>
       <p className="text-muted-foreground -mt-3 text-xs">auto for Cloudflare R2.</p>
 
       {accessKeyId && (
-        <SecretField secret={accessKeyId} writable={writable} onChanged={onSecretsChanged} />
+        <SecretField secret={accessKeyId} writable={writable} onChanged={secretsChanged} />
       )}
       {secretAccessKey && (
-        <SecretField secret={secretAccessKey} writable={writable} onChanged={onSecretsChanged} />
+        <SecretField secret={secretAccessKey} writable={writable} onChanged={secretsChanged} />
       )}
 
       <div className="flex flex-col gap-1">

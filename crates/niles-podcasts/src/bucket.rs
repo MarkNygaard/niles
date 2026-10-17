@@ -13,6 +13,7 @@ const DELETE_WITHIN: Duration = Duration::from_secs(20);
 const MOST_VALID: u64 = 604_800;
 /// A test object read back is tiny; a bigger answer is not the object.
 const MOST_READ: usize = 1 << 20;
+const MOST_ERROR: usize = 4096;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 pub struct BucketSettings {
@@ -131,17 +132,19 @@ impl Bucket {
         if !response.status().is_success() {
             return Err(self.refused(response, "read").await);
         }
-        let body = response.bytes().await.map_err(|e| Error::Storage {
-            action: "read",
-            reason: format!("R2 answered with HTTP 200 and unreadable data: {e}"),
-        })?;
+        let body = response_prefix(response, MOST_READ + 1)
+            .await
+            .map_err(|_| Error::Storage {
+                action: "read",
+                reason: "R2 answered with unreadable data".into(),
+            })?;
         if body.len() > MOST_READ {
             return Err(Error::Storage {
                 action: "read",
                 reason: "what came back is bigger than the test file can be".into(),
             });
         }
-        Ok(body.to_vec())
+        Ok(body)
     }
 
     fn not_answered(&self, e: &reqwest::Error, action: &'static str, within: u64) -> Error {
@@ -170,8 +173,10 @@ impl Bucket {
     /// body, never the address.
     async fn refused(&self, response: reqwest::Response, action: &'static str) -> Error {
         let status = response.status().as_u16();
-        let body = response.bytes().await.unwrap_or_default();
-        let text = String::from_utf8_lossy(&body[..body.len().min(4096)]);
+        let body = response_prefix(response, MOST_ERROR)
+            .await
+            .unwrap_or_default();
+        let text = String::from_utf8_lossy(&body);
         let code = text
             .split("<Code>")
             .nth(1)
@@ -204,6 +209,20 @@ impl Bucket {
         };
         Error::Storage { action, reason }
     }
+}
+
+async fn response_prefix(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> std::result::Result<Vec<u8>, reqwest::Error> {
+    let mut body = Vec::new();
+    while body.len() < limit {
+        let Some(chunk) = response.chunk().await? else {
+            break;
+        };
+        body.extend_from_slice(&chunk[..chunk.len().min(limit - body.len())]);
+    }
+    Ok(body)
 }
 
 #[async_trait::async_trait]
@@ -287,8 +306,7 @@ impl Storage for Bucket {
         }
         // A key already gone is the state a delete wants.
         if status == 404 {
-            let gone = response
-                .bytes()
+            let gone = response_prefix(response, MOST_ERROR)
                 .await
                 .map(|body| String::from_utf8_lossy(&body).contains("<Code>NoSuchKey</Code>"))
                 .unwrap_or(false);

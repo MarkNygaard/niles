@@ -289,7 +289,8 @@ fn lines(o: &Map<String, Value>, hosts: &[String; 2]) -> Result<Vec<Value>> {
         spoken[host] = true;
         let Some(text) = string(o, "text", &at)? else {
             return Err(invalid(format!(
-                "line {n} needs \"text\", what {host} says"
+                "line {n} needs \"text\", what {} says",
+                hosts[host]
             )));
         };
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");

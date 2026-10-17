@@ -200,11 +200,12 @@ impl Artifacts {
             Ok(Some(now)) if now.job_id == artifact.job_id => now,
             _ => return Err(Unrecorded::Gone),
         };
+        let bytes = joined.mp3.len();
         match tokio::time::timeout_at(
             deadline,
             studio
                 .storage
-                .put(&episode_key(artifact.id), joined.mp3.clone(), "audio/mpeg"),
+                .put(&episode_key(artifact.id), joined.mp3, "audio/mpeg"),
         )
         .await
         {
@@ -226,7 +227,7 @@ impl Artifacts {
                     "[artifacts] podcast {} recorded: {:.0} s, {} bytes",
                     artifact.id,
                     joined.seconds,
-                    joined.mp3.len()
+                    bytes
                 );
                 Ok(())
             }
@@ -411,12 +412,13 @@ impl Tool for PlayEpisode {
         let url = studio
             .storage
             .presign_get(&episode_key(id), PLAY_FOR, Utc::now());
+        // The registry runs a named tool whether or not it is offered.
         let sonos = self
             .0
             .podcasts
             .as_ref()
             .and_then(|p| p.sonos.get())
-            .expect("offered() said the Sonos handle is set");
+            .ok_or_else(|| invalid(TOOL, "Sonos playback is not up"))?;
         match sonos.play_url(&room, &url, &artifact.title).await {
             music::Outcome::Playing(title) => Ok(json!({
                 "playing": title,
@@ -1163,6 +1165,22 @@ mod tests {
         .expect("played");
         assert_eq!(out["playing"], json!("The Øresund bridge"));
         assert_eq!(sonos.played.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn called_before_sonos_is_up_it_refuses_rather_than_panics() {
+        let f = fixture();
+        let id = episode(&f, MARK, Status::Ready).await;
+        assert!(!offered(&f.artifacts, "podcast_play"));
+        let error = call(
+            &f,
+            asking(MARK),
+            "podcast_play",
+            json!({ "id": id, "room": "kitchen" }),
+        )
+        .await
+        .expect_err("no Sonos yet");
+        assert!(error.to_string().contains("Sonos"), "{error}");
     }
 
     #[tokio::test]

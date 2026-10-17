@@ -5,6 +5,7 @@ import { AddOnsPage } from "@/components/AddOnsPage";
 import type { AddOnsPageProps } from "@/components/AddOnsPage";
 import { api } from "@/lib/api";
 import { matchesQuery, statusOf } from "@/lib/integrations";
+import { DEFAULT_KEEP_DAYS } from "@/lib/podcasts";
 import type { Integration, IntegrationGroup, SecretsReport, ToolServer } from "@/lib/api";
 
 const SYSTEM: IntegrationGroup = {
@@ -993,11 +994,11 @@ describe("AddOnsPage podcasts", () => {
     expect(screen.getByText("Needs its R2 bucket")).toBeInTheDocument();
   });
 
-  it("adds it by writing the section, and opens it to be filled in", () => {
+  it("adds it with a persistable retention setting, and opens it to be filled in", () => {
     const { onChange } = showPodcasts(PODCASTS, unifiKey());
     fireEvent.click(screen.getByRole("button", { name: "Connect Podcasts" }));
     expect(onChange).toHaveBeenCalledWith("integrations.podcasts", [
-      { path: "integrations.podcasts", value: {} },
+      { path: "integrations.podcasts.keep_days", value: DEFAULT_KEEP_DAYS },
     ]);
     expect(screen.getByLabelText("Kokoro address")).toBeTruthy();
   });

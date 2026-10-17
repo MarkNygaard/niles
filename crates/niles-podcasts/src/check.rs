@@ -9,6 +9,7 @@ use std::time::Duration;
 
 const KOKORO_WITHIN: Duration = Duration::from_secs(45);
 const STORAGE_WITHIN: Duration = Duration::from_secs(20);
+const CLEANUP_WITHIN: Duration = Duration::from_secs(20);
 /// What the storage part says to prove it end to end: upload, read
 /// back through a presigned address, delete.
 const TEST_BODY: &[u8] = b"niles";
@@ -51,7 +52,7 @@ pub async fn check(
 ) -> Check {
     let (kokoro, storage) = tokio::join!(
         tokio::time::timeout(KOKORO_WITHIN, check_kokoro(kokoro, voices),),
-        tokio::time::timeout(STORAGE_WITHIN, check_storage(bucket, now),),
+        check_storage(bucket, now, STORAGE_WITHIN, CLEANUP_WITHIN),
     );
     Check {
         kokoro: match kokoro {
@@ -61,13 +62,7 @@ pub async fn check(
                 KOKORO_WITHIN.as_secs()
             )),
         },
-        storage: match storage {
-            Ok(part) => part,
-            Err(_) => Part::failed(format!(
-                "did not finish within {} s",
-                STORAGE_WITHIN.as_secs()
-            )),
-        },
+        storage,
     }
 }
 
@@ -87,29 +82,51 @@ async fn check_kokoro(kokoro: &Kokoro, voices: &[String; 2]) -> Part {
     Part::ok()
 }
 
-async fn check_storage(bucket: &Bucket, now: DateTime<Utc>) -> Part {
+async fn check_storage(
+    bucket: &Bucket,
+    now: DateTime<Utc>,
+    within: Duration,
+    cleanup_within: Duration,
+) -> Part {
     let key = format!("podcasts/niles-test-{}.txt", now.timestamp_millis());
-    if let Err(e) = bucket.put(&key, TEST_BODY.to_vec(), "text/plain").await {
-        return Part::failed(format!("Uploading a test file: {e}"));
-    }
-    // Whatever happens next, the delete is always tried, so a test file
-    // never lives in the bucket past its test.
-    let read_back = match bucket.read(&key, now).await {
-        Ok(body) if body == TEST_BODY => None,
-        Ok(_) => Some("what was read back is not what was written".to_string()),
-        Err(e) => Some(e.to_string()),
+    let deadline = tokio::time::Instant::now() + within;
+    let upload =
+        tokio::time::timeout_at(deadline, bucket.put(&key, TEST_BODY.to_vec(), "text/plain")).await;
+    let failure = match upload {
+        Err(_) => Some(Part::failed("Uploading a test file: the request timed out")),
+        Ok(Err(e)) => Some(Part::failed(format!("Uploading a test file: {e}"))),
+        Ok(Ok(())) => match tokio::time::timeout_at(deadline, bucket.read(&key, now)).await {
+            Ok(Ok(body)) if body == TEST_BODY => None,
+            read => {
+                let error = match read {
+                    Err(_) => "the request timed out".to_string(),
+                    Ok(Err(e)) => e.to_string(),
+                    Ok(Ok(_)) => "what was read back is not what was written".to_string(),
+                };
+                Some(Part::failed(format!(
+                    "Reading it back through a time-limited address: {error}"
+                )))
+            }
+        },
     };
-    let delete = bucket.delete(&key).await;
-    if let Some(error) = read_back {
-        return Part::failed(format!(
-            "Reading it back through a time-limited address: {error}"
-        ));
+    // An upload can have reached R2 even if its answer never arrived.
+    // Cleanup has its own budget: timing out the check must not cancel it.
+    let delete = tokio::time::timeout(cleanup_within, bucket.delete(&key)).await;
+    if let Some(failure) = failure {
+        return failure;
     }
     match delete {
-        Ok(()) => Part::ok(),
-        Err(e) => Part::failed(format!(
-            "Deleting the test file: {e}. It stays until the bucket's lifecycle rule clears it."
-        )),
+        Ok(Ok(())) => Part::ok(),
+        other => {
+            let error = match other {
+                Err(_) => "the request timed out".to_string(),
+                Ok(Err(e)) => e.to_string(),
+                Ok(Ok(())) => unreachable!(),
+            };
+            Part::failed(format!(
+                "Deleting the test file: {error}. It stays until the bucket's lifecycle rule clears it."
+            ))
+        }
     }
 }
 

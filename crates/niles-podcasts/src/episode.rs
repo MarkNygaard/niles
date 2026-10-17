@@ -4,7 +4,6 @@
 use crate::error::{Error, Result};
 use crate::{Speech, mp3};
 use futures_util::StreamExt;
-use futures_util::TryStreamExt;
 use futures_util::stream;
 use std::time::Duration;
 
@@ -55,10 +54,19 @@ pub async fn record(
             }
         })
         .collect();
-    let segments: Vec<Vec<u8>> = stream::iter(said)
-        .buffered(SAYING_AT_ONCE)
-        .try_collect()
-        .await?;
+    let mut answers = stream::iter(said).buffered(SAYING_AT_ONCE);
+    let mut segments = Vec::with_capacity(total);
+    let mut bytes = 0usize;
+    while let Some(answer) = answers.next().await {
+        let segment = answer?;
+        if segment.len() > mp3::MOST_JOINED - bytes {
+            return Err(Error::Audio {
+                reason: "the recording came out bigger than an episode can be".into(),
+            });
+        }
+        bytes += segment.len();
+        segments.push(segment);
+    }
     let joined = mp3::join(&segments, LEAD_IN, PAUSE)?;
     if joined.seconds > MOST_SECONDS {
         // The script's budget said this; a runaway says it again here,

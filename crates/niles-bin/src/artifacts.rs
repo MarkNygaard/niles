@@ -1011,13 +1011,14 @@ impl Artifacts {
             Err(why) => tracing::warn!("[artifacts] {person}: {:?} failed: {why}", done.title),
         }
         self.announce(&done);
-        if let Ok(Some(via)) = ended {
+        // A re-recorded podcast had no run, so no assistant to name.
+        if let Ok(via) = ended {
             self.say(
                 &person,
                 &done,
                 done.conversation_id.filter(|_| person == owner),
                 format!("{} is ready.", done.title),
-                Some(via),
+                via,
             )
             .await;
         }
@@ -4373,6 +4374,11 @@ mod tests {
             format!("podcasts/{id}.mp3")
         );
         assert_eq!(ran_for.lock().unwrap().len(), 1, "no second run");
+        let chats = f.chats.0.lock().unwrap();
+        let (person, conversation, turn) = chats.last().expect("completion in the original chat");
+        assert_eq!((person.as_str(), *conversation), (MARK, 1));
+        assert_eq!(turn.artifacts[0].id, id);
+        assert_eq!(turn.artifacts[0].status, Status::Ready);
     }
 
     #[tokio::test]

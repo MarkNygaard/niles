@@ -57,7 +57,7 @@ import { PluginPanel, PluginRow } from "@/components/PluginPanel";
 import { PluginLogo } from "@/components/PluginPreview";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import type { PodcastsSettings } from "@/lib/podcasts";
+import { DEFAULT_KEEP_DAYS, type PodcastsSettings } from "@/lib/podcasts";
 import {
   LINEAR_KEYWORDS,
   LINEAR_URL,
@@ -292,10 +292,10 @@ export function AddOnsPage({
         return onChange("integrations.spotify", [
           { path: "integrations.spotify.enabled", value: true },
         ]);
-      // The fields make it added; nothing to write yet, like web search.
+      // Empty tables are not persisted, so seed the retention default.
       case "podcasts":
         return onChange("integrations.podcasts", [
-          { path: "integrations.podcasts", value: {} },
+          { path: "integrations.podcasts.keep_days", value: DEFAULT_KEEP_DAYS },
         ]);
       // The redirect as this browser reaches Niles, written down rather
       // than worked out from forwarded headers on every sign-in:
