@@ -338,7 +338,10 @@ export function ChatView({
             {pendingAttachments && pendingAttachments.length > 0 && (
               <PendingAttachments files={pendingAttachments} />
             )}
-            <Bubble from="you">{pending}</Bubble>
+            {/* A file on its own is a message: then there is no said
+                bubble, only the chips, the way the kept turn reads
+                back. */}
+            {pending ? <Bubble from="you">{pending}</Bubble> : null}
             <Bubble from="niles">
               <span className="text-muted-foreground" aria-label="Niles is answering">
                 …
