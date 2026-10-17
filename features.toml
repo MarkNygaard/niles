@@ -911,3 +911,10 @@ id = "linear-webhook"
 category = "ui.integrations"
 summary = "Linear's card takes a webhook signing secret; once saved, an issue going to review or done is announced"
 since_pr = 466
+
+[[feature]]
+id = "podcasts"
+category = "voice.media"
+summary = "A researched two-host episode, voiced by the house's own Kokoro, played in the app or on a Sonos"
+phrasings = ["make me a quick podcast about the Øresund bridge", "play the podcast about the bridge in the kitchen"]
+since_pr = 457
