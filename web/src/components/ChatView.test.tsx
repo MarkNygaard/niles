@@ -217,6 +217,26 @@ describe("ChatView", () => {
       expect(onAnswer).toHaveBeenLastCalledWith(1, false);
     });
 
+    it("shows the rule in full, and what it will not do, beside Save", () => {
+      const in_full =
+        "When:\n  1. There has been no motion in the hallway or the kitchen for 2 minutes\n" +
+        "Do:\n  Turn off the kitchen lights\n  Turn off the hallway lights";
+      const warning = "A run started by trigger 1 checks that the office window is closed.";
+      const shown = { ...proposal, in_full, warnings: [warning] };
+      renderChat({ turns: [turn("lights off", "Shall I save it?", { proposal: shown })] });
+      const full = screen.getByLabelText("The rule in full");
+      // Line by line, as the server wrote it.
+      expect(full.textContent).toBe(in_full);
+      expect(screen.getByText(warning)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    });
+
+    it("says nothing more for a proposal kept before it had the rule in full", () => {
+      renderChat({ turns: [asked] });
+      expect(screen.queryByLabelText("The rule in full")).toBeNull();
+      expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    });
+
     it("is not offered once another turn follows it", () => {
       renderChat({ turns: [asked, turn("Yes", "Saved.")] });
       expect(screen.queryByRole("button", { name: "Save" })).toBeNull();

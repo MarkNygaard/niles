@@ -57,6 +57,118 @@ fn words(slug: &str) -> String {
     slug.replace('_', " ")
 }
 
+/// The one sensor a motion trigger or condition names, when it names
+/// one: in `device`, or as a list of one.
+pub(crate) fn one_sensor<'a>(
+    device: &'a Option<String>,
+    devices: &'a [String],
+    rooms: &[String],
+) -> Option<&'a str> {
+    match (device, devices, rooms) {
+        (Some(device), _, _) => Some(device),
+        (None, [one], []) => Some(one),
+        _ => None,
+    }
+}
+
+/// Where a group of motion sensors looks: "the hallway", "the kitchen".
+/// A sensor named for what it is — `hallway/motion`, `kitchen/pir` —
+/// stands for its room, which is how people say it; any other is said
+/// by name. A room comes up once however many sensors it has.
+fn places(devices: &[String], rooms: &[String]) -> Vec<String> {
+    const SENSOR: &[&str] = &["motion", "presence", "occupancy", "pir", "radar"];
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |place: String| {
+        if !out.contains(&place) {
+            out.push(place);
+        }
+    };
+    for device in devices {
+        let bare = device
+            .split_once(':')
+            .map_or(device.as_str(), |(_, rest)| rest);
+        match bare.split_once('/') {
+            Some((room, name)) if name == "sensor" || SENSOR.iter().any(|s| name.contains(s)) => {
+                add(format!("the {}", words(room)))
+            }
+            _ => add(thing(device)),
+        }
+    }
+    for room in rooms {
+        add(format!("the {}", words(room)));
+    }
+    out
+}
+
+/// "a", "a or b", "a, b or c".
+fn or_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// The whole rule, a line for each part: the triggers numbered, the
+/// conditions, then the actions in order, with what an `if` does either
+/// way indented under it.
+///
+/// Made from the rule alone, so what is read back for a yes is what
+/// will run — not the model's paraphrase of what it meant to write.
+pub fn describe(rule: &AutomationRuleDto) -> String {
+    let names = trigger_names(&rule.triggers);
+    let mut lines = vec!["When:".to_string()];
+    if rule.triggers.is_empty() {
+        lines.push("  nothing yet".into());
+    }
+    for (i, t) in rule.triggers.iter().enumerate() {
+        lines.push(format!("  {}. {}", i + 1, upper_first(&trigger(t))));
+    }
+    if !rule.conditions.is_empty() {
+        lines.push("Only if:".into());
+        for c in &rule.conditions {
+            lines.push(format!("  - {}", upper_first(&condition(c, &names))));
+        }
+    }
+    lines.push("Do:".into());
+    steps(&rule.actions, 1, &names, &mut lines);
+    lines.join("\n")
+}
+
+fn steps(actions: &[ActionDto], depth: usize, names: &[(String, String)], lines: &mut Vec<String>) {
+    let indent = "  ".repeat(depth);
+    for a in actions {
+        let ActionDto::If {
+            conditions,
+            then,
+            otherwise,
+        } = a
+        else {
+            lines.push(format!("{indent}{}", upper_first(&action(a, names))));
+            continue;
+        };
+        if conditions.is_empty() {
+            lines.push(format!("{indent}Always:"));
+        } else {
+            let when: Vec<String> = conditions.iter().map(|c| condition(c, names)).collect();
+            lines.push(format!("{indent}If {}:", when.join(" and ")));
+        }
+        steps(then, depth + 1, names, lines);
+        if !otherwise.is_empty() {
+            lines.push(format!("{indent}Otherwise:"));
+            steps(otherwise, depth + 1, names, lines);
+        }
+    }
+}
+
+fn upper_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// Whether an action is a press, hold or turn of a button, in
 /// Zigbee2MQTT's vocabulary. A rule sentence has no device class to go
 /// on, and actions come from any device now: "the printer is pressed
@@ -95,7 +207,7 @@ fn looks_like_a_button(device: &str) -> bool {
 
 /// Each trigger's id and how it is said: by its place, as the app
 /// shows it — the id is the app's and the model's, not a person's.
-fn trigger_names(triggers: &[TriggerDto]) -> Vec<(String, String)> {
+pub(crate) fn trigger_names(triggers: &[TriggerDto]) -> Vec<(String, String)> {
     triggers
         .iter()
         .enumerate()
@@ -190,7 +302,7 @@ fn sun_moment(event: &str, offset: i32) -> String {
     }
 }
 
-fn trigger(t: &TriggerDto) -> String {
+pub(crate) fn trigger(t: &TriggerDto) -> String {
     match &t.kind {
         TriggerKind::Contact { device, open, hold } => match (open, held(hold)) {
             (Some(true), Some(h)) => format!("{} has been open for {h}", thing(device)),
@@ -202,15 +314,31 @@ fn trigger(t: &TriggerDto) -> String {
         },
         TriggerKind::Motion {
             device,
+            devices,
+            rooms,
             detected,
             hold,
-        } => match (detected, held(hold)) {
-            (Some(true), Some(h)) => format!("{} has seen motion for {h}", thing(device)),
-            (Some(false), Some(h)) => format!("{} has seen no motion for {h}", thing(device)),
-            (None, Some(h)) => format!("{} has stayed as it is for {h}", thing(device)),
-            (Some(true), None) => format!("{} sees motion", thing(device)),
-            (Some(false), None) => format!("{} stops seeing motion", thing(device)),
-            (None, None) => format!("{} sees motion or stops", thing(device)),
+        } => match one_sensor(device, devices, rooms) {
+            Some(device) => match (detected, held(hold)) {
+                (Some(true), Some(h)) => format!("{} has seen motion for {h}", thing(device)),
+                (Some(false), Some(h)) => format!("{} has seen no motion for {h}", thing(device)),
+                (None, Some(h)) => format!("{} has stayed as it is for {h}", thing(device)),
+                (Some(true), None) => format!("{} sees motion", thing(device)),
+                (Some(false), None) => format!("{} stops seeing motion", thing(device)),
+                (None, None) => format!("{} sees motion or stops", thing(device)),
+            },
+            None => {
+                let at = or_list(&places(devices, rooms));
+                match (detected, held(hold)) {
+                    (Some(true), Some(h)) => format!("there has been motion in {at} for {h}"),
+                    (Some(false), Some(h)) => {
+                        format!("there has been no motion in {at} for {h}")
+                    }
+                    (Some(true), None) => format!("there is motion in {at}"),
+                    (Some(false), None) => format!("there is no motion left in {at}"),
+                    (None, _) => format!("motion in {at} starts or stops"),
+                }
+            }
         },
         TriggerKind::DeviceState {
             device,
@@ -278,7 +406,7 @@ fn trigger(t: &TriggerDto) -> String {
     }
 }
 
-fn condition(condition: &ConditionDto, names: &[(String, String)]) -> String {
+pub(crate) fn condition(condition: &ConditionDto, names: &[(String, String)]) -> String {
     match condition {
         ConditionDto::TimeOfDay {
             after,
@@ -340,13 +468,17 @@ fn condition(condition: &ConditionDto, names: &[(String, String)]) -> String {
             thing(device),
             bounds(*above, *below)
         ),
-        ConditionDto::MotionIs { device, detected } => {
-            if *detected {
-                format!("{} sees motion", thing(device))
-            } else {
-                format!("{} sees no motion", thing(device))
-            }
-        }
+        ConditionDto::MotionIs {
+            device,
+            devices,
+            rooms,
+            detected,
+        } => match (one_sensor(device, devices, rooms), detected) {
+            (Some(device), true) => format!("{} sees motion", thing(device)),
+            (Some(device), false) => format!("{} sees no motion", thing(device)),
+            (None, true) => format!("there is motion in {}", or_list(&places(devices, rooms))),
+            (None, false) => format!("there is no motion in {}", or_list(&places(devices, rooms))),
+        },
         ConditionDto::PresenceIs { state } => match state.as_str() {
             "away" => "everyone is away".to_string(),
             _ => "someone is home".to_string(),
@@ -367,7 +499,7 @@ fn condition(condition: &ConditionDto, names: &[(String, String)]) -> String {
     }
 }
 
-fn action(step: &ActionDto, names: &[(String, String)]) -> String {
+pub(crate) fn action(step: &ActionDto, names: &[(String, String)]) -> String {
     match step {
         ActionDto::SetDevice {
             device,
@@ -732,6 +864,123 @@ mod tests {
              power of the kitchen dishwasher is below 5 and the CO2 of the office air is above \
              1000 and the soil moisture of the garden plant is below 20.5, turn on the kitchen \
              dishwasher."
+        );
+    }
+
+    /// The hallway and the kitchen share a light: each room's motion
+    /// turns its lights on, and both go off once neither has seen
+    /// anybody for two minutes.
+    fn shared_lights() -> serde_json::Value {
+        json!({
+            "id": "r",
+            "triggers": [
+                { "id": "hall-seen", "type": "motion", "device": "hallway/motion", "detected": true },
+                { "id": "kitchen-seen", "type": "motion", "device": "kitchen/motion", "detected": true },
+                { "id": "all-clear", "type": "motion", "devices": ["hallway/motion", "kitchen/motion"], "detected": false, "for": { "minutes": 2 } }
+            ],
+            "actions": [
+                { "do": "if", "conditions": [{ "kind": "triggered_by", "triggers": ["hall-seen"] }],
+                  "then": [{ "do": "set_room", "room": "hallway", "on": true }] },
+                { "do": "if", "conditions": [{ "kind": "triggered_by", "triggers": ["kitchen-seen"] }],
+                  "then": [{ "do": "set_room", "room": "kitchen", "on": true }, { "do": "set_room", "room": "hallway", "on": true }] },
+                { "do": "if", "conditions": [{ "kind": "triggered_by", "triggers": ["all-clear"] }],
+                  "then": [{ "do": "set_room", "room": "kitchen", "on": false }, { "do": "set_room", "room": "hallway", "on": false }] }
+            ],
+        })
+    }
+
+    #[test]
+    fn says_a_group_of_sensors_by_their_rooms() {
+        let s = said(shared_lights());
+        assert!(
+            s.contains(
+                "or when there has been no motion in the hallway or the kitchen for 2 minutes,"
+            ),
+            "{s}"
+        );
+        let when = |trigger: serde_json::Value| {
+            said(
+                json!({ "id": "r", "triggers": [trigger], "actions": [{ "do": "notify", "body": "x" }] }),
+            )
+        };
+        assert_eq!(
+            when(
+                json!({ "type": "motion", "devices": ["hallway/motion", "office/radar", "hallway/pir"], "rooms": ["kitchen"], "detected": true })
+            ),
+            "When there is motion in the hallway, the office or the kitchen, say \"x\"."
+        );
+        assert_eq!(
+            when(
+                json!({ "type": "motion", "devices": ["hallway/motion", "office/desk_lamp"], "detected": false })
+            ),
+            "When there is no motion left in the hallway or the office desk lamp, say \"x\"."
+        );
+        assert_eq!(
+            when(json!({ "type": "motion", "devices": ["hallway/motion"], "detected": true })),
+            "When the hallway motion sees motion, say \"x\".",
+            "a list of one is that sensor"
+        );
+        assert_eq!(
+            said(json!({
+                "id": "r",
+                "triggers": [{ "type": "time", "at": "23:00" }],
+                "conditions": [{ "kind": "motion_is", "rooms": ["hallway", "kitchen"], "detected": false }],
+                "actions": [{ "do": "notify", "body": "x" }],
+            })),
+            "When it is 23:00, if there is no motion in the hallway or the kitchen, say \"x\"."
+        );
+    }
+
+    #[test]
+    fn describes_the_rule_a_line_at_a_time() {
+        let described = describe(&serde_json::from_value(shared_lights()).unwrap());
+        assert_eq!(
+            described,
+            "When:\n\
+             \x20 1. The hallway motion sees motion\n\
+             \x20 2. The kitchen motion sees motion\n\
+             \x20 3. There has been no motion in the hallway or the kitchen for 2 minutes\n\
+             Do:\n\
+             \x20 If it was started by trigger 1:\n\
+             \x20   Turn on the hallway lights\n\
+             \x20 If it was started by trigger 2:\n\
+             \x20   Turn on the kitchen lights\n\
+             \x20   Turn on the hallway lights\n\
+             \x20 If it was started by trigger 3:\n\
+             \x20   Turn off the kitchen lights\n\
+             \x20   Turn off the hallway lights"
+        );
+    }
+
+    #[test]
+    fn describes_conditions_waits_and_both_ways_of_an_if() {
+        let described = describe(
+            &serde_json::from_value(json!({
+                "id": "r",
+                "triggers": [{ "type": "contact", "device": "office/door", "open": false }],
+                "conditions": [{ "kind": "sun", "after": "sunset", "before": "sunrise" }],
+                "actions": [
+                    { "do": "delay", "minutes": 5 },
+                    { "do": "if",
+                      "conditions": [{ "kind": "motion_is", "device": "office/motion", "detected": false }],
+                      "then": [{ "do": "set_room", "room": "office", "on": false }],
+                      "else": [{ "do": "notify", "body": "Somebody is still in the office" }] }
+                ],
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            described,
+            "When:\n\
+             \x20 1. The office door closes\n\
+             Only if:\n\
+             \x20 - It is dark\n\
+             Do:\n\
+             \x20 Wait 5 minutes\n\
+             \x20 If the office motion sees no motion:\n\
+             \x20   Turn off the office lights\n\
+             \x20 Otherwise:\n\
+             \x20   Say \"Somebody is still in the office\""
         );
     }
 

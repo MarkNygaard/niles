@@ -12,7 +12,7 @@ use crate::registry::ToolRegistry;
 use crate::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use niles_automations::store::DEFAULT_SOURCE;
-use niles_automations::{AutomationStore, Measure, Rule, RunLog, sentence};
+use niles_automations::{AutomationStore, Measure, Rule, RunLog, describe, sentence, warnings};
 use niles_config::{ActionDto, AutomationRuleDto, ConditionDto, TriggerDto, TriggerKind};
 use niles_core::{DeviceId, DeviceRegistry, RoomName};
 use serde_json::{Value, json};
@@ -233,7 +233,7 @@ fn rule_schema() -> Value {
     });
     let condition = json!({
         "type": "object",
-        "description": "kind=time_of_day: after/before HH:MM (may wrap midnight), optional days. kind=sun: after and/or before sunrise|sunset, with after_offset_minutes/before_offset_minutes (after sunset + before sunrise = while it is dark). kind=device_is: a device on/off. kind=contact_is: a door open/closed. kind=motion_is: a motion sensor seeing somebody (detected=true) or not. kind=numeric: a number the device reports (see measure) above and/or below a value. kind=presence_is: state home|away. kind=triggered_by: which of the rule's triggers (by id) started it — for a rule with several triggers doing different things.",
+        "description": "kind=time_of_day: after/before HH:MM (may wrap midnight), optional days. kind=sun: after and/or before sunrise|sunset, with after_offset_minutes/before_offset_minutes (after sunset + before sunrise = while it is dark). kind=device_is: a device on/off. kind=contact_is: a door open/closed. kind=motion_is: a motion sensor (device) seeing somebody (detected=true) or not; over several (devices, and/or every motion sensor in rooms), detected=false is none of them seeing anybody and true any of them. kind=numeric: a number the device reports (see measure) above and/or below a value. kind=presence_is: state home|away. kind=triggered_by: which of the rule's triggers (by id) started it — for a rule with several triggers doing different things.",
         "properties": {
             "kind": { "type": "string", "enum": ["time_of_day", "sun", "device_is", "contact_is", "motion_is", "numeric", "presence_is", "triggered_by"] },
             "after": { "type": "string" },
@@ -242,6 +242,8 @@ fn rule_schema() -> Value {
             "before_offset_minutes": { "type": "integer" },
             "days": days,
             "device": device,
+            "devices": { "type": "array", "items": device.clone(), "description": "motion_is only: several motion sensors, in place of device." },
+            "rooms": { "type": "array", "items": { "type": "string" }, "description": "motion_is only: every motion sensor in these rooms." },
             "on": { "type": "boolean" },
             "open": { "type": "boolean" },
             "detected": { "type": "boolean" },
@@ -288,13 +290,15 @@ fn rule_schema() -> Value {
             "triggers": {
                 "type": "array",
                 "minItems": 1,
-                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. A moment relative to the sun ('30 minutes after sunset') is ONE sun trigger with offset_minutes 30 — not a sunset trigger with a condition, which would never hold at sunset. type=contact: a door or window opens (open=true) or closes (false). type=motion: a motion sensor sees somebody (detected=true) or stops (false); lights on with motion and off again is TWO triggers — motion detected=true, and motion detected=false with `for` ('no motion for 5 minutes') — told apart by triggered_by. type=device_state: a device turns on/off. type=numeric: a number the device reports (see measure) goes above/below a value — a price, a power draw, a temperature. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, motion, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
+                "description": "What starts it; one or more. Give each an id (t1, t2…) when conditions need to tell them apart. A moment relative to the sun ('30 minutes after sunset') is ONE sun trigger with offset_minutes 30 — not a sunset trigger with a condition, which would never hold at sunset. type=contact: a door or window opens (open=true) or closes (false). type=motion: a motion sensor sees somebody (detected=true) or stops (false); lights on with motion and off again is TWO triggers — motion detected=true, and motion detected=false with `for` ('no motion for 5 minutes') — told apart by triggered_by. A motion trigger can watch several sensors as one: `devices` (and/or every motion sensor in `rooms`) in place of `device`; detected=false holds once NONE of them sees anybody, so with `for` it is 'no motion in any of these rooms for 2 minutes', counted from the last one to clear and started over by motion in any; detected=true fires on motion in any. Lights shared by rooms ('keep both on while I move between them', 'off once both are clear') get ONE such trigger over all the rooms' sensors, detected=false with `for`, for the off; the on triggers stay one per room. Never write 'off only if the other room is clear' as a condition on a trigger with `for`, or after a delay: it is checked once, when the wait ends, and if it fails nothing tries again. type=device_state: a device turns on/off. type=numeric: a number the device reports (see measure) goes above/below a value — a price, a power draw, a temperature. type=device_action: a button press. type=presence: someone comes home (state=home) or everyone leaves (away). type=time: at HH:MM, optional days. type=sun: sunrise|sunset with offset_minutes (negative: before). type=timer_fired. contact, motion, device_state, numeric and presence take `for`: fire only once it has held that long ('open for 10 minutes').",
                 "items": {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
                         "type": { "type": "string", "enum": ["contact", "motion", "device_state", "numeric", "device_action", "presence", "time", "sun", "timer_fired"] },
                         "device": device,
+                        "devices": { "type": "array", "items": device.clone(), "description": "motion only: several sensors watched as one, in place of device." },
+                        "rooms": { "type": "array", "items": { "type": "string" }, "description": "motion only: every motion sensor in these rooms, with or in place of devices." },
                         "room": { "type": "string" },
                         "open": { "type": "boolean" },
                         "detected": { "type": "boolean" },
@@ -403,6 +407,7 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     let mut devices: Vec<&str> = Vec::new();
     let mut rooms: Vec<&str> = Vec::new();
     let mut measured: Vec<(&str, &str)> = Vec::new();
+    let mut sensors = Sensors::default();
     for trigger in &rule.triggers {
         match &trigger.kind {
             TriggerKind::Numeric {
@@ -411,9 +416,15 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
                 devices.push(device);
                 measured.push((device, measure));
             }
-            TriggerKind::Contact { device, .. }
-            | TriggerKind::Motion { device, .. }
-            | TriggerKind::DeviceAction { device, .. } => devices.push(device),
+            TriggerKind::Motion {
+                device,
+                devices: named,
+                rooms: watched,
+                ..
+            } => sensors.add(device, named, watched),
+            TriggerKind::Contact { device, .. } | TriggerKind::DeviceAction { device, .. } => {
+                devices.push(device)
+            }
             TriggerKind::DeviceState { device, room, .. } => {
                 devices.extend(device.as_deref());
                 rooms.extend(room.as_deref());
@@ -425,6 +436,7 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
         conditions: &'a [ConditionDto],
         devices: &mut Vec<&'a str>,
         measured: &mut Vec<(&'a str, &'a str)>,
+        sensors: &mut Sensors<'a>,
     ) {
         for condition in conditions {
             match condition {
@@ -434,9 +446,15 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
                     devices.push(device);
                     measured.push((device, measure));
                 }
-                ConditionDto::DeviceIs { device, .. }
-                | ConditionDto::ContactIs { device, .. }
-                | ConditionDto::MotionIs { device, .. } => devices.push(device),
+                ConditionDto::MotionIs {
+                    device,
+                    devices: named,
+                    rooms: watched,
+                    ..
+                } => sensors.add(device, named, watched),
+                ConditionDto::DeviceIs { device, .. } | ConditionDto::ContactIs { device, .. } => {
+                    devices.push(device)
+                }
                 _ => {}
             }
         }
@@ -446,6 +464,7 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
         devices: &mut Vec<&'a str>,
         lit: &mut Vec<&'a str>,
         measured: &mut Vec<(&'a str, &'a str)>,
+        sensors: &mut Sensors<'a>,
     ) {
         for action in actions {
             match action {
@@ -467,33 +486,32 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
                     then,
                     otherwise,
                 } => {
-                    in_conditions(conditions, devices, measured);
-                    in_actions(then, devices, lit, measured);
-                    in_actions(otherwise, devices, lit, measured);
+                    in_conditions(conditions, devices, measured, sensors);
+                    in_actions(then, devices, lit, measured, sensors);
+                    in_actions(otherwise, devices, lit, measured, sensors);
                 }
                 _ => {}
             }
         }
     }
-    in_conditions(&rule.conditions, &mut devices, &mut measured);
-    in_actions(&rule.actions, &mut devices, &mut rooms, &mut measured);
+    in_conditions(&rule.conditions, &mut devices, &mut measured, &mut sensors);
+    in_actions(
+        &rule.actions,
+        &mut devices,
+        &mut rooms,
+        &mut measured,
+        &mut sensors,
+    );
+    let mut missing = sensors.unknown(registry);
+    devices.retain(|d| !sensors.devices.contains(d));
     devices.sort_unstable();
     devices.dedup();
     rooms.sort_unstable();
     rooms.dedup();
     measured.sort_unstable();
     measured.dedup();
-    let find = |device: &str| {
-        let full = if device.contains(':') {
-            device.to_string()
-        } else {
-            format!("{DEFAULT_SOURCE}:{device}")
-        };
-        DeviceId::parse(&full).ok().and_then(|id| registry.get(&id))
-    };
-    let mut missing = Vec::new();
     for device in devices {
-        if find(device).is_none() {
+        if find(registry, device).is_none() {
             missing.push(format!("no device called {device}"));
         }
     }
@@ -501,7 +519,8 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     // be a rule that never fires and never says why. A missing device
     // has been said above.
     for (device, measure) in measured {
-        let (Some(found), Some(Measure::Reading(name))) = (find(device), Measure::parse(measure))
+        let (Some(found), Some(Measure::Reading(name))) =
+            (find(registry, device), Measure::parse(measure))
         else {
             continue;
         };
@@ -540,6 +559,60 @@ fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     missing
 }
 
+fn find(registry: &DeviceRegistry, device: &str) -> Option<niles_core::Device> {
+    let full = if device.contains(':') {
+        device.to_string()
+    } else {
+        format!("{DEFAULT_SOURCE}:{device}")
+    };
+    DeviceId::parse(&full).ok().and_then(|id| registry.get(&id))
+}
+
+/// The motion sensors a rule watches, by name and by room: each has to
+/// be one, which a door sensor misread as "the hall sensor" is not.
+#[derive(Default)]
+struct Sensors<'a> {
+    devices: Vec<&'a str>,
+    rooms: Vec<&'a str>,
+}
+
+impl<'a> Sensors<'a> {
+    fn add(&mut self, device: &'a Option<String>, devices: &'a [String], rooms: &'a [String]) {
+        self.devices.extend(device.as_deref());
+        self.devices.extend(devices.iter().map(String::as_str));
+        self.rooms.extend(rooms.iter().map(String::as_str));
+    }
+
+    fn unknown(&mut self, registry: &DeviceRegistry) -> Vec<String> {
+        let motion = |d: &niles_core::Device| {
+            d.class == niles_core::DeviceClass::Motion || d.state.motion.is_some()
+        };
+        self.devices.sort_unstable();
+        self.devices.dedup();
+        self.rooms.sort_unstable();
+        self.rooms.dedup();
+        let mut missing = Vec::new();
+        for device in &self.devices {
+            match find(registry, device) {
+                None => missing.push(format!("no device called {device}")),
+                Some(found) if !motion(&found) => {
+                    missing.push(format!("{device} is not a motion sensor"))
+                }
+                Some(_) => {}
+            }
+        }
+        for room in &self.rooms {
+            let watched = RoomName::parse(*room)
+                .map(|r| registry.list_room(&r).iter().any(motion))
+                .unwrap_or(false);
+            if !watched {
+                missing.push(format!("no motion sensor in a room called {room}"));
+            }
+        }
+        missing
+    }
+}
+
 /// Whether two rules start on any of the same kind of trigger for the
 /// same thing — "you already have one for the garden door".
 fn overlaps(a: &[TriggerDto], b: &[TriggerDto]) -> bool {
@@ -561,11 +634,24 @@ impl Tool for ProposeAutomation {
             description: "First step of making an automation — 'when the office door opens, \
                 turn off the office lights', 'turn the lights off five minutes after the door \
                 closes', 'tell me if the garden door has been open for ten minutes', 'turn on the \
-                porch light at sunset'. Saves nothing. Returns the rule as a sentence: read it to \
-                the person and ask whether to save it ('When the office door opens, I'll turn \
-                off the office lights. Shall I?'). Call create_automation with the same rule \
-                only after they say yes. If it returns problems, say them instead and ask what \
-                they meant."
+                porch light at sunset'. Saves nothing. Returns the rule as a sentence, and \
+                rule_in_full, every trigger, condition and action as it will run: check that \
+                against what was asked, then read the sentence to the person and ask whether to \
+                save it ('When the office door opens, I'll turn off the office lights. Shall \
+                I?'). Say only what rule_in_full says it does, never more. Call \
+                create_automation with the same rule only after they say yes. If it returns \
+                problems, say them instead and ask what they meant; if it returns warnings, \
+                they say what the rule will not do — fix the rule unless it is meant. Ask \
+                before proposing when the request can be read two ways: 'not if there is motion \
+                in the kitchen' may mean do not turn it on while the kitchen has somebody, or \
+                do not turn it off until the kitchen is clear too; 'no motion for 2 minutes' is \
+                not 'on for at least 2 minutes'. Example, once asked: 'hallway motion turns on \
+                the hallway light, kitchen motion the kitchen and hallway lights, and both go \
+                off once neither room has seen anybody for 2 minutes' is triggers hall-seen \
+                (motion, hallway sensor, detected true), kitchen-seen (motion, kitchen sensor, \
+                detected true) and all-clear (motion, devices [hallway sensor, kitchen sensor], \
+                detected false, for 2 minutes), with one if per trigger by triggered_by — and no \
+                motion_is conditions."
                 .into(),
             parameters: rule_schema(),
         }
@@ -613,15 +699,24 @@ impl Tool for ProposeAutomation {
             .filter(|r| overlaps(&r.triggers, &rule.triggers))
             .map(|r| sentence(&r))
             .collect();
+        let warned = warnings(&rule);
         Ok(json!({
             "sentence": sentence(&rule),
+            "rule_in_full": describe(&rule),
             "problems": problems,
+            "warnings": warned,
             "existing_with_the_same_trigger": similar,
             "saved": false,
-            "next": if problems.is_empty() {
-                "NOT saved yet. Read the sentence back and ask whether to save it. Do not say it is saved."
-            } else {
+            "next": if !problems.is_empty() {
                 "NOT saved. Say what is wrong and ask what they meant."
+            } else if !warned.is_empty() {
+                "NOT saved yet. Check the warnings against what they asked for: if the rule would \
+                 not do it, change the rule and propose it again. If it is meant, read the \
+                 sentence back, say the warning in a few words, and ask whether to save it."
+            } else {
+                "NOT saved yet. Check rule_in_full is what they asked for, then read the sentence \
+                 back and ask whether to save it. Describe only what rule_in_full says. Do not say \
+                 it is saved."
             },
         }))
     }
@@ -657,7 +752,14 @@ impl Tool for CreateAutomation {
             .create(rule)
             .map_err(|e| invalid("create_automation", e.to_string()))?;
         self.proposals.clear();
-        Ok(json!({ "saved": true, "id": made.id, "sentence": sentence(&made) }))
+        Ok(json!({
+            "saved": true,
+            "id": made.id,
+            "sentence": sentence(&made),
+            "rule_in_full": describe(&made),
+            "warnings": warnings(&made),
+            "next": "Saved. Say what it does as rule_in_full has it, not in your own words.",
+        }))
     }
 }
 
@@ -1015,6 +1117,173 @@ mod tests {
         // A fixed measure is not second-guessed.
         let out = propose.execute(when("temperature")).await.unwrap();
         assert_eq!(out["problems"].as_array().unwrap().len(), 1);
+    }
+
+    /// The office, and a hallway and a kitchen with a motion sensor and
+    /// a ceiling light each.
+    fn shared_house() -> Arc<DeviceRegistry> {
+        let registry = house();
+        for room in ["hallway", "kitchen"] {
+            registry.upsert(Device::new(
+                DeviceId::parse(&format!("z2m:{room}/motion")).unwrap(),
+                DeviceState {
+                    motion: Some(false),
+                    ..Default::default()
+                },
+                DeviceClass::Motion,
+            ));
+            registry.upsert(Device::new(
+                DeviceId::parse(&format!("z2m:{room}/ceiling")).unwrap(),
+                DeviceState::default(),
+                DeviceClass::Light,
+            ));
+        }
+        registry
+    }
+
+    fn proposer(registry: Arc<DeviceRegistry>) -> ProposeAutomation {
+        ProposeAutomation {
+            store: Arc::new(AutomationStore::new()),
+            registry,
+            proposals: Arc::new(Proposals::new()),
+            tz: chrono_tz::Tz::UTC,
+        }
+    }
+
+    fn lights(room: &str, on: bool) -> Value {
+        json!({ "do": "set_room", "room": room, "on": on })
+    }
+
+    fn started_by(id: &str, then: Vec<Value>, more: Vec<Value>) -> Value {
+        let mut conditions = vec![json!({ "kind": "triggered_by", "triggers": [id] })];
+        conditions.extend(more);
+        json!({ "do": "if", "conditions": conditions, "then": then })
+    }
+
+    /// The hallway and kitchen rule, once asked what was meant.
+    fn shared_lights() -> Value {
+        json!({
+            "description": "Hallway and kitchen lights follow motion",
+            "triggers": [
+                { "id": "hall-seen", "type": "motion", "device": "hallway/motion", "detected": true },
+                { "id": "kitchen-seen", "type": "motion", "device": "kitchen/motion", "detected": true },
+                { "id": "all-clear", "type": "motion", "devices": ["hallway/motion", "kitchen/motion"], "detected": false, "for": { "minutes": 2 } }
+            ],
+            "actions": [
+                started_by("hall-seen", vec![lights("hallway", true)], vec![]),
+                started_by("kitchen-seen", vec![lights("kitchen", true), lights("hallway", true)], vec![]),
+                started_by("all-clear", vec![lights("kitchen", false), lights("hallway", false)], vec![])
+            ],
+        })
+    }
+
+    #[tokio::test]
+    async fn the_shared_lights_rule_reads_back_in_full_without_warnings() {
+        let out = proposer(shared_house())
+            .execute(shared_lights())
+            .await
+            .unwrap();
+        assert_eq!(out["problems"], json!([]));
+        assert_eq!(out["warnings"], json!([]));
+        let full = out["rule_in_full"].as_str().unwrap();
+        assert!(
+            full.contains(
+                "3. There has been no motion in the hallway or the kitchen for 2 minutes"
+            ),
+            "{full}"
+        );
+        assert!(
+            full.contains("    Turn off the kitchen lights\n    Turn off the hallway lights"),
+            "{full}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_off_held_back_by_a_condition_comes_back_with_a_warning() {
+        let held_back = json!({
+            "description": "Hallway and kitchen lights",
+            "triggers": [
+                { "id": "hall-seen", "type": "motion", "device": "hallway/motion", "detected": true },
+                { "id": "hall-quiet", "type": "motion", "device": "hallway/motion", "detected": false, "for": { "minutes": 2 } }
+            ],
+            "actions": [
+                started_by("hall-seen", vec![lights("hallway", true)], vec![]),
+                started_by(
+                    "hall-quiet",
+                    vec![lights("hallway", false)],
+                    vec![json!({ "kind": "motion_is", "device": "kitchen/motion", "detected": false })],
+                )
+            ],
+        });
+        let out = proposer(shared_house()).execute(held_back).await.unwrap();
+        assert_eq!(out["problems"], json!([]), "a warning, not a refusal");
+        let warning = out["warnings"][0].as_str().unwrap();
+        assert!(
+            warning.contains("nothing in this rule tries again"),
+            "{warning}"
+        );
+        assert!(out["next"].as_str().unwrap().contains("warnings"));
+    }
+
+    #[tokio::test]
+    async fn a_group_names_only_motion_sensors_the_house_has() {
+        let out = proposer(shared_house())
+            .execute(json!({
+                "description": "x",
+                "triggers": [{ "type": "motion", "devices": ["hallway/motion", "office/door", "attic/motion"], "rooms": ["office", "kitchen"], "detected": false, "for": { "minutes": 2 } }],
+                "conditions": [{ "kind": "motion_is", "devices": ["kitchen/motion", "kitchen/ceiling"], "detected": false }],
+                "actions": [lights("hallway", false)],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            out["problems"],
+            json!([
+                "no device called attic/motion",
+                "kitchen/ceiling is not a motion sensor",
+                "office/door is not a motion sensor",
+                "no motion sensor in a room called office"
+            ])
+        );
+        let out = proposer(shared_house())
+            .execute(json!({
+                "description": "x",
+                "triggers": [{ "type": "motion", "device": "hallway/motion", "devices": ["kitchen/motion"], "detected": false }],
+                "actions": [lights("hallway", false)],
+            }))
+            .await
+            .unwrap();
+        assert!(
+            out["problems"][0].as_str().unwrap().contains("not both"),
+            "{}",
+            out["problems"]
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_says_the_rule_in_full_for_the_confirmation() {
+        let store = Arc::new(AutomationStore::new());
+        let made = CreateAutomation {
+            store: store.clone(),
+            registry: shared_house(),
+            proposals: Arc::new(Proposals::new()),
+        }
+        .execute(shared_lights())
+        .await
+        .unwrap();
+        assert_eq!(made["saved"], true);
+        assert!(
+            made["rule_in_full"]
+                .as_str()
+                .unwrap()
+                .starts_with("When:\n  1. The hallway motion sees motion")
+        );
+        assert_eq!(made["warnings"], json!([]));
+        let saved = store.list();
+        let TriggerKind::Motion { devices, .. } = &saved[0].triggers[2].kind else {
+            panic!("a motion trigger");
+        };
+        assert_eq!(devices, &["hallway/motion", "kitchen/motion"]);
     }
 
     #[tokio::test]

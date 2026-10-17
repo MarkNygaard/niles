@@ -61,6 +61,15 @@ pub enum Trigger {
         device: DeviceId,
         detected: Option<bool>,
     },
+    /// Several motion sensors as one: `detected: false` holds while none
+    /// of them sees anybody, `true` while any of them does. With `for`,
+    /// "no motion in the hallway or the kitchen for 2 minutes" — counted
+    /// from the last of them to clear, and started over by motion in
+    /// any. See [`MotionGroup`] for a sensor not heard from.
+    MotionGroup {
+        group: MotionGroup,
+        detected: bool,
+    },
     /// A reading coming to lie above and/or below a value.
     Numeric {
         device: DeviceId,
@@ -151,6 +160,106 @@ fn in_range(value: f64, above: Option<f64>, below: Option<f64>) -> bool {
     above.is_none_or(|a| value > a) && below.is_none_or(|b| value < b)
 }
 
+/// The motion sensors one trigger or condition watches together: some
+/// by name, and every motion sensor in some rooms.
+///
+/// A room's sensors are looked up in the registry each time the group
+/// is asked about, so one paired after the rule was saved belongs to it
+/// from its first report.
+///
+/// A sensor counts only for what it is known to say. One that has never
+/// reported motion, is not in the registry, or that its source says it
+/// cannot reach, is not known to be clear: the group is not "no motion"
+/// while it is in it — better a light left on than one switched off on
+/// somebody. Nor does its last word count as motion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MotionGroup {
+    pub devices: Vec<DeviceId>,
+    pub rooms: Vec<RoomName>,
+}
+
+/// What a group's state is filed under in the engine: one subject for
+/// the whole group, whichever sensor spoke.
+const GROUP_SUBJECT: &str = "motion sensors";
+
+impl MotionGroup {
+    /// Whether `id` is one of the group's sensors. A device in one of its
+    /// rooms is, once it says anything about motion.
+    fn includes(&self, id: &DeviceId) -> bool {
+        self.devices.contains(id) || self.rooms.iter().any(|r| r == id.room())
+    }
+
+    /// What each sensor says: `Some(motion)` when it is known, `None`
+    /// when it is not. `heard` is a report just in, which goes for its
+    /// sensor whatever the registry has caught up with.
+    fn readings(
+        &self,
+        registry: &DeviceRegistry,
+        heard: Option<(&DeviceId, bool)>,
+    ) -> Vec<Option<bool>> {
+        let known = |device: &niles_core::Device| {
+            if heard.is_some_and(|(id, _)| *id == device.id) {
+                return heard.map(|(_, motion)| motion);
+            }
+            device.state.motion.filter(|_| device.available)
+        };
+        let mut seen: Vec<DeviceId> = Vec::new();
+        let mut out = Vec::new();
+        for id in &self.devices {
+            seen.push(id.clone());
+            out.push(match registry.get(id) {
+                Some(device) => known(&device),
+                None => heard.filter(|(h, _)| *h == id).map(|(_, m)| m),
+            });
+        }
+        for room in &self.rooms {
+            for device in registry.list_room(room) {
+                let motion_sensor = device.class == niles_core::DeviceClass::Motion
+                    || device.state.motion.is_some()
+                    || heard.is_some_and(|(id, _)| *id == device.id);
+                if motion_sensor && !seen.contains(&device.id) {
+                    seen.push(device.id.clone());
+                    out.push(known(&device));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the group is as `detected` wants it: `false` every sensor
+    /// known to see nobody (and at least one sensor), `true` any known
+    /// to see somebody.
+    fn holds(
+        &self,
+        registry: &DeviceRegistry,
+        heard: Option<(&DeviceId, bool)>,
+        detected: bool,
+    ) -> bool {
+        let readings = self.readings(registry, heard);
+        if detected {
+            readings.contains(&Some(true))
+        } else {
+            !readings.is_empty() && readings.iter().all(|r| *r == Some(false))
+        }
+    }
+
+    /// "z2m:hallway/motion, z2m:kitchen/motion and every motion sensor
+    /// in the office", for a run's reason.
+    fn named(&self) -> String {
+        let mut parts: Vec<String> = self.devices.iter().map(ToString::to_string).collect();
+        parts.extend(
+            self.rooms
+                .iter()
+                .map(|r| format!("every motion sensor in {r}")),
+        );
+        match parts.as_slice() {
+            [] => String::new(),
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        }
+    }
+}
+
 /// Gate that must pass after a trigger fires.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -174,6 +283,12 @@ pub enum Condition {
     },
     MotionIs {
         device: DeviceId,
+        detected: bool,
+    },
+    /// `detected: false` is none of the group seeing anybody, `true`
+    /// any of them.
+    MotionGroupIs {
+        group: MotionGroup,
         detected: bool,
     },
     Numeric {
@@ -446,16 +561,28 @@ impl Trigger {
             Trigger::DeviceState { .. }
                 | Trigger::Contact { .. }
                 | Trigger::Motion { .. }
+                | Trigger::MotionGroup { .. }
                 | Trigger::Numeric { .. }
                 | Trigger::Presence { .. }
         )
     }
 
     /// For a trigger that follows a state: what `ev` says of it, as the
-    /// thing it concerns (a device, or the house) and whether the state
-    /// now holds. `None` when the event says nothing about it.
-    pub fn observe(&self, ev: &Event) -> Option<(String, bool)> {
+    /// thing it concerns (a device, a group of sensors, or the house)
+    /// and whether the state now holds. `None` when the event says
+    /// nothing about it. A group is read across all its sensors, the
+    /// others as `registry` has them.
+    pub fn observe(&self, ev: &Event, registry: &DeviceRegistry) -> Option<(String, bool)> {
         match (self, ev) {
+            (Trigger::MotionGroup { group, detected }, Event::DeviceStateChanged { id, state })
+                if group.includes(id) =>
+            {
+                let now = state.motion?;
+                Some((
+                    GROUP_SUBJECT.into(),
+                    group.holds(registry, Some((id, now)), *detected),
+                ))
+            }
             (
                 Trigger::DeviceState { device, room, on },
                 Event::DeviceStateChanged { id, state },
@@ -513,14 +640,20 @@ impl Trigger {
             | Trigger::Motion { device, .. }
             | Trigger::Numeric { device, .. } => registry
                 .get(device)
-                .and_then(|d| self.observe(&event_of(&d)))
+                .and_then(|d| self.observe(&event_of(&d), registry))
                 .into_iter()
                 .collect(),
             Trigger::DeviceState { .. } => registry
                 .list_all()
                 .iter()
-                .filter_map(|d| self.observe(&event_of(d)))
+                .filter_map(|d| self.observe(&event_of(d), registry))
                 .collect(),
+            // Always, known or not: a group none of whose sensors has
+            // said anything yet is not clear, and its first all-clear is
+            // a change.
+            Trigger::MotionGroup { group, detected } => {
+                vec![(GROUP_SUBJECT.into(), group.holds(registry, None, *detected))]
+            }
             _ => Vec::new(),
         }
     }
@@ -545,8 +678,8 @@ impl Trigger {
 
     /// Whether `ev` matches it at all: a moment it is, or a state it
     /// follows coming to hold.
-    pub fn matches(&self, ev: &Event) -> bool {
-        self.fires(ev) || self.observe(ev).is_some_and(|(_, holds)| holds)
+    pub fn matches(&self, ev: &Event, registry: &DeviceRegistry) -> bool {
+        self.fires(ev) || self.observe(ev, registry).is_some_and(|(_, holds)| holds)
     }
 
     /// For a clock trigger: the minute it falls on, on the local date of
@@ -623,6 +756,9 @@ impl Condition {
                 .get(device)
                 .and_then(|d| d.state.motion)
                 .is_some_and(|s| s == *detected),
+            Condition::MotionGroupIs { group, detected } => {
+                group.holds(ctx.registry, None, *detected)
+            }
             Condition::Numeric {
                 device,
                 measure,
@@ -667,6 +803,16 @@ impl Condition {
                     format!("{device} saw no motion")
                 } else {
                     format!("{device} saw motion")
+                }
+            }
+            Condition::MotionGroupIs { group, detected } => {
+                if *detected {
+                    format!("none of {} saw motion", group.named())
+                } else {
+                    format!(
+                        "one of {} saw motion, or had not been heard from",
+                        group.named()
+                    )
                 }
             }
             Condition::Numeric {
@@ -879,15 +1025,36 @@ fn parse_trigger(
         ),
         TriggerKind::Motion {
             device,
+            devices,
+            rooms,
             detected,
             hold: h,
-        } => (
-            Trigger::Motion {
-                device: parse_device_id(id, device, default_source)?,
-                detected: *detected,
-            },
-            hold(h)?,
-        ),
+        } => {
+            let trigger = match parse_sensors(
+                id,
+                "motion trigger",
+                device.as_deref(),
+                devices,
+                rooms,
+                default_source,
+            )? {
+                Sensors::One(device) => Trigger::Motion {
+                    device,
+                    detected: *detected,
+                },
+                Sensors::Group(group) => Trigger::MotionGroup {
+                    group,
+                    detected: detected.ok_or_else(|| Error::Invalid {
+                        id: id.to_string(),
+                        reason: "a motion trigger over several sensors needs `detected`: true \
+                                 starts it when any of them sees somebody, false once none of \
+                                 them does — with `for`, once none of them has for that long"
+                            .into(),
+                    })?,
+                },
+            };
+            (trigger, hold(h)?)
+        }
         TriggerKind::Numeric {
             device,
             measure,
@@ -987,9 +1154,27 @@ fn parse_condition(
             device: parse_device_id(id, device, default_source)?,
             open: *open,
         },
-        ConditionDto::MotionIs { device, detected } => Condition::MotionIs {
-            device: parse_device_id(id, device, default_source)?,
-            detected: *detected,
+        ConditionDto::MotionIs {
+            device,
+            devices,
+            rooms,
+            detected,
+        } => match parse_sensors(
+            id,
+            "motion condition",
+            device.as_deref(),
+            devices,
+            rooms,
+            default_source,
+        )? {
+            Sensors::One(device) => Condition::MotionIs {
+                device,
+                detected: *detected,
+            },
+            Sensors::Group(group) => Condition::MotionGroupIs {
+                group,
+                detected: *detected,
+            },
         },
         ConditionDto::Numeric {
             device,
@@ -1026,6 +1211,63 @@ fn parse_condition(
             Condition::TriggeredBy(named.clone())
         }
     })
+}
+
+/// The sensors a motion trigger or condition names.
+enum Sensors {
+    One(DeviceId),
+    Group(MotionGroup),
+}
+
+/// `device`, or `devices` and/or `rooms` — never both ways at once. A
+/// list of one is that one sensor, and a name given twice counts once.
+fn parse_sensors(
+    id: &str,
+    what: &str,
+    device: Option<&str>,
+    devices: &[String],
+    rooms: &[String],
+    default_source: &str,
+) -> Result<Sensors> {
+    let invalid = |reason: String| Error::Invalid {
+        id: id.to_string(),
+        reason,
+    };
+    let several = !devices.is_empty() || !rooms.is_empty();
+    match device {
+        Some(_) if several => Err(invalid(format!(
+            "a {what} names one sensor in `device`, or several in `devices` (or every motion \
+             sensor in `rooms`) — not both"
+        ))),
+        Some(device) => Ok(Sensors::One(parse_device_id(id, device, default_source)?)),
+        None if !several => Err(invalid(format!(
+            "a {what} needs a sensor: one in `device`, several in `devices`, or every motion \
+             sensor in `rooms`"
+        ))),
+        None => {
+            let mut named: Vec<DeviceId> = Vec::new();
+            for d in devices {
+                let d = parse_device_id(id, d, default_source)?;
+                if !named.contains(&d) {
+                    named.push(d);
+                }
+            }
+            let mut places: Vec<RoomName> = Vec::new();
+            for r in rooms {
+                let r = parse_room_name(id, r)?;
+                if !places.contains(&r) {
+                    places.push(r);
+                }
+            }
+            if let ([one], []) = (named.as_slice(), places.as_slice()) {
+                return Ok(Sensors::One(one.clone()));
+            }
+            Ok(Sensors::Group(MotionGroup {
+                devices: named,
+                rooms: places,
+            }))
+        }
+    }
 }
 
 fn parse_actions(
@@ -1638,18 +1880,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            t.observe(&state_event(&sensor, seen(false))),
+            t.observe(&state_event(&sensor, seen(false)), &DeviceRegistry::new()),
             Some(("z2m:hallway/motion".into(), true))
         );
         assert_eq!(
-            t.observe(&state_event(&sensor, seen(true))),
+            t.observe(&state_event(&sensor, seen(true)), &DeviceRegistry::new()),
             Some(("z2m:hallway/motion".into(), false))
         );
         let lux_only = DeviceState {
             illuminance_lux: Some(40.0),
             ..Default::default()
         };
-        assert_eq!(t.observe(&state_event(&sensor, lux_only)), None);
+        assert_eq!(
+            t.observe(&state_event(&sensor, lux_only), &DeviceRegistry::new()),
+            None
+        );
         assert!(t.follows_state());
     }
 
@@ -1736,6 +1981,268 @@ mod tests {
         assert!(!is(false).evaluate(&ctx(&registry, Utc::now())));
     }
 
+    fn sensor(registry: &DeviceRegistry, room: &str, motion: Option<bool>) -> DeviceId {
+        let id = device_id(room, "motion");
+        registry.upsert(Device::new(
+            id.clone(),
+            DeviceState {
+                motion,
+                ..Default::default()
+            },
+            DeviceClass::Motion,
+        ));
+        id
+    }
+
+    fn group_trigger(sensors: serde_json::Value, detected: Option<bool>) -> Result<Rule> {
+        let mut trigger = json!({ "type": "motion", "for": { "minutes": 2 } });
+        for (k, v) in sensors.as_object().unwrap() {
+            trigger[k] = v.clone();
+        }
+        if let Some(detected) = detected {
+            trigger["detected"] = json!(detected);
+        }
+        rule(json!({ "id": "r", "triggers": [trigger], "actions": [lights_off()] }))
+    }
+
+    #[test]
+    fn a_motion_trigger_takes_several_sensors_as_one() {
+        let r = group_trigger(
+            json!({ "devices": ["hallway/motion", "kitchen/motion", "hallway/motion"], "rooms": ["office"] }),
+            Some(false),
+        )
+        .unwrap();
+        let Trigger::MotionGroup { group, detected } = &r.triggers[0].trigger else {
+            panic!("a group");
+        };
+        assert!(!detected);
+        assert_eq!(
+            group.devices,
+            [
+                device_id("hallway", "motion"),
+                device_id("kitchen", "motion")
+            ],
+            "a sensor named twice counts once"
+        );
+        assert_eq!(group.rooms, [RoomName::parse("office").unwrap()]);
+        assert_eq!(r.triggers[0].hold, Some(Duration::from_secs(120)));
+        assert!(r.triggers[0].trigger.follows_state());
+    }
+
+    #[test]
+    fn a_list_of_one_sensor_is_that_sensor() {
+        let r = group_trigger(json!({ "devices": ["hallway/motion"] }), Some(false)).unwrap();
+        assert!(matches!(r.triggers[0].trigger, Trigger::Motion { .. }));
+    }
+
+    #[test]
+    fn a_motion_trigger_names_its_sensors_one_way() {
+        let err = |sensors: serde_json::Value, detected: Option<bool>| {
+            group_trigger(sensors, detected).unwrap_err().to_string()
+        };
+        assert!(
+            err(
+                json!({ "device": "hallway/motion", "devices": ["kitchen/motion"] }),
+                Some(false)
+            )
+            .contains("not both")
+        );
+        assert!(err(json!({}), Some(false)).contains("needs a sensor"));
+        assert!(err(json!({ "devices": [] }), Some(false)).contains("needs a sensor"));
+        assert!(
+            err(
+                json!({ "devices": ["hallway/motion", "kitchen/motion"] }),
+                None
+            )
+            .contains("needs `detected`")
+        );
+        assert!(
+            err(
+                json!({ "devices": ["no slash", "kitchen/motion"] }),
+                Some(false)
+            )
+            .contains("no slash")
+        );
+        assert!(err(json!({ "rooms": ["Not A Room"] }), Some(false)).contains("Not A Room"));
+    }
+
+    #[test]
+    fn a_group_is_clear_only_once_every_sensor_is() {
+        let registry = DeviceRegistry::new();
+        let hallway = sensor(&registry, "hallway", Some(true));
+        let kitchen = sensor(&registry, "kitchen", Some(false));
+        let t = Trigger::MotionGroup {
+            group: MotionGroup {
+                devices: vec![hallway.clone(), kitchen.clone()],
+                rooms: vec![],
+            },
+            detected: false,
+        };
+        let seen = |id: &DeviceId, motion: bool| {
+            state_event(
+                id,
+                DeviceState {
+                    motion: Some(motion),
+                    ..Default::default()
+                },
+            )
+        };
+        // The kitchen repeating itself: the hallway still sees somebody.
+        assert_eq!(
+            t.observe(&seen(&kitchen, false), &registry),
+            Some((GROUP_SUBJECT.into(), false))
+        );
+        // The hallway clearing, before the registry has caught up.
+        assert_eq!(
+            t.observe(&seen(&hallway, false), &registry),
+            Some((GROUP_SUBJECT.into(), true))
+        );
+        // A report from somewhere else, or without motion, says nothing.
+        assert_eq!(
+            t.observe(&seen(&device_id("office", "motion"), true), &registry),
+            None
+        );
+        let battery = state_event(
+            &kitchen,
+            DeviceState {
+                battery_percent: Some(80),
+                ..Default::default()
+            },
+        );
+        assert_eq!(t.observe(&battery, &registry), None);
+
+        let any = Trigger::MotionGroup {
+            group: MotionGroup {
+                devices: vec![hallway.clone(), kitchen.clone()],
+                rooms: vec![],
+            },
+            detected: true,
+        };
+        assert_eq!(
+            any.observe(&seen(&kitchen, false), &registry).map(|o| o.1),
+            Some(true),
+            "the hallway still sees somebody"
+        );
+        assert_eq!(
+            any.observe(&seen(&hallway, false), &registry).map(|o| o.1),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_sensor_not_heard_from_is_not_known_to_be_clear() {
+        let registry = DeviceRegistry::new();
+        let hallway = sensor(&registry, "hallway", Some(false));
+        let kitchen = sensor(&registry, "kitchen", None);
+        let group = MotionGroup {
+            devices: vec![
+                hallway.clone(),
+                kitchen.clone(),
+                device_id("attic", "motion"),
+            ],
+            rooms: vec![],
+        };
+        let clear = Trigger::MotionGroup {
+            group: group.clone(),
+            detected: false,
+        };
+        assert_eq!(
+            clear.seed(&registry),
+            [(GROUP_SUBJECT.to_string(), false)],
+            "never reported, nor paired"
+        );
+        sensor(&registry, "kitchen", Some(false));
+        assert!(!clear.seed(&registry)[0].1, "the attic is still not paired");
+
+        let paired = Trigger::MotionGroup {
+            group: MotionGroup {
+                devices: vec![hallway.clone(), kitchen.clone()],
+                rooms: vec![],
+            },
+            detected: false,
+        };
+        assert!(paired.seed(&registry)[0].1);
+        // Out of reach, its last word does not count either way.
+        registry.set_available(&kitchen, false);
+        assert!(!paired.seed(&registry)[0].1);
+        sensor(&registry, "kitchen", Some(true));
+        registry.set_available(&kitchen, false);
+        let any = Trigger::MotionGroup {
+            group: MotionGroup {
+                devices: vec![hallway, kitchen],
+                rooms: vec![],
+            },
+            detected: true,
+        };
+        assert!(!any.seed(&registry)[0].1);
+    }
+
+    #[test]
+    fn a_rooms_sensors_are_found_when_asked_so_a_new_one_counts() {
+        let registry = DeviceRegistry::new();
+        let t = Trigger::MotionGroup {
+            group: MotionGroup {
+                devices: vec![],
+                rooms: vec![RoomName::parse("kitchen").unwrap()],
+            },
+            detected: false,
+        };
+        // A light in the room is not one of its motion sensors.
+        registry.upsert(Device::new(
+            device_id("kitchen", "ceiling"),
+            DeviceState {
+                on: Some(true),
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        ));
+        assert!(!t.seed(&registry)[0].1, "no sensor is no all-clear");
+        sensor(&registry, "kitchen", Some(false));
+        assert!(t.seed(&registry)[0].1);
+        let radar = device_id("kitchen", "radar");
+        registry.upsert(Device::new(
+            radar.clone(),
+            DeviceState {
+                motion: Some(true),
+                ..Default::default()
+            },
+            DeviceClass::Sensor,
+        ));
+        assert!(!t.seed(&registry)[0].1, "paired since, and sees somebody");
+    }
+
+    #[test]
+    fn a_motion_condition_over_several_sensors_is_all_clear_or_any_motion() {
+        let registry = DeviceRegistry::new();
+        sensor(&registry, "hallway", Some(false));
+        sensor(&registry, "kitchen", Some(true));
+        let r = rule(json!({
+            "id": "r",
+            "triggers": [door(true)],
+            "conditions": [
+                { "kind": "motion_is", "devices": ["hallway/motion", "kitchen/motion"], "detected": false },
+                { "kind": "motion_is", "devices": ["hallway/motion", "kitchen/motion"], "detected": true }
+            ],
+            "actions": [lights_off()],
+        }))
+        .unwrap();
+        let (clear, any) = (&r.conditions[0], &r.conditions[1]);
+        assert!(matches!(clear, Condition::MotionGroupIs { .. }));
+        assert!(!clear.evaluate(&ctx(&registry, Utc::now())));
+        assert!(any.evaluate(&ctx(&registry, Utc::now())));
+        assert_eq!(
+            clear.unmet(),
+            "one of z2m:hallway/motion and z2m:kitchen/motion saw motion, or had not been heard from"
+        );
+        sensor(&registry, "kitchen", Some(false));
+        assert!(clear.evaluate(&ctx(&registry, Utc::now())));
+        assert!(!any.evaluate(&ctx(&registry, Utc::now())));
+        assert_eq!(
+            any.unmet(),
+            "none of z2m:hallway/motion and z2m:kitchen/motion saw motion"
+        );
+    }
+
     #[test]
     fn a_contact_trigger_follows_the_door() {
         let door = device_id("office", "door");
@@ -1752,11 +2259,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            t.observe(&state_event(&door, open)),
+            t.observe(&state_event(&door, open), &DeviceRegistry::new()),
             Some(("z2m:office/door".into(), true))
         );
         assert_eq!(
-            t.observe(&state_event(&door, shut)),
+            t.observe(&state_event(&door, shut), &DeviceRegistry::new()),
             Some(("z2m:office/door".into(), false))
         );
         // A battery report without the contact says nothing about it.
@@ -1764,7 +2271,10 @@ mod tests {
             battery_percent: Some(90),
             ..Default::default()
         };
-        assert_eq!(t.observe(&state_event(&door, battery)), None);
+        assert_eq!(
+            t.observe(&state_event(&door, battery), &DeviceRegistry::new()),
+            None
+        );
         assert!(t.follows_state());
     }
 
@@ -1786,8 +2296,14 @@ mod tests {
                 },
             )
         };
-        assert_eq!(t.observe(&at(25.5)).map(|o| o.1), Some(true));
-        assert_eq!(t.observe(&at(24.0)).map(|o| o.1), Some(false));
+        assert_eq!(
+            t.observe(&at(25.5), &DeviceRegistry::new()).map(|o| o.1),
+            Some(true)
+        );
+        assert_eq!(
+            t.observe(&at(24.0), &DeviceRegistry::new()).map(|o| o.1),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1802,12 +2318,18 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            t.observe(&state_event(&device_id("kitchen", "lamp"), on.clone()))
-                .is_some()
+            t.observe(
+                &state_event(&device_id("kitchen", "lamp"), on.clone()),
+                &DeviceRegistry::new()
+            )
+            .is_some()
         );
         assert!(
-            t.observe(&state_event(&device_id("office", "lamp"), on))
-                .is_none()
+            t.observe(
+                &state_event(&device_id("office", "lamp"), on),
+                &DeviceRegistry::new()
+            )
+            .is_none()
         );
     }
 

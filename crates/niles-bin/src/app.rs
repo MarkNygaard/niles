@@ -461,6 +461,8 @@ pub(crate) fn proposal_since(
     let rule = proposals.offered_since(started)?;
     Some(niles_api::chat::Proposal {
         sentence: niles_automations::sentence(&rule),
+        in_full: Some(niles_automations::describe(&rule)),
+        warnings: niles_automations::warnings(&rule),
         rule: serde_json::to_value(&rule).ok(),
     })
 }

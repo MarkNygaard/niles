@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, Plus, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -106,6 +106,22 @@ export function AutomationsPage() {
   );
 }
 
+/** What the server says a rule will not do the way it reads. A rule
+    with one still runs: the check it is about may be meant. */
+export function RuleWarnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <ul aria-label="Warnings" className="mt-1 flex flex-col gap-1">
+      {warnings.map((warning) => (
+        <li key={warning} className="text-muted-foreground flex gap-1.5 text-xs">
+          <TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+          {warning}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function AutomationCard({
   view,
   onEnabled,
@@ -128,6 +144,7 @@ function AutomationCard({
         </div>
       )}
       {error && <p className="text-destructive mt-1 text-xs">{error}</p>}
+      <RuleWarnings warnings={view.warnings} />
       {stored && <LastRun id={rule.id} />}
     </>
   );

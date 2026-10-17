@@ -22,6 +22,7 @@ import {
   ranAt,
   roomChoices,
   runTrigger,
+  sensorChoices,
   siblings,
   stepAt,
   stepsOf,
@@ -31,7 +32,9 @@ import {
   triggerChoices,
   wakeChoices,
   wakeTarget,
+  watchesSeveral,
   withBlindsTarget,
+  withSeveralSensors,
   withStep,
   withWakeTarget,
   withTriggerIds,
@@ -631,6 +634,91 @@ describe("motion", () => {
         conditions: [{ kind: "motion_is", device: "", detected: true }],
       }),
     ).toEqual(["Trigger 1 needs a device.", "Condition 1 needs a device."]);
+  });
+});
+
+describe("several motion sensors as one", () => {
+  const of = (step: Partial<Step> & Pick<Step, "role" | "value">) =>
+    summary({ id: "x", index: 0, branch: null, ...step } as Step);
+  const both = ["hallway/motion", "kitchen/motion"];
+
+  it("reads none of them seeing anybody as all of them, and motion as any", () => {
+    const held = (detected: boolean) =>
+      of({
+        role: "trigger",
+        value: { type: "motion", devices: both, detected, for: { minutes: 2 } },
+      });
+    expect(held(false)).toBe("Hallway motion and Kitchen motion: no motion for 2 minutes");
+    expect(held(true)).toBe("Hallway motion or Kitchen motion: motion for 2 minutes");
+    const named = { devices: ["hallway/motion"], rooms: ["kitchen"] };
+    expect(of({ role: "trigger", value: { type: "motion", ...named, detected: true } })).toBe(
+      "Hallway motion or every sensor in Kitchen: sees motion",
+    );
+    expect(
+      of({ role: "condition", value: { kind: "motion_is", devices: both, detected: false } }),
+    ).toBe("Hallway motion and Kitchen motion see no motion");
+    expect(
+      of({ role: "condition", value: { kind: "motion_is", devices: both, detected: true } }),
+    ).toBe("Hallway motion or Kitchen motion sees motion");
+  });
+
+  it("goes from one sensor to several and back", () => {
+    const one: Trigger = { type: "motion", device: "hall/motion", for: { minutes: 2 } };
+    const several = withSeveralSensors(one, true, devices);
+    // "Either" means nothing for a group: it waits for none.
+    expect(several).toEqual({
+      type: "motion",
+      devices: ["hall/motion"],
+      detected: false,
+      for: { minutes: 2 },
+    });
+    expect(watchesSeveral(several)).toBe(true);
+    expect(withSeveralSensors(several, false, devices)).toEqual({
+      type: "motion",
+      device: "hall/motion",
+      detected: false,
+      for: { minutes: 2 },
+    });
+    // Every box unticked is still several, asking for a sensor.
+    const none = { ...several, devices: [] };
+    expect(watchesSeveral(none)).toBe(true);
+    expect(withSeveralSensors(none, false, devices)).toMatchObject({ device: "hall/motion" });
+  });
+
+  it("offers the motion sensors and the rooms with one", () => {
+    const house = [...devices, device("z2m:kitchen/radar", "unknown", { motion: false })];
+    const offered = sensorChoices(house, {
+      kind: "motion_is",
+      devices: ["attic/motion"],
+      detected: false,
+    });
+    expect(offered.sensors.map((c) => c.value)).toEqual([
+      "attic/motion",
+      "hall/motion",
+      "kitchen/radar",
+    ]);
+    expect(offered.rooms.map((c) => c.value)).toEqual(["hall", "kitchen"]);
+  });
+
+  it("wants a sensor, and whether it waits for motion or for none", () => {
+    expect(
+      problems({
+        ...garden,
+        triggers: [{ id: "t1", type: "motion", devices: [], rooms: [], for: { minutes: 2 } }],
+        conditions: [{ kind: "motion_is", devices: [], detected: false }],
+      }),
+    ).toEqual([
+      "Trigger 1 needs a device.",
+      "Trigger 1: several sensors wait for motion in any, or for none in all.",
+      "Condition 1 needs a device.",
+    ]);
+    expect(
+      problems({
+        ...garden,
+        triggers: [{ id: "t1", type: "motion", rooms: ["kitchen"], detected: false }],
+        conditions: [],
+      }),
+    ).toEqual([]);
   });
 });
 

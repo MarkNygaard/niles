@@ -18,6 +18,8 @@ const stored: AutomationView = {
   rule: garden,
   source: "stored",
   sentence: "When the office door opens, turn off the office lights.",
+  in_full: "",
+  warnings: [],
   error: null,
 };
 
@@ -32,6 +34,8 @@ const fromConfig: AutomationView = {
   },
   source: "config",
   sentence: "When everybody leaves, turn off the hall lights.",
+  in_full: "",
+  warnings: [],
   error: null,
 };
 
@@ -85,6 +89,8 @@ describe("AutomationsPage", () => {
         "When the hallway motion sees motion, or when the hallway motion has seen no " +
         "motion for 2 minutes, if the light level of the hallway motion is below 30, " +
         "turn on the hallway lights.",
+      in_full: "",
+      warnings: [],
       error: null,
     };
     show([hallway]);
@@ -109,6 +115,15 @@ describe("AutomationsPage", () => {
     expect(screen.getByText("From config")).toBeInTheDocument();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.queryByRole("link", { name: /everybody leaves/ })).toBeNull();
+  });
+
+  it("lists what a rule will not do the way it reads, under it", async () => {
+    const warning =
+      "A run started by trigger 3 checks that the kitchen motion sees no motion only once its " +
+      "wait is over, before it will turn off the hallway lights.";
+    show([{ ...stored, warnings: [warning] }]);
+    const listed = await screen.findByRole("list", { name: "Warnings" });
+    expect(listed).toHaveTextContent(warning);
   });
 
   it("says why a rule is not running", async () => {

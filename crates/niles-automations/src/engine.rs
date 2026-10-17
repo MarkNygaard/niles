@@ -256,7 +256,7 @@ impl AutomationEngine {
                     handles.extend(self.start(rule, &t.id, now));
                     continue;
                 }
-                let Some((subject, holds)) = t.trigger.observe(event) else {
+                let Some((subject, holds)) = t.trigger.observe(event, &self.registry) else {
                     continue;
                 };
                 let key = (rule.id.clone(), t.id.clone(), subject);
@@ -1245,6 +1245,209 @@ mod tests {
         t.send(press.clone(), noon()).await;
         t.send(press, noon()).await;
         assert_eq!(t.said().len(), 2, "every press counts");
+    }
+
+    /// The hallway and the kitchen share a light: each room's motion
+    /// turns its lights on, and both go off once neither has seen
+    /// anybody for two minutes.
+    fn shared_lights() -> serde_json::Value {
+        json!({
+            "id": "shared",
+            "triggers": [
+                { "id": "hall-seen", "type": "motion", "device": "hallway/motion", "detected": true },
+                { "id": "kitchen-seen", "type": "motion", "device": "kitchen/motion", "detected": true },
+                { "id": "all-clear", "type": "motion", "devices": ["hallway/motion", "kitchen/motion"], "detected": false, "for": { "minutes": 2 } }
+            ],
+            "actions": [
+                { "do": "if", "conditions": [{ "kind": "triggered_by", "triggers": ["hall-seen"] }],
+                  "then": [{ "do": "set_room", "room": "hallway", "on": true }] },
+                { "do": "if", "conditions": [{ "kind": "triggered_by", "triggers": ["kitchen-seen"] }],
+                  "then": [{ "do": "set_room", "room": "kitchen", "on": true }, { "do": "set_room", "room": "hallway", "on": true }] },
+                { "do": "if", "conditions": [{ "kind": "triggered_by", "triggers": ["all-clear"] }],
+                  "then": [{ "do": "set_room", "room": "kitchen", "on": false }, { "do": "set_room", "room": "hallway", "on": false }] }
+            ],
+        })
+    }
+
+    /// The office, with a hallway and a kitchen beside it: a motion
+    /// sensor and a ceiling light in each, the sensors as given.
+    async fn hallway_and_kitchen(rule: serde_json::Value, hallway: bool, kitchen: bool) -> Test {
+        let t = office(vec![rule]);
+        for (room, motion) in [("hallway", hallway), ("kitchen", kitchen)] {
+            t.registry.upsert(Device::new(
+                id(&format!("{room}/motion")),
+                DeviceState {
+                    motion: Some(motion),
+                    ..Default::default()
+                },
+                DeviceClass::Motion,
+            ));
+            t.registry.upsert(Device::new(
+                id(&format!("{room}/ceiling")),
+                DeviceState {
+                    on: Some(true),
+                    ..Default::default()
+                },
+                DeviceClass::Light,
+            ));
+        }
+        t.engine.seed().await;
+        t
+    }
+
+    impl Test {
+        /// A sensor's report, as a source makes it: into the registry,
+        /// then onto the bus. Not waited for, so a `for` can run on.
+        async fn motion(&self, room: &str, motion: bool) {
+            let sensor = id(&format!("{room}/motion"));
+            let state = DeviceState {
+                motion: Some(motion),
+                ..Default::default()
+            };
+            self.registry.merge_state(&sensor, state.clone());
+            let event = Event::DeviceStateChanged { id: sensor, state };
+            drop(self.engine.handle_event(&event, noon()).await);
+        }
+
+        fn turned_off(&self) -> Vec<String> {
+            let mut off: Vec<String> = self
+                .set()
+                .into_iter()
+                .filter(|s| s.ends_with(" off"))
+                .collect();
+            off.sort();
+            off
+        }
+    }
+
+    /// From the start of the test, on the paused clock.
+    async fn until(start: tokio::time::Instant, secs: u64) {
+        tokio::time::sleep_until(start + Duration::from_secs(secs)).await;
+    }
+
+    const BOTH_OFF: [&str; 2] = ["z2m:hallway/ceiling off", "z2m:kitchen/ceiling off"];
+
+    #[tokio::test(start_paused = true)]
+    async fn moving_between_the_rooms_keeps_the_lights_on_until_both_are_clear() {
+        let t = hallway_and_kitchen(shared_lights(), false, true).await;
+        let start = tokio::time::Instant::now();
+        until(start, 10).await;
+        t.motion("kitchen", false).await;
+        until(start, 100).await;
+        t.motion("hallway", true).await;
+        until(start, 131).await;
+        assert!(t.turned_off().is_empty(), "the hallway saw somebody at 100");
+        until(start, 150).await;
+        t.motion("hallway", false).await;
+        until(start, 269).await;
+        assert!(t.turned_off().is_empty());
+        until(start, 271).await;
+        assert_eq!(
+            t.turned_off(),
+            BOTH_OFF,
+            "two minutes after the last one cleared"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_two_minutes_count_from_the_last_room_to_clear() {
+        let t = hallway_and_kitchen(shared_lights(), true, true).await;
+        let start = tokio::time::Instant::now();
+        t.motion("kitchen", false).await;
+        until(start, 119).await;
+        t.motion("hallway", false).await;
+        until(start, 121).await;
+        assert!(
+            t.turned_off().is_empty(),
+            "the kitchen alone has been clear for two minutes"
+        );
+        until(start, 238).await;
+        assert!(t.turned_off().is_empty());
+        until(start, 240).await;
+        assert_eq!(t.turned_off(), BOTH_OFF);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sensors_repeating_that_they_are_clear_do_not_start_the_count_again() {
+        let t = hallway_and_kitchen(shared_lights(), false, true).await;
+        let start = tokio::time::Instant::now();
+        t.motion("kitchen", false).await;
+        until(start, 60).await;
+        t.motion("kitchen", false).await;
+        t.motion("hallway", false).await;
+        until(start, 121).await;
+        assert_eq!(t.turned_off(), BOTH_OFF);
+        let runs = t.runs("shared");
+        assert_eq!(runs.len(), 1, "one run, of all-clear");
+        assert_eq!(runs[0].trigger.as_deref(), Some("all-clear"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rooms_already_clear_when_niles_starts_have_not_just_cleared() {
+        let t = hallway_and_kitchen(shared_lights(), false, false).await;
+        let start = tokio::time::Instant::now();
+        t.motion("hallway", false).await;
+        until(start, 300).await;
+        assert!(t.turned_off().is_empty(), "nothing changed");
+        t.motion("kitchen", true).await;
+        t.motion("kitchen", false).await;
+        until(start, 421).await;
+        assert_eq!(t.turned_off(), BOTH_OFF);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sensor_never_heard_from_keeps_the_lights_on() {
+        let t = hallway_and_kitchen(shared_lights(), true, false).await;
+        // The kitchen sensor, re-paired, has said nothing since.
+        t.registry.upsert(Device::new(
+            id("kitchen/motion"),
+            DeviceState::default(),
+            DeviceClass::Motion,
+        ));
+        let start = tokio::time::Instant::now();
+        t.motion("hallway", false).await;
+        until(start, 300).await;
+        assert!(t.turned_off().is_empty());
+        t.motion("kitchen", false).await;
+        until(start, 421).await;
+        assert_eq!(t.turned_off(), BOTH_OFF);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rule_for_one_sensor_runs_as_it_always_has() {
+        let t = hallway_and_kitchen(
+            json!({
+                "id": "hallway",
+                "triggers": [
+                    { "id": "seen", "type": "motion", "device": "hallway/motion", "detected": true },
+                    { "id": "quiet", "type": "motion", "device": "hallway/motion", "detected": false, "for": { "minutes": 2 } }
+                ],
+                "actions": [{
+                    "do": "if",
+                    "conditions": [{ "kind": "triggered_by", "triggers": ["seen"] }],
+                    "then": [{ "do": "set_room", "room": "hallway", "on": true }],
+                    "else": [{ "do": "set_room", "room": "hallway", "on": false }],
+                }],
+            }),
+            false,
+            false,
+        )
+        .await;
+        let start = tokio::time::Instant::now();
+        t.motion("hallway", true).await;
+        until(start, 1).await;
+        assert_eq!(t.set(), ["z2m:hallway/ceiling on"]);
+        t.motion("hallway", false).await;
+        until(start, 60).await;
+        t.motion("hallway", true).await;
+        t.motion("hallway", false).await;
+        until(start, 179).await;
+        assert!(
+            t.turned_off().is_empty(),
+            "the motion at 60 started it over"
+        );
+        until(start, 181).await;
+        assert_eq!(t.turned_off(), ["z2m:hallway/ceiling off"]);
     }
 
     /// Waits kept in memory, standing in for the database.

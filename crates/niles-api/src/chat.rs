@@ -196,6 +196,14 @@ pub struct Turn {
 pub struct Proposal {
     /// "When the office door opens, turn off the office lights."
     pub sentence: String,
+    /// The rule a line at a time, made from the rule itself: what Save
+    /// saves, shown beside it. Absent from a turn kept before there was
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_full: Option<String>,
+    /// What the rule will not do the way it reads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// The rule itself, so a tap hours later saves what was read back.
     /// Kept, never sent to the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -618,6 +626,10 @@ mod tests {
                     if let Some(first) = c.turns.first_mut() {
                         first.proposal = Some(Proposal {
                             sentence: "When it is dark, turn on the porch.".into(),
+                            in_full: Some(
+                                "When:\n  1. The sun sets\nDo:\n  Turn on the porch lights".into(),
+                            ),
+                            warnings: Vec::new(),
                             rule: Some(json!({ "secret": "rule" })),
                         });
                     }
@@ -753,11 +765,17 @@ mod tests {
         assert_eq!(list.as_array().unwrap().len(), 2);
         let (_, one) = call(&app, "GET", &format!("/chat/conversations/{id}"), None).await;
         assert_eq!(one["turns"][1]["said"], "and again");
-        // The read-back's sentence goes to the app; the rule a tap saves
-        // does not.
+        // The read-back's sentence and the rule in full go to the app;
+        // the rule a tap saves does not.
         assert_eq!(
             one["turns"][0]["proposal"]["sentence"],
             "When it is dark, turn on the porch."
+        );
+        assert!(
+            one["turns"][0]["proposal"]["in_full"]
+                .as_str()
+                .unwrap()
+                .contains("Turn on the porch lights")
         );
         assert!(one["turns"][0]["proposal"].get("rule").is_none());
 

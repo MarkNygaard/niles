@@ -55,6 +55,8 @@ const stored: AutomationView = {
   rule: garden,
   source: "stored",
   sentence: "When the office door opens, turn off the office lights and say so.",
+  in_full: "",
+  warnings: [],
   error: null,
 };
 
@@ -285,6 +287,52 @@ describe("AutomationEditor", () => {
         }),
       ),
     );
+  });
+
+  it("watches the motion sensors of two rooms as one", async () => {
+    open(undefined, [], [
+      ...house,
+      device("z2m:hallway/motion", "motion", { motion: false }),
+      device("z2m:kitchen/motion", "motion", { motion: true }),
+    ]);
+    const create = vi.spyOn(api, "createAutomation").mockResolvedValue(stored);
+    fireEvent.click(await screen.findByRole("button", { name: "Add trigger" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Motion" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Several" }));
+    // The sensor it had stays ticked; the kitchen's is added to it.
+    expect(screen.getByRole("checkbox", { name: "Hallway motion" })).toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Kitchen motion" }));
+    fireEvent.click(screen.getByRole("button", { name: "None sees motion" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Minutes" }), {
+      target: { value: "2" },
+    });
+    expect(
+      screen.getAllByText("Hallway motion and Kitchen motion: no motion for 2 minutes").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(/starts when the last of them clears/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          triggers: [
+            { id: "t1", type: "contact", device: "office/door", open: true },
+            {
+              id: "t2",
+              type: "motion",
+              devices: ["hallway/motion", "kitchen/motion"],
+              detected: false,
+              for: { minutes: 2 },
+            },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("shows what the server warns the saved rule will not do", async () => {
+    const warning = "A run started by trigger 1 checks that the office window is closed";
+    open("4f1c", [{ ...stored, warnings: [warning] }]);
+    expect(await screen.findByText(warning)).toBeInTheDocument();
   });
 
   it("checks whether a motion sensor sees anybody", async () => {

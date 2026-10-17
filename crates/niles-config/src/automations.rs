@@ -135,8 +135,19 @@ pub enum TriggerKind {
     },
     /// A motion sensor seeing somebody (`detected = true`), or nothing
     /// any more (`false`) — with `for`, "no motion for 5 minutes".
+    ///
+    /// One sensor in `device`, or a group: the sensors in `devices` and
+    /// every motion sensor in `rooms`. A group's `false` holds once none
+    /// of them sees anybody, its `true` while any of them does — so
+    /// `false` with `for` is "no motion anywhere in these rooms for 2
+    /// minutes", counted from the last one to clear.
     Motion {
-        device: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        devices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rooms: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detected: Option<bool>,
         #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
@@ -220,8 +231,15 @@ pub enum ConditionDto {
         device: String,
         open: bool,
     },
+    /// One sensor, or a group as the motion trigger has one: `false`
+    /// is none of them seeing anybody, `true` any of them.
     MotionIs {
-        device: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        devices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rooms: Vec<String>,
         detected: bool,
     },
     Numeric {
@@ -414,6 +432,52 @@ mod tests {
         // And back, as written.
         let again: AutomationRuleDto =
             serde_json::from_value(serde_json::to_value(&rule).unwrap()).unwrap();
+        assert_eq!(again, rule);
+    }
+
+    #[test]
+    fn a_motion_rule_saved_with_one_sensor_is_written_back_as_it_was() {
+        let stored =
+            r#"{"type":"motion","device":"hallway/motion","detected":false,"for":{"minutes":2}}"#;
+        let trigger: TriggerDto = serde_json::from_str(stored).unwrap();
+        let TriggerKind::Motion {
+            device, devices, ..
+        } = &trigger.kind
+        else {
+            panic!("a motion trigger");
+        };
+        assert_eq!(device.as_deref(), Some("hallway/motion"));
+        assert!(devices.is_empty());
+        assert_eq!(serde_json::to_string(&trigger).unwrap(), stored);
+    }
+
+    #[test]
+    fn a_motion_group_reads_and_writes_its_sensors_and_rooms() {
+        let rule: AutomationRuleDto = serde_json::from_str(
+            r#"{"id":"r","triggers":[
+                  {"type":"motion","devices":["hallway/motion","kitchen/motion"],"detected":false,"for":{"minutes":2}},
+                  {"type":"motion","rooms":["kitchen"],"detected":true}],
+                "conditions":[{"kind":"motion_is","devices":["hallway/motion","kitchen/motion"],"detected":false}],
+                "actions":[{"do":"set_room","room":"kitchen","on":false}]}"#,
+        )
+        .unwrap();
+        let TriggerKind::Motion {
+            device,
+            devices,
+            rooms,
+            ..
+        } = &rule.triggers[0].kind
+        else {
+            panic!("a motion trigger");
+        };
+        assert_eq!(*device, None);
+        assert_eq!(devices, &["hallway/motion", "kitchen/motion"]);
+        assert!(rooms.is_empty());
+        let written = serde_json::to_value(&rule).unwrap();
+        assert!(written["triggers"][0].get("device").is_none());
+        assert!(written["triggers"][1].get("devices").is_none());
+        assert_eq!(written["triggers"][1]["rooms"][0], "kitchen");
+        let again: AutomationRuleDto = serde_json::from_value(written).unwrap();
         assert_eq!(again, rule);
     }
 
