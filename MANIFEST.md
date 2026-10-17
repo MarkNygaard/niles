@@ -2,7 +2,7 @@
 
 # niles — feature manifest
 
-Niles is an AI-first home-automation system for private homes. It listens to natural-language voice commands, dispatches them through a tiered intent router, and can escalate to an LLM when a request exceeds the deterministic tier. The feature catalog below tracks every user-observable capability shipped so far. For the full architecture spec see ARCHITECTURE.md.
+Niles is an AI-first home-automation system for private homes. It listens to natural-language voice commands, dispatches them through a tiered intent router, and can escalate to an LLM when a request exceeds the deterministic tier. The feature catalog below tracks every user-observable capability shipped so far. For the crate map, the house rules and the big decisions see ARCHITECTURE.md.
 
 ## ambient
 
@@ -11,6 +11,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `curve-brightness` | Per-minute adaptive brightness curve based on time of day | [#5](https://github.com/MarkNygaard/niles/pull/5) |
 | `curve-color-temp` | Per-minute adaptive color-temperature curve based on time of day | [#7](https://github.com/MarkNygaard/niles/pull/7) |
 | `curve-morning-routine` | Gradual morning-routine ramp that respects per-room claims | [#24](https://github.com/MarkNygaard/niles/pull/24) |
+| `morning-routine-keeps-manual` | At the end of the morning routine, a light set by hand during the ramp keeps its level instead of going to full | [#466](https://github.com/MarkNygaard/niles/pull/466) |
+| `manual-mode-from-tools-and-rules` | A level, warmth, colour or effect set by the model or an automation puts the light in manual mode; on or off does not | [#466](https://github.com/MarkNygaard/niles/pull/466) |
 | `manual-mode-override` | Clear manual-mode overrides after a configurable timeout | [#32](https://github.com/MarkNygaard/niles/pull/32) |
 
 ## api
@@ -83,6 +85,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `assistant-reads-attachments` | Claude or ChatGPT answers about an attached photo or PDF; a message with files always goes to the assistant | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `web-search-live` | Adding, changing or removing the SearXNG address takes hold with the next search, without a restart | [#451](https://github.com/MarkNygaard/niles/pull/451) |
+| `notification-history` | What Niles says unprompted is kept in Postgres, so "what did I miss" still knows after a restart | [#466](https://github.com/MarkNygaard/niles/pull/466) |
+| `notifications-for-the-house` | An announcement with no room is spoken in every room with a satellite, still under quiet hours | [#466](https://github.com/MarkNygaard/niles/pull/466) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `push-artifact-shared` | A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
@@ -169,6 +173,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `ui-training-plan-sessions` | Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan | [#436](https://github.com/MarkNygaard/niles/pull/436) |
 | `ui-todays-run-card` | Today's run on the dashboard: the session, the next one, the week's km and the coach's note, with Done and Skipped | [#438](https://github.com/MarkNygaard/niles/pull/438) |
+| `linear-webhook` | Linear's card takes a webhook signing secret; once saved, an issue going to review or done is announced | [#466](https://github.com/MarkNygaard/niles/pull/466) |
 | `plugins-widget-room-setting` | A plugin's widget can start in the room one of its settings names, and moves when the setting changes | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `ui-media-without-sonos` | Media without Sonos: the TV's switch, what is on and its own volume; no Sonos-only cards; with no TV, where to add one | [#408](https://github.com/MarkNygaard/niles/pull/408) |
 | `ui-plugin-pages` | Plugins' pages join the menu and their widgets the front page and rooms, drawn from their declared trees | [#391](https://github.com/MarkNygaard/niles/pull/391) |
@@ -207,6 +212,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `media-play-pause` | Play or pause media playback on the active speaker | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-set` | Set the speaker volume to a specific level | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-step` | Raise or lower the speaker volume by one step | [#65](https://github.com/MarkNygaard/niles/pull/65) |
+| `podcasts` | A researched two-host episode, voiced by the house's own Kokoro, played in the app or on a Sonos | [#457](https://github.com/MarkNygaard/niles/pull/457) |
 | `tv-volume` | The LG TV's own speakers by voice, and a room's volume on its TV when the room has no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tv-wake-connected-interface` | Turning on the LG TV wakes the interface it is connected by, and every other MAC it reported too | [#409](https://github.com/MarkNygaard/niles/pull/409) |
 | `memory-add` | Append a note to the user's persistent memory | [#77](https://github.com/MarkNygaard/niles/pull/77) |
@@ -216,6 +222,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `scene-apply` | Restore a previously saved scene by name | [#43](https://github.com/MarkNygaard/niles/pull/43) |
 | `scene-delete` | Delete a saved scene by name | [#45](https://github.com/MarkNygaard/niles/pull/45) |
 | `scene-list` | List all saved scenes | [#45](https://github.com/MarkNygaard/niles/pull/45) |
+| `scene-room-by-name` | "cosy in the living room" saves or applies the living room's cosy when the house has that room | [#466](https://github.com/MarkNygaard/niles/pull/466) |
 | `scene-save` | Save the current device states as a named scene | [#43](https://github.com/MarkNygaard/niles/pull/43) |
 | `skill-background-review` | Review skill suggestions generated in the background | [#85](https://github.com/MarkNygaard/niles/pull/85) |
 | `skill-curator` | Automatic background transitions for stale and archived skills | [#80](https://github.com/MarkNygaard/niles/pull/80) |
@@ -297,6 +304,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - turn it up
 - make it quieter
 
+### `podcasts` — example phrasings
+
+- make me a quick podcast about the Øresund bridge
+- play the podcast about the bridge in the kitchen
+
 ### `tv-volume` — example phrasings
 
 - set the TV volume to 20
@@ -341,6 +353,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 - what scenes do we have
 - list my scenes
+
+### `scene-room-by-name` — example phrasings
+
+- save this as cosy in the living room
+- apply cosy in the living room
 
 ### `scene-save` — example phrasings
 

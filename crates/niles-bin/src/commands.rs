@@ -386,6 +386,10 @@ pub(crate) async fn synthesize(args: SynthesizeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "a dev subcommand's straight-line wiring of the Tier 1 stack"
+)]
 pub(crate) async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let (cfg, mqtt_client) = connect_from_config(&args.config).await?;
     let publisher = mqtt_client.publisher();
@@ -440,6 +444,7 @@ pub(crate) async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         search,
         presence_agg,
         &cfg.home,
+        None,
         None,
         false,
     );

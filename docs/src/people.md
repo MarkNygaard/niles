@@ -1,0 +1,141 @@
+# People and voices
+
+Niles knows the people in the house in two ways: who may sign in to the
+app, and whose voice is whose. Link the two and Niles treats you as the
+same person whether you speak or type.
+
+## Who can sign in
+
+**Settings → People → People** is the list of who can sign in. Signing in
+uses GitHub, but anyone can make a GitHub account, so this list decides
+who gets in, not GitHub.
+
+To add someone, type the email address GitHub has verified for them
+(GitHub → Settings → Emails) and press **Add**. Not their username, and
+not an address they have not verified. They then sign in with **Sign in
+with GitHub**. There are no passwords, invitations or roles. Everyone on
+the list can do everything, including adding and removing people.
+
+Remove someone with the bin next to their address. It takes effect on
+their next click. You cannot remove the last person on the list, because
+then nobody could sign in to add anyone back. **Undo last change** will
+not take them away either.
+
+The list only works with a GitHub app in the **Signing in** card above
+it. Without one, signing in stays off and the card says "Signing in is
+off while there is no GitHub app".
+
+Change the list here. Niles will not change it when asked, by voice or in
+the chat.
+
+Next to each address is a choice of voice. Pick the person's voice there
+to link the two. See [Security and privacy](security.md) for how signing
+in works.
+
+## Teaching Niles your voice
+
+Say to a satellite "my name is" and your name, or "I am", "I'm" or "this
+is" and your name. A single first name works best. Niles answers:
+
+1. "Nice to meet you, Mark. Say it once or twice more and I'll know you
+   better."
+2. "Got it, Mark. One more would help."
+3. "I'll know you now, Mark."
+
+Say it three or four times, from where you usually speak. Ask "who am I?"
+to check. Niles says "You're Mark.", or that it does not know yet.
+
+If someone already has that name and you sound different, Niles says "I
+already know a Mark, and you don't sound like them." Once Niles knows your
+voice, saying your name again adds to your voice, whatever name it hears.
+
+Niles keeps a short fingerprint of each sample, not the recording.
+Recognising a voice runs on your own Niles. What you say is still sent to
+the speech-to-text service to be written down, as every command is.
+
+## The Voices card
+
+**Settings → People → Voices** lists every voice Niles knows, with how many
+samples it has, when it last heard it, and "thin" if it could use more.
+You can edit a name in place. The bin removes the voice at once, with the
+person's notes, birthday and name settings. Their sign-in stays.
+
+**Only answer voices Niles knows** stops Niles answering anyone it does
+not recognise. "An unfamiliar voice is told so, and nothing happens,
+including introducing itself, which is what keeps the television from
+becoming a resident." An unknown voice that says "Niles" first hears
+"Sorry, I didn't recognise your voice." "Stop" to a ringing timer always
+works. To add someone new, switch the lock off, have them introduce
+themselves a few times, and switch it back on. Typing in the chat is
+never locked out, because whoever types has signed in.
+
+Off, an unknown voice can still run the house: lights, music, timers and
+the rest. It has no calendar, mail, notes or Saved items, and what it
+says goes into nobody's chat.
+
+## What Niles knows about you
+
+With your voice linked to your sign-in, **My profile → About you** has
+three cards.
+
+**What Niles knows about you** is a page of notes that Niles reads
+when it is talking to you, and never for anyone else. Niles adds a line
+when you say "remember that I…", or when it notices something lasting
+about you. Edit anything it got wrong, then save.
+
+**How Niles speaks to you** has:
+
+- **Address me as**: your name, or something like "Sir". Niles uses it now
+  and then, not on every reply.
+- **Say my name like**: a spelling for the voice to read, when it says
+  your name wrong.
+- **Birthday**: on the day, Niles opens the morning with happy birthday.
+  The year is optional.
+
+Without a linked voice, the page says "Niles does not know your voice
+yet" and explains how to introduce yourself.
+
+## The household's memory
+
+**Settings → Memory** holds what Niles remembers for the whole house, in
+two lists: **About the household** ("the bins go out on Tuesdays") and
+**What Niles has noted**. Niles reads both before it answers. Everyone in
+the house shares them, so a fact about one person belongs in their own
+notes instead.
+
+Niles adds to memory when you ask ("remember that the cleaner comes on
+Thursdays"). With an assistant switched on, it also looks back over what
+was said once the house has been quiet for five minutes, and may add a
+note or a skill. Once a week it tidies up.
+
+Delete anything wrong or out of date. Deleted entries wait under
+**Recently forgotten**, with **Restore**.
+
+## Who is home
+
+Niles can tell whether anyone is home, from tado° or UniFi, both under
+**Settings → Add-ons**.
+
+- **tado°** counts anyone whose phone has the tado° app with location on.
+  Connect it with **Connect tado** and approve at tado°, then switch on
+  **Read presence**.
+- **UniFi** counts the phones paired to people. Each person pairs their
+  own from **My profile → My phone**: open the page on your phone, on the
+  home Wi-Fi, and press **This is my phone**. Pairing only works from the
+  home network. One phone per person.
+
+Niles knows whether anyone is home, not who. The house counts as home as
+soon as any source says someone is there, and as away only once every
+source has said nobody is home for five minutes.
+
+Two options sit on the tado° panel once presence is on, both off until
+you switch them on:
+
+- **Lights off when everyone leaves**: whatever is on when the last
+  person goes.
+- **Lights on when somebody comes home**: the lights you pick, such as
+  the hall and the kitchen. A light already on is left alone.
+
+Automations can use **Home or away** as a trigger or a condition. You can
+also tell Niles the house is empty or occupied. That holds until you tell
+it to go back to automatic.

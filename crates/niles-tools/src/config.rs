@@ -18,6 +18,11 @@
 //! "restart required" badge next to the field. A spoken answer has no
 //! such affordance.
 //!
+//! `[auth]` is the other exception, and for a different reason: it says
+//! who can sign in, and the model reads web pages and tool results that
+//! anybody could have written. None of these tools changes it, undo
+//! included; the store refuses a spoken change to it as well.
+//!
 //! # Relative changes
 //!
 //! "Brighter" is relative, so the model needs to read before it writes.
@@ -89,7 +94,7 @@ impl Tool for GetConfig {
                     "section": section,
                     "values": to_json(values)?,
                     "overridden": overrides.get(section).map(to_json).transpose()?,
-                    "changeable_by_voice": section_reload(section) == Reload::Hot,
+                    "changeable_by_voice": changeable_by_voice(section),
                 })
             }
             None => json!({
@@ -150,6 +155,14 @@ impl Tool for UpdateConfig {
         })?;
 
         let section = path.split('.').next().unwrap_or(&path);
+        if section == "auth" {
+            return Err(Error::InvalidArgs {
+                tool: "update_config".into(),
+                reason: "who can sign in is never changed by voice; the person can change \
+                         it in the app, under Settings → People"
+                    .into(),
+            });
+        }
         if section_reload(section) != Reload::Hot {
             // Storing it would be honest only if we could also say "and
             // nothing will happen until the pod restarts", which is not a
@@ -249,9 +262,10 @@ impl Tool for UndoConfigChange {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "undo_config_change".into(),
-            description: "Undo the most recent configuration change, whoever made it. \
-                 Use for 'undo that', 'no, put it back', 'that's too dark, revert'. \
-                 Calling it twice walks back two changes. Returns what was reverted."
+            description: "Undo the most recent configuration change, whoever made it, \
+                 unless it changed who can sign in. Use for 'undo that', 'no, put it \
+                 back', 'that's too dark, revert'. Calling it twice walks back two \
+                 changes. Returns what was reverted."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -263,7 +277,7 @@ impl Tool for UndoConfigChange {
     }
 
     async fn execute(&self, _args: Value) -> Result<Value> {
-        match self.store.undo().await {
+        match self.store.undo(ChangeSource::Voice).await {
             Ok(Some(applied)) => Ok(applied_json(&applied)),
             Ok(None) => Ok(json!({
                 "changed": false,
@@ -341,9 +355,13 @@ fn applied_json(applied: &Applied) -> Value {
 fn hot_sections(effective: &toml::Table) -> Vec<String> {
     effective
         .keys()
-        .filter(|name| section_reload(name) == Reload::Hot)
+        .filter(|name| changeable_by_voice(name))
         .cloned()
         .collect()
+}
+
+fn changeable_by_voice(section: &str) -> bool {
+    section != "auth" && section_reload(section) == Reload::Hot
 }
 
 fn section_list(effective: &toml::Table) -> String {
@@ -371,6 +389,24 @@ mod tests {
 
     fn store() -> Arc<ConfigStore> {
         Arc::new(ConfigStore::from_str_in_memory(BASE).expect("fixture is a valid config"))
+    }
+
+    /// a@ in the file, and b@ added in the app: a change to who can sign
+    /// in that leaves somebody listed whichever way it is walked back.
+    async fn with_b_added() -> Arc<ConfigStore> {
+        let store = Arc::new(
+            ConfigStore::from_str_in_memory(&format!(
+                "{BASE}\n[auth]\nallowed = [{{ email = \"a@example.com\" }}]\n"
+            ))
+            .unwrap(),
+        );
+        let both =
+            "[auth]\nallowed = [{ email = \"a@example.com\" }, { email = \"b@example.com\" }]";
+        store
+            .apply(&toml::from_str(both).unwrap(), ChangeSource::Api)
+            .await
+            .unwrap();
+        store
     }
 
     async fn update(store: &Arc<ConfigStore>, path: &str, value: Value) -> Result<Value> {
@@ -413,6 +449,79 @@ mod tests {
         assert!(message.contains("only read when Niles starts"), "{message}");
         assert!(message.contains("lighting"), "names what it can change");
         assert_eq!(store.current().mqtt.host, "192.168.42.16");
+    }
+
+    #[tokio::test]
+    async fn update_refuses_to_change_who_can_sign_in() {
+        // A web page or a tool result can talk to the model, so an
+        // address the model wrote onto the list would be a stranger's
+        // way in.
+        let store = store();
+        let err = update(
+            &store,
+            "auth.allowed",
+            json!([{ "email": "stranger@example.com" }]),
+        )
+        .await
+        .expect_err("the allowlist is not the model's to change");
+        let message = err.to_string();
+        assert!(message.contains("Settings → People"), "{message}");
+        assert!(store.current().auth.allowed.is_empty());
+        assert!(store.history().is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_refuses_the_rest_of_auth_too() {
+        let store = store();
+        // Where the session key is read from is as good as the list:
+        // whoever chooses it can sign cookies.
+        assert!(
+            update(&store, "auth.session_secret_env", json!("ELSEWHERE"))
+                .await
+                .is_err()
+        );
+        assert!(store.current().auth.session_secret_env.is_none());
+    }
+
+    #[tokio::test]
+    async fn undo_by_voice_will_not_take_back_a_change_to_who_can_sign_in() {
+        // Undoing somebody's addition changes the list as much as
+        // writing it would.
+        let store = with_b_added().await;
+        let err = UndoConfigChange::new(store.clone())
+            .execute(json!({}))
+            .await
+            .expect_err("refused");
+        assert!(err.to_string().contains("Settings → People"), "{err}");
+        assert_eq!(store.current().auth.allowed.len(), 2, "unchanged");
+        assert_eq!(store.history().len(), 1, "still there for the app to undo");
+    }
+
+    #[tokio::test]
+    async fn get_config_does_not_offer_auth_as_changeable() {
+        let store = with_b_added().await;
+        let tool = GetConfig::new(store);
+        let out = tool.execute(json!({"section": "auth"})).await.unwrap();
+        assert_eq!(out["changeable_by_voice"], false);
+        let out = tool.execute(json!({})).await.unwrap();
+        assert!(
+            !out["changeable_by_voice"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("auth"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_by_voice_will_not_touch_who_can_sign_in_either() {
+        let store = with_b_added().await;
+        assert!(
+            ResetConfig::new(store.clone())
+                .execute(json!({"path": "auth.allowed"}))
+                .await
+                .is_err()
+        );
+        assert_eq!(store.current().auth.allowed.len(), 2);
     }
 
     #[tokio::test]

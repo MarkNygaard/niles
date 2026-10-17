@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { SandboxedPage } from "@/components/SandboxedPage";
 import { ShareDialog } from "@/components/ShareDialog";
+import { EpisodePlayer } from "@/components/EpisodePlayer";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -204,10 +205,17 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
       )}
       {failure && <p className="text-destructive text-sm">{failure.message}</p>}
 
+      {a.kind === "podcast" && a.status === "ready" && reading === undefined && (
+        <EpisodePlayer artifact={a.id} title={a.title} />
+      )}
+
       {reading !== undefined && (
         <div className="bg-muted/60 flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-sm">
           <span className="flex-1">Version {reading}, as it was</span>
-          {reading !== a.current_revision && editable && (
+          {/* A podcast is kept as recorded: the script and the audio
+              must never diverge, so an old version is read, never
+              restored. */}
+          {reading !== a.current_revision && editable && a.kind !== "podcast" && (
             <Button size="sm" disabled={restore.isPending} onClick={() => restore.mutate(reading)}>
               Restore this version
             </Button>

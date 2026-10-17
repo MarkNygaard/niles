@@ -1,39 +1,28 @@
 # AGENTS.md
 
-Working notes for any AI coding agent on this repo. This file
-exists alongside [`CLAUDE.md`](CLAUDE.md) so agents that auto-load
-`AGENTS.md` (Codex, OpenAI agent SDK, Pi/Kimi via Archon) see the
-same project conventions as agents that auto-load `CLAUDE.md`
-(Claude Code).
+How to work in this repo, for any coding agent (Claude Code, Codex, Hermes, Cursor) and the people who run one. `CLAUDE.md` imports this file and adds only what is particular to Claude Code.
 
-**The two files mirror each other.** Keep them in sync — when you
-edit one, edit the other to match. Same content, same rules, just
-two filenames so different agents can find them.
+## What Niles is
 
-## What this project is
+Niles is an open-source, AI-first home automation system in Rust. It replaces Home Assistant for a household that wants voice answers in well under a second, config over setup screens, and a language model built in. Niles is used in English only; English voices and phrasings are enough.
 
-Niles is an open-source, AI-first home automation system written in Rust.
-It replaces Home Assistant for users who want sub-second voice control,
-code/config over UI, and an LLM as a first-class citizen.
-The full spec is in [ARCHITECTURE.md](ARCHITECTURE.md).
-Current build status is in [ROADMAP.md](ROADMAP.md).
+## Where things are
 
-## Repository orientation
+- `ARCHITECTURE.md` is the map: the crates, how a turn flows, the 27 house rules and the big decisions. Every change keeps the house rules.
+- `features.toml`, and the `MANIFEST.md` generated from it, say what exists.
+- A crate's doc comments say how it works and why.
+- `docs/src/` is the user guide (an mdBook); `docs/integrations/` is the plugin author guide.
+- Planned work and feature specs are Linear issues in the *Niles software* project.
 
-- **Monorepo, Cargo workspace.** Workspace manifest at `Cargo.toml`, resolver 3, edition 2024.
-- **Crates** under `crates/`. Library crates have one module per concern; `niles-bin` is the only binary.
-- **Architecture, roadmap, contributing, security, conduct docs** at repo root.
-- **Deploy / firmware / docs / schemas / examples / scripts** are placeholders that fill in as their owning phases land.
+A new or ambiguous feature gets a Linear issue with the decision written down before any code. A change to a house rule, the crate map or a big decision updates `ARCHITECTURE.md` in the same PR.
 
-## Toolchain
+The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Kustomize), `examples/` and `scripts/`.
 
-- `rust-toolchain.toml` pins `stable` with `rustfmt` + `clippy`. Cloners get the right compiler via `rustup` automatically.
-- Edition `2024` is set workspace-wide; crates inherit via `edition.workspace = true`.
-- Workspace dependencies live in `[workspace.dependencies]` so every crate shares a single version.
+## Commands
 
-## Common commands
+`rust-toolchain.toml` pins stable with rustfmt and clippy. Edition 2024 is set for the whole workspace, and shared dependencies live in `[workspace.dependencies]`. The dev machine is Windows (MSVC, PowerShell); CI is Ubuntu.
 
-Always run these in PowerShell on the dev machine (Windows MSVC) or on CI (Ubuntu). The verify chain we run before pushing:
+The verify chain. Run all of it before every push, including the push of a review fix, and run `cargo fmt --all` before every commit:
 
 ```powershell
 cargo fmt --all --check
@@ -42,106 +31,70 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-To test or run a single crate:
+When `web/` changed, also run, in `web/`: `bun install` (only if dependencies changed), `npm run build` (tsc and vite) and `npm test` (vitest). When a skill changed, run `python scripts/check-skills.py`.
 
-```powershell
-cargo test -p niles-core
-cargo run -p niles-bin -- --help
-```
-
-If formatting fails, run `cargo fmt --all` to auto-fix and re-run the check.
+One crate at a time: `cargo test -p niles-core`, `cargo run -p niles-bin -- --help`.
 
 ## Conventions
 
-### Crate layout
+- **Crate layout.** `lib.rs` declares the modules and re-exports the headline types, so callers write `use niles_core::DeviceRegistry;`. `error.rs` holds the crate's own `Error` (a `thiserror` enum) and `pub type Result<T> = std::result::Result<T, Error>;`. A variant with a dynamic cause names a kind and a reason: `InvalidName { kind: &'static str, reason: String }`. One module per concern. Every `Cargo.toml` has `[lints] workspace = true`.
+- **Tests** sit inline under `#[cfg(test)] mod tests` and assert behaviour, not implementation. Several small tests beat one big one.
+- **Public surface.** No traits without implementations: a trait lives in the crate of its first implementation, as `DeviceCommander` does in `niles-mqtt`. `#[non_exhaustive]` on public enums that will grow (events, intents). Newtypes for validated identifiers (`RoomName`, `DeviceName`, `MinuteOfDay`), never a raw `String` or `u16`.
+- **Units.** Brightness is a `u8` in `0..=100`, colour temperature a `u16` in Kelvin. The source crate translates (Z2M's 0-254, WLED's 0-255, mireds).
+- **Comments** explain why. Never restate the code; the default is no comment.
+- **features.toml.** A user-visible feature adds or updates its `[[feature]]` entry (`id`, `category`, `summary`, `phrasings`, `since_pr` set to the PR's number). Then `cargo run -p niles-bin -- generate-manifest` rewrites `MANIFEST.md`; the test `committed_manifest_matches_features_toml` fails when the two disagree.
 
-Each library crate uses this shape:
+### File and function size
 
-```
-crates/<name>/
-├── Cargo.toml      # inherits package metadata + lints from workspace
-└── src/
-    ├── lib.rs      # module declarations + pub re-exports of the public API
-    ├── error.rs    # local Error enum (thiserror) + Result alias
-    └── <concern>.rs ...
-```
+Keep a source file under roughly 1,000 to 1,500 lines, not counting its tests. Split it by concern before it grows past that, the way #446 split `crates/niles-bin/src/main.rs` into `cli.rs`, `commands.rs`, `dispatch/` and `wiring/`.
 
-`lib.rs` re-exports the headline types so callers can write `use niles_core::DeviceRegistry;` instead of `use niles_core::registry::DeviceRegistry;`.
+A function is at most 100 lines. Clippy's `too_many_lines` enforces it (the threshold is in `clippy.toml`). A longer function needs `#[expect(clippy::too_many_lines, reason = "...")]` with a real reason, such as "one match over every intent; splitting it scatters the dispatch table".
 
-### Errors
+## The web UI
 
-- `thiserror` for ergonomic `#[derive(Error)]` enums.
-- Each crate defines its own `Error` + `pub type Result<T> = std::result::Result<T, Error>;` alias.
-- `Error` variants name a *kind* + a *reason* string when the cause is dynamic (e.g. `InvalidName { kind: &'static str, reason: String }`).
+`web/` is a Vite and React app, served by `niles-api` behind the `ui` feature. Bun installs the dependencies and `bun.lock` is the lockfile. Components come from shadcn/ui on Base UI (`components.json`, `style: "base-nova"`). Two traps that each cost an hour:
 
-### Tests
+- **`npx shadcn@latest add <x>` rewrites an import and installs a package for it.** The generated file says `import { cn } from "cn"` and a `cn` dependency appears in `package.json`. Both are wrong here. Change the import to `@/lib/utils`, run `npm uninstall cn`, then `bun install`, because npm does not update `bun.lock`.
+- **Base UI's `Select` popup hangs jsdom.** The run never finishes. Anything worth asserting about what a `Select` offers belongs in a function the test calls directly, like `usableFor` in `RoleCard.tsx` and `roomChoices` in `SatellitesCard.tsx`. `Dialog`, `Popover` and `Switch` are fine, though `Switch` needs the `PointerEvent` shim in `src/test-setup.ts`.
 
-- Unit tests inline in the same file as the code, under `#[cfg(test)] mod tests`.
-- Tests assert *behavior*, not implementation detail. Prefer multiple tightly-scoped tests over one giant test.
-- The standard contract: build / fmt / clippy `-D warnings` / tests all pass before commit.
+## Skills
 
-### Public surface
+Skills live in `.agents/skills/`, where Codex, Hermes and the skills CLI look. `.claude/skills/` is a copy for Claude Code, because the repo has no symlinks (Windows checkouts run with `core.symlinks` off). Edit `.agents/skills/`, then copy the change over `.claude/skills/`. `scripts/check-skills.py` fails CI when the two differ.
 
-- **No traits without implementations.** `DeviceSource` and `RoomSpeaker` live in their first implementation crate (e.g. `niles-mqtt`), not in `niles-core`, until they're actually used.
-- **`#[non_exhaustive]` on public enums** that will gain variants (events, intents) so adding variants isn't a breaking change for downstream matches.
-- **Newtypes for validated identifiers** (`RoomName`, `DeviceName`, `MinuteOfDay`) — never raw `String`/`u16` in public APIs where validation rules matter.
+Hermes users run `hermes skills trust` once in the repo to load them.
 
-### Units and ranges
+`shadcn` is pinned by hash in `skills-lock.json`, which the skills CLI (`npx skills`) writes. Updating it means updating both copies and the lock. `unslop` lists the AI tells to cut from docs, PR bodies and user-facing text. Niles's own assistant (Claude Code or ChatGPT, in the chat and in artifact jobs) is told the same rules: `niles-bin` compiles `.agents/skills/unslop/SKILL.md` into its system prompt, so an edit there changes how Niles writes.
 
-- Brightness is `u8` in `0..=100` (percent). Upstream-source translation (Z2M's `0..=254`) happens in the source-specific crate, not in core types.
-- Color temperature is `u16` Kelvin. Mireds → Kelvin conversion happens in the source-specific crate.
+## Branches, PRs and releases
 
-## PR workflow
+`development` is the default branch, where work lands. `main` is what is released, and images are built from it.
 
-1. Branch off `main` with a meaningful prefix: `feat/`, `fix/`, `docs/`, `chore/`.
-2. Make the change; run the verify chain locally.
-3. Commit with a Conventional-Commits-style subject (`feat(niles-core): ...`).
-4. Push and open a PR with `gh pr create`. PR body summarizes what's in, what's out, and how it was verified.
-5. Wait for CI green. The user reviews, may push fixup commits.
-6. Squash-merge with `--delete-branch` once approved.
+1. Branch off `development` as `feat/`, `fix/`, `docs/` or `chore/`.
+2. Make the change and run the verify chain.
+3. Open a PR into `development`. Its title is a Conventional Commit (`feat(niles-core): ...`, `fix: ...`), because release-please reads the titles. The body says what is in, what is out, and how it was verified.
+4. Wait for CI. The PR is squash-merged with `--delete-branch`, the only method `development` takes.
 
-Commits made by Claude include the trailer:
-```
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-```
+release-please (`.github/workflows/release-please.yml`, `release-please-config.json`) keeps a release PR open against `development` with the next version and its `CHANGELOG.md` entry. Merging it tags `vX.Y.Z`. The version is in `Cargo.toml`'s `[workspace.package]`. Then one PR from `development` into `main`, merged as a merge commit (the only method `main` takes), builds the image (`image.yml`).
 
-### Pre-commit hygiene during review/fix passes
+Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, both CI jobs must pass, and Mark (the code owner for everything, in `.github/CODEOWNERS`) must approve. A push after the approval needs a new one. The admin may bypass them only through a pull request.
 
-Run `cargo fmt --all` **before every commit**, not just once at the
-end of a feature. A one-line addition during a review pass can wrap
-longer than rustfmt's max-width and break CI's
-`cargo fmt --all --check`, even if the edit looked fine in your
-editor. The same applies to `cargo clippy --workspace --all-targets
--- -D warnings` and `cargo test --workspace` — the full verify
-chain runs **before every `git push`**, not just once at PR-open
-time.
+## Linear
 
-This applies *especially* to agent-driven review/fix passes (Codex,
-Sonnet, Pi self-review). Archon's `validate` node runs early in the
-workflow, before review fixes land. If a later node pushes a fix on
-top, that fix must re-validate locally — the orchestrator won't do
-it for you. CI will catch any drift and the PR fails red.
+Issues go in the `niles` team, project *Niles software*. The *Satellite v2 PCB* project and `hardware/` are Mark's; leave them alone. An agent reaches Linear through Linear's MCP server (`https://mcp.linear.app/mcp`), signed in as the person running it, so what it files is theirs.
+
+- **Filing.** Anyone but Mark files a new issue into Triage. Only Mark moves an issue to Todo, and only he hands one to the ai-harness. An agent never triggers the harness. A good issue says what exists today (with file paths), the decision already made, and when it is done.
+- **Before filing, search.** Look through the issues in Triage, Backlog, Todo and the started states (In Progress through Ready for merge) for the same thing. If one already covers it, add what you know as a comment there instead of filing a new one. If one is close but doesn't cover it, file the new issue and mark it *related to* that one, saying in the description how the two differ.
+- **Picking one up.** Work only on an issue in Todo that nobody else is assigned to and that isn't delegated to the AI Harness. Assign it to yourself and move it to In Progress before you start.
+- **The PR.** Name the branch after the issue (`fix/nil-34-app-timers`), and put `Fixes NIL-34` in the PR body, so Linear's GitHub integration links the two. Move the issue to In Review when the PR is open.
+- **After that, it's Mark's.** Changes requested, Functional testing and Ready for merge are his to set. The issue goes to Done when the PR merges.
 
 ## Things to avoid
 
-- **No local Docker workflows.** All containerized services run on the user's k8s cluster. Don't suggest `docker run` or `docker compose up`.
-- **Never `git add -A` or `git add .`** Stage files explicitly. Easy to accidentally include `.env` or other secrets.
-- **Never skip git hooks** (`--no-verify`, `--no-gpg-sign`). If a hook fails, fix the cause.
-- **No backwards-compatibility shims** for code that isn't yet in production. Just change the code.
-- **No premature abstractions.** Three similar lines is better than a generic helper used once.
-- **No comments that restate the code.** Comments explain *why*, not *what*. Default to none.
-- **No half-finished implementations.** If a function can't be completed in this PR, scope it out.
-
-## Spec discipline
-
-- The spec ([ARCHITECTURE.md](ARCHITECTURE.md)) is the source of truth for *what* Niles does.
-- When the spec is ambiguous, **fix the spec first** in a doc-only PR, then implement against the clarified version. Don't bake ambiguity into code.
-- Build status (which phase deliverables are done, in flight, blocked) is tracked in a local `ROADMAP.md` at the repo root. The file is gitignored — it's a working doc, not a public artifact — but it's auto-loaded by Claude Code when present. Update it as PRs land. If the file is missing, recreate it from the phase structure in ARCHITECTURE.md.
-
-## Pointers
-
-- [ARCHITECTURE.md](ARCHITECTURE.md) — full architectural spec (long, detailed)
-- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup and PR conventions for humans
-- [README.md](README.md) — human-facing intro
-- `ROADMAP.md` — local-only build status (gitignored; see "Spec discipline" above)
-- `CLAUDE.local.md` — local-only working notes (gitignored sibling to this file)
+- Local Docker workflows. Everything containerised runs on the household's Kubernetes cluster; don't suggest `docker run` or `docker compose up`.
+- `git add -A` or `git add .`. Stage files by name, so an `.env` never slips in.
+- Skipping hooks (`--no-verify`, `--no-gpg-sign`). If a hook fails, fix the cause.
+- Compatibility shims for code that isn't in production yet. Change the code.
+- Premature abstractions. Three similar lines beat a helper used once.
+- Half-finished implementations and `todo!()` paths. Scope out what this PR can't finish.
+- ConfigMap toggles. A feature works by default: on when the database is there, with its state in Postgres. Never require a `niles.toml` section to switch it on.
+- Printing secrets. A credential is never echoed, logged or pasted into an issue, a PR or a test.

@@ -4,8 +4,7 @@
 /// at the bottom of this file: it imports the host interfaces below and
 /// exports the lifecycle and tool functions Niles calls.
 ///
-/// Spec: ARCHITECTURE.md, "Third-party integrations (plugins)".
-/// Author guide: docs/integrations/.
+/// Spec and author guide: docs/integrations/.
 ///
 /// Status: v0.2.1, frozen. Niles still runs plugins built against it
 /// (and against 0.2.0, which is this without `config.time-zone` and

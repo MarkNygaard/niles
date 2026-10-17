@@ -185,6 +185,15 @@ pub fn scene_not_found(name: &str) -> String {
     format!("I don't have a scene called {}.", spoken_room(name))
 }
 
+/// "The scene cosy has nothing in the kitchen."
+pub fn scene_not_in_room(name: &str, room: &str) -> String {
+    format!(
+        "The scene {} has nothing in the {}.",
+        spoken_room(name),
+        spoken_room(room)
+    )
+}
+
 /// "The scene kitchen evening is empty."
 pub fn scene_empty(name: &str) -> String {
     format!("The scene {} is empty.", spoken_room(name))
@@ -958,6 +967,14 @@ mod tests {
         assert_eq!(
             scene_not_found("kitchen_evening"),
             "I don't have a scene called kitchen evening."
+        );
+    }
+
+    #[test]
+    fn scene_not_in_room_phrasing() {
+        assert_eq!(
+            scene_not_in_room("cosy", "living room"),
+            "The scene cosy has nothing in the living room."
         );
     }
 

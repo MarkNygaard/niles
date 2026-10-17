@@ -10,8 +10,7 @@
 // What it is for is the two things a page cannot do on its own: being
 // installed to a Home Screen, and receiving a push while the app is
 // closed: "Your Thailand travel plan is ready", and later a timer that
-// fires. The pushes are sent by crates/niles-webpush; see ARCHITECTURE.md
-// § Notifications on your devices.
+// fires. The pushes are sent by crates/niles-webpush.
 
 // Take over as soon as a new version is published, rather than waiting
 // for every tab to close. A service worker this small has no state to

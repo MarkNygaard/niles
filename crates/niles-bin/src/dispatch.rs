@@ -258,6 +258,10 @@ pub(crate) async fn handle_transcript(
 /// matched but resolved no target device — e.g. "living room ceiling light"
 /// makes Tier 0 grab "living room ceiling" as the room (no such devices);
 /// rather than dead-ending, the LLM resolves the real `living_room/ceiling`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Tier 1 turn; its outcomes (done, hand-off, escalate) share the messages built first"
+)]
 pub(crate) async fn dispatch_tier1(
     ctx: &DispatchCtx,
     peer: SocketAddr,
@@ -287,6 +291,18 @@ pub(crate) async fn dispatch_tier1(
             if follow_up::asks(&reply) {
                 proposals.discussed();
             }
+            return Some(reply);
+        }
+    } else if artifacts::about_podcasts(text)
+        && ctx.artifacts.as_ref().is_some_and(|a| a.podcasts_ready())
+    {
+        // A spoken ask for a podcast goes straight to the assistant:
+        // the fast model has no artifact tools with which to start the
+        // job. With no assistant on, `ask_assistant` is a no-op and the
+        // fast model answers as best it can.
+        if let Some(reply) =
+            ask_assistant(ctx, peer, text, thread, speaker, &system_prompt, &[]).await
+        {
             return Some(reply);
         }
     }
@@ -579,7 +595,16 @@ pub(crate) async fn ask_assistant(
     {
         system_prompt.push_str(&artifacts::turn_prompt(
             artifacts.searching(Some(chosen.via())),
+            artifacts.podcasts_ready(),
         ));
+    } else if let Some(artifacts) = &ctx.artifacts
+        && matches!(thread, conversation::Thread::Room(_))
+        && artifacts.podcasts_ready()
+        && approvals::asker().is_some_and(|a| !a.person.starts_with("satellite:"))
+    {
+        // A spoken podcast request is the assistant's: the satellite
+        // only says its one-sentence answer.
+        system_prompt.push_str(artifacts::spoken_prompt());
     }
     system_prompt.push_str(&assistant::attachments_section(attachments));
     match assistant
@@ -716,6 +741,9 @@ pub(crate) fn answer_to_proposal(
     if !proposals.pending() {
         return None;
     }
+    // From any voice, on purpose: one word is too short for voice
+    // recognition to say who spoke it, so asking it to would refuse
+    // every yes rather than a stranger's.
     let yes = niles_tools::automations::answer(text)?;
     let rule = proposals.take()?;
     if !yes {
@@ -907,7 +935,10 @@ pub(crate) fn format_intent(intent: &Intent) -> String {
             Some(r) => format!("SceneSave({name:?} in {r})"),
             None => format!("SceneSave({name:?})"),
         },
-        Intent::SceneApply { name } => format!("SceneApply({name:?})"),
+        Intent::SceneApply { name, room } => match room {
+            Some(r) => format!("SceneApply({name:?} in {r})"),
+            None => format!("SceneApply({name:?})"),
+        },
         Intent::SceneList => "SceneList".into(),
         Intent::SceneDelete { name } => format!("SceneDelete({name:?})"),
         Intent::TimerCancel { name } => format!("TimerCancel({name:?})"),

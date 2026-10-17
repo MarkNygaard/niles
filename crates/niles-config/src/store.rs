@@ -298,7 +298,10 @@ impl ConfigStore {
     /// Returns `None` when there is nothing to undo. Undo is a pop, not a
     /// new revision: undoing twice walks two changes back rather than
     /// oscillating between two states.
-    pub async fn undo(&self) -> Result<Option<Applied>> {
+    ///
+    /// `source` is who is asking, not who made the change. Refused, the
+    /// change stays in the history, still there to undo from the app.
+    pub async fn undo(&self, source: ChangeSource) -> Result<Option<Applied>> {
         let _write = self.write_lock.lock().await;
         let (overrides, revisions) = self.snapshot();
         let Some(last) = revisions.last().cloned() else {
@@ -309,6 +312,7 @@ impl ConfigStore {
         let config = layer(&self.base, &restored)?;
         let before = layer_table(&self.base, &overrides);
         let after = layer_table(&self.base, &restored);
+        self.check_sign_in(source, &before, &after, &config)?;
 
         let mut remaining = revisions;
         remaining.pop();
@@ -369,23 +373,10 @@ impl ConfigStore {
         // override document is the whole delta, so this is what a fresh
         // boot would produce.
         let config = layer(&self.base, &next)?;
-
-        // The one write that cannot be undone from the page that made
-        // it: with nobody on the allowlist, nobody can sign in to put
-        // somebody back. Refused here rather than in `validate`,
-        // because an empty list is a perfectly valid *state* — it is
-        // how a fresh install starts — and only the transition out of
-        // a non-empty one is the mistake.
-        if self.current().auth.would_lock_out(&config.auth) {
-            return Err(Error::InvalidSection {
-                section: "auth",
-                reason: "removing the last person would leave nobody able to sign in;                          add somebody else first"
-                    .into(),
-            });
-        }
-
         let before = layer_table(&self.base, &overrides);
         let after = layer_table(&self.base, &next);
+        self.check_sign_in(source, &before, &after, &config)?;
+
         let changes: Vec<Change> = paths
             .into_iter()
             .map(|path| Change {
@@ -433,6 +424,46 @@ impl ConfigStore {
         })
     }
 
+    /// What every change is held to over who can sign in, undo included:
+    /// undo restores a whole document, so it can change the allowlist as
+    /// surely as a write can.
+    fn check_sign_in(
+        &self,
+        source: ChangeSource,
+        before: &toml::Table,
+        after: &toml::Table,
+        next: &Config,
+    ) -> Result<()> {
+        // Voice is the model's way in, and the model reads web pages and
+        // tool results anybody could have written. An address it put on
+        // the list would be a stranger's way in, so `[auth]` changes only
+        // from the app, by somebody already signed in.
+        if source == ChangeSource::Voice && before.get("auth") != after.get("auth") {
+            return Err(Error::Refused {
+                section: "auth",
+                reason: "who can sign in is never changed by voice; \
+                         change it in the app, under Settings → People"
+                    .into(),
+            });
+        }
+
+        // The one change that cannot be undone from the page that made
+        // it: with nobody on the allowlist, nobody can sign in to put
+        // somebody back. Refused here rather than in `validate`,
+        // because an empty list is a perfectly valid *state* — it is
+        // how a fresh install starts — and only the transition out of
+        // a non-empty one is the mistake.
+        if self.current().auth.would_lock_out(&next.auth) {
+            return Err(Error::InvalidSection {
+                section: "auth",
+                reason: "removing the last person would leave nobody able to sign in; \
+                         add somebody else first"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Hand the whole state to the backend.
     ///
     /// Always a full replacement rather than an incremental edit, which
@@ -472,7 +503,7 @@ impl ConfigStore {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ChangeSource {
-    /// A spoken request, via the LLM tool.
+    /// A spoken request, via the LLM tool. Never changes `[auth]`.
     Voice,
     /// The config UI or a direct HTTP call.
     Api,
@@ -818,6 +849,108 @@ allowed = [{ email = \"a@example.com\" }]
     }
 
     #[tokio::test]
+    async fn undoing_the_first_person_is_refused_like_removing_them() {
+        // Undo restores a whole document, so it can empty the list as
+        // surely as a write can — and an empty list is an open door.
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        store
+            .apply(
+                &patch(
+                    "[auth]
+allowed = [{ email = \"a@example.com\" }]
+",
+                ),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+
+        let error = store
+            .undo(ChangeSource::Api)
+            .await
+            .expect_err("should refuse");
+        assert!(
+            error.to_string().contains("nobody able to sign in"),
+            "the refusal should say why: {error}"
+        );
+        assert_eq!(store.current().auth.allowed.len(), 1, "unchanged");
+        assert_eq!(
+            store.history().len(),
+            1,
+            "the change is still there to undo"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spoken_change_never_reaches_who_can_sign_in() {
+        // Voice is the model's route in, and the model reads web pages.
+        let store = with_auth(r#"allowed = [{ email = "a@example.com" }]"#);
+        let add_a_stranger = patch(
+            "[auth]
+allowed = [{ email = \"a@example.com\" }, { email = \"stranger@example.com\" }]
+",
+        );
+        let error = store
+            .apply(&add_a_stranger, ChangeSource::Voice)
+            .await
+            .expect_err("should refuse");
+        assert!(error.to_string().contains("Settings → People"), "{error}");
+        assert_eq!(store.current().auth.allowed.len(), 1);
+        assert!(store.history().is_empty());
+
+        store
+            .apply(&add_a_stranger, ChangeSource::Api)
+            .await
+            .expect("the app can");
+        assert_eq!(store.current().auth.allowed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn undo_by_voice_leaves_a_change_to_who_can_sign_in_alone() {
+        let store = with_auth(r#"allowed = [{ email = "a@example.com" }]"#);
+        store
+            .apply(
+                &patch(
+                    "[auth]
+allowed = [{ email = \"a@example.com\" }, { email = \"b@example.com\" }]
+",
+                ),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+
+        let error = store
+            .undo(ChangeSource::Voice)
+            .await
+            .expect_err("should refuse");
+        assert!(error.to_string().contains("Settings → People"), "{error}");
+        assert_eq!(store.current().auth.allowed.len(), 2, "unchanged");
+        assert_eq!(store.history().len(), 1, "still there to undo");
+
+        store
+            .undo(ChangeSource::Api)
+            .await
+            .expect("the app can")
+            .expect("something to undo");
+        assert_eq!(store.current().auth.allowed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn undo_by_voice_still_walks_back_everything_else() {
+        let store = with_auth(r#"allowed = [{ email = "a@example.com" }]"#);
+        store
+            .apply(
+                &patch("[lighting]\ndaytime_brightness = 85"),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+        store.undo(ChangeSource::Voice).await.unwrap();
+        assert_eq!(store.current().lighting.daytime_brightness, 100);
+    }
+
+    #[tokio::test]
     async fn apply_changes_the_effective_config() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
         store
@@ -1157,7 +1290,11 @@ daytime_brightness = 85",
             )
             .await
             .unwrap();
-        let undone = store.undo().await.unwrap().expect("something to undo");
+        let undone = store
+            .undo(ChangeSource::Api)
+            .await
+            .unwrap()
+            .expect("something to undo");
         assert_eq!(store.current().lighting.daytime_brightness, 100);
         assert_eq!(undone.changes[0].from, Some(toml::Value::Integer(85)));
         assert_eq!(undone.changes[0].to, toml::Value::Integer(100));
@@ -1189,12 +1326,12 @@ daytime_brightness = 70",
             )
             .await
             .unwrap();
-        store.undo().await.unwrap();
+        store.undo(ChangeSource::Api).await.unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 85);
-        store.undo().await.unwrap();
+        store.undo(ChangeSource::Api).await.unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 100);
         assert!(
-            store.undo().await.unwrap().is_none(),
+            store.undo(ChangeSource::Api).await.unwrap().is_none(),
             "nothing left to undo"
         );
     }
@@ -1253,7 +1390,7 @@ daytime_brightness = 100",
     #[tokio::test]
     async fn undo_of_nothing_is_none_rather_than_an_error() {
         let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
-        assert!(store.undo().await.unwrap().is_none());
+        assert!(store.undo(ChangeSource::Api).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1274,7 +1411,7 @@ daytime_brightness = 85",
             .await
             .unwrap();
         assert_eq!(store.current().lighting.daytime_brightness, 100);
-        store.undo().await.unwrap();
+        store.undo(ChangeSource::Api).await.unwrap();
         assert_eq!(
             store.current().lighting.daytime_brightness,
             85,
@@ -1514,7 +1651,7 @@ daytime_brightness = 72",
         // The undo must work across the restart, not just in the session
         // that made the change.
         reopened
-            .undo()
+            .undo(ChangeSource::Api)
             .await
             .unwrap()
             .expect("undoable after reopen");

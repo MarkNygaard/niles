@@ -369,6 +369,18 @@ pub fn is_radio(uri: &str) -> bool {
     .any(|scheme| uri.starts_with(scheme))
 }
 
+/// DIDL-Lite metadata for one plain MP3 address — a podcast episode —
+/// as `SetAVTransportURI` takes it: a title and a `res` the speaker
+/// fetches. Escaped once; `load` escapes the metadata again as a SOAP
+/// element, which is the double escaping Sonos expects.
+pub fn track_metadata(title: &str, uri: &str) -> String {
+    format!(
+        r#"<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="true"><dc:title>{}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="http-get:*:audio/mpeg:*">{}</res></item></DIDL-Lite>"#,
+        escape(title),
+        escape(uri)
+    )
+}
+
 /// Text placed inside a SOAP element.
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -406,6 +418,21 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::Mutex;
+
+    #[test]
+    fn track_metadata_escapes_the_title_and_the_uri_once() {
+        let metadata = track_metadata(
+            "Fish & Chips <the musical>",
+            "https://bucket.example.com/e.mp3?X-Amz-Signature=ab&cd=1",
+        );
+        assert!(metadata.contains("<dc:title>Fish &amp; Chips &lt;the musical&gt;</dc:title>"));
+        assert!(metadata.contains(
+            "<res protocolInfo=\"http-get:*:audio/mpeg:*\">https://bucket.example.com/e.mp3?X-Amz-Signature=ab&amp;cd=1</res>"
+        ));
+        assert!(metadata.contains("<upnp:class>object.item.audioItem.musicTrack</upnp:class>"));
+        // Escaped once, not twice: no `&amp;amp;` anywhere.
+        assert!(!metadata.contains("&amp;amp;"));
+    }
 
     #[derive(Clone)]
     struct MockTransport {

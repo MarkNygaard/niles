@@ -1,8 +1,7 @@
 //! Who is allowed to use the web surface.
 //!
-//! See ARCHITECTURE.md § Signing in. The short of it: GitHub is the
-//! front door, not the boundary — accounts there are free, so "has a
-//! GitHub account" tests nothing. This list is the boundary, and it
+//! GitHub is the front door, not the boundary — accounts there are
+//! free, so "has a GitHub account" tests nothing. This list is the boundary, and it
 //! lives in config rather than a table so that adding somebody is an
 //! edit in Settings rather than a message, a token and a mail server.
 //!
@@ -79,8 +78,19 @@ impl AuthConfig {
     /// Both halves are required. Naming a GitHub app with nobody
     /// allowed would refuse everyone; listing people with no GitHub app
     /// would give them nothing to sign in with.
+    ///
+    /// The second is not failing closed, on purpose: refusing everybody
+    /// until an app exists would leave the API key as the only way in.
+    /// It is said instead — [`Self::is_open_with_people_listed`].
     pub fn is_enabled(&self) -> bool {
         !self.allowed.is_empty() && self.names_a_github_app()
+    }
+
+    /// People are listed, so it reads as though sign-in were on, and it
+    /// is off: there is no GitHub app, and Niles is open to anybody who
+    /// can reach it.
+    pub fn is_open_with_people_listed(&self) -> bool {
+        !self.allowed.is_empty() && !self.names_a_github_app()
     }
 
     /// Whether a GitHub app has been *pointed at*, by either route.
@@ -93,7 +103,7 @@ impl AuthConfig {
     /// arrived be told apart from one correctly waiting for its first
     /// person, and collapsing it would hide exactly the failure
     /// `is_configured` exists to catch.
-    fn names_a_github_app(&self) -> bool {
+    pub fn names_a_github_app(&self) -> bool {
         let named = self.github_client_id_env.is_some() && self.github_client_secret_env.is_some();
         let stored = crate::secrets::get("auth.github_client_id").is_some()
             && crate::secrets::get("auth.github_client_secret").is_some();
@@ -353,11 +363,20 @@ mod tests {
             ..Default::default()
         };
         assert!(!cfg.is_enabled());
+        assert!(cfg.is_open_with_people_listed(), "and that is worth saying");
     }
 
     #[test]
     fn one_person_and_an_app_is_enough() {
-        assert!(configured(vec![person("someone@example.com")]).is_enabled());
+        let cfg = configured(vec![person("someone@example.com")]);
+        assert!(cfg.is_enabled());
+        assert!(!cfg.is_open_with_people_listed());
+    }
+
+    #[test]
+    fn an_empty_list_is_open_but_not_this_kind_of_open() {
+        // The empty list has its own notice, and its own fix.
+        assert!(!AuthConfig::default().is_open_with_people_listed());
     }
 
     #[test]

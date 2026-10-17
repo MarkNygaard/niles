@@ -13,7 +13,7 @@ use niles_core::{
 use niles_history::{CommandQuery, CommandReader, StateQuery, StateReader};
 use niles_memory::{MemoryStore, Target as MemoryTarget};
 use niles_mqtt::{CommandRouter, MqttPublisher};
-use niles_scheduler::{TimerState, TimerStore, canonicalize_name};
+use niles_scheduler::{ManualModeTracker, TimerState, TimerStore, canonicalize_name};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -664,6 +664,7 @@ pub struct SetDevice<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
     publisher: P,
     router: Arc<CommandRouter>,
+    manual: Option<Arc<ManualModeTracker>>,
     dry_run: bool,
 }
 
@@ -678,8 +679,16 @@ impl<P: Publisher> SetDevice<P> {
             registry,
             publisher,
             router,
+            manual: None,
             dry_run,
         }
+    }
+
+    /// Put what this sets in manual mode, as the same words said to
+    /// Tier 0 would.
+    pub fn with_manual_mode(mut self, manual: Option<Arc<ManualModeTracker>>) -> Self {
+        self.manual = manual;
+        self
     }
 }
 
@@ -721,6 +730,9 @@ impl<P: Publisher> Tool for SetDevice<P> {
         }
         let target = extract_set_state("set_device", &args)?;
         check_can_do(&device, &target, raw)?;
+        if let Some(manual) = &self.manual {
+            manual.adjusted(&device.id, &target);
+        }
 
         if let Some(commander) = self.router.commander_for(&device.id, &target) {
             if self.dry_run {
@@ -764,6 +776,7 @@ pub struct SetRoom<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
     publisher: P,
     router: Arc<CommandRouter>,
+    manual: Option<Arc<ManualModeTracker>>,
     dry_run: bool,
 }
 
@@ -778,8 +791,16 @@ impl<P: Publisher> SetRoom<P> {
             registry,
             publisher,
             router,
+            manual: None,
             dry_run,
         }
+    }
+
+    /// Put what this sets in manual mode, as the same words said to
+    /// Tier 0 would.
+    pub fn with_manual_mode(mut self, manual: Option<Arc<ManualModeTracker>>) -> Self {
+        self.manual = manual;
+        self
     }
 }
 
@@ -833,6 +854,9 @@ impl<P: Publisher> Tool for SetRoom<P> {
         let mut skipped = Vec::new();
         for device in &targets {
             let id = device.id.to_string();
+            if let Some(manual) = &self.manual {
+                manual.adjusted(&device.id, &target);
+            }
             if let Some(commander) = self.router.commander_for(&device.id, &target) {
                 if self.dry_run {
                     tracing::info!("[dry-run] would command {id} {target:?}");
@@ -1023,6 +1047,7 @@ pub struct SetLightEffect<P: Publisher = MqttPublisher> {
     registry: Arc<DeviceRegistry>,
     publisher: P,
     router: Arc<CommandRouter>,
+    manual: Option<Arc<ManualModeTracker>>,
     dry_run: bool,
 }
 
@@ -1037,8 +1062,16 @@ impl<P: Publisher> SetLightEffect<P> {
             registry,
             publisher,
             router,
+            manual: None,
             dry_run,
         }
+    }
+
+    /// Put what this sets in manual mode, as the same words said to
+    /// Tier 0 would.
+    pub fn with_manual_mode(mut self, manual: Option<Arc<ManualModeTracker>>) -> Self {
+        self.manual = manual;
+        self
     }
 }
 
@@ -1089,6 +1122,11 @@ impl<P: Publisher> Tool for SetLightEffect<P> {
                 tool: "set_light_effect".into(),
                 reason: format!("unknown or unsupported effect '{effect}'"),
             })?;
+        // An effect is picked on purpose, and the curve's next warmth
+        // would paint over it.
+        if let Some(manual) = &self.manual {
+            manual.flag(&device.id);
+        }
         if self.dry_run {
             tracing::info!("[dry-run] would publish {topic} {payload}");
             return Ok(json!({ "ok": true, "topic": topic, "dry_run": true }));
@@ -1705,6 +1743,7 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
     publisher: P,
     router: Arc<CommandRouter>,
     settings: Option<Arc<niles_config::ConfigStore>>,
+    manual: Option<Arc<ManualModeTracker>>,
     dry_run: bool,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
@@ -1712,18 +1751,14 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
     reg.register(Box::new(GetDeviceState::new(registry.clone())));
     reg.register(Box::new(ListDevicesInRoom::new(registry.clone())));
     reg.register(Box::new(ListAllDevices::new(registry.clone())));
-    reg.register(Box::new(SetLightEffect::new(
-        registry.clone(),
-        publisher.clone(),
-        router.clone(),
-        dry_run,
-    )));
-    reg.register(Box::new(SetRoom::new(
-        registry.clone(),
-        publisher.clone(),
-        router.clone(),
-        dry_run,
-    )));
+    reg.register(Box::new(
+        SetLightEffect::new(registry.clone(), publisher.clone(), router.clone(), dry_run)
+            .with_manual_mode(manual.clone()),
+    ));
+    reg.register(Box::new(
+        SetRoom::new(registry.clone(), publisher.clone(), router.clone(), dry_run)
+            .with_manual_mode(manual.clone()),
+    ));
     reg.register(Box::new(SetBlinds::new(
         registry.clone(),
         publisher.clone(),
@@ -1731,9 +1766,9 @@ pub fn default_registry<P: Publisher + Clone + 'static>(
         settings,
         dry_run,
     )));
-    reg.register(Box::new(SetDevice::new(
-        registry, publisher, router, dry_run,
-    )));
+    reg.register(Box::new(
+        SetDevice::new(registry, publisher, router, dry_run).with_manual_mode(manual),
+    ));
     reg
 }
 
@@ -3265,6 +3300,7 @@ mod tests {
             MockPublisher::default(),
             Arc::new(CommandRouter::z2m_only("z2m")),
             None,
+            None,
             false,
         );
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
@@ -3278,11 +3314,105 @@ mod tests {
             MockPublisher::default(),
             Arc::new(CommandRouter::z2m_only("z2m")),
             None,
+            None,
             false,
         );
         let names: Vec<String> = tools.llm_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"set_light_effect".to_string()));
     }
+    /// The house's light tools, as the model is given them, with the
+    /// curve's manual-mode flags beside them.
+    fn light_tools() -> (ToolRegistry, Arc<ManualModeTracker>) {
+        let manual = Arc::new(ManualModeTracker::new());
+        let wled = DeviceId::parse("wled:office/desk_strip").unwrap();
+        let mut map = std::collections::HashMap::new();
+        map.insert(wled.clone(), "wled/office".into());
+        let reg = fixture_registry();
+        reg.upsert(Device::new(
+            wled,
+            DeviceState {
+                on: Some(true),
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        ));
+        let tools = default_registry(
+            reg,
+            MockPublisher::default(),
+            Arc::new(CommandRouter::new("z2m", map)),
+            None,
+            Some(manual.clone()),
+            false,
+        );
+        (tools, manual)
+    }
+
+    async fn call(tools: &ToolRegistry, name: &str, arguments: Value) {
+        let call = niles_llm::ToolCall {
+            id: "1".into(),
+            name: name.into(),
+            arguments,
+        };
+        tools.execute(&call).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_level_the_model_sets_keeps_the_curve_off_that_light() {
+        // Said to Tier 0, "dim the kitchen to 30%" is manual mode. Said
+        // so that the model answers it, it has to be the same, or the
+        // curve takes the light back within the minute.
+        let (tools, manual) = light_tools();
+        let ceiling = DeviceId::parse("z2m:kitchen/ceiling_light").unwrap();
+        call(
+            &tools,
+            "set_device",
+            json!({ "device_id": "kitchen/ceiling_light", "brightness": 30 }),
+        )
+        .await;
+        assert!(manual.is_flagged(&ceiling));
+
+        let floor = DeviceId::parse("z2m:living_room/floor_lamp").unwrap();
+        call(
+            &tools,
+            "set_room",
+            json!({ "room": "living_room", "color_temp_kelvin": 2200 }),
+        )
+        .await;
+        assert!(manual.is_flagged(&floor));
+    }
+
+    #[tokio::test]
+    async fn on_or_off_from_the_model_leaves_the_curve_in_charge() {
+        let (tools, manual) = light_tools();
+        call(
+            &tools,
+            "set_device",
+            json!({ "device_id": "kitchen/ceiling_light", "on": true }),
+        )
+        .await;
+        call(
+            &tools,
+            "set_room",
+            json!({ "room": "living_room", "on": false }),
+        )
+        .await;
+        for id in ["z2m:kitchen/ceiling_light", "z2m:living_room/floor_lamp"] {
+            assert!(!manual.is_flagged(&DeviceId::parse(id).unwrap()), "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_effect_the_model_picks_is_not_painted_over_by_the_curve() {
+        let (tools, manual) = light_tools();
+        call(
+            &tools,
+            "set_light_effect",
+            json!({ "device": "wled:office/desk_strip", "effect": "candle" }),
+        )
+        .await;
+        assert!(manual.is_flagged(&DeviceId::parse("wled:office/desk_strip").unwrap()));
+    }
+
     // ---------- timer tool tests ----------
 
     fn localhost() -> std::net::SocketAddr {

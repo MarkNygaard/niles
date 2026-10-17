@@ -29,6 +29,7 @@ import type { Role, RoleChange } from "@/components/RoleCard";
 import { SecretField } from "@/components/SecretField";
 import { SECTIONS, SettingsNav, sectionId } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
+import type { PodcastsSettings } from "@/lib/podcasts";
 import { SetupChecklist } from "@/components/SetupChecklist";
 import { gapsFor, todoByPage } from "@/lib/setup";
 import { useRoute } from "@/lib/route";
@@ -341,6 +342,10 @@ export function ConfigPanel() {
   const tado = useQuery({ queryKey: ["tado"], queryFn: api.tadoStatus });
   const chatgpt = useQuery({ queryKey: ["chatgpt"], queryFn: api.chatgptStatus });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
+  // Its own key rather than the app's `auth`, which is deliberately
+  // never re-asked: refreshing that one after a save here would swap
+  // the page for the sign-in screen the moment sign-in switched on.
+  const signIn = useQuery({ queryKey: ["sign-in"], queryFn: api.authStatus });
   /** The keys a page sets up, each where it is used: there is no list
       of every key, so a key is never shown in two places. */
   const secretFields = (keys: string[]) =>
@@ -352,7 +357,11 @@ export function ConfigPanel() {
             key={key}
             secret={secret}
             writable={secrets.data?.writable ?? false}
-            onChanged={() => secrets.refetch()}
+            onChanged={() => {
+              secrets.refetch();
+              // A GitHub app's keys are what switch sign-in on.
+              signIn.refetch();
+            }}
           />
         )
       );
@@ -481,6 +490,7 @@ export function ConfigPanel() {
       "history",
       "setup",
       "secrets",
+      "sign-in",
       "integrations",
       "tado",
       "climate",
@@ -692,6 +702,14 @@ export function ConfigPanel() {
           {lastApplied.needs_restart.length > 0 && (
             <> · needs a restart to take effect ({lastApplied.needs_restart.join(", ")})</>
           )}
+        </Notice>
+      )}
+
+      {/* A refused undo — one that would leave nobody able to sign in —
+          has to say so, or the button reads as broken. */}
+      {undo.error && (
+        <Notice>
+          {undo.error instanceof ApiError ? undo.error.message : String(undo.error)}
         </Notice>
       )}
 
@@ -1044,6 +1062,7 @@ export function ConfigPanel() {
               <PeopleCard
                 people={peopleAt(view.effective)}
                 voices={voices.data}
+                githubApp={signIn.data?.github_app}
                 saving={save.isPending}
                 error={rowError?.row === "auth.allowed" ? rowError.message : undefined}
                 onChange={(people) =>
@@ -1234,6 +1253,11 @@ export function ConfigPanel() {
             }
             unifiHost={stringAt(view.effective, "presence.unifi.host")}
             webSearchAddress={stringAt(view.effective, "web_search.base_url")}
+            podcasts={
+              (view.effective.integrations as
+                | { podcasts?: PodcastsSettings }
+                | undefined)?.podcasts
+            }
             sonos={{
               enabled: valueAt(view.effective, "speakers.enabled") !== false,
               host: sonosHost,

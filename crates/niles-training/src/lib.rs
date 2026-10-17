@@ -1,8 +1,8 @@
 //! niles-training — each person's workouts, from their own Strava.
 //!
-//! See ARCHITECTURE.md § Training (per person). Each person connects
-//! their own Strava on their profile, with an API app they made
-//! themselves ([`StravaApp`]); [`Strava`] brings their activities in
+//! Why Strava is in ARCHITECTURE.md's Operations notes. Each person
+//! connects their own Strava on their profile, with an API app they
+//! made themselves ([`StravaApp`]); [`Strava`] brings their activities in
 //! and keeps them coming, in canonical units — metres, seconds, beats
 //! per minute, kilocalories.
 //!

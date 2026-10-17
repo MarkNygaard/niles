@@ -47,6 +47,7 @@ pub mod memory;
 pub mod music;
 pub mod places;
 pub mod plugins;
+pub mod podcasts;
 pub mod presence;
 pub mod publish;
 pub mod push;

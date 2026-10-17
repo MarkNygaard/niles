@@ -525,6 +525,10 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
 
 #[tokio::test]
 #[ignore = "needs NILES_TEST_DATABASE_URL"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one sharing scenario from create to delete; each step depends on the one before"
+)]
 async fn an_artifact_is_shared_with_its_own_pin_and_goes_with_it() {
     use niles_artifacts::{
         Access, ArtifactStore, Author, Changes, Filter, Level, NewArtifact, NewRevision,

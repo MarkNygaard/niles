@@ -1,6 +1,6 @@
 //! Wake-ups an automation starts: the morning routine, at whatever
-//! moment the rule arrives at, with the rule's own settings. See "The
-//! morning routine" in ARCHITECTURE.md.
+//! moment the rule arrives at, with the rule's own settings. The
+//! scheduled routine is `niles_scheduler::morning`.
 //!
 //! Lights that are off come on at 0% and ramp to the end level; lights
 //! already on, or taken by the scheduled routine, are left alone. When
@@ -373,6 +373,10 @@ impl WakeUps {
     /// held lights on the curve's warmth when they have none of their
     /// own, and let go of the ones the curve has caught up with.
     /// `curve` is the curve's value now, `None` when it is off.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "advances every ramp and hold in one pass so the state is saved once"
+    )]
     pub(crate) async fn tick(&self, now: DateTime<Utc>, curve: Option<CurveNow>, fade: Duration) {
         *self.curve.lock().unwrap_or_else(|e| e.into_inner()) = curve;
         let (ramps, holds) = {

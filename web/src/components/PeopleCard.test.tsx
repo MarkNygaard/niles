@@ -26,6 +26,41 @@ describe("PeopleCard", () => {
     expect(screen.getByText(/Signing in is off/)).toBeInTheDocument();
   });
 
+  it("says sign-in is off when people are listed but there is no GitHub app", () => {
+    // The list reads as a lock, and without an app it is not one.
+    render(
+      <PeopleCard
+        people={[{ email: "mark@example.com" }]}
+        githubApp={false}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Signing in is off while there is no GitHub app/,
+    );
+  });
+
+  it("says nothing of the sort once there is an app, or before it is known", () => {
+    const { rerender } = render(
+      <PeopleCard
+        people={[{ email: "mark@example.com" }]}
+        githubApp
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/no GitHub app/)).toBeNull();
+    rerender(
+      <PeopleCard people={[{ email: "mark@example.com" }]} onChange={vi.fn()} />,
+    );
+    expect(screen.queryByText(/no GitHub app/)).toBeNull();
+  });
+
+  it("leaves an empty list to its own notice", () => {
+    render(<PeopleCard people={[]} githubApp={false} onChange={vi.fn()} />);
+    expect(screen.queryByText(/no GitHub app/)).toBeNull();
+    expect(screen.getByText(/while nobody is listed/)).toBeInTheDocument();
+  });
+
   it("adds an address", () => {
     const { onChange } = setup([]);
     type("majse@example.com");

@@ -1,6 +1,5 @@
 //! Notifications on the signed-in person's devices: the switch and the
-//! device list on My profile. See ARCHITECTURE.md § Notifications on
-//! your devices.
+//! device list on My profile. How it works is in `niles-webpush`.
 //!
 //! Every `/me/push` route acts for the caller, by the key their chat is
 //! kept under, and never for a person named in the request.

@@ -471,6 +471,10 @@ mod tests {
     // One test owns the environment variable, so tests that read it
     // cannot race each other.
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one tool server's life from connect to reset; each step depends on the one before"
+    )]
     async fn offers_a_servers_tools_follows_its_settings_and_calls_them() {
         // SAFETY: only this test in the crate reads or writes it.
         unsafe { std::env::set_var("NILES_TEST_TOOL_SERVER_KEY", "lin_api_test") };

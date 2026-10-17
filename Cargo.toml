@@ -3,13 +3,18 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0" # x-release-please-version
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Mark Nygaard Leth <47065655+MarkNygaard@users.noreply.github.com>"]
 
 [workspace.lints.rust]
 unused_must_use = "deny"
+
+# The threshold (100 lines) is in clippy.toml. A function over it carries
+# `#[expect(clippy::too_many_lines, reason = "...")]` saying why.
+[workspace.lints.clippy]
+too_many_lines = "warn"
 
 [workspace.dependencies]
 thiserror = "2"
@@ -108,6 +113,7 @@ niles-recognition = { path = "crates/niles-recognition" }
 niles-weather = { path = "crates/niles-weather" }
 niles-calendar = { path = "crates/niles-calendar" }
 niles-websearch = { path = "crates/niles-websearch" }
+niles-podcasts = { path = "crates/niles-podcasts" }
 niles-notifications = { path = "crates/niles-notifications" }
 niles-presence = { path = "crates/niles-presence" }
 niles-automations = { path = "crates/niles-automations" }

@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
  * A picture's web address in the content would be a request from this
  * phone to that site each time the artifact is looked at, so it is
  * never drawn; and a name of one the artifact no longer keeps shows
- * nothing. See ARCHITECTURE.md § Artifact pictures.
+ * nothing. See crates/niles-artifacts/src/images.rs.
  */
 export const IMAGE_SCHEME = "niles-image:";
 

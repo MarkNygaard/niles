@@ -1,5 +1,5 @@
 //! Approvals: what Niles holds for a person's yes instead of doing on
-//! the model's word. See "Approvals" in ARCHITECTURE.md.
+//! the model's word. See ARCHITECTURE.md's House rules.
 //!
 //! A held call keeps the tool and its arguments exactly as the model
 //! sent them. The person decides — a button on the card in the app or

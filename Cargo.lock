@@ -163,6 +163,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "asn1-rs"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -511,6 +517,12 @@ checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
@@ -2428,7 +2440,7 @@ version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d8f1ea3f21fd3405dcaf6c9b5c1630af9afc422d9073ea39c5f6d6c772e08ed"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "libc",
  "plain",
  "redox_syscall 0.9.4",
@@ -2728,7 +2740,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "niles-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -2753,6 +2765,7 @@ dependencies = [
  "niles-mqtt",
  "niles-nemlig",
  "niles-notifications",
+ "niles-podcasts",
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
@@ -2780,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "niles-artifacts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2794,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "niles-automations"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2813,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "niles-bin"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2844,6 +2857,7 @@ dependencies = [
  "niles-nemlig",
  "niles-notifications",
  "niles-plugins",
+ "niles-podcasts",
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
@@ -2858,6 +2872,7 @@ dependencies = [
  "niles-webpush",
  "niles-websearch",
  "niles-wyoming",
+ "parking_lot",
  "rand 0.10.2",
  "reqwest",
  "serde",
@@ -2872,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "niles-calendar"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-imap",
  "async-trait",
@@ -2898,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "niles-capabilities"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -2909,7 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "niles-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2930,7 +2945,7 @@ dependencies = [
 
 [[package]]
 name = "niles-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2940,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "niles-db"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2966,7 +2981,7 @@ dependencies = [
 
 [[package]]
 name = "niles-groceries"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "niles-nemlig",
@@ -2978,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "niles-history"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "niles-core",
@@ -2991,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "niles-integration-linear"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "hex",
  "hmac 0.13.0",
@@ -3003,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "niles-intent"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "niles-core",
  "regex",
@@ -3011,7 +3026,7 @@ dependencies = [
 
 [[package]]
 name = "niles-llm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3028,7 +3043,7 @@ dependencies = [
 
 [[package]]
 name = "niles-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -3041,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "niles-memory"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3052,7 +3067,7 @@ dependencies = [
 
 [[package]]
 name = "niles-mqtt"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "niles-core",
@@ -3066,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "niles-nemlig"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3081,28 +3096,21 @@ dependencies = [
 
 [[package]]
 name = "niles-notifications"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "chrono-tz",
  "niles-core",
- "parking_lot",
  "rand 0.10.2",
  "serde",
- "serde_json",
- "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
 
 [[package]]
-name = "niles-permissions"
-version = "0.3.0"
-
-[[package]]
 name = "niles-plugins"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3143,8 +3151,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "niles-podcasts"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "hex",
+ "hmac 0.13.0",
+ "niles-config",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "symphonia",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "niles-presence"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3159,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "niles-recognition"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3178,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "niles-scheduler"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "niles-core",
@@ -3190,7 +3222,7 @@ dependencies = [
 
 [[package]]
 name = "niles-skills"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3201,7 +3233,7 @@ dependencies = [
 
 [[package]]
 name = "niles-speakers"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "regex",
@@ -3214,7 +3246,7 @@ dependencies = [
 
 [[package]]
 name = "niles-stt"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -3226,7 +3258,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tls"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rcgen",
  "rustls 0.23.40",
@@ -3236,7 +3268,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tools"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3269,7 +3301,7 @@ dependencies = [
 
 [[package]]
 name = "niles-training"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3286,7 +3318,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -3297,7 +3329,7 @@ dependencies = [
 
 [[package]]
 name = "niles-weather"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3312,7 +3344,7 @@ dependencies = [
 
 [[package]]
 name = "niles-webos"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures-util",
  "niles-tls",
@@ -3329,7 +3361,7 @@ dependencies = [
 
 [[package]]
 name = "niles-webpush"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3351,7 +3383,7 @@ dependencies = [
 
 [[package]]
 name = "niles-websearch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "html2text",
@@ -3368,7 +3400,7 @@ dependencies = [
 
 [[package]]
 name = "niles-wyoming"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3820,7 +3852,7 @@ version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "crc32fast",
  "fdeflate",
  "flate2",
@@ -4193,7 +4225,7 @@ version = "11.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
 ]
 
 [[package]]
@@ -4251,7 +4283,7 @@ version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
 ]
 
 [[package]]
@@ -4260,7 +4292,7 @@ version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "737970939a87c6fa31e7acad13307bccbb017a073b695b6089a2c484f929e20e"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
 ]
 
 [[package]]
@@ -4350,12 +4382,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls 0.26.4",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots 1.0.7",
 ]
@@ -4391,7 +4425,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b91f7eff05f748767f183df4320a63d6936e9c6107d97c9e6bdd9784f4289c94"
 dependencies = [
  "base64 0.21.7",
- "bitflags",
+ "bitflags 2.11.1",
  "serde",
  "serde_derive",
 ]
@@ -4560,7 +4594,7 @@ version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "errno",
  "libc",
  "linux-raw-sys",
@@ -4717,7 +4751,7 @@ version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "core-foundation",
  "core-foundation-sys",
  "libc",
@@ -5150,7 +5184,7 @@ checksum = "aa003f0038df784eb8fecbbac13affe3da23b45194bd57dba231c8f48199c526"
 dependencies = [
  "atoi",
  "base64 0.22.1",
- "bitflags",
+ "bitflags 2.11.1",
  "byteorder",
  "bytes",
  "chrono",
@@ -5193,7 +5227,7 @@ checksum = "db58fcd5a53cf07c184b154801ff91347e4c30d17a3562a635ff028ad5deda46"
 dependencies = [
  "atoi",
  "base64 0.22.1",
- "bitflags",
+ "bitflags 2.11.1",
  "byteorder",
  "chrono",
  "crc",
@@ -5331,6 +5365,55 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "symphonia"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
+dependencies = [
+ "lazy_static",
+ "symphonia-bundle-mp3",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-bundle-mp3"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4872dd6bb56bf5eac799e3e957aa1981086c3e613b27e0ac23b176054f7c57ed"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-core"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea00cc4f79b7f6bb7ff87eddc065a1066f3a43fe1875979056672c9ef948c2af"
+dependencies = [
+ "arrayvec",
+ "bitflags 1.3.2",
+ "bytemuck",
+ "lazy_static",
+ "log",
+]
+
+[[package]]
+name = "symphonia-metadata"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36306ff42b9ffe6e5afc99d49e121e0bd62fe79b9db7b9681d48e29fa19e6b16"
+dependencies = [
+ "encoding_rs",
+ "lazy_static",
+ "log",
+ "symphonia-core",
+]
 
 [[package]]
 name = "syn"
@@ -5749,7 +5832,7 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "bytes",
  "futures-util",
  "http 1.5.0",
@@ -6214,12 +6297,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "wasmparser"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
@@ -6231,7 +6327,7 @@ version = "0.258.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe9269dd817e0e7021bf534ccd9761bc2d64778b6708e41228b8439d75eaa0b1"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "hashbrown 0.17.1",
  "indexmap",
  "semver",
@@ -6257,7 +6353,7 @@ checksum = "4fbdd39f5c66f63ba6b5b31391b324b7ade7237d29c866cdb561330118ef436e"
 dependencies = [
  "addr2line",
  "async-trait",
- "bitflags",
+ "bitflags 2.11.1",
  "bumpalo",
  "cc",
  "encoding_rs",
@@ -6445,7 +6541,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cad5e8cef56790d4741b62f7b6c971af53b2ad4c2d1603f8ffe86872763147aa"
 dependencies = [
  "anyhow",
- "bitflags",
+ "bitflags 2.11.1",
  "heck",
  "indexmap",
  "wit-component 0.258.3",
@@ -6459,7 +6555,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "284555904d42017e049fd57c05810b7975075c322481c045f99b07385fb7a5ba"
 dependencies = [
  "async-trait",
- "bitflags",
+ "bitflags 2.11.1",
  "bytes",
  "cap-primitives",
  "futures",
@@ -6838,7 +6934,7 @@ version = "0.36.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "windows-sys 0.52.0",
 ]
 
@@ -6929,7 +7025,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2"
 dependencies = [
  "anyhow",
- "bitflags",
+ "bitflags 2.11.1",
  "indexmap",
  "log",
  "serde",
@@ -6948,7 +7044,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0fca88950af0c1f42bc77e17315e48798b8d68340171b6d204f62bc19a878a6"
 dependencies = [
  "anyhow",
- "bitflags",
+ "bitflags 2.11.1",
  "indexmap",
  "log",
  "serde",

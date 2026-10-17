@@ -1,6 +1,6 @@
 //! Per-light manual-mode flag store backing the curve dispatcher's skip decision.
 //!
-//! Off→on transitions auto-clear the flag per `ARCHITECTURE.md`.
+//! Off→on transitions auto-clear the flag (ARCHITECTURE.md, House rules).
 
 use niles_core::{DeviceId, DeviceState, RoomName};
 use std::collections::{HashMap, HashSet};
@@ -31,6 +31,25 @@ impl ManualModeTracker {
     /// Mark `id` as manually controlled — the curve driver should skip it.
     pub fn flag(&self, id: &DeviceId) {
         self.flagged_write().insert(id.clone());
+    }
+
+    /// Note a command somebody (or something acting for them) sent to
+    /// `id`, and flag it if the curve would undo it. Returns whether it
+    /// was flagged.
+    ///
+    /// Only a *level* counts: brightness, warmth or colour. `on` alone
+    /// is not manual, because turning a light on is how you ask for the
+    /// curve back, and the off→on transition clears the flag anyway.
+    /// Call it before the command goes out: the curve ticks once a
+    /// minute and would otherwise be free to overwrite in between.
+    pub fn adjusted(&self, id: &DeviceId, desired: &DeviceState) -> bool {
+        let sets_a_level = desired.brightness.is_some()
+            || desired.color_temp_kelvin.is_some()
+            || desired.rgb.is_some();
+        if sets_a_level {
+            self.flag(id);
+        }
+        sets_a_level
     }
 
     /// Remove the manual-mode flag for `id`, returning it to curve control.
@@ -171,6 +190,35 @@ mod tests {
         assert!(!t.is_flagged(&id));
         t.flag(&id);
         assert!(t.is_flagged(&id));
+    }
+
+    #[test]
+    fn a_level_is_an_adjustment_and_on_or_off_is_not() {
+        let t = ManualModeTracker::new();
+        let id = dev("light_level");
+        for plain in [on_state(true), on_state(false)] {
+            assert!(!t.adjusted(&id, &plain));
+        }
+        assert!(!t.is_flagged(&id));
+        for level in [
+            DeviceState {
+                brightness: Some(30),
+                ..Default::default()
+            },
+            DeviceState {
+                color_temp_kelvin: Some(2700),
+                ..Default::default()
+            },
+            DeviceState {
+                on: Some(true),
+                rgb: Some([255, 0, 0]),
+                ..Default::default()
+            },
+        ] {
+            let t = ManualModeTracker::new();
+            assert!(t.adjusted(&id, &level));
+            assert!(t.is_flagged(&id));
+        }
     }
 
     #[test]

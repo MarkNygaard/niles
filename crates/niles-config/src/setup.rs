@@ -40,6 +40,10 @@ impl Config {
     /// Empty means Niles is fully set up. It deliberately does not
     /// include anything with a working default — a gap is something a
     /// person has to answer, not something they *could* change.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat list of independent setup checks, one block per gap"
+    )]
     pub fn setup_gaps(&self) -> Vec<Gap> {
         let mut gaps = Vec::new();
 

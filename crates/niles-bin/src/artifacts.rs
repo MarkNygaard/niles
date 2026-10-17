@@ -1,5 +1,5 @@
 //! Artifacts: what Claude or ChatGPT makes for one person and keeps for
-//! them. See ARCHITECTURE.md § Artifacts (per person).
+//! them.
 //!
 //! The tools here are offered to the assistant alone (see
 //! [`crate::assistant::Assistant::start`]), and act for the asker of
@@ -21,8 +21,10 @@
 
 mod coach;
 mod pictures;
+mod podcast;
 
 pub(crate) use pictures::{DOWNLOAD_WITHIN, Pictures};
+pub(crate) use podcast::{Podcasts, Sonos, about_podcasts};
 
 use crate::approvals::{self, Asker};
 use crate::assistant::Searching;
@@ -59,6 +61,7 @@ const LEAST_LINES: usize = 3;
 
 const TRAINING_PLAN: &str = "training_plan";
 const TRIP: &str = "trip";
+const PODCAST: &str = niles_artifacts::podcast::ID;
 
 /// Told when a job ends, ready or failed, if the artifact's notify is
 /// on; and when something is shared with someone.
@@ -325,6 +328,8 @@ pub(crate) struct Artifacts {
     paging: Arc<Mutex<HashSet<i64>>>,
     /// Where pictures are found and fetched from; none, no pictures.
     pictures: Option<Pictures>,
+    /// A podcast's studio and Sonos handle; none, no podcasts.
+    podcasts: Option<Podcasts>,
     /// Jobs going, per person.
     running: Arc<Mutex<HashMap<String, usize>>>,
     touched: Mutex<Vec<Touch>>,
@@ -475,9 +480,19 @@ fn view(a: &Artifact) -> Value {
 fn kinds_help() -> String {
     kinds::KINDS
         .iter()
+        .filter(|k| made_at_once().contains(&k.id))
         .map(|k| format!("{}: {}", k.id, k.content_help))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Kinds made at once, in the turn: a podcast is made only as a job.
+fn made_at_once() -> Vec<&'static str> {
+    kinds::KINDS
+        .iter()
+        .map(|k| k.id)
+        .filter(|id| *id != PODCAST)
+        .collect()
 }
 
 fn kind_ids() -> Vec<&'static str> {
@@ -505,6 +520,7 @@ impl Artifacts {
             reviewing: Arc::default(),
             paging: Arc::default(),
             pictures: None,
+            podcasts: None,
             running: Arc::default(),
             touched: Mutex::default(),
             started: chrono::Utc::now(),
@@ -592,6 +608,13 @@ impl Artifacts {
         self
     }
 
+    /// What a podcast needs that the rest do not: a studio from the
+    /// live config, and the Sonos handle once music is up.
+    pub(crate) fn with_podcasts(mut self, podcasts: Podcasts) -> Self {
+        self.podcasts = Some(podcasts);
+        self
+    }
+
     pub(crate) fn store(&self) -> &Arc<dyn ArtifactStore> {
         &self.store
     }
@@ -632,6 +655,7 @@ impl Artifacts {
         reg.register(Box::new(ShareTool(self.clone())));
         reg.register(Box::new(People(self.clone())));
         pictures::register(self, &mut reg, None);
+        podcast::register(self, &mut reg);
         reg
     }
 
@@ -665,7 +689,7 @@ impl Artifacts {
         if let (TRAINING_PLAN, Some(training)) = (kind, &self.training) {
             training(&mut reg);
         }
-        if keep_past.is_none() && kind != TRAINING_PLAN {
+        if keep_past.is_none() && kind != TRAINING_PLAN && kind != PODCAST {
             pictures::register(self, &mut reg, Some(id));
         }
         reg
@@ -790,6 +814,9 @@ impl Artifacts {
         if self.runner.available().is_none() {
             return Err(NO_ASSISTANT.into());
         }
+        if job.kind.id == PODCAST {
+            self.podcast_can_start(true)?;
+        }
         let slot = self.take_slot(&asker.person).ok_or_else(busy)?;
         let artifact = self
             .store
@@ -841,8 +868,14 @@ impl Artifacts {
                 "only a job that did not finish can be tried again".into(),
             ));
         }
-        if self.runner.available().is_none() {
+        // A podcast whose script was kept only needs recording again.
+        let rerecord = artifact.kind == PODCAST && artifact.current_revision > 0;
+        if !rerecord && self.runner.available().is_none() {
             return Err(Refused::Unavailable(NO_ASSISTANT.into()));
+        }
+        if artifact.kind == PODCAST {
+            self.podcast_can_start(!rerecord)
+                .map_err(Refused::Unavailable)?;
         }
         let slot = self
             .take_slot(person)
@@ -888,12 +921,27 @@ impl Artifacts {
             satellite: None,
             conversation: artifact.conversation_id.filter(|_| person == owner),
         };
-        let (system, prompt) = job_prompts(&artifact, self.searching(self.runner.available()));
-        let tools = self.job_tools(artifact.id, &artifact.kind, None);
-        let outcome =
-            tokio::time::timeout(JOB_LIMIT, self.runner.run(asker, &system, &prompt, tools))
+        // One deadline covers the run and, for a podcast, its recording:
+        // a job is never more than half an hour all told.
+        let deadline = tokio::time::Instant::now() + JOB_LIMIT;
+        // A podcast whose script is kept is recorded, not run again.
+        let rerecord = artifact.kind == PODCAST && artifact.current_revision > 0;
+        let outcome: std::result::Result<Option<(&'static str, String)>, String> = if rerecord {
+            Ok(None)
+        } else {
+            let (system, prompt) = job_prompts(
+                &artifact,
+                self.searching(self.runner.available()),
+                self.podcast_voices()
+                    .as_ref()
+                    .filter(|_| artifact.kind == PODCAST),
+            );
+            let tools = self.job_tools(artifact.id, &artifact.kind, None);
+            tokio::time::timeout_at(deadline, self.runner.run(asker, &system, &prompt, tools))
                 .await
-                .unwrap_or_else(|_| Err("it took longer than half an hour".into()));
+                .unwrap_or_else(|_| Err(podcast::TOO_LONG.into()))
+                .map(|(via, answer)| Some((via, answer)))
+        };
 
         let now = match self.store.get(&owner, artifact.id).await {
             Ok(Some(now)) => now,
@@ -908,12 +956,25 @@ impl Artifacts {
         if now.job_id != artifact.job_id {
             return;
         }
-        let ended = match outcome {
-            Ok((via, answer)) => self
+        let ended: std::result::Result<Option<&'static str>, String> = match outcome {
+            Ok(Some((via, answer))) => self
                 .keep_answer(&now, via, &answer, &person)
                 .await
-                .map(|()| via),
-            Err(why) => Err(why),
+                .map(|()| Some(via)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        };
+        // A kept podcast is recorded before it is called ready; a failed
+        // one leaves nothing half-made in the bucket.
+        let ended = match ended {
+            Ok(via) if now.kind == PODCAST => match self.record(&owner, &now, deadline).await {
+                Ok(()) => Ok(via),
+                Err(podcast::Unrecorded::Failed(why)) => Err(why),
+                // Gone: deleted or superseded while it recorded. With
+                // nothing uploaded by this job, there is nothing to say.
+                Err(podcast::Unrecorded::Gone) => return,
+            },
+            other => other,
         };
         let change = match &ended {
             Ok(_) => StatusChange {
@@ -931,7 +992,15 @@ impl Artifacts {
         };
         let done = match self.store.set_status(&owner, now.id, change).await {
             Ok(Some(done)) => done,
-            Ok(None) => return,
+            Ok(None) => {
+                // Deleted at the last moment: its recording, if this job
+                // made one, is taken back. (A newer job owns the key
+                // instead; that one deletes nothing.)
+                if now.kind == PODCAST && ended.is_ok() {
+                    self.forget_recording(now.id).await;
+                }
+                return;
+            }
             Err(e) => {
                 tracing::warn!("[artifacts] job {} ended but was not kept: {e}", now.id);
                 return;
@@ -942,13 +1011,14 @@ impl Artifacts {
             Err(why) => tracing::warn!("[artifacts] {person}: {:?} failed: {why}", done.title),
         }
         self.announce(&done);
+        // A re-recorded podcast had no run, so no assistant to name.
         if let Ok(via) = ended {
             self.say(
                 &person,
                 &done,
                 done.conversation_id.filter(|_| person == owner),
                 format!("{} is ready.", done.title),
-                Some(via),
+                via,
             )
             .await;
         }
@@ -1308,7 +1378,11 @@ fn page_prompts(artifact: &Artifact, brief: &str, searching: Searching) -> (Stri
 }
 
 /// The run's instructions, and what it is to make.
-fn job_prompts(artifact: &Artifact, searching: Searching) -> (String, String) {
+fn job_prompts(
+    artifact: &Artifact,
+    searching: Searching,
+    voices: Option<&[String; 2]>,
+) -> (String, String) {
     let kind = kinds::kind(&artifact.kind);
     let label = kind.map_or("document", |k| k.label).to_lowercase();
     let help = kind.map_or("", |k| k.content_help);
@@ -1316,9 +1390,16 @@ fn job_prompts(artifact: &Artifact, searching: Searching) -> (String, String) {
     let craft = match artifact.kind.as_str() {
         TRAINING_PLAN => COACHING.to_string(),
         TRIP => format!("{TRAVEL} {research} {pictures}"),
+        PODCAST => podcast::craft(searching, voices),
         _ => format!("{research} {pictures}"),
     };
     let craft = format!("{craft} {LOOK}");
+    let language = if artifact.kind == PODCAST {
+        "Write it in English, whatever language the brief is in: the voices speak only \
+         English."
+    } else {
+        "Write in the language the brief is in."
+    };
     let system = format!(
         "You are writing a {label} for one person in the household Niles serves, in the \
          background. Nobody is waiting on you in a chat: take the time to do it well, and \
@@ -1326,7 +1407,7 @@ fn job_prompts(artifact: &Artifact, searching: Searching) -> (String, String) {
          artifact_update on artifact {id}, the whole content, with the reason \"First \
          draft\" and a one-line summary; if it is refused, the answer says what to fix, so \
          fix that and save again. Then finish with one short sentence saying what you \
-         wrote.\n\nThe content is {help}\n\n{craft} Write in the language the brief is in.",
+         wrote.\n\nThe content is {help}\n\n{craft} {language}",
         id = artifact.id,
     );
     let prompt = format!(
@@ -1342,7 +1423,7 @@ fn job_prompts(artifact: &Artifact, searching: Searching) -> (String, String) {
 /// What the assistant is told about artifacts in a turn, beside the
 /// tools themselves: what they are and when to make one, and how a
 /// picture is found, when one can be.
-pub(crate) fn turn_prompt(searching: Searching) -> String {
+pub(crate) fn turn_prompt(searching: Searching, podcasts: bool) -> String {
     let pictures = match searching {
         Searching::Niles => {
             "image_search finds it, artifact_add_image keeps Niles's own copy and answers its \
@@ -1355,10 +1436,20 @@ pub(crate) fn turn_prompt(searching: Searching) -> String {
              they ask you to find one."
         }
     };
-    format!(
+    let base = format!(
         "{PROMPT}\n\nA picture they want on a document, a trip or a page: {pictures} Never a \
          picture's web address: it is not shown."
-    )
+    );
+    if podcasts {
+        format!("{base}{}", podcast::PODCASTS_IN_CHAT)
+    } else {
+        base
+    }
+}
+
+/// What a spoken turn gets when podcasts can be made.
+pub(crate) fn spoken_prompt() -> &'static str {
+    podcast::SPOKEN
 }
 
 const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person will want to \
@@ -1541,7 +1632,7 @@ impl Tool for Create {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "kind": { "type": "string", "enum": kind_ids() },
+                    "kind": { "type": "string", "enum": made_at_once() },
                     "title": { "type": "string", "description": "Short, as a person would name it: \"Packing list for the cabin\"" },
                     "summary": { "type": "string" },
                     "content": { "type": "object", "description": "The kind's content" },
@@ -1557,6 +1648,13 @@ impl Tool for Create {
         let asker = asker(TOOL)?;
         let kind = kinds::require(str_arg(&args, "kind").unwrap_or("document"))
             .map_err(|e| refused(TOOL, e))?;
+        if kind.id == PODCAST {
+            return Err(invalid(
+                TOOL,
+                "a podcast is researched and recorded by a job: use start_artifact_job with \
+                 kind podcast",
+            ));
+        }
         let title = niles_artifacts::title(str_arg(&args, "title").unwrap_or_default())
             .map_err(|e| refused(TOOL, e))?;
         let content = kind
@@ -1654,6 +1752,15 @@ impl Tool for Update {
             .artifacts
             .opened(TOOL, &asker.person, id, Operation::Edit)
             .await?;
+        // From the chat a podcast is kept as it was made; its own job
+        // saves the script it is to record.
+        if opened.artifact.kind == PODCAST && self.only.is_none() {
+            return Err(invalid(
+                TOOL,
+                "a podcast is recorded from its script and kept as it was made; to change it, \
+                 make a new episode with start_artifact_job",
+            ));
+        }
         let (a, owner) = (&opened.artifact, opened.owner());
         let content = kinds::validate(&a.kind, args.get("content").unwrap_or(&Value::Null))
             .map_err(|e| refused(TOOL, e))?;
@@ -2128,10 +2235,17 @@ impl Tool for StartJob {
             .map_err(|why| invalid(TOOL, why))?;
         self.0.touch(&asker.person, a.id);
         let mut out = view(&a);
-        out["note"] = json!(
-            "It is being written now. Tell the person in one sentence that you are putting it \
-             together and they will find it under Saved."
-        );
+        out["note"] = if a.kind == PODCAST {
+            json!(
+                "It is being researched now and will be recorded once it is written. Tell the \
+                 person in one short sentence that you'll let them know when it's ready."
+            )
+        } else {
+            json!(
+                "It is being written now. Tell the person in one sentence that you are putting \
+                 it together and they will find it under Saved."
+            )
+        };
         Ok(out)
     }
 }
@@ -2183,6 +2297,8 @@ mod tests {
         /// Saves this markdown through the job's own tool, as a real run
         /// would.
         Saves(&'static str),
+        /// Saves this content (any kind's) through the job's own tool.
+        SavesContent(Value),
         /// Saves nothing, and answers this.
         Answers(&'static str),
         Fails(&'static str),
@@ -2194,17 +2310,24 @@ mod tests {
 
     struct FakeRunner {
         on: bool,
+        /// `claude` or `chatgpt`, as the fixture's assistant is.
+        via: &'static str,
         jobs: Mutex<VecDeque<Does>>,
         /// Whom each job ran for.
-        ran_for: Mutex<Vec<String>>,
+        ran_for: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeRunner {
         fn doing(jobs: Vec<Does>) -> Arc<Self> {
+            Self::as_("claude", jobs)
+        }
+
+        fn as_(via: &'static str, jobs: Vec<Does>) -> Arc<Self> {
             Arc::new(Self {
                 on: true,
+                via,
                 jobs: Mutex::new(jobs.into()),
-                ran_for: Mutex::default(),
+                ran_for: Arc::new(Mutex::default()),
             })
         }
     }
@@ -2250,7 +2373,7 @@ mod tests {
     #[async_trait]
     impl Runner for FakeRunner {
         fn available(&self) -> Option<&'static str> {
-            self.on.then_some("claude")
+            self.on.then_some(self.via)
         }
 
         async fn run(
@@ -2266,14 +2389,34 @@ mod tests {
             match does {
                 Does::Saves(markdown) => {
                     save(&tools, asker, id, markdown).await?;
-                    Ok(("claude", "Wrote it.".into()))
+                    Ok((self.via, "Wrote it.".into()))
                 }
-                Does::Answers(text) => Ok(("claude", text.into())),
+                Does::SavesContent(content) => {
+                    crate::assistant::tests_support::as_assistant(
+                        self.via,
+                        approvals::ASKER.scope(
+                            asker,
+                            tools.execute(&niles_llm::ToolCall {
+                                id: String::new(),
+                                name: "artifact_update".into(),
+                                arguments: json!({
+                                    "id": id,
+                                    "content": content,
+                                    "reason": "First draft",
+                                }),
+                            }),
+                        ),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    Ok((self.via, "Wrote it.".into()))
+                }
+                Does::Answers(text) => Ok((self.via, text.into())),
                 Does::Fails(why) => Err(why.into()),
                 Does::Waits(go) => {
                     go.notified().await;
                     save(&tools, asker, id, "# done").await?;
-                    Ok(("claude", "Wrote it.".into()))
+                    Ok((self.via, "Wrote it.".into()))
                 }
                 Does::Pages(html) => {
                     approvals::ASKER
@@ -2287,7 +2430,7 @@ mod tests {
                         )
                         .await
                         .map_err(|e| e.to_string())?;
-                    Ok(("claude", "Made it.".into()))
+                    Ok((self.via, "Made it.".into()))
                 }
             }
         }
@@ -2864,7 +3007,7 @@ mod tests {
 
     #[test]
     fn a_training_plan_s_job_is_told_to_build_on_her_running() {
-        let (system, prompt) = job_prompts(&working("training_plan"), Searching::Niles);
+        let (system, prompt) = job_prompts(&working("training_plan"), Searching::Niles, None);
         assert!(system.contains("writing a training plan"), "{system}");
         assert!(system.contains("training_summary"), "{system}");
         assert!(system.contains("10%"), "{system}");
@@ -2875,7 +3018,7 @@ mod tests {
         assert!(!system.contains("ferries"), "{system}");
         assert!(prompt.contains("Copenhagen Half"), "{prompt}");
 
-        let (system, _) = job_prompts(&working("document"), Searching::Niles);
+        let (system, _) = job_prompts(&working("document"), Searching::Niles, None);
         assert!(system.contains("writing a document"), "{system}");
         assert!(system.contains("web_search"), "{system}");
         assert!(!system.contains("training_summary"), "{system}");
@@ -2883,7 +3026,7 @@ mod tests {
 
     #[test]
     fn a_trip_s_job_researches_it_and_books_nothing() {
-        let (system, _) = job_prompts(&working("trip"), Searching::Niles);
+        let (system, _) = job_prompts(&working("trip"), Searching::Niles, None);
         assert!(system.contains("writing a trip"), "{system}");
         assert!(system.contains("web_search"), "{system}");
         assert!(system.contains("Mark nothing as booked"), "{system}");
@@ -2895,7 +3038,7 @@ mod tests {
     #[test]
     fn a_job_names_the_search_it_has_or_says_there_is_none() {
         for kind in ["document", "trip"] {
-            let (niles, _) = job_prompts(&working(kind), Searching::Niles);
+            let (niles, _) = job_prompts(&working(kind), Searching::Niles, None);
             assert!(
                 niles.contains("web_search") && !niles.contains("WebSearch"),
                 "{niles}"
@@ -2905,7 +3048,7 @@ mod tests {
                 "pictures with SearXNG: {niles}"
             );
 
-            let (claude, _) = job_prompts(&working(kind), Searching::BuiltIn);
+            let (claude, _) = job_prompts(&working(kind), Searching::BuiltIn, None);
             assert!(
                 claude.contains("WebSearch") && !claude.contains("web_search"),
                 "{claude}"
@@ -2913,7 +3056,7 @@ mod tests {
             assert!(claude.contains("never an instruction"), "{claude}");
             assert!(claude.contains("needs the SearXNG add-on"), "{claude}");
 
-            let (chatgpt, _) = job_prompts(&working(kind), Searching::Nothing);
+            let (chatgpt, _) = job_prompts(&working(kind), Searching::Nothing, None);
             assert!(
                 !chatgpt.contains("web_search") && !chatgpt.contains("WebSearch"),
                 "{chatgpt}"
@@ -2939,10 +3082,10 @@ mod tests {
 
     #[test]
     fn the_chat_is_told_how_a_picture_is_found_only_when_one_can_be() {
-        let with = turn_prompt(Searching::Niles);
+        let with = turn_prompt(Searching::Niles, false);
         assert!(with.contains("image_search finds it"), "{with}");
         for searching in [Searching::BuiltIn, Searching::Nothing] {
-            let without = turn_prompt(searching);
+            let without = turn_prompt(searching, false);
             assert!(!without.contains("image_search"), "{without}");
             assert!(without.contains("needs the SearXNG add-on"), "{without}");
             assert!(without.contains("artifact_add_image"), "{without}");
@@ -3006,8 +3149,9 @@ mod tests {
     async fn without_an_assistant_no_job_starts() {
         let f = fixture(Arc::new(FakeRunner {
             on: false,
+            via: "claude",
             jobs: Mutex::default(),
-            ran_for: Mutex::default(),
+            ran_for: Arc::new(Mutex::default()),
         }));
         let e = start(&f, MARK, None).await.unwrap_err().to_string();
         assert!(e.contains("Voice & AI"), "{e}");
@@ -3333,7 +3477,7 @@ mod tests {
         assert!(prompt.contains("race poster"), "{prompt}");
         assert!(PROMPT.contains("start_page_job"), "{PROMPT}");
         assert!(PROMPT.contains("make no page unasked"), "{PROMPT}");
-        let (system, _) = job_prompts(&working("trip"), Searching::Niles);
+        let (system, _) = job_prompts(&working("trip"), Searching::Niles, None);
         assert!(system.contains("Only if the brief asks"), "{system}");
     }
 
@@ -3891,5 +4035,417 @@ mod tests {
         assert_eq!(message.body, "Mark shared “Half marathon plan” with you.");
         assert_eq!(message.url, "/#/chat?artifact=7");
         assert_eq!(message.tag, "artifact-7");
+    }
+
+    /// The two hosts' script a run saves.
+    fn script_content() -> Value {
+        json!({
+            "topic": "The Øresund bridge",
+            "minutes": 5,
+            "hosts": ["Maya", "Leo"],
+            "lines": [
+                { "host": "Maya", "text": "Twenty years ago this month, the first car drove across." },
+                { "host": "Leo", "text": "And by car number ten million, it had made one region of two cities." },
+            ],
+            "sources": [{ "title": "Øresundsbron", "url": "https://www.oresundsbron.com/" }],
+        })
+    }
+
+    /// The fixture, with the Podcasts add-on over the fakes and,
+    /// when `searxng`, a picture search that makes a run count as
+    /// searching through the house's SearXNG.
+    fn podcast_fixture(
+        runner: Arc<dyn Runner>,
+        speech: Arc<podcast::fakes::FakeSpeech>,
+        storage: Arc<podcast::fakes::FakeStorage>,
+        searxng: bool,
+    ) -> Fixture {
+        let store = Arc::new(MemoryArtifacts::new());
+        let told = Arc::new(Told::default());
+        let chats = Arc::new(Chats::default());
+        let bus = EventBus::default();
+        let mut made = Artifacts::new(
+            store.clone(),
+            bus.clone(),
+            runner,
+            told.clone(),
+            Some(chats.clone() as Arc<dyn Conversations>),
+            Box::new(|_| {}),
+        )
+        .with_podcasts(Podcasts::new(podcast::fakes::studio(
+            speech.clone(),
+            storage.clone(),
+        )));
+        if searxng {
+            made = made.with_pictures(Pictures {
+                search: niles_tools::Search::of(&niles_config::WebSearchConfig {
+                    base_url: Some("http://searxng.invalid/search".into()),
+                    ..Default::default()
+                }),
+                download: Arc::new(niles_websearch::PublicFetcher::new(
+                    niles_artifacts::images::MAX_DOWNLOAD,
+                    DOWNLOAD_WITHIN,
+                    niles_websearch::USER_AGENT,
+                )),
+            });
+        }
+        let artifacts = Arc::new(made);
+        Fixture {
+            artifacts,
+            store,
+            told,
+            chats,
+            bus,
+        }
+    }
+
+    async fn start_podcast(f: &Fixture, person: &str) -> Result<Value> {
+        call(
+            f,
+            asking(person, Some(1)),
+            "start_artifact_job",
+            json!({
+                "kind": PODCAST,
+                "title": "The Øresund bridge",
+                "summary": "Twenty years on",
+                "brief": "A quick episode about the Øresund bridge, twenty years on: the \
+                          numbers, the region it made, and what crosses it now.",
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_podcast_asked_for_by_voice_runs_on_the_chat_s_assistant_and_says_it_will_tell_them()
+    {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let ran_for = runner.ran_for.clone();
+        let speech = Arc::new(podcast::fakes::FakeSpeech::new());
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        let f = podcast_fixture(runner, speech.clone(), storage.clone(), true);
+        // Asked from a satellite turn by a recognised voice.
+        let asker = Asker {
+            satellite: Some("10.0.0.9:1234".parse().unwrap()),
+            ..asking(MARK, Some(1))
+        };
+        let out = call(
+            &f,
+            asker,
+            "start_artifact_job",
+            json!({
+                "kind": PODCAST,
+                "title": "The Øresund bridge",
+                "summary": "Twenty years on",
+                "brief": "A quick episode about the Øresund bridge.",
+            }),
+        )
+        .await
+        .expect("started");
+        assert!(
+            out["note"]
+                .as_str()
+                .expect("a note")
+                .contains("let them know when it's ready"),
+            "{out}"
+        );
+        let id = out["id"].as_i64().unwrap();
+        let done = settled(&f, MARK, id).await;
+        assert_eq!(done.status, Status::Ready);
+        let revision = f
+            .store
+            .revision(MARK, id, done.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(revision.author, Author::Chatgpt);
+        assert_eq!(ran_for.lock().unwrap().as_slice(), [MARK]);
+        assert!(
+            f.told.0.lock().unwrap().contains(&(id, Status::Ready)),
+            "told: {:?}",
+            f.told.0.lock().unwrap()
+        );
+        // Recorded: the key is in the bucket, and every line was said
+        // in its host's voice, in order.
+        let puts = storage.put.lock();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0].0, format!("podcasts/{id}.mp3"));
+        drop(puts);
+        let said = speech.said.lock();
+        assert_eq!(said.len(), 2);
+        assert_eq!(said[0].0, "af_heart");
+        assert_eq!(said[1].0, "am_michael");
+        assert!(said[0].1.starts_with("Twenty years ago"));
+        assert!(said[1].1.starts_with("And by car number ten million"));
+    }
+
+    #[tokio::test]
+    async fn a_podcast_is_researching_then_recording_then_ready() {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let speech = Arc::new(podcast::fakes::FakeSpeech::new());
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        let f = podcast_fixture(runner, speech, storage, true);
+        let mut seen = f.bus.subscribe();
+        let id = start_podcast(&f, MARK).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let done = settled(&f, MARK, id).await;
+        assert_eq!(done.status, Status::Ready);
+        let mut texts = Vec::new();
+        while let Ok(event) = seen.try_recv() {
+            if let Event::ArtifactChanged {
+                id: got,
+                status,
+                status_text,
+                ..
+            } = event
+                && got == id
+            {
+                texts.push((status, status_text));
+            }
+        }
+        let researching_at = texts
+            .iter()
+            .position(|(status, text)| {
+                status == "working"
+                    && text
+                        .as_deref()
+                        .is_some_and(|t| t.starts_with("Researching"))
+            })
+            .expect("a Researching status");
+        let recording_at = texts
+            .iter()
+            .position(|(status, text)| {
+                status == "working" && text.as_deref().is_some_and(|t| t.starts_with("Recording"))
+            })
+            .expect("a Recording status");
+        assert!(researching_at < recording_at, "{texts:?}");
+        assert!(
+            texts.iter().any(|(status, _)| status == "ready"),
+            "{texts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_add_on_no_podcast_starts() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let error = start_podcast(&f, MARK).await.unwrap_err().to_string();
+        assert!(error.contains("Settings → Add-ons"), "unexpected: {error}");
+        assert!(
+            f.store
+                .list(MARK, Filter::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn chatgpt_without_searxng_starts_no_podcast() {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let speech = Arc::new(podcast::fakes::FakeSpeech::new());
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        // No SearXNG: a ChatGPT run would have nothing to research with.
+        let f = podcast_fixture(runner, speech, storage, false);
+        let error = start_podcast(&f, MARK).await.unwrap_err().to_string();
+        assert!(error.contains("no web search"), "unexpected: {error}");
+        assert!(
+            f.store
+                .list(MARK, Filter::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn kokoro_down_fails_the_podcast_with_why_and_uploads_nothing() {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let speech = Arc::new(podcast::fakes::FakeSpeech::new());
+        speech.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        let f = podcast_fixture(runner, speech, storage.clone(), true);
+        let id = start_podcast(&f, MARK).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let done = settled(&f, MARK, id).await;
+        assert_eq!(done.status, Status::Failed);
+        let error = done.error.expect("a reason");
+        assert!(error.contains("was not recorded"), "unexpected: {error}");
+        assert!(storage.put.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_upload_fails_it_and_takes_the_half_made_file_away() {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let speech = Arc::new(podcast::fakes::FakeSpeech::new());
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        storage
+            .fail_put
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let f = podcast_fixture(runner, speech, storage.clone(), true);
+        let id = start_podcast(&f, MARK).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let done = settled(&f, MARK, id).await;
+        assert_eq!(done.status, Status::Failed);
+        let error = done.error.expect("a reason");
+        assert!(
+            error.contains("could not be uploaded"),
+            "unexpected: {error}"
+        );
+        assert!(
+            storage
+                .deleted
+                .lock()
+                .contains(&format!("podcasts/{id}.mp3")),
+            "deleted: {:?}",
+            storage.deleted.lock()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_podcast_deleted_while_it_was_recorded_leaves_nothing_in_the_bucket() {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let speech = Arc::new(podcast::fakes::FakeSpeech::gated());
+        let gate = speech.gate.clone().expect("a gate");
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        let f = podcast_fixture(runner, speech, storage.clone(), true);
+        let id = start_podcast(&f, MARK).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        // Hold the recording at its first line until the row is gone.
+        for _ in 0..200 {
+            let a = f.store.get(MARK, id).await.unwrap().unwrap();
+            if a.status_text
+                .as_deref()
+                .is_some_and(|t| t.starts_with("Recording"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        f.store.delete(MARK, id).await.unwrap();
+        gate.add_permits(100);
+        for _ in 0..200 {
+            if !f
+                .artifacts
+                .running
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(MARK)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Nothing was put, or whatever was put was taken back.
+        let puts = storage.put.lock();
+        let deleted = storage.deleted.lock();
+        for (key, _) in puts.iter() {
+            assert!(deleted.contains(key), "{key} was put and never deleted");
+        }
+        // And nobody was told it finished: there was nothing to tell of.
+        assert!(f.told.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn trying_a_podcast_again_after_its_script_was_kept_only_records_it() {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let ran_for = runner.ran_for.clone();
+        let speech = Arc::new(podcast::fakes::FakeSpeech::new());
+        speech.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        let f = podcast_fixture(runner, speech.clone(), storage.clone(), true);
+        let id = start_podcast(&f, MARK).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let failed = settled(&f, MARK, id).await;
+        assert_eq!(failed.status, Status::Failed);
+        // Kokoro is back. Try again: no new run, only a recording.
+        speech
+            .fail
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        f.artifacts.retry(MARK, id).await.expect("tried again");
+        let done = settled(&f, MARK, id).await;
+        assert_eq!(done.status, Status::Ready);
+        assert_eq!(done.current_revision, 1, "the script is the one kept");
+        assert_eq!(
+            storage.put.lock().last().unwrap().0,
+            format!("podcasts/{id}.mp3")
+        );
+        assert_eq!(ran_for.lock().unwrap().len(), 1, "no second run");
+        let chats = f.chats.0.lock().unwrap();
+        let (person, conversation, turn) = chats.last().expect("completion in the original chat");
+        assert_eq!((person.as_str(), *conversation), (MARK, 1));
+        assert_eq!(turn.artifacts[0].id, id);
+        assert_eq!(turn.artifacts[0].status, Status::Ready);
+    }
+
+    #[tokio::test]
+    async fn a_podcast_cannot_be_made_at_once_or_changed_in_the_chat() {
+        let runner = FakeRunner::as_("chatgpt", vec![Does::SavesContent(script_content())]);
+        let speech = Arc::new(podcast::fakes::FakeSpeech::new());
+        let storage = Arc::new(podcast::fakes::FakeStorage::new());
+        let f = podcast_fixture(runner, speech, storage, true);
+        let error = call(
+            &f,
+            asking(MARK, None),
+            "artifact_create",
+            json!({
+                "kind": PODCAST,
+                "title": "Now",
+                "summary": "at once",
+                "content": script_content(),
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("start_artifact_job"), "unexpected: {error}");
+        let id = start_podcast(&f, MARK).await.unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        settled(&f, MARK, id).await;
+        let error = call(
+            &f,
+            asking(MARK, None),
+            "artifact_update",
+            json!({ "id": id, "content": script_content(), "reason": "a change" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("make a new episode"), "unexpected: {error}");
+    }
+
+    #[tokio::test]
+    async fn the_chat_is_told_about_podcasts_only_when_they_can_be_made() {
+        let plain = turn_prompt(Searching::Niles, false);
+        assert!(!plain.contains("kind podcast"), "{plain}");
+        let with = turn_prompt(Searching::Niles, true);
+        assert!(with.contains("kind podcast"), "{with}");
+        let spoken = spoken_prompt();
+        assert!(
+            spoken.contains("I'll let you know when it's ready")
+                && spoken.contains("never on this speaker"),
+            "{spoken}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_podcasts_job_is_told_to_write_english_within_its_budget() {
+        let artifact = Artifact {
+            kind: PODCAST.into(),
+            ..working("podcast")
+        };
+        let voices = ["af_heart".to_string(), "am_michael".to_string()];
+        let (system, _) = job_prompts(&artifact, Searching::Niles, Some(&voices));
+        assert!(system.contains("in English"), "{system}");
+        assert!(system.contains("150 words a minute"), "{system}");
+        assert!(!system.contains("image_search"), "{system}");
+        assert!(
+            system.contains("a woman's voice with an American accent"),
+            "{system}"
+        );
     }
 }

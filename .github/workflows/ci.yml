@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, development]
   pull_request:
-    branches: [main]
+    branches: [main, development]
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +19,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # .claude/skills is a copy of .agents/skills: the repo has no
+      # symlinks, so this is what keeps the copy from drifting.
+      - name: Skills copies match
+        run: python3 scripts/check-skills.py
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

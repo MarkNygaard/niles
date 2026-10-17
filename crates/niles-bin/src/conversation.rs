@@ -3,9 +3,8 @@
 //! the LLM can resolve follow-ups like "turn it off again" or "make it
 //! warmer" against what was just said.
 //!
-//! This is the in-context half of ARCHITECTURE.md Phase 12's
-//! "conversation memory (short-term in context, long-term in Postgres)".
-//! It holds only the last few turns, scoped to one room and expired by a
+//! This is the short-term, in-context half of conversation memory
+//! (`niles-memory` is the long-term half). It holds only the last few turns, scoped to one room and expired by a
 //! short idle TTL so an unrelated command minutes later starts fresh.
 //!
 //! Every change is also handed on whole, to be kept in Postgres: a

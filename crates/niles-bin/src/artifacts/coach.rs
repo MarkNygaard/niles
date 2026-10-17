@@ -1,5 +1,5 @@
-//! A training plan that keeps up with the runs. See ARCHITECTURE.md §
-//! Artifacts (per person), `training_plan`.
+//! A training plan that keeps up with the runs. The plan's shape is in
+//! `niles-artifacts/src/training_plan.rs`.
 //!
 //! After every sync of a person's Strava their plans are brought up to
 //! date in code ([`tracking::track`]): each new run marks the session

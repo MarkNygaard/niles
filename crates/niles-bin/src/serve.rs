@@ -59,6 +59,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the startup sequence of `niles serve`; each step needs handles the ones before it made"
+)]
 pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Where the override document lives is deliberately *not* itself
     // overridable — it's how we find the overrides in the first place — so
@@ -423,6 +427,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         presence_agg.clone(),
         &cfg.home,
         Some(store.clone()),
+        Some(tracker.clone()),
         args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -556,6 +561,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
+    if let Some(artifacts) = &artifacts {
+        artifacts.play_on(music.clone() as Arc<dyn artifacts::Sonos>);
+    }
     let tv = Arc::new(tv::TvControl::new(store.clone()));
     music::register(&mut tools, music.clone(), tv.clone());
     tv::register(&mut tools, tv.clone());
@@ -568,7 +576,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     // Notification center
-    let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
+    let mut notifications = build_notification_center(&cfg).await;
     let peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let wyoming_delivery = Arc::new(WyomingDelivery {
@@ -586,6 +594,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let automation_sink = Arc::new(MqttDeviceSink {
         publisher: publisher.clone(),
         router: router.clone(),
+        manual: tracker.clone(),
         dry_run: args.dry_run,
     });
 
@@ -644,8 +653,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let tools = Arc::new(tools);
     if let Some(artifacts) = &artifacts {
-        let artifacts = artifacts.clone();
-        tokio::spawn(async move { artifacts.recover().await });
+        let recovered = artifacts.clone();
+        tokio::spawn(async move { recovered.recover().await });
+        tokio::spawn(artifacts.clone().sweep_episodes());
     }
     let assistant_only = artifacts
         .as_ref()
@@ -739,6 +749,11 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     )
     .with_config_store(Some(store.clone()))
     .with_logs(LOG_BUFFER.get().cloned())
+    // Mounted always and answering only once its signing secret is
+    // saved, which is what switching it on is.
+    .with_linear_webhook(Some(Arc::new(niles_api::LinearWebhookState::new(
+        notifications.clone(),
+    ))))
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())
@@ -776,10 +791,6 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             as Arc<dyn niles_api::tool_servers::ToolServers>,
     ));
 
-    // A deployment that mounts its secrets under names the platform
-    // silently drops leaves `[auth]` naming variables that do not
-    // resolve. Sign-in then reads as "off, waiting for its first
-    // person" — which is what a correct install looks like too, except
     // Starting no longer proves Niles is configured — every section has
     // a default, which is what lets the app be the way in. So say what
     // is still unanswered, once, where somebody will see it.
@@ -794,11 +805,26 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
+    // A deployment that mounts its secrets under names the platform
+    // silently drops leaves `[auth]` naming variables that do not
+    // resolve. Sign-in then reads as "off, waiting for its first
+    // person" — which is what a correct install looks like too, except
     // that one is open to anybody who can reach it. Worth one loud line
     // rather than a discovery.
     if cfg.auth.github_client_id_env.is_some() && !cfg.auth.is_configured() {
         tracing::warn!(
-            "[auth] names secrets that cannot be read, so signing in is OFF and this              Niles is open to anyone who can reach it — check the env vars actually              reach the process"
+            "[auth] names secrets that cannot be read, so signing in is OFF and this \
+             Niles is open to anyone who can reach it — check the env vars actually \
+             reach the process"
+        );
+    }
+    // The same open door behind a list that looks like a lock: people
+    // are listed, so it reads as on. Not failed closed, which would
+    // leave the API key as the household's only way in.
+    if cfg.auth.is_open_with_people_listed() {
+        tracing::warn!(
+            "[auth] people are listed but there is no GitHub app, so signing in is OFF and \
+             this Niles is open to anyone who can reach it — set one up under Settings → People"
         );
     }
     let api_handle = tokio::spawn(async move {

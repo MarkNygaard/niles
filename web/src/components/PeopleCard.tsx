@@ -50,6 +50,11 @@ export interface PeopleCardProps {
    * and changing the name left the list still saying it.
    */
   voices?: { speaker: string; display_name: string }[];
+  /**
+   * Whether a GitHub app is set up, from `/auth/status`. Undefined while
+   * loading. Without one, a list here switches nothing on.
+   */
+  githubApp?: boolean;
   saving?: boolean;
   error?: string;
   onChange: (people: Person[]) => void;
@@ -66,6 +71,7 @@ export interface PeopleCardProps {
 export function PeopleCard({
   people,
   voices,
+  githubApp,
   saving,
   error,
   onChange,
@@ -96,6 +102,15 @@ export function PeopleCard({
 
   return (
     <div className="flex flex-col gap-4">
+      {/* A list reads as a lock. Without an app behind it, it is not
+          one, and nothing else on the page would say so. */}
+      {people.length > 0 && githubApp === false && (
+        <p role="alert" className="bg-destructive/10 text-destructive rounded-md px-3 py-2 text-sm">
+          Signing in is off while there is no GitHub app, so Niles is open to
+          anyone who can reach it. Set one up under Signing in above to switch
+          it on.
+        </p>
+      )}
       {people.length === 0 ? (
         <p className="bg-muted/60 rounded-md px-3 py-2 text-sm">
           Signing in is off while nobody is listed, so Niles is open to anyone

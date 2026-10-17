@@ -11,6 +11,7 @@ use tracing::info;
 /// Build the API router with the given shared state. Exposed so
 /// tests can drive it via `tower::ServiceExt::oneshot` without
 /// binding a port.
+#[expect(clippy::too_many_lines, reason = "every route of the API in one table")]
 pub fn router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/healthz", get(handlers::healthz))
@@ -184,6 +185,11 @@ pub fn router(state: AppState) -> Router {
             "/integrations/web_search/test",
             post(crate::web_search::test),
         )
+        .route("/integrations/podcasts/test", post(crate::podcasts::test))
+        .route(
+            "/integrations/podcasts/voices",
+            get(crate::podcasts::voices),
+        )
         .route("/integrations/chatgpt", get(crate::chatgpt::status))
         .route(
             "/integrations/chatgpt/login",
@@ -244,6 +250,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::artifacts::restore),
         )
         .route("/me/artifacts/{id}/retry", post(crate::artifacts::retry))
+        .route("/me/artifacts/{id}/audio", get(crate::artifacts::audio))
         .route(
             "/me/artifacts/{id}/shares",
             get(crate::artifacts::shares)

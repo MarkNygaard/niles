@@ -371,6 +371,42 @@ async fn undo_walks_back_the_last_change() {
 }
 
 #[tokio::test]
+async fn undo_will_not_empty_the_allowlist() {
+    // Undoing the change that added the first person would switch
+    // sign-in off, and open Niles to anybody who can reach it.
+    let app = app(true);
+    let (status, _) = send(
+        &app,
+        patch(json!({"auth": {"allowed": [{"email": "mark@example.com"}]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let undo = Request::builder()
+        .method("POST")
+        .uri("/config/undo")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app, undo).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("nobody able to sign in"),
+        "{body}"
+    );
+
+    let (_, after) = send(&app, get("/config")).await;
+    assert_eq!(
+        after["effective"]["auth"]["allowed"][0]["email"],
+        "mark@example.com"
+    );
+    let (_, history) = send(&app, get("/config/history")).await;
+    assert_eq!(history.as_array().unwrap().len(), 1, "still there");
+}
+
+#[tokio::test]
 async fn undo_with_nothing_to_undo_is_not_a_success() {
     let app = app(true);
     let undo = Request::builder()

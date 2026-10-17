@@ -74,6 +74,14 @@ impl SatelliteRegistry {
         self.by_ip.get(&peer.ip()).map_or(100, |s| s.volume)
     }
 
+    /// Every room that has a satellite, each once.
+    pub fn rooms(&self) -> Vec<RoomName> {
+        let mut rooms: Vec<RoomName> = self.by_ip.values().map(|s| s.room.clone()).collect();
+        rooms.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        rooms.dedup();
+        rooms
+    }
+
     /// Where to reach the satellite in `room`.
     ///
     /// The reverse of [`Self::room_for`], for the case where niles

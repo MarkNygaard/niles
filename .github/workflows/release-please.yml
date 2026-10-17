@@ -1,0 +1,67 @@
+name: release-please
+
+# Keeps a release PR open against development: the next version, worked
+# out from the Conventional-Commits titles merged since the last
+# release, and the changelog. Merging it tags the release and publishes
+# it on GitHub. The image for a release is built when development is
+# merged into main (see image.yml), not here.
+#
+# The token: a PR opened with the workflow's own GITHUB_TOKEN starts no
+# workflows, so CI would never report on the release PR and the
+# development ruleset, which requires CI, would hold it. A fine-grained
+# token in RELEASE_PLEASE_TOKEN (this repository: contents and pull
+# requests, read and write) lets CI run on it. Without one this still
+# works, and the release PR is merged through the admin bypass.
+on:
+  push:
+    branches: [development]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      pr: ${{ steps.release.outputs.pr }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          target-branch: development
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # release-please moves the workspace version in Cargo.toml; the lock
+  # file names every workspace crate at that version too, and is left
+  # to cargo to put right, on the release PR's own branch.
+  lockfile:
+    needs: release-please
+    if: needs.release-please.outputs.prs_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Bring Cargo.lock to the new version
+        run: |
+          cargo update --workspace
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already agrees."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: Cargo.lock for the release"
+          git push

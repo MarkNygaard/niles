@@ -1,16 +1,16 @@
 //! niles-artifacts — what Niles makes for one person and keeps for
-//! them: a travel plan, a packing list, a training plan.
+//! them: a travel plan, a packing list, a training plan, a podcast.
 //!
-//! See ARCHITECTURE.md § Artifacts (per person). An artifact is one
-//! person's, under the same key as their chat ([`person_key`] in
-//! `niles-training`), and every version of its content is kept, up to
+//! An artifact is one person's, under the same key as their chat
+//! ([`person_key`] in `niles-training`), and every version of its content is kept, up to
 //! [`KEPT_REVISIONS`]. What the content looks like is its kind's
 //! business ([`kinds`]): a document is markdown, a training plan
-//! weeks of dated sessions, a trip its days and places. An artifact may
-//! also have a [`page`] that draws that content: kept once, and named
-//! by each version drawn with it, and [`images`]: Niles's own copies of
-//! pictures, which its content and page name by id. Its owner may
-//! [`share`] it with others in the household, to read or to edit.
+//! weeks of dated sessions, a trip its days and places, a podcast a
+//! two-host episode's script. An artifact may also have a [`page`]
+//! that draws that content: kept once, and named by each version drawn
+//! with it, and [`images`]: Niles's own copies of pictures, which its
+//! content and page name by id. Its owner may [`share`] it with others
+//! in the household, to read or to edit.
 
 mod document;
 mod error;
@@ -19,6 +19,7 @@ pub mod kinds;
 mod model;
 pub mod page;
 pub mod plan_day;
+pub mod podcast;
 pub mod share;
 mod store;
 pub mod tracking;

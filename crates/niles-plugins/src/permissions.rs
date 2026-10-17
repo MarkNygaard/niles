@@ -34,6 +34,10 @@ pub struct Diff {
 /// Every grant in `manifest`, in the order the approval screen lists
 /// them. `tools` are the bare names its component offers, when they are
 /// known: an update check reads only the manifest.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one block per permission kind, in the order the approval screen lists them"
+)]
 pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
     let p = &manifest.permissions;
     let mut out = Vec::new();

@@ -4,7 +4,7 @@
 //! indexes by the spoken form of the device name (underscores
 //! replaced with spaces). No bus coupling inside this module.
 
-use niles_core::DeviceId;
+use niles_core::{DeviceId, RoomName};
 use std::collections::HashMap;
 
 /// Index of devices by their spoken (space-separated) name.
@@ -51,6 +51,11 @@ impl DeviceIndex {
             .get(&key)
             .map(|v| v.as_slice())
             .unwrap_or_default()
+    }
+
+    /// Whether any indexed device is in `room`.
+    pub fn has_room(&self, room: &RoomName) -> bool {
+        self.by_name.values().flatten().any(|id| id.room() == room)
     }
 
     /// True when the index contains no entries.
@@ -145,6 +150,14 @@ mod tests {
         idx.remove(&living);
         assert_eq!(idx.matches("floor lamp"), &[bedroom]);
         assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn knows_the_rooms_its_devices_are_in() {
+        let mut idx = DeviceIndex::new();
+        idx.insert(make_id("living_room", "floor_lamp"));
+        assert!(idx.has_room(&RoomName::parse("living_room").unwrap()));
+        assert!(!idx.has_room(&RoomName::parse("kitchen").unwrap()));
     }
 
     #[test]

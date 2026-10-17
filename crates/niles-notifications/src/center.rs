@@ -1,7 +1,5 @@
 //! Notification center: in-memory ring buffer + delivery orchestration.
 
-// Error/Result unused in this module — kept for future expansion.
-use crate::log::NotificationLog;
 use crate::model::{DeliveryOutcome, Notification, Priority};
 use crate::quiet::QuietHoursConfig;
 use chrono::Utc;
@@ -14,12 +12,20 @@ pub trait NotificationDelivery: Send + Sync {
     fn deliver(&self, text: &str, room: Option<&str>, priority: Priority) -> bool;
 }
 
+/// Where each notification is kept so "what did you say?" still knows
+/// after a restart, which every deploy is.
+pub trait NotificationHistory: Send + Sync {
+    /// Keep one. Called on the delivery path, so it hands the write off
+    /// rather than waiting for it.
+    fn keep(&self, notification: &Notification);
+}
+
 pub struct NotificationCenter {
     buffer: Mutex<VecDeque<Notification>>,
     capacity: usize,
     quiet: Option<QuietHoursConfig>,
     delivery: Option<Arc<dyn NotificationDelivery>>,
-    log: Option<NotificationLog>,
+    history: Option<Arc<dyn NotificationHistory>>,
 }
 
 impl NotificationCenter {
@@ -35,7 +41,7 @@ impl NotificationCenter {
             capacity,
             quiet: None,
             delivery: None,
-            log: None,
+            history: None,
         }
     }
 
@@ -51,23 +57,21 @@ impl NotificationCenter {
         self
     }
 
-    /// Attach a file-based notification log.
-    ///
-    /// Seeds the in-memory ring buffer with the most recent persisted
-    /// notifications so `recent()` is immediately useful after restart.
-    pub fn with_log(mut self, log: NotificationLog) -> Self {
-        match log.load_recent(self.capacity) {
-            Ok(recent) => {
-                let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-                for n in recent.into_iter().rev() {
-                    buffer.push_back(n);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("failed to seed notification buffer from log: {e}");
+    /// Pick up where the last run left off: `earlier` (newest first, as
+    /// the history reads them back) fills the buffer, and every new one
+    /// is handed to `history`.
+    pub fn with_history(
+        mut self,
+        earlier: Vec<Notification>,
+        history: Arc<dyn NotificationHistory>,
+    ) -> Self {
+        {
+            let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            for n in earlier.into_iter().take(self.capacity).rev() {
+                buffer.push_back(n);
             }
         }
-        self.log = Some(log);
+        self.history = Some(history);
         self
     }
 
@@ -120,10 +124,8 @@ impl NotificationCenter {
         }
         buffer.push_back(notification.clone());
         drop(buffer);
-        if let Some(ref log) = self.log
-            && let Err(e) = log.append(&notification)
-        {
-            tracing::warn!("failed to persist notification to log: {e}");
+        if let Some(history) = &self.history {
+            history.keep(&notification);
         }
         notification
     }
@@ -295,48 +297,46 @@ mod tests {
     fn new_panics_when_capacity_zero() {
         let _ = NotificationCenter::new(0);
     }
-    #[test]
-    fn persists_and_reloads_across_restart() {
-        use crate::model::Priority;
-        use tempfile::TempDir;
+    #[derive(Default)]
+    struct Kept(Mutex<Vec<Notification>>);
 
-        let tmp = TempDir::new().unwrap();
-        let log = NotificationLog::new(tmp.path()).unwrap();
-        let center = NotificationCenter::new(10).with_log(log);
+    impl NotificationHistory for Kept {
+        fn keep(&self, notification: &Notification) {
+            self.0.lock().unwrap().push(notification.clone());
+        }
+    }
+
+    #[test]
+    fn what_was_said_before_a_restart_is_still_recalled() {
+        let kept = Arc::new(Kept::default());
+        let center = NotificationCenter::new(10).with_history(Vec::new(), kept.clone());
         center.deliver("first", None, Priority::Routine);
         center.deliver("second", None, Priority::Routine);
-        assert_eq!(center.recent(10).len(), 2);
 
-        // Simulate restart: new center seeded from same log.
-        let log2 = NotificationLog::new(tmp.path()).unwrap();
-        let center2 = NotificationCenter::new(10).with_log(log2);
-        let recent = center2.recent(10);
+        // The next run reads them back newest first, as the store does.
+        let earlier: Vec<Notification> = kept.0.lock().unwrap().iter().rev().cloned().collect();
+        let restarted =
+            NotificationCenter::new(10).with_history(earlier, Arc::new(Kept::default()));
+        let recent = restarted.recent(10);
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].text, "second");
         assert_eq!(recent[1].text, "first");
     }
 
     #[test]
-    fn seed_respects_capacity() {
-        use crate::model::{DeliveryOutcome, Priority};
-        use tempfile::TempDir;
-
-        let tmp = TempDir::new().unwrap();
-        let log = NotificationLog::new(tmp.path()).unwrap();
-        // Write 5 notifications directly to log.
-        for i in 1..=5 {
-            let n = crate::model::Notification {
+    fn what_is_picked_up_respects_capacity() {
+        let earlier: Vec<Notification> = (1..=5)
+            .rev()
+            .map(|i| Notification {
                 id: format!("id-{i}"),
                 text: format!("msg {i}"),
                 priority: Priority::Routine,
                 room: None,
                 outcome: DeliveryOutcome::Delivered,
-                created_at: chrono::Utc::now() + chrono::Duration::seconds(i),
-            };
-            log.append(&n).unwrap();
-        }
-        // New center with capacity 3 should only keep the newest 3.
-        let center = NotificationCenter::new(3).with_log(log);
+                created_at: Utc::now() + chrono::Duration::seconds(i),
+            })
+            .collect();
+        let center = NotificationCenter::new(3).with_history(earlier, Arc::new(Kept::default()));
         let recent = center.recent(10);
         assert_eq!(recent.len(), 3);
         assert_eq!(recent[0].text, "msg 5");

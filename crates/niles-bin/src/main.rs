@@ -1,6 +1,6 @@
 //! niles — AI-first home automation system.
 
-use crate::cli::{Cli, Commands, ConfigAction, ToolsAction};
+use crate::cli::{Cli, Commands, ConfigAction};
 use crate::commands::{
     api, chat, config_validate, discover, enroll, mqtt_tap, set, synthesize, transcribe, voice_tap,
     wyoming_tap,
@@ -100,13 +100,8 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Serve(args) => serve(args).await,
-        Commands::MigrateFromHa => todo!("implement `migrate-from-ha`"),
-        Commands::FlashSatellite => todo!("implement `flash-satellite`"),
         Commands::Config { action } => match action {
             ConfigAction::Validate(args) => config_validate(args),
-        },
-        Commands::Tools { action } => match action {
-            ToolsAction::List => todo!("implement `tools list`"),
         },
         Commands::MqttTap(args) => mqtt_tap(args).await,
         Commands::Discover(args) => discover(args).await,
