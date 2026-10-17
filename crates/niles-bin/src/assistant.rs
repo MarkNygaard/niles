@@ -125,6 +125,26 @@ pub(crate) fn searching_section(searching: Searching) -> &'static str {
     }
 }
 
+/// The repo's own writing rules, the same ones its contributors' agents
+/// follow, so a reply or a document reads like a person wrote it.
+const UNSLOP: &str = include_str!("../../../.agents/skills/unslop/SKILL.md");
+
+/// How the assistant writes what a person reads: the unslop skill
+/// without its frontmatter, which is for the agents that load skills.
+pub(crate) fn writing_section() -> &'static str {
+    static SECTION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let body = UNSLOP
+            .strip_prefix("---")
+            .and_then(|rest| rest.split_once("\n---"))
+            .map_or(UNSLOP, |(_, body)| body);
+        format!(
+            "\n\nWrite every reply and everything you make for a person by these rules.\n\n{}",
+            body.trim()
+        )
+    });
+    &SECTION
+}
+
 /// The assistant chosen for one turn, and what it needs to run.
 pub(crate) enum Chosen {
     ClaudeCode {
@@ -284,7 +304,11 @@ impl Assistant {
         );
         let prompt = transcript(history, text);
         let searching = self.searching(chosen.via());
-        let system_prompt = format!("{system_prompt}{}", searching_section(searching));
+        let system_prompt = format!(
+            "{system_prompt}{}{}",
+            searching_section(searching),
+            writing_section()
+        );
         match chosen {
             Chosen::ClaudeCode { cfg, token } => {
                 crate::claude_code::run(
@@ -330,6 +354,7 @@ impl Assistant {
         // a document's research, not the review of a conversation.
         let built_in_search =
             tools.registers("web_search") && self.searching(chosen.via()) == Searching::BuiltIn;
+        let system_prompt = &format!("{system_prompt}{}", writing_section());
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
@@ -681,6 +706,15 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         assert_eq!(Searching::of(true, "chatgpt"), Searching::Niles);
         assert_eq!(Searching::of(false, "claude"), Searching::BuiltIn);
         assert_eq!(Searching::of(false, "chatgpt"), Searching::Nothing);
+    }
+
+    #[test]
+    fn the_assistant_writes_by_the_unslop_rules_without_their_frontmatter() {
+        let section = writing_section();
+        assert!(section.contains("Em dash overuse"));
+        assert!(section.contains("Chatbot phrases"));
+        assert!(!section.contains("disable-model-invocation"));
+        assert!(!section.contains("name: unslop"));
     }
 
     #[test]
