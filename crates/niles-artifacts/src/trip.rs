@@ -131,6 +131,10 @@ fn from_text(text: &str) -> Result<Value> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "checks every field of a trip in the order the schema lists them"
+)]
 fn trip(content: &Value) -> Result<Value> {
     const AT: &str = "the trip";
     let o = fields(content, AT, TRIP)?;

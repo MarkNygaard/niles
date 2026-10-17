@@ -194,6 +194,10 @@ pub(crate) async fn keep_waiting<T>(
 
 /// Spawn a fire-and-forget task that transcribes `session`, dispatches
 /// the transcript, and speaks the response back to the satellite.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one voice turn from transcript to spoken reply, in a task that owns its clones"
+)]
 pub(crate) fn spawn_dispatch_task(
     whisper: &Arc<LiveStt>,
     ctx: &DispatchCtx,
@@ -420,6 +424,10 @@ pub(crate) fn hush_on_wake(ctx: &DispatchCtx, incoming: &niles_wyoming::server::
     });
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "a dev subcommand's straight-line wiring of the voice stack"
+)]
 pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()> {
     // MQTT + config: connect_from_config validates and gives us a
     // live MqttClient. We grab a publisher handle *before* handing

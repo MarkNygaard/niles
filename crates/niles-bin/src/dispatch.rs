@@ -258,6 +258,10 @@ pub(crate) async fn handle_transcript(
 /// matched but resolved no target device — e.g. "living room ceiling light"
 /// makes Tier 0 grab "living room ceiling" as the room (no such devices);
 /// rather than dead-ending, the LLM resolves the real `living_room/ceiling`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Tier 1 turn; its outcomes (done, hand-off, escalate) share the messages built first"
+)]
 pub(crate) async fn dispatch_tier1(
     ctx: &DispatchCtx,
     peer: SocketAddr,

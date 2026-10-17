@@ -31,7 +31,7 @@ What Niles is not:
 
 ## The crate map
 
-A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the rest together.
+A Cargo workspace of 35 crates; `niles-bin` is the only binary and wires the rest together.
 
 **Core and state**
 
@@ -96,7 +96,6 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 | `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime. |
 | `niles-integration-linear` | Linear's webhook, turned into notifications. |
 | `niles-tls` | TLS to devices that sign their own certificate (an LG TV). |
-| `niles-permissions` | An empty placeholder. Nothing uses it. |
 | `niles-bin` | The `niles` binary: `serve`, the dev subcommands, and all the wiring. |
 
 **Outside `crates/`:** `web/` (the React app, served by `niles-api`), `firmware/xiao-wyoming/satellite-idf/` (the satellite firmware), `hardware/satellite-v2/` (the custom satellite board), `schemas/` (the plugin WIT), `docs/src/` (the user guide, an mdBook), `docs/capabilities/` (capability references), `docs/integrations/` (the plugin author guide), `deploy/kustomize/` and `deploy/README.md` (deployment), and `examples/niles.example.toml`.
@@ -180,7 +179,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 
 **Code**
 
-27. No traits without implementations; `#[non_exhaustive]` on public enums that grow; newtypes for validated identifiers; no compatibility shims before production; no half-finished implementations or `todo!()` paths. *See CLAUDE.md.*
+27. No traits without implementations; `#[non_exhaustive]` on public enums that grow; newtypes for validated identifiers; no compatibility shims before production; no half-finished implementations or `todo!()` paths. *See AGENTS.md.*
 
 ## Big decisions
 

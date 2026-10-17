@@ -1,43 +1,30 @@
 # Contributing to Niles
 
-Thanks for your interest. Niles is in early development — expect frequent breaking changes.
+Thanks for your interest. Niles is in early development, so expect breaking changes.
 
 ## Development setup
 
-Niles is a Rust monorepo using a Cargo workspace. The pinned toolchain is in `rust-toolchain.toml`; `rustup` will fetch it automatically on first build.
+Niles is a Rust monorepo in one Cargo workspace. The toolchain is pinned in `rust-toolchain.toml`, and `rustup` fetches it on the first build. The web app in `web/` uses Bun for its dependencies.
+
+Run the whole chain before every push. CI runs it on every PR:
 
 ```bash
-# Build everything
-cargo build --workspace
-
-# Run tests
-cargo test --workspace
-
-# Format check
 cargo fmt --all --check
-
-# Lint
+cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-CI runs all four on every PR.
+If you changed `web/`, also run `npm run build` and `npm test` there.
 
-## Conventions
+## Pull requests
 
-- **Branching:** feature branches off `main`, PRs into `main`.
-- **Commits:** short imperative summary line; explain *why* in the body if it isn't obvious from the diff.
-- **Scope:** keep PRs focused. A single PR can atomically update Rust types, schemas, firmware config, and deployment manifests (that's the point of the monorepo) — but each PR should still be reviewable as one change.
+- Branch off `development` and open the PR into `development`. `main` is what is released.
+- The PR title is a Conventional Commit (`feat: ...`, `fix(niles-mqtt): ...`), because release-please builds the changelog from the titles. PRs are squash-merged.
+- Keep a PR to one reviewable change. It may still touch Rust, schemas, firmware and deploy manifests together; that is what the monorepo is for.
+- A new feature, a new crate, a new transport or a change to a core trait starts as an issue, so the approach is agreed before the code.
 
-## Larger changes
-
-For any of the following, open an issue or draft RFC first to discuss the approach before writing code:
-
-- Adding a new tier to the voice pipeline
-- Adding a new transport (Wyoming alternative, MQTT topic structure changes)
-- Adding a new core trait (DeviceSource, RoomSpeaker, etc.) or breaking changes to existing ones
-- New top-level crates
-
-Smaller PRs (bug fixes, new tools, additional integrations) are welcome directly.
+The code conventions (crate layout, errors, tests, units, file and function size) are in `AGENTS.md` at the repo root. It is written for coding agents and reads fine for people.
 
 ## Code of conduct
 

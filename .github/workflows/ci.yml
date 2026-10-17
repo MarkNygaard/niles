@@ -20,6 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # .claude/skills is a copy of .agents/skills: the repo has no
+      # symlinks, so this is what keeps the copy from drifting.
+      - name: Skills copies match
+        run: python3 scripts/check-skills.py
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

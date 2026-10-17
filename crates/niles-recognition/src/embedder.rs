@@ -32,6 +32,10 @@ pub struct EcapaTdnnEmbedder {
 }
 
 impl EcapaTdnnEmbedder {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loads the model and checks each input and output tensor in turn, each with its own error"
+    )]
     pub fn new(cfg: &EmbedderConfig) -> Result<Self> {
         let load_err = |source| Error::LoadModel {
             path: cfg.model_path.clone(),

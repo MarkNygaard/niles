@@ -681,7 +681,7 @@ export function AddOnsPage({
                     modes={linear?.tools ?? {}}
                     notes={linear?.notes ?? ""}
                     handOff={linear?.hand_off !== false}
-                    notesPlaceholder="For example: a coding task goes to the team Niles, in Todo, with the label AI Eligible."
+                    notesPlaceholder="For example: a coding task goes to the team Niles, in Triage."
                     secret={secretFor(current.secret_key)}
                     writable={secrets?.writable ?? false}
                     saving={saving}

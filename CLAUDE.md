@@ -1,193 +1,32 @@
-# CLAUDE.md
+@AGENTS.md
 
-Working notes for Claude Code (and any AI coding agent) on this repo.
-Auto-loaded by Claude Code when sessions start in this directory.
+# Claude Code notes
 
-## What this project is
+Everything above comes from `AGENTS.md`, which every agent reads. What follows is only for Claude Code.
 
-Niles is an open-source, AI-first home automation system written in Rust.
-It replaces Home Assistant for users who want sub-second voice control,
-code/config over UI, and an LLM as a first-class citizen.
-The full spec is in [ARCHITECTURE.md](ARCHITECTURE.md).
-Current build status is in [ROADMAP.md](ROADMAP.md).
+## Attribution
 
-## Repository orientation
-
-- **Monorepo, Cargo workspace.** Workspace manifest at `Cargo.toml`, resolver 3, edition 2024.
-- **Crates** under `crates/`. Library crates have one module per concern; `niles-bin` is the only binary.
-- **Architecture, roadmap, contributing, security, conduct docs** at repo root.
-- **Deploy / firmware / docs / schemas / examples / scripts** are placeholders that fill in as their owning phases land.
-
-## Toolchain
-
-- `rust-toolchain.toml` pins `stable` with `rustfmt` + `clippy`. Cloners get the right compiler via `rustup` automatically.
-- Edition `2024` is set workspace-wide; crates inherit via `edition.workspace = true`.
-- Workspace dependencies live in `[workspace.dependencies]` so every crate shares a single version.
-
-## Common commands
-
-Always run these in PowerShell on the dev machine (Windows MSVC) or on CI (Ubuntu). The verify chain we run before pushing:
-
-```powershell
-cargo fmt --all --check
-cargo build --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-To test or run a single crate:
-
-```powershell
-cargo test -p niles-core
-cargo run -p niles-bin -- --help
-```
-
-If formatting fails, run `cargo fmt --all` to auto-fix and re-run the check.
-
-## Conventions
-
-### Crate layout
-
-Each library crate uses this shape:
+Commits end with:
 
 ```
-crates/<name>/
-├── Cargo.toml      # inherits package metadata + lints from workspace
-└── src/
-    ├── lib.rs      # module declarations + pub re-exports of the public API
-    ├── error.rs    # local Error enum (thiserror) + Result alias
-    └── <concern>.rs ...
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```
 
-`lib.rs` re-exports the headline types so callers can write `use niles_core::DeviceRegistry;` instead of `use niles_core::registry::DeviceRegistry;`.
+PR bodies end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 
-### Errors
+## Local files
 
-- `thiserror` for ergonomic `#[derive(Error)]` enums.
-- Each crate defines its own `Error` + `pub type Result<T> = std::result::Result<T, Error>;` alias.
-- `Error` variants name a *kind* + a *reason* string when the cause is dynamic (e.g. `InvalidName { kind: &'static str, reason: String }`).
+- `ROADMAP.md` is Mark's local working note: gitignored, and auto-loaded when present. Update it after each merge.
+- `CLAUDE.local.md` holds local-only notes, gitignored, loaded beside this file.
 
-### Tests
+## Shell habits
 
-- Unit tests inline in the same file as the code, under `#[cfg(test)] mod tests`.
-- Tests assert *behavior*, not implementation detail. Prefer multiple tightly-scoped tests over one giant test.
-- The standard contract: build / fmt / clippy `-D warnings` / tests all pass before commit.
+These avoid permission prompts on Windows:
 
-### Public surface
+- In Bash, no heredocs, no shell loops and no `$(...)`.
+- Write scripts, commit messages and PR bodies to a file with the Write tool, then pass the path: `git commit -F <file>`, `gh pr create --body-file <file>`.
+- Watch CI with `gh pr checks <number> --watch`.
 
-- **No traits without implementations.** `DeviceSource` and `RoomSpeaker` live in their first implementation crate (e.g. `niles-mqtt`), not in `niles-core`, until they're actually used.
-- **`#[non_exhaustive]` on public enums** that will gain variants (events, intents) so adding variants isn't a breaking change for downstream matches.
-- **Newtypes for validated identifiers** (`RoomName`, `DeviceName`, `MinuteOfDay`) — never raw `String`/`u16` in public APIs where validation rules matter.
+## The installed app
 
-### Units and ranges
-
-- Brightness is `u8` in `0..=100` (percent). Upstream-source translation (Z2M's `0..=254`) happens in the source-specific crate, not in core types.
-- Color temperature is `u16` Kelvin. Mireds → Kelvin conversion happens in the source-specific crate.
-
-## The web UI
-
-`web/` is a Vite + React app, served by `niles-api` behind the `ui`
-feature. Bun for dependencies (`bun.lock` is the lockfile), and:
-
-```powershell
-cd web
-npm run build      # tsc --noEmit + vite build
-npm test           # vitest
-```
-
-Components come from **shadcn/ui** on Base UI (`components.json`,
-`style: "base-nova"`). The skill is vendored at
-`.claude/skills/shadcn/`, pinned by `skills-lock.json`.
-
-Two things that cost an hour each if you do not know them:
-
-- **`npx shadcn@latest add <x>` rewrites the import and installs a
-  package for it.** The generated file says `import { cn } from "cn"`
-  and a `cn` dependency appears in `package.json`. Both are wrong here:
-  change the import to `@/lib/utils` and `npm uninstall cn`. Check
-  `bun.lock` afterwards — npm will not update it, so run `bun install`
-  to put the lockfile back in step with `package.json`.
-- **Base UI's `Select` popup hangs jsdom.** Not a slow retry — the run
-  never finishes. Anything worth asserting about what a `Select` offers
-  belongs in a function the test can call directly; see `usableFor` in
-  `RoleCard.tsx` and `roomChoices` in `SatellitesCard.tsx`. `Dialog`,
-  `Popover` and `Switch` are all fine, though `Switch` needs the
-  `PointerEvent` shim in `src/test-setup.ts`.
-
-## PR workflow
-
-`development` is the default branch and where work lands; `main` is what
-is released, and images are built from it.
-
-1. Branch off `development` with a meaningful prefix: `feat/`, `fix/`, `docs/`, `chore/`.
-2. Make the change; run the verify chain locally.
-3. Commit with a Conventional-Commits-style subject (`feat(niles-core): ...`).
-4. Push and open a PR into `development` with `gh pr create`. PR body summarizes what's in, what's out, and how it was verified.
-5. Wait for CI green. The user reviews, may push fixup commits.
-6. Squash-merge with `--delete-branch` once approved — the only merge method `development` takes.
-
-Releases are release-please's (`.github/workflows/release-please.yml`,
-`release-please-config.json`): it keeps a release PR open against
-`development` with the next version, worked out from the
-Conventional-Commits titles merged since the last release, and the
-`CHANGELOG.md` entry. PR titles are what it reads, so they keep the
-`feat:`/`fix:` form. Merging that PR tags `vX.Y.Z` and publishes the
-GitHub release. The version lives in `Cargo.toml`'s `[workspace.package]`
-(the `x-release-please-version` marker), and the release PR's branch gets
-the matching `Cargo.lock`.
-
-Then one PR from `development` into `main`, merged as a merge commit (the
-only method `main` takes), so `main` keeps `development`'s history and
-the next release has nothing to reconcile. That merge builds the image
-(`image.yml`): `sha-…` and `latest`, and the version when what was
-merged is a release.
-
-Both branches are protected by repository rulesets: no direct pushes, no
-force-pushes, no deletion, and CI's two jobs must pass. The repository
-admin may bypass them through a pull request only.
-
-Commits made by Claude include the trailer:
-```
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-```
-
-### Pre-commit hygiene during review/fix passes
-
-Run `cargo fmt --all` **before every commit**, not just once at the
-end of a feature. A one-line addition during a review pass can wrap
-longer than rustfmt's max-width and break CI's
-`cargo fmt --all --check`, even if the edit looked fine in your
-editor. The same applies to `cargo clippy --workspace --all-targets
--- -D warnings` and `cargo test --workspace` — the full verify
-chain runs **before every `git push`**, not just once at PR-open
-time.
-
-This applies *especially* to agent-driven review/fix passes (Codex,
-Sonnet, Pi self-review). Archon's `validate` node runs early in the
-workflow, before review fixes land. If a later node pushes a fix on
-top, that fix must re-validate locally — the orchestrator won't do
-it for you. CI will catch any drift and the PR fails red.
-
-## Things to avoid
-
-- **No local Docker workflows.** All containerized services run on the user's k8s cluster. Don't suggest `docker run` or `docker compose up`.
-- **Never `git add -A` or `git add .`** Stage files explicitly. Easy to accidentally include `.env` or other secrets.
-- **Never skip git hooks** (`--no-verify`, `--no-gpg-sign`). If a hook fails, fix the cause.
-- **No backwards-compatibility shims** for code that isn't yet in production. Just change the code.
-- **No premature abstractions.** Three similar lines is better than a generic helper used once.
-- **No comments that restate the code.** Comments explain *why*, not *what*. Default to none.
-- **No half-finished implementations.** If a function can't be completed in this PR, scope it out.
-
-## Spec discipline
-
-- The spec ([ARCHITECTURE.md](ARCHITECTURE.md)) is the source of truth for *what* Niles does.
-- When the spec is ambiguous, **fix the spec first** in a doc-only PR, then implement against the clarified version. Don't bake ambiguity into code.
-- Build status (which phase deliverables are done, in flight, blocked) is tracked in a local `ROADMAP.md` at the repo root. The file is gitignored — it's a working doc, not a public artifact — but it's auto-loaded by Claude Code when present. Update it as PRs land. If the file is missing, recreate it from the phase structure in ARCHITECTURE.md.
-
-## Pointers
-
-- [ARCHITECTURE.md](ARCHITECTURE.md) — full architectural spec (long, detailed)
-- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup and PR conventions for humans
-- [README.md](README.md) — human-facing intro
-- `ROADMAP.md` — local-only build status (gitignored; see "Spec discipline" above)
-- `CLAUDE.local.md` — local-only working notes (gitignored sibling to this file)
+The PWA installed on an iPhone keeps its old JavaScript after a deploy. Before debugging a UI error reported from the phone, ask for the app to be closed or hard-refreshed.

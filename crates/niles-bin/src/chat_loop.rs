@@ -52,6 +52,10 @@ pub(crate) const AUTOMATION_CHANGES: &[&str] = &[
 ];
 
 /// Internal helper that starts from an existing message history.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the tool-calling loop; its exits (done, hand-off, escalate) share the message history"
+)]
 pub(crate) async fn run_tool_calling_chat_with_messages(
     client: &dyn ChatProvider,
     registry: &ToolRegistry,

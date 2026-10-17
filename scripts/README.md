@@ -1,9 +1,4 @@
 # Developer scripts
 
-Helper scripts for common workflows. Populated as needs arise.
-
-Planned:
-
-- `dev-up` — bring up the local Compose stack for development
-- `flash-satellite` — convenience wrapper for flashing satellite firmware
-- `migrate-from-ha` — assist migration from Home Assistant
+- `check-skills.py` fails when `.agents/skills/` and `.claude/skills/` differ. CI runs it; see "Skills" in `AGENTS.md`.
+- `export-ecapa-onnx.py` exports the speaker-recognition model to ONNX, once, for a release.

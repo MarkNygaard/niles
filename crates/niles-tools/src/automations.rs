@@ -209,6 +209,10 @@ pub fn answer(said: &str) -> Option<bool> {
 }
 
 /// The rule as the model writes it — the same JSON the app sends.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the rule's JSON schema as one literal, so its shape reads in one place"
+)]
 fn rule_schema() -> Value {
     let device = json!({
         "type": "string",
@@ -403,6 +407,10 @@ fn lift_moment(rule: &mut AutomationRuleDto) {
 /// "office" as "offers", or a reading the device never reports.
 /// Checked here rather than in the store because the app may well save
 /// a rule for a device not yet paired.
+#[expect(
+    clippy::too_many_lines,
+    reason = "walks triggers, conditions and actions into shared lists, then checks each name against the registry"
+)]
 fn unknown(rule: &AutomationRuleDto, registry: &DeviceRegistry) -> Vec<String> {
     let mut devices: Vec<&str> = Vec::new();
     let mut rooms: Vec<&str> = Vec::new();

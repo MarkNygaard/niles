@@ -59,6 +59,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the startup sequence of `niles serve`; each step needs handles the ones before it made"
+)]
 pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Where the override document lives is deliberately *not* itself
     // overridable — it's how we find the overrides in the first place — so

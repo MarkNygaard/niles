@@ -241,6 +241,7 @@ impl Music {
     }
 
     /// Group `speakers` and play `choice` on them.
+    #[expect(clippy::too_many_lines, reason = "one arm per kind of thing to play")]
     pub async fn start_on(&self, speakers: &[String], choice: &Choice) -> Result<(), String> {
         let all = self.speakers.everywhere().await;
         let players: Vec<Player> = all
