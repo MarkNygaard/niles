@@ -38,9 +38,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `automations-any-device-action` | Any device that reports an action, such as a printer finishing, can start a rule, and the editor offers it | [#393](https://github.com/MarkNygaard/niles/pull/393) |
-| `automations-motion-groups` | A motion trigger or condition over several sensors or rooms: no motion in any of them for 2 minutes, or motion in one | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
-| `automations-rule-in-full` | A rule said a line at a time from the rule itself, shown with Save in the chat and used for the confirmation | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
-| `automations-save-warnings` | Saving or proposing a rule warns when a check after a wait could end it with nothing to try again | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `automations-motion-groups` | A motion trigger or condition over several sensors or rooms: no motion in any of them for 2 minutes, or motion in one | [#450](https://github.com/MarkNygaard/niles/pull/450) |
+| `automations-rule-in-full` | A rule said a line at a time from the rule itself, shown with Save in the chat and used for the confirmation | [#450](https://github.com/MarkNygaard/niles/pull/450) |
+| `automations-save-warnings` | Saving or proposing a rule warns when a check after a wait could end it with nothing to try again | [#450](https://github.com/MarkNygaard/niles/pull/450) |
 
 ### `automations-motion-groups` — example phrasings
 
