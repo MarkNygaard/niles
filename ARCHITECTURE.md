@@ -2602,7 +2602,7 @@ A photo or a PDF on a message, for "what's this plant" and "add what's on this r
 
 ### What is taken
 
-JPEG, PNG, WebP, GIF and PDF — decided by the file's first bytes, never by its name or what the part claims to be. A `.png` that is really a PDF is kept as a PDF; a `.jpg` that is really HTML is refused. Ten megabytes a file, five files a message. **HEIC is refused with what to change**: nothing in Niles decodes it, and the sentence names the iPhone setting (Camera → Formats → Most Compatible) or offers sharing the one photo as a JPEG, so no photo is silently lost and the way to a working upload is one sentence long.
+JPEG, PNG, WebP, GIF and PDF — decided by the file's first bytes, never by its name or what the part claims to be. A `.png` that is really a PDF is kept as a PDF; a `.jpg` that is really HTML is refused. Ten megabytes a file, five files a message. **HEIC is refused with what to change**: nothing in Niles decodes it, and the sentence names the iPhone setting (Camera → Formats → Most Compatible) or offers sharing the one photo as a JPEG, so no photo is silently lost and the way to a working upload is one sentence long. The app's picker does not list HEIC, so an iPhone converts the photos it picks to JPEG on the way out; the refusal is for a HEIC that arrives some other way, such as dragged in on a desktop.
 
 ### Sending
 

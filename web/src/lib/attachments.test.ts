@@ -117,9 +117,14 @@ describe("accept", () => {
 });
 
 describe("ACCEPT", () => {
-  it("offers photos and PDFs, including HEIC so an iPhone shows them", () => {
-    for (const t of ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "application/pdf"]) {
+  it("offers photos and PDFs", () => {
+    for (const t of ["image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf"]) {
       expect(ACCEPT).toContain(t);
     }
+  });
+
+  it("leaves HEIC out, so an iPhone hands over its photos as JPEG", () => {
+    expect(ACCEPT).not.toContain("heic");
+    expect(ACCEPT).not.toContain("heif");
   });
 });

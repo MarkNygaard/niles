@@ -338,12 +338,18 @@ describe("ChatView", () => {
       const { onSend } = renderChat();
       // dragEnter bubbles from the field to the conversation's outer
       // div, the drop zone.
-      fireEvent.dragEnter(field());
+      fireEvent.dragEnter(field(), { dataTransfer: { types: ["Files"] } });
       expect(screen.getByText("Drop a photo or a PDF here")).toBeInTheDocument();
       fireEvent.drop(field(), { dataTransfer: { files: [image()] } });
       expect(screen.queryByText("Drop a photo or a PDF here")).toBeNull();
       expect(screen.getByTestId("attachment-chips")).toHaveTextContent("plant.jpg");
       expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("shows no drop zone for text dragged out of a reply", () => {
+      renderChat();
+      fireEvent.dragEnter(field(), { dataTransfer: { types: ["text/plain"] } });
+      expect(screen.queryByText("Drop a photo or a PDF here")).toBeNull();
     });
 
     it("takes a file off the message by its chip's remove button", () => {

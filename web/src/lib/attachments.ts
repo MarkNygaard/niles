@@ -4,13 +4,14 @@
 
 export const MAX_FILES = 5;
 export const MAX_BYTES = 10 * 1024 * 1024;
-/** What the picker offers. HEIC and HEIF are listed so an iPhone shows
-    photos at all; the camera and the photo library come free with
-    `image/*` on iOS. A HEIC chosen on a desktop passes this check and
-    is refused by the server with the setting to change — the client
-    does not second-guess what the server can decode. */
-export const ACCEPT =
-  "image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,application/pdf";
+/** What the picker offers. HEIC is left out on purpose: an iPhone
+    converts a photo to a type the list names, so its photos arrive as
+    JPEG, which the server can read, rather than HEIC, which it cannot.
+    The photo library and the camera are still offered. A HEIC dropped
+    on a desktop passes `accept` below and is refused by the server with
+    the setting to change; the client does not second-guess what the
+    server can decode. */
+export const ACCEPT = "image/jpeg,image/png,image/webp,image/gif,application/pdf";
 
 /** What the accept list takes, by MIME type. */
 export function isImage(file: { type: string }): boolean {

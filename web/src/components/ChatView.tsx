@@ -194,6 +194,8 @@ export function ChatView({
     <div
       className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]"
       onDragEnter={(e) => {
+        // Only files: a word dragged out of a reply is not an upload.
+        if (!e.dataTransfer?.types.includes("Files")) return;
         // Without preventDefault the browser opens the file instead of
         // letting it be dropped here.
         e.preventDefault();
@@ -219,7 +221,8 @@ export function ChatView({
       {dragging && (
         // pointer-events-none: the overlay must not eat the drop that
         // dismisses it.
-        <div className="bg-background/90 border-primary pointer-events-none fixed inset-0 z-40 m-4 flex items-center justify-center rounded-2xl border-2 border-dashed">
+        // Over the chat's half alone while Niles's panel has the other.
+        <div className="bg-background/90 border-primary pointer-events-none fixed inset-0 z-40 m-4 flex items-center justify-center rounded-2xl border-2 border-dashed md:in-data-panel:right-1/2">
           <p className="text-muted-foreground text-sm">Drop a photo or a PDF here</p>
         </div>
       )}
