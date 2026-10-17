@@ -418,8 +418,7 @@ sockets and DNS (refused), `std::process`, threads.
 
 ## Coming later
 
-Not yet, and sketched in
-[ARCHITECTURE.md](../../ARCHITECTURE.md#the-interface):
+Not yet:
 
 - **WebSockets**, held by Niles, which reconnects them and delivers each
   message to a new export, for devices and services that push.

@@ -1,6 +1,6 @@
 [preamble]
 text = """
-Niles is an AI-first home-automation system for private homes. It listens to natural-language voice commands, dispatches them through a tiered intent router, and can escalate to an LLM when a request exceeds the deterministic tier. The feature catalog below tracks every user-observable capability shipped so far. For the full architecture spec see ARCHITECTURE.md.
+Niles is an AI-first home-automation system for private homes. It listens to natural-language voice commands, dispatches them through a tiered intent router, and can escalate to an LLM when a request exceeds the deterministic tier. The feature catalog below tracks every user-observable capability shipped so far. For the crate map, the house rules and the big decisions see ARCHITECTURE.md.
 """
 
 [[feature]]

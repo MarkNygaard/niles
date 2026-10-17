@@ -3,8 +3,7 @@
  *
  * The server keeps who gets what (crates/niles-webpush); this is the
  * device's half: whether it can be notified at all, asking the person,
- * and handing the subscription over. See ARCHITECTURE.md §
- * Notifications on your devices.
+ * and handing the subscription over.
  */
 import { api } from "@/lib/api";
 

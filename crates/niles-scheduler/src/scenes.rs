@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn save_drops_non_light_devices() {
         // Sensor-style device: only sensor fields set. Scenes are
-        // about lights (ARCHITECTURE.md:491), so it should be filtered
+        // about lights, so it should be filtered
         // by `DeviceClass`, not just by state fields.
         let store = SceneStore::new();
         let reg = DeviceRegistry::new();

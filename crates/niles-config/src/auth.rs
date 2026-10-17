@@ -1,8 +1,7 @@
 //! Who is allowed to use the web surface.
 //!
-//! See ARCHITECTURE.md § Signing in. The short of it: GitHub is the
-//! front door, not the boundary — accounts there are free, so "has a
-//! GitHub account" tests nothing. This list is the boundary, and it
+//! GitHub is the front door, not the boundary — accounts there are
+//! free, so "has a GitHub account" tests nothing. This list is the boundary, and it
 //! lives in config rather than a table so that adding somebody is an
 //! edit in Settings rather than a message, a token and a mail server.
 //!

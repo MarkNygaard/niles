@@ -1,5 +1,5 @@
-//! Each person's artifacts and every version of them. See
-//! ARCHITECTURE.md § Artifacts (per person).
+//! Each person's artifacts and every version of them. What an artifact
+//! is belongs to `niles-artifacts`.
 //!
 //! The content is JSONB, whose shape is the kind's business; it goes in
 //! and out as text, cast in the statement, because the pool's sqlx has

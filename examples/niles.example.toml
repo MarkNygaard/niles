@@ -149,8 +149,8 @@ bind_address = "0.0.0.0:10300"
 # devices = ["living_room/tv_light", "bedroom/shelf_strip"]
 
 [lighting]
-# Times are HH:MM in local wall-clock. See ARCHITECTURE.md for the
-# semantics of each phase.
+# Times are HH:MM in local wall-clock. What each phase does is in
+# crates/niles-scheduler/src/curve.rs.
 morning_start = "05:45"
 morning_end   = "06:30"
 sunset_start  = "21:30"

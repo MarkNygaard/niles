@@ -1,6 +1,6 @@
 //! Per-light manual-mode flag store backing the curve dispatcher's skip decision.
 //!
-//! Off→on transitions auto-clear the flag per `ARCHITECTURE.md`.
+//! Off→on transitions auto-clear the flag (ARCHITECTURE.md, House rules).
 
 use niles_core::{DeviceId, DeviceState, RoomName};
 use std::collections::{HashMap, HashSet};

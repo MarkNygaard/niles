@@ -1,5 +1,5 @@
-//! A person's own Strava, from their profile. See ARCHITECTURE.md §
-//! Training (per person).
+//! A person's own Strava, from their profile. Why Strava is in
+//! ARCHITECTURE.md's Operations notes.
 //!
 //! Each person brings their own Strava API app — a new app may only be
 //! used by the athlete who made it — and its Client ID and Secret are

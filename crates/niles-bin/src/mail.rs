@@ -1,6 +1,6 @@
 //! The mail tools: the speaker's own mail, read, and — where an account
 //! may send — written, but never sent without the person's yes in the
-//! app. See "Mail" and "Approvals" in ARCHITECTURE.md.
+//! app. See ARCHITECTURE.md's House rules.
 //!
 //! Whose mail comes from [`profile::SPEAKER`], as for calendars: never
 //! from an argument.

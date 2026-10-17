@@ -4,8 +4,8 @@
  * A page is HTML the assistant wrote once that draws the artifact's
  * data. The data stays the truth: Niles hands it to the page, and hands
  * it again whenever it changes, so a run marked on a plan redraws the
- * page without anyone writing it again. See ARCHITECTURE.md § Artifact
- * pages.
+ * page without anyone writing it again. The threat model, what was
+ * tested and what is left, is in ARCHITECTURE.md's Security notes.
  *
  * The page may have been written by a model that read a web page meant
  * to steer it, so the frame trusts it with nothing: no network, no

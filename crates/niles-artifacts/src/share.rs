@@ -1,5 +1,5 @@
 //! Sharing an artifact with someone else in the household, to read or
-//! to edit. See ARCHITECTURE.md § Artifacts (per person), Sharing.
+//! to edit.
 //!
 //! An artifact stays its owner's: shared, it is in the other person's
 //! Saved list as well, and their assistant can read it, or change it

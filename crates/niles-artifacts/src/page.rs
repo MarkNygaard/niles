@@ -7,7 +7,8 @@
 //! to Niles, an opaque origin), and hands it again whenever it changes,
 //! so a run Niles marks on a plan redraws the page without anyone
 //! writing it again. Voice, cards and notifications read the data and
-//! never the page. See ARCHITECTURE.md § Artifact pages.
+//! never the page. The threat model is in ARCHITECTURE.md's Security
+//! notes, and the frame in `web/src/lib/sandboxedPage.ts`.
 //!
 //! What is checked here is what helps the model get a page that works:
 //! a size, and nothing loaded from elsewhere, which the frame would
