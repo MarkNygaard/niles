@@ -224,6 +224,7 @@ pub(crate) async fn handle_transcript(
                     .approvals
                     .for_turn(&chat_log::person(Some(slug), ""), started),
                 artifacts: Vec::new(),
+                attachments: Vec::new(),
             };
             let (log, person) = (log.clone(), chat_log::person(Some(slug), ""));
             tokio::spawn(async move { log.record_spoken(&person, &turn).await });
@@ -257,42 +258,11 @@ pub(crate) async fn dispatch_tier1(
     speaker: &SpeakerContext,
 ) -> Option<String> {
     tracing::info!("[{peer}] dispatching to Tier 1 LLM: {text:?}");
-    let user_mem = ctx
-        .memory
-        .as_ref()
-        .map(|m| m.load(niles_memory::Target::User));
-    let agent_mem = ctx
-        .memory
-        .as_ref()
-        .map(|m| m.load(niles_memory::Target::Memory));
-    let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
-    let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
-    let skill_summaries = ctx.skill_store.as_ref().map(|s| s.list_summaries());
-    let system_prompt = assemble_system_prompt_with_optional_capabilities(
-        text,
-        &ctx.home,
-        ctx.capability_index.as_deref(),
-        ctx.capability_loader.as_deref(),
-        origin_room,
-        user_mem_str.as_deref(),
-        agent_mem_str.as_deref(),
-        skill_summaries.as_deref(),
-        speaker,
-    );
-    let mut system_prompt = system_prompt;
-    system_prompt.push_str(&now_playing_section(&ctx.music.now_playing().await));
-    // What the household wrote about a tool server's tools, with the
-    // tools themselves: where a coding task goes, which team is theirs.
-    for note in ctx.tools.notes_for(text) {
-        system_prompt.push_str("\n\n");
-        system_prompt.push_str(&note);
-    }
-    if !matches!(thread, conversation::Thread::Chat(_)) {
-        system_prompt.push_str(HEARD_NOT_READ);
-    }
+    let system_prompt = turn_system_prompt(ctx, text, origin_room, thread, speaker).await;
     if matches!(thread, conversation::Thread::Chat(_)) {
-        system_prompt.push_str(TYPED_IN_THE_APP);
-        if let Some(reply) = ask_assistant(ctx, peer, text, thread, speaker, &system_prompt).await {
+        if let Some(reply) =
+            ask_assistant(ctx, peer, text, thread, speaker, &system_prompt, &[]).await
+        {
             return Some(reply);
         }
     } else if let Some((_, proposals)) = ctx.automations.as_ref()
@@ -302,7 +272,9 @@ pub(crate) async fn dispatch_tier1(
         // fast model dropped "half an hour after" and left out the
         // trigger, and five turns went by before the rule was right.
         // Slower, but the satellite is kept waiting (`keep_waiting`).
-        if let Some(reply) = ask_assistant(ctx, peer, text, thread, speaker, &system_prompt).await {
+        if let Some(reply) =
+            ask_assistant(ctx, peer, text, thread, speaker, &system_prompt, &[]).await
+        {
             if follow_up::asks(&reply) {
                 proposals.discussed();
             }
@@ -350,7 +322,7 @@ pub(crate) async fn dispatch_tier1(
                 "[{peer}] the fast model reached for {tool}; \"{text}\" goes to the assistant"
             );
             if let Some(reply) =
-                ask_assistant(ctx, peer, text, thread, speaker, &system_prompt).await
+                ask_assistant(ctx, peer, text, thread, speaker, &system_prompt, &[]).await
             {
                 if follow_up::asks(&reply)
                     && let Some((_, proposals)) = ctx.automations.as_ref()
@@ -433,6 +405,86 @@ pub(crate) async fn dispatch_tier1(
         }
     }
 }
+
+/// The system prompt for one turn, the same for the fast model and
+/// for the assistant.
+async fn turn_system_prompt(
+    ctx: &DispatchCtx,
+    text: &str,
+    origin_room: Option<&RoomName>,
+    thread: &conversation::Thread,
+    speaker: &SpeakerContext,
+) -> String {
+    let user_mem = ctx
+        .memory
+        .as_ref()
+        .map(|m| m.load(niles_memory::Target::User));
+    let agent_mem = ctx
+        .memory
+        .as_ref()
+        .map(|m| m.load(niles_memory::Target::Memory));
+    let user_mem_str = user_mem.as_deref().and_then(join_memory_entries);
+    let agent_mem_str = agent_mem.as_deref().and_then(join_memory_entries);
+    let skill_summaries = ctx.skill_store.as_ref().map(|s| s.list_summaries());
+    let mut system_prompt = assemble_system_prompt_with_optional_capabilities(
+        text,
+        &ctx.home,
+        ctx.capability_index.as_deref(),
+        ctx.capability_loader.as_deref(),
+        origin_room,
+        user_mem_str.as_deref(),
+        agent_mem_str.as_deref(),
+        skill_summaries.as_deref(),
+        speaker,
+    );
+    system_prompt.push_str(&now_playing_section(&ctx.music.now_playing().await));
+    // What the household wrote about a tool server's tools, with the
+    // tools themselves: where a coding task goes, which team is theirs.
+    for note in ctx.tools.notes_for(text) {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&note);
+    }
+    if !matches!(thread, conversation::Thread::Chat(_)) {
+        system_prompt.push_str(HEARD_NOT_READ);
+    }
+    if matches!(thread, conversation::Thread::Chat(_)) {
+        system_prompt.push_str(TYPED_IN_THE_APP);
+    }
+    system_prompt
+}
+
+/// A typed turn that came with files.
+///
+/// Tier 0 cannot see a picture and the fast model cannot either, so
+/// there is no router and no fallback here: the assistant answers it
+/// or nobody does. `None` is "it could not", and why is on the note.
+pub(crate) async fn dispatch_attached(
+    ctx: &DispatchCtx,
+    peer: SocketAddr,
+    text: &str,
+    thread: &conversation::Thread,
+    speaker: &SpeakerContext,
+    attachments: &[assistant::Attached],
+) -> Option<String> {
+    let system_prompt = turn_system_prompt(ctx, text, None, thread, speaker).await;
+    // An empty message with files is a message: the run is asked to
+    // look at them. What the turn keeps as said stays exactly as typed.
+    let text = if text.is_empty() {
+        "Have a look at the attached file."
+    } else {
+        text
+    };
+    ask_assistant(
+        ctx,
+        peer,
+        text,
+        thread,
+        speaker,
+        &system_prompt,
+        attachments,
+    )
+    .await
+}
 /// The tools of every tool server the household left to the assistant,
 /// as they are offered now.
 pub(crate) fn handed_to_the_assistant(ctx: &DispatchCtx) -> Vec<String> {
@@ -478,6 +530,8 @@ pub(crate) fn assistant_on(ctx: &DispatchCtx) -> bool {
 /// `None` sends the turn on to `[llm]` as if there were no assistant: a
 /// subscription that has lapsed, a sign-in that has run out or a run
 /// that timed out costs the quality of the answer, not the answer.
+/// Callers with files must not let that happen: a fast model that
+/// cannot see a picture answering about it is worse than no answer.
 pub(crate) async fn ask_assistant(
     ctx: &DispatchCtx,
     peer: SocketAddr,
@@ -485,6 +539,7 @@ pub(crate) async fn ask_assistant(
     thread: &conversation::Thread,
     speaker: &SpeakerContext,
     system_prompt: &str,
+    attachments: &[assistant::Attached],
 ) -> Option<String> {
     let assistant = ctx.assistant.as_ref()?;
     // Read per turn: switching it on in the app takes hold with the next
@@ -515,8 +570,9 @@ pub(crate) async fn ask_assistant(
     {
         system_prompt.push_str(artifacts::PROMPT);
     }
+    system_prompt.push_str(&assistant::attachments_section(attachments));
     match assistant
-        .answer(&chosen, &system_prompt, &history, text, slug)
+        .answer(&chosen, &system_prompt, &history, text, slug, attachments)
         .await
     {
         Ok(reply) => {

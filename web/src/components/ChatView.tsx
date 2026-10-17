@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, LoaderCircle, Mic, Square, SquarePen, TriangleAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowUp,
+  FileText,
+  LoaderCircle,
+  Mic,
+  Paperclip,
+  Square,
+  SquarePen,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ArtifactCard } from "@/components/ArtifactCard";
 import { PushNudge } from "@/components/PushNudge";
@@ -8,7 +18,9 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { dictationSupported, useDictation } from "@/hooks/useDictation";
-import type { AssistantId, Decision, Turn } from "@/lib/api";
+import { ACCEPT, accept, filesFrom, isImage, readable } from "@/lib/attachments";
+import type { AssistantId, Attachment, Decision, Turn } from "@/lib/api";
+import { chatAttachmentUrl } from "@/lib/api";
 import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
 
@@ -27,8 +39,12 @@ export interface ChatViewProps {
   loading?: boolean;
   /** Sent and not answered yet. */
   pending?: string;
+  /** The files of the message on its way, for its bubble. */
+  pendingAttachments?: File[];
+  /** The conversation on screen; its attachments are fetched from it. */
+  conversationId?: number | null;
   error?: string;
-  onSend: (text: string) => void;
+  onSend: (text: string, files: File[]) => void;
   /** Leave this conversation for an empty one. */
   onNew: () => void;
   /** Open Niles's panel, which holds the past conversations, or close it. */
@@ -62,6 +78,8 @@ export function ChatView({
   turns,
   loading,
   pending,
+  pendingAttachments,
+  conversationId,
   error,
   onSend,
   onNew,
@@ -77,6 +95,29 @@ export function ChatView({
   working,
 }: ChatViewProps) {
   const [draft, setDraft] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [fileError, setFileError] = useState<string>();
+  const [dragging, setDragging] = useState(false);
+  // A counter, not a boolean: dragging over a child fires leave+enter
+  // on the way through, and only zero really means left.
+  const dragDepth = useRef(0);
+  const picker = useRef<HTMLInputElement>(null);
+  const add = (chosen: File[]) => {
+    const { files: next, error } = accept(chosen, files);
+    setFiles(next);
+    setFileError(error);
+  };
+  // Object URLs for the chips' thumbnails: made with the list and
+  // revoked with it, so nothing leaks. jsdom has no createObjectURL:
+  // no thumbnails there, and the chips show the file icon instead.
+  const previews = useMemo(() => {
+    if (typeof URL.createObjectURL !== "function") return [];
+    return files.filter(isImage).map((f) => [f, URL.createObjectURL(f)] as const);
+  }, [files]);
+  useEffect(
+    () => () => previews.forEach(([, url]) => URL.revokeObjectURL(url)),
+    [previews],
+  );
   const [transcribing, setTranscribing] = useState(false);
   const [dictationError, setDictationError] = useState<string>();
   const dictation = useDictation(async (audio) => {
@@ -137,9 +178,12 @@ export function ChatView({
 
   const send = (text: string) => {
     const message = text.trim();
-    if (!message || busy) return;
-    onSend(message);
+    // A file on its own is a message; the field may be empty then.
+    if ((!message && files.length === 0) || busy) return;
+    onSend(message, files);
     setDraft("");
+    setFiles([]);
+    setFileError(undefined);
   };
 
   return (
@@ -147,7 +191,38 @@ export function ChatView({
     // at its bottom: page padding (see App) is 0.25rem on a phone and
     // 1.5rem from `sm`, the header 2.25rem, the gap under it 0.5rem on a
     // phone and 1rem from `sm`.
-    <div className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]">
+    <div
+      className="flex min-h-[calc(100dvh-env(safe-area-inset-top)-3rem)] flex-col gap-4 sm:min-h-[calc(100dvh-env(safe-area-inset-top)-4.75rem)]"
+      onDragEnter={(e) => {
+        // Without preventDefault the browser opens the file instead of
+        // letting it be dropped here.
+        e.preventDefault();
+        dragDepth.current += 1;
+        setDragging(true);
+      }}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragging(false);
+        // Everything dropped goes to accept, which keeps the good and
+        // refuses the rest in a sentence: a .txt drop is told why, not
+        // ignored. Paste goes through filesFrom instead, where a plain
+        // text paste must keep working untouched.
+        add(Array.from(e.dataTransfer?.files ?? []));
+      }}
+    >
+      {dragging && (
+        // pointer-events-none: the overlay must not eat the drop that
+        // dismisses it.
+        <div className="bg-background/90 border-primary pointer-events-none fixed inset-0 z-40 m-4 flex items-center justify-center rounded-2xl border-2 border-dashed">
+          <p className="text-muted-foreground text-sm">Drop a photo or a PDF here</p>
+        </div>
+      )}
       {/* Niles at the head of the conversation, the way a messages app
           puts the other person there; tapping the face opens what it
           keeps. New chat stays out here as well, for the one thing done
@@ -197,6 +272,9 @@ export function ChatView({
           <li key={i} className="flex flex-col gap-3">
             {/* Nothing said is Niles speaking first: a job that was
                 asked for earlier, finished. */}
+            {conversationId != null && turn.attachments?.length ? (
+              <Attachments conversation={conversationId} items={turn.attachments} />
+            ) : null}
             {turn.said && <Bubble from="you">{turn.said}</Bubble>}
             {turn.via === "voice" && <Spoken room={turn.room} />}
             <Bubble from="niles">{turn.reply}</Bubble>
@@ -257,6 +335,9 @@ export function ChatView({
         ))}
         {busy && (
           <li className="flex flex-col gap-3">
+            {pendingAttachments && pendingAttachments.length > 0 && (
+              <PendingAttachments files={pendingAttachments} />
+            )}
             <Bubble from="you">{pending}</Bubble>
             <Bubble from="niles">
               <span className="text-muted-foreground" aria-label="Niles is answering">
@@ -296,75 +377,128 @@ export function ChatView({
           "sm:bottom-0 sm:pb-[env(safe-area-inset-bottom)]",
         )}
       >
-        <div className="mx-auto flex w-full max-w-5xl items-end gap-2 px-4 py-2 sm:px-6">
-        <Textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onFocus={() => {
-            document.documentElement.dataset.typing = "";
-            // Start from the newest message, so the end of the
-            // conversation is what the keyboard's lift keeps in view.
-            const root = document.getElementById("root");
-            root?.scrollTo?.({ top: root.scrollHeight });
-          }}
-          onBlur={() => delete document.documentElement.dataset.typing}
-          onKeyDown={(e) => {
-            // Enter sends, as in every chat; Shift+Enter is a new line.
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              send(draft);
-            }
-          }}
-          rows={1}
-          placeholder={
-            dictation.recording ? "Listening…" : transcribing ? "Writing it down…" : "Message Niles"
-          }
-          aria-label="Message Niles"
-          className="max-h-40 min-h-10 resize-none"
-        />
-        {/* The microphone where Send would be while there is nothing to
-            send, the way a phone's messages app does it. */}
-        {canDictate && dictation.recording ? (
-          <Button
-            type="button"
-            size="icon-lg"
-            variant="destructive"
-            aria-label="Stop dictating"
-            onClick={dictation.stop}
-            onMouseDown={(e) => e.preventDefault()}
-            className="rounded-full"
-          >
-            <Square className="fill-current" />
-          </Button>
-        ) : canDictate && (transcribing || !draft.trim()) ? (
-          <Button
-            type="button"
-            size="icon-lg"
-            variant="secondary"
-            aria-label="Dictate"
-            onClick={dictation.start}
-            onMouseDown={(e) => e.preventDefault()}
-            disabled={transcribing}
-            className="rounded-full"
-          >
-            {transcribing ? <LoaderCircle className="animate-spin" /> : <Mic />}
-          </Button>
-        ) : (
-          <Button
-            type="submit"
-            size="icon-lg"
-            aria-label="Send"
-            disabled={!draft.trim() || busy}
-            // Sending keeps the keyboard up for the next message, and a
-            // tap that blurred the field first would drop the composer
-            // out from under the finger.
-            onMouseDown={(e) => e.preventDefault()}
-            className="rounded-full"
-          >
-            <ArrowUp />
-          </Button>
+        {/* The files about to go, each removable: above the field the
+            way a messages app shows what is attached. */}
+        {files.length > 0 && (
+          <AttachmentChips
+            files={files}
+            previews={previews}
+            onRemove={(file) => {
+              setFiles(files.filter((f) => f !== file));
+              setFileError(undefined);
+            }}
+          />
         )}
+        <div className="mx-auto flex w-full max-w-5xl items-end gap-2 px-4 py-2 sm:px-6">
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            accept={ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              add(Array.from(e.target.files ?? []));
+              // The same file may be picked twice in a row.
+              e.target.value = "";
+            }}
+          />
+          {/* On iOS this offers Photo Library, Take Photo and Choose
+              File; the camera and the library come free with the
+              image types in its accept list. */}
+          <Button
+            type="button"
+            size="icon-lg"
+            variant="ghost"
+            aria-label="Attach a file"
+            onClick={() => picker.current?.click()}
+            onMouseDown={(e) => e.preventDefault()}
+            className="rounded-full"
+          >
+            <Paperclip />
+          </Button>
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onFocus={() => {
+              document.documentElement.dataset.typing = "";
+              // Start from the newest message, so the end of the
+              // conversation is what the keyboard's lift keeps in view.
+              const root = document.getElementById("root");
+              root?.scrollTo?.({ top: root.scrollHeight });
+            }}
+            onBlur={() => delete document.documentElement.dataset.typing}
+            onPaste={(e) => {
+              // Only when there are files: a plain text paste must keep
+              // working.
+              const pasted = filesFrom(e.clipboardData);
+              if (pasted.length) {
+                e.preventDefault();
+                add(pasted);
+              }
+            }}
+            onKeyDown={(e) => {
+              // Enter sends, as in every chat; Shift+Enter is a new line.
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                send(draft);
+              }
+            }}
+            rows={1}
+            placeholder={
+              dictation.recording
+                ? "Listening…"
+                : transcribing
+                  ? "Writing it down…"
+                  : "Message Niles"
+            }
+            aria-label="Message Niles"
+            className="max-h-40 min-h-10 resize-none"
+          />
+          {/* The microphone where Send would be while there is nothing
+              to send, the way a phone's messages app does it. A file
+              counts as something to send. */}
+          {canDictate && dictation.recording ? (
+            <Button
+              type="button"
+              size="icon-lg"
+              variant="destructive"
+              aria-label="Stop dictating"
+              onClick={dictation.stop}
+              onMouseDown={(e) => e.preventDefault()}
+              className="rounded-full"
+            >
+              <Square className="fill-current" />
+            </Button>
+          ) : canDictate && (transcribing || (!draft.trim() && files.length === 0)) ? (
+            <Button
+              type="button"
+              size="icon-lg"
+              variant="secondary"
+              aria-label="Dictate"
+              onClick={dictation.start}
+              onMouseDown={(e) => e.preventDefault()}
+              disabled={transcribing}
+              className="rounded-full"
+            >
+              {transcribing ? <LoaderCircle className="animate-spin" /> : <Mic />}
+            </Button>
+          ) : (
+            <Button
+              type="submit"
+              size="icon-lg"
+              aria-label="Send"
+              disabled={(!draft.trim() && files.length === 0) || busy}
+              // Sending keeps the keyboard up for the next message, and a
+              // tap that blurred the field first would drop the composer
+              // out from under the finger.
+              onMouseDown={(e) => e.preventDefault()}
+              className="rounded-full"
+            >
+              <ArrowUp />
+            </Button>
+          )}
         </div>
+        {fileError && <p className="text-destructive px-1 pb-1 text-sm">{fileError}</p>}
       </form>
       {/* Room at the end for what is pinned over it — the composer, and
           below that the tab bar — so the last message scrolls clear of
@@ -420,6 +554,103 @@ function Bubble({ from, children }: { from: "you" | "niles"; children: React.Rea
       )}
     >
       {children}
+    </div>
+  );
+}
+
+/** The files on one turn, above the message: a thumbnail per picture,
+    a chip opening a PDF in its own tab. Never an iframe or an embed:
+    a PDF is only ever opened on its own, where the sandbox policy
+    cannot stop it — but that page is never Niles's. */
+function Attachments({ conversation, items }: { conversation: number; items: Attachment[] }) {
+  return (
+    <div className="flex flex-wrap justify-end gap-1.5 self-end">
+      {items.map((a) =>
+        a.kind === "image" ? (
+          <img
+            key={a.id}
+            src={chatAttachmentUrl(conversation, a.id)}
+            alt={a.name}
+            width={a.width}
+            height={a.height}
+            loading="lazy"
+            className="max-h-48 rounded-xl"
+          />
+        ) : (
+          <a
+            key={a.id}
+            href={chatAttachmentUrl(conversation, a.id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="bg-card flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm"
+          >
+            <FileText className="size-4" aria-hidden />
+            <span className="max-w-32 truncate">{a.name}</span>
+          </a>
+        ),
+      )}
+    </div>
+  );
+}
+
+/** The chips of the message on its way: the files just sent, by their
+    own object URLs, so a just-sent photo does not vanish between the
+    bubble going up and the refetch landing. */
+function PendingAttachments({ files }: { files: File[] }) {
+  const previews = useMemo(() => {
+    if (typeof URL.createObjectURL !== "function") return [];
+    return files.filter(isImage).map((f) => [f, URL.createObjectURL(f)] as const);
+  }, [files]);
+  useEffect(
+    () => () => previews.forEach(([, url]) => URL.revokeObjectURL(url)),
+    [previews],
+  );
+  return <AttachmentChips files={files} previews={previews} />;
+}
+
+/** A row of the chosen files: a thumbnail when there is one, the name
+    (truncated), its size, and a way to take it off the message. */
+function AttachmentChips({
+  files,
+  previews,
+  onRemove,
+}: {
+  files: File[];
+  previews: readonly (readonly [File, string])[];
+  onRemove?: (file: File) => void;
+}) {
+  return (
+    <div
+      className="flex flex-wrap justify-end gap-1.5 px-4 sm:px-6"
+      data-testid="attachment-chips"
+    >
+      {files.map((file) => {
+        const url = previews.find(([f]) => f === file)?.[1];
+        return (
+          <span
+            key={`${file.name}-${file.size}-${file.lastModified}`}
+            className="bg-card inline-flex items-center gap-1.5 rounded-full py-1 pr-1 pl-2 text-sm"
+          >
+            {url ? (
+              <img src={url} alt="" className="size-10 rounded-md object-cover" />
+            ) : (
+              <FileText className="text-muted-foreground size-5" aria-hidden />
+            )}
+            <span className="max-w-32 truncate">{file.name}</span>
+            <span className="text-muted-foreground shrink-0">{readable(file.size)}</span>
+            {onRemove && (
+              <button
+                type="button"
+                aria-label={`Remove ${file.name}`}
+                onClick={() => onRemove(file)}
+                className="rounded-full p-1 transition-colors hover:bg-muted"
+              >
+                <X className="size-4" aria-hidden />
+              </button>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }

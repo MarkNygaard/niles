@@ -125,12 +125,27 @@ impl niles_api::chat::Chat for AppChat {
         who: &str,
         speaker: Option<&str>,
         text: &str,
+        attachments: Vec<niles_api::chat::Upload>,
         into: niles_api::chat::Where,
     ) -> Result<niles_api::chat::Reply, String> {
         let ctx = self
             .ctx
             .get()
             .ok_or_else(|| "Niles is still starting; try again in a moment".to_string())?;
+        // Both checks before anything is stored, so a refusal costs
+        // nothing and leaves nothing behind.
+        if !attachments.is_empty() {
+            if !crate::dispatch::assistant_on(ctx) {
+                return Err(
+                    "Niles needs Claude or ChatGPT to look at a file. Turn one on in \
+                     Settings → Voice & AI."
+                        .into(),
+                );
+            }
+            if ctx.chat_log.is_none() {
+                return Err("Niles has no database here, so it cannot keep a file.".into());
+            }
+        }
         let thread = conversation::Thread::Chat(who.to_string());
         let person = chat_log::person(speaker, who);
         // The conversation picked up is the context, every turn of it,
@@ -170,6 +185,31 @@ impl niles_api::chat::Chat for AppChat {
             satellite: None,
             conversation: target,
         };
+        // Kept before dispatch: the files are the person's from the
+        // moment they are stored, and bound to their turn once the
+        // turn is kept. A store failure returns its own reason;
+        // earlier rows stay unbound and are swept within a day.
+        let mut kept_ids = Vec::new();
+        let mut metas = Vec::new();
+        let mut attached = Vec::new();
+        for (n, upload) in attachments.iter().enumerate() {
+            let log = ctx.chat_log.as_ref().expect("checked above");
+            let id = log.attach(&person, upload).await?;
+            kept_ids.push(id);
+            metas.push(niles_api::chat::Attachment {
+                id,
+                kind: upload.kind,
+                name: upload.name.clone(),
+                size: upload.bytes.len(),
+                width: upload.width,
+                height: upload.height,
+            });
+            attached.push(crate::assistant::Attached {
+                name: upload.name.clone(),
+                file: crate::assistant::file_name(n + 1, &upload.mime),
+                bytes: Arc::new(upload.bytes.clone()),
+            });
+        }
         let (reply, note) = CHAT_NOTE
             .scope(std::cell::RefCell::default(), async {
                 // And the training tools read whoever is signed in, voice
@@ -179,16 +219,37 @@ impl niles_api::chat::Chat for AppChat {
                         person.clone(),
                         profile::SPEAKER.scope(
                             slug,
-                            approvals::ASKER.scope(
-                                asker,
-                                dispatch_text(ctx, APP_PEER, text, &thread, &known, None, true),
-                            ),
+                            approvals::ASKER.scope(asker, async {
+                                if attached.is_empty() {
+                                    dispatch_text(ctx, APP_PEER, text, &thread, &known, None, true)
+                                        .await
+                                } else {
+                                    // Files bypass the router and
+                                    // the fast model entirely: only
+                                    // the assistant can see them.
+                                    crate::dispatch::dispatch_attached(
+                                        ctx, APP_PEER, text, &thread, &known, &attached,
+                                    )
+                                    .await
+                                }
+                            }),
                         ),
                     )
                     .await;
                 (reply, CHAT_NOTE.with(|note| note.take()))
             })
             .await;
+        // A turn with files that nobody answered is an error, not a
+        // "Done.": nothing is recorded, so the person keeps their chips
+        // and can try again.
+        if !attached.is_empty() && reply.is_none() {
+            return Err(match note.fallback {
+                Some((_, why)) => why,
+                None => "Claude or ChatGPT could not answer, and Niles's own model \
+                         cannot see a file."
+                    .to_string(),
+            });
+        }
         let via = note.via;
         // Nothing to say is how a spoken turn ends when the action was
         // the answer. On a screen that looks like being ignored.
@@ -214,6 +275,7 @@ impl niles_api::chat::Chat for AppChat {
                         Some(artifacts) => artifacts.for_turn(&person, started).await,
                         None => Vec::new(),
                     },
+                    attachments: metas.clone(),
                 };
                 let kept = log
                     .record(&person, target, &turn)
@@ -228,6 +290,12 @@ impl niles_api::chat::Chat for AppChat {
                 if let (Some(artifacts), Some(id)) = (&ctx.artifacts, kept) {
                     artifacts.placed(&person, started, id).await;
                 }
+                if !kept_ids.is_empty()
+                    && let (Some(log), Some(id)) = (&ctx.chat_log, kept)
+                    && let Err(e) = log.bind(&person, &kept_ids, id).await
+                {
+                    tracing::warn!("[chat-log] a turn's files were not tied to it: {e}");
+                }
                 kept
             }
             None => None,
@@ -238,7 +306,23 @@ impl niles_api::chat::Chat for AppChat {
             fallback: note.fallback.as_ref().map(|(_, why)| why.clone()),
             fallback_from: note.fallback.map(|(from, _)| from.to_string()),
             conversation_id,
+            attachments: metas,
         })
+    }
+
+    async fn attachment(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        conversation: i64,
+        id: i64,
+    ) -> Option<niles_api::chat::Served> {
+        let ctx = self.ctx.get()?;
+        let log = ctx.chat_log.as_ref()?;
+        log.attachment(&chat_log::person(speaker, who), conversation, id)
+            .await
+            .ok()
+            .flatten()
     }
 
     async fn conversations(
@@ -358,6 +442,7 @@ impl niles_api::chat::Chat for AppChat {
             proposal: None,
             approval: None,
             artifacts: Vec::new(),
+            attachments: Vec::new(),
         };
         if let Err(e) = log.record(&person, Some(id), &answered).await {
             tracing::warn!("[chat-log] the answer was not kept: {e}");
@@ -422,6 +507,7 @@ impl niles_api::chat::Chat for AppChat {
             proposal: None,
             approval: None,
             artifacts: Vec::new(),
+            attachments: Vec::new(),
         };
         if let Err(e) = log.record(&person, Some(id), &answered).await {
             tracing::warn!("[chat-log] the answer was not kept: {e}");

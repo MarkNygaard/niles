@@ -101,9 +101,12 @@ export function ChatPage() {
   >({});
 
   const send = useMutation({
-    mutationFn: ({ text, to }: { text: string; to: number | null }) =>
-      api.sendChat(text, to === null ? { new: true } : { conversation_id: to }),
-    onSuccess: ({ reply, via, fallback, fallback_from, conversation_id }, { text: said, to }) => {
+    mutationFn: ({ text, files, to }: { text: string; files: File[]; to: number | null }) =>
+      api.sendChat(text, to === null ? { new: true } : { conversation_id: to }, files),
+    onSuccess: (
+      { reply, via, fallback, fallback_from, conversation_id, attachments },
+      { text: said, to },
+    ) => {
       const now = new Date().toISOString();
       const turn = {
         at: now,
@@ -113,6 +116,7 @@ export function ChatPage() {
         room: null,
         by: via ?? null,
         proposal: null,
+        attachments: attachments ?? [],
       } as const;
       // In place at once, so the message does not drop out between the
       // pending bubble going and the refetch landing.
@@ -276,13 +280,17 @@ export function ChatPage() {
         turns={turns}
         loading={current !== null && conversation.isLoading}
         pending={send.isPending && send.variables.to === current ? send.variables.text : undefined}
+        pendingAttachments={
+          send.isPending && send.variables.to === current ? send.variables.files : undefined
+        }
+        conversationId={current}
         error={
           send.error?.message ??
           answer.error?.message ??
           decide.error?.message ??
           conversation.error?.message
         }
-        onSend={(text) => send.mutate({ text, to: current })}
+        onSend={(text, files) => send.mutate({ text, files, to: current })}
         onNew={startNew}
         onOpenPanel={() => setPanelOpen((open) => !open)}
         avatarRef={avatar}

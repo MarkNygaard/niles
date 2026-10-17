@@ -41,7 +41,12 @@ pub fn router(state: AppState) -> Router {
             "/scenes/{name}",
             post(crate::scenes::apply_scene).delete(crate::scenes::delete_scene),
         )
-        .route("/chat", post(crate::chat::send))
+        .route(
+            "/chat",
+            post(crate::chat::send).layer(axum::extract::DefaultBodyLimit::max(
+                crate::chat_attachments::MAX_CHAT_BODY,
+            )),
+        )
         .route("/chat/conversations", get(crate::chat::conversations))
         .route(
             "/chat/conversations/{id}",
@@ -54,6 +59,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/chat/conversations/{id}/approvals/{approval}",
             post(crate::chat::decide),
+        )
+        .route(
+            "/chat/conversations/{id}/attachments/{a}",
+            get(crate::chat_attachments::serve),
         )
         .route(
             "/chat/dictation",

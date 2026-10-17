@@ -132,6 +132,62 @@ impl ChatLog {
         self.table.delete(person, id).await
     }
 
+    /// Keep one uploaded file, owned by `person` from the moment it is
+    /// stored. Answers the row id; `bind` ties it to its turn later.
+    pub(crate) async fn attach(
+        &self,
+        person: &str,
+        upload: &niles_api::chat::Upload,
+    ) -> Result<i64, String> {
+        self.table
+            .attach(
+                person,
+                upload.kind.as_str(),
+                &upload.mime,
+                &upload.name,
+                &upload.bytes,
+                match (upload.width, upload.height) {
+                    (Some(w), Some(h)) => match (i32::try_from(w), i32::try_from(h)) {
+                        (Ok(w), Ok(h)) => Some((w, h)),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+            )
+            .await
+    }
+
+    /// Tie stored files to the conversation's most recent turn.
+    pub(crate) async fn bind(
+        &self,
+        person: &str,
+        ids: &[i64],
+        conversation: i64,
+    ) -> Result<(), String> {
+        self.table.bind(person, ids, conversation).await
+    }
+
+    /// One attachment's bytes, when it is the person's, in that
+    /// conversation. An unknown kind in the row is "no such
+    /// attachment": Niles only ever writes the two it knows.
+    pub(crate) async fn attachment(
+        &self,
+        person: &str,
+        conversation: i64,
+        id: i64,
+    ) -> Result<Option<niles_api::chat::Served>, String> {
+        let row = self.table.attachment(person, conversation, id).await?;
+        Ok(row.and_then(|r| {
+            let kind = niles_api::chat::AttachmentKind::parse(&r.kind)?;
+            Some(niles_api::chat::Served {
+                kind,
+                mime: r.mime,
+                name: r.name,
+                bytes: r.bytes,
+            })
+        }))
+    }
+
     /// Put an answered card back where it was asked, saying what became
     /// of it.
     pub(crate) async fn update_approval(

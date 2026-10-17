@@ -395,6 +395,35 @@ describe("ChatPage", () => {
     expect(screen.getByText("Only you, Sir.")).toBeInTheDocument();
   });
 
+  it("sends the files with the message and shows them on the turn at once", async () => {
+    const conversations: Record<number, Conversation> = {};
+    show([MILK], conversations);
+    const kept = { id: 3, kind: "image" as const, name: "plant.jpg", size: 8 };
+    const send = vi.spyOn(api, "sendChat").mockImplementation(async (text, _target, files) => {
+      void files;
+      const old = conversations[47] ?? conversationOf(summary(47, text), []);
+      conversations[47] = {
+        ...old,
+        turns: [...old.turns, turn(text, "A fern.", { attachments: [kept] })],
+      };
+      return { reply: "A fern.", conversation_id: 47, attachments: [kept], via: undefined };
+    });
+    await screen.findByRole("button", { name: "Open Niles" });
+
+    const file = new File([new Uint8Array(8)], "plant.jpg", { type: "image/jpeg" });
+    fireEvent.drop(field(), { dataTransfer: { files: [file] } });
+    fireEvent.keyDown(field(), { key: "Enter" });
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toBe("");
+    expect(send.mock.calls[0][1]).toEqual({ new: true });
+    expect(send.mock.calls[0][2]).toEqual([file]);
+    // The optimistic turn carries what the reply returned, so the
+    // photo is there before the refetch lands.
+    const img = await screen.findByRole("img", { name: "plant.jpg" });
+    expect(img).toHaveAttribute("src", "/chat/conversations/47/attachments/3");
+  });
+
   it("sends the next message to the conversation the last one landed in", async () => {
     const conversations: Record<number, Conversation> = {};
     show([], conversations);

@@ -97,22 +97,42 @@ pub(crate) async fn run(
     turn_token: &str,
     system_prompt: &str,
     prompt: &str,
+    attachments: &[crate::assistant::Attached],
 ) -> anyhow::Result<String> {
     let sign_in = fresh_sign_in(secrets).await?;
     let home = pi_home()?;
     write_auth(&home, &sign_in)?;
     let extension = extension()?;
+    let staged = if attachments.is_empty() {
+        None
+    } else {
+        Some(crate::assistant::stage(&home.join("work"), attachments)?)
+    };
+    let cwd = staged
+        .as_ref()
+        .map_or_else(|| home.join("work"), |s| s.dir.clone());
 
     let mut command = tokio::process::Command::new("pi");
     command
-        .args(arguments(&run, &extension, system_prompt))
+        .args(arguments(
+            &run,
+            &extension,
+            system_prompt,
+            &staged.as_ref().map_or_else(Vec::new, |s| {
+                attachments
+                    .iter()
+                    .map(|a| s.dir.join(&a.file))
+                    .collect::<Vec<_>>()
+            }),
+        ))
         .env_clear()
         .envs(environment(&home, mcp_url, turn_token, |key| {
             std::env::var(key).ok()
         }))
         // An empty directory, so there is no AGENTS.md or project
-        // settings for it to pick up.
-        .current_dir(home.join("work"))
+        // settings for it to pick up — or, with files attached, the
+        // staging directory holding exactly those files.
+        .current_dir(&cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -132,6 +152,8 @@ pub(crate) async fn run(
     })
     .await
     .map_err(|_| anyhow!("no answer within {}s", run.timeout.as_secs()))??;
+    // `staged` drops here, after the run has ended, taking the
+    // directory and its files with it.
 
     parse_events(&output.stdout, &output.stderr, output.status.code())
 }
@@ -263,7 +285,12 @@ fn extension() -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow!("pi's Niles extension is missing from {EXTENSION}"))
 }
 
-fn arguments(run: &Run<'_>, extension: &Path, system_prompt: &str) -> Vec<String> {
+fn arguments(
+    run: &Run<'_>,
+    extension: &Path,
+    system_prompt: &str,
+    paths: &[PathBuf],
+) -> Vec<String> {
     let mut args: Vec<String> = [
         // Nothing found lying around: no extensions, skills, prompt
         // templates or AGENTS.md but what is named here, and no session
@@ -293,8 +320,17 @@ fn arguments(run: &Run<'_>, extension: &Path, system_prompt: &str) -> Vec<String
     if let Some(level) = run.thinking {
         args.extend(["--thinking".to_string(), level.to_string()]);
     }
-    // Last, with nothing after it: the message comes on stdin.
+    // Last, with nothing after it: the message comes on stdin. A
+    // staged attachment is the one exception — pi reads an argument
+    // starting with `@` as a file to attach, which is exactly how a
+    // file reaches it. That is also exactly why the person's words
+    // still never become an argument. `read` stays excluded above:
+    // an `@` argument is the CLI attaching a file, not pi reading
+    // one.
     args.push("-p".into());
+    for path in paths {
+        args.push(format!("@{}", path.display()));
+    }
     args
 }
 
@@ -416,6 +452,7 @@ mod tests {
             &Run::chat(&cfg),
             Path::new("/usr/local/lib/niles/pi/niles.ts"),
             "You are Niles.",
+            &[],
         );
         assert!(args.contains(&"--no-builtin-tools".to_string()), "{args:?}");
         let excluded: Vec<&str> = after(&args, "--exclude-tools").split(',').collect();
@@ -440,7 +477,7 @@ mod tests {
     #[test]
     fn the_chat_runs_the_chosen_model_without_extra_thinking() {
         let cfg = cfg();
-        let args = arguments(&Run::chat(&cfg), Path::new("x.ts"), "You are Niles.");
+        let args = arguments(&Run::chat(&cfg), Path::new("x.ts"), "You are Niles.", &[]);
         assert_eq!(after(&args, "--model"), "openai-codex/gpt-5.6-terra");
         assert_eq!(after(&args, "--mode"), "json");
         assert_eq!(after(&args, "--system-prompt"), "You are Niles.");
@@ -449,7 +486,7 @@ mod tests {
 
     #[test]
     fn the_background_gets_the_most_capable_model_and_time_to_think() {
-        let args = arguments(&Run::background(), Path::new("x.ts"), "s");
+        let args = arguments(&Run::background(), Path::new("x.ts"), "s", &[]);
         assert_eq!(after(&args, "--model"), "openai-codex/gpt-6-astra");
         assert_eq!(after(&args, "--thinking"), "medium");
     }
@@ -457,9 +494,31 @@ mod tests {
     #[test]
     fn the_message_is_never_an_argument() {
         // pi takes an argument starting with "@" as a file to attach.
-        let args = arguments(&Run::background(), Path::new("x.ts"), "s");
+        let args = arguments(&Run::background(), Path::new("x.ts"), "s", &[]);
         assert_eq!(args.last().map(String::as_str), Some("-p"));
         assert!(!args.iter().any(|a| a.starts_with('@')), "{args:?}");
+    }
+
+    #[test]
+    fn attachments_are_the_only_arguments_and_read_stays_out() {
+        // With files, every argument after `-p` is one of the staged
+        // paths, and none holds the message.
+        let paths: Vec<PathBuf> = ["/tmp/stage/a1.jpg", "/tmp/stage/a2.pdf"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let args = arguments(&Run::background(), Path::new("x.ts"), "s", &paths);
+        let p = args.iter().position(|a| a == "-p").unwrap();
+        let rest = &args[p + 1..];
+        assert_eq!(rest.len(), 2, "{args:?}");
+        for (arg, path) in rest.iter().zip(paths.iter()) {
+            assert_eq!(arg, &format!("@{}", path.display()));
+        }
+        assert!(!rest.iter().any(|a| a == "s"), "{args:?}");
+        // `read` is still excluded: an `@` argument attaches a file,
+        // it is not pi reading one.
+        let excluded: Vec<&str> = after(&args, "--exclude-tools").split(',').collect();
+        assert!(excluded.contains(&"read"), "{excluded:?}");
     }
 
     #[test]
@@ -651,6 +710,7 @@ mod tests {
                 &[],
                 "Add milk to the shopping list.",
                 None,
+                &[],
             )
             .await
             .expect("an answer");

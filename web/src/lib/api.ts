@@ -1061,6 +1061,9 @@ export interface Turn {
   /** The artifacts this turn made or changed, for a card under the
       reply. Absent when there are none. */
   artifacts?: ArtifactRef[];
+  /** The files the person attached to this turn. Absent when there
+      are none. */
+  attachments?: Attachment[];
 }
 
 export type ArtifactStatus = "ready" | "working" | "failed";
@@ -1169,6 +1172,24 @@ export function artifactImageUrl(artifact: number, image: number): string {
   return `/me/artifacts/${artifact}/images/${image}`;
 }
 
+export type AttachmentKind = "image" | "pdf";
+
+/** A file on a turn. Mirrors `Attachment` in
+    crates/niles-api/src/chat.rs. */
+export interface Attachment {
+  id: number;
+  kind: AttachmentKind;
+  name: string;
+  size: number;
+  width?: number;
+  height?: number;
+}
+
+/** Where the app fetches a file attached to a message. */
+export function chatAttachmentUrl(conversation: number, attachment: number): string {
+  return `/chat/conversations/${conversation}/attachments/${attachment}`;
+}
+
 export interface ArtifactList {
   artifacts: Artifact[];
   /** Which assistant makes them now; null when neither is on. */
@@ -1231,6 +1252,9 @@ export interface SentChat {
   fallback_from?: AssistantId;
   /** The conversation the message landed in. */
   conversation_id: number;
+  /** The files that went with the message, as kept. Absent when
+      there are none. */
+  attachments?: Attachment[];
 }
 
 /** Where a message goes: on with this conversation, or a new one.
@@ -1477,11 +1501,24 @@ export const api = {
     }),
   conversations: () => request<ConversationSummary[]>("/chat/conversations"),
   conversation: (id: number) => request<Conversation>(`/chat/conversations/${id}`),
-  sendChat: (text: string, target: ChatTarget = {}) =>
-    request<SentChat>("/chat", {
-      method: "POST",
-      body: JSON.stringify({ text, ...target }),
-    }),
+  sendChat: (text: string, target: ChatTarget = {}, files: File[] = []) => {
+    if (files.length === 0) {
+      return request<SentChat>("/chat", {
+        method: "POST",
+        body: JSON.stringify({ text, ...target }),
+      });
+    }
+    const form = new FormData();
+    form.append("text", text);
+    if ("conversation_id" in target && target.conversation_id !== undefined)
+      form.append("conversation_id", String(target.conversation_id));
+    if ("new" in target && target.new) form.append("new", "true");
+    for (const file of files) form.append("files", file, file.name);
+    // No content-type of our own: the browser writes the boundary.
+    // `request` spreads these headers over its JSON default, so an
+    // empty object is what takes that default off.
+    return request<SentChat>("/chat", { method: "POST", headers: {}, body: form });
+  },
   answerProposal: (id: number, turn: number, save: boolean) =>
     request<{ reply: string }>(`/chat/conversations/${id}/proposal`, {
       method: "POST",
