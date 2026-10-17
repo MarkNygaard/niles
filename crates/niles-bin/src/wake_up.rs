@@ -373,6 +373,10 @@ impl WakeUps {
     /// held lights on the curve's warmth when they have none of their
     /// own, and let go of the ones the curve has caught up with.
     /// `curve` is the curve's value now, `None` when it is off.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "advances every ramp and hold in one pass so the state is saved once"
+    )]
     pub(crate) async fn tick(&self, now: DateTime<Utc>, curve: Option<CurveNow>, fade: Duration) {
         *self.curve.lock().unwrap_or_else(|e| e.into_inner()) = curve;
         let (ramps, holds) = {

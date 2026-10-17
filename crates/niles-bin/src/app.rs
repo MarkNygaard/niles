@@ -120,6 +120,10 @@ pub(crate) fn settled(outcome: music::Outcome) -> Result<(), String> {
 
 #[async_trait::async_trait]
 impl niles_api::chat::Chat for AppChat {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one chat turn from upload to stored reply; the steps share the turn's state"
+    )]
     async fn reply(
         &self,
         who: &str,

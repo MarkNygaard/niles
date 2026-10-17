@@ -3097,10 +3097,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "niles-permissions"
-version = "0.3.0"
-
-[[package]]
 name = "niles-plugins"
 version = "0.3.0"
 dependencies = [

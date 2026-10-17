@@ -987,6 +987,10 @@ fn parse_days(id: &str, days: Option<&Vec<String>>) -> Result<Option<Vec<Weekday
         .map(|d| (!d.is_empty()).then_some(d))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per trigger kind; splitting it scatters the validation table"
+)]
 fn parse_trigger(
     id: &str,
     dto: &TriggerKind,
@@ -1282,6 +1286,10 @@ fn parse_actions(
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per action kind; splitting it scatters the validation table"
+)]
 fn parse_action(
     id: &str,
     dto: &ActionDto,

@@ -302,6 +302,10 @@ fn sun_moment(event: &str, offset: i32) -> String {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per trigger kind, each the sentence it reads as"
+)]
 pub(crate) fn trigger(t: &TriggerDto) -> String {
     match &t.kind {
         TriggerKind::Contact { device, open, hold } => match (open, held(hold)) {
@@ -499,6 +503,10 @@ pub(crate) fn condition(condition: &ConditionDto, names: &[(String, String)]) ->
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per action kind, each the sentence it reads as"
+)]
 pub(crate) fn action(step: &ActionDto, names: &[(String, String)]) -> String {
     match step {
         ActionDto::SetDevice {

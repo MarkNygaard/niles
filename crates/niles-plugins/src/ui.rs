@@ -424,6 +424,7 @@ fn control_id(kind: &Kind) -> Option<&str> {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per WIT node kind")]
 fn convert(kind: wit::NodeKind, http: &HttpPolicy) -> Result<Kind, String> {
     Ok(match kind {
         wit::NodeKind::Stack => Kind::Stack,

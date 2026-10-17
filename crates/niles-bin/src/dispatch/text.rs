@@ -31,6 +31,10 @@ use std::time::Instant;
 /// command — the noise gate, the name, the known-voices lock. Typed
 /// words from the app have already answered all of that by being typed
 /// by somebody signed in, so they start here.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match over every Tier 0 intent; splitting it scatters the dispatch table"
+)]
 pub(crate) async fn dispatch_text(
     ctx: &DispatchCtx,
     peer: SocketAddr,

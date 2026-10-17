@@ -303,6 +303,10 @@ pub(crate) async fn lighting(args: LightingArgs) -> anyhow::Result<()> {
 /// drifted past the debounce threshold and whose last-published
 /// target differs from the current one.
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over every light, with each reason to leave one alone in order"
+)]
 pub(crate) async fn run_curve_tick(
     registry: &DeviceRegistry,
     publisher: &MqttPublisher,
@@ -464,6 +468,10 @@ pub(crate) fn kelvin_drifted(reported: Option<u16>, want: Option<u16>) -> bool {
 /// - At `morning_end` or after: release any device the routine still
 ///   has claimed.
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the routine's start, window and end in one tick, sharing the claim state"
+)]
 pub(crate) async fn run_morning_routine_tick(
     registry: &DeviceRegistry,
     publisher: &MqttPublisher,

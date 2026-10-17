@@ -13,11 +13,11 @@ It is set up from its own app. Settings keeps the base system — the broker you
 A navigable docs site lives at [docs/](docs/). Build locally with `mdbook serve docs` and browse at <http://localhost:3000>.
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the map and the rules: the crates, how a turn flows through them, the house rules and the big decisions. How to use Niles is in the docs site.
-- **[CLAUDE.md](CLAUDE.md)** — project orientation for Claude Code and other AI coding agents.
+- **[AGENTS.md](AGENTS.md)** — how to work in this repo, for AI coding agents and the people who run them.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
 - **[Naming your devices](docs/src/naming.md)** — how to name things in Zigbee2MQTT so Niles finds them, and what to call them.
 - **[Set up a satellite](firmware/xiao-wyoming/satellite-idf/README.md#set-up-a-satellite)** — flash a reSpeaker XVF3800 with the Niles firmware and add it to a room.
-- `MANIFEST.md` — LLM-facing capability manifest (generated; not yet present, see Phase 11).
+- **[MANIFEST.md](MANIFEST.md)** — what Niles can do, generated from `features.toml`.
 
 ## License
 

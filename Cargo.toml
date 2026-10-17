@@ -11,6 +11,11 @@ authors = ["Mark Nygaard Leth <47065655+MarkNygaard@users.noreply.github.com>"]
 [workspace.lints.rust]
 unused_must_use = "deny"
 
+# The threshold (100 lines) is in clippy.toml. A function over it carries
+# `#[expect(clippy::too_many_lines, reason = "...")]` saying why.
+[workspace.lints.clippy]
+too_many_lines = "warn"
+
 [workspace.dependencies]
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time", "signal", "io-util", "net"] }

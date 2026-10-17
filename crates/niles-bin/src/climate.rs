@@ -135,6 +135,10 @@ fn stepped(zone: &Zone, up: bool) -> u16 {
 }
 
 /// Any heating intent, against tado.
+#[expect(
+    clippy::too_many_lines,
+    reason = "resolves the room and zones once, then one arm per heating intent"
+)]
 pub(crate) async fn heating(ctx: &DispatchCtx, peer: SocketAddr, intent: &Intent) -> String {
     let Some(tado) = ctx.tado.as_ref() else {
         return response::heating_unavailable();

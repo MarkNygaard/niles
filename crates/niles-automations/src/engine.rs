@@ -487,6 +487,10 @@ impl AutomationEngine {
     /// ends at `until`: everything before it is skipped, and the `if`s on
     /// the way go the way they went.
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per action kind, all sharing the resume-after-restart position"
+    )]
     fn perform<'a>(
         self: &'a Arc<Self>,
         rule: &'a Rule,

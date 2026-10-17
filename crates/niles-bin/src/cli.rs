@@ -18,19 +18,10 @@ pub(crate) enum Commands {
     /// voice dispatch (Wyoming + STT + intent), and the ambient-lighting
     /// curve, all sharing one device registry and one manual-mode tracker.
     Serve(ServeArgs),
-    /// One-shot helper to migrate state from Home Assistant.
-    MigrateFromHa,
-    /// Flash firmware to a satellite device.
-    FlashSatellite,
     /// Configuration utilities.
     Config {
         #[command(subcommand)]
         action: ConfigAction,
-    },
-    /// LLM tools registry utilities.
-    Tools {
-        #[command(subcommand)]
-        action: ToolsAction,
     },
     /// Connect to MQTT and print received messages (for development).
     MqttTap(MqttTapArgs),
@@ -101,12 +92,6 @@ pub(crate) struct ConfigValidateArgs {
     /// Path to the Niles config file.
     #[arg(short, long, default_value = "niles.toml")]
     pub(crate) config: PathBuf,
-}
-
-#[derive(Subcommand)]
-pub(crate) enum ToolsAction {
-    /// List registered LLM tools.
-    List,
 }
 
 #[derive(Args)]

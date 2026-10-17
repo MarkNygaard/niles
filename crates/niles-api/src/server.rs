@@ -11,6 +11,7 @@ use tracing::info;
 /// Build the API router with the given shared state. Exposed so
 /// tests can drive it via `tower::ServiceExt::oneshot` without
 /// binding a port.
+#[expect(clippy::too_many_lines, reason = "every route of the API in one table")]
 pub fn router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/healthz", get(handlers::healthz))

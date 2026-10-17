@@ -779,6 +779,10 @@ impl Installer {
     }
 
     /// Every installed plugin, oldest first, with how it is doing.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "joins stored records, running plugins and webhook addresses into the same rows"
+    )]
     pub async fn list(&self) -> Vec<Listed> {
         let records = match self.records().await {
             Ok(records) => records,
