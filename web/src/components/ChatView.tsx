@@ -21,6 +21,7 @@ import { dictationSupported, useDictation } from "@/hooks/useDictation";
 import { ACCEPT, accept, filesFrom, isImage, readable } from "@/lib/attachments";
 import type { AssistantId, Attachment, Decision, Turn } from "@/lib/api";
 import { chatAttachmentUrl } from "@/lib/api";
+import { Markdown } from "@/lib/markdown";
 import { humanize } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
 
@@ -230,7 +231,19 @@ export function ChatView({
           puts the other person there; tapping the face opens what it
           keeps. New chat stays out here as well, for the one thing done
           often enough not to want a panel in the way. */}
-      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+      {/* Pinned to the top as the conversation scrolls, the way the
+          other person stays at the top of a messages app: under the
+          header on a desk (whose height App keeps in --header-h), just
+          under the status bar in a hand. What scrolls under it fades out rather
+          than meeting a hard edge; the faded strip lets clicks through
+          to the text beneath, and only the buttons take them. */}
+      <div
+        className={cn(
+          "pointer-events-none sticky z-20 -mx-4 grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-4 sm:-mx-6 sm:px-6",
+          "top-[env(safe-area-inset-top)] sm:top-(--header-h)",
+          "from-background via-background/95 -mb-6 bg-linear-to-b from-65% to-transparent pb-6",
+        )}
+      >
         <span aria-hidden />
         <button
           ref={avatarRef}
@@ -240,7 +253,7 @@ export function ChatView({
           aria-expanded={panelOpen ?? false}
           onClick={onOpenPanel}
           className={cn(
-            "rounded-full transition-transform active:scale-95",
+            "pointer-events-auto rounded-full transition-transform active:scale-95",
             "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
           )}
         >
@@ -254,7 +267,7 @@ export function ChatView({
             disabled={busy}
             aria-label="New chat"
             title="New chat"
-            className="text-muted-foreground justify-self-end"
+            className="text-muted-foreground pointer-events-auto justify-self-end"
           >
             <SquarePen className="size-5" />
           </Button>
@@ -280,7 +293,11 @@ export function ChatView({
             ) : null}
             {turn.said && <Bubble from="you">{turn.said}</Bubble>}
             {turn.via === "voice" && <Spoken room={turn.room} />}
-            <Bubble from="niles">{turn.reply}</Bubble>
+            <Bubble from="niles">
+              {/* Replies come as markdown — bold, lists, a link —
+                  where what the person typed is shown as typed. */}
+              <Markdown source={turn.reply} breaks className="gap-2 leading-normal" />
+            </Bubble>
             {(turn.by || turn.fallback) && <Credit turn={turn} />}
             {turn.artifacts?.map((card) => (
               <ArtifactCard key={card.id} card={card} onOpen={onOpenArtifact} />
@@ -551,11 +568,11 @@ function Bubble({ from, children }: { from: "you" | "niles"; children: React.Rea
   return (
     <div
       className={cn(
-        // Pre-wrap: a typed reply may come as a few lines or a list,
-        // and those line breaks are the formatting.
-        "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap",
+        "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm",
+        // What was typed is shown as typed, line breaks and all; a
+        // reply's lines are its markdown's business.
         from === "you"
-          ? "bg-primary text-primary-foreground self-end rounded-br-md"
+          ? "bg-primary text-primary-foreground self-end rounded-br-md whitespace-pre-wrap"
           : "bg-card self-start rounded-bl-md",
       )}
     >

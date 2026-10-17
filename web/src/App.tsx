@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, lazy, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
 import { AutomationsPage } from "@/components/AutomationsPage";
@@ -104,6 +104,22 @@ export function App() {
     document.getElementById("root")?.scrollTo(0, 0);
   }, [route]);
 
+  // The header's height, for what sticks under it as a page scrolls
+  // (the chat's Niles, see ChatView). Measured: the header wraps and
+  // grows with what its menu holds.
+  const header = useCallback((el: HTMLElement | null) => {
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() =>
+      root.style.setProperty("--header-h", `${el.offsetHeight}px`),
+    );
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty("--header-h");
+    };
+  }, []);
+
   // Nothing is worth drawing before we know whether it will be refused.
   if (auth.isLoading) {
     return (
@@ -143,7 +159,23 @@ export function App() {
           "pb-[calc(env(safe-area-inset-bottom)+3.5rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1.5rem)]",
       )}
     >
-      <header className="flex items-center gap-2">
+      {/* What would sit under the status bar on a phone, covered, so a
+          page scrolling up goes behind it rather than under the clock.
+          Nothing on a desk, which has no inset. */}
+      <div
+        aria-hidden
+        className="bg-background pointer-events-none fixed inset-x-0 top-0 z-40 h-[env(safe-area-inset-top)]"
+      />
+      {/* Stays at the top of a desk as a long page scrolls — the menu is
+          there, and the chat's conversation can be pages long. The
+          negative margins undo the padding that gives it its own
+          background edge to edge, so unscrolled it sits where it did. In
+          a hand the menu is the tab bar at the bottom, so the title
+          scrolls away as before. */}
+      <header
+        ref={header}
+        className="flex items-center gap-2 sm:bg-background sm:sticky sm:top-0 sm:z-30 sm:-mx-6 sm:-mt-6 sm:-mb-2 sm:px-6 sm:pt-6 sm:pb-2"
+      >
         {screen.parent && (
           <a
             href={screen.parent}

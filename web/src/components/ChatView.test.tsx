@@ -119,6 +119,27 @@ describe("ChatView", () => {
     expect(screen.getByRole("list", { name: "Conversation" })).toBeEmptyDOMElement();
   });
 
+  it("draws a reply's markdown, and shows what was typed as typed", () => {
+    renderChat({
+      turns: [turn("is **this** bold?", "It is **bold**.\n\n- the kitchen\n- the hallway")],
+    });
+    expect(screen.getByText("bold", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getByText("the kitchen", { selector: "li" })).toBeInTheDocument();
+    expect(screen.getByText("is **this** bold?")).toBeInTheDocument();
+    expect(screen.queryByText(/\*\*bold\*\*/)).toBeNull();
+  });
+
+  it("keeps Niles at the top as the conversation scrolls", () => {
+    renderChat({ turns: [turn("hi", "Good evening.")] });
+    const row = screen.getByRole("button", { name: "Open Niles" }).parentElement!;
+    expect(row.className).toContain("sticky");
+    // The fading strip lets clicks through; the buttons in it take them.
+    expect(row.className).toContain("pointer-events-none");
+    expect(screen.getByRole("button", { name: "Open Niles" }).className).toContain(
+      "pointer-events-auto",
+    );
+  });
+
   it("says when Claude wrote a reply", () => {
     renderChat({ turns: [turn("hi", "Good evening.", { by: "claude" })] });
     expect(screen.getByText("Claude")).toBeInTheDocument();

@@ -23,6 +23,14 @@ Two weeks in **March**.
 > Pack light.`;
 
 describe("parseMarkdown", () => {
+  it("runs a paragraph's lines together, unless asked to keep its breaks", () => {
+    const source = "Kitchen: on\nHallway: off";
+    expect(parseMarkdown(source)).toEqual([{ type: "paragraph", text: "Kitchen: on Hallway: off" }]);
+    expect(parseMarkdown(source, { breaks: true })).toEqual([
+      { type: "paragraph", text: "Kitchen: on\nHallway: off" },
+    ]);
+  });
+
   it("reads the blocks a document has", () => {
     const blocks = parseMarkdown(PLAN);
     expect(blocks.map((b) => b.type)).toEqual([
