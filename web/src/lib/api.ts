@@ -1283,6 +1283,51 @@ export interface ApprovalCard {
   outcome: string | null;
 }
 
+/**
+ * One held call still waiting, as Niles's panel lists it: the card the
+ * chat shows, and where and when it was asked. Mirrors `Waiting` in
+ * crates/niles-api/src/approvals.rs.
+ */
+export interface PendingApproval extends ApprovalCard {
+  /** The add-on it is for: "Linear", "Mail". */
+  tool: string;
+  /** What it would do, in a line. */
+  summary: string;
+  /** The conversation its card is in; null for a question asked aloud. */
+  conversation_id: number | null;
+  asked_at: string;
+  expires_at: string;
+  /** Where it waits for the answer. */
+  via: "app" | "voice";
+}
+
+/** One decided, or lapsed. Mirrors `Decided` in crates/niles-api/src/approvals.rs. */
+export interface DecidedApproval {
+  id: number;
+  approval: string;
+  tool: string;
+  icon: string | null;
+  title: string;
+  summary: string;
+  status: Exclude<ApprovalStatus, "pending">;
+  /** What the person chose; null for a lapse. */
+  decision: Decision | null;
+  outcome: string | null;
+  decided_via: "app" | "voice" | null;
+  asked_via: "app" | "voice";
+  asked_at: string;
+  decided_at: string | null;
+  conversation_id: number | null;
+}
+
+export interface ApprovalHistory {
+  entries: DecidedApproval[];
+  /** What to ask for the next page with, while there is one. */
+  next: number | null;
+  /** False without a database: nothing is kept. */
+  kept: boolean;
+}
+
 export interface Conversation {
   id: number;
   title: string;
@@ -1580,6 +1625,17 @@ export const api = {
     request<{ reply: string }>(
       `/chat/conversations/${id}/approvals/${encodeURIComponent(approval)}`,
       { method: "POST", body: JSON.stringify({ decision }) },
+    ),
+  approvals: () => request<{ approvals: PendingApproval[] }>("/me/approvals"),
+  /** The same decision a card's button sends, by the approval's id alone. */
+  decideHeld: (approval: string, decision: Decision) =>
+    request<{ reply: string }>(`/me/approvals/${encodeURIComponent(approval)}`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
+  approvalHistory: (before?: number) =>
+    request<ApprovalHistory>(
+      before === undefined ? "/me/approvals/history" : `/me/approvals/history?before=${before}`,
     ),
   deleteConversation: (id: number) =>
     request<void>(`/chat/conversations/${id}`, { method: "DELETE" }),

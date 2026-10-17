@@ -77,7 +77,8 @@ impl ChatLog {
     }
 
     /// A spoken turn: into the conversation going on, or a new one.
-    pub(crate) async fn record_spoken(&self, person: &str, turn: &Turn) {
+    /// Answers which, so a card asked for aloud knows where it is.
+    pub(crate) async fn record_spoken(&self, person: &str, turn: &Turn) -> Option<i64> {
         let _order = self.order.lock().await;
         let outcome = async {
             let into = self.table.active(person, GAP_SECONDS).await?;
@@ -87,9 +88,10 @@ impl ChatLog {
                 .await
         }
         .await;
-        if let Err(e) = outcome {
+        outcome.unwrap_or_else(|e| {
             tracing::warn!("[chat-log] a spoken turn was not kept: {e}");
-        }
+            None
+        })
     }
 
     pub(crate) async fn list(&self, person: &str) -> Result<Vec<Summary>, String> {

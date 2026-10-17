@@ -17,6 +17,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `api-events-approval-changed` | approval_changed on /events/stream when one is held, answered or lapses, to its person only | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `api-events-stream` | WebSocket /events/stream pushes real-time device and system events | [#86](https://github.com/MarkNygaard/niles/pull/86) |
 | `events-artifact-status` | artifact_changed on /events/stream, to its owner and whoever it is shared with only: the status line follows a job | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `api-artifact-images` | GET /me/artifacts/{id}/images/{image}: a picture an artifact keeps, its owner's only; GET lists them | [#442](https://github.com/MarkNygaard/niles/pull/442) |
@@ -29,6 +30,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-artifact-pages` | An artifact's page_html and the house's today on GET /me/artifacts/{id}; PATCH remove_page; each version with its page | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `api-artifact-shares` | GET/PUT/DELETE /me/artifacts/{id}/shares, its owner's only; every artifact route answers by owner, edit or view | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `api-chat-attachments` | POST /chat takes a multipart body with up to 5 files of 10 MB; GET …/attachments/{a} serves one to its owner | [#449](https://github.com/MarkNygaard/niles/pull/449) |
+| `api-me-approvals` | GET /me/approvals, POST /me/approvals/{id}, GET /me/approvals/history?before=; the caller's own only | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
@@ -71,6 +73,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `approval-log` | Every approval logged when asked and answered, lapses included; one summary line, never the arguments | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `artifacts-pictures` | Pictures in a document, a trip or a page, found with the house's search and kept as Niles's own clean copies | [#442](https://github.com/MarkNygaard/niles/pull/442) |
@@ -157,6 +160,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `chat-attachments` | Attach photos and PDFs to a chat message by dragging, the paperclip or a paste; chips before sending, thumbnails after | [#449](https://github.com/MarkNygaard/niles/pull/449) |
+| `ui-approvals-history` | Approvals history in the panel and on My profile: each decided or lapsed, "Allowed once · 15:34", Show older | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `ui-approvals-panel` | Approvals tab in Niles's panel: what needs review, folded with Details, answered there; a count on the tab | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `ui-artifact-page-frame` | An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `ui-artifact-pictures` | Pictures drawn from Niles's own copies with their credit; a picture by its web address is never fetched | [#442](https://github.com/MarkNygaard/niles/pull/442) |
 | `ui-artifact-sharing` | Share from an open artifact: None, View or Edit for each person; Saved marks what is shared and who changed it last | [#452](https://github.com/MarkNygaard/niles/pull/452) |
@@ -177,6 +182,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 | `ui-room-hidden` | Hide a room from the dashboard's grid in Settings → Rooms; voice, rules, the API and the house's counts still reach it | [#404](https://github.com/MarkNygaard/niles/pull/404) |
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
+| `ui-profile-sections` | My profile laid out like Settings: About you, My phone, Notifications, each add-on a page, Approvals | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
 | `ui-push-notifications` | My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |

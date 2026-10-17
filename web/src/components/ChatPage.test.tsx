@@ -107,6 +107,10 @@ function show(
 ) {
   vi.stubGlobal("WebSocket", FakeSocket);
   if (!vi.isMockFunction(api.artifacts)) vi.spyOn(api, "artifacts").mockResolvedValue(saved);
+  if (!vi.isMockFunction(api.approvals))
+    vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [] });
+  if (!vi.isMockFunction(api.approvalHistory))
+    vi.spyOn(api, "approvalHistory").mockResolvedValue({ entries: [], next: null, kept: true });
   vi.spyOn(api, "conversations").mockResolvedValue(list);
   vi.spyOn(api, "conversation").mockImplementation(async (id) => {
     if (!conversations[id]) throw new ApiError("no such conversation", 404);
@@ -230,6 +234,37 @@ describe("ChatPage", () => {
 
     fireEvent.click(dialog.getByRole("button", { name: "Saved" }));
     expect(await dialog.findByText(/Nothing saved yet/)).toBeInTheDocument();
+  });
+
+  it("has an Approvals tab counting what waits, answered from there", async () => {
+    vi.spyOn(api, "approvals").mockResolvedValue({
+      approvals: [
+        {
+          id: "a1",
+          title: "Let Linear create issue?",
+          subtitle: "Linear",
+          icon: "linear",
+          fields: [{ label: "Title", value: "WLED presets" }],
+          body: null,
+          allow_conversation: true,
+          status: "pending",
+          outcome: null,
+          tool: "Linear",
+          summary: "Title: WLED presets",
+          conversation_id: 42,
+          asked_at: ago(MINUTE),
+          expires_at: ago(-59 * MINUTE),
+          via: "app",
+        },
+      ],
+    });
+    const decide = vi.spyOn(api, "decideHeld").mockResolvedValue({ reply: "Done." });
+    show([CURTAINS], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    const dialog = await openPanel();
+    const tab = await dialog.findByRole("tab", { name: "Approvals, 1 waiting" });
+    fireEvent.click(tab);
+    fireEvent.click(await dialog.findByRole("button", { name: "Allow once" }));
+    await waitFor(() => expect(decide).toHaveBeenCalledWith("a1", "once"));
   });
 
   it("opens the artifact a notification's link names, and puts the address back", async () => {

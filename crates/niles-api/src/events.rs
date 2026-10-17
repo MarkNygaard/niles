@@ -55,6 +55,12 @@ pub enum WireEvent {
         status: String,
         status_text: Option<String>,
     },
+    /// Something of the viewer's waiting for their yes was asked,
+    /// answered or lapsed: the panel's Approvals and its count follow.
+    ApprovalChanged {
+        id: String,
+        status: String,
+    },
     Ping {
         ts: String,
     },
@@ -84,6 +90,9 @@ impl WireEvent {
                 status,
                 status_text,
             }),
+            Event::ApprovalChanged { person, id, status } => {
+                (person == viewer).then_some(WireEvent::ApprovalChanged { id, status })
+            }
             other => Self::from_event(other),
         }
     }
@@ -116,6 +125,8 @@ impl WireEvent {
 /// - `device_state_changed`, `device_added`, `device_removed` events
 /// - `ui_invalidated` (`plugin`, `surface`): a plugin's page or widget
 ///   has something new to show
+/// - `artifact_changed` and `approval_changed`, each only to the person
+///   it is about
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
 /// - Slow-consumer detection: if the cumulative number of dropped events
 ///   reaches 256, the connection is closed with `{"type":"close"}`
@@ -443,6 +454,31 @@ mod tests {
         assert!(WireEvent::for_viewer(changed("person:mark"), "person:majse").is_none());
         assert!(WireEvent::for_viewer(changed("person:mark"), "email:anyone").is_none());
         assert!(WireEvent::from_event(changed("person:mark")).is_none());
+    }
+
+    fn asked(person: &str) -> Event {
+        Event::ApprovalChanged {
+            person: person.into(),
+            id: "a1".into(),
+            status: "pending".into(),
+        }
+    }
+
+    #[test]
+    fn an_approval_goes_to_the_person_it_waits_for() {
+        let wire = WireEvent::for_viewer(asked("person:mark"), "person:mark").expect("theirs");
+        let v = serde_json::to_value(&wire).unwrap();
+        assert_eq!(v["type"], "approval_changed");
+        assert_eq!(v["id"], "a1");
+        assert_eq!(v["status"], "pending");
+        assert!(v.get("person").is_none());
+    }
+
+    #[test]
+    fn an_approval_never_goes_to_anybody_else() {
+        assert!(WireEvent::for_viewer(asked("person:mark"), "person:majse").is_none());
+        assert!(WireEvent::for_viewer(asked("satellite:10.0.0.2:4000"), "email:anyone").is_none());
+        assert!(WireEvent::from_event(asked("person:mark")).is_none());
     }
 
     #[test]

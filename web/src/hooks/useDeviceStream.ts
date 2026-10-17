@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { mergeReported } from "@/lib/rooms";
+import { APPROVALS } from "@/lib/approvals";
 import { ARTIFACTS, ARTIFACT_LIST } from "@/lib/artifacts";
 import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState } from "@/lib/api";
 
@@ -16,7 +17,8 @@ import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState } from
  *
  * The same stream says when a plugin's page or widget has changed,
  * which refetches it if it is on screen, and when one of the signed-in
- * person's artifacts moves on, which Saved and the status line follow.
+ * person's artifacts moves on, which Saved and the status line follow,
+ * and when something of theirs waiting for a yes is asked or answered.
  */
 export function useDeviceStream() {
   const queryClient = useQueryClient();
@@ -66,6 +68,12 @@ export function useDeviceStream() {
               void queryClient.invalidateQueries({ queryKey: ["chat"] });
             }
             break;
+          // Asked, answered or lapsed: the panel's lists and count, and
+          // the card in the conversation it was asked in.
+          case "approval_changed":
+            void queryClient.invalidateQueries({ queryKey: APPROVALS });
+            void queryClient.invalidateQueries({ queryKey: ["chat"] });
+            break;
         }
       };
 
@@ -95,6 +103,7 @@ type WireEvent =
   | { type: "device_removed"; id: string }
   | { type: "ui_invalidated"; plugin: string; surface: string }
   | ArtifactChanged
+  | { type: "approval_changed"; id: string; status: string }
   | { type: "ping" | "close" };
 
 interface ArtifactChanged {

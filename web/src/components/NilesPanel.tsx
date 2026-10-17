@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/drawer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { badgeText } from "@/lib/approvals";
 import { cn } from "@/lib/utils";
 
 /** One tab of the panel. A new tab is one more of these in the list. */
@@ -18,6 +19,8 @@ export interface PanelTab {
   /** Read out for the icon, and the tooltip over it. */
   label: string;
   icon: LucideIcon;
+  /** How many things there wait for you, shown on the icon while any do. */
+  badge?: number;
   render: () => React.ReactNode;
 }
 
@@ -222,11 +225,22 @@ export function NilesPanel({
                 <TabsTrigger
                   key={t.id}
                   value={t.id}
-                  aria-label={t.label}
+                  aria-label={t.badge ? `${t.label}, ${t.badge} waiting` : t.label}
                   title={t.label}
-                  className="h-full rounded-full [&_svg:not([class*='size-'])]:size-[18px]"
+                  className="relative h-full rounded-full [&_svg:not([class*='size-'])]:size-[18px]"
                 >
                   <t.icon aria-hidden />
+                  {/* On the icon's corner, as a home screen counts what
+                      waits: the bar has no room for a word. */}
+                  {Boolean(t.badge) && (
+                    <span
+                      aria-hidden
+                      data-slot="tab-badge"
+                      className="bg-primary text-primary-foreground absolute top-0 left-1/2 ml-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-medium tabular-nums"
+                    >
+                      {badgeText(t.badge ?? 0)}
+                    </span>
+                  )}
                 </TabsTrigger>
               ))}
             </TabsList>

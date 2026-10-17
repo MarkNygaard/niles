@@ -26,6 +26,7 @@
 //! replacement, so a retry after a connection dies mid-write cannot apply
 //! anything twice.
 
+mod approval_log;
 mod artifacts;
 mod automation_waits;
 mod automations;
@@ -48,6 +49,9 @@ mod tado_tokens;
 mod timers;
 mod training;
 mod wake_ups;
+pub use approval_log::{
+    APPROVALS_KEPT_PER_PERSON, ApprovalEntry, ApprovalLogged, PostgresApprovalLog,
+};
 pub use artifacts::PostgresArtifacts;
 pub use automation_waits::PostgresAutomationWaits;
 pub use automations::PostgresAutomations;

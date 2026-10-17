@@ -18,9 +18,11 @@
 //! GET  /plugins                 -> installed plugins and how each is doing
 //! POST /plugins/install/preview -> download and check a GitHub release (see `plugins`)
 //! GET  /me/strava               -> the signed-in person's own Strava (see `training`)
+//! GET  /me/approvals            -> what waits for their yes (see `approvals`)
 //! ```
 
 pub mod api_token;
+pub mod approvals;
 pub mod artifacts;
 pub mod auth;
 pub mod automations;

@@ -434,25 +434,28 @@ pub async fn decide(
 ) -> Result<Json<Answered>, Failure> {
     let chat = chat(&state)?;
     let (who, speaker) = caller(&state, &headers);
-    match chat
-        .decide(&who, speaker.as_deref(), id, &approval, body.decision)
+    chat.decide(&who, speaker.as_deref(), id, &approval, body.decision)
         .await
-    {
-        Ok(reply) => Ok(Json(Answered { reply })),
-        Err(Undecidable::NoSuchConversation) => {
-            Err(failed(StatusCode::NOT_FOUND, "no such conversation".into()))
+        .map(|reply| Json(Answered { reply }))
+        .map_err(undecided)
+}
+
+/// Why an approval could not be answered, as the app is told it: the
+/// same from a card in the chat and from Niles's panel.
+pub(crate) fn undecided(why: Undecidable) -> Failure {
+    match why {
+        Undecidable::NoSuchConversation => {
+            failed(StatusCode::NOT_FOUND, "no such conversation".into())
         }
-        Err(Undecidable::NoSuchApproval) => {
-            Err(failed(StatusCode::NOT_FOUND, "no such approval".into()))
-        }
-        Err(Undecidable::NotWaiting) => Err(failed(
+        Undecidable::NoSuchApproval => failed(StatusCode::NOT_FOUND, "no such approval".into()),
+        Undecidable::NotWaiting => failed(
             StatusCode::CONFLICT,
             "that is no longer waiting: it was answered, or it lapsed".into(),
-        )),
-        Err(Undecidable::OnceOnly) => Err(failed(
+        ),
+        Undecidable::OnceOnly => failed(
             StatusCode::UNPROCESSABLE_ENTITY,
             "this can only be allowed once".into(),
-        )),
+        ),
     }
 }
 

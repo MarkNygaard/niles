@@ -1,4 +1,5 @@
-import { ChevronDown, Mail, ShieldQuestion } from "lucide-react";
+import type { ReactNode } from "react";
+import { ChevronDown, ChevronRight, Mail, ShieldQuestion } from "lucide-react";
 import { BrandMark, hasBrandMark } from "@/components/BrandMark";
 import { Button } from "@/components/ui/button";
 import type { ApprovalCard as Card, Decision } from "@/lib/api";
@@ -12,6 +13,16 @@ export interface ApprovalCardProps {
   /** A decision is on its way. */
   deciding?: boolean;
   onDecide: (decision: Decision) => void;
+  /**
+   * Drawn as Niles's panel lists it: a line saying what it would do,
+   * and the rest behind Details. In the chat the card sits under the
+   * message that asked, and shows it all.
+   */
+  folded?: boolean;
+  /** The line a folded card leads with. */
+  summary?: string;
+  /** Under the buttons: where it was asked, how long it waits. */
+  footer?: ReactNode;
 }
 
 /**
@@ -21,37 +32,64 @@ export interface ApprovalCardProps {
  * The model asked; the person answers here, and Niles does exactly what
  * the card shows.
  */
-export function ApprovalCard({ card, deciding, onDecide }: ApprovalCardProps) {
+export function ApprovalCard({
+  card,
+  deciding,
+  onDecide,
+  folded,
+  summary,
+  footer,
+}: ApprovalCardProps) {
   const pending = card.status === "pending";
+  const hasDetails = card.fields.length > 0 || Boolean(card.body);
+  const details = hasDetails && (
+    <div className="bg-background/70 flex flex-col gap-2 rounded-xl px-3 py-2.5 text-sm">
+      {card.fields.map((field) => (
+        <Field key={field.label} label={field.label} value={field.value} />
+      ))}
+      {card.body && (
+        <p
+          className={cn(
+            "whitespace-pre-wrap",
+            card.fields.length > 0 && "border-border/60 mt-1 border-t pt-2",
+          )}
+        >
+          {card.body}
+        </p>
+      )}
+    </div>
+  );
   return (
     <section
       aria-label={card.title}
       className="bg-muted/60 ring-foreground/10 flex w-full max-w-xl flex-col gap-3 self-start rounded-2xl p-4 ring-1"
     >
       <div className="flex items-start gap-3">
-        <Icon icon={card.icon} label={card.subtitle} />
+        <ApprovalIcon icon={card.icon} label={card.subtitle} />
         <div className="min-w-0">
           <h3 className="text-base leading-snug font-medium">{card.title}</h3>
           <p className="text-muted-foreground text-sm">{card.subtitle}</p>
         </div>
       </div>
 
-      {(card.fields.length > 0 || card.body) && (
-        <div className="bg-background/70 flex flex-col gap-2 rounded-xl px-3 py-2.5 text-sm">
-          {card.fields.map((field) => (
-            <Field key={field.label} label={field.label} value={field.value} />
-          ))}
-          {card.body && (
-            <p
-              className={cn(
-                "whitespace-pre-wrap",
-                card.fields.length > 0 && "border-border/60 mt-1 border-t pt-2",
-              )}
-            >
-              {card.body}
-            </p>
+      {folded ? (
+        <>
+          {summary && <p className="text-sm break-words">{summary}</p>}
+          {hasDetails && (
+            <details className="group">
+              <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center justify-between gap-2 py-1 text-sm">
+                Details
+                <ChevronRight
+                  aria-hidden
+                  className="size-4 shrink-0 transition-transform group-open:rotate-90"
+                />
+              </summary>
+              <div className="mt-2">{details}</div>
+            </details>
           )}
-        </div>
+        </>
+      ) : (
+        details
       )}
 
       {pending ? (
@@ -89,6 +127,7 @@ export function ApprovalCard({ card, deciding, onDecide }: ApprovalCardProps) {
           {outcome(card)}
         </p>
       )}
+      {footer}
     </section>
   );
 }
@@ -109,19 +148,31 @@ export function outcome(card: Card): string {
   }
 }
 
-function Icon({ icon, label }: { icon: string | null; label: string }) {
-  const box = "bg-background flex size-10 shrink-0 items-center justify-center rounded-xl";
+/** The add-on's own mark, or a mail or a question for anything else. */
+export function ApprovalIcon({
+  icon,
+  label,
+  small,
+}: {
+  icon: string | null;
+  label: string;
+  small?: boolean;
+}) {
+  const box = cn(
+    "bg-background flex shrink-0 items-center justify-center",
+    small ? "size-8 rounded-lg" : "size-10 rounded-xl",
+  );
   if (icon && hasBrandMark(icon)) {
     return (
       <span className={box}>
-        <BrandMark id={icon} label={label} className="size-6" />
+        <BrandMark id={icon} label={label} className={small ? "size-5" : "size-6"} />
       </span>
     );
   }
   const Glyph = icon === "mail" ? Mail : ShieldQuestion;
   return (
     <span className={box}>
-      <Glyph aria-hidden className="size-5" />
+      <Glyph aria-hidden className={small ? "size-4" : "size-5"} />
     </span>
   );
 }
@@ -137,14 +188,14 @@ function Field({ label, value }: { label: string; value: string }) {
     );
   }
   return (
-    <details className="group">
+    <details className="group/field">
       <summary className={cn(row, "cursor-pointer list-none")}>
         <span className="text-muted-foreground">{label}</span>
         <span className="flex min-w-0 items-start justify-between gap-2">
           <span className="truncate">{value}</span>
           <ChevronDown
             aria-hidden
-            className="text-muted-foreground size-4 shrink-0 transition-transform group-open:rotate-180"
+            className="text-muted-foreground size-4 shrink-0 transition-transform group-open/field:rotate-180"
           />
         </span>
       </summary>

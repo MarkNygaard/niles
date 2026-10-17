@@ -838,3 +838,39 @@ id = "push-artifact-shared"
 category = "runtime.notifications"
 summary = "A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you"
 since_pr = 452
+
+[[feature]]
+id = "ui-approvals-panel"
+category = "ui.chat"
+summary = "Approvals tab in Niles's panel: what needs review, folded with Details, answered there; a count on the tab"
+since_pr = 9999
+
+[[feature]]
+id = "ui-approvals-history"
+category = "ui.chat"
+summary = "Approvals history in the panel and on My profile: each decided or lapsed, \"Allowed once · 15:34\", Show older"
+since_pr = 9999
+
+[[feature]]
+id = "api-me-approvals"
+category = "api.write"
+summary = "GET /me/approvals, POST /me/approvals/{id}, GET /me/approvals/history?before=; the caller's own only"
+since_pr = 9999
+
+[[feature]]
+id = "approval-log"
+category = "runtime.approvals"
+summary = "Every approval logged when asked and answered, lapses included; one summary line, never the arguments"
+since_pr = 9999
+
+[[feature]]
+id = "api-events-approval-changed"
+category = "api.events"
+summary = "approval_changed on /events/stream when one is held, answered or lapses, to its person only"
+since_pr = 9999
+
+[[feature]]
+id = "ui-profile-sections"
+category = "ui.settings"
+summary = "My profile laid out like Settings: About you, My phone, Notifications, each add-on a page, Approvals"
+since_pr = 9999

@@ -636,3 +636,80 @@ async fn an_artifact_is_shared_with_its_own_pin_and_goes_with_it() {
     assert!(store.delete(&owner, a.id).await.expect("delete"));
     assert!(store.shared(&her, a.id).await.expect("shared").is_none());
 }
+
+fn approval(approval: &str, person: &str) -> niles_db::ApprovalEntry {
+    niles_db::ApprovalEntry {
+        approval: approval.into(),
+        person: person.into(),
+        tool: "Linear".into(),
+        icon: Some("linear".into()),
+        title: "Let Linear create issue?".into(),
+        summary: "Title: WLED presets".into(),
+        status: "pending".into(),
+        decision: None,
+        outcome: None,
+        asked_via: "app".into(),
+        decided_via: None,
+        asked_at: chrono::Utc::now(),
+        decided_at: None,
+        conversation_id: Some(7),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn an_approval_is_logged_when_asked_and_again_when_decided() {
+    let Some(backend) = backend() else {
+        return;
+    };
+    let log = niles_db::PostgresApprovalLog::new(backend.pool(), "test".into());
+    let person = format!("person:approvals-{}", std::process::id());
+    let tag = |n: u32| format!("{}-{n}", std::process::id());
+
+    let asked = approval(&tag(1), &person);
+    log.asked(&asked).await.expect("asked");
+    assert!(
+        log.page(&person, None, 10).await.expect("page").is_empty(),
+        "waiting is not history yet"
+    );
+    let decided = niles_db::ApprovalEntry {
+        status: "allowed".into(),
+        decision: Some("once".into()),
+        outcome: Some("Done".into()),
+        decided_via: Some("app".into()),
+        decided_at: Some(chrono::Utc::now()),
+        ..asked.clone()
+    };
+    log.settled(&decided).await.expect("settled");
+    // Asked again after the answer, the answer stands.
+    log.asked(&asked).await.expect("asked twice");
+    let page = log.page(&person, None, 10).await.expect("page");
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].entry.status, "allowed");
+    assert_eq!(page[0].entry.decision.as_deref(), Some("once"));
+
+    for n in 2..5 {
+        let mut denied = approval(&tag(n), &person);
+        denied.status = "denied".into();
+        log.settled(&denied).await.expect("denied");
+    }
+    log.settled(&approval(&tag(9), "person:someone-else"))
+        .await
+        .expect("another's");
+    let first = log.page(&person, None, 2).await.expect("first page");
+    assert_eq!(first.len(), 2);
+    assert!(first[0].id > first[1].id, "newest first");
+    let rest = log
+        .page(&person, Some(first[1].id), 10)
+        .await
+        .expect("rest");
+    assert_eq!(rest.len(), 2);
+    assert!(rest.iter().all(|r| r.entry.person == person));
+
+    // A Niles starting up finds what it cannot still be holding.
+    log.asked(&approval(&tag(5), &person)).await.expect("asked");
+    let restarted = niles_db::PostgresApprovalLog::new(backend.pool(), "test".into());
+    let after = restarted.page(&person, None, 10).await.expect("page");
+    assert_eq!(after[0].entry.approval, tag(5));
+    assert_eq!(after[0].entry.status, "lapsed");
+}

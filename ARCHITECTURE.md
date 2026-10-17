@@ -1135,9 +1135,31 @@ Some things Niles must not do on the model's word alone: send a mail, or call a 
 
 **What is kept.** The card, its preview and its outcome are part of the conversation, in its history, as the messages around it are. The held call itself, the tool and its arguments, is kept in memory only: a restart lapses every approval still waiting, and its card says so.
 
+**In Niles's panel.** The third tab, **Approvals** (after Conversations and Saved), gathers everything of the person's still waiting, wherever it was asked, and what they decided before. The tab's icon carries a count while anything waits.
+
+- **Needs review**: a card per held call, newest first. The same card as in the chat, folded: its mark, the question, whose account or which add-on, one line of what it would do, and **Details** with a chevron for the fields and a mail's body. Under it, when it was asked and until when it waits, and **Show in the chat** for one with a conversation. The buttons are the card's own: **Allow once**, **Allow for this conversation** where offered, **Deny**. "For this conversation" stays the name: the grant is the existing per-conversation one, and a panel that said "this task" would promise a scope Niles does not have.
+- **Deciding here is deciding on the card.** A held call whose card is in a conversation is answered through that conversation, exactly as its button would: the card there says what became of it, and the answer is a turn in it. One asked aloud (no card) is answered from the panel too, as a yes or no at the satellite would.
+- **Approvals history**: a row per decided or lapsed approval, newest first: the mark, the title, the summary line, and "Allowed once · 15:34", "Allowed for the conversation", "Denied by voice", "Lapsed", "Allowed, but it didn't work". Thirty at a time, with **Show older**. Without a database it says that nothing is kept.
+- **Live.** Holding a call, answering it and its lapsing each send `approval_changed` (`id`, `status`) on `/events/stream`, to that person's connections only, as `artifact_changed` is; the panel, its count and the card in the chat follow without polling. Nothing is pushed to a device for a new approval: the reply that asked for it already says it is waiting.
+- **On My profile** too, under its own Approvals entry, the same two lists.
+
+**The log.** Every approval is written to `approval_log`, created on first use: `approval` (the card's id, unique), `person`, `tool` (the add-on as a person reads it), `icon`, `title`, `summary`, `status` (`pending`, `allowed`, `denied`, `lapsed`, `failed`), `decision` (`once`, `conversation`, `deny`), `outcome`, `asked_via` and `decided_via` (`app`, `voice`), `asked_at`, `decided_at`, `conversation_id`. A row is written as `pending` when the call is held and again with its answer; the first use after a start marks every row still `pending` as lapsed, because a restart lapsed them. A lapse noticed while running is logged within half a minute of it. The summary is the card's fields, each as the card labels and cuts it, joined on one line of at most 200 characters, with a value whose label reads like a credential (password, token, secret, API key) left out; a mail's body is never in it, and the call's arguments are never kept. Each person keeps their newest 500.
+
+**API.** All the caller's own, by the same person key as their conversations:
+
+- `GET /me/approvals`: what waits, each the card (`id`, `title`, `subtitle`, `icon`, `fields`, `body`, `allow_conversation`, `status`) with `tool`, `summary`, `conversation_id`, `asked_at`, `expires_at` and `via`.
+- `POST /me/approvals/{id}` with `{ "decision": "once" | "conversation" | "deny" }`: answered as its card's button would be. Somebody else's is 404, as one never held; answered or lapsed is 409; "for this conversation" on a mail is 422.
+- `GET /me/approvals/history?before={id}`: `{ entries, next, kept }`, newest first.
+
 ### Accounts
 
 A person's sign-in at Microsoft, Google or Apple is one **account**, connected on their profile. An account serves **Calendar**, **Mail**, or both, each ticked separately. On My profile → Add-ons, Calendars and Mail are separate add-ons, each listing the accounts that serve it, because that is how people think of them. Underneath, one Gmail is one sign-in.
+
+**My profile's layout.** My profile is laid out as Settings is: a list of sections, grouped, and the section it opened, side by side from `sm`; on a phone the list is the screen, a section pushes in, and **‹ My profile** goes back. Each section has its own address, `#/me/profile/{id}`.
+
+- **You**: **About you** (what Niles knows about you, how it addresses you and says your name, your birthday), **My phone**, **Notifications**.
+- **Add-ons**: each of the person's own add-ons as a section of its own, Calendars and Mail (only with a voice, which is what they are read for) and Strava, its line saying what is connected. A section is the add-on's whole page, as a Settings section is, not a dialog over a list: there are three, not dozens, and a sign-in that comes back (`?calendar=…`, `?strava=…`) lands on its add-on's page.
+- **Approvals**: what waits for the person's yes and what they decided (see [Approvals](#approvals)), with the count of what waits beside it.
 
 **Three providers.**
 

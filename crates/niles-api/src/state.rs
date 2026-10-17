@@ -83,6 +83,9 @@ pub struct AppState {
     pub chatgpt_logins: Arc<crate::chatgpt::Logins>,
     /// What answers the app's chat, when the binary wired one up.
     pub chat: Option<Arc<dyn crate::chat::Chat>>,
+    /// What waits for each person's yes, and what they decided.
+    /// Answered by the binary, beside the chat whose cards they are.
+    pub approvals: Option<Arc<dyn crate::approvals::Approvals>>,
     /// The rooms' music, for the room cards. Answered by the binary.
     pub music: Option<Arc<dyn crate::music::Music>>,
     /// The nemlig.com session. Present whether or not the integration is
@@ -139,6 +142,7 @@ impl AppState {
             calendar_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             chatgpt_logins: Arc::default(),
             chat: None,
+            approvals: None,
             nemlig: None,
             plugins: None,
             tool_servers: None,
@@ -278,6 +282,14 @@ impl AppState {
 
     pub fn with_chat(mut self, chat: Option<Arc<dyn crate::chat::Chat>>) -> Self {
         self.chat = chat;
+        self
+    }
+
+    pub fn with_approvals(
+        mut self,
+        approvals: Option<Arc<dyn crate::approvals::Approvals>>,
+    ) -> Self {
+        self.approvals = approvals;
         self
     }
 
