@@ -879,35 +879,35 @@ since_pr = 455
 id = "manual-mode-from-tools-and-rules"
 category = "ambient.manual-mode"
 summary = "A level, warmth, colour or effect set by the model or an automation puts the light in manual mode; on or off does not"
-since_pr = 9999
+since_pr = 466
 
 [[feature]]
 id = "morning-routine-keeps-manual"
 category = "ambient.curve"
 summary = "At the end of the morning routine, a light set by hand during the ramp keeps its level instead of going to full"
-since_pr = 9999
+since_pr = 466
 
 [[feature]]
 id = "scene-room-by-name"
 category = "voice.scenes"
 summary = "\"cosy in the living room\" saves or applies the living room's cosy when the house has that room"
 phrasings = ["save this as cosy in the living room", "apply cosy in the living room"]
-since_pr = 9999
+since_pr = 466
 
 [[feature]]
 id = "notifications-for-the-house"
 category = "runtime.notifications"
 summary = "An announcement with no room is spoken in every room with a satellite, still under quiet hours"
-since_pr = 9999
+since_pr = 466
 
 [[feature]]
 id = "notification-history"
 category = "runtime.notifications"
 summary = "What Niles says unprompted is kept in Postgres, so \"what did I miss\" still knows after a restart"
-since_pr = 9999
+since_pr = 466
 
 [[feature]]
 id = "linear-webhook"
 category = "ui.integrations"
 summary = "Linear's card takes a webhook signing secret; once saved, an issue going to review or done is announced"
-since_pr = 9999
+since_pr = 466
