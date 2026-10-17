@@ -100,6 +100,11 @@ function setup(
 beforeEach(() => {
   vi.spyOn(api, "pluginLog").mockResolvedValue([]);
   vi.spyOn(api, "pluginLogo").mockResolvedValue(LOGO);
+  vi.spyOn(api, "pluginLibrary").mockResolvedValue({
+    generated_at: null,
+    cannot: PREVIEW.cannot,
+    addons: [],
+  });
 });
 
 afterEach(() => {
@@ -590,6 +595,43 @@ describe("the panel", () => {
     expect(
       within(widgets).getByRole("combobox", { name: "Where Electricity now goes" }),
     ).toHaveTextContent("Kitchen");
+  });
+});
+
+describe("the library on the panel", () => {
+  it("says an add-on taken off the list is no longer listed, and why", async () => {
+    vi.mocked(api.pluginLibrary).mockResolvedValue({
+      generated_at: null,
+      cannot: PREVIEW.cannot,
+      addons: [
+        {
+          repo: "https://github.com/jane/niles-spotprice",
+          owner: "jane",
+          standing: "removed",
+          removed_reason: "Its author archived it.",
+          name: "Spot prices",
+          description: "Hear what power costs hour by hour.",
+          version: "0.1.0",
+          published_at: null,
+          installs: 34,
+          downloads: 120,
+          stars: 12,
+          logo: null,
+          readme: null,
+          permissions: [],
+          min_niles: "0.2.0",
+          needs_newer_niles: false,
+          blocked: null,
+        },
+      ],
+    });
+    const { dialog } = await openPanel(PLUGIN);
+    expect(await within(dialog).findByText("No longer listed")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        "Taken off the add-on library's list. Its author archived it. It keeps working.",
+      ),
+    ).toBeInTheDocument();
   });
 });
 

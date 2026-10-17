@@ -94,7 +94,9 @@ each of your widgets goes, the last lines of its log (yours, and what Niles
 noted about it), and the buttons to turn it off, check for updates, update,
 roll back and remove it. Your pages join the menu, where the household shows,
 hides and moves them in Settings → Menu like the built-in ones. People find
-**Add-on from GitHub** at the end of the Available tab.
+**Add-on from GitHub** at the end of the Available tab, and your add-on on the
+**Browse** tab once your repo has the topic `niles-addon`
+([publishing](publishing.md#the-add-on-library)).
 
 ## Capabilities at a glance
 
@@ -135,7 +137,7 @@ See [host API](host-api.md#coming-later).
 7. [MQTT](mqtt.md): brokers, `trust-device` certificates, a printer as the example
 8. [Accounts and webhooks](accounts.md): signing in to a service, keeping its tokens, being called by it
 9. [Permissions](permissions.md): what each one allows and how the household sees it
-10. [Publishing](publishing.md): release layout, versioning, updates
+10. [Publishing](publishing.md): release layout, the add-on library, versioning, updates
 11. [Worked example: spot prices](example-spotprice.md): a complete plugin in Rust,
    with the same tool in JavaScript and Python
 

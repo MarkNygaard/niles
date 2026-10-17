@@ -16,7 +16,8 @@ import { PluginSettings } from "@/components/PluginSettings";
 import { api } from "@/lib/api";
 import type { PluginPreview, PluginSummary, SecretsReport } from "@/lib/api";
 import type { Status } from "@/lib/integrations";
-import { setupLine, widgetPlace, widgetPlaceOptions } from "@/lib/plugins";
+import { day, setupLine, widgetPlace, widgetPlaceOptions } from "@/lib/plugins";
+import { standingOf, useLibrary } from "@/lib/library";
 import { cn } from "@/lib/utils";
 
 /** An installed plugin on the Connected tab, laid out like a built-in's row. */
@@ -65,15 +66,6 @@ export function PluginRow({
   );
 }
 
-function day(iso: string | null): string | null {
-  if (!iso) return null;
-  return new Date(iso).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
 /**
  * An installed plugin's panel: where it came from, its settings, where
  * its widgets go, its log, and switching it off, updating, rolling back
@@ -110,6 +102,9 @@ export function PluginPanel({
   const [note, setNote] = useState<string | null>(null);
   const [update, setUpdate] = useState<PluginPreview | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // Before the early return below, so the hook order stays stable.
+  const library = useLibrary(plugin.repo !== null);
+  const standing = standingOf(plugin, library.data);
 
   async function run(work: () => Promise<void>) {
     setBusy(true);
@@ -184,6 +179,12 @@ export function PluginPanel({
             </dd>
           </>
         )}
+        {standing && (
+          <>
+            <dt className="text-muted-foreground">Library</dt>
+            <dd>{standing.label}</dd>
+          </>
+        )}
         <dt className="text-muted-foreground">Version</dt>
         <dd>{plugin.version}</dd>
         {plugin.authors.length > 0 && (
@@ -199,6 +200,7 @@ export function PluginPanel({
           </>
         )}
       </dl>
+      {standing?.note && <p className="text-muted-foreground">{standing.note}</p>}
       {plugin.older_interface && (
         <p className="text-muted-foreground">
           Built for an older Niles. It works, and a newer release may be on{" "}

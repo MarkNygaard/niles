@@ -248,6 +248,16 @@ export function widgetPlaceOptions(rooms: string[]): { value: string; label: str
 // ---------------------------------------------------------------------------
 // Pictures
 
+/** `14 Oct 2026`, in the reader's own format. */
+export function day(iso: string | null): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 /**
  * Where the app loads a page's picture from. A `data:` image is drawn
  * as it is, since it was checked with the tree; anything else comes

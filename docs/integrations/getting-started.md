@@ -248,8 +248,8 @@ git push origin v0.1.0
 ```
 
 The template's workflow builds the component and creates a GitHub release with
-`niles-integration.toml`, `integration.wasm` and `logo.svg` attached. Details
-in [publishing](publishing.md).
+`niles-integration.toml`, `integration.wasm`, `logo.svg` and `niles-installed`
+attached. Details in [publishing](publishing.md).
 
 ## 7. Install
 
@@ -263,7 +263,8 @@ is on the Connected tab, in its group with a **Custom** badge and a status
 line; its panel has your repo, the version and install date, the settings form
 generated from your manifest, where each widget goes, the last lines of its
 log, and buttons to turn it off, check for updates, roll back an update and
-remove it.
+remove it. Once your repo has the topic `niles-addon`, people also find it
+under **Browse** ([the add-on library](publishing.md#the-add-on-library)).
 
 Fill in the settings and press **Save**: the plugin restarts with them, and the
 status line says how that went ("Not set up: needs API key" until every

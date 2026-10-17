@@ -306,6 +306,11 @@ describe("AddOnsPage tabs", () => {
     expect(tab("Available")).toHaveAccessibleName("Available 2");
   });
 
+  it("offers Browse beside Connected and Available, without a count", () => {
+    setup([UNIFI_ADDED, NEMLIG]);
+    expect(screen.getByRole("tab", { name: "Browse" })).toBeInTheDocument();
+  });
+
   it("offers what is not added under Available", () => {
     setup([UNIFI_ADDED, TADO]);
     fireEvent.click(tab("Available"));

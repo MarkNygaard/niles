@@ -30,6 +30,9 @@ A user's goal extracted from a command. Tier 0 produces intents directly; a Tier
 ## Tool registry
 The structured catalogue of every tool the LLM can call. Tools are offered by topic, from keywords in the request. The registry is queryable structured data, not RAG.
 
+## Add-on library
+The Browse tab's list of add-ons other people published, read from one file the registry repo builds. Listed ones were reviewed into the registry; Unreviewed ones are only tagged `niles-addon` on GitHub.
+
 ## System prompt
 The full context assembled for the LLM on every turn. Ordered stable to volatile: persona, tool guidance, household context, user memory, agent memory, skills, capability references, origin room, speaker, current time.
 

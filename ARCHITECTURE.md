@@ -94,7 +94,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 | `niles-webpush` | Web Push to a person's devices, RFC 8291 and 8292 in pure Rust. |
 | `niles-websearch` | The SearXNG client, and the fetcher that goes only to the public internet. |
 | `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's. |
-| `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime. |
+| `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime, installed from GitHub releases and found in the add-on library. |
 | `niles-integration-linear` | Linear's webhook, turned into notifications. |
 | `niles-tls` | TLS to devices that sign their own certificate (an LG TV). |
 | `niles-bin` | The `niles` binary: `serve`, the dev subcommands, and all the wiring. |
@@ -129,6 +129,15 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 3. Actions go out through the `DeviceSink` (`MqttDeviceSink` in `niles-bin/src/wiring/automations.rs`, which uses the `CommandRouter`) and the `Notifier` (`niles-notifications`).
 4. A delay is kept in `automation_waits`, and a `wake_up` action starts a wake-up (`wake_up.rs`) kept in `wake_ups`, so both survive a restart. The last 20 runs of each rule, including ones a condition stopped, are kept in memory to answer "why didn't it".
 5. The curve and the morning routine are code, not rules: `niles-scheduler` computes them and `niles-bin/src/lighting.rs` ticks them.
+
+## How an add-on is found
+
+1. The author publishes releases as `docs/integrations/publishing.md` says, with a small `niles-installed` file beside the manifest and component, and gives the repo the GitHub topic `niles-addon`.
+2. The registry repo, `MarkNygaard/niles-addons`, lists reviewed repos in `addons.toml`. A pull request that adds one runs `niles plugin check --listing <repo>`: everything an install checks, plus the marker. It puts the permission lines in the check's summary, and Mark merges by hand. Merged is **Listed**: it passed the checks and someone read what it asks for. That is not an audit of its code, and later releases aren't reviewed again.
+3. An Action in the registry builds `index.json` every six hours and on every merge, and GitHub Pages serves it. It holds the listed repos, every public repo with the topic as Unreviewed, and repos taken off the list (removed, with the reason). Each entry carries its latest release's manifest and logo as text, a README excerpt, its stars, and GitHub's download counts. The format is in `niles_plugins::library`.
+4. `GET /plugins/install/library` fetches that one file when Browse or an add-on's panel asks, and keeps it six hours. It reads it as a stranger's: manifests go through the install's own parser, so permissions read as on the approval screen and `min_niles` is the install's own check; logos go through the logo allowlist; text is capped, and links are built from the repo. Browsing calls no GitHub API.
+5. Browse's **Install** opens the paste flow with the address filled in: the same preview, checks and approval. An installed add-on's panel says Listed, Unreviewed or No longer listed.
+6. After a fresh install succeeds, `Installer::install` downloads the release's `niles-installed` once per repo per house; `plugin_installs_counted` remembers, through a removal. A preview, an update or a reinstall never downloads it. GitHub's download count of that file across releases is the install count; without one, the library shows the component's downloads, labelled as such. This is not telemetry (rule 26): a public file is fetched from the address that just downloaded the add-on, and it carries nothing that download didn't.
 
 ## House rules
 
@@ -197,6 +206,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - WLED as a second MQTT device source (#110, #111).
 - Automations as narrow JSON rules in Postgres with a flow-drawn page, and no scripting language, which would be a security and complexity hole (#342, #344); waits survive a restart, and a rule can start the morning routine (#431).
 - Third-party add-ons as sandboxed WebAssembly components installed from GitHub releases (spec #384, #388, #390, #391); MQTT in 0.2 (#392); accounts and webhooks in 0.3 (#439, #444). **Rejected:** native Rust dylibs, because Rust has no stable ABI and a native library has the whole process's rights; and a subprocess or container per plugin, because it is sandboxed differently on every OS and Niles in Kubernetes can't start containers. A component is one portable file whose imports are all it can touch. Trust model: see Security notes.
+- The add-on library (NIL-35): found by a GitHub topic, listed through pull requests to a registry repo, read from one `index.json` on GitHub Pages, and counted by GitHub's download count of a `niles-installed` file each fresh install fetches once. **Rejected:** a server of Niles's own, which someone would have to run and trust; counts reported by each Niles, which is telemetry; and the component's own download count, which previews and updates inflate.
 - Linear through Linear's own MCP server, as a remote tool server; Niles files and queries issues and never talks to the ai-harness (#417, #419).
 - Approvals: Ask-first tools and every mail wait for the person's yes (spec #422, #423); the panel and the history (#455).
 - Accounts: one sign-in per provider serves Calendar, Mail or both (#424); mail (#425); iCloud over IMAP and SMTP (#426). App registrations: see Operations notes.
@@ -222,6 +232,8 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 **The allowlist amends itself, by design.** There are no roles, so anyone signed in can let anyone else in. That fits two adults sharing a home and is the wrong shape for anything larger: **revisit it first if Niles ever has a user who is not a householder.** If the list is ever emptied some other way, the bearer token is not subject to it, and `PATCH /config` restores it. People listed with no GitHub app is sign-in off, not failed closed (that would leave the bearer token as the only way in); the People card and the startup log say so.
 
 **The plugin trust model.** The sandbox limits what a plugin can *reach*; it does not make a plugin *trustworthy*. An approved plugin can do anything its declared hosts and devices allow: one given an account's password can do what that account can, one subscribed to device state learns when the house is empty and can send that to any host it declared, and any plugin can tell the model untrue things in a tool result. What the sandbox guarantees: no undeclared hosts or local addresses, no other integration's secrets, no database, conversations, memory or people, no code in the app, and capped memory and time. So the approval screen says plainly what is granted, the repo is shown, the component is pinned, and an update that asks for more is approved again.
+
+**The add-on library.** Listed means an add-on passed `niles plugin check --listing` when it was listed and someone read its permissions. It is not an audit of its code, and later releases aren't reviewed again. Nothing about installing changes: Browse's Install is the same preview and approval as a pasted address, and an update that asks for more is approved again. The index is a stranger's file. Niles parses its manifests with the install's parser, sanitises its logos with the install's allowlist, shows its text as text, and takes no address from it.
 
 ## Operations notes
 
@@ -258,6 +270,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - **Notification**: something Niles says unprompted at a satellite, with a chime and quiet hours; a person's own things also go to their devices by Web Push.
 - **Automation**: when X, do Y. Rules are stored in Postgres; the curve and the morning routine are code.
 - **Tool server**: a remote MCP server whose tools Niles offers, named `<id>__<tool>`.
+- **Add-on library**: the add-ons other people published, read from the registry's `index.json` and shown under Add-ons → Browse. Each is Listed (reviewed into the registry), Unreviewed (found by the `niles-addon` topic) or, once taken off the list, No longer listed.
 - **Plugin**: a WebAssembly component installed from a GitHub release, targeting the `niles:integration/plugin` world in `schemas/niles-integration.wit`.
 - **features.toml / MANIFEST.md**: the catalogue of what Niles does, and the LLM-facing file `niles generate-manifest` makes from it.
 

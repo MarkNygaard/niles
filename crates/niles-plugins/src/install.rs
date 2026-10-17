@@ -18,9 +18,15 @@
 //! For [`Options::rollback_window`] after an update the new version is
 //! watched, and if it traps, times out, or its component does not load,
 //! the version before it is put back.
+//!
+//! A fresh install that succeeded downloads its release's
+//! `niles-installed` once per repo per house: GitHub's count of that
+//! file is the add-on's install count in the [`library`]. A preview, an
+//! update and a reinstall don't, and the install never fails over it.
 
 use crate::check::{self, MAX_LOGO};
-use crate::github::{self, GitHub, MAX_MANIFEST, Release, Repo};
+use crate::github::{self, Asset, GitHub, MAX_MANIFEST, Release, Repo};
+use crate::library::{self, Library, MARKER, MAX_MARKER, Shelf};
 use crate::manifest::{INTERFACES, Manifest, MenuEntry, SettingKind, Widget};
 use crate::permissions::{self, CANNOT};
 use crate::runtime::{MAX_COMPONENT, Runtime, Status};
@@ -117,6 +123,10 @@ impl Default for Options {
         }
     }
 }
+
+/// How long counting an install may take: it is a few bytes, and the
+/// install has already succeeded.
+const MARKER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What a removed plugin leaves outside the plugin tables: its settings
 /// in the config store, its secrets in the secret store, its menu
@@ -343,6 +353,7 @@ struct Inner {
     runtime: Runtime,
     github: GitHub,
     options: Options,
+    library: Library,
     database: bool,
     /// Niles's own tools' names, which no plugin's may take.
     reserved_tools: Vec<String>,
@@ -363,6 +374,8 @@ struct Staged {
     package: Package,
     sha256: String,
     manifest_sha256: String,
+    /// The release's `niles-installed`, to count a fresh install by.
+    marker: Option<Asset>,
 }
 
 /// A release downloaded and checked.
@@ -387,6 +400,7 @@ impl Installer {
                 runtime,
                 github,
                 options,
+                library: Library::default(),
                 database: true,
                 reserved_tools: Vec::new(),
                 leftovers: None,
@@ -413,6 +427,12 @@ impl Installer {
 
     pub fn with_leftovers(self, leftovers: Arc<dyn Leftovers>) -> Self {
         self.edit(|inner| inner.leftovers = Some(leftovers))
+    }
+
+    /// The add-on library to browse: the registry's, or a stand-in in
+    /// tests.
+    pub fn with_library(self, library: Library) -> Self {
+        self.edit(|inner| inner.library = library)
     }
 
     pub fn runtime(&self) -> &Runtime {
@@ -466,6 +486,13 @@ impl Installer {
         Ok(self.stage(&repo, fetched, Purpose::Install))
     }
 
+    /// The add-on library, as Browse shows it: one request for the
+    /// registry's index while the copy kept is fresh, none to GitHub's
+    /// API.
+    pub async fn library(&self) -> Outcome<Arc<Shelf>> {
+        self.inner.library.shelf().await
+    }
+
     /// Install what the preview with `token` downloaded. `sha256`, when
     /// given, is the component's as the preview showed it, and must
     /// still be.
@@ -480,9 +507,49 @@ impl Installer {
                 manifest.name
             )));
         }
-        self.inner.runtime.install_package(staged.package).await?;
+        let Staged {
+            package, marker, ..
+        } = staged;
+        let repo = package.source.as_ref().map(|s| s.repo.clone());
+        self.inner.runtime.install_package(package).await?;
         tracing::info!(plugin = %manifest.id, "[plugins] installed {} {}", manifest.name, manifest.version);
+        if let (Some(repo), Some(marker)) = (repo, marker) {
+            self.count(&manifest.id, &repo, &marker).await;
+        }
         self.listed(&manifest.id).await
+    }
+
+    /// Count this house's first install from `repo`: one download of its
+    /// release's `niles-installed`, whose download count GitHub keeps.
+    /// At most once: the claim is made before the download, and a failed
+    /// download is not tried again.
+    async fn count(&self, id: &str, repo: &str, marker: &Asset) {
+        if marker.size > MAX_MARKER as u64 {
+            tracing::debug!(plugin = %id, "[plugins] not counted: its {MARKER} is {} bytes", marker.size);
+            return;
+        }
+        let Ok((repo, _)) = github::parse_repo(repo) else {
+            return;
+        };
+        let key = repo.slug().to_lowercase();
+        match self.inner.runtime.store().count_install(&key).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                tracing::warn!(plugin = %id, "[plugins] install not counted: {e}");
+                return;
+            }
+        }
+        match tokio::time::timeout(
+            MARKER_TIMEOUT,
+            self.inner.github.download(marker, MAX_MARKER),
+        )
+        .await
+        {
+            Ok(Ok(_)) => tracing::debug!("[plugins] install counted"),
+            Ok(Err(e)) => tracing::info!("[plugins] install not counted: {e}"),
+            Err(_) => tracing::info!("[plugins] install not counted: {MARKER} took too long"),
+        }
     }
 
     /// Ask `id`'s repo for a newer release and record what it finds:
@@ -1086,6 +1153,7 @@ impl Installer {
         let sha256 = niles_db::hex_digest(&component);
         let manifest_sha256 = niles_db::hex_digest(text.as_bytes());
         let names = bare_names(&manifest.id, &tools);
+        let marker = release.asset(library::MARKER).cloned();
         let preview = Preview {
             token: token.clone(),
             expires_in: self.inner.options.staging_ttl.as_secs(),
@@ -1148,6 +1216,7 @@ impl Installer {
             },
             sha256,
             manifest_sha256,
+            marker,
         };
         let mut all = lock(&self.inner.staged);
         let ttl = self.inner.options.staging_ttl;
@@ -1267,6 +1336,7 @@ mod tests {
             },
             sha256: niles_db::hex_digest(component),
             manifest_sha256: niles_db::hex_digest(b"id = \"x\""),
+            marker: None,
         }
     }
 

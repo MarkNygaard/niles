@@ -415,7 +415,7 @@ since_pr = 388
 [[feature]]
 id = "plugins-dev-check"
 category = "runtime.plugins"
-summary = "`niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house"
+summary = "`niles plugin check` validates a plugin as an install would and lists its permissions; `--listing` adds the marker check"
 since_pr = 388
 
 [[feature]]
@@ -918,3 +918,21 @@ category = "voice.media"
 summary = "A researched two-host episode, voiced by the house's own Kokoro, played in the app or on a Sonos"
 phrasings = ["make me a quick podcast about the Øresund bridge", "play the podcast about the bridge in the kitchen"]
 since_pr = 457
+
+[[feature]]
+id = "plugins-library"
+category = "ui.integrations"
+summary = "Browse lists add-ons others published, Listed before Unreviewed, with installs and stars; Install opens the same preview"
+since_pr = 469
+
+[[feature]]
+id = "api-plugins-library"
+category = "api.read"
+summary = "GET /plugins/install/library: the add-on library from the registry's one index.json, kept 6 hours; no GitHub API calls"
+since_pr = 469
+
+[[feature]]
+id = "plugins-install-count"
+category = "runtime.plugins"
+summary = "A fresh install downloads the release's niles-installed once per house, so GitHub counts installs; previews don't"
+since_pr = 469
