@@ -10,6 +10,10 @@ use niles_notifications::Priority;
 
 const LINEAR_WEBHOOK_TIMESTAMP_TOLERANCE_MS: u64 = 60_000;
 
+/// Where the Linear webhook's signing secret is sealed. Typed in on
+/// Linear's card under Add-ons.
+pub const LINEAR_WEBHOOK_SECRET: &str = "linear.webhook_secret";
+
 pub async fn handle_linear(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -18,13 +22,16 @@ pub async fn handle_linear(
     let Some(wh) = state.linear_webhook.as_ref() else {
         return StatusCode::NOT_FOUND;
     };
+    let Some(secret) = (wh.secret)() else {
+        return StatusCode::NOT_FOUND;
+    };
     let Some(sig) = headers
         .get("linear-signature")
         .and_then(|v| v.to_str().ok())
     else {
         return StatusCode::UNAUTHORIZED;
     };
-    if !niles_integration_linear::verify_signature(&wh.secret, &body, sig) {
+    if !niles_integration_linear::verify_signature(secret.as_bytes(), &body, sig) {
         return StatusCode::UNAUTHORIZED;
     }
     if headers
@@ -42,9 +49,8 @@ pub async fn handle_linear(
     if !webhook_timestamp_is_current(&payload) {
         return StatusCode::UNAUTHORIZED;
     }
-    if let Some(n) = niles_integration_linear::notification_for(&payload, &wh.team) {
-        wh.center
-            .deliver(n.text, wh.notify_room.clone(), Priority::Important);
+    if let Some(n) = niles_integration_linear::notification_for(&payload) {
+        wh.center.deliver(n.text, None, Priority::Important);
     }
     StatusCode::OK
 }
@@ -85,8 +91,9 @@ mod tests {
         hex::encode(hmac::Mac::finalize(mac).into_bytes())
     }
 
-    fn app_state_with_webhook(secret: &[u8], team: &str) -> AppState {
+    fn app_state_with_secret(secret: Option<&[u8]>) -> AppState {
         let center = Arc::new(NotificationCenter::new(10));
+        let secret = secret.map(|s| String::from_utf8(s.to_vec()).unwrap());
         AppState::new(
             Arc::new(niles_core::DeviceRegistry::default()),
             Arc::new(NoopPublisher),
@@ -94,11 +101,13 @@ mod tests {
             niles_core::EventBus::new(16),
         )
         .with_linear_webhook(Some(Arc::new(LinearWebhookState {
-            secret: secret.to_vec(),
-            team: team.into(),
-            notify_room: None,
+            secret: Box::new(move || secret.clone()),
             center,
         })))
+    }
+
+    fn app_state_with_webhook(secret: &[u8]) -> AppState {
+        app_state_with_secret(Some(secret))
     }
 
     fn webhook_timestamp() -> i64 {
@@ -108,7 +117,7 @@ mod tests {
     #[tokio::test]
     async fn valid_signed_webhook_delivers() {
         let secret = b"shh";
-        let state = app_state_with_webhook(secret, "TEAM");
+        let state = app_state_with_webhook(secret);
         let body = serde_json::json!({
             "action": "update",
             "type": "Issue",
@@ -146,7 +155,7 @@ mod tests {
     #[tokio::test]
     async fn tampered_signature_rejected() {
         let secret = b"shh";
-        let state = app_state_with_webhook(secret, "TEAM");
+        let state = app_state_with_webhook(secret);
         let body = b"{}";
 
         let app = router(state.clone());
@@ -170,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn bad_user_agent_rejected() {
         let secret = b"shh";
-        let state = app_state_with_webhook(secret, "TEAM");
+        let state = app_state_with_webhook(secret);
         let body = serde_json::json!({
             "action": "update",
             "type": "Issue",
@@ -208,7 +217,7 @@ mod tests {
     #[tokio::test]
     async fn missing_signature_rejected() {
         let secret = b"shh";
-        let state = app_state_with_webhook(secret, "TEAM");
+        let state = app_state_with_webhook(secret);
 
         let app = router(state.clone());
         let response = app
@@ -228,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn irrelevant_event_acked_without_notification() {
         let secret = b"shh";
-        let state = app_state_with_webhook(secret, "TEAM");
+        let state = app_state_with_webhook(secret);
         let body = serde_json::json!({
             "action": "create",
             "type": "Issue",
@@ -265,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn stale_webhook_replay_rejected() {
         let secret = b"shh";
-        let state = app_state_with_webhook(secret, "TEAM");
+        let state = app_state_with_webhook(secret);
         let body = serde_json::json!({
             "action": "update",
             "type": "Issue",
@@ -302,7 +311,7 @@ mod tests {
     #[tokio::test]
     async fn missing_webhook_timestamp_rejected() {
         let secret = b"shh";
-        let state = app_state_with_webhook(secret, "TEAM");
+        let state = app_state_with_webhook(secret);
         let body = serde_json::json!({
             "action": "update",
             "type": "Issue",
@@ -333,6 +342,24 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let recent = state.linear_webhook.unwrap().center.recent(1);
         assert!(recent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_no_secret_saved_there_is_no_webhook() {
+        let state = app_state_with_secret(None);
+        let body = b"{}";
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/linear")
+                    .header("linear-signature", sign(b"", body))
+                    .body(Body::from(body.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

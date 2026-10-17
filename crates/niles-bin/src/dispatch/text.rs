@@ -425,11 +425,23 @@ pub(crate) async fn dispatch_text(
             }
             Some(response::scene_saved(&name))
         }
-        Intent::SceneApply { name } => {
-            let Some(entries) = ctx.scenes.get(&name) else {
+        Intent::SceneApply { name, room } => {
+            let Some(mut entries) = ctx.scenes.get(&name) else {
                 tracing::info!("[{peer}] no scene named {name:?}");
                 return Some(response::scene_not_found(&name));
             };
+            // "Cosy in the living room": that room's lights from it, so a
+            // cosy saved for another room is not applied over there.
+            if let Some(room) = &room {
+                let Ok(canonical) = intent_room_to_canonical(room) else {
+                    return Some(response::room_not_found(room));
+                };
+                entries.retain(|e| e.device_id.room() == &canonical);
+                if entries.is_empty() {
+                    tracing::info!("[{peer}] scene {name:?} has nothing in {canonical}");
+                    return Some(response::scene_not_in_room(&name, room));
+                }
+            }
             if entries.is_empty() {
                 tracing::info!("[{peer}] scene {name:?} is empty — nothing to apply");
                 return Some(response::scene_empty(&name));

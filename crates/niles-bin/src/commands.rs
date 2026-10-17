@@ -445,6 +445,7 @@ pub(crate) async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         presence_agg,
         &cfg.home,
         None,
+        None,
         false,
     );
     let client = build_llm_client(&cfg)?;

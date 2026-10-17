@@ -75,18 +75,15 @@ pub fn parse_webhook(body: &[u8]) -> Result<WebhookPayload> {
 }
 
 /// Map a verified webhook payload to a notification text, if relevant.
-pub fn notification_for(p: &WebhookPayload, team: &str) -> Option<WebhookNotification> {
+///
+/// Every team's: which teams send anything is chosen where the webhook
+/// is made, in Linear, and a second filter here would be a setting with
+/// nowhere to set it.
+pub fn notification_for(p: &WebhookPayload) -> Option<WebhookNotification> {
     if p.action != "update" || p.kind != "Issue" {
         return None;
     }
     let data = p.data.as_ref()?;
-    if let Some(t) = &data.team {
-        if t.key.as_deref() != Some(team) && t.name.as_deref() != Some(team) {
-            return None;
-        }
-    } else {
-        return None;
-    }
     let updated = p.updated_from.as_ref()?;
     updated.get("stateId")?;
     let state = data.state.as_ref()?;
@@ -164,14 +161,14 @@ mod tests {
     #[test]
     fn notification_for_in_review() {
         let p = make_update_payload("started", "In Review", "TEAM");
-        let n = notification_for(&p, "TEAM").unwrap();
+        let n = notification_for(&p).unwrap();
         assert!(n.text.contains("pull request ready"));
     }
 
     #[test]
     fn notification_for_done() {
         let p = make_update_payload("completed", "Done", "TEAM");
-        let n = notification_for(&p, "TEAM").unwrap();
+        let n = notification_for(&p).unwrap();
         assert_eq!(n.text, "The Fix bug task is done.");
     }
 
@@ -179,20 +176,23 @@ mod tests {
     fn notification_for_ignores_create() {
         let mut p = make_update_payload("started", "In Progress", "TEAM");
         p.action = "create".into();
-        assert!(notification_for(&p, "TEAM").is_none());
+        assert!(notification_for(&p).is_none());
     }
 
     #[test]
     fn notification_for_ignores_non_state_update() {
         let mut p = make_update_payload("started", "In Progress", "TEAM");
         p.updated_from = Some(serde_json::json!({"title": "old title"}));
-        assert!(notification_for(&p, "TEAM").is_none());
+        assert!(notification_for(&p).is_none());
     }
 
     #[test]
-    fn notification_for_ignores_other_team() {
-        let p = make_update_payload("started", "In Progress", "OTHER");
-        assert!(notification_for(&p, "TEAM").is_none());
+    fn notification_for_any_team_linear_sends() {
+        let p = make_update_payload("completed", "Done", "OTHER");
+        assert_eq!(
+            notification_for(&p).unwrap().text,
+            "The Fix bug task is done."
+        );
     }
 
     #[test]

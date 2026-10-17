@@ -82,9 +82,13 @@ Some details worth knowing:
   before. Sun rules need the house's location under **Settings → Home**.
 - **On** limits a time trigger to some days. None picked is every day.
 - **Say something** speaks in the room you pick under **In**, at a
-  priority: Routine, Important or Urgent. Pick a room, because a step
-  left on **Wherever Niles would** is not spoken. See [Notifications](notifications.md)
-  for what quiet hours do with each priority.
+  priority: Routine, Important or Urgent. Left on **Wherever Niles
+  would**, it is an announcement for the house and is spoken in every
+  room with a satellite. See [Notifications](notifications.md) for what
+  quiet hours do with each priority.
+- A brightness or warmth that a rule sets puts the light in manual mode,
+  so the curve leaves it there. A rule that only switches a light on or
+  off leaves it to the curve. See [Manual mode](lighting.md#manual-mode).
 - **Wake-up** brings lights up from nothing over a number of minutes
   (45 unless you say), then holds them. See [Lighting and
   scenes](lighting.md#the-morning-routine).

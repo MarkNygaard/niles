@@ -7,7 +7,7 @@ use crate::wiring::mqtt::connect_from_config;
 use anyhow::Context;
 use chrono::{Datelike, Timelike, Utc};
 use niles_config::{Config, ConfigStore};
-use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
+use niles_core::{Device, DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_mqtt::{CommandRouter, MqttPublisher, Z2mSource, is_actionable};
 use niles_scheduler::{
     BRIGHTNESS_DEBOUNCE, KELVIN_DEBOUNCE_K, ManualModeTracker, MinuteOfDay, MorningClaimTracker,
@@ -456,6 +456,28 @@ pub(crate) fn kelvin_drifted(reported: Option<u16>, want: Option<u16>) -> bool {
     matches!((reported, want), (Some(now), Some(want)) if now.abs_diff(want) > KELVIN_DEBOUNCE_K)
 }
 
+/// What the end of the morning routine sends a light it brought up: full,
+/// in the routine's warmth, unless it is there already — or somebody set
+/// it by hand during the ramp, which is the level they wanted, and
+/// manual mode exists so that nothing lifts it back.
+pub(crate) fn finish_ramp(
+    device: &Device,
+    manual: bool,
+    ambient: &HashSet<DeviceId>,
+    warmth: Option<u16>,
+) -> Option<DeviceState> {
+    if manual || !device.is_curve_driven(ambient) {
+        return None;
+    }
+    let arrived = device.state.brightness == Some(100)
+        && !kelvin_drifted(device.state.color_temp_kelvin, warmth);
+    (!arrived).then(|| DeviceState {
+        brightness: Some(100),
+        color_temp_kelvin: warmth,
+        ..Default::default()
+    })
+}
+
 /// One tick of the morning routine. Behaviour:
 ///
 /// - At `morning_start` on a fire-day: claim every off target device
@@ -585,22 +607,12 @@ pub(crate) async fn run_morning_routine_tick(
                     tracing::info!("[routine {minute_of_day}] released {id}");
                     continue;
                 };
-                if device.is_curve_driven(ambient)
-                    && (device.state.brightness != Some(100)
-                        || kelvin_drifted(device.state.color_temp_kelvin, warmth))
+                if let Some(target) = finish_ramp(&device, tracker.is_flagged(id), ambient, warmth)
                 {
-                    let target = DeviceState {
-                        brightness: Some(100),
-                        color_temp_kelvin: warmth,
-                        ..Default::default()
-                    };
                     if let Some(commander) = router.commander_for(id, &target) {
                         let what = format!("[routine {minute_of_day}]");
                         command_directly(commander, id, &target, dry_run, &what).await;
-                    } else {
-                        let Some((topic, payload)) = router.format(id, &target) else {
-                            continue;
-                        };
+                    } else if let Some((topic, payload)) = router.format(id, &target) {
                         if dry_run {
                             tracing::info!(
                                 "[routine {minute_of_day}] [dry-run] {topic}  {payload}"
@@ -744,5 +756,60 @@ pub(crate) async fn run_morning_routine_tick(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use niles_core::DeviceClass;
+
+    fn bedroom_lamp(brightness: u8) -> Device {
+        Device::new(
+            DeviceId::parse("z2m:bedroom/lamp").unwrap(),
+            DeviceState {
+                on: Some(true),
+                brightness: Some(brightness),
+                color_temp_kelvin: Some(2700),
+                ..Default::default()
+            },
+            DeviceClass::Light,
+        )
+    }
+
+    #[test]
+    fn the_end_of_the_routine_brings_a_light_up_to_full() {
+        let target = finish_ramp(&bedroom_lamp(60), false, &HashSet::new(), Some(2700));
+        assert_eq!(
+            target,
+            Some(DeviceState {
+                brightness: Some(100),
+                color_temp_kelvin: Some(2700),
+                ..Default::default()
+            })
+        );
+    }
+
+    #[test]
+    fn a_light_dimmed_by_hand_during_the_routine_keeps_its_level() {
+        assert_eq!(
+            finish_ramp(&bedroom_lamp(20), true, &HashSet::new(), Some(2700)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_light_already_at_full_is_sent_nothing() {
+        assert_eq!(
+            finish_ramp(&bedroom_lamp(100), false, &HashSet::new(), Some(2700)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_ambient_light_is_not_the_routines_to_finish() {
+        let lamp = bedroom_lamp(30);
+        let ambient = HashSet::from([lamp.id.clone()]);
+        assert_eq!(finish_ramp(&lamp, false, &ambient, Some(2700)), None);
     }
 }

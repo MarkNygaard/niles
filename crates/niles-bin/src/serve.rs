@@ -427,6 +427,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         presence_agg.clone(),
         &cfg.home,
         Some(store.clone()),
+        Some(tracker.clone()),
         args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -572,7 +573,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     // Notification center
-    let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
+    let mut notifications = build_notification_center(&cfg).await;
     let peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let wyoming_delivery = Arc::new(WyomingDelivery {
@@ -590,6 +591,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let automation_sink = Arc::new(MqttDeviceSink {
         publisher: publisher.clone(),
         router: router.clone(),
+        manual: tracker.clone(),
         dry_run: args.dry_run,
     });
 
@@ -743,6 +745,11 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     )
     .with_config_store(Some(store.clone()))
     .with_logs(LOG_BUFFER.get().cloned())
+    // Mounted always and answering only once its signing secret is
+    // saved, which is what switching it on is.
+    .with_linear_webhook(Some(Arc::new(niles_api::LinearWebhookState::new(
+        notifications.clone(),
+    ))))
     .with_manual_mode(Some(tracker.clone()))
     .with_scenes(Some(scenes.clone()))
     .with_groceries(groceries.clone())

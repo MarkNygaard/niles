@@ -59,9 +59,13 @@ light is in manual mode. These put a light in manual mode:
 - applying a scene
 - the brighter or dimmer buttons on a wall dimmer
 - setting brightness, warmth or colour from the dashboard
+- a brightness, warmth, colour or effect that Niles sets when it answers
+  a request with its own tools ("make the kitchen a bit cosier")
+- a brightness or warmth that an automation sets
 
-Turning a light on from the dashboard, or a room on by voice, does not:
-turning a light on is how you ask for the curve back.
+Turning a light on or off from the dashboard, by an automation, or a room
+on by voice, does not. Turning a light on is how you ask for the curve
+back.
 
 A light leaves manual mode when:
 
@@ -69,7 +73,9 @@ A light leaves manual mode when:
 - you say "back to normal" (every light), "back to normal in the kitchen"
   or "kitchen back to normal".
 
-Automations do not put a light in manual mode.
+A level sent to a light that is off also turns it on, and that off-to-on
+clears manual mode again, so the light gets the curve's value. Manual mode
+keeps a level only on a light that was already on.
 
 ## Ambient lights
 
@@ -109,6 +115,10 @@ Switch on **Wake up with light**, then choose:
 At the start of the window, the routine only takes lights that are off. A
 light that is already on is left as it is, and so is an ambient light.
 
+A light you set yourself during the window, by voice, a dimmer or the
+dashboard, is in manual mode. The routine stops ramping it, and at the end
+of the window it keeps your level instead of going to full.
+
 Turning the routine off keeps all its settings for when you turn it on
 again.
 
@@ -121,9 +131,10 @@ A scene is a snapshot of your lights that you can put back later.
 
 | To | Say |
 |---|---|
-| Save one room | "save the living room as cosy", "save the kitchen scene as dinner" |
+| Save one room | "save the living room as cosy", "save the kitchen scene as dinner", "save this as cosy in the living room" |
 | Save the whole house | "save this as movie night", "save movie night" |
 | Apply one | "cosy scene", "apply cosy", "scene cosy", "turn on cosy", "set the lights to cosy", "activate cosy" |
+| Apply one room's lights from it | "apply cosy in the living room", "turn on cosy in the living room" |
 | List them | "list my scenes", "what scenes do I have" |
 | Delete one | "delete the cosy scene", "remove scene cosy" |
 
@@ -133,8 +144,16 @@ the phrasings above are the ones that work.
 A scene keeps every light and lamp plug in the room, or in the whole
 house. It keeps whether each one was on or off, so applying it also
 turns off the lights that were off when you saved it. Saving under a name
-you already used replaces that scene. Names ignore upper case and
-spacing, so "Movie Night" and "movie night" are the same scene.
+you already used replaces that scene, whichever room it was for. Names
+ignore upper case and spacing, so "Movie Night" and "movie night" are the
+same scene.
+
+"In the living room" at the end of a name means the room when your house
+has a room by that name. "Save this as cosy in the living room" saves a
+scene called cosy with the living room's lights. "Save this as dinner in
+paris" saves a scene called "dinner in paris", because there is no room
+called paris. Applying "cosy in the living room" puts back only the
+living room's lights from cosy.
 
 "Turn on cosy" means the scene only when a scene called cosy exists and
 no room or device has that name. A room or a device always wins.

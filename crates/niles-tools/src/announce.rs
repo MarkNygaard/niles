@@ -43,7 +43,7 @@ impl Tool for AnnounceTool {
                     },
                     "room": {
                         "type": "string",
-                        "description": "Optional target room name. If omitted, the notification is recorded but not spoken (no target satellite is known)."
+                        "description": "Optional target room name. If omitted, it is an announcement for the house, spoken in every room with a satellite."
                     }
                 },
                 "required": ["text", "priority"],

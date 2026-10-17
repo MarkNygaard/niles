@@ -28,7 +28,7 @@ add-on**. Removing one deletes its saved keys too.
 | nemlig.com | Turns the shopping list into a filled basket. | A nemlig.com account's email and password. |
 | Claude Code | Claude answers the chat and handles new rules. | A paid Claude subscription. |
 | ChatGPT | ChatGPT answers the chat and handles new rules. | A paid ChatGPT subscription (Plus or Pro). |
-| Linear | Issues, projects and comments, through Linear's own tools. | A Linear workspace and a personal API key. |
+| Linear | Issues, projects and comments, through Linear's own tools. | A Linear workspace and a personal API key. To hear when an issue moves, a Linear webhook and its signing secret. |
 | Web search (SearXNG) | Web search and pictures for Claude and ChatGPT. | A SearXNG instance Niles can reach. |
 
 iCloud calendars need nothing here. Each person connects theirs from
@@ -92,6 +92,27 @@ tools to the assistant, which is slower and better at writing. Off keeps
 quick lookups on the fast model. **Notes for Niles, given with these
 tools** tells the model how your workspace is used, such as which team a
 coding task goes to.
+
+### Hearing when an issue moves
+
+Linear can also tell Niles when an issue goes to review or is done, and
+Niles says so: "The Fix the hall light task has a pull request ready for
+review." It is an announcement for the house, spoken in every room with a
+satellite at Important priority.
+
+1. In Linear, open **Settings → API → Webhooks** and make a webhook for
+   **Issues**. Pick the teams you want to hear about there; Niles
+   announces every team the webhook sends.
+2. Send it to your Niles's address followed by `/webhooks/linear`. The
+   panel shows the full address. Linear has to be able to reach it, so
+   this needs Niles on an address outside the house.
+3. Copy the webhook's signing secret into **Linear webhook signing
+   secret** on Linear's panel.
+
+The webhook is on once the secret is saved, with no restart. Until then
+the address answers as if it did not exist. Niles checks Linear's
+signature on every call and ignores one more than a minute old. Removing
+the Linear add-on deletes the secret too.
 
 Linear is the one tool server the app can add. Others can be written into
 Niles's config file by whoever runs it.

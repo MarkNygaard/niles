@@ -101,7 +101,7 @@ impl IntentRouter {
     pub fn parse_with_context(&self, transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
         // Existing patterns take precedence so behaviour doesn't change.
         if let Some(intent) = self.parse(transcript) {
-            return Some(intent);
+            return Some(scene_in_a_room(intent, &ctx));
         }
 
         let t = normalize(transcript);
@@ -941,6 +941,7 @@ fn match_scene_apply(t: &str) -> Option<Intent> {
     }
     Some(Intent::SceneApply {
         name: name.to_string(),
+        room: None,
     })
 }
 
@@ -987,12 +988,62 @@ fn match_scene_by_name(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
         .or_else(|| caps.name("name3"))?
         .as_str()
         .trim();
-    let canonical = niles_core::canonicalize_name(name);
-    if !ctx.scenes.contains(&canonical) {
+    let applied = scene_in_a_room(
+        Intent::SceneApply {
+            name: name.to_string(),
+            room: None,
+        },
+        ctx,
+    );
+    let Intent::SceneApply { name, .. } = &applied else {
         return None;
+    };
+    ctx.scenes
+        .contains(&niles_core::canonicalize_name(name))
+        .then_some(applied)
+}
+
+/// "save this as cosy in the living room" names a scene cosy for the
+/// living room, and "cosy in the living room" applies that one, rather
+/// than either being a scene called "cosy in the living room".
+///
+/// Only when what follows "in" is a room the house has, so "dinner in
+/// paris" stays a name. A scene already saved under the whole phrase
+/// keeps answering to it; one saved under the short name, for the room,
+/// is the one applied.
+fn scene_in_a_room(intent: Intent, ctx: &RouterContext<'_>) -> Intent {
+    match intent {
+        Intent::SceneSave { name, room: None } => match named_room(&name, ctx) {
+            Some((name, room)) => Intent::SceneSave {
+                name: name.to_string(),
+                room: Some(room.to_string()),
+            },
+            None => Intent::SceneSave { name, room: None },
+        },
+        Intent::SceneApply { name, room: None } => {
+            let saved = |n: &str| ctx.scenes.contains(&niles_core::canonicalize_name(n));
+            match named_room(&name, ctx).filter(|(short, _)| !saved(&name) && saved(short)) {
+                Some((short, room)) => Intent::SceneApply {
+                    name: short.to_string(),
+                    room: Some(room.to_string()),
+                },
+                None => Intent::SceneApply { name, room: None },
+            }
+        }
+        other => other,
     }
-    Some(Intent::SceneApply {
-        name: name.to_string(),
+}
+
+/// `name` split at an "in (the) <room>" that ends it and names a room the
+/// house has: the first such "in", so the room is as long as it can be.
+fn named_room<'a>(name: &'a str, ctx: &RouterContext<'_>) -> Option<(&'a str, &'a str)> {
+    name.match_indices(" in ").find_map(|(at, sep)| {
+        let short = name[..at].trim();
+        let rest = &name[at + sep.len()..];
+        let room = rest.strip_prefix("the ").unwrap_or(rest).trim();
+        let known =
+            RoomName::parse(room.replace(' ', "_")).is_ok_and(|r| ctx.device_index.has_room(&r));
+        (known && !short.is_empty()).then_some((short, room))
     })
 }
 
@@ -2510,6 +2561,7 @@ mod tests {
             parse("apply kitchen evening"),
             Some(Intent::SceneApply {
                 name: "kitchen evening".into(),
+                room: None,
             })
         );
     }
@@ -2520,6 +2572,7 @@ mod tests {
             parse("kitchen evening scene"),
             Some(Intent::SceneApply {
                 name: "kitchen evening".into(),
+                room: None,
             })
         );
     }
@@ -2530,6 +2583,7 @@ mod tests {
             parse("scene kitchen evening"),
             Some(Intent::SceneApply {
                 name: "kitchen evening".into(),
+                room: None,
             })
         );
     }
@@ -2545,6 +2599,7 @@ mod tests {
             parse("Apply Kitchen Evening."),
             Some(Intent::SceneApply {
                 name: "kitchen evening".into(),
+                room: None,
             })
         );
     }
@@ -2644,6 +2699,7 @@ mod tests {
             parse("kitchen evening scene"),
             Some(Intent::SceneApply {
                 name: "kitchen evening".into(),
+                room: None,
             })
         );
     }
@@ -2654,6 +2710,7 @@ mod tests {
             parse("apply delete party"),
             Some(Intent::SceneApply {
                 name: "delete party".into(),
+                room: None,
             })
         );
     }
@@ -2664,6 +2721,7 @@ mod tests {
             parse("scene remove clutter"),
             Some(Intent::SceneApply {
                 name: "remove clutter".into(),
+                room: None,
             })
         );
     }
@@ -3785,7 +3843,8 @@ mod context_tests {
             assert_eq!(
                 parse_with(said, ctx_with_scenes(&idx, &scenes)),
                 Some(Intent::SceneApply {
-                    name: "cosy".into()
+                    name: "cosy".into(),
+                    room: None,
                 }),
                 "{said}"
             );
@@ -3825,13 +3884,82 @@ mod context_tests {
         assert_eq!(
             parse_with("turn on Movie  Night", ctx_with_scenes(&idx, &scenes)),
             Some(Intent::SceneApply {
-                name: "movie night".into()
+                name: "movie night".into(),
+                room: None,
             })
         );
     }
 
     fn parse_with(transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
         IntentRouter::new().parse_with_context(transcript, ctx)
+    }
+
+    #[test]
+    fn a_scene_saved_in_a_room_is_named_without_it() {
+        let idx = fixture_multi();
+        for said in [
+            "save this as cosy in the living room",
+            "save this scene as cosy in living room",
+            "save cosy in the living room",
+        ] {
+            assert_eq!(
+                parse_with(said, ctx_with(&idx, None)),
+                Some(Intent::SceneSave {
+                    name: "cosy".into(),
+                    room: Some("living room".into()),
+                }),
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_with_in_but_no_room_after_it_stays_whole() {
+        let idx = fixture_multi();
+        assert_eq!(
+            parse_with("save this as dinner in paris", ctx_with(&idx, None)),
+            Some(Intent::SceneSave {
+                name: "dinner in paris".into(),
+                room: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_room_scene_is_applied_by_the_words_it_was_saved_with() {
+        let idx = fixture_multi();
+        let scenes = vec!["cosy".to_string()];
+        for said in [
+            "apply cosy in the living room",
+            "turn on cosy in the living room",
+            "activate cosy in living room",
+        ] {
+            let parsed = parse_with(said, ctx_with_scenes(&idx, &scenes));
+            assert_eq!(
+                parsed,
+                Some(Intent::SceneApply {
+                    name: "cosy".into(),
+                    room: Some("living room".into()),
+                }),
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scene_saved_under_the_whole_phrase_still_answers_to_it() {
+        let idx = fixture_multi();
+        let scenes = vec!["cosy".to_string(), "cosy_in_the_living_room".to_string()];
+        assert_eq!(
+            parse_with(
+                "apply cosy in the living room",
+                ctx_with_scenes(&idx, &scenes)
+            ),
+            Some(Intent::SceneApply {
+                name: "cosy in the living room".into(),
+                room: None,
+            })
+        );
     }
 
     #[test]

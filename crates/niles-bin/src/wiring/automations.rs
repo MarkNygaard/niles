@@ -7,6 +7,7 @@ use niles_config::Config;
 use niles_core::{DeviceId, DeviceState};
 use niles_mqtt::{CommandRouter, MqttPublisher};
 use niles_notifications::NotificationCenter;
+use niles_scheduler::ManualModeTracker;
 use std::sync::Arc;
 
 /// Where the automations keep a run waiting out a delay.
@@ -90,12 +91,16 @@ pub(crate) async fn command_directly(
 pub(crate) struct MqttDeviceSink {
     pub(crate) publisher: MqttPublisher,
     pub(crate) router: Arc<CommandRouter>,
+    /// A rule the household made is an explicit adjustment like any
+    /// other: what it sets, the curve leaves alone.
+    pub(crate) manual: Arc<ManualModeTracker>,
     pub(crate) dry_run: bool,
 }
 
 #[async_trait::async_trait]
 impl DeviceSink for MqttDeviceSink {
     async fn set(&self, device: &DeviceId, desired: &DeviceState) {
+        self.manual.adjusted(device, desired);
         if let Some(commander) = self.router.commander_for(device, desired) {
             command_directly(commander, device, desired, self.dry_run, "[automation]").await;
             return;
@@ -226,4 +231,59 @@ pub(crate) async fn build_automation_store(
             .with_location(location)
             .with_sink(Arc::new(QueuedAutomations { tx })),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sink() -> (MqttDeviceSink, Arc<ManualModeTracker>) {
+        // A broker that is never reached: the sink runs dry.
+        let mqtt = niles_mqtt::MqttClient::connect(niles_mqtt::MqttOptions::new(
+            "127.0.0.1",
+            1,
+            "automation-sink-test",
+        ));
+        let manual = Arc::new(ManualModeTracker::new());
+        let sink = MqttDeviceSink {
+            publisher: mqtt.publisher(),
+            router: Arc::new(CommandRouter::z2m_only("zigbee2mqtt")),
+            manual: manual.clone(),
+            dry_run: true,
+        };
+        (sink, manual)
+    }
+
+    #[tokio::test]
+    async fn a_level_a_rule_sets_is_not_pulled_back_by_the_curve() {
+        let (sink, manual) = sink();
+        let lamp = DeviceId::parse("z2m:living_room/floor_lamp").unwrap();
+        sink.set(
+            &lamp,
+            &DeviceState {
+                brightness: Some(20),
+                color_temp_kelvin: Some(2200),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(manual.is_flagged(&lamp));
+    }
+
+    #[tokio::test]
+    async fn a_rule_switching_a_light_leaves_it_to_the_curve() {
+        let (sink, manual) = sink();
+        let lamp = DeviceId::parse("z2m:hallway/ceiling").unwrap();
+        for on in [true, false] {
+            sink.set(
+                &lamp,
+                &DeviceState {
+                    on: Some(on),
+                    ..Default::default()
+                },
+            )
+            .await;
+        }
+        assert!(!manual.is_flagged(&lamp));
+    }
 }

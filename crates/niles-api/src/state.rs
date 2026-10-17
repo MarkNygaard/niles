@@ -9,10 +9,24 @@ use std::sync::Arc;
 
 /// State required to verify and route Linear webhooks.
 pub struct LinearWebhookState {
-    pub secret: Vec<u8>,
-    pub team: String,
-    pub notify_room: Option<String>,
+    /// The signing secret Linear shows when the webhook is made. Read on
+    /// every request, so saving it in the app takes hold at once; none
+    /// means there is no webhook, and the route answers as if absent.
+    pub secret: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// Where what Linear says goes: an announcement for the house, since
+    /// nothing says which room the person who filed it is in.
     pub center: Arc<NotificationCenter>,
+}
+
+impl LinearWebhookState {
+    /// The webhook as the app sets it up: its secret sealed in the store
+    /// under [`crate::webhook::LINEAR_WEBHOOK_SECRET`].
+    pub fn new(center: Arc<NotificationCenter>) -> Self {
+        Self {
+            secret: Box::new(|| niles_config::secrets::get(crate::webhook::LINEAR_WEBHOOK_SECRET)),
+            center,
+        }
+    }
 }
 
 /// State shared with every request. `Clone` is cheap (just bumps

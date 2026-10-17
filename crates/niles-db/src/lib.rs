@@ -39,6 +39,7 @@ mod groceries;
 mod journal;
 mod memory;
 mod morning_claims;
+mod notifications;
 mod plugins;
 mod push;
 mod room_music;
@@ -66,6 +67,7 @@ pub use groceries::PostgresGroceries;
 pub use journal::PostgresJournal;
 pub use memory::PostgresMemory;
 pub use morning_claims::PostgresMorningClaims;
+pub use notifications::{NOTIFICATIONS_KEPT, PostgresNotifications};
 pub use plugins::{
     PluginDeviceRow, PluginInstall, PluginMeta, PluginRow, PostgresPlugins, hex_digest,
 };

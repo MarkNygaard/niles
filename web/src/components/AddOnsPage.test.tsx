@@ -434,6 +434,23 @@ describe("AddOnsPage", () => {
     expect(screen.getByText("Linear API key")).toBeTruthy();
   });
 
+  it("asks for the Linear webhook's signing secret and says where to send it", () => {
+    setup([{ ...LINEAR, added: true }], {
+      writable: true,
+      secrets: [
+        { key: "tool_servers.linear.api_key", label: "Linear API key", source: "stored" },
+        {
+          key: "linear.webhook_secret",
+          label: "Linear webhook signing secret",
+          source: "unset",
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Configure Linear" }));
+    expect(screen.getByLabelText("Linear webhook signing secret")).toBeTruthy();
+    expect(screen.getByText(`${window.location.origin}/webhooks/linear`)).toBeTruthy();
+  });
+
   it("switches nemlig.com on and asks for both halves of the login", () => {
     const { onChange } = setup([NEMLIG], NEMLIG_LOGIN);
     fireEvent.click(screen.getByRole("button", { name: "Connect nemlig.com" }));
