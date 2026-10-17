@@ -33,13 +33,16 @@ import {
   labelOf,
   moveStep,
   roomChoices,
+  sensorChoices,
   siblings,
   stepAt,
   toggleDay,
   triggerChoices,
   wakeChoices,
   wakeTarget,
+  watchesSeveral,
   withBlindsTarget,
+  withSeveralSensors,
   withWakeTarget,
   withStep,
   withoutStep,
@@ -53,6 +56,7 @@ import type {
   Step,
   StepKind,
   WakeTarget,
+  Watching,
 } from "@/lib/automations";
 import type { Action, Condition, Day, Device, Duration, Measure, Trigger } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -259,34 +263,47 @@ function TriggerFields({
           <ForField value={value.for} onChange={(held) => onChange({ ...value, for: held })} />
         </>
       );
-    case "motion":
+    case "motion": {
+      const several = watchesSeveral(value);
       return (
         <>
-          <DeviceField
-            label="Motion sensor"
-            kind="motion"
-            value={value.device}
-            devices={devices}
-            onChange={(device) => onChange({ ...value, device: device ?? "" })}
-          />
-          <Choices
-            label="When it"
-            value={value.detected === undefined ? "either" : value.detected ? "sees" : "stops"}
-            options={[
-              { value: "sees", label: "Sees motion" },
-              { value: "stops", label: "Stops seeing motion" },
-              { value: "either", label: "Either" },
-            ]}
-            onChange={(next) =>
-              onChange({
-                ...value,
-                detected: next === "either" ? undefined : next === "sees",
-              })
-            }
-          />
+          <SensorsField value={value} devices={devices} onChange={onChange} />
+          {several ? (
+            <Choices
+              label="When"
+              value={value.detected ? "any" : "none"}
+              options={[
+                { value: "any", label: "Any sees motion" },
+                { value: "none", label: "None sees motion" },
+              ]}
+              onChange={(next) => onChange({ ...value, detected: next === "any" })}
+            />
+          ) : (
+            <Choices
+              label="When it"
+              value={value.detected === undefined ? "either" : value.detected ? "sees" : "stops"}
+              options={[
+                { value: "sees", label: "Sees motion" },
+                { value: "stops", label: "Stops seeing motion" },
+                { value: "either", label: "Either" },
+              ]}
+              onChange={(next) =>
+                onChange({
+                  ...value,
+                  detected: next === "either" ? undefined : next === "sees",
+                })
+              }
+            />
+          )}
           <ForField value={value.for} onChange={(held) => onChange({ ...value, for: held })} />
+          {several && value.detected === false && (
+            <p className="text-muted-foreground text-xs">
+              The wait starts when the last of them clears; motion in any starts it over.
+            </p>
+          )}
         </>
       );
+    }
     case "device_state":
       return (
         <>
@@ -526,27 +543,23 @@ function ConditionFields({
           />
         </>
       );
-    case "motion_is":
+    case "motion_is": {
+      const several = watchesSeveral(value);
       return (
         <>
-          <DeviceField
-            label="Motion sensor"
-            kind="motion_is"
-            value={value.device}
-            devices={devices}
-            onChange={(device) => onChange({ ...value, device: device ?? "" })}
-          />
+          <SensorsField value={value} devices={devices} onChange={onChange} />
           <Choices
             label="Is"
             value={value.detected ? "motion" : "none"}
             options={[
-              { value: "motion", label: "Sees motion" },
-              { value: "none", label: "Sees no motion" },
+              { value: "motion", label: several ? "Any sees motion" : "Sees motion" },
+              { value: "none", label: several ? "None sees motion" : "Sees no motion" },
             ]}
             onChange={(next) => onChange({ ...value, detected: next === "motion" })}
           />
         </>
       );
+    }
     case "numeric":
       return (
         <ReadingFields
@@ -1230,6 +1243,58 @@ function StartedByField({
         ))}
       </div>
     </Field>
+  );
+}
+
+/** The sensor a motion step watches, or the several it watches as one:
+    named, and every motion sensor in some rooms. */
+function SensorsField<T extends Watching>({
+  value,
+  devices,
+  onChange,
+}: {
+  value: T;
+  devices: Device[];
+  onChange: (value: T) => void;
+}) {
+  const several = watchesSeveral(value);
+  const choices = sensorChoices(devices, value);
+  return (
+    <>
+      <Choices
+        label="Watch"
+        value={several ? "several" : "one"}
+        options={[
+          { value: "one", label: "One sensor" },
+          { value: "several", label: "Several" },
+        ]}
+        onChange={(next) => onChange(withSeveralSensors(value, next === "several", devices))}
+      />
+      {several ? (
+        <>
+          <Ticks
+            label="These sensors"
+            choices={choices.sensors}
+            value={value.devices ?? []}
+            onChange={(picked) => onChange({ ...value, devices: picked })}
+          />
+          <Ticks
+            label="And every sensor in"
+            choices={choices.rooms}
+            value={value.rooms ?? []}
+            onChange={(rooms) => onChange({ ...value, rooms })}
+          />
+        </>
+      ) : (
+        <DeviceField
+          label="Motion sensor"
+          kind="motion"
+          value={value.device}
+          devices={devices}
+          onChange={(device) => onChange({ ...value, device: device ?? "" })}
+        />
+      )}
+    </>
   );
 }
 

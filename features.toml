@@ -509,6 +509,25 @@ summary = "Any device that reports an action, such as a printer finishing, can s
 since_pr = 393
 
 [[feature]]
+id = "automations-motion-groups"
+category = "automations"
+summary = "A motion trigger or condition over several sensors or rooms: no motion in any of them for 2 minutes, or motion in one"
+phrasings = ["keep the hallway and kitchen lights on while I move between them", "turn both off once neither room has had motion for two minutes"]
+since_pr = 450
+
+[[feature]]
+id = "automations-save-warnings"
+category = "automations"
+summary = "Saving or proposing a rule warns when a check after a wait could end it with nothing to try again"
+since_pr = 450
+
+[[feature]]
+id = "automations-rule-in-full"
+category = "automations"
+summary = "A rule said a line at a time from the rule itself, shown with Save in the chat and used for the confirmation"
+since_pr = 450
+
+[[feature]]
 id = "plugins-widget-room-setting"
 category = "ui.integrations"
 summary = "A plugin's widget can start in the room one of its settings names, and moves when the setting changes"

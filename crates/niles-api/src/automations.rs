@@ -8,7 +8,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use niles_automations::store::DEFAULT_SOURCE;
-use niles_automations::{AutomationStore, Error, Rule, sentence};
+use niles_automations::{AutomationStore, Error, Rule, describe, sentence, warnings};
 use niles_config::AutomationRuleDto;
 use serde::Serialize;
 use std::sync::Arc;
@@ -26,6 +26,13 @@ pub struct AutomationView {
     pub source: &'static str,
     /// "When the office door opens, turn off the office lights."
     pub sentence: String,
+    /// The same, a line for each trigger, condition and action, an
+    /// `if`'s branches indented under it.
+    pub in_full: String,
+    /// What the rule will not do the way it reads — a check after a
+    /// wait that nothing tries again — said for the editor to show.
+    /// Saved anyway: the check may be meant.
+    pub warnings: Vec<String>,
     /// Why the rule is not running, when it is not.
     pub error: Option<String>,
 }
@@ -45,6 +52,8 @@ fn view(mut rule: AutomationRuleDto, source: &'static str) -> AutomationView {
             .err()
             .map(|e| e.to_string()),
         sentence: sentence(&rule),
+        in_full: describe(&rule),
+        warnings: warnings(&rule),
         rule,
         source,
     }
@@ -260,6 +269,42 @@ mod tests {
         let (_, listed) = send(&app, "GET", "/automations", None).await;
         assert_eq!(listed["rules"][0]["source"], "stored");
         assert_eq!(store.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn saving_a_rule_that_may_never_finish_says_so_and_saves_it() {
+        let app = app(Arc::new(AutomationStore::new()));
+        let (status, made) = send(
+            &app,
+            "POST",
+            "/automations",
+            Some(json!({
+                "description": "Hallway off",
+                "enabled": true,
+                "triggers": [{ "type": "motion", "device": "hallway/motion", "detected": false, "for": { "minutes": 2 } }],
+                "conditions": [{ "kind": "motion_is", "device": "kitchen/motion", "detected": false }],
+                "actions": [{ "do": "set_room", "room": "hallway", "on": false }],
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(
+            made["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains("nothing in this rule tries again"),
+            "{made}"
+        );
+        assert_eq!(
+            made["in_full"],
+            "When:\n  1. The hallway motion has seen no motion for 2 minutes\nOnly if:\n  - The \
+             kitchen motion sees no motion\nDo:\n  Turn off the hallway lights"
+        );
+        let (_, listed) = send(&app, "GET", "/automations", None).await;
+        assert_eq!(listed["rules"][0]["warnings"], made["warnings"]);
+
+        let (_, door) = send(&app, "POST", "/automations", Some(garden_door())).await;
+        assert_eq!(door["warnings"], json!([]));
     }
 
     #[tokio::test]

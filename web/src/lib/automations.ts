@@ -653,6 +653,17 @@ function triggerText(t: Trigger): string {
       return `${what} ${t.open ? "opens" : "closes"}`;
     }
     case "motion": {
+      if (watchesSeveral(t)) {
+        const all = sensorsText(t, "and");
+        const any = sensorsText(t, "or");
+        if (t.for) {
+          const held = durationText(t.for);
+          if (t.detected === undefined) return `${all}: unchanged for ${held}`;
+          return t.detected ? `${any}: motion for ${held}` : `${all}: no motion for ${held}`;
+        }
+        if (t.detected === undefined) return `${any}: motion starts or stops`;
+        return t.detected ? `${any}: sees motion` : `${all}: motion stops`;
+      }
       const what = device(t.device, "A motion sensor");
       if (t.for) {
         const held = durationText(t.for);
@@ -751,6 +762,11 @@ function conditionText(c: Condition, triggers: Trigger[]): string {
     case "contact_is":
       return `${device(c.device, "A door or window")} is ${c.open ? "open" : "closed"}`;
     case "motion_is":
+      if (watchesSeveral(c)) {
+        return c.detected
+          ? `${sensorsText(c, "or")} sees motion`
+          : `${sensorsText(c, "and")} see no motion`;
+      }
       return `${device(c.device, "A motion sensor")} sees ${c.detected ? "motion" : "no motion"}`;
     case "numeric":
       return `${reading(c.device, c.measure)} is ${bounds(c.measure, c.above, c.below)}`;
@@ -905,6 +921,71 @@ const USE: Partial<Record<StepKind, Use>> = {
     classified still says `open`, and the office door is one. */
 export function isContact(device: Device): boolean {
   return device.class === "contact" || (device.state.open ?? null) !== null;
+}
+
+/** A step about motion sensors: the trigger, or the condition. */
+export type Watching =
+  | Extract<Trigger, { type: "motion" }>
+  | Extract<Condition, { kind: "motion_is" }>;
+
+/**
+ * Whether a motion step watches several sensors as one rather than one
+ * in `device`. By which fields are there, not whether they hold
+ * anything, as with a wake-up's rooms: every box unticked must ask for
+ * a sensor, not quietly turn back into one.
+ */
+export function watchesSeveral(step: Watching): boolean {
+  return step.device === undefined && (step.devices !== undefined || step.rooms !== undefined);
+}
+
+/** A group of sensors by name: "Hallway motion and Kitchen motion" for
+    all of them, "… or …" for any. */
+function sensorsText(step: Watching, joiner: "and" | "or"): string {
+  const named = [
+    ...(step.devices ?? []).map(deviceLabel),
+    ...(step.rooms ?? []).map((r) => `every sensor in ${humanize(r)}`),
+  ];
+  return named.length > 0 ? upperFirst(listed(named, joiner)) : "Motion sensors yet to be picked";
+}
+
+/**
+ * The step watching one sensor, or several. Several start from the one
+ * there was; one keeps the first that was ticked. A group has to say
+ * whether it waits for motion or for none, so "either" becomes none.
+ */
+export function withSeveralSensors<T extends Watching>(
+  step: T,
+  several: boolean,
+  devices: Device[],
+): T {
+  if (watchesSeveral(step) === several) return step;
+  const { device: one, devices: named, rooms: _rooms, ...rest } = step;
+  if (several) {
+    return { ...rest, devices: one ? [one] : [], detected: rest.detected ?? false } as T;
+  }
+  return { ...rest, device: named?.[0] ?? first(devices, "motion") } as T;
+}
+
+/** What a group's tick boxes offer: the motion sensors, and the rooms
+    with one in them — and any already ticked, so none vanishes. */
+export function sensorChoices(
+  devices: Device[],
+  step: Watching,
+): { sensors: Choice[]; rooms: Choice[] } {
+  const sorted = (values: string[], label: (value: string) => string) =>
+    [...new Set(values)]
+      .map((value) => ({ value, label: label(value) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  return {
+    sensors: sorted(
+      [...deviceChoices(devices, "motion").map((c) => c.value), ...(step.devices ?? [])],
+      deviceLabel,
+    ),
+    rooms: sorted(
+      [...devices.filter(isMotion).map((d) => d.room).filter(Boolean), ...(step.rooms ?? [])],
+      humanize,
+    ),
+  };
 }
 
 /** A motion sensor, by class or by reporting `motion`, for the same
@@ -1308,8 +1389,12 @@ function conditionProblems(c: Condition, where: string, triggers: Trigger[]): st
       break;
     case "device_is":
     case "contact_is":
-    case "motion_is":
       if (!c.device) found.push(`${where} needs a device.`);
+      break;
+    case "motion_is":
+      if (watchesSeveral(c) ? !c.devices?.length && !c.rooms?.length : !c.device) {
+        found.push(`${where} needs a device.`);
+      }
       break;
     case "presence_is":
       break;
@@ -1391,14 +1476,16 @@ function actionProblems(
 
 function triggerProblems(t: Trigger, where: string): string[] {
   const found: string[] = [];
-  if (
-    (t.type === "contact" ||
-      t.type === "motion" ||
-      t.type === "device_action" ||
-      t.type === "numeric") &&
-    !t.device
-  ) {
+  if ((t.type === "contact" || t.type === "device_action" || t.type === "numeric") && !t.device) {
     found.push(`${where} needs a device.`);
+  }
+  if (t.type === "motion") {
+    if (watchesSeveral(t) ? !t.devices?.length && !t.rooms?.length : !t.device) {
+      found.push(`${where} needs a device.`);
+    }
+    if (watchesSeveral(t) && t.detected === undefined) {
+      found.push(`${where}: several sensors wait for motion in any, or for none in all.`);
+    }
   }
   if (t.type === "numeric" && t.above === undefined && t.below === undefined) {
     found.push(`${where} needs a value to go above or below.`);

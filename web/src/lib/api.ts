@@ -818,8 +818,18 @@ export type Trigger = { id?: string } & (
       With `for`, once it has stayed that way that long. */
   | { type: "contact"; device: string; open?: boolean; for?: Duration }
   /** `detected` true sees somebody, false sees nobody any more, absent
-      either. With `for`, "no motion for 2 minutes". */
-  | { type: "motion"; device: string; detected?: boolean; for?: Duration }
+      either. With `for`, "no motion for 2 minutes". One sensor in
+      `device`, or several watched as one — `devices`, and every motion
+      sensor in `rooms` — where false is none of them seeing anybody and
+      true any of them, and `detected` has to be given. */
+  | {
+      type: "motion";
+      device?: string;
+      devices?: string[];
+      rooms?: string[];
+      detected?: boolean;
+      for?: Duration;
+    }
   | { type: "device_state"; device?: string; room?: string; on?: boolean; for?: Duration }
   | {
       type: "numeric";
@@ -852,7 +862,8 @@ export type Condition =
     }
   | { kind: "device_is"; device: string; on: boolean }
   | { kind: "contact_is"; device: string; open: boolean }
-  | { kind: "motion_is"; device: string; detected: boolean }
+  /** One sensor, or several as the motion trigger takes them. */
+  | { kind: "motion_is"; device?: string; devices?: string[]; rooms?: string[]; detected: boolean }
   | { kind: "numeric"; device: string; measure: Measure; above?: number; below?: number }
   | { kind: "presence_is"; state: "home" | "away" }
   /** Which of the rule's triggers started this run, by their ids. */
@@ -918,6 +929,12 @@ export interface AutomationView {
   source: "stored" | "config";
   /** The rule as a sentence, written by the server. */
   sentence: string;
+  /** The rule a line at a time, branches indented, written by the
+      server from the rule itself. */
+  in_full: string;
+  /** What the rule will not do the way it reads, such as a check after
+      a wait that nothing tries again. Saved anyway. */
+  warnings: string[];
   /** Why the rule is not running, when it is invalid. */
   error: string | null;
 }
@@ -1019,6 +1036,11 @@ export interface ConversationSummary {
 /** Niles reading a rule back and asking whether to save it. */
 export interface Proposal {
   sentence: string;
+  /** The rule a line at a time, from the rule itself: what Save saves.
+      Absent on a turn kept before there was one. */
+  in_full?: string;
+  /** What the rule will not do the way it reads. */
+  warnings?: string[];
 }
 
 /** One thing said to Niles, and the answer. */

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, LoaderCircle, Mic, Square, SquarePen } from "lucide-react";
+import { ArrowUp, LoaderCircle, Mic, Square, SquarePen, TriangleAlert } from "lucide-react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ArtifactCard } from "@/components/ArtifactCard";
 import { PushNudge } from "@/components/PushNudge";
@@ -217,18 +217,40 @@ export function ChatView({
                 anything follows it, it has been answered one way or
                 the other. */}
             {turn.proposal && i === turns.length - 1 && !busy && (
-              <div className="flex gap-2 self-start px-1">
-                <Button size="sm" disabled={answering} onClick={() => onAnswer(i, true)}>
-                  Save
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={answering}
-                  onClick={() => onAnswer(i, false)}
-                >
-                  Don't save
-                </Button>
+              <div className="flex max-w-full flex-col gap-2 self-start px-1">
+                {/* The rule as Save would keep it, written by the server
+                    from the rule itself: what Niles said of it above is
+                    its own words, and can be wrong. */}
+                {turn.proposal.in_full && (
+                  <pre
+                    aria-label="The rule in full"
+                    className={cn(
+                      "bg-muted text-foreground rounded-lg px-3 py-2",
+                      "font-sans text-xs leading-relaxed whitespace-pre-wrap",
+                    )}
+                  >
+                    {turn.proposal.in_full}
+                  </pre>
+                )}
+                {turn.proposal.warnings?.map((warning) => (
+                  <p key={warning} className="text-muted-foreground flex gap-1.5 text-xs">
+                    <TriangleAlert aria-label="Warning" className="mt-0.5 size-3.5 shrink-0" />
+                    {warning}
+                  </p>
+                ))}
+                <div className="flex gap-2">
+                  <Button size="sm" disabled={answering} onClick={() => onAnswer(i, true)}>
+                    Save
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={answering}
+                    onClick={() => onAnswer(i, false)}
+                  >
+                    Don't save
+                  </Button>
+                </div>
               </div>
             )}
           </li>

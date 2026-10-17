@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
-import { AUTOMATIONS, nameOf, useSetEnabled } from "@/components/AutomationsPage";
+import { AUTOMATIONS, RuleWarnings, nameOf, useSetEnabled } from "@/components/AutomationsPage";
 import { FlowCanvas } from "@/components/automations/FlowCanvas";
 import { Inspector } from "@/components/automations/Inspector";
 import { Palette } from "@/components/automations/Palette";
@@ -107,6 +107,7 @@ function Viewer({ view }: { view?: AutomationView }) {
         <p className="text-sm">{view.sentence}</p>
         {!stored && <Badge variant="outline">From config</Badge>}
         {view.error && <p className="text-destructive text-xs">{view.error}</p>}
+        <RuleWarnings warnings={view.warnings} />
       </div>
       <div className="bg-card h-[55dvh] min-h-72 overflow-hidden rounded-xl border">
         <FlowCanvas rule={view.rule} />
@@ -208,6 +209,8 @@ function Builder({ view, devices }: { view?: AutomationView; devices: Device[] }
       ) : (
         found.length > 0 && <p className="text-muted-foreground text-sm">{found[0]}</p>
       )}
+      {/* The saved rule's: the server says them of what it has. */}
+      {view && <RuleWarnings warnings={view.warnings} />}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="bg-card relative h-[60vh] min-h-96 overflow-hidden rounded-xl border">
