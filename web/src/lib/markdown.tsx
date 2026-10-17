@@ -76,7 +76,10 @@ function startsBlock(line: string, next: string | undefined): boolean {
   );
 }
 
-export function parseMarkdown(source: string): Block[] {
+/** `breaks`: a line break inside a paragraph stays one, as a chat
+    reply means it to (a few lines of status), rather than running the
+    lines together as a document's wrapped text. */
+export function parseMarkdown(source: string, { breaks = false } = {}): Block[] {
   const all = lines(source);
   const blocks: Block[] = [];
   let i = 0;
@@ -158,7 +161,7 @@ export function parseMarkdown(source: string): Block[] {
     while (i < all.length && all[i].trim() && !startsBlock(all[i], all[i + 1])) {
       paragraph.push(all[i++].trim());
     }
-    blocks.push({ type: "paragraph", text: paragraph.join(" ") });
+    blocks.push({ type: "paragraph", text: paragraph.join(breaks ? "\n" : " ") });
   }
   return blocks;
 }
@@ -257,12 +260,21 @@ export interface MarkdownProps {
       shown and cannot be changed. */
   onToggle?: (item: ListItem, checked: boolean) => void;
   disabled?: boolean;
+  /** Keep a paragraph's line breaks (see `parseMarkdown`). */
+  breaks?: boolean;
+  className?: string;
 }
 
-export function Markdown({ source, onToggle, disabled }: MarkdownProps) {
-  const blocks = parseMarkdown(source);
+export function Markdown({ source, onToggle, disabled, breaks, className }: MarkdownProps) {
+  const blocks = parseMarkdown(source, { breaks });
   return (
-    <div className="flex flex-col gap-3 text-sm leading-relaxed break-words">
+    <div
+      className={cn(
+        "flex flex-col gap-3 text-sm leading-relaxed break-words",
+        breaks && "[&_p]:whitespace-pre-line",
+        className,
+      )}
+    >
       {blocks.map((block, i) => (
         <BlockView key={i} block={block} onToggle={onToggle} disabled={disabled} />
       ))}
