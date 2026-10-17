@@ -56,30 +56,30 @@ pub async fn test(State(state): State<AppState>) -> Json<PodcastsTestDto> {
     let kokoro = match niles_podcasts::Kokoro::from_config(&podcasts) {
         Ok(kokoro) => kokoro,
         Err(e) => {
-            let failed = niles_podcasts::Part {
-                ok: false,
-                error: Some(e.to_string()),
-            };
+            // The address is there but unusable: Kokoro's part says so.
+            // Storage was never tried, so it says nothing.
             return Json(PodcastsTestDto {
                 configured: true,
                 missing: Vec::new(),
-                kokoro: Some(failed.clone()),
-                storage: Some(failed),
+                kokoro: Some(niles_podcasts::Part {
+                    ok: false,
+                    error: Some(e.to_string()),
+                }),
+                storage: None,
             });
         }
     };
     let bucket = match niles_podcasts::Bucket::from_config(&podcasts) {
         Ok(bucket) => bucket,
         Err(e) => {
-            let failed = niles_podcasts::Part {
-                ok: false,
-                error: Some(e.to_string()),
-            };
             return Json(PodcastsTestDto {
                 configured: true,
                 missing: Vec::new(),
-                kokoro: Some(failed.clone()),
-                storage: Some(failed),
+                kokoro: None,
+                storage: Some(niles_podcasts::Part {
+                    ok: false,
+                    error: Some(e.to_string()),
+                }),
             });
         }
     };
@@ -367,6 +367,30 @@ mod tests {
                 .starts_with("Uploading a test file:"),
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_unusable_address_is_kokoro_s_failure_and_storage_says_nothing() {
+        test_credentials();
+        // "http://" passes the config's prefix check but is no address
+        // Kokoro can be built from: only Kokoro's part speaks.
+        let body = tested(&app("[integrations.podcasts]\n\
+             kokoro_url = \"http://\"\n\
+             endpoint = \"https://account.r2.cloudflarestorage.com\"\n\
+             bucket = \"episodes\"\n\
+             access_key_id_env = \"NILES_TEST_PODCASTS_API_AKID\"\n\
+             secret_access_key_env = \"NILES_TEST_PODCASTS_API_SECRET\"\n"))
+        .await;
+        assert_eq!(body["configured"], true);
+        assert_eq!(body["kokoro"]["ok"], false);
+        assert!(
+            body["kokoro"]["error"]
+                .as_str()
+                .expect("an error")
+                .contains("not an address"),
+            "{body}"
+        );
+        assert_eq!(body["storage"], Value::Null);
     }
 
     #[tokio::test]

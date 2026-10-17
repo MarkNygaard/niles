@@ -48,11 +48,17 @@ export function EpisodePlayer({ artifact, title }: { artifact: number; title: st
           aria-label={`Play ${title}`}
           className="w-full"
           onError={() => {
-            if (askedAgain) setLoadFailed(true);
-            else {
-              setAskedAgain(true);
-              void audio.refetch();
+            if (askedAgain) {
+              setLoadFailed(true);
+              return;
             }
+            setAskedAgain(true);
+            void audio.refetch().then((result) => {
+              // Refetched within the same second, the signed address is
+              // byte-identical and would fail the same way: said, not
+              // retried against itself.
+              if (result.data?.url === url) setLoadFailed(true);
+            });
           }}
         />
       )}

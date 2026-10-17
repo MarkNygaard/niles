@@ -34,24 +34,40 @@ export function PodcastView({ content }: KindViewProps) {
           </span>
           <ol className="flex flex-col gap-1">
             {podcast.sources.map((s, i) => {
-              let host = s.url;
+              // Saved sources are http(s), validated where the episode
+              // is made; a link is still only drawn for what parses as
+              // one, so nothing else ever becomes a clickable href.
+              let parsed: URL | null = null;
               try {
-                host = new URL(s.url).host;
+                const url = new URL(s.url);
+                if (url.protocol === "http:" || url.protocol === "https:") parsed = url;
               } catch {
-                // Kept verbatim: the address as the episode saved it.
+                // Kept verbatim below: the address as the episode saved it.
               }
+              const host = parsed?.host ?? s.url;
+              const text = (
+                <>
+                  {s.title}
+                  <span className="text-muted-foreground"> ({host})</span>
+                  {parsed && (
+                    <ExternalLink aria-hidden className="mx-1 inline size-3 align-[-0.125em]" />
+                  )}
+                </>
+              );
               return (
                 <li key={`${s.url}-${i}`} className="text-sm">
-                  <a
-                    href={s.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="hover:underline"
-                  >
-                    {s.title}
-                    <span className="text-muted-foreground"> ({host})</span>
-                    <ExternalLink aria-hidden className="mx-1 inline size-3 align-[-0.125em]" />
-                  </a>
+                  {parsed ? (
+                    <a
+                      href={parsed.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:underline"
+                    >
+                      {text}
+                    </a>
+                  ) : (
+                    <span>{text}</span>
+                  )}
                 </li>
               );
             })}
