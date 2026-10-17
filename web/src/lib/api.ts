@@ -1132,6 +1132,37 @@ export interface Artifact {
   /** The page the version shown is drawn with, by its id; null for its
       kind's own view. Absent from a Niles older than pages. */
   page?: number | null;
+  /** What the signed-in person has of it. Absent from a Niles older
+      than sharing, where everything is their own. */
+  access?: ArtifactAccess;
+  /** Whose it is, by name, when it is not theirs; null for their own,
+      and for someone no longer in the household. */
+  owner?: string | null;
+  /** For its owner, how many people it is shared with. */
+  shared_with?: number;
+  /** Who saved the version shown, by name, when it was someone else. */
+  changed_by?: string | null;
+}
+
+/** Theirs; shared with them to change; or to read only. */
+export type ArtifactAccess = "owner" | "edit" | "view";
+
+/** How an artifact is shared with someone. */
+export type ShareLevel = "view" | "edit";
+
+/** Someone in the household its owner can share an artifact with.
+    Mirrors `Sharee` in crates/niles-api/src/artifacts.rs. */
+export interface ArtifactSharee {
+  person: string;
+  /** Null for someone it is still shared with who is no longer in the
+      household. */
+  name: string | null;
+  /** Null when it is not shared with them. */
+  level: ShareLevel | null;
+}
+
+export interface ArtifactShares {
+  people: ArtifactSharee[];
 }
 
 export type ArtifactAuthor = "person" | "claude" | "chatgpt" | "niles";
@@ -1142,6 +1173,9 @@ export interface ArtifactRevisionMeta {
   page?: number | null;
   reason: string;
   author: ArtifactAuthor;
+  /** Whose change it was, by name, when it was not the signed-in
+      person's. */
+  by?: string | null;
   at: string;
 }
 
@@ -1570,6 +1604,15 @@ export const api = {
     request<Artifact>(`/me/artifacts/${id}/retry`, { method: "POST" }),
   deleteArtifact: (id: number) =>
     request<void>(`/me/artifacts/${id}`, { method: "DELETE" }),
+  /** Who in the household its owner can share it with, and how it is
+      shared with each. Its owner's alone. */
+  artifactShares: (id: number) => request<ArtifactShares>(`/me/artifacts/${id}/shares`),
+  /** Share it with `person` at `level`, or with null stop. */
+  shareArtifact: (id: number, person: string, level: ShareLevel | null) =>
+    request<ArtifactShares>(`/me/artifacts/${id}/shares`, {
+      method: "PUT",
+      body: JSON.stringify({ person, level }),
+    }),
   /** A picture an artifact keeps, as bytes: for its page's sealed frame,
       which cannot fetch anything itself. */
   artifactImage: async (id: number, image: number): Promise<Blob> => {

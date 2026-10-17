@@ -31,12 +31,13 @@ impl Status {
     }
 }
 
-/// Who wrote a version.
+/// What wrote a version. Which person, when it was one or one's
+/// assistant, is the version's `by`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Author {
-    /// The person it belongs to, from the app: a ticked checklist item,
-    /// a restore.
+    /// A person, from the app: a ticked checklist item, a restore. Its
+    /// owner, or someone it is shared with to edit.
     Person,
     Claude,
     Chatgpt,
@@ -74,6 +75,8 @@ pub struct Artifact {
     pub title: String,
     /// One line, under the title.
     pub summary: String,
+    /// In the list of whoever reads it: the owner's own pin, or, for an
+    /// artifact shared with someone, theirs.
     pub pinned: bool,
     pub archived: bool,
     /// Whether the person is told when a job for it ends.
@@ -101,6 +104,15 @@ pub struct Artifact {
     /// The page the version shown is drawn with, by its id; `None` for
     /// the kind's own view.
     pub page: Option<i64>,
+    /// Whose change the version shown is, by key: the person who made
+    /// it, or whose assistant did. `None` for Niles's own bookkeeping,
+    /// and for a version kept before anyone else could change it.
+    #[serde(skip)]
+    pub changed_by: Option<String>,
+    /// Everyone it is shared with, by key, in the order they were
+    /// shared with: who else hears that it changed.
+    #[serde(skip)]
+    pub shared_with: Vec<String>,
 }
 
 /// One version of an artifact's content.
@@ -112,6 +124,9 @@ pub struct Revision {
     pub page: Option<i64>,
     pub reason: String,
     pub author: Author,
+    /// Whose change it was, by key; see [`Artifact::changed_by`].
+    #[serde(skip)]
+    pub by: Option<String>,
     pub at: DateTime<Utc>,
 }
 
@@ -122,6 +137,8 @@ pub struct RevisionMeta {
     pub page: Option<i64>,
     pub reason: String,
     pub author: Author,
+    #[serde(skip)]
+    pub by: Option<String>,
     pub at: DateTime<Utc>,
 }
 
@@ -132,6 +149,7 @@ impl From<&Revision> for RevisionMeta {
             page: r.page,
             reason: r.reason.clone(),
             author: r.author,
+            by: r.by.clone(),
             at: r.at,
         }
     }
@@ -158,6 +176,9 @@ pub struct NewRevision {
     pub content: Value,
     pub reason: String,
     pub author: Author,
+    /// Whose change it is, by key: the person, or whose assistant made
+    /// it; `None` for Niles's own.
+    pub by: Option<String>,
     /// A new summary to go with it, if it changes.
     pub summary: Option<String>,
     /// What becomes of the page. Every change to the data keeps it.
@@ -345,10 +366,14 @@ mod tests {
             current_revision: 1,
             preview: Preview::default(),
             page: None,
+            changed_by: Some("person:majse".into()),
+            shared_with: vec!["person:majse".into()],
         };
         let v = serde_json::to_value(&a).unwrap();
         assert!(v.get("person").is_none());
         assert!(v.get("brief").is_none());
+        assert!(v.get("changed_by").is_none());
+        assert!(v.get("shared_with").is_none());
         assert_eq!(v["title"], "Packing list");
     }
 }

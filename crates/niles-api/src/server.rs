@@ -242,6 +242,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me/artifacts/{id}/retry", post(crate::artifacts::retry))
         .route(
+            "/me/artifacts/{id}/shares",
+            get(crate::artifacts::shares)
+                .put(crate::artifacts::share)
+                .delete(crate::artifacts::unshare_all),
+        )
+        .route(
             "/me/artifacts/{id}/images/{image}",
             get(crate::artifacts::image),
         )

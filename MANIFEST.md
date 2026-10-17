@@ -18,7 +18,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `api-events-stream` | WebSocket /events/stream pushes real-time device and system events | [#86](https://github.com/MarkNygaard/niles/pull/86) |
-| `events-artifact-status` | artifact_changed on /events/stream, only to its own person: the status line follows a job as it is written | [#429](https://github.com/MarkNygaard/niles/pull/429) |
+| `events-artifact-status` | artifact_changed on /events/stream, to its owner and whoever it is shared with only: the status line follows a job | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `api-artifact-images` | GET /me/artifacts/{id}/images/{image}: a picture an artifact keeps, its owner's only; GET lists them | [#442](https://github.com/MarkNygaard/niles/pull/442) |
 | `api-get-devices` | GET /devices returns the full device registry snapshot | [#13](https://github.com/MarkNygaard/niles/pull/13) |
 | `api-get-room` | GET /rooms/{room} returns the devices in a single room | [#13](https://github.com/MarkNygaard/niles/pull/13) |
@@ -27,6 +27,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-plugins` | GET /plugins lists installed plugins with their status and last error | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `api-training-today` | GET /me/training/today: the signed-in person's training plan read for today, or plan null without one | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `api-artifact-pages` | An artifact's page_html and the house's today on GET /me/artifacts/{id}; PATCH remove_page; each version with its page | [#440](https://github.com/MarkNygaard/niles/pull/440) |
+| `api-artifact-shares` | GET/PUT/DELETE /me/artifacts/{id}/shares, its owner's only; every artifact route answers by owner, edit or view | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `api-chat-attachments` | POST /chat takes a multipart body with up to 5 files of 10 MB; GET …/attachments/{a} serves one to its owner | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
@@ -73,12 +74,14 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `artifacts-pictures` | Pictures in a document, a trip or a page, found with the house's search and kept as Niles's own clean copies | [#442](https://github.com/MarkNygaard/niles/pull/442) |
+| `artifacts-sharing` | Share a saved artifact with someone in the house, to read or to edit; an editor's own Claude or ChatGPT can change it | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `artifacts-trip` | A trip planned in the background: days, places, stays and bookings, a countdown, and a packing list to tick | [#434](https://github.com/MarkNygaard/niles/pull/434) |
 | `assistant-built-in-search` | Without SearXNG, Claude searches with Claude Code's own WebSearch (never WebFetch); ChatGPT is told it has no search | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `assistant-reads-attachments` | Claude or ChatGPT answers about an attached photo or PDF; a message with files always goes to the assistant | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `web-search-live` | Adding, changing or removing the SearXNG address takes hold with the next search, without a restart | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
+| `push-artifact-shared` | A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
@@ -117,6 +120,13 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - put a photo of the beach on day three
 - make a page for our trip with pictures of each place
 
+### `artifacts-sharing` — example phrasings
+
+- share the Thailand trip with Majse so she can edit it
+- let Majse see my training plan
+- add Chiang Mai to our Thailand trip
+- stop sharing the packing list with Majse
+
 ### `artifacts-trip` — example phrasings
 
 - plan our trip to Thailand from 3 to 23 January
@@ -149,6 +159,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `chat-attachments` | Attach photos and PDFs to a chat message by dragging, the paperclip or a paste; chips before sending, thumbnails after | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `ui-artifact-page-frame` | An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `ui-artifact-pictures` | Pictures drawn from Niles's own copies with their credit; a picture by its web address is never fetched | [#442](https://github.com/MarkNygaard/niles/pull/442) |
+| `ui-artifact-sharing` | Share from an open artifact: None, View or Edit for each person; Saved marks what is shared and who changed it last | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `ui-training-plan-sessions` | Tap a training plan's session to mark it done or skipped, and read the coach's notes on the plan | [#436](https://github.com/MarkNygaard/niles/pull/436) |

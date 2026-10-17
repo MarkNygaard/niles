@@ -138,6 +138,46 @@ describe("SavedList", () => {
     expect(screen.queryByText(/Nothing saved yet/)).toBeNull();
   });
 
+  it("marks what is shared, whose it is and who changed it", () => {
+    show({
+      artifacts: [
+        artifact(5, "Thailand trip", { access: "view", owner: "Mark", changed_by: "Mark" }),
+        artifact(6, "Our groceries", { access: "edit", owner: "Mark" }),
+        artifact(7, "Packing list", { access: "owner", shared_with: 1, changed_by: "Majse" }),
+      ],
+    });
+    const rowOf = (title: string) => rows().find((r) => within(r).queryByText(title))!;
+    const [trip, groceries, packing] = ["Thailand trip", "Our groceries", "Packing list"].map(
+      rowOf,
+    );
+    expect(within(trip).getByText("Shared by Mark · read only")).toBeInTheDocument();
+    expect(within(trip).getByText("just now · changed by Mark")).toBeInTheDocument();
+    expect(within(groceries).getByText("Shared by Mark")).toBeInTheDocument();
+    expect(within(packing).getByRole("img", { name: "Shared with 1" })).toBeInTheDocument();
+    expect(within(packing).getByText("just now · changed by Majse")).toBeInTheDocument();
+  });
+
+  it("offers someone it is shared with only what they may do", async () => {
+    const { onChange } = show({
+      artifacts: [
+        artifact(5, "Thailand trip", { access: "view", owner: "Mark" }),
+        artifact(6, "Our groceries", { access: "edit", owner: "Mark" }),
+      ],
+    });
+    more("Thailand trip");
+    expect(screen.getByRole("button", { name: "Pin" })).toBeInTheDocument();
+    for (const name of ["Rename", "Archive", "Delete"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Pin" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(5, { pinned: true }));
+
+    more("Our groceries");
+    expect(screen.getByRole("button", { name: "Rename" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
   it("says what goes here when there is nothing yet", () => {
     show({ artifacts: [] });
     expect(screen.getByText(/Nothing saved yet/)).toBeInTheDocument();

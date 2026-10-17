@@ -11,12 +11,14 @@ import {
   PinOff,
   Trash2,
   TriangleAlert,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Artifact, ArtifactPatch, AssistantId } from "@/lib/api";
 import { arrange, kindOf } from "@/lib/artifacts";
+import { canEdit, changedNote, isOwner, sharingNote } from "@/lib/sharing";
 import { relativeTime } from "@/lib/skills";
 import { cn } from "@/lib/utils";
 
@@ -35,9 +37,11 @@ export interface SavedListProps {
 export const VOICE_AND_AI = "#/me/settings/voice";
 
 /**
- * What Niles has made for the signed-in person: the Saved tab of its
- * panel. Pinned first, then the rest by when they changed, then the
- * archived ones, folded away.
+ * What Niles has made for the signed-in person, and what others in the
+ * household shared with them: the Saved tab of its panel. Pinned first,
+ * then the rest by when they changed, then the archived ones, folded
+ * away. A shared one says whose it is, and offers only what they may
+ * do: pin it in their own list, and rename it when shared to edit.
  */
 export function SavedList({
   artifacts,
@@ -143,6 +147,9 @@ export function SavedList({
   const row = (a: Artifact) => {
     const kind = kindOf(a.kind);
     const open = actionsFor === a.id;
+    const mine = isOwner(a);
+    const shared = sharingNote(a);
+    const changed = changedNote(a);
     return (
       <li key={a.id} className="flex flex-col">
         <div className="flex items-center gap-1">
@@ -163,9 +170,20 @@ export function SavedList({
                     <Pin aria-hidden className="text-muted-foreground size-3" />
                   </span>
                 )}
+                {mine && shared && (
+                  <span role="img" aria-label={shared} className="inline-flex">
+                    <Users aria-hidden className="text-muted-foreground size-3" />
+                  </span>
+                )}
               </span>
               {a.summary && (
                 <span className="text-muted-foreground block truncate text-xs">{a.summary}</span>
+              )}
+              {!mine && shared && (
+                <span className="text-muted-foreground flex items-center gap-1 text-xs">
+                  <Users aria-hidden className="size-3" />
+                  {shared}
+                </span>
               )}
               <span className="text-muted-foreground flex items-center gap-1 text-xs">
                 {a.status === "working" ? (
@@ -178,6 +196,8 @@ export function SavedList({
                     <TriangleAlert aria-hidden className="text-destructive size-3" />
                     didn't finish
                   </>
+                ) : changed ? (
+                  `${relativeTime(a.updated_at)} · ${changed}`
                 ) : (
                   relativeTime(a.updated_at)
                 )}
@@ -208,42 +228,48 @@ export function SavedList({
               {a.pinned ? <PinOff /> : <Pin />}
               {a.pinned ? "Unpin" : "Pin"}
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setRenaming({ artifact: a, title: a.title });
-                setActionsFor(undefined);
-              }}
-            >
-              <Pencil />
-              Rename
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                act(
-                  () => onChange(a.id, { archived: !a.archived }),
-                  () => setActionsFor(undefined),
-                )
-              }
-            >
-              {a.archived ? <ArchiveRestore /> : <Archive />}
-              {a.archived ? "Unarchive" : "Archive"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setConfirming(a);
-                setActionsFor(undefined);
-              }}
-            >
-              <Trash2 />
-              Delete
-            </Button>
+            {canEdit(a) && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setRenaming({ artifact: a, title: a.title });
+                  setActionsFor(undefined);
+                }}
+              >
+                <Pencil />
+                Rename
+              </Button>
+            )}
+            {mine && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() =>
+                  act(
+                    () => onChange(a.id, { archived: !a.archived }),
+                    () => setActionsFor(undefined),
+                  )
+                }
+              >
+                {a.archived ? <ArchiveRestore /> : <Archive />}
+                {a.archived ? "Unarchive" : "Archive"}
+              </Button>
+            )}
+            {mine && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setConfirming(a);
+                  setActionsFor(undefined);
+                }}
+              >
+                <Trash2 />
+                Delete
+              </Button>
+            )}
           </div>
         )}
       </li>

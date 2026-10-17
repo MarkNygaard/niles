@@ -708,6 +708,7 @@ mod tests {
                                 .unwrap(),
                             reason: "First draft".into(),
                             author: Author::Claude,
+                            by: None,
                             summary: None,
                             page: niles_artifacts::PageChange::Keep,
                         }),

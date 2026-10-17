@@ -2335,6 +2335,7 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
 5. **Today's run on the dashboard** (2e, built): a card on the person's dashboard with today's session from their plan, read as `training_today` reads it (see [Today's run](#todays-run)).
 6. **Pages** (2f, built): any artifact may have a page, HTML the assistant writes once that draws the artifact's data, shown in a sealed frame in place of the kind's own view (see [Artifact pages](#artifact-pages)).
 7. **Pictures** (2g, built): pictures found with the house's own search, kept by Niles as its own copies, named in a document, on a trip and in a page by id (see [Artifact pictures](#artifact-pictures)).
+8. **Sharing** (2h, built): the owner shares an artifact with others in the household, each to view or to edit, from the app or by asking (see [Sharing](#sharing)).
 
 ### The model
 
@@ -2342,7 +2343,7 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
   - `id`, `person` (the same key as the chat history: `person:{slug}` or `email:{address}`), `kind`, `title`, `summary` (one line, shown under the title), `pinned`, `archived`, `notify` (default on), `created_at`, `updated_at`, `current_revision`.
   - `status`: `ready`, `working` or `failed`, with `status_text` ("Writing your Thailand travel plan…") while working and `error` (why) when failed.
   - For a background job: `job_id`, the `brief` it was started with (kept, so a failed job can be tried again), and `conversation_id`, the chat it came from.
-- **`artifact_revisions`**: every version of the content. `artifact_id`, `n` (1, 2, 3… per artifact), `content` (JSONB, whose shape is the kind's), `reason` ("First draft", "Added the ferry to Koh Tao"), `author` (`person`, `claude`, `chatgpt` or `niles`), `at`.
+- **`artifact_revisions`**: every version of the content. `artifact_id`, `n` (1, 2, 3… per artifact), `content` (JSONB, whose shape is the kind's), `reason` ("First draft", "Added the ferry to Koh Tao"), `author` (`person`, `claude`, `chatgpt` or `niles`), `by_person` (whose change it was, by key: the person, or the person whose assistant made it; null for Niles's own bookkeeping), `at`. The artifact keeps the current one's as `changed_by`.
   - **The last 50 are kept.** An older one goes as a new one is saved.
   - **Restoring version n** saves its content as a new version, with the reason "Restored version n". Nothing is rewritten: what was there before the restore is a version too.
   - **The person's own changes are versions.** Ticking an item on a checklist saves a version by `person`.
@@ -2351,6 +2352,7 @@ Things Niles makes for one person and keeps for them: a Thailand travel plan, a 
 - **`artifact_pages`**: every page an artifact has had. `id`, `artifact_id`, `html`, `at`. A version names the page it is drawn with (`artifact_revisions.page`, null for the kind's own view), and the artifact the current one's (`artifacts.page`).
   - **A page is kept once**, however many versions draw with it. Niles marks a run on a plan many times a month, and a 200 KB copy of its page in each version would be most of what is kept. A change to the data keeps the page the version before it had.
   - **A page goes** when no version kept draws with it any more: when the last version that named it is one of the oldest past 50.
+- **`artifact_shares`**: who else has an artifact. `artifact_id`, `person` (their key), `level` (`view` or `edit`), `pinned` (their own pin), `shared_at`; one row per person, going with its artifact (`on delete cascade`). See [Sharing](#sharing).
 
 ### Kinds
 
@@ -2530,7 +2532,7 @@ A trip reads better with the beach it goes to, a guide with the dish it is about
 
 **Naming.** Content names a picture as `niles-image:{id}`: a document's `![alt](niles-image:12)`, a trip's `image`, a page's `niles.image(d.image)`. A training plan has none: it is sessions, and a page over it can have pictures of its own. A name of a picture the artifact does not keep is **not refused**: it shows as nothing. So restoring a version from before a picture was taken away, or ticking a box in a document whose picture went, never fails; and the assistant is told instead: `artifact_create` and `artifact_update` answer a note naming each picture the content names that the artifact does not keep. `artifact_get` lists the pictures it keeps, with their names, alt, credit, source and size.
 
-**Serving.** `GET /me/artifacts/{id}/images/{image}`, behind sign-in, the caller's own only (another person's, or one of another artifact's, is a 404 as if it did not exist), served with its type (`image/jpeg` or `image/png`, nothing else), `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, `Cross-Origin-Resource-Policy: same-origin`, and `Cache-Control: private, max-age=31536000, immutable`, since an id is never used for other bytes. `GET /me/artifacts/{id}` lists them (`images`, oldest first, without bytes). The built-in views draw only names, from this endpoint, each with its credit and the source's host as a link under it, small, `loading="lazy"`, no referrer.
+**Serving.** `GET /me/artifacts/{id}/images/{image}`, behind sign-in, of an artifact the caller can open only (one of an artifact not theirs or shared with them, or of another artifact, is a 404 as if it did not exist), served with its type (`image/jpeg` or `image/png`, nothing else), `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, `Cross-Origin-Resource-Policy: same-origin`, and `Cache-Control: private, max-age=31536000, immutable`, since an id is never used for other bytes. `GET /me/artifacts/{id}` lists them (`images`, oldest first, without bytes). The built-in views draw only names, from this endpoint, each with its credit and the source's host as a link under it, small, `loading="lazy"`, no referrer.
 
 **The frame.** The page cannot fetch, so the app does: each picture the artifact keeps (40 at most), as a `Blob` from the endpoint above, waiting at most 15 seconds and leaving out any that did not come. What they are (id, alt, credit, source, width, height) goes into the frame's document with the data; the runtime posts `hello` as its script starts, and the app answers with an `images` message of `{id: Blob}`, which the runtime makes `blob:` URLs of **inside the frame**: a `blob:` URL the app made belongs to the app's origin and would not load in the opaque one. A page with pictures is not drawn until they are in, so it draws once, with them; its four seconds to say it is ready count from then. A picture kept while the page is open is handed in the same way, and the page draws again. The frame's policy is unchanged (`img-src data: blob:`). The runtime takes only `Blob`s under numeric ids, and only from its parent.
 
@@ -2540,7 +2542,7 @@ A trip reads better with the beach it goes to, a guide with the dish it is about
 
 Offered only to Claude and ChatGPT, over the same MCP server as the rest of Niles's tools but from a registry of their own, so the fast model never has them and they need no relevance group. Each acts for **the person asking**: the voice that was recognised, or the person signed in to the app. Never a person named in an argument. An unrecognised voice has no artifacts, and is told so.
 
-- `artifact_list {archived?}`: the person's artifacts, newest first, with id, kind, title, summary, status and when each was changed.
+- `artifact_list {archived?}`: the person's artifacts and those shared with them, newest first, with id, kind, title, summary, status, when each was changed, and `access` (`owner`, `edit` or `view`, with `owner` naming whose it is when it is not theirs).
 - `artifact_get {id, with_page?}`: one, with its content, whether it has a page (`page`), and the pictures it keeps (`images`, each with its name); with `with_page`, the page's HTML as well.
 - `artifact_create {kind, title, summary, content, notify?}`: a small one made at once, in the turn.
 - `artifact_update {id, content, summary?, reason}`: a new version.
@@ -2548,8 +2550,10 @@ Offered only to Claude and ChatGPT, over the same MCP server as the rest of Nile
 - `artifact_set_page {id, html? | remove?, reason}`: a page for it, a new page, or none (see [Artifact pages](#artifact-pages)); its description carries how a page is written.
 - `start_page_job {id, brief}`: a page made in the background, for "make it look nicer".
 - `image_search {query, num_results?}`, `artifact_add_image {id, url, alt, credit?, source?}`, `artifact_remove_image {id, image}`: pictures found, kept as Niles's own copies, and taken away (see [Artifact pictures](#artifact-pictures)).
+- `artifact_share {id, person, level}`: share one of the asker's own with someone in the household, change how, or stop (`none`) (see [Sharing](#sharing)).
+- `artifact_people {id?}`: who else is in the household, by name; with the id of one of the asker's own, how it is shared with each.
 
-Each validates the content for its kind before anything is kept, and answers the id and a short view (title, summary, the preview). An id that is not the asker's is "no such artifact", exactly as one that does not exist.
+Each validates the content for its kind before anything is kept, and answers the id and a short view (title, summary, the preview). An id the asker has nothing of is "no such artifact", exactly as one that does not exist. Every one but `artifact_create` and `start_artifact_job` acts on an artifact shared with the asker as far as its level lets them (see [Sharing](#sharing)).
 
 ### Background jobs
 
@@ -2562,7 +2566,7 @@ A travel plan for two weeks in Thailand takes the assistant minutes, and nobody 
 - **Failed**: `failed`, with the reason. The Saved tab shows it, and **Try again** runs the same brief again on the same artifact. A restart fails every job that was running, saying so: the run was in the old pod.
 - **Limits**: two jobs at a time per person; a third is refused with that reason, which the assistant passes on. Each is held to the background runs' timeout, and to half an hour in all.
 
-**Live status.** Every change to an artifact goes out on `/events/stream` as `artifact_changed {id, kind, title, status, status_text}`, **only to the person's own connections**: the stream is otherwise the house's, and a title is not. The app refreshes Saved from it. The panel's status line under Niles's name shows the newest working job, "✍️ Writing your Thailand travel plan…", and with none the usual line.
+**Live status.** Every change to an artifact goes out on `/events/stream` as `artifact_changed {id, kind, title, status, status_text}`, **only to the connections of the people who have it**, its owner and whoever it is shared with, one event each: the stream is otherwise the house's, and a title is not. The app refreshes Saved from it. The panel's status line under Niles's name shows the newest working job, "✍️ Writing your Thailand travel plan…", and with none the usual line.
 
 ### In the chat
 
@@ -2586,11 +2590,46 @@ The second tab of Niles's panel, so the panel has a tab bar from here on.
 
 ### Who it belongs to
 
-Each artifact is one person's, under the same key as their chat and training. Only they see it, and only the assistant acting for them can read or change it:
+Each artifact is one person's, under the same key as their chat and training. Only they see it, and those they share it with, and only the assistant acting for one of them can read or change it:
 
-- The tools act for the asker, read from the turn, never from an argument. A background job acts for the person it was started for.
-- `/me/artifacts` acts for the person signed in. Another person's artifact is a 404, as if it did not exist.
-- Status events go only to that person's connections.
+- The tools act for the asker, read from the turn, never from an argument. A background job acts for the person who started it.
+- `/me/artifacts` acts for the person signed in. An artifact they have nothing of is a 404, as if it did not exist.
+- Status events go only to the connections of the people who have it.
+
+### Sharing
+
+The owner shares an artifact with others in the household (everybody `[auth] allowed`; see [Signing in](#signing-in)), each **to view** or **to edit**, and can change that or stop at any time: from the artifact in the app (**Share**, each person with None, View or Edit), or by asking ("share the Thailand trip with Majse so she can edit it", "let Majse see my training plan"). It stays the owner's: shared, it is in the other person's Saved list too, marked whose it is ("Shared by Mark", "· read only"), and their own assistant can read it, and change it when they may.
+
+**One access function.** Whatever acts on an artifact for a person asks `niles_artifacts::open` first, with the asker's key: owner, edit, view, or nothing. Every route under `/me/artifacts` and every assistant tool goes through it, and then reads and writes under the owner's key. What each may do:
+
+| | Owner | Edit | View |
+| --- | --- | --- | --- |
+| Open it, its page and pictures, who changed it last | ✓ | ✓ | ✓ |
+| Pin it, in their own list | ✓ | ✓ | ✓ |
+| The versions before the current one | ✓ | ✓ | |
+| Change it: content (ticks, marks, a page's `niles.save`), title, page, pictures; restore a version; try its job again; make it a page; their assistant's `artifact_update` and the rest | ✓ | ✓ | |
+| Notify, archive, share, delete | ✓ | | |
+
+- **Pins are each person's own**: the owner's on the artifact, anyone else's on their share of it, so pinning it moves nobody else's list.
+- **A viewer sees the current version only**, with who made it. What it was before it was shared is the owner's, and restoring is a change.
+- **Who changed it.** Every version keeps whose change it was (`by_person`), whoever's the artifact: the app shows "changed by Majse" in Saved, and in Versions "Majse" or "Claude for Majse".
+- **A job an editor starts** (a page, trying a failed one again) is theirs: run by their assistant, counted among their two, its card in their chat (never the owner's), its notification to them; it writes into the shared artifact.
+- **A training plan follows its owner's runs only.** The coach reads the plans of the person whose Strava synced; someone it is shared with never marks a session on it by running. `training_today` and the dashboard's card are the owner's own plan only.
+- **Refused, saying why, only to someone who has it**: a viewer's assistant is told "Mark shared it with you to read only", which it passes on; anyone but the owner asking to share it, "only Mark, whose it is, can share it". The app hides what a level does not allow (no ticks, no marks, no Remove page, no restore, and a page's saves refused in the frame's parent), and the server refuses it again (403).
+- **A key nobody in the household has any more** (someone taken off the list, or whose voice was unlinked, which changes their key) is shown to the owner as "Someone no longer in the household", to stop sharing with; it cannot be shared with again. Names are read from the household each time, so a renamed voice shows its new name.
+- **Telling them.** Someone an artifact is newly shared with is told on their devices, "Mark shared “Thailand trip” with you.", from the app or by asking. A change of level, a stop, or an edit by someone else pushes nothing: Saved follows on the event stream, and says who changed it.
+
+**Asking.** `artifact_share {id, person, level: view|edit|none}`, the owner's alone, with `person` as the asker named them: the name they go by, its first word, their voice's slug or their email, in any case and with a possessive ("Majse's"). A whole name, slug or address is taken before a first word; a name that is nobody or several is refused listing who there is, so the model can ask; the asker themselves is refused. It answers what changed, plainly ("Shared “Thailand trip” with Majse, who can now edit it."). `artifact_people` lists who there is. These are Niles's own tools, allowed like `artifact_update`: Ask first is for the tools of add-on tool servers.
+
+#### Privacy
+
+Another person learns nothing about someone's artifacts unless they are shared with them: not their titles, kinds, count, existence, or whose they are.
+
+- Every read and write resolves through `open` with the asker's key, from a recognised voice or the signed-in app. An unrecognised voice (`satellite:…`) or no asker has no artifacts at all.
+- An artifact not shared with them answers exactly as one that does not exist, on every route (404, "no such artifact") and every tool ("there is no artifact N"), page and picture serving and versions among them. Wording that names an owner is only for an artifact that is shared with the asker.
+- `artifact_list` and `GET /me/artifacts` hold their own and what is shared with them, and nothing about anyone else's; the owner alone is told how many have theirs.
+- Events and pushes go only to the owner and those it is shared with. A job, a page job or the coach running as a person reaches only what that person has; a chat card is shown only to someone who can open its artifact, and goes when they no longer can.
+- `artifact_people` names the household, who know each other already from Settings → People, and nothing of their artifacts.
 
 ### Telling the person
 
@@ -2602,22 +2641,25 @@ When the coach changed a training plan's sessions after a run (see Keeping up wi
 
 Every route acts for the person signed in (the operator's key is "anyone", as in the chat):
 
-- `GET /me/artifacts?pinned=&archived=`: the list, and which assistant would make one now (none: what the Saved tab explains).
-- `GET /me/artifacts/{id}`: the current content, its page's HTML (`page_html`, null without one), every version's number, page, reason, author and time, and the house's `today`.
+- `GET /me/artifacts?pinned=&archived=`: the list, their own and those shared with them together, each with `access` (`owner`, `edit`, `view`), `owner` (whose it is by name, when not theirs), `shared_with` (for the owner, how many have it) and `changed_by` (by name, when someone else saved it last); and which assistant would make one now (none: what the Saved tab explains).
+- `GET /me/artifacts/{id}`: the current content, its page's HTML (`page_html`, null without one), every version's number, page, reason, author, `by` (by name, when someone else's) and time (a viewer's, the current one only), the same `access`, `owner`, `shared_with` and `changed_by`, and the house's `today`.
 - `GET /me/artifacts/{id}/revisions/{n}`: one version's content, with the HTML of the page it was drawn with.
 - `PATCH /me/artifacts/{id}`: `title`, `pinned`, `archived`, `notify`; or `content` (with a `reason`), which saves a version by `person` drawn with the page it has; or `remove_page: true`, a version by `person` without it.
 - `POST /me/artifacts/{id}/restore/{n}`
 - `POST /me/artifacts/{id}/retry`: a failed job, again.
 - `DELETE /me/artifacts/{id}`
+- `GET /me/artifacts/{id}/shares`: everybody else in the household, `{people: [{person, name, level}]}` with `level` null when it is not shared with them, then anyone it is shared with who is no longer in it (`name` null). `PUT` with `{person, level}` shares, changes the level, or with `level: null` stops; `DELETE` stops sharing with anyone. The owner's alone.
+
+Each acts as far as the caller's access lets them (see [Sharing](#sharing)): one they have nothing of is a 404, one they have but may not do this with a 403 saying why.
 - `GET /me/training/today`: the dashboard card's day, `{"plan": null}` without a plan whose race is still to come, else `{"plan": {id, title, race, today, days_to_go, sessions, next, week, update}}`: `race` the plan's goal, `today` the house's day, the sessions as the plan keeps them (km, paces per km, `actual` once run), `week` `{focus, planned_km, run_km, sessions_left}` or null, `update` the coach's newest note or null. 501 without a database, as the rest.
 
 ### Where it lives
 
-- `niles-artifacts`: the model, the kinds with their validators and previews, the store trait with an in-memory store for tests, what a page is and how it is checked (`page`), a training plan's bookkeeping and the rule its review is held to (`tracking`), and its day (`plan_day`).
+- `niles-artifacts`: the model, the kinds with their validators and previews, the store trait with an in-memory store for tests, who has an artifact and what each may do (`share`, with `open`), what a page is and how it is checked (`page`), a training plan's bookkeeping and the rule its review is held to (`tracking`), and its day (`plan_day`).
 - `niles-db`: the Postgres store, which creates its tables on first use. Artifacts are on whenever there is a database.
-- `niles-api`: `/me/artifacts`, `/me/training/today`, the artifact refs on a chat turn, and `artifact_changed` on the event stream.
+- `niles-api`: `/me/artifacts` with its shares, `/me/training/today`, the artifact refs on a chat turn, `artifact_changed` on the event stream, and who is in the household and what a name means (`household`).
 - `niles-bin`: the tools, the jobs, the notifier, which pushes to the person's devices, and following the runs in the plans and the coach's look (`artifacts::coach`).
-- `web/`: the Saved tab, the artifact view, the chat card, the status line, the dashboard's `TodaysRunCard`, and a page's sealed frame (`SandboxedPage`, with what it is given and may say in `lib/sandboxedPage.ts`).
+- `web/`: the Saved tab, the artifact view and its `ShareDialog` (what each level allows in `lib/sharing.ts`), the chat card, the status line, the dashboard's `TodaysRunCard`, and a page's sealed frame (`SandboxedPage`, with what it is given and may say in `lib/sandboxedPage.ts`).
 
 ## Chat attachments
 

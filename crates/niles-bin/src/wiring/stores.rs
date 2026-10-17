@@ -21,6 +21,9 @@ pub(crate) fn build_artifacts(
     training: Option<Arc<dyn niles_training::TrainingStore>>,
     push: Option<Arc<niles_webpush::WebPush>>,
 ) -> Option<Arc<artifacts::Artifacts>> {
+    // The household is who the settings allow in: the same store the
+    // assistant is chosen from.
+    let settings = runner.settings.clone();
     let database = cfg.database.as_ref()?;
     let url = database.resolve_url().ok()?;
     let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
@@ -54,7 +57,8 @@ pub(crate) fn build_artifacts(
         chat_log.map(|log| log as Arc<dyn artifacts::Conversations>),
         extras,
     )
-    .with_pictures(pictures);
+    .with_pictures(pictures)
+    .with_household(settings as Arc<dyn artifacts::Household>);
     let artifacts = match (training, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         (Some(store), Ok(tz)) => {
             let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;

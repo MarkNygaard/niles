@@ -63,9 +63,11 @@ pub enum Event {
         /// The surface id from the plugin's manifest, e.g. `electricity`.
         surface: String,
     },
-    /// One of a person's artifacts was made, changed, or moved on in its
-    /// job. Forwarded only to that person's own connections: the stream
-    /// is the house's, and a title is not.
+    /// One of a person's artifacts, their own or one shared with them,
+    /// was made, changed, or moved on in its job. Forwarded only to that
+    /// person's own connections: the stream is the house's, and a title
+    /// is not. A change to a shared one is published once for each
+    /// person who has it.
     ArtifactChanged {
         /// The person key, `person:{slug}` or `email:{address}`.
         person: String,

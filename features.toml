@@ -660,7 +660,7 @@ since_pr = 429
 [[feature]]
 id = "events-artifact-status"
 category = "api.events"
-summary = "artifact_changed on /events/stream, only to its own person: the status line follows a job as it is written"
+summary = "artifact_changed on /events/stream, to its owner and whoever it is shared with only: the status line follows a job"
 since_pr = 429
 
 [[feature]]
@@ -813,3 +813,28 @@ id = "api-web-search-test"
 category = "api.write"
 summary = "POST /integrations/web_search/test runs a web and an image query through the saved SearXNG and counts the results"
 since_pr = 451
+
+[[feature]]
+id = "artifacts-sharing"
+category = "runtime.assistant"
+summary = "Share a saved artifact with someone in the house, to read or to edit; an editor's own Claude or ChatGPT can change it"
+phrasings = ["share the Thailand trip with Majse so she can edit it", "let Majse see my training plan", "add Chiang Mai to our Thailand trip", "stop sharing the packing list with Majse"]
+since_pr = 452
+
+[[feature]]
+id = "ui-artifact-sharing"
+category = "ui.chat"
+summary = "Share from an open artifact: None, View or Edit for each person; Saved marks what is shared and who changed it last"
+since_pr = 452
+
+[[feature]]
+id = "api-artifact-shares"
+category = "api.write"
+summary = "GET/PUT/DELETE /me/artifacts/{id}/shares, its owner's only; every artifact route answers by owner, edit or view"
+since_pr = 452
+
+[[feature]]
+id = "push-artifact-shared"
+category = "runtime.notifications"
+summary = "A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you"
+since_pr = 452
