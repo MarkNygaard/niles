@@ -793,23 +793,23 @@ since_pr = 449
 id = "ui-web-search-addon"
 category = "ui.integrations"
 summary = "Web search (SearXNG) as an add-on: its address saved in the app, its status, a Test of web and image search, Remove"
-since_pr = 9999
+since_pr = 451
 
 [[feature]]
 id = "web-search-live"
 category = "runtime.assistant"
 summary = "Adding, changing or removing the SearXNG address takes hold with the next search, without a restart"
-since_pr = 9999
+since_pr = 451
 
 [[feature]]
 id = "assistant-built-in-search"
 category = "runtime.assistant"
 summary = "Without SearXNG, Claude searches with Claude Code's own WebSearch (never WebFetch); ChatGPT is told it has no search"
 phrasings = ["what's the news today", "when does the ferry to Samsø leave"]
-since_pr = 9999
+since_pr = 451
 
 [[feature]]
 id = "api-web-search-test"
 category = "api.write"
 summary = "POST /integrations/web_search/test runs a web and an image query through the saved SearXNG and counts the results"
-since_pr = 9999
+since_pr = 451
