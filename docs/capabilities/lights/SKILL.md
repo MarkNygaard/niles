@@ -31,13 +31,15 @@ lights:
     - "solid" turns a WLED effect off
     - the curve sets brightness and colour temperature through the day, once a minute
     - manual mode: a spoken dim, step or white change, a device switched by name, a scene,
-      or a wall dimmer press takes a light off the curve
+      a wall dimmer press, or a level, warmth, colour or effect you set with set_device,
+      set_room or set_light_effect (or a rule sets) takes a light off the curve; on/off alone does not
     - a light leaves manual mode when switched off and on again, or on "back to normal"
     - ambient lights sit out the curve and the morning routine; held at lighting.ambient_* if set
     - curve settings: lighting.daytime_brightness, lighting.night_floor_brightness,
       lighting.morning_start / morning_end / sunset_start / sunset_end ("HH:MM")
     - relative curve changes ("make the evenings brighter"): get_config first, then update_config
-    - the morning routine ramps lights from 0 to 100% on its days (lighting.morning_routine)
+    - the morning routine ramps lights from 0 to 100% on its days (lighting.morning_routine);
+      a light set by hand during the ramp keeps its level at the end
   examples:
     - User: "make the kitchen lights blue" → set_room room=kitchen rgb=[0,0,255]
     - User: "put the fire effect on the shelf strip" → set_light_effect effect=fire

@@ -42,6 +42,7 @@ import { ClaudeCodePanel } from "@/components/ClaudeCodePanel";
 import { ChatGptPanel } from "@/components/ChatGptPanel";
 import { NemligPanel } from "@/components/NemligPanel";
 import { ToolServerPanel } from "@/components/ToolServerPanel";
+import { LinearWebhookPanel } from "@/components/LinearWebhookPanel";
 import type { ToolMode } from "@/components/ToolServerPanel";
 import { SonosPanel } from "@/components/SonosPanel";
 import { CalendarAppPanel, redirectUri } from "@/components/CalendarAppPanel";
@@ -57,6 +58,7 @@ import { api } from "@/lib/api";
 import {
   LINEAR_KEYWORDS,
   LINEAR_URL,
+  LINEAR_WEBHOOK_SECRET,
   RANK,
   groupsOf,
   matchesQuery,
@@ -225,6 +227,7 @@ export function AddOnsPage({
     if (!key) return undefined;
     return secrets?.secrets.find((s) => s.key === key);
   }
+  const linearWebhook = secretFor(LINEAR_WEBHOOK_SECRET);
 
   function status(integration: Integration): Status {
     return statusOf(integration, {
@@ -688,6 +691,13 @@ export function AddOnsPage({
                     onChange={(entries) => onChange("tool_servers.linear", entries)}
                     onSecretsChanged={onSecretsChanged}
                     onRefreshed={() => onToolServersChanged?.()}
+                  />
+                )}
+                {current.id === "linear" && linearWebhook && (
+                  <LinearWebhookPanel
+                    secret={linearWebhook}
+                    writable={secrets?.writable ?? false}
+                    onSecretsChanged={onSecretsChanged}
                   />
                 )}
 

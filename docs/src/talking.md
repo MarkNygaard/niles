@@ -51,7 +51,9 @@ A step is 10% brighter or dimmer. Warmer and cooler move 200 K. Warm white
 is 2200 K, cool white 4000 K and daylight 5500 K.
 
 Colours by name ("make the kitchen lights blue") and WLED effects ("put
-the fire effect on the shelf strip") work too, through the model.
+the fire effect on the shelf strip") work too, through the model. A level,
+warmth, colour or effect set that way puts the light in manual mode, the
+same as the fixed phrasings do.
 
 "The lights" in a room includes lamps on smart plugs that you have marked
 as lamps under **Settings → Lighting → Lamps on plugs**. Other plugs are
@@ -73,8 +75,9 @@ Saying "open" again when it is already there opens it all the way.
 
 ## Scenes
 
-- "save the living room as cosy", "save this as movie night"
-- "cosy scene", "apply cosy", "turn on cosy"
+- "save the living room as cosy", "save this as cosy in the living room",
+  "save this as movie night"
+- "cosy scene", "apply cosy", "turn on cosy", "apply cosy in the living room"
 - "list my scenes", "delete the cosy scene"
 
 See [Lighting and scenes](lighting.md#scenes).
@@ -171,7 +174,8 @@ These go to the model. Say them however you like:
   coffee black", "what do you know about me".
 - Who is home: "is anyone home". You can also tell Niles the house is
   empty or occupied. That holds until you tell it to go back to automatic.
-- Announcements: "what just happened" lists what Niles announced lately.
+- Announcements: "what just happened" lists what Niles announced lately,
+  including before its last restart.
 - Devices: "when did the kitchen light turn off", "why is the bedroom
   light at 30%".
 

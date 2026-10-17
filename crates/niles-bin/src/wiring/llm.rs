@@ -77,9 +77,11 @@ pub(crate) fn build_tool_registry(
     presence: Option<Arc<PresenceAggregator>>,
     home: &niles_config::HomeConfig,
     settings: Option<Arc<niles_config::ConfigStore>>,
+    manual: Option<Arc<niles_scheduler::ManualModeTracker>>,
     dry_run: bool,
 ) -> ToolRegistry {
-    let mut tools = niles_tools::default_registry(registry, publisher, router, settings, dry_run);
+    let mut tools =
+        niles_tools::default_registry(registry, publisher, router, settings, manual, dry_run);
     if let Some(loader) = capability_loader {
         tools.register(Box::new(LookUpCapability::new(loader)));
     }

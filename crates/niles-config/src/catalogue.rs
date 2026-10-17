@@ -433,12 +433,14 @@ pub const KNOWN: &[Known] = &[
         id: "linear",
         label: "Linear",
         blurb: "Issues, projects and comments, through Linear's own tools.",
-        needs: "A Linear workspace and a personal API key.",
+        needs: "A Linear workspace and a personal API key. To hear when an issue moves, a Linear webhook and its signing secret.",
         kind: Kind::Service,
         group: Group::Assistants,
         importance: Importance::Optional,
         icon: "list-todo",
-        secrets: &["tool_servers.linear.api_key"],
+        // The webhook's goes with the add-on, so removing Linear stops
+        // it announcing too.
+        secrets: &["tool_servers.linear.api_key", "linear.webhook_secret"],
         base_url: None,
         serves: &[],
         api: Api::OpenAi,
@@ -715,7 +717,10 @@ mod tests {
         }
         assert_eq!(owns("lg_tv"), ["tv.client_key"]);
         assert_eq!(owns("unifi"), ["presence.unifi.api_key"]);
-        assert_eq!(owns("linear"), ["tool_servers.linear.api_key"]);
+        assert_eq!(
+            owns("linear"),
+            ["tool_servers.linear.api_key", "linear.webhook_secret"]
+        );
         assert_eq!(
             owns("claude_code"),
             ["integrations.claude_code.oauth_token"]

@@ -71,8 +71,18 @@ Some things Niles says without being asked:
 - announcements from add-ons that are allowed to speak
 - something you asked Niles to announce in a room
 
-An announcement is spoken in the room it names. One without a room is
-recorded but not spoken.
+An announcement is spoken in the room it names. One without a room is an
+announcement for the house, spoken in every room that has a satellite
+under **Settings → Satellites**. These have no room:
+
+- the nemlig.com reminder that a grocery delivery is on its way
+- an automation's **Say something** left on **Wherever Niles would**
+- a timer set from a satellite that is not listed under **Settings →
+  Satellites**
+- Linear telling Niles that an issue moved (see [Add-ons](add-ons.md))
+
+With no satellites listed, an announcement without a room is recorded but
+not spoken.
 
 ### Priorities and quiet hours
 
@@ -107,5 +117,6 @@ room.
 
 ### What did I miss
 
-Ask "what just happened" and Niles reads its recent announcements. It
-keeps the last 50, until it restarts.
+Ask "what just happened" and Niles reads its recent announcements, the
+last 50. With a database they are kept there, so a restart does not lose
+them. Without one, Niles forgets them when it restarts.

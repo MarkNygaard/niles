@@ -12,6 +12,9 @@ import type {
 /** Where Linear's own MCP server is. */
 export const LINEAR_URL = "https://mcp.linear.app/mcp";
 
+/** Where the Linear webhook's signing secret is kept. */
+export const LINEAR_WEBHOOK_SECRET = "linear.webhook_secret";
+
 /** What a request has to mention for Linear's tools to go with it. */
 export const LINEAR_KEYWORDS = ["linear", "issue", "issues", "task", "tasks", "ticket", "tickets"];
 

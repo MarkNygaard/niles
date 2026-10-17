@@ -522,6 +522,8 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         presence_agg.clone(),
         &cfg.home,
         Some(store.clone()),
+        // No curve runs here to leave anything alone.
+        None,
         args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
@@ -577,7 +579,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
     tv::register(&mut tools, tv.clone());
 
     // Notification center
-    let mut notifications = build_notification_center(&cfg.notifications, &cfg.home.timezone);
+    let mut notifications = build_notification_center(&cfg).await;
     let peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let wyoming_delivery = Arc::new(WyomingDelivery {

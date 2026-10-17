@@ -160,6 +160,9 @@ pub enum Intent {
     /// Bare `<name>` is intentionally rejected at the router level.
     SceneApply {
         name: String,
+        /// "cosy in the living room": only that room's lights from the
+        /// scene. Raw, like `SceneSave { room }`.
+        room: Option<String>,
     },
 
     /// "list my scenes" / "what scenes do I have" / "list scenes" /

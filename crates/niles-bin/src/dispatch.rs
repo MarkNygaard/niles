@@ -720,6 +720,9 @@ pub(crate) fn answer_to_proposal(
     if !proposals.pending() {
         return None;
     }
+    // From any voice, on purpose: one word is too short for voice
+    // recognition to say who spoke it, so asking it to would refuse
+    // every yes rather than a stranger's.
     let yes = niles_tools::automations::answer(text)?;
     let rule = proposals.take()?;
     if !yes {
@@ -911,7 +914,10 @@ pub(crate) fn format_intent(intent: &Intent) -> String {
             Some(r) => format!("SceneSave({name:?} in {r})"),
             None => format!("SceneSave({name:?})"),
         },
-        Intent::SceneApply { name } => format!("SceneApply({name:?})"),
+        Intent::SceneApply { name, room } => match room {
+            Some(r) => format!("SceneApply({name:?} in {r})"),
+            None => format!("SceneApply({name:?})"),
+        },
         Intent::SceneList => "SceneList".into(),
         Intent::SceneDelete { name } => format!("SceneDelete({name:?})"),
         Intent::TimerCancel { name } => format!("TimerCancel({name:?})"),

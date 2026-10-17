@@ -123,6 +123,11 @@ const KNOWN: &[(&str, &str)] = &[
     // Read on every poll, so saving it takes hold without a restart —
     // which is what makes the phone-pairing button appear at all.
     ("presence.unifi.api_key", "UniFi console API key"),
+    // Read on every webhook, so saving it is what turns the webhook on.
+    (
+        crate::webhook::LINEAR_WEBHOOK_SECRET,
+        "Linear webhook signing secret",
+    ),
 ];
 
 #[derive(serde::Serialize)]
