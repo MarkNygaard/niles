@@ -168,7 +168,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 
 20. Every state change is `POST`, `PUT`, `PATCH` or `DELETE` (signing out aside, which only clears the cookie), and the event WebSocket checks `Origin`. *`SameSite=Lax` depends on it.*
 21. Only the HTTP API has a login. What sits outside the gate authenticates itself (Linear's HMAC, a plugin hook's token). *A cookie means nothing to Linear.*
-22. The allowlist is re-read on every request, the last person can't be removed, and the bearer token can't read or rotate itself. *Removing someone takes effect at once, and a leaked key can't lock the house out.*
+22. The allowlist is re-read on every request, the last person can't be removed (by undo either), the model can't change `[auth]` (the store refuses a voice-sourced change, undo included), and the bearer token can't read or rotate itself. *Removing someone takes effect at once, a web page can't talk the model into letting a stranger in, and a leaked key can't lock the house out.*
 
 **Extensions**
 
@@ -217,7 +217,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 
 **If Niles is ever exposed to the internet.** Only port 8080, the HTTP API, goes out; Wyoming and MQTT stay on the house network, and the satellite streams audio unauthenticated. **`/logs` changes character:** at home it shows voice transcripts to people already in the house; exposed, it shows them to anyone holding a session. That is a reason to keep the allowlist short, not to hide the route. Exposing a plugin's webhook (`/plugins/*/hook/*`) is not exposing Niles; the app can stay at home. Pushes to a phone need no inbound port at all.
 
-**The allowlist amends itself, by design.** There are no roles, so anyone signed in can let anyone else in. That fits two adults sharing a home and is the wrong shape for anything larger: **revisit it first if Niles ever has a user who is not a householder.** If the list is ever emptied some other way, the bearer token is not subject to it, and `PATCH /config` restores it.
+**The allowlist amends itself, by design.** There are no roles, so anyone signed in can let anyone else in. That fits two adults sharing a home and is the wrong shape for anything larger: **revisit it first if Niles ever has a user who is not a householder.** If the list is ever emptied some other way, the bearer token is not subject to it, and `PATCH /config` restores it. People listed with no GitHub app is sign-in off, not failed closed (that would leave the bearer token as the only way in); the People card and the startup log say so.
 
 **The plugin trust model.** The sandbox limits what a plugin can *reach*; it does not make a plugin *trustworthy*. An approved plugin can do anything its declared hosts and devices allow: one given an account's password can do what that account can, one subscribed to device state learns when the house is empty and can send that to any host it declared, and any plugin can tell the model untrue things in a tool result. What the sandbox guarantees: no undeclared hosts or local addresses, no other integration's secrets, no database, conversations, memory or people, no code in the app, and capped memory and time. So the approval screen says plainly what is granted, the repo is shown, the component is pinned, and an update that asks for more is approved again.
 

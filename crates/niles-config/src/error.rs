@@ -23,6 +23,13 @@ pub enum Error {
         section: &'static str,
         reason: String,
     },
+
+    /// A change this route may not make, however valid the result.
+    #[error("{reason}")]
+    Refused {
+        section: &'static str,
+        reason: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

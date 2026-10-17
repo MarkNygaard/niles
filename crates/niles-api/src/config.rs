@@ -205,7 +205,7 @@ pub async fn undo_config(State(state): State<AppState>) -> Response {
     let Some(store) = store(&state) else {
         return unconfigured();
     };
-    match store.undo().await {
+    match store.undo(ChangeSource::Api).await {
         Ok(Some(applied)) => applied_response(applied),
         Ok(None) => problem(StatusCode::NOT_FOUND, "no config changes to undo"),
         Err(e) => problem(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),

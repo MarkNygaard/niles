@@ -439,6 +439,32 @@ async fn status_tells_a_missing_secret_apart_from_an_empty_list() {
     );
 }
 
+#[tokio::test]
+async fn status_says_when_people_are_listed_but_there_is_no_github_app() {
+    // Sign-in is off and Niles is open, with a list on the page that
+    // reads as though it were on. The page has to be able to say so.
+    let toml = format!(
+        "{}\n[auth]\n{ONE_PERSON}\n",
+        crate::config_tests::base_toml()
+    );
+    let store = Arc::new(ConfigStore::from_str_in_memory(&toml).expect("fixture is valid"));
+    let app = router(
+        AppState::new(
+            Arc::new(DeviceRegistry::new()),
+            Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
+            Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
+            EventBus::default(),
+        )
+        .with_config_store(Some(store)),
+    );
+    let (_, body) = send(&app, get("/auth/status")).await;
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["github_app"], false);
+
+    let (_, body) = send(&app_allowing(ONE_PERSON, None), get("/auth/status")).await;
+    assert_eq!(body["github_app"], true);
+}
+
 fn with_key(uri: &str, method: &str, token: &str) -> Request<Body> {
     Request::builder()
         .uri(uri)

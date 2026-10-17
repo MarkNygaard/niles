@@ -21,6 +21,12 @@ function stubApi() {
   vi.spyOn(api, "devices").mockResolvedValue([]);
   vi.spyOn(api, "secrets").mockResolvedValue({ writable: true, secrets: [] });
   vi.spyOn(api, "setup").mockResolvedValue({ set_up: true, gaps: [] });
+  vi.spyOn(api, "authStatus").mockResolvedValue({
+    enabled: false,
+    github_app: false,
+    signed_in_as: null,
+    avatar_url: null,
+  });
   vi.spyOn(api, "timezones").mockResolvedValue(["UTC"]);
   vi.spyOn(api, "integrations").mockResolvedValue([
     {
@@ -150,6 +156,45 @@ describe("ConfigPanel", () => {
     await open(/People/);
     expect(await screen.findByText(/Nobody yet/)).toBeInTheDocument();
     expect(screen.queryByText(/not set up to recognise voices/i)).toBeNull();
+  });
+
+  it("says on People that a list without a GitHub app switches nothing on", async () => {
+    stubApi();
+    vi.mocked(api.getConfig).mockResolvedValue({
+      effective: { auth: { allowed: [{ email: "mark@example.com" }] } },
+      overrides: {},
+      sections: [],
+      persistent: true,
+    });
+    vi.spyOn(api, "voices").mockResolvedValue([]);
+    renderPanel();
+
+    await open(/People/);
+    expect(
+      await screen.findByText(/Signing in is off while there is no GitHub app/),
+    ).toBeInTheDocument();
+  });
+
+  it("says why an undo was refused", async () => {
+    // Undoing the change that added the first person would leave
+    // nobody able to sign in, and a button that silently does nothing
+    // reads as broken.
+    stubApi();
+    vi.mocked(api.history).mockResolvedValue([
+      { id: 1, at: "2026-10-17T10:00:00Z", source: "api", summary: "auth.allowed set" },
+    ]);
+    vi.spyOn(api, "undo").mockRejectedValue(
+      new ApiError(
+        "invalid [auth] section: removing the last person would leave nobody able to sign in; add somebody else first",
+        422,
+      ),
+    );
+    renderPanel();
+
+    const undo = await screen.findByRole("button", { name: /Undo last change/ });
+    await waitFor(() => expect(undo).toBeEnabled());
+    fireEvent.click(undo);
+    expect(await screen.findByText(/nobody able to sign in/)).toBeInTheDocument();
   });
 
   it("calls recognition off when the server says so", async () => {
