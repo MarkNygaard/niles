@@ -186,12 +186,17 @@ mod tests {
         }
     }
 
-    fn dummy_quiet(start_h: u32, end_h: u32) -> QuietHoursConfig {
+    /// Quiet from an hour ago until an hour from now, so the test is
+    /// inside the window whenever it runs; a fixed 00:00–23:00 left
+    /// every run in the last hour of the UTC day outside it.
+    fn quiet_now() -> QuietHoursConfig {
+        use chrono::Timelike;
+        let hour = Utc::now().hour();
         QuietHoursConfig {
             enabled: true,
             window: Some(crate::quiet::QuietWindow::new(
-                chrono::NaiveTime::from_hms_opt(start_h, 0, 0).unwrap(),
-                chrono::NaiveTime::from_hms_opt(end_h, 0, 0).unwrap(),
+                chrono::NaiveTime::from_hms_opt((hour + 23) % 24, 0, 0).unwrap(),
+                chrono::NaiveTime::from_hms_opt((hour + 2) % 24, 0, 0).unwrap(),
             )),
             timezone: Some(chrono_tz::Tz::UTC),
         }
@@ -212,7 +217,7 @@ mod tests {
         let delivery = Arc::new(CountingDelivery::new(true));
         let center = NotificationCenter::new(10)
             .with_delivery(delivery.clone())
-            .with_quiet_hours(dummy_quiet(0, 23));
+            .with_quiet_hours(quiet_now());
         let n = center.deliver("shh", None, Priority::Routine);
         assert_eq!(n.outcome, DeliveryOutcome::Suppressed);
         assert_eq!(n.priority, Priority::Important);
@@ -224,7 +229,7 @@ mod tests {
         let delivery = Arc::new(CountingDelivery::new(true));
         let center = NotificationCenter::new(10)
             .with_delivery(delivery.clone())
-            .with_quiet_hours(dummy_quiet(0, 23));
+            .with_quiet_hours(quiet_now());
         let n = center.deliver("hey", None, Priority::Important);
         assert_eq!(n.outcome, DeliveryOutcome::Delivered);
         assert_eq!(n.priority, Priority::Important);
@@ -236,7 +241,7 @@ mod tests {
         let delivery = Arc::new(CountingDelivery::new(true));
         let center = NotificationCenter::new(10)
             .with_delivery(delivery.clone())
-            .with_quiet_hours(dummy_quiet(0, 23));
+            .with_quiet_hours(quiet_now());
         let n = center.deliver("fire", None, Priority::Urgent);
         assert_eq!(n.outcome, DeliveryOutcome::Delivered);
         assert_eq!(n.priority, Priority::Urgent);
