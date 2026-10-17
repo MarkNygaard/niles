@@ -26,6 +26,7 @@ These avoid permission prompts on Windows:
 - In Bash, no heredocs, no shell loops and no `$(...)`.
 - Write scripts, commit messages and PR bodies to a file with the Write tool, then pass the path: `git commit -F <file>`, `gh pr create --body-file <file>`.
 - Watch CI with `gh pr checks <number> --watch`.
+- PRs opened from Mark's account can't get his approval (GitHub doesn't let an author approve their own PR), so they merge through his admin bypass once CI is green: `gh pr merge <number> --squash --delete-branch --admin`. Only when he has asked for the merge.
 
 ## The installed app
 
