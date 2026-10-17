@@ -2761,6 +2761,7 @@ dependencies = [
  "niles-training",
  "niles-webos",
  "niles-webpush",
+ "niles-websearch",
  "rand 0.10.2",
  "reqwest",
  "rust-embed",

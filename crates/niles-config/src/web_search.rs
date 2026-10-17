@@ -11,14 +11,20 @@ fn default_num_results() -> u8 {
     5
 }
 
-/// `[web_search]` section of the config file.
+/// `[web_search]` section of the config file: the house's SearXNG.
 ///
-/// Optional. If absent (or `base_url` is `None`), the web search tool
-/// is not registered.
+/// Optional, and set up as an add-on in the app as often as here. With
+/// no address, Niles's own `web_search` and `image_search` are not
+/// offered, and Claude searches with its own built-in search instead.
+/// Read live: changing or removing the address takes hold with the next
+/// search, without a restart.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebSearchConfig {
-    /// Base URL of the SearXNG instance. If `None`, web search is disabled.
+    /// Where the SearXNG instance answers searches, usually ending in
+    /// `/search`. Empty is the same as absent: removing the add-on in
+    /// the app writes it empty, so an address a ConfigMap still names
+    /// is set aside rather than coming back.
     pub base_url: Option<String>,
     /// Request timeout in seconds. Default: 15.
     #[serde(default = "default_timeout_seconds")]
@@ -39,20 +45,23 @@ impl Default for WebSearchConfig {
 }
 
 impl WebSearchConfig {
+    /// The SearXNG address, when there is one.
+    pub fn address(&self) -> Option<&str> {
+        self.base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+    }
+
     pub fn validate(&self) -> Result<()> {
-        if let Some(url) = &self.base_url {
-            if url.trim().is_empty() {
-                return Err(Error::InvalidSection {
-                    section: "web_search",
-                    reason: "base_url must not be empty if present".into(),
-                });
-            }
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Err(Error::InvalidSection {
-                    section: "web_search",
-                    reason: format!("base_url '{}' must start with http:// or https://", url),
-                });
-            }
+        if let Some(url) = self.address()
+            && !url.starts_with("http://")
+            && !url.starts_with("https://")
+        {
+            return Err(Error::InvalidSection {
+                section: "web_search",
+                reason: format!("base_url '{}' must start with http:// or https://", url),
+            });
         }
         if self.timeout_seconds == 0 || self.timeout_seconds > 600 {
             return Err(Error::InvalidSection {

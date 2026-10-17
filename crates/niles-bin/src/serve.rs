@@ -15,7 +15,7 @@ use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
     build_calendars, build_push, build_secret_store, build_strava, build_tado_tokens,
-    build_weather_client, build_websearch_client, ensure_session_key, forget_retired_provider_keys,
+    build_weather_client, ensure_session_key, forget_retired_provider_keys,
 };
 use crate::wiring::automations::{
     CenterNotifier, MqttDeviceSink, automation_rules, automation_waits, build_automation_store,
@@ -390,7 +390,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let _skill_curator_handle = skill_store
         .clone()
         .and_then(|store| spawn_skill_curator(store, cfg.skills.curator.clone()));
-    let websearch_client = build_websearch_client(&cfg.web_search);
+    let search = niles_tools::Search::live(store.clone());
     // Kept separately from the poll loop: the connection has to exist
     // for Settings to authorise it even when nothing polls it yet.
     let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
@@ -415,8 +415,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         memory_store.clone(),
         skill_store.clone(),
         weather_client.clone(),
-        websearch_client.clone(),
-        cfg.web_search.default_num_results,
+        search.clone(),
         presence_agg.clone(),
         &cfg.home,
         Some(store.clone()),
@@ -455,7 +454,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         bus.clone(),
         artifact_runner.clone(),
         chat_log.clone(),
-        websearch_client.clone(),
+        search.clone(),
         strava.as_ref().map(|s| s.store().clone()),
         push.clone(),
     );
@@ -651,6 +650,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tools.clone(),
         assistant_only,
         secret_store.clone(),
+        search.clone(),
     )
     .await
     {

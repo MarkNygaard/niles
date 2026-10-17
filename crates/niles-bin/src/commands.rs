@@ -10,7 +10,7 @@ use crate::prompt::{
     build_capability_loader, join_memory_entries,
 };
 use crate::voice::transcribe_session;
-use crate::wiring::accounts::{build_tado_tokens, build_weather_client, build_websearch_client};
+use crate::wiring::accounts::{build_tado_tokens, build_weather_client};
 use crate::wiring::llm::{build_llm_client, build_tool_registry};
 use crate::wiring::memory::{build_memory_store, build_skill_store};
 use crate::wiring::mqtt::{build_command_router, connect_from_config, spawn_wled_source};
@@ -412,7 +412,7 @@ pub(crate) async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     let memory_store = build_memory_store(&cfg).await;
     let skill_store = build_skill_store(&cfg).await;
     let weather_client = build_weather_client();
-    let websearch_client = build_websearch_client(&cfg.web_search);
+    let search = niles_tools::Search::of(&cfg.web_search);
     // Kept separately from the poll loop: the connection has to exist
     // for Settings to authorise it even when nothing polls it yet.
     let tado = build_tado(&cfg.presence, build_tado_tokens(&cfg)?);
@@ -437,8 +437,7 @@ pub(crate) async fn chat(args: ChatArgs) -> anyhow::Result<()> {
         memory_store.clone(),
         skill_store.clone(),
         weather_client.clone(),
-        websearch_client.clone(),
-        cfg.web_search.default_num_results,
+        search,
         presence_agg,
         &cfg.home,
         None,

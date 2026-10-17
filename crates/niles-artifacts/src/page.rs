@@ -35,7 +35,8 @@ pub const HELP: &str = "A page is one self-contained HTML document, at most 200 
     for each, niles.image(name) the url for a name in the data such as \"niles-image:12\" \
     (undefined for one it does not keep: draw without it), and niles.imageInfo[id] its \
     {alt, credit, source, width, height}; give each <img> its alt and show its credit, \
-    small. A new picture is kept with artifact_add_image, after image_search finds it; a \
+    small. A new picture is kept with artifact_add_image, after image_search, where it is \
+    offered, finds it; a \
     picture's web address never shows in a page. \
     Use the app's colours as CSS variables, so it matches in light and dark: \
     var(--background), --foreground, --card, --card-foreground, --muted, --muted-foreground, \

@@ -48,6 +48,7 @@ import { CalendarAppPanel, redirectUri } from "@/components/CalendarAppPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { TvPanel } from "@/components/TvPanel";
 import { UnifiPanel } from "@/components/UnifiPanel";
+import { WebSearchPanel } from "@/components/WebSearchPanel";
 import { AddPluginDialog } from "@/components/AddPluginDialog";
 import { PluginPanel, PluginRow } from "@/components/PluginPanel";
 import { PluginLogo } from "@/components/PluginPreview";
@@ -113,6 +114,8 @@ export interface AddOnsPageProps {
   google?: { enabled?: boolean };
   /** The UniFi console's address, empty until one is typed in. */
   unifiHost?: string;
+  /** The SearXNG address, empty until one is typed in. */
+  webSearchAddress?: string;
   /** `[speakers]` as the config has it: Sonos's switch and address. */
   sonos?: { enabled?: boolean; host?: string };
   /** What the speaker at that address described. */
@@ -174,6 +177,7 @@ export function AddOnsPage({
   microsoft,
   google,
   unifiHost,
+  webSearchAddress,
   sonos,
   sonosFound,
   tvConfig,
@@ -234,6 +238,7 @@ export function AddOnsPage({
       microsoft,
       google,
       unifiHost,
+      webSearchAddress,
       sonos,
       tv,
     });
@@ -291,9 +296,9 @@ export function AddOnsPage({
           { path: "integrations.google.redirect_uri", value: redirectUri("google") },
         ]);
       default:
-        // UniFi, Sonos, the TV: nothing to write yet. The address is
-        // what makes it added, and that is the first thing the dialog
-        // asks for.
+        // UniFi, Sonos, the TV, web search: nothing to write yet. The
+        // address is what makes it added, and that is the first thing
+        // the dialog asks for.
         return;
     }
   }
@@ -344,6 +349,11 @@ export function AddOnsPage({
       // The rooms each Sonos is placed in stay, for when it comes back.
       case "sonos":
         return onChange("speakers", [{ path: "speakers.host", value: "" }]);
+      // Written empty rather than reset, so an address a ConfigMap
+      // still names is set aside too. Claude goes back to its own
+      // search with the next message.
+      case "web_search":
+        return onChange("web_search", [{ path: "web_search.base_url", value: "" }]);
       // Gone, not switched off — the card's own switch is for that, and
       // keeps the token. Removing it deletes the token too.
       case "claude_code":
@@ -822,6 +832,16 @@ export function AddOnsPage({
                   />
                 )}
 
+                {current.id === "web_search" && (
+                  <WebSearchPanel
+                    address={webSearchAddress ?? ""}
+                    saving={saving}
+                    onAddress={(address) =>
+                      onChange("web_search", [{ path: "web_search.base_url", value: address }])
+                    }
+                  />
+                )}
+
                 {current.id === "unifi" && (
                   <UnifiPanel
                     host={unifiHost ?? ""}
@@ -899,6 +919,7 @@ const ICONS: Record<string, LucideIcon> = {
   "shopping-basket": ShoppingBasket,
   bot: Bot,
   "list-todo": ListTodo,
+  search: Search,
 };
 
 /** The service's own mark; the catalogue's icon only where there is

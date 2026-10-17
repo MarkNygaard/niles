@@ -178,6 +178,7 @@ impl ToolRegistry {
         let mut out: Vec<niles_llm::Tool> = self
             .tools
             .values()
+            .filter(|t| t.offered())
             .map(|t| t.descriptor().to_llm_tool())
             .collect();
         out.extend(self.dynamic_tools(None));
@@ -201,6 +202,7 @@ impl ToolRegistry {
         let mut out: Vec<niles_llm::Tool> = self
             .tools
             .values()
+            .filter(|t| t.offered())
             .map(|t| t.descriptor().to_llm_tool())
             // A tool nobody classified is a tool that still has to
             // work, so an unknown name keeps its place.
@@ -231,9 +233,17 @@ impl ToolRegistry {
         mentioned
     }
 
-    /// Whether a tool by this name is offered here, built in or added.
+    /// Whether a tool by this name is offered here now, built in or
+    /// added.
     pub fn has(&self, name: &str) -> bool {
-        self.tools.contains_key(name) || self.dynamic.find(name).is_some()
+        self.tools.get(name).is_some_and(|t| t.offered()) || self.dynamic.find(name).is_some()
+    }
+
+    /// Whether a built-in by this name is registered here, offered now
+    /// or not: what a run was given, as against what its settings let
+    /// it use at the moment.
+    pub fn registers(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
     }
 
     /// Dispatch a `ToolCall`. Returns the JSON value the tool produced;
@@ -474,6 +484,42 @@ mod gating_tests {
             arguments: serde_json::json!({}),
         };
         assert!(reg.execute(&call).await.is_ok());
+    }
+
+    struct Switched(&'static str, Arc<std::sync::atomic::AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl Tool for Switched {
+        fn descriptor(&self) -> ToolDescriptor {
+            Named(self.0).descriptor()
+        }
+        async fn execute(&self, _args: serde_json::Value) -> crate::Result<serde_json::Value> {
+            Ok(serde_json::Value::Null)
+        }
+        fn offered(&self) -> bool {
+            self.1.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn a_tool_that_is_not_offered_now_is_left_off_every_list() {
+        let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = registry();
+        reg.register(Box::new(Switched("web_search", on.clone())));
+        let reg = Arc::new(reg);
+        assert!(!names(reg.llm_tools()).contains(&"web_search".to_string()));
+        assert!(
+            !names(reg.llm_tools_for("search for the news")).contains(&"web_search".to_string())
+        );
+        assert!(!reg.has("web_search"));
+        assert!(reg.registers("web_search"));
+
+        on.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(names(reg.llm_tools()).contains(&"web_search".to_string()));
+        assert!(
+            names(reg.llm_tools_for("search for the news")).contains(&"web_search".to_string())
+        );
+        assert!(reg.has("web_search"));
     }
 
     #[test]

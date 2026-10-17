@@ -61,4 +61,4 @@ pub use skill::{
 };
 pub use tool::{Tool, ToolDescriptor};
 pub use weather::{WeatherTool, register_weather_tools};
-pub use web_search::{WebSearchTool, register_web_search_tool};
+pub use web_search::{Search, WebSearchTool, register_web_tools};

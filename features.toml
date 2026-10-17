@@ -229,7 +229,7 @@ since_pr = 81
 [[feature]]
 id = "tool-web-search"
 category = "llm.tools"
-summary = "Search the web via SearXNG and return summarized results"
+summary = "Search the web via SearXNG and return summarized results; offered while the SearXNG add-on is set up"
 since_pr = 83
 
 [[feature]]
@@ -788,3 +788,28 @@ category = "runtime.assistant"
 summary = "Claude or ChatGPT answers about an attached photo or PDF; a message with files always goes to the assistant"
 phrasings = ["what's this plant", "add what's on this receipt to the shopping list"]
 since_pr = 449
+
+[[feature]]
+id = "ui-web-search-addon"
+category = "ui.integrations"
+summary = "Web search (SearXNG) as an add-on: its address saved in the app, its status, a Test of web and image search, Remove"
+since_pr = 9999
+
+[[feature]]
+id = "web-search-live"
+category = "runtime.assistant"
+summary = "Adding, changing or removing the SearXNG address takes hold with the next search, without a restart"
+since_pr = 9999
+
+[[feature]]
+id = "assistant-built-in-search"
+category = "runtime.assistant"
+summary = "Without SearXNG, Claude searches with Claude Code's own WebSearch (never WebFetch); ChatGPT is told it has no search"
+phrasings = ["what's the news today", "when does the ferry to Samsø leave"]
+since_pr = 9999
+
+[[feature]]
+id = "api-web-search-test"
+category = "api.write"
+summary = "POST /integrations/web_search/test runs a web and an image query through the saved SearXNG and counts the results"
+since_pr = 9999

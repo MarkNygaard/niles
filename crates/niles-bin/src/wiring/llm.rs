@@ -73,8 +73,7 @@ pub(crate) fn build_tool_registry(
     memory_store: Option<Arc<MemoryStore>>,
     skill_store: Option<Arc<SkillStore>>,
     weather_client: Option<Arc<niles_weather::OpenMeteoClient>>,
-    websearch_client: Option<Arc<niles_websearch::SearXngClient>>,
-    websearch_default_num_results: u8,
+    search: niles_tools::Search,
     presence: Option<Arc<PresenceAggregator>>,
     home: &niles_config::HomeConfig,
     settings: Option<Arc<niles_config::ConfigStore>>,
@@ -103,9 +102,7 @@ pub(crate) fn build_tool_registry(
             units,
         );
     }
-    if let Some(client) = websearch_client {
-        niles_tools::register_web_search_tool(&mut tools, client, websearch_default_num_results);
-    }
+    niles_tools::register_web_tools(&mut tools, search);
     if let Some(agg) = presence {
         niles_tools::register_presence_tools(&mut tools, agg);
     }

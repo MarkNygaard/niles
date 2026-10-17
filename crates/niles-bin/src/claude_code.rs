@@ -3,12 +3,22 @@
 //! MCP (see [`crate::assistant`]).
 //!
 //! Claude Code's own tools are switched off — no shell, no web, no
-//! files — except when the person attached files to the message: then
-//! `Read` is allowed, for that run only, and `--restricted` confines it
-//! to the directory the run works in, which holds nothing but this
-//! turn's files. `--permission-mode dontAsk` means a path outside it is
-//! refused rather than waiting on a prompt nobody will see. It runs
-//! inside the Niles pod, next to every credential the house has.
+//! files — with two exceptions. When the person attached files to the
+//! message, `Read` is allowed, for that run only, and `--restricted`
+//! confines it to the directory the run works in, which holds nothing
+//! but this turn's files. And when the house has no SearXNG, its own
+//! `WebSearch` is allowed in place of Niles's `web_search`, in a run
+//! that would have had that. `--permission-mode dontAsk` means anything
+//! else is refused rather than waiting on a prompt nobody will see. It
+//! runs inside the Niles pod, next to every credential the house has.
+//!
+//! `WebFetch` stays off whatever else is on: it fetches any address it
+//! is given from inside the pod, which can reach the cluster's own
+//! services. A page is read with Niles's `read_page`, which goes only to
+//! the public internet. `WebSearch` searches on Anthropic's side and
+//! brings back results, so it reaches nothing here; `--restricted` takes
+//! away only the tools that run code, and `WebFetch`, and leaves it be
+//! when `--tools` names it.
 
 use anyhow::{Context, anyhow, bail};
 use serde_json::{Value, json};
@@ -55,6 +65,9 @@ impl<'a> Run<'a> {
     }
 }
 
+/// One run. `web_search` gives it Claude Code's own `WebSearch`: for a
+/// run that searches, when the house has no SearXNG.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     run: Run<'_>,
     oauth_token: &str,
@@ -63,6 +76,7 @@ pub(crate) async fn run(
     system_prompt: &str,
     prompt: &str,
     attachments: &[crate::assistant::Attached],
+    web_search: bool,
 ) -> anyhow::Result<String> {
     let state = state_dir()?;
     let work = state.join("work");
@@ -83,6 +97,7 @@ pub(crate) async fn run(
             prompt,
             &mcp_config(mcp_url, turn_token),
             !attachments.is_empty(),
+            web_search,
         ))
         .env("CLAUDE_CODE_OAUTH_TOKEN", oauth_token)
         .env("CLAUDE_CONFIG_DIR", &state)
@@ -164,13 +179,17 @@ fn arguments(
     prompt: &str,
     mcp_config: &str,
     with_files: bool,
+    web_search: bool,
 ) -> Vec<String> {
-    let tools = if with_files { "Read" } else { "" };
-    let allowed = if with_files {
-        format!("mcp__{SERVER_NAME},Read")
-    } else {
-        format!("mcp__{SERVER_NAME}")
-    };
+    let own: Vec<&str> = [(with_files, "Read"), (web_search, "WebSearch")]
+        .into_iter()
+        .filter_map(|(on, tool)| on.then_some(tool))
+        .collect();
+    let tools = own.join(",");
+    let allowed = std::iter::once(format!("mcp__{SERVER_NAME}"))
+        .chain(own.iter().map(|tool| tool.to_string()))
+        .collect::<Vec<_>>()
+        .join(",");
     let mut args: Vec<String> = [
         "-p",
         prompt,
@@ -183,9 +202,10 @@ fn arguments(
         "--system-prompt",
         system_prompt,
         // No built-in tools at all, and only this server's — or, with
-        // files attached, `Read` as well, confined by `--restricted`.
+        // files attached, `Read` as well, confined by `--restricted`, and
+        // without a SearXNG, `WebSearch`. Never `WebFetch`.
         "--tools",
-        tools,
+        &tools,
         "--mcp-config",
         mcp_config,
         "--strict-mcp-config",
@@ -253,14 +273,51 @@ mod tests {
         toml::from_str("").expect("every field has a default")
     }
 
+    fn after<'a>(args: &'a [String], flag: &str) -> &'a str {
+        let i = args.iter().position(|a| a == flag).expect(flag);
+        args[i + 1].as_str()
+    }
+
+    #[test]
+    fn without_searxng_claude_searches_with_its_own_and_fetches_nothing() {
+        let cfg = cfg();
+        let args = arguments(&Run::chat(&cfg), "s", "p", "{}", false, true);
+        assert_eq!(after(&args, "--tools"), "WebSearch");
+        assert_eq!(after(&args, "--allowedTools"), "mcp__niles,WebSearch");
+        assert!(!args.iter().any(|a| a.contains("WebFetch")), "{args:?}");
+        assert!(!args.contains(&"--restricted".to_string()));
+        assert_eq!(after(&args, "--permission-mode"), "dontAsk");
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+    }
+
+    #[test]
+    fn with_searxng_claude_has_no_search_of_its_own() {
+        let cfg = cfg();
+        for files in [false, true] {
+            let args = arguments(&Run::chat(&cfg), "s", "p", "{}", files, false);
+            assert!(!after(&args, "--tools").contains("WebSearch"), "{args:?}");
+            assert!(
+                !after(&args, "--allowedTools").contains("WebSearch"),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn files_and_its_own_search_together_are_still_restricted() {
+        let cfg = cfg();
+        let args = arguments(&Run::chat(&cfg), "s", "p", "{}", true, true);
+        assert_eq!(after(&args, "--tools"), "Read,WebSearch");
+        assert_eq!(after(&args, "--allowedTools"), "mcp__niles,Read,WebSearch");
+        assert!(args.contains(&"--restricted".to_string()));
+        assert!(!args.iter().any(|a| a.contains("WebFetch")), "{args:?}");
+    }
+
     #[test]
     fn claude_code_gets_no_tools_of_its_own() {
         let cfg = cfg();
-        let args = arguments(&Run::chat(&cfg), "You are Niles.", "hi", "{}", false);
-        let after = |flag: &str| {
-            let i = args.iter().position(|a| a == flag).expect(flag);
-            args[i + 1].as_str()
-        };
+        let args = arguments(&Run::chat(&cfg), "You are Niles.", "hi", "{}", false, false);
+        let after = |flag: &str| after(&args, flag);
         assert_eq!(after("--tools"), "");
         assert_eq!(after("--allowedTools"), "mcp__niles");
         assert_eq!(after("--permission-mode"), "dontAsk");
@@ -274,11 +331,8 @@ mod tests {
     #[test]
     fn files_bring_read_confined_to_the_run_directory() {
         let cfg = cfg();
-        let args = arguments(&Run::chat(&cfg), "s", "p", "{}", true);
-        let after = |flag: &str| {
-            let i = args.iter().position(|a| a == flag).expect(flag);
-            args[i + 1].as_str()
-        };
+        let args = arguments(&Run::chat(&cfg), "s", "p", "{}", true, false);
+        let after = |flag: &str| after(&args, flag);
         assert_eq!(after("--tools"), "Read");
         assert_eq!(after("--allowedTools"), "mcp__niles,Read");
         assert!(args.contains(&"--restricted".to_string()));
@@ -292,7 +346,7 @@ mod tests {
 
     #[test]
     fn the_background_gets_the_strongest_model() {
-        let args = arguments(&Run::background(), "s", "p", "{}", false);
+        let args = arguments(&Run::background(), "s", "p", "{}", false, false);
         let i = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[i + 1], "opus");
     }
@@ -341,6 +395,7 @@ mod tests {
             Arc::new(registry),
             niles_tools::ToolRegistry::new(),
             None,
+            niles_tools::Search::none(),
         )
         .await
         .unwrap();

@@ -698,6 +698,7 @@ mod tests {
             Arc::new(registry),
             niles_tools::ToolRegistry::new(),
             None,
+            niles_tools::Search::none(),
         )
         .await
         .unwrap();
