@@ -76,7 +76,7 @@ Hermes users run `hermes skills trust` once in the repo to load them.
 
 release-please (`.github/workflows/release-please.yml`, `release-please-config.json`) keeps a release PR open against `development` with the next version and its `CHANGELOG.md` entry. Merging it tags `vX.Y.Z`. The version is in `Cargo.toml`'s `[workspace.package]`. Then one PR from `development` into `main`, merged as a merge commit (the only method `main` takes), builds the image (`image.yml`).
 
-Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, and both CI jobs must pass. The admin may bypass them only through a pull request.
+Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, both CI jobs must pass, and Mark (the code owner for everything, in `.github/CODEOWNERS`) must approve. A push after the approval needs a new one. The admin may bypass them only through a pull request.
 
 ## Linear
 
