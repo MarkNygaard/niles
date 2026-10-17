@@ -80,7 +80,12 @@ Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, 
 
 ## Linear
 
-Issues go in the `niles` team, project *Niles software*. Anyone but Mark files a new issue into Triage. Only Mark moves an issue to Todo, and only he hands one to the ai-harness. An agent never triggers the harness.
+Issues go in the `niles` team, project *Niles software*. The *Satellite v2 PCB* project and `hardware/` are Mark's; leave them alone. An agent reaches Linear through Linear's MCP server (`https://mcp.linear.app/mcp`), signed in as the person running it, so what it files is theirs.
+
+- **Filing.** Anyone but Mark files a new issue into Triage. Only Mark moves an issue to Todo, and only he hands one to the ai-harness. An agent never triggers the harness. A good issue says what exists today (with file paths), the decision already made, and when it is done.
+- **Picking one up.** Work only on an issue in Todo that nobody else is assigned to and that isn't delegated to the AI Harness. Assign it to yourself and move it to In Progress before you start.
+- **The PR.** Name the branch after the issue (`fix/nil-34-app-timers`), and put `Fixes NIL-34` in the PR body, so Linear's GitHub integration links the two. Move the issue to In Review when the PR is open.
+- **After that, it's Mark's.** Changes requested, Functional testing and Ready for merge are his to set. The issue goes to Done when the PR merges.
 
 ## Things to avoid
 
