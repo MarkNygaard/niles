@@ -65,6 +65,24 @@ body {
   overflow-y: auto;
 }
 
+/* Niles's panel on a desk takes the right half of the screen (see
+   NilesPanel), and the page moves over into the left half rather than
+   sitting under it: narrowed rather than padded, so its scrollbar is at
+   the split and not hidden behind the panel. */
+@media (min-width: 48rem) {
+  #root {
+    transition: width 300ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  :root[data-panel] #root {
+    width: 50%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #root {
+    transition: none;
+  }
+}
+
 /* Painted on the root as well, because a background only travels from
    the body up to the canvas while the root has none of its own. Belt
    and braces: whichever of the two a phone decides to show behind the
