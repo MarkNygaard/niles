@@ -1,9 +1,8 @@
 //! niles-artifacts — what Niles makes for one person and keeps for
 //! them: a travel plan, a packing list, a training plan.
 //!
-//! See ARCHITECTURE.md § Artifacts (per person). An artifact is one
-//! person's, under the same key as their chat ([`person_key`] in
-//! `niles-training`), and every version of its content is kept, up to
+//! An artifact is one person's, under the same key as their chat
+//! ([`person_key`] in `niles-training`), and every version of its content is kept, up to
 //! [`KEPT_REVISIONS`]. What the content looks like is its kind's
 //! business ([`kinds`]): a document is markdown, a training plan
 //! weeks of dated sessions, a trip its days and places. An artifact may

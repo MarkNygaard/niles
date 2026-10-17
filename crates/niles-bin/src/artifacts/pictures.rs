@@ -1,5 +1,5 @@
 //! Pictures for artifacts: found with the house's own search, kept by
-//! Niles as its own copies. See ARCHITECTURE.md § Artifact pictures.
+//! Niles as its own copies. Why copies is in `niles_artifacts::images`.
 //!
 //! The assistant finds a picture with `image_search` (SearXNG's image
 //! engines), and keeps it with `artifact_add_image`: Niles fetches it

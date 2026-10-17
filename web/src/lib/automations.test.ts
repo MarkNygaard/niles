@@ -99,7 +99,7 @@ const garden: Draft = {
   ],
 };
 
-// The rule ARCHITECTURE.md shows: two ways in, one branch for each.
+// The branching example: two ways in, one branch for each.
 const branching: Draft = {
   description: "Office lights and the garden door",
   enabled: true,

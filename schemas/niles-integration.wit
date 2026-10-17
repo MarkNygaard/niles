@@ -4,8 +4,7 @@
 /// at the bottom of this file: it imports the host interfaces below and
 /// exports the lifecycle and tool functions Niles calls.
 ///
-/// Spec: ARCHITECTURE.md, "Third-party integrations (plugins)".
-/// Author guide: docs/integrations/.
+/// Spec and author guide: docs/integrations/.
 ///
 /// Status: v0.3.0 (`crates/niles-plugins`). 0.3.0 is 0.2.1 plus the
 /// `secrets` and `inbound` interfaces and the exports `authorize-url`,

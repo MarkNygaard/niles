@@ -2,9 +2,7 @@
 
 > New in interface 0.3. A plugin targets 0.3 with `interface = "0.3"` in its
 > manifest and the [WIT](../../schemas/niles-integration.wit) of 0.3; see
-> [publishing](publishing.md#interface-versions). The design and its
-> reasons are in
-> [ARCHITECTURE.md](../../ARCHITECTURE.md#accounts-and-webhooks).
+> [publishing](publishing.md#interface-versions).
 
 Some services need more than an API key. They have the person sign in on
 their own page and hand back OAuth tokens, and they push what happens to an

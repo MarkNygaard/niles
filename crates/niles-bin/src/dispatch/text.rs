@@ -456,8 +456,8 @@ pub(crate) async fn dispatch_text(
                         Err(e) => tracing::warn!("[{peer}] publish to {topic} failed: {e}"),
                     }
                 }
-                // ARCHITECTURE.md:501 — scene-applied lights enter
-                // manual mode until the user explicitly clears them.
+                // Scene-applied lights enter manual mode until the
+                // user explicitly clears them.
                 ctx.tracker.flag(&entry.device_id);
             }
             tracing::info!("[{peer}] applied scene {name:?}");

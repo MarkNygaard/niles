@@ -1,5 +1,4 @@
 //! The signed-in person's artifacts: the Saved tab of Niles's panel.
-//! See ARCHITECTURE.md § Artifacts (per person).
 //!
 //! Every route acts for the caller, by the key their chat is kept
 //! under, and never for a person named in the request. What they may do

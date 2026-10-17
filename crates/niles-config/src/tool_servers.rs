@@ -1,5 +1,6 @@
 //! `[tool_servers.<id>]` — remote MCP servers whose tools Niles offers
-//! the model. See "Remote tool servers (MCP)" in ARCHITECTURE.md.
+//! the model. The client is `niles-mcp`; the wiring is
+//! `niles-bin/src/tool_servers.rs`.
 //!
 //! Each server's key is a secret, `tool_servers.<id>.api_key`, never a
 //! value here.

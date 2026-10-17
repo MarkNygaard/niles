@@ -417,7 +417,6 @@ mod tests {
 
     #[test]
     fn brightness_worked_example_06_10() {
-        // From ARCHITECTURE.md's manual-turn-on table:
         // 25 min into a 45 min ramp, 15 → 100 → 15 + (25/45) * 85 ≈ 62.
         let b = brightness_at(&cfg(), t(6, 10));
         assert!((61..=63).contains(&b), "got {b}");

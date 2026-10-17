@@ -139,5 +139,7 @@ See [host API](host-api.md#coming-later).
 11. [Worked example: spot prices](example-spotprice.md): a complete plugin in Rust,
    with the same tool in JavaScript and Python
 
-The design and its reasoning are in
-[ARCHITECTURE.md](../../ARCHITECTURE.md#third-party-add-ons-plugins).
+Why plugins are WebAssembly components, and what the sandbox does and does
+not promise, are in ARCHITECTURE.md's
+[Big decisions](../../ARCHITECTURE.md#big-decisions) and
+[Security notes](../../ARCHITECTURE.md#security-notes).

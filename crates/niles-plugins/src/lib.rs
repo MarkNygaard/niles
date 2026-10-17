@@ -13,8 +13,7 @@
 //! already has: the [`Runtime`] is a `niles_mqtt::DeviceCommander` for
 //! `x_*` devices, and its tools are in a `niles_tools::DynamicTools`.
 //!
-//! Spec: ARCHITECTURE.md, "Third-party integrations (plugins)", and the
-//! author guide in `docs/integrations/`.
+//! Spec: the author guide in `docs/integrations/`.
 
 mod bindings;
 pub mod check;

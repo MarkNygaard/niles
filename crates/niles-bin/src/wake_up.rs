@@ -1,6 +1,6 @@
 //! Wake-ups an automation starts: the morning routine, at whatever
-//! moment the rule arrives at, with the rule's own settings. See "The
-//! morning routine" in ARCHITECTURE.md.
+//! moment the rule arrives at, with the rule's own settings. The
+//! scheduled routine is `niles_scheduler::morning`.
 //!
 //! Lights that are off come on at 0% and ramp to the end level; lights
 //! already on, or taken by the scheduled routine, are left alone. When

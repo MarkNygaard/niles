@@ -1,5 +1,5 @@
 //! Artifacts: what Claude or ChatGPT makes for one person and keeps for
-//! them. See ARCHITECTURE.md § Artifacts (per person).
+//! them.
 //!
 //! The tools here are offered to the assistant alone (see
 //! [`crate::assistant::Assistant::start`]), and act for the asker of

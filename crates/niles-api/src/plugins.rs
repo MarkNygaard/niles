@@ -24,8 +24,8 @@
 //! POST   /plugins/{id}/rotate-hook                           -> PluginSummary, with a new hook address
 //! ```
 //!
-//! The last five are interface 0.3's accounts and webhooks; ARCHITECTURE.md
-//! has the rules. Niles owns the sign-in round trip (`state`, the cookie
+//! The last five are interface 0.3's accounts and webhooks;
+//! `docs/integrations/accounts.md` has the rules. Niles owns the sign-in round trip (`state`, the cookie
 //! binding it to the browser, the person) and the webhook's token and
 //! limits; the plugin builds the service's address, exchanges the code,
 //! and answers the webhook.

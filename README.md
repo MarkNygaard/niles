@@ -12,7 +12,7 @@ It is set up from its own app. Settings keeps the base system — the broker you
 
 A navigable docs site lives at [docs/](docs/). Build locally with `mdbook serve docs` and browse at <http://localhost:3000>.
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architectural spec: hardware, voice pipeline, lighting model, scenes, timers, add-ons, permissions, deployment.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the map and the rules: the crates, how a turn flows through them, the house rules and the big decisions. How to use Niles is in the docs site.
 - **[CLAUDE.md](CLAUDE.md)** — project orientation for Claude Code and other AI coding agents.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
 - **[Naming your devices](docs/src/naming.md)** — how to name things in Zigbee2MQTT so Niles finds them, and what to call them.

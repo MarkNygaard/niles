@@ -1,9 +1,8 @@
 //! niles-webpush — notifications on a person's phone and computer, by
 //! the browser's own Web Push.
 //!
-//! See ARCHITECTURE.md § Notifications on your devices. A person allows
-//! notifications in the app on each device they want them on; the
-//! browser hands over a [`Subscription`] (an address at its push service
+//! A person allows notifications in the app on each device they want
+//! them on; the browser hands over a [`Subscription`] (an address at its push service
 //! and the keys to encrypt for it), and Niles keeps it under the same
 //! person key as their chat. When something of theirs needs them — a
 //! document written in the background is ready — [`WebPush`] sends to

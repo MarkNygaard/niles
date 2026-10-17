@@ -1,7 +1,7 @@
 //! Requests from outside, for a plugin (interface 0.3): its webhook, and
 //! the browser coming back from a sign-in page.
 //!
-//! The rules are ARCHITECTURE.md's "Accounts and webhooks". Niles owns
+//! The rules are in `docs/integrations/accounts.md`. Niles owns
 //! what is the same for every plugin: the webhook's token and the limits
 //! around it here, and the OAuth `state` in `niles-api`. The plugin owns
 //! what differs between services: the sign-in address, the code

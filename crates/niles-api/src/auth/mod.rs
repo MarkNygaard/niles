@@ -1,7 +1,7 @@
 //! Who may use this API.
 //!
-//! See ARCHITECTURE.md § Signing in. Two ways past this: a **cookie**,
-//! for a person with a browser, and a **bearer token**, for the terminal
+//! Two ways past this: a **cookie**, for a person with a browser, and
+//! a **bearer token**, for the terminal
 //! — `/logs` and `/devices` get read from one, which is why `/logs`
 //! exists at all. The token is the operator and is not subject to the
 //! allowlist, because it is not a person; it is also the way back in if
