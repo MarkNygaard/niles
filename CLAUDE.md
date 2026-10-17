@@ -116,12 +116,24 @@ Two things that cost an hour each if you do not know them:
 
 ## PR workflow
 
-1. Branch off `main` with a meaningful prefix: `feat/`, `fix/`, `docs/`, `chore/`.
+`development` is the default branch and where work lands; `main` is what
+is released, and images are built from it.
+
+1. Branch off `development` with a meaningful prefix: `feat/`, `fix/`, `docs/`, `chore/`.
 2. Make the change; run the verify chain locally.
 3. Commit with a Conventional-Commits-style subject (`feat(niles-core): ...`).
-4. Push and open a PR with `gh pr create`. PR body summarizes what's in, what's out, and how it was verified.
+4. Push and open a PR into `development` with `gh pr create`. PR body summarizes what's in, what's out, and how it was verified.
 5. Wait for CI green. The user reviews, may push fixup commits.
-6. Squash-merge with `--delete-branch` once approved.
+6. Squash-merge with `--delete-branch` once approved — the only merge method `development` takes.
+
+A release is one PR from `development` into `main`, merged as a merge
+commit (the only method `main` takes), so `main` keeps `development`'s
+history and the next release has nothing to reconcile. Images are built
+from `main` after it.
+
+Both branches are protected by repository rulesets: no direct pushes, no
+force-pushes, no deletion, and CI's two jobs must pass. The repository
+admin may bypass them through a pull request only.
 
 Commits made by Claude include the trailer:
 ```
