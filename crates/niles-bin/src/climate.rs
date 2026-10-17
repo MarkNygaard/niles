@@ -5,7 +5,7 @@
 //! things "set the bedroom to 19" means is a round trip that can only
 //! add delay — and, for the heating, a chance of picking the wrong one.
 
-use crate::DispatchCtx;
+use crate::dispatch::DispatchCtx;
 use crate::response::{self, DaySummary, Heated};
 use niles_core::{RoomName, canonicalize_name};
 use niles_intent::{ForecastDay, Intent};

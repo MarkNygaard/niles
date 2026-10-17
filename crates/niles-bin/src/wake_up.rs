@@ -232,7 +232,14 @@ impl WakeUps {
     async fn send(&self, id: &DeviceId, target: &DeviceState, fade: Duration) -> bool {
         let what = "[wake-up]";
         if let Some(commander) = self.router.commander_for(id, target) {
-            return crate::command_directly(commander, id, target, self.dry_run, what).await;
+            return crate::wiring::automations::command_directly(
+                commander,
+                id,
+                target,
+                self.dry_run,
+                what,
+            )
+            .await;
         }
         let Some((topic, payload)) = self.router.format_fading(id, target, fade) else {
             return false;
