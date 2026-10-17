@@ -779,7 +779,7 @@ since_pr = 449
 [[feature]]
 id = "api-chat-attachments"
 category = "api.write"
-summary = "POST /chat takes a multipart body with up to 5 files of 10 MB; GET /chat/conversations/{id}/attachments/{a} serves one to its owner"
+summary = "POST /chat takes a multipart body with up to 5 files of 10 MB; GET …/attachments/{a} serves one to its owner"
 since_pr = 449
 
 [[feature]]
