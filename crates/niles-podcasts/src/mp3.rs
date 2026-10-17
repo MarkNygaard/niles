@@ -306,6 +306,27 @@ pub struct Joined {
     pub seconds: f64,
 }
 
+/// The bitrate for the Info/Xing frame: the stream's own when a silent
+/// frame at that rate has room for the tag, else the lowest that does.
+fn tag_bitrate(reference: &Header, silent_frame_len: usize) -> u8 {
+    let xing_room = 4 + reference.version.side_info(reference.mono) + 16;
+    if silent_frame_len >= xing_room {
+        return reference.bitrate_index;
+    }
+    (1..=14)
+        .find(|&bitrate_index| {
+            Header {
+                bitrate_index,
+                padding: 0,
+                crc: false,
+                ..*reference
+            }
+            .frame_len()
+                >= xing_room
+        })
+        .expect("the top MPEG-1 rate, 320 kbps, always has room")
+}
+
 /// Join the segments into one stream: a silent lead-in, then each
 /// segment with a silent pause between turns, and a fresh Info/Xing
 /// frame first so players read the duration straight off the file.
@@ -355,24 +376,7 @@ pub fn join(segments: &[Vec<u8>], lead_in: Duration, pause: Duration) -> Result<
         .and_then(|pauses| pauses.checked_add(lead_in_frames))
         .ok_or_else(too_big)?;
     let silence = silent_frame(&reference, reference.bitrate_index);
-    let xing_room = 4 + reference.version.side_info(reference.mono) + 16;
-    let tag_index = if silence.len() >= xing_room {
-        reference.bitrate_index
-    } else {
-        (1..=14)
-            .find(|&bitrate_index| {
-                Header {
-                    bitrate_index,
-                    padding: 0,
-                    crc: false,
-                    ..reference
-                }
-                .frame_len()
-                    >= xing_room
-            })
-            .expect("the top MPEG-1 rate, 320 kbps, always has room")
-    };
-    let mut tag = silent_frame(&reference, tag_index);
+    let mut tag = silent_frame(&reference, tag_bitrate(&reference, silence.len()));
     let mut bytes = silence_frames
         .checked_mul(silence.len())
         .and_then(|body| body.checked_add(tag.len()))
