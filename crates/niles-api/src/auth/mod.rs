@@ -192,6 +192,7 @@ pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Respon
         return axum::Json(serde_json::json!({
             "enabled": false,
             "configured": false,
+            "github_app": false,
             "signed_in_as": null,
             "avatar_url": null,
         }))
@@ -219,6 +220,13 @@ pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Respon
         // for its first person. Only one of them is open to anybody,
         // and this is how to tell.
         "configured": config.auth.is_configured(),
+        // Whether a GitHub app has been set up at all. With people
+        // listed and none, sign-in is off and the list on the People
+        // page reads as though it were on; this is how the page knows
+        // to say otherwise. It tells an outsider nothing: with sign-in
+        // on it is always true, and with it off the config is theirs to
+        // read anyway.
+        "github_app": config.auth.names_a_github_app(),
         "signed_in_as": who,
     }))
     .into_response()

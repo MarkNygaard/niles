@@ -18,7 +18,15 @@ the list can do everything, including adding and removing people.
 
 Remove someone with the bin next to their address. It takes effect on
 their next click. You cannot remove the last person on the list, because
-then nobody could sign in to add anyone back.
+then nobody could sign in to add anyone back. **Undo last change** will
+not take them away either.
+
+The list only works with a GitHub app in the **Signing in** card above
+it. Without one, signing in stays off and the card says "Signing in is
+off while there is no GitHub app".
+
+Change the list here. Niles will not change it when asked, by voice or in
+the chat.
 
 Next to each address is a choice of voice. Pick the person's voice there
 to link the two. See [Security and privacy](security.md) for how signing

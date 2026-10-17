@@ -730,8 +730,12 @@ export interface SetLight {
 
 /** What `GET /auth/status` says before anybody has signed in. */
 export interface AuthStatus {
-  /** False when nobody is on the allowlist: Niles is open. */
+  /** False when nobody is on the allowlist, or there is no GitHub app:
+      Niles is open. */
   enabled: boolean;
+  /** Whether a GitHub app is set up. People listed and none is sign-in
+      off behind a list that reads as on. */
+  github_app: boolean;
   /** The address of whoever is holding this browser, or null. */
   signed_in_as: string | null;
   /** Their GitHub avatar, when the session knows which account it is. */

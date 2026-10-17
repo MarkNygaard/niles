@@ -780,10 +780,6 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             as Arc<dyn niles_api::tool_servers::ToolServers>,
     ));
 
-    // A deployment that mounts its secrets under names the platform
-    // silently drops leaves `[auth]` naming variables that do not
-    // resolve. Sign-in then reads as "off, waiting for its first
-    // person" — which is what a correct install looks like too, except
     // Starting no longer proves Niles is configured — every section has
     // a default, which is what lets the app be the way in. So say what
     // is still unanswered, once, where somebody will see it.
@@ -798,11 +794,26 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
+    // A deployment that mounts its secrets under names the platform
+    // silently drops leaves `[auth]` naming variables that do not
+    // resolve. Sign-in then reads as "off, waiting for its first
+    // person" — which is what a correct install looks like too, except
     // that one is open to anybody who can reach it. Worth one loud line
     // rather than a discovery.
     if cfg.auth.github_client_id_env.is_some() && !cfg.auth.is_configured() {
         tracing::warn!(
-            "[auth] names secrets that cannot be read, so signing in is OFF and this              Niles is open to anyone who can reach it — check the env vars actually              reach the process"
+            "[auth] names secrets that cannot be read, so signing in is OFF and this \
+             Niles is open to anyone who can reach it — check the env vars actually \
+             reach the process"
+        );
+    }
+    // The same open door behind a list that looks like a lock: people
+    // are listed, so it reads as on. Not failed closed, which would
+    // leave the API key as the household's only way in.
+    if cfg.auth.is_open_with_people_listed() {
+        tracing::warn!(
+            "[auth] people are listed but there is no GitHub app, so signing in is OFF and \
+             this Niles is open to anyone who can reach it — set one up under Settings → People"
         );
     }
     let api_handle = tokio::spawn(async move {

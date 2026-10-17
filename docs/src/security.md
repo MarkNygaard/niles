@@ -21,6 +21,14 @@ Signing in needs two things:
   off and Niles is open to anyone who can reach it. The People card says
   so.
 
+People listed without a GitHub app does not switch signing in on either:
+Niles stays open, the People card warns, and the log says so at startup.
+
+Only the app changes who can sign in. Niles will not add or remove anyone
+when asked, by voice or in the chat, so a web page or a message that talks
+it into trying gets nowhere. **Undo last change** will not empty the list,
+and undo by voice will not undo a change to it.
+
 When you sign in, Niles asks GitHub for your email addresses only. It
 matches the address GitHub has verified against the list, ignoring upper
 and lower case. An unverified address, or a GitHub username, never
