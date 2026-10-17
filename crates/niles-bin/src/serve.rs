@@ -561,6 +561,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
+    if let Some(artifacts) = &artifacts {
+        artifacts.play_on(music.clone() as Arc<dyn artifacts::Sonos>);
+    }
     let tv = Arc::new(tv::TvControl::new(store.clone()));
     music::register(&mut tools, music.clone(), tv.clone());
     tv::register(&mut tools, tv.clone());
@@ -650,8 +653,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let tools = Arc::new(tools);
     if let Some(artifacts) = &artifacts {
-        let artifacts = artifacts.clone();
-        tokio::spawn(async move { artifacts.recover().await });
+        let recovered = artifacts.clone();
+        tokio::spawn(async move { recovered.recover().await });
+        tokio::spawn(artifacts.clone().sweep_episodes());
     }
     let assistant_only = artifacts
         .as_ref()

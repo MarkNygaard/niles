@@ -43,6 +43,10 @@ pub struct IntegrationsConfig {
     pub nemlig: Option<NemligConfig>,
     #[serde(default)]
     pub spotify: Option<SpotifyConfig>,
+    /// Set up in the app (Settings → Add-ons → Podcasts), never written
+    /// into a config file by hand.
+    #[serde(default)]
+    pub podcasts: Option<PodcastsConfig>,
     #[serde(default)]
     pub microsoft: Option<MicrosoftConfig>,
     #[serde(default)]
@@ -189,6 +193,251 @@ impl NemligConfig {
             &self.password_env,
         )?;
         Ok((username, password))
+    }
+}
+
+/// `[integrations.podcasts]` — the household's own Kokoro (which speaks
+/// the episodes) and a private Cloudflare R2 bucket (which keeps them),
+/// for podcasts researched by the assistant and recorded by Niles (see
+/// ARCHITECTURE.md § Podcasts).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PodcastsConfig {
+    /// Where Kokoro-FastAPI runs, such as `http://kokoro:8880`. A
+    /// trailing `/v1` or `/` is no problem.
+    #[serde(default)]
+    pub kokoro_url: String,
+    /// The account's S3 endpoint, such as
+    /// `https://<account-id>.r2.cloudflarestorage.com`.
+    #[serde(default)]
+    pub endpoint: String,
+    /// The bucket episodes are kept in.
+    #[serde(default)]
+    pub bucket: String,
+    /// The variables holding the R2 API token's two parts, when they
+    /// come from them rather than from Niles's own store.
+    #[serde(default)]
+    pub access_key_id_env: String,
+    #[serde(default)]
+    pub secret_access_key_env: String,
+    /// The SigV4 region used for signing and presigning.
+    #[serde(default = "default_podcasts_region")]
+    pub region: String,
+    /// The two hosts' Kokoro voices, English ones.
+    #[serde(default = "default_first_voice")]
+    pub first_voice: String,
+    #[serde(default = "default_second_voice")]
+    pub second_voice: String,
+    /// How many days an episode is kept.
+    #[serde(default = "default_keep_days")]
+    pub keep_days: u16,
+}
+
+pub const DEFAULT_REGION: &str = "auto";
+pub const DEFAULT_VOICES: [&str; 2] = ["af_heart", "am_michael"];
+pub const DEFAULT_KEEP_DAYS: u16 = 14;
+
+fn default_podcasts_region() -> String {
+    DEFAULT_REGION.into()
+}
+
+fn default_first_voice() -> String {
+    DEFAULT_VOICES[0].into()
+}
+
+fn default_second_voice() -> String {
+    DEFAULT_VOICES[1].into()
+}
+
+fn default_keep_days() -> u16 {
+    DEFAULT_KEEP_DAYS
+}
+
+impl Default for PodcastsConfig {
+    fn default() -> Self {
+        Self {
+            kokoro_url: String::new(),
+            endpoint: String::new(),
+            bucket: String::new(),
+            access_key_id_env: String::new(),
+            secret_access_key_env: String::new(),
+            region: default_podcasts_region(),
+            first_voice: default_first_voice(),
+            second_voice: default_second_voice(),
+            keep_days: default_keep_days(),
+        }
+    }
+}
+
+impl PodcastsConfig {
+    /// Kokoro's address, without a trailing `/v1/` or `/`; nothing
+    /// when it is not set.
+    pub fn kokoro_address(&self) -> Option<String> {
+        let mut address = self.kokoro_url.trim().to_string();
+        while address.ends_with('/') {
+            address.pop();
+        }
+        if let Some(stripped) = address.strip_suffix("/v1") {
+            address = stripped.to_string();
+        }
+        while address.ends_with('/') {
+            address.pop();
+        }
+        (!address.is_empty()).then_some(address)
+    }
+
+    /// The bucket endpoint's address, without a trailing `/`; nothing
+    /// when it is not set.
+    pub fn endpoint_address(&self) -> Option<String> {
+        let mut address = self.endpoint.trim().to_string();
+        while address.ends_with('/') {
+            address.pop();
+        }
+        (!address.is_empty()).then_some(address)
+    }
+
+    /// The bucket's name; nothing when it is not set.
+    pub fn bucket_name(&self) -> Option<&str> {
+        let name = self.bucket.trim();
+        (!name.is_empty()).then_some(name)
+    }
+
+    /// The SigV4 region: `auto` for R2, whatever else an S3-compatible
+    /// service wants.
+    pub fn signing_region(&self) -> &str {
+        let region = self.region.trim();
+        if region.is_empty() {
+            DEFAULT_REGION
+        } else {
+            region
+        }
+    }
+
+    /// The two hosts' voices, each falling back to its default when
+    /// left blank.
+    pub fn voices(&self) -> [String; 2] {
+        [
+            voice_or_default(&self.first_voice, DEFAULT_VOICES[0]),
+            voice_or_default(&self.second_voice, DEFAULT_VOICES[1]),
+        ]
+    }
+
+    /// The R2 API token's access key id.
+    pub fn access_key_id(&self) -> Result<String> {
+        Ok(crate::env::require_secret(
+            "integrations.podcasts",
+            "integrations.podcasts.access_key_id",
+            &self.access_key_id_env,
+        )?
+        .trim()
+        .to_string())
+    }
+
+    /// The R2 API token's secret access key.
+    pub fn secret_access_key(&self) -> Result<String> {
+        Ok(crate::env::require_secret(
+            "integrations.podcasts",
+            "integrations.podcasts.secret_access_key",
+            &self.secret_access_key_env,
+        )?
+        .trim()
+        .to_string())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let invalid = |reason: String| Error::InvalidSection {
+            section: "integrations.podcasts",
+            reason,
+        };
+        let kokoro = self.kokoro_url.trim();
+        if !(kokoro.is_empty() || kokoro.starts_with("http://") || kokoro.starts_with("https://")) {
+            return Err(invalid(format!(
+                "kokoro_url {kokoro:?} must start with http:// or https://"
+            )));
+        }
+        let endpoint = self.endpoint.trim();
+        if !endpoint.is_empty() {
+            let rest = endpoint
+                .strip_prefix("https://")
+                .or_else(|| endpoint.strip_prefix("http://"));
+            let host_ok = match rest {
+                Some(host) => {
+                    let host = host.strip_suffix('/').unwrap_or(host);
+                    !host.is_empty()
+                        && !host.contains('/')
+                        && !host.contains(['?', '#'])
+                        && !host.chars().any(char::is_whitespace)
+                }
+                None => false,
+            };
+            if !host_ok {
+                return Err(invalid(
+                    "endpoint is the account's S3 address, such as \
+                     https://<account-id>.r2.cloudflarestorage.com, with nothing after it (the \
+                     bucket has its own field)"
+                        .into(),
+                ));
+            }
+        }
+        let bucket = self.bucket.trim();
+        if !bucket.is_empty() {
+            let name_char =
+                |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-';
+            let well_formed = bucket.len() >= 3
+                && bucket.len() <= 63
+                && bucket.chars().all(name_char)
+                && bucket.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && bucket.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit());
+            if !well_formed {
+                return Err(invalid(format!(
+                    "bucket {bucket:?} is not a bucket name: 3 to 63 lowercase letters, digits, \
+                     dots and hyphens"
+                )));
+            }
+        }
+        let region = self.region.trim();
+        if !region.is_empty()
+            && (region.len() > 32
+                || !region
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+        {
+            return Err(invalid(format!(
+                "region {region:?} must be lowercase letters, digits and hyphens, such as auto"
+            )));
+        }
+        let voices = self.voices();
+        for voice in &voices {
+            let english = voice.len() >= 4
+                && matches!(voice.as_bytes()[0], b'a' | b'b')
+                && voice.as_bytes()[1].is_ascii_lowercase()
+                && voice.as_bytes()[2] == b'_'
+                && voice[3..]
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !english {
+                return Err(invalid(format!(
+                    "Podcasts are in English for now: {voice:?} is not an English Kokoro voice \
+                     (one starting af_, am_, bf_ or bm_)"
+                )));
+            }
+        }
+        if voices[0] == voices[1] {
+            return Err(invalid("the two hosts need different voices".into()));
+        }
+        if !(1..=365).contains(&self.keep_days) {
+            return Err(invalid("keep_days must be between 1 and 365".into()));
+        }
+        Ok(())
+    }
+}
+
+fn voice_or_default(raw: &str, default: &str) -> String {
+    let voice = raw.trim();
+    if voice.is_empty() {
+        default.to_string()
+    } else {
+        voice.to_string()
     }
 }
 
@@ -359,6 +608,9 @@ impl IntegrationsConfig {
         if let Some(chatgpt) = &self.chatgpt {
             chatgpt.validate()?;
         }
+        if let Some(podcasts) = &self.podcasts {
+            podcasts.validate()?;
+        }
         Ok(())
     }
 }
@@ -404,6 +656,118 @@ mod tests {
         assert!(integrations("[chatgpt]\nmodel = \" \"").validate().is_err());
         // The sign-in is not config, and a key for it here is a mistake.
         assert!(toml::from_str::<IntegrationsConfig>("[chatgpt]\naccess_token = \"x\"").is_err());
+    }
+
+    fn podcasts(body: &str) -> PodcastsConfig {
+        let toml = if body.trim().is_empty() {
+            "[podcasts]".to_string()
+        } else {
+            format!("[podcasts]\n{body}")
+        };
+        toml::from_str::<IntegrationsConfig>(&toml)
+            .expect("valid")
+            .podcasts
+            .expect("the section")
+    }
+
+    #[test]
+    fn an_empty_podcasts_section_is_a_half_set_up_one_that_saves() {
+        let podcasts = podcasts("");
+        assert_eq!(podcasts.signing_region(), "auto");
+        assert_eq!(podcasts.voices(), ["af_heart", "am_michael"]);
+        assert_eq!(podcasts.keep_days, 14);
+        assert!(podcasts.validate().is_ok());
+        assert!(toml::from_str::<IntegrationsConfig>("[podcasts]\naccess_key_id = \"x\"").is_err());
+    }
+
+    #[test]
+    fn kokoro_address_strips_a_trailing_v1() {
+        let mut podcasts = podcasts("");
+        podcasts.kokoro_url = " http://kokoro:8880/v1/ ".into();
+        assert_eq!(
+            podcasts.kokoro_address().as_deref(),
+            Some("http://kokoro:8880")
+        );
+        podcasts.kokoro_url = "https://kokoro.example.com".into();
+        assert_eq!(
+            podcasts.kokoro_address().as_deref(),
+            Some("https://kokoro.example.com")
+        );
+        podcasts.kokoro_url = " ".into();
+        assert_eq!(podcasts.kokoro_address(), None);
+    }
+
+    #[test]
+    fn an_endpoint_with_a_bucket_path_is_refused() {
+        let mut podcasts = podcasts("");
+        podcasts.endpoint = "https://account.r2.cloudflarestorage.com/my-bucket".into();
+        let error = podcasts.validate().expect_err("refused");
+        let reason = error.to_string();
+        assert!(
+            reason.contains("with nothing after it"),
+            "unexpected: {reason}"
+        );
+        podcasts.endpoint = "https://account.r2.cloudflarestorage.com/".into();
+        assert!(podcasts.validate().is_ok());
+        podcasts.endpoint = "account.r2.cloudflarestorage.com".into();
+        assert!(podcasts.validate().is_err());
+    }
+
+    #[test]
+    fn a_bucket_name_is_lowercase_and_bounded() {
+        let mut podcasts = podcasts("");
+        podcasts.bucket = "Niles-Podcasts".into();
+        let error = podcasts.validate().expect_err("refused");
+        assert!(
+            error.to_string().contains("is not a bucket name"),
+            "unexpected: {error}"
+        );
+        podcasts.bucket = "niles-podcasts".into();
+        assert!(podcasts.validate().is_ok());
+        podcasts.bucket = "ab".into();
+        assert!(podcasts.validate().is_err());
+    }
+
+    #[test]
+    fn the_two_hosts_need_different_english_voices() {
+        let mut podcasts = podcasts("");
+        podcasts.first_voice = "af_heart".into();
+        podcasts.second_voice = "af_heart".into();
+        let error = podcasts.validate().expect_err("refused");
+        assert!(
+            error.to_string().contains("different voices"),
+            "unexpected: {error}"
+        );
+        podcasts.second_voice = "ef_dora".into();
+        let error = podcasts.validate().expect_err("refused");
+        assert!(
+            error.to_string().contains("not an English Kokoro voice"),
+            "unexpected: {error}"
+        );
+        podcasts.second_voice = "bm_george".into();
+        assert!(podcasts.validate().is_ok());
+    }
+
+    #[test]
+    fn keep_days_is_a_year_at_most() {
+        let mut podcasts = podcasts("");
+        podcasts.keep_days = 0;
+        assert!(podcasts.validate().is_err());
+        podcasts.keep_days = 366;
+        assert!(podcasts.validate().is_err());
+        podcasts.keep_days = 365;
+        assert!(podcasts.validate().is_ok());
+    }
+
+    #[test]
+    fn a_blank_region_signs_as_auto() {
+        let mut podcasts = podcasts("");
+        podcasts.region = " ".into();
+        assert_eq!(podcasts.signing_region(), "auto");
+        podcasts.region = "eu-west-1".into();
+        assert_eq!(podcasts.signing_region(), "eu-west-1");
+        podcasts.region = "EU_WEST".into();
+        assert!(podcasts.validate().is_err());
     }
 
     #[test]

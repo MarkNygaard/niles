@@ -293,6 +293,18 @@ pub(crate) async fn dispatch_tier1(
             }
             return Some(reply);
         }
+    } else if artifacts::about_podcasts(text)
+        && ctx.artifacts.as_ref().is_some_and(|a| a.podcasts_ready())
+    {
+        // A spoken ask for a podcast goes straight to the assistant:
+        // the fast model has no artifact tools with which to start the
+        // job. With no assistant on, `ask_assistant` is a no-op and the
+        // fast model answers as best it can.
+        if let Some(reply) =
+            ask_assistant(ctx, peer, text, thread, speaker, &system_prompt, &[]).await
+        {
+            return Some(reply);
+        }
     }
     let mut messages = Vec::new();
     messages.push(Message::System {
@@ -583,7 +595,16 @@ pub(crate) async fn ask_assistant(
     {
         system_prompt.push_str(&artifacts::turn_prompt(
             artifacts.searching(Some(chosen.via())),
+            artifacts.podcasts_ready(),
         ));
+    } else if let Some(artifacts) = &ctx.artifacts
+        && matches!(thread, conversation::Thread::Room(_))
+        && artifacts.podcasts_ready()
+        && approvals::asker().is_some_and(|a| !a.person.starts_with("satellite:"))
+    {
+        // A spoken podcast request is the assistant's: the satellite
+        // only says its one-sentence answer.
+        system_prompt.push_str(artifacts::spoken_prompt());
     }
     system_prompt.push_str(&assistant::attachments_section(attachments));
     match assistant

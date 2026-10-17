@@ -29,6 +29,7 @@ import type { Role, RoleChange } from "@/components/RoleCard";
 import { SecretField } from "@/components/SecretField";
 import { SECTIONS, SettingsNav, sectionId } from "@/components/SettingsNav";
 import { cn } from "@/lib/utils";
+import type { PodcastsSettings } from "@/lib/podcasts";
 import { SetupChecklist } from "@/components/SetupChecklist";
 import { gapsFor, todoByPage } from "@/lib/setup";
 import { useRoute } from "@/lib/route";
@@ -1252,6 +1253,11 @@ export function ConfigPanel() {
             }
             unifiHost={stringAt(view.effective, "presence.unifi.host")}
             webSearchAddress={stringAt(view.effective, "web_search.base_url")}
+            podcasts={
+              (view.effective.integrations as
+                | { podcasts?: PodcastsSettings }
+                | undefined)?.podcasts
+            }
             sonos={{
               enabled: valueAt(view.effective, "speakers.enabled") !== false,
               host: sonosHost,

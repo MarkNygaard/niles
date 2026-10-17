@@ -54,6 +54,7 @@ pub const KINDS: &[Kind] = &[
     crate::document::KIND,
     crate::training_plan::KIND,
     crate::trip::KIND,
+    crate::podcast::KIND,
 ];
 
 pub fn kind(id: &str) -> Option<&'static Kind> {

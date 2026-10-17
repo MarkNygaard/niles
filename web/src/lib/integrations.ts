@@ -75,6 +75,7 @@ export interface StatusInputs {
   google?: { enabled?: boolean };
   unifiHost?: string;
   webSearchAddress?: string;
+  podcasts?: { kokoro_url?: string; endpoint?: string; bucket?: string };
   sonos?: { enabled?: boolean; host?: string };
   tv?: TvInfo;
 }
@@ -151,6 +152,19 @@ export function statusOf(integration: Integration, inputs: StatusInputs): Status
       return inputs.webSearchAddress?.trim()
         ? { ok: true, text: "In use" }
         : needs("Needs its address");
+    // Whether it works is the panel's test to say, like web_search;
+    // the row only says when it is filled in.
+    case "podcasts":
+      if (!inputs.podcasts?.kokoro_url?.trim()) return needs("Needs its Kokoro address");
+      if (!inputs.podcasts.endpoint?.trim() || !inputs.podcasts.bucket?.trim()) {
+        return needs("Needs its R2 bucket");
+      }
+      return missing(
+        "integrations.podcasts.access_key_id",
+        "integrations.podcasts.secret_access_key",
+      )
+        ? needs("Needs its access key")
+        : { ok: true, text: "Set up" };
     default:
       return missing(integration.secret_key) ? needs("Needs its API key") : WORKING;
   }

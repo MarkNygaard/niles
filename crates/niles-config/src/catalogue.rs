@@ -116,7 +116,7 @@ pub const GROUPS: &[GroupInfo] = &[
     GroupInfo {
         id: Group::Assistants,
         label: "Assistants & tools",
-        blurb: "Claude or ChatGPT in the chat, on your own subscription, work handed to Niles from Linear, and the web search they use.",
+        blurb: "Claude or ChatGPT in the chat, on your own subscription, work handed to Niles from Linear, the web search they use, and the podcasts they make.",
         requirement: None,
     },
 ];
@@ -463,6 +463,24 @@ pub const KNOWN: &[Known] = &[
         api: Api::OpenAi,
         models: &[],
     },
+    Known {
+        id: "podcasts",
+        label: "Podcasts",
+        blurb: "Ask Niles to research a topic, by voice or in the app. A few minutes later you get a short episode, at most 8 minutes, of two hosts talking it through, with the sources listed underneath. Listen in the app or on a Sonos speaker.",
+        needs: "Kokoro, which you run yourself on your own server or cluster, and a private Cloudflare R2 bucket with an access key for that bucket only. Claude or ChatGPT researches and writes each episode.",
+        kind: Kind::Service,
+        group: Group::Assistants,
+        importance: Importance::Optional,
+        icon: "podcast",
+        secrets: &[
+            "integrations.podcasts.access_key_id",
+            "integrations.podcasts.secret_access_key",
+        ],
+        base_url: None,
+        serves: &[],
+        api: Api::OpenAi,
+        models: &[],
+    },
 ];
 
 pub fn find(id: &str) -> Option<&'static Known> {
@@ -498,6 +516,10 @@ impl Known {
             // Two again, like nemlig; the secret is the one that says.
             Kind::Service if self.id == "spotify" => {
                 Some("integrations.spotify.client_secret".into())
+            }
+            // Two again, like spotify; the secret is the one that says.
+            Kind::Service if self.id == "podcasts" => {
+                Some("integrations.podcasts.secret_access_key".into())
             }
             Kind::Service if self.id == "microsoft" => {
                 Some("integrations.microsoft.client_secret".into())
@@ -732,6 +754,13 @@ mod tests {
         sign_in.sort();
         assert_eq!(chatgpt, sign_in);
         assert_eq!(owns("mqtt"), ["mqtt.username", "mqtt.password"]);
+        assert_eq!(
+            owns("podcasts"),
+            [
+                "integrations.podcasts.access_key_id",
+                "integrations.podcasts.secret_access_key"
+            ]
+        );
     }
 
     #[test]
@@ -781,7 +810,7 @@ mod tests {
             .collect();
         assert_eq!(
             assistants,
-            ["claude_code", "chatgpt", "linear", "web_search"]
+            ["claude_code", "chatgpt", "linear", "web_search", "podcasts"]
         );
         let chatgpt = find("chatgpt").expect("in the catalogue");
         assert_eq!(chatgpt.kind, Kind::Service);

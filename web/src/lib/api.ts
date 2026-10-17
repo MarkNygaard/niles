@@ -532,6 +532,42 @@ export interface WebSearchTest {
   images: WebSearchOutcome | null;
 }
 
+/** One part of the Podcasts test: Kokoro or storage. */
+export interface PodcastsPart {
+  ok: boolean;
+  /** Why it failed, in words for the page. Never an address or a key. */
+  error: string | null;
+}
+
+/** `POST /integrations/podcasts/test`: a one-second sample in each
+    host's voice through Kokoro, and a tiny object uploaded, read back
+    through a presigned URL and deleted in the R2 bucket. */
+export interface PodcastsTest {
+  /** Whether every field the test needs is filled in. */
+  configured: boolean;
+  /** What is still missing, by its field's name: "R2 endpoint". */
+  missing: string[];
+  kokoro: PodcastsPart | null;
+  storage: PodcastsPart | null;
+}
+
+/** `GET /integrations/podcasts/voices`: the voices Kokoro lists, for
+    the host pickers. */
+export interface PodcastVoices {
+  voices: string[];
+  /** Why the list could not be fetched, in words for the page. */
+  error: string | null;
+}
+
+/** `GET /me/artifacts/{id}/audio`: where an episode is played from.
+    `url` is signed and stops working after `expires_at`; `kept_until`
+    is the retention date the app shows. */
+export interface EpisodeAudio {
+  url: string;
+  expires_at: string;
+  kept_until: string;
+}
+
 /** The Sonos household as a speaker described it just now. */
 export interface SpeakersReport {
   /** Whether Niles has an address to ask. */
@@ -1651,6 +1687,8 @@ export const api = {
     }),
   artifacts: () => request<ArtifactList>("/me/artifacts"),
   artifact: (id: number) => request<ArtifactDetail>(`/me/artifacts/${id}`),
+  /** A signed play link for a recorded podcast episode. */
+  episodeAudio: (id: number) => request<EpisodeAudio>(`/me/artifacts/${id}/audio`),
   artifactRevision: (id: number, n: number) =>
     request<ArtifactRevision>(`/me/artifacts/${id}/revisions/${n}`),
   patchArtifact: (id: number, patch: ArtifactPatch) =>
@@ -1789,6 +1827,9 @@ export const api = {
   speakers: () => request<SpeakersReport>("/speakers"),
   testWebSearch: () =>
     request<WebSearchTest>("/integrations/web_search/test", { method: "POST" }),
+  testPodcasts: () =>
+    request<PodcastsTest>("/integrations/podcasts/test", { method: "POST" }),
+  podcastVoices: () => request<PodcastVoices>("/integrations/podcasts/voices"),
   tv: () => request<TvInfo>("/tv"),
   music: () => request<RoomMusic[]>("/music"),
   musicControl: (room: string, control: MusicControl) =>

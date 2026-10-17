@@ -97,6 +97,8 @@ create table if not exists artifact_shares (
     primary key (artifact_id, person)
 );
 create index if not exists artifact_shares_person on artifact_shares (person);
+-- A kind kept only for a while (podcasts) is swept by kind and age.
+create index if not exists artifacts_kind_made on artifacts (kind, created_at);
 ";
 
 /// Qualified, so a query joining `artifact_shares` (which has a `person`
@@ -425,6 +427,21 @@ impl ArtifactStore for PostgresArtifacts {
     async fn get(&self, person: &str, id: i64) -> Result<Option<Artifact>> {
         self.ensure_schema().await?;
         self.one(person, id).await
+    }
+
+    async fn made_before(&self, kind: &str, before: DateTime<Utc>) -> Result<Vec<Artifact>> {
+        self.ensure_schema().await?;
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from artifacts
+             where artifacts.kind = $1 and artifacts.created_at < $2
+             order by artifacts.created_at, artifacts.id"
+        ))
+        .bind(kind)
+        .bind(before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(rows.iter().map(artifact).collect())
     }
 
     async fn revision(&self, person: &str, id: i64, n: i32) -> Result<Option<Revision>> {

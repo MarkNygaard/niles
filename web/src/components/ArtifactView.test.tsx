@@ -396,3 +396,88 @@ describe("ArtifactView's pictures", () => {
     await waitFor(() => expect(artifactImage).toHaveBeenCalledWith(5, 12));
   });
 });
+
+describe("ArtifactView, podcast", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const EPISODE = {
+    kind: "podcast",
+    title: "Why the sky is blue",
+    content: {
+      topic: "Why the sky is blue",
+      minutes: 5,
+      hosts: ["Heart", "Michael"],
+      lines: [
+        { host: "Heart", text: "Why is the sky blue?" },
+        { host: "Michael", text: "Sunlight scattering off the air." },
+      ],
+      sources: [{ title: "Rayleigh scattering", url: "https://example.com/rayleigh" }],
+    },
+  };
+
+  const AUDIO = {
+    url: "https://abc123.r2.cloudflarestorage.com/niles-podcasts/podcasts/5.mp3?X-Amz-Expires=14400",
+    expires_at: NOW,
+    kept_until: "2026-10-31T00:00:00Z",
+  };
+
+  it("plays a ready episode from the signed address, and shows its script and sources", async () => {
+    show(detail(EPISODE));
+    vi.spyOn(api, "episodeAudio").mockResolvedValue(AUDIO);
+    const player = (await screen.findByLabelText("Play Why the sky is blue")) as HTMLAudioElement;
+    expect(player.getAttribute("src")).toBe(AUDIO.url);
+    expect(screen.getByText(/Kept until/)).toBeInTheDocument();
+    expect(screen.getByText(/play it in the kitchen/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Rayleigh scattering/ })).toHaveAttribute(
+      "href",
+      "https://example.com/rayleigh",
+    );
+    expect(screen.queryByText("Heart: Why is the sky blue?")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Script/ }));
+    expect(screen.getByText(/Why is the sky blue\?/)).toBeInTheDocument();
+    expect(screen.getByText(/Sunlight scattering off the air\./)).toBeInTheDocument();
+  });
+
+  it("says why a ready episode cannot be played when the add-on is gone", async () => {
+    show(detail(EPISODE));
+    vi.spyOn(api, "episodeAudio").mockRejectedValue(new Error("Podcasts are not set up."));
+    expect(await screen.findByText("Podcasts are not set up.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Play Why the sky is blue")).toBeNull();
+  });
+
+  it("has no player while the episode is being recorded", async () => {
+    const asked = vi.spyOn(api, "episodeAudio");
+    show(
+      detail({
+        ...EPISODE,
+        status: "working" as const,
+        status_text: "Recording “Why the sky is blue”…",
+        content: null,
+      }),
+    );
+    expect(await screen.findByText("Recording “Why the sky is blue”…")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Play Why the sky is blue")).toBeNull();
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("reads an old version without offering to restore it", async () => {
+    show(detail(EPISODE));
+    vi.spyOn(api, "episodeAudio").mockResolvedValue(AUDIO);
+    vi.spyOn(api, "artifactRevision").mockResolvedValue({
+      n: 1,
+      reason: "First version",
+      author: "niles",
+      at: NOW,
+      content: EPISODE.content,
+    });
+    await screen.findByLabelText("Play Why the sky is blue");
+    fireEvent.click(screen.getByRole("button", { name: "Versions (2)" }));
+    fireEvent.click(screen.getByText(/Version 1 · First version/));
+    expect(await screen.findByText("Version 1, as it was")).toBeInTheDocument();
+    // The version is read, not restored: a podcast is kept as recorded.
+    expect(screen.queryByRole("button", { name: "Restore this version" })).toBeNull();
+    // A version is not the recording either.
+    expect(screen.queryByLabelText("Play Why the sky is blue")).toBeNull();
+  });
+});

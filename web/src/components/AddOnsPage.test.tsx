@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AddOnsPage } from "@/components/AddOnsPage";
 import type { AddOnsPageProps } from "@/components/AddOnsPage";
 import { api } from "@/lib/api";
@@ -201,6 +202,45 @@ const WEB_SEARCH: Integration = {
   needs: "A SearXNG instance.",
   group: ASSISTANTS,
   icon: "search",
+};
+
+const PODCASTS: Integration = {
+  ...TADO,
+  id: "podcasts",
+  label: "Podcasts",
+  blurb: "A researched two-host episode, voiced and kept at your place.",
+  needs: "Kokoro and a private Cloudflare R2 bucket.",
+  group: ASSISTANTS,
+  icon: "podcast",
+  secret_keys: [
+    "integrations.podcasts.access_key_id",
+    "integrations.podcasts.secret_access_key",
+  ],
+  secret_key: "integrations.podcasts.access_key_id",
+};
+
+const PODCASTS_KEYS: SecretsReport = {
+  writable: true,
+  secrets: [
+    {
+      key: "integrations.podcasts.access_key_id",
+      label: "R2 access key ID",
+      hint: "cloudflare.com",
+      source: "stored",
+    },
+    {
+      key: "integrations.podcasts.secret_access_key",
+      label: "R2 secret access key",
+      hint: "cloudflare.com",
+      source: "stored",
+    },
+  ],
+};
+
+const PODCASTS_SET = {
+  kokoro_url: "http://kokoro.ns.svc:8880",
+  endpoint: "https://abc123.r2.cloudflarestorage.com",
+  bucket: "niles-podcasts",
 };
 
 function setup(
@@ -899,5 +939,79 @@ describe("AddOnsPage removing", () => {
     setup([{ ...NEMLIG, added: true }], NEMLIG_LOGIN);
     fireEvent.click(screen.getByRole("button", { name: "Configure nemlig.com" }));
     expect(screen.queryByText(/saved keys are deleted/)).toBeNull();
+  });
+});
+
+describe("AddOnsPage podcasts", () => {
+  // The panel asks the server for the voice list, so these render with
+  // a query client like the app has.
+  function showPodcasts(integration: Integration, secrets: SecretsReport, podcasts?: object) {
+    const onChange = vi.fn();
+    const onReset = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <AddOnsPage
+          integrations={[integration]}
+          secrets={secrets}
+          podcasts={podcasts}
+          onChange={onChange}
+          onReset={onReset}
+          onSecretsChanged={vi.fn()}
+          onTadoChanged={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    return { onChange, onReset };
+  }
+
+  it("says its row is waiting for the Kokoro address, then Set up", () => {
+    showPodcasts({ ...PODCASTS, added: true }, unifiKey(), {});
+    expect(screen.getByText("Needs its Kokoro address")).toBeInTheDocument();
+    cleanup();
+
+    showPodcasts({ ...PODCASTS, added: true }, PODCASTS_KEYS, PODCASTS_SET);
+    expect(screen.getByText("Set up")).toBeInTheDocument();
+    expect(screen.queryByText("Needs its Kokoro address")).toBeNull();
+  });
+
+  it("names what is missing along the way", () => {
+    // Everything but the keys: the row says which half is left.
+    const unset: SecretsReport = {
+      writable: true,
+      secrets: PODCASTS_KEYS.secrets.map((s) => ({ ...s, source: "unset" as const })),
+    };
+    showPodcasts({ ...PODCASTS, added: true }, unset, PODCASTS_SET);
+    expect(screen.getByText("Needs its access key")).toBeInTheDocument();
+    cleanup();
+
+    showPodcasts(
+      { ...PODCASTS, added: true },
+      PODCASTS_KEYS,
+      { kokoro_url: PODCASTS_SET.kokoro_url },
+    );
+    expect(screen.getByText("Needs its R2 bucket")).toBeInTheDocument();
+  });
+
+  it("adds it by writing the section, and opens it to be filled in", () => {
+    const { onChange } = showPodcasts(PODCASTS, unifiKey());
+    fireEvent.click(screen.getByRole("button", { name: "Connect Podcasts" }));
+    expect(onChange).toHaveBeenCalledWith("integrations.podcasts", [
+      { path: "integrations.podcasts", value: {} },
+    ]);
+    expect(screen.getByLabelText("Kokoro address")).toBeTruthy();
+  });
+
+  it("removing it clears both stored keys, then resets the section", async () => {
+    const clear = vi.spyOn(api, "clearSecret").mockResolvedValue(undefined);
+    const { onReset } = showPodcasts({ ...PODCASTS, added: true }, PODCASTS_KEYS, PODCASTS_SET);
+    fireEvent.click(screen.getByRole("button", { name: "Configure Podcasts" }));
+    expect(screen.getByText("Its saved keys are deleted too.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Remove add-on/ }));
+
+    await waitFor(() =>
+      expect(onReset).toHaveBeenCalledWith("integrations.podcasts", ["integrations.podcasts"]),
+    );
+    expect(clear.mock.calls.map(([key]) => key).sort()).toEqual([...PODCASTS.secret_keys].sort());
   });
 });
