@@ -73,8 +73,35 @@ Open an old version to read it as it was, then **Restore this version** or
 go **Back to the current one**. Restoring saves a new version, so nothing
 is lost.
 
-**Copy** puts the item on your clipboard: a document as markdown, a plan
-or a trip as plain text.
+## Share, copy and download
+
+An open item has a share symbol, a box with an arrow, in its top right
+corner. Its menu shows what applies to the item:
+
+- **Share…** opens the sharing dialog (see [Sharing](#sharing)). Only the
+  owner sees it.
+- **Copy** puts the item on your clipboard: a document as markdown, a
+  plan, a trip or an episode's script as plain text. The menu says
+  **Copied** when it is done.
+- **Download as Word** saves a document, a training plan or a trip as a
+  `.docx`. A document keeps its headings, lists, checklists (☐ and ☑),
+  tables, quotes, code, links and pictures. A plan has the race, the
+  coach's newest note and a table of sessions for each week. A trip has
+  its dates, travellers, stays, each day's plan, the packing list with
+  its ticks, the budget and the notes.
+- **Download as Markdown** saves a document's markdown as a `.md` file.
+- **Download the episode** opens a ready podcast's MP3 in a new tab,
+  where the browser offers to save it. The recording is kept in the
+  podcast bucket, on another site, so the browser does not save it
+  straight away.
+
+A file is named after the item. While you read an old version, Copy and
+the downloads use that version, and the file name says which: "Thailand
+trip (version 3).docx".
+
+The Word file is made in the app from the item itself, never from its
+page. Pictures in it are Niles's own copies; one that fails to load is
+left out.
 
 ## Pin, rename, archive, delete
 
@@ -92,9 +119,9 @@ The list shows pinned items first, then the rest by last change.
 ## Sharing
 
 You can share an item with anyone else in the household, meaning anyone
-listed under **Settings → People**. Open the item and press **Share**. For
-each person choose **None**, **View** or **Edit**. A change is saved at
-once.
+listed under **Settings → People**. Open the item, press the share symbol
+in its top right corner and choose **Share…**. For each person choose
+**None**, **View** or **Edit**. A change is saved at once.
 
 | | Owner | Edit | View |
 |---|---|---|---|

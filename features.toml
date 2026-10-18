@@ -942,3 +942,9 @@ id = "plugins-check-listing"
 category = "runtime.plugins"
 summary = "`niles plugin check` lists a plugin's permissions; `--listing` also checks the marker the add-on library needs"
 since_pr = 469
+
+[[feature]]
+id = "ui-artifact-share-menu"
+category = "ui.chat"
+summary = "A share menu on an open artifact: Share, Copy, Word for documents, plans and trips, Markdown, a podcast's MP3"
+since_pr = 9999
