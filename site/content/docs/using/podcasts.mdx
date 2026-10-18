@@ -17,9 +17,10 @@ Cloudflare R2 bucket with an access key for that bucket only.
 ## Running Kokoro
 
 The voices come from Kokoro-FastAPI, the fastest way to run the Kokoro
-voices. Run it on your own server or cluster, on port 8880, and give Niles
-its internal service address, such as `http://kokoro.ns.svc:8880` — a
-trailing `/v1` or `/` is fine, Niles tidies it up. Nothing here is sent to a
+voices. Run it on a machine in the house, on port 8880, and give Niles the
+address it reaches it at, such as `http://192.168.1.11:8880` or
+`http://kokoro.ns.svc:8880` on Kubernetes. A trailing `/v1` or `/` is
+fine, Niles tidies it up. Nothing here is sent to a
 hosted voice service: the voices are made on your Kokoro.
 
 ## Making the bucket

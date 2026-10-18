@@ -14,7 +14,8 @@ settings.
   switch reaches Niles through Zigbee2MQTT. The coordinator Niles was built
   with is the SMLIGHT SLZB-06MU, placed centrally.
 - **An MQTT broker**, such as Mosquitto, that Zigbee2MQTT and Niles both
-  connect to. Its address and login go under **Settings → Devices**.
+  connect to. Niles needs its address and login before its first start;
+  after that they are under **Settings → Devices**.
 - **Piper**, which speaks Niles's replies. It runs in the house, not in a
   cloud.
 - **A Postgres database and a secrets key.** Niles runs without them, but
@@ -27,7 +28,8 @@ settings.
 
 No GPU is needed. Niles listens on port 8080 for the app and on 10300 for
 the satellites, and calls each satellite on 10301 to ring timers and speak
-announcements. [Deployment](/docs/operations/deployment) covers running Niles itself.
+announcements. [Self-hosting](/docs/self-hosting) covers running Niles
+itself, with Docker Compose or Kubernetes.
 
 ## The satellite
 

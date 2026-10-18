@@ -17,10 +17,9 @@ spec:
     spec:
       containers:
         - name: niles
-          # Published by .github/workflows/image.yml. Pin a version tag
-          # (e.g. :0.1.0) in an overlay for production; :latest is fine for
-          # a homelab. GHCR packages default to PRIVATE — either make the
-          # package public or add an imagePullSecret (see deploy/docker/README.md).
+          # Published by .github/workflows/image.yml, for linux/amd64.
+          # Pin a version tag (e.g. :0.4.0) in an overlay for production;
+          # :latest is the newest release.
           image: ghcr.io/marknygaard/niles:latest
           imagePullPolicy: Always
           args:
@@ -35,24 +34,49 @@ spec:
               containerPort: 10300
               protocol: TCP
           env:
+            # The database and the key that seals what is typed into the
+            # app. The only two Niles always takes from outside.
+            - name: NILES_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: database-url
+            - name: NILES_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: secret-key
+            # What Niles needs before the app is up: the broker's login and
+            # the keys for hearing and thinking, named in niles.toml.
+            # Optional, for an install that already keeps them in the app.
             - name: NILES_MQTT_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: niles-secrets
                   key: mqtt-username
+                  optional: true
             - name: NILES_MQTT_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: niles-secrets
                   key: mqtt-password
-            - name: OPENAI_API_KEY
+                  optional: true
+            - name: ELEVENLABS_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: niles-secrets
-                  key: openai-api-key
+                  key: elevenlabs-api-key
                   optional: true
-            # Signing in. All optional: an install with no `[auth]`
-            # section never reads them, and must still start.
+            - name: CEREBRAS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: niles-secrets
+                  key: cerebras-api-key
+                  optional: true
+            # Signing in, for a deployment that owns these rather than the
+            # app. All optional: the GitHub app's two are read only when
+            # `[auth]` names them, and with a database Niles makes and
+            # keeps its own session key and API key.
             - name: NILES_GITHUB_CLIENT_ID
               valueFrom:
                 secretKeyRef:

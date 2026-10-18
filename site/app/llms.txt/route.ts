@@ -30,8 +30,8 @@ export function GET() {
 
 > ${siteConfig.description}
 
-${siteConfig.name} is open source (${siteConfig.license}) and runs on the
-household's own Kubernetes cluster. Satellites hear the wake word on the
+${siteConfig.name} is open source (${siteConfig.license}) and self-hosted,
+with Docker Compose or Kubernetes. Satellites hear the wake word on the
 device and stream audio to it. Regex intents answer the common commands with
 no model; a fast model with tools takes the rest; the assistant (Claude Code
 or ChatGPT, on the household's own subscription) takes the bigger jobs.
@@ -41,7 +41,7 @@ The full documentation as a single file is at ${at("/llms-full.txt")}.
 
 ## Start here
 
-- [Why ${siteConfig.name}](${at("/why")}): who it is for, who should stay on Home Assistant, the ideas it is built on, and what leaves the house.
+- [Why ${siteConfig.name}](${at("/why")}): why it is built the way it is, what leaves the house, and whether it fits yours.
 - [Add-ons](${at("/add-ons")}): the add-on library, from ${siteConfig.addons.index}.
 
 ${body}

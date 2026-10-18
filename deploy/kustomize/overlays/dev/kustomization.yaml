@@ -7,9 +7,9 @@ resources:
   - ../../base
 
 images:
-  - name: niles
+  - name: ghcr.io/marknygaard/niles
     newName: ghcr.io/marknygaard/niles
-    newTag: v0.1.0
+    newTag: latest
 
 configMapGenerator:
   - name: niles-config

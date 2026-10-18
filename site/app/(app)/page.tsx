@@ -2,9 +2,10 @@ import type { Metadata } from "next"
 import Link from "next/link"
 
 import { siteConfig } from "@/lib/config"
+import { CopyButton } from "@/components/copy-button"
 import { SiteFooter } from "@/components/site-footer"
 
-const tagline = "A home assistant you talk to, run on your own cluster"
+const tagline = "A self-hosted home assistant you talk to"
 
 export const metadata: Metadata = {
   title: { absolute: `${siteConfig.name}. ${tagline}.` },
@@ -122,7 +123,7 @@ const jsonLd = {
       name: siteConfig.name,
       description: siteConfig.description,
       applicationCategory: "HomeApplication",
-      operatingSystem: "Linux, Kubernetes",
+      operatingSystem: "Linux (Docker Compose or Kubernetes)",
       url: siteConfig.url,
       codeRepository: siteConfig.links.github,
       license: ["https://opensource.org/licenses/MIT", "https://www.apache.org/licenses/LICENSE-2.0"],
@@ -132,22 +133,52 @@ const jsonLd = {
   ],
 }
 
-// From deploy/README.md: the quick start, applied to an overlay of your own.
-// The resource names are the manifests' own, which follow the binary's name.
+// The quick starts of deploy/compose/README.md and deploy/README.md. The
+// resource and file names are the repository's own, which follow the
+// binary's name.
 const bin = siteConfig.binary
-const install = `git clone ${siteConfig.links.github}
-cd ${siteConfig.links.github.split("/").pop()}
+const repo = siteConfig.links.github.split("/").pop()
+const env = siteConfig.envPrefix
+
+const installs = [
+  {
+    title: "Docker Compose",
+    body: `On one Linux machine. Compose runs ${siteConfig.name} and its Postgres; your broker and Zigbee2MQTT stay where they are.`,
+    href: "/docs/self-hosting/docker-compose",
+    link: "The Docker Compose guide",
+    code: `git clone ${siteConfig.links.github}
+cd ${repo}/deploy/compose
+cp .env.example .env
+# In .env: the database password, the secrets key,
+#   the broker's login and the two API keys
+# In ${bin}.toml: your MQTT broker's address
+
+docker compose up -d`,
+  },
+  {
+    title: "Kubernetes",
+    body: "With the Kustomize manifests in the repository, and a Postgres you already run.",
+    href: "/docs/self-hosting/kubernetes",
+    link: "The Kubernetes guide",
+    code: `git clone ${siteConfig.links.github}
+cd ${repo}
 cp -r deploy/kustomize/overlays/dev deploy/kustomize/overlays/home
-# In overlays/home, set ${bin}.toml, and the namespace in kustomization.yaml
+# In overlays/home: the broker's address in ${bin}.toml,
+#   and the namespace and image tag in kustomization.yaml
 
 kubectl create namespace ${bin}
 kubectl create secret generic ${bin}-secrets \\
   --namespace ${bin} \\
-  --from-literal=mqtt-username='your-mqtt-user' \\
-  --from-literal=mqtt-password='your-mqtt-pass'
+  --from-literal=database-url='postgres://${bin}:...@postgres:5432/${bin}' \\
+  --from-literal=secret-key="$(openssl rand -base64 32)" \\
+  --from-literal=mqtt-username='...' \\
+  --from-literal=mqtt-password='...' \\
+  --from-literal=elevenlabs-api-key='...' \\
+  --from-literal=cerebras-api-key='...'
 
-kustomize build deploy/kustomize/overlays/home | kubectl diff -f -
-kubectl apply -k deploy/kustomize/overlays/home`
+kubectl apply -k deploy/kustomize/overlays/home`,
+  },
+]
 
 export default function HomePage() {
   return (
@@ -244,40 +275,62 @@ export default function HomePage() {
           >
             Why {siteConfig.name}
           </Link>{" "}
-          says who it is for, who should stay on Home Assistant, and what
-          leaves the house.
+          says how it is built, what leaves the house, and whether it fits
+          yours.
         </p>
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6 pb-16">
-        <h2 className="text-2xl font-semibold tracking-tight">
-          Someone in the house runs a cluster
-        </h2>
+        <h2 className="text-2xl font-semibold tracking-tight">Run it yourself</h2>
         <p className="mt-3 max-w-2xl leading-relaxed text-muted-foreground">
-          {siteConfig.name} is one container and a Postgres database on your
-          own Kubernetes, beside an MQTT broker and Zigbee2MQTT. It reaches
-          the database through{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5 text-sm">{siteConfig.envPrefix}DATABASE_URL</code>{" "}
+          {siteConfig.name} is one container and a Postgres database, beside
+          the MQTT broker and Zigbee2MQTT you run for your Zigbee devices. It
+          reaches the database through{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5 text-sm">{env}DATABASE_URL</code>{" "}
           and seals the keys you type into the app with{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5 text-sm">{siteConfig.envPrefix}SECRET_KEY</code>.
+          <code className="rounded bg-muted px-1.5 py-0.5 text-sm">{env}SECRET_KEY</code>.
+          The first start also needs the broker&apos;s login and the
+          ElevenLabs and Cerebras keys. Everything else is set in the app.
         </p>
-        <pre className="mt-6 max-w-3xl overflow-x-auto rounded-lg border border-border bg-card p-4 text-sm whitespace-pre">
-          <code>{install}</code>
-        </pre>
-        <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+
+        <div className="mt-8 grid gap-6 lg:grid-cols-2">
+          {installs.map((install) => (
+            <div key={install.title} className="flex min-w-0 flex-col">
+              <h3 className="font-medium">{install.title}</h3>
+              <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                {install.body}
+              </p>
+              <div className="relative mt-4 flex-1 rounded-lg border border-border bg-card">
+                <div className="absolute top-2 right-2">
+                  <CopyButton text={install.code} label={`Copy the ${install.title} commands`} />
+                </div>
+                <pre className="overflow-x-auto p-4 pr-12 text-sm whitespace-pre">
+                  <code>{install.code}</code>
+                </pre>
+              </div>
+              <p className="mt-3 text-sm">
+                <Link
+                  href={install.href}
+                  className="underline underline-offset-4 hover:text-foreground"
+                >
+                  {install.link}
+                </Link>
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <p className="mt-6 max-w-2xl text-sm leading-relaxed text-muted-foreground">
           The image is{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5">{siteConfig.image}</code>;
-          pin its tag in the overlay. The overlay&apos;s {siteConfig.binary}.toml
-          holds the coordinates, the locale, the MQTT host and the lighting
-          schedule.{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5">{siteConfig.image}</code>,
+          for x86-64 Linux. Pin its tag to choose when you upgrade.{" "}
           <Link
-            href="/docs/operations/deployment"
+            href="/docs/self-hosting"
             className="underline underline-offset-4 hover:text-foreground"
           >
-            Deployment
+            Self-hosting
           </Link>{" "}
-          covers signing in, the data volume and the ports. There is no Docker
-          Compose file.
+          covers the first sign-in, backups, the ports and HTTPS for phones.
         </p>
       </section>
 

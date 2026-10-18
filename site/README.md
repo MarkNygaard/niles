@@ -11,11 +11,14 @@ the add-on library, as one static Next.js app.
 - **Docs.** Markdown in `content/docs/`, rendered through
   [Fumadocs](https://fumadocs.dev) by `app/(app)/docs/[[...slug]]/page.tsx`.
   A page is a file; order and section titles are the `meta.json` files. The
-  sections are `setting-up/`, `using/`, `architecture/`, `writing-add-ons/`
-  (the author guide), `operations/` and `reference/`.
+  sections are `self-hosting/`, `setting-up/`, `using/`, `architecture/`,
+  `writing-add-ons/` (the author guide) and `reference/`.
 - **Repository files as pages.** `<include>` puts a file from the repo into a
-  page, so it is written once: `operations/deployment.mdx` is
-  `deploy/README.md`, and `architecture/features.mdx` is `MANIFEST.md`. A
+  page, so it is written once: `self-hosting/docker-compose.mdx` is
+  `deploy/compose/README.md`, `self-hosting/kubernetes.mdx` is
+  `deploy/README.md`, and `architecture/features.mdx` is `MANIFEST.md`.
+  Links inside those files are absolute, because a relative one would
+  resolve against the page's address. A
   remark step in `source.config.ts` drops their own level-one title and raw
   HTML, which MDX can't render.
 - **Identity.** `lib/config.ts` holds the name, URL, links and nav. Nothing in

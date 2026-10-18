@@ -16,7 +16,7 @@ Niles is an open-source, AI-first home automation system in Rust. It replaces Ho
 
 A new or ambiguous feature gets a Linear issue with the decision written down before any code. A change to a house rule, the crate map or a big decision updates `ARCHITECTURE.md` in the same PR.
 
-The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `site/` (the website and the docs), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Kustomize), `examples/` and `scripts/`.
+The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `site/` (the website and the docs), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Docker Compose, Kustomize and the image's Dockerfile), `examples/` and `scripts/`.
 
 ## Commands
 
@@ -97,7 +97,7 @@ An agent reaches Linear through Linear's MCP server (`https://mcp.linear.app/mcp
 
 ## Things to avoid
 
-- Local Docker workflows. Everything containerised runs on the household's Kubernetes cluster; don't suggest `docker run` or `docker compose up`.
+- Local Docker workflows for developing Niles or for Mark's own deployment. His house runs on Kubernetes, so don't suggest `docker run` or `docker compose up` for working on Niles or for his setup. Docker Compose is still a supported way for users to run Niles (`deploy/compose`), and changes to it are tested by CI's compose job.
 - `git add -A` or `git add .`. Stage files by name, so an `.env` never slips in.
 - Skipping hooks (`--no-verify`, `--no-gpg-sign`). If a hook fails, fix the cause.
 - Compatibility shims for code that isn't in production yet. Change the code.

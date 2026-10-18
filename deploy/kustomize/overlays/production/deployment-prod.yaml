@@ -18,10 +18,11 @@ spec:
               # review can overlap, so two of them at once still fit.
               memory: "1Gi"
               cpu: "500m"
+          # Working space for Claude Code and pi. Everything that must
+          # outlive a restart is in Postgres, so this needs no claim.
           volumeMounts:
             - name: data
               mountPath: /data
       volumes:
         - name: data
-          persistentVolumeClaim:
-            claimName: niles-data
+          emptyDir: {}

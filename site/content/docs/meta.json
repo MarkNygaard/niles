@@ -2,11 +2,11 @@
   "title": "Documentation",
   "pages": [
     "index",
+    "self-hosting",
     "setting-up",
     "using",
     "architecture",
     "writing-add-ons",
-    "operations",
     "reference"
   ]
 }

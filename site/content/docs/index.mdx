@@ -3,12 +3,12 @@ title: "Introduction"
 description: "What Niles is, and which page to read first."
 ---
 
-**Niles** (NYE-uls), *Neural Intelligence, Lightweight Edge System*, is an open-source, AI-first home automation system. It replaces Home Assistant for a household that wants voice answers in well under a second, config and naming instead of setup screens, and a language model built in.
+**Niles** (NYE-uls), *Neural Intelligence, Lightweight Edge System*, is an open-source, AI-first home automation system for a household that wants voice answers in well under a second, config and naming instead of setup screens, and a language model built in.
 
-It runs on the household's own Kubernetes cluster, reaches Zigbee devices through Zigbee2MQTT, and listens through its own satellites: a reSpeaker XVF3800 with Niles's firmware and an on-device "Niles" wake word. A command goes to a regex router first, then to a fast model with tools, and the bigger jobs go to the assistant (Claude Code or ChatGPT, on the household's own subscription).
+It is self-hosted, with Docker Compose or Kubernetes, reaches Zigbee devices through Zigbee2MQTT, and listens through its own satellites: a reSpeaker XVF3800 with Niles's firmware and an on-device "Niles" wake word. A command goes to a regex router first, then to a fast model with tools, and the bigger jobs go to the assistant (Claude Code or ChatGPT, on the household's own subscription).
 
 Living with Niles: start with [Talking to Niles](/docs/using/talking) for what you can say, and [Lighting and scenes](/docs/using/lighting) for what it does with your lights. The rest of **Using Niles** covers the app: the chat, what Niles saves for you, approvals, automations, add-ons and accounts, and who can see what.
 
-Setting it up: [Deployment](/docs/operations/deployment) runs Niles on Kubernetes, [Satellites and hardware](/docs/setting-up/satellites) lists what a house needs, and [Naming your devices](/docs/setting-up/naming) is the one rule the rest depends on.
+Setting it up: [Self-hosting](/docs/self-hosting) runs Niles with [Docker Compose](/docs/self-hosting/docker-compose) or [Kubernetes](/docs/self-hosting/kubernetes), [Satellites and hardware](/docs/setting-up/satellites) lists what a house needs, and [Naming your devices](/docs/setting-up/naming) is the one rule the rest depends on.
 
 Building on Niles: [Overall architecture](/docs/architecture) points to the crate map and the house rules, [Voice loop](/docs/architecture/voice-loop) follows a command through the tiers, and [Writing add-ons](/docs/writing-add-ons) is the guide for third-party add-ons. To change Niles itself, read [CONTRIBUTING.md](https://github.com/MarkNygaard/niles/blob/main/CONTRIBUTING.md) and the [code of conduct](https://github.com/MarkNygaard/niles/blob/main/CODE_OF_CONDUCT.md).
