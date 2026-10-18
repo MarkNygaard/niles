@@ -152,7 +152,8 @@ settings it asks for. It starts once the required ones are filled in.
 
 The panel also says whether it is **Listed**, **Unreviewed** or **No longer
 listed** in the library, with the reason when it was taken off the list. It
-keeps working either way.
+keeps working either way. One the library doesn't know, such as a private
+repo installed by its address, shows no library line.
 
 Installing counts once: after an install, Niles downloads the release's tiny
 `niles-installed` file, and GitHub's count of it is the add-on's number of

@@ -415,7 +415,7 @@ since_pr = 388
 [[feature]]
 id = "plugins-dev-check"
 category = "runtime.plugins"
-summary = "`niles plugin check` validates a plugin as an install would and lists its permissions; `--listing` adds the marker check"
+summary = "`niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house"
 since_pr = 388
 
 [[feature]]
@@ -935,4 +935,10 @@ since_pr = 469
 id = "plugins-install-count"
 category = "runtime.plugins"
 summary = "A fresh install downloads the release's niles-installed once per house, so GitHub counts installs; previews don't"
+since_pr = 469
+
+[[feature]]
+id = "plugins-check-listing"
+category = "runtime.plugins"
+summary = "`niles plugin check` lists a plugin's permissions; `--listing` also checks the marker the add-on library needs"
 since_pr = 469

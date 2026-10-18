@@ -80,9 +80,10 @@ export function starsLine(n: number): string {
 
 /**
  * Where an installed add-on stands in the library, for its panel.
- * `null` when it has no repo or the library isn't loaded. One that was
- * taken off the list says so, with the reason and that it keeps
- * working; one never in the index reads as Unreviewed.
+ * `null` when it has no repo, the library isn't loaded, or its repo
+ * isn't in the library (installed by address, or private): Unreviewed
+ * means found by the topic, which those weren't. One that was taken off
+ * the list says so, with the reason and that it keeps working.
  */
 export function standingOf(
   plugin: PluginSummary,
@@ -91,8 +92,10 @@ export function standingOf(
   if (plugin.repo === null || library === undefined) return null;
   const repo = plugin.repo;
   const entry = library.addons.find((e) => sameRepo(e.repo, repo));
-  if (entry?.standing === "listed") return { label: "Listed", note: null };
-  if (entry?.standing === "removed") {
+  if (entry === undefined) return null;
+  if (entry.standing === "listed") return { label: "Listed", note: null };
+  if (entry.standing === "unreviewed") return { label: "Unreviewed", note: null };
+  if (entry.standing === "removed") {
     const reason = entry.removed_reason;
     const sentence =
       reason && !/[.!?]$/.test(reason) ? `${reason}.` : reason;
@@ -103,5 +106,5 @@ export function standingOf(
         .join(" "),
     };
   }
-  return { label: "Unreviewed", note: null };
+  return null;
 }

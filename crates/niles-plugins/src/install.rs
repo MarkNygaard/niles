@@ -22,7 +22,8 @@
 //! A fresh install that succeeded downloads its release's
 //! `niles-installed` once per repo per house: GitHub's count of that
 //! file is the add-on's install count in the [`library`]. A preview, an
-//! update and a reinstall don't, and the install never fails over it.
+//! update and a reinstall don't. The download runs in the background:
+//! the install never fails over it, nor waits for it.
 
 use crate::check::{self, MAX_LOGO};
 use crate::github::{self, Asset, GitHub, MAX_MANIFEST, Release, Repo};
@@ -514,7 +515,7 @@ impl Installer {
         self.inner.runtime.install_package(package).await?;
         tracing::info!(plugin = %manifest.id, "[plugins] installed {} {}", manifest.name, manifest.version);
         if let (Some(repo), Some(marker)) = (repo, marker) {
-            self.count(&manifest.id, &repo, &marker).await;
+            self.count(&manifest.id, &repo, marker);
         }
         self.listed(&manifest.id).await
     }
@@ -522,8 +523,9 @@ impl Installer {
     /// Count this house's first install from `repo`: one download of its
     /// release's `niles-installed`, whose download count GitHub keeps.
     /// At most once: the claim is made before the download, and a failed
-    /// download is not tried again.
-    async fn count(&self, id: &str, repo: &str, marker: &Asset) {
+    /// download is not tried again. It runs in the background, so the
+    /// install's answer never waits on it.
+    fn count(&self, id: &str, repo: &str, marker: Asset) {
         if marker.size > MAX_MARKER as u64 {
             tracing::debug!(plugin = %id, "[plugins] not counted: its {MARKER} is {} bytes", marker.size);
             return;
@@ -532,24 +534,28 @@ impl Installer {
             return;
         };
         let key = repo.slug().to_lowercase();
-        match self.inner.runtime.store().count_install(&key).await {
-            Ok(true) => {}
-            Ok(false) => return,
-            Err(e) => {
-                tracing::warn!(plugin = %id, "[plugins] install not counted: {e}");
-                return;
+        let id = id.to_string();
+        let installer = self.clone();
+        tokio::spawn(async move {
+            let inner = &installer.inner;
+            match inner.runtime.store().count_install(&key).await {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(e) => {
+                    tracing::warn!(plugin = %id, "[plugins] install not counted: {e}");
+                    return;
+                }
             }
-        }
-        match tokio::time::timeout(
-            MARKER_TIMEOUT,
-            self.inner.github.download(marker, MAX_MARKER),
-        )
-        .await
-        {
-            Ok(Ok(_)) => tracing::debug!("[plugins] install counted"),
-            Ok(Err(e)) => tracing::info!("[plugins] install not counted: {e}"),
-            Err(_) => tracing::info!("[plugins] install not counted: {MARKER} took too long"),
-        }
+            match tokio::time::timeout(MARKER_TIMEOUT, inner.github.download(&marker, MAX_MARKER))
+                .await
+            {
+                Ok(Ok(_)) => tracing::debug!(plugin = %id, "[plugins] install counted"),
+                Ok(Err(e)) => tracing::info!(plugin = %id, "[plugins] install not counted: {e}"),
+                Err(_) => {
+                    tracing::info!(plugin = %id, "[plugins] install not counted: {MARKER} took too long");
+                }
+            }
+        });
     }
 
     /// Ask `id`'s repo for a newer release and record what it finds:

@@ -336,8 +336,10 @@ pub trait Plugins: Send + Sync {
     ) -> Result<serde_json::Value, PluginFailure>;
 
     /// The add-on library, as Browse shows it: the registry's index,
-    /// read and kept by the binary.
-    async fn library(&self) -> Result<serde_json::Value, PluginFailure>;
+    /// read and kept by the binary, as JSON bytes. Bytes rather than a
+    /// `serde_json::Value`, so the kept copy is written straight to the
+    /// response instead of copied into a tree on every request.
+    async fn library(&self) -> Result<Vec<u8>, PluginFailure>;
     async fn install(
         &self,
         token: &str,
@@ -431,8 +433,9 @@ pub struct Approval {
 }
 
 /// `GET /plugins/install/library`
-pub async fn library(State(state): State<AppState>) -> Result<Json<serde_json::Value>, Failure> {
-    Ok(Json(plugins(&state)?.library().await?))
+pub async fn library(State(state): State<AppState>) -> Result<Response, Failure> {
+    let json = plugins(&state)?.library().await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 /// `POST /plugins/install/preview`
@@ -1001,7 +1004,7 @@ pub(crate) mod tests {
             }
         }
 
-        async fn library(&self) -> Result<serde_json::Value, PluginFailure> {
+        async fn library(&self) -> Result<Vec<u8>, PluginFailure> {
             self.called("library".into());
             if self.library_down {
                 return Err(PluginFailure::Upstream(
@@ -1015,7 +1018,9 @@ pub(crate) mod tests {
                     "repo": "https://github.com/jane/niles-spotprice",
                     "standing": "listed",
                 }],
-            }))
+            })
+            .to_string()
+            .into_bytes())
         }
 
         async fn check_update(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
@@ -1219,7 +1224,11 @@ pub(crate) mod tests {
         let fake = Arc::new(Fake::default());
         let (status, body) = send(app(fake.clone()), get("/plugins/install/library")).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("jane/niles-spotprice"), "{body}");
+        let shelf: serde_json::Value = serde_json::from_str(&body).expect("the body is JSON");
+        assert_eq!(
+            shelf["addons"][0]["repo"],
+            "https://github.com/jane/niles-spotprice"
+        );
         assert_eq!(
             *fake.calls.lock().unwrap(),
             vec!["library"],

@@ -175,6 +175,19 @@ impl Hub {
             .filter(|r| r.url.path().ends_with(&format!("/{name}")))
             .count()
     }
+
+    /// Wait until `name` has been downloaded `n` times: the install
+    /// counts in the background, after it has answered.
+    async fn downloads_reach(&self, name: &str, n: usize) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.downloads_of(name).await < n {
+            assert!(
+                Instant::now() < until,
+                "{name} was downloaded fewer than {n} times"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1008,6 +1021,7 @@ async fn a_fresh_install_downloads_the_marker_once_and_a_preview_never_does() {
         .install(&second.token, Some(&second.sha256))
         .await
         .unwrap();
+    hub.downloads_reach("niles-installed", 1).await;
     assert_eq!(
         hub.downloads_of("niles-installed").await,
         1,
@@ -1017,9 +1031,39 @@ async fn a_fresh_install_downloads_the_marker_once_and_a_preview_never_does() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_install_answers_before_the_marker_has_downloaded() {
+    let hub = Hub::new().await;
+    hub.latest("v0.1.0", with_marker(plugin_assets(MANIFEST)))
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/v0.1.0/niles-installed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes("Counts installs.\n")
+                .set_delay(Duration::from_secs(60)),
+        )
+        .with_priority(1)
+        .mount(&hub.server)
+        .await;
+    let home = Home::new(&hub, options()).await;
+    let preview = home.installer.preview("jane/hello", None).await.unwrap();
+    let listed = tokio::time::timeout(
+        Duration::from_secs(5),
+        home.installer
+            .install(&preview.token, Some(&preview.sha256)),
+    )
+    .await
+    .expect("the install does not wait on the marker")
+    .unwrap();
+    assert_eq!(listed.id, "hello");
+    hub.downloads_reach("niles-installed", 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_update_does_not_download_the_marker() {
     let hub = Hub::new().await;
     let home = updated(&hub).await;
+    hub.downloads_reach("niles-installed", 1).await;
     assert_eq!(
         hub.downloads_of("niles-installed").await,
         1,
@@ -1035,7 +1079,7 @@ async fn installing_again_after_a_removal_is_not_counted_again() {
         .await;
     let home = Home::new(&hub, options()).await;
     home.install_latest().await;
-    assert_eq!(hub.downloads_of("niles-installed").await, 1);
+    hub.downloads_reach("niles-installed", 1).await;
     home.installer.remove("hello").await.unwrap();
     home.install_latest().await;
     assert_eq!(
@@ -1071,7 +1115,7 @@ async fn a_marker_that_fails_does_not_fail_the_install() {
         .await;
     let home = Home::new(&hub, options()).await;
     home.install_latest().await;
-    assert_eq!(hub.downloads_of("niles-installed").await, 1);
+    hub.downloads_reach("niles-installed", 1).await;
     assert!(
         !home.store.count_install("jane/hello").await.unwrap(),
         "claimed before the download, at most once"

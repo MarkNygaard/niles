@@ -185,7 +185,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 23. No plugin code runs in the web app (its UI is declarative); a plugin reaches only what its manifest declares and the household approved; nothing outside `niles-plugins` knows about WebAssembly. *The sandbox is one crate wide.*
 24. Plugin-facing names stay as they are: `niles:integration`, `niles-integration.toml`, `/integrations`, `/plugins/…`, `integrations.*`. *Published plugins depend on them.*
 25. No OpenSSL in the build: rustls and RustCrypto. *One build on every platform.*
-26. No telemetry. If it is ever added, opt-in only. *Local-first is the point.*
+26. No telemetry. If it is ever added, opt-in only. A download a person's own action starts, from the host that action already reaches, and carrying nothing that action didn't, is not telemetry: the add-on library's install count (one `niles-installed` per repo per house, at install) is the one such download. *Local-first is the point.*
 
 **Code**
 

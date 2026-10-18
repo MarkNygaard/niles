@@ -1084,9 +1084,9 @@ impl niles_api::plugins::Plugins for AppPlugins {
         as_json(self.0.preview(repo, tag).await.map_err(refused)?)
     }
 
-    async fn library(&self) -> Result<serde_json::Value, PluginFailure> {
+    async fn library(&self) -> Result<Vec<u8>, PluginFailure> {
         let shelf = self.0.library().await.map_err(refused)?;
-        serde_json::to_value(&*shelf).map_err(|e| PluginFailure::Unavailable(e.to_string()))
+        serde_json::to_vec(&*shelf).map_err(|e| PluginFailure::Unavailable(e.to_string()))
     }
 
     async fn install(

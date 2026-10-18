@@ -93,7 +93,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
-| `plugins-dev-check` | `niles plugin check` validates a plugin as an install would and lists its permissions; `--listing` adds the marker check | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `plugins-check-listing` | `niles plugin check` lists a plugin's permissions; `--listing` also checks the marker the add-on library needs | [#469](https://github.com/MarkNygaard/niles/pull/469) |
+| `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
 | `plugins-dev-loopback-wait` | `niles plugin dev` waits for MQTT before --call, runs the newer build, and reaches a fake device with --allow-loopback | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `plugins-disable-remove` | Turn a plugin off and keep its data, or remove it with its devices, storage, settings and secrets | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `plugins-install` | Install a plugin from a GitHub release after a preview of its permissions; exactly the previewed files run | [#390](https://github.com/MarkNygaard/niles/pull/390) |

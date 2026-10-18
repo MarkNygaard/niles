@@ -133,13 +133,15 @@ describe("standingOf", () => {
     expect(standingOf(plugin({ repo }), lib)).toEqual({ label: "Listed", note: null });
   });
 
-  it("says Unreviewed, when in the index and when absent", () => {
+  it("says Unreviewed for an entry the topic found", () => {
     const unreviewed = library(entry({ repo, standing: "unreviewed" }));
     expect(standingOf(plugin({ repo }), unreviewed)).toEqual({ label: "Unreviewed", note: null });
-    expect(standingOf(plugin({ repo }), library())).toEqual({
-      label: "Unreviewed",
-      note: null,
-    });
+  });
+
+  it("is null for a repo the library doesn't hold", () => {
+    const other = library(entry({ repo: "https://github.com/jane/niles-pool" }));
+    expect(standingOf(plugin({ repo }), library())).toBeNull();
+    expect(standingOf(plugin({ repo }), other)).toBeNull();
   });
 
   it("says No longer listed, with the reason and that it keeps working", () => {

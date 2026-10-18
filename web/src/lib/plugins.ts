@@ -140,6 +140,20 @@ function and(items: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Dates
+
+/** `14 Oct 2026`, in the reader's own format: when a plugin was
+    installed, or when a library release came out. */
+export function day(iso: string | null): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Pages in the menu
 
 /** A plugin's page as the menu has it. */
@@ -247,16 +261,6 @@ export function widgetPlaceOptions(rooms: string[]): { value: string; label: str
 
 // ---------------------------------------------------------------------------
 // Pictures
-
-/** `14 Oct 2026`, in the reader's own format. */
-export function day(iso: string | null): string | null {
-  if (!iso) return null;
-  return new Date(iso).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
 
 /**
  * Where the app loads a page's picture from. A `data:` image is drawn

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AddOnsPage } from "@/components/AddOnsPage";
 import { api } from "@/lib/api";
@@ -632,6 +632,16 @@ describe("the library on the panel", () => {
         "Taken off the add-on library's list. Its author archived it. It keeps working.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows no library line for an add-on the library doesn't hold", async () => {
+    const { dialog } = await openPanel(PLUGIN);
+    await waitFor(() => expect(api.pluginLibrary).toHaveBeenCalled());
+    // Let the query settle and the panel render what it answered.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(within(dialog).getByText("Version")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Library")).toBeNull();
+    expect(within(dialog).queryByText("Unreviewed")).toBeNull();
   });
 });
 

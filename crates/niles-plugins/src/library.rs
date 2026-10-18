@@ -70,14 +70,19 @@
 //! | `release` | The latest release that is not a draft or a pre-release, or `null`. It has `tag`, `published_at`, `manifest` (its `niles-integration.toml`, as text) and `logo` (the SVG the manifest names, as text, or `null`). |
 //! | `readme` | Plain text: the README's opening paragraphs without Markdown, at most 1,000 characters. |
 //!
-//! Niles's caps: the file is at most [`MAX_INDEX`] (8 MiB) and
-//! [`MAX_ADDONS`] (2,000) add-ons. A manifest over [`github::MAX_MANIFEST`]
-//! (64 KiB) or a logo over [`check::MAX_LOGO`] (32 KiB) is ignored. Text
-//! is cut to 100 characters (name), 300 (description, reason) and 1,000
-//! (readme). An entry that doesn't read costs that entry only.
+//! Niles's caps: the file is at most [`MAX_INDEX`] (8 MiB), and only its
+//! first [`MAX_RAW`] (8,000) entries are looked at. Of those, Browse shows
+//! at most [`MAX_ADDONS`] (2,000) listed and unreviewed add-ons, counted
+//! after duplicates and unreadable entries are dropped; removed entries
+//! are always kept, and only their repo, standing and reason are read. A
+//! manifest over [`github::MAX_MANIFEST`] (64 KiB) or a logo over
+//! [`check::MAX_LOGO`] (32 KiB) is ignored. Text is cut to 100 characters
+//! (name), 300 (description, reason) and 1,000 (readme). An entry whose
+//! `repo` doesn't read costs that entry only; any other field that is
+//! `null` or of the wrong type costs that field only.
 
 use crate::check;
-use crate::github::{self, human_size};
+use crate::github::{self, Repo, human_size};
 use crate::install::Refusal;
 use crate::manifest::{Manifest, NILES_VERSION};
 use crate::permissions::{self, CANNOT};
@@ -107,8 +112,13 @@ const RETRY_AFTER: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long reading the index may take in all.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// The most entries read from one index.
+/// The most add-ons Browse shows (listed and unreviewed) from one index.
+/// Removed entries don't count against it: they are kept, so an
+/// installed one's panel still says it was taken off the list.
 const MAX_ADDONS: usize = 2000;
+/// The most raw entries looked at in one index, shown or removed: a
+/// bound on the work a huge file can ask for, beside [`MAX_INDEX`].
+const MAX_RAW: usize = 4 * MAX_ADDONS;
 /// An add-on's name, at most.
 const MAX_NAME: usize = 100;
 /// A description or a removal reason, at most.
@@ -116,49 +126,61 @@ const MAX_TEXT: usize = 300;
 /// A README excerpt, at most.
 const MAX_README: usize = 1000;
 
-/// The file, as the registry wrote it. Every field but `repo` is lenient,
-/// so an odd value costs only itself.
+/// The file, as the registry wrote it.
 #[derive(Debug, Deserialize)]
 struct Index {
     version: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     generated_at: Option<String>,
     #[serde(default)]
     addons: Vec<serde_json::Value>,
 }
 
-/// One entry, before it is judged. Unknown fields are ignored.
+/// A field read leniently: missing, `null` or the wrong type gives the
+/// default, so an odd value costs only itself, not its entry.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// One entry, before it is judged. Every field but `repo` is lenient;
+/// unknown fields are ignored.
 #[derive(Debug, Deserialize)]
 struct IndexEntry {
     repo: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     standing: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     removed_reason: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     stars: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     installs: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     downloads: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     release: Option<IndexRelease>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     readme: Option<String>,
 }
 
-/// The latest release an entry carries, as text.
+/// The latest release an entry carries, as text. Every field is
+/// lenient.
 #[derive(Debug, Deserialize)]
 struct IndexRelease {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     tag: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     published_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     manifest: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     logo: Option<String>,
 }
 
@@ -187,7 +209,9 @@ pub struct Shelf {
     pub addons: Vec<ShelfEntry>,
 }
 
-/// One add-on in the library, already judged.
+/// One add-on in the library, already judged. A removed one is never
+/// shown, so it carries only its repo, owner, standing and reason: its
+/// name is the repo's, and the rest is empty.
 #[derive(Debug, Clone, Serialize)]
 pub struct ShelfEntry {
     /// `https://github.com/owner/name`, built from the checked repo.
@@ -354,9 +378,19 @@ fn rank(standing: Standing) -> u8 {
     }
 }
 
-/// Read one raw entry into what Browse shows. `None` when its repo
-/// doesn't read, or named a tag: the library lists repos, not releases.
-fn entry(raw: IndexEntry) -> Option<ShelfEntry> {
+/// One raw entry with its repo checked and its standing read, before
+/// the costlier judging.
+struct Sorted {
+    repo: Repo,
+    standing: Standing,
+    raw: IndexEntry,
+}
+
+/// Check one raw entry's repo and read its standing. `None` when it
+/// doesn't read, or its repo named a tag: the library lists repos, not
+/// releases.
+fn sift(raw: serde_json::Value) -> Option<Sorted> {
+    let raw = serde_json::from_value::<IndexEntry>(raw).ok()?;
     let (repo, tag) = github::parse_repo(&raw.repo).ok()?;
     if tag.is_some() {
         return None;
@@ -366,6 +400,51 @@ fn entry(raw: IndexEntry) -> Option<ShelfEntry> {
         Some("removed") => Standing::Removed,
         _ => Standing::Unreviewed,
     };
+    Some(Sorted {
+        repo,
+        standing,
+        raw,
+    })
+}
+
+/// A removed entry, as an installed copy's panel needs it: its repo and
+/// why. Its manifest and logo are never read, since Browse hides it.
+fn removed(repo: Repo, raw: &IndexEntry) -> ShelfEntry {
+    ShelfEntry {
+        repo: repo.url(),
+        name: capped(&repo.name, MAX_NAME),
+        owner: repo.owner,
+        standing: Standing::Removed,
+        removed_reason: raw
+            .removed_reason
+            .as_deref()
+            .map(|r| capped(first_line(r), MAX_TEXT)),
+        description: String::new(),
+        version: None,
+        published_at: None,
+        installs: None,
+        downloads: 0,
+        stars: 0,
+        logo: None,
+        readme: None,
+        permissions: None,
+        min_niles: None,
+        needs_newer_niles: false,
+        blocked: None,
+    }
+}
+
+/// Judge one entry Browse shows into what it shows.
+fn entry(
+    Sorted {
+        repo,
+        standing,
+        raw,
+    }: Sorted,
+) -> ShelfEntry {
+    if standing == Standing::Removed {
+        return removed(repo, &raw);
+    }
     let judged = judge(raw.release.as_ref());
     let description = judged
         .description
@@ -391,17 +470,11 @@ fn entry(raw: IndexEntry) -> Option<ShelfEntry> {
         .and_then(|r| r.published_at.as_deref())
         .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
         .map(|d| d.with_timezone(&Utc));
-    Some(ShelfEntry {
+    ShelfEntry {
         repo: repo.url(),
         owner: repo.owner,
         standing,
-        removed_reason: (standing == Standing::Removed)
-            .then(|| {
-                raw.removed_reason
-                    .as_deref()
-                    .map(|r| capped(first_line(r), MAX_TEXT))
-            })
-            .flatten(),
+        removed_reason: None,
         name: capped(judged.name.as_deref().unwrap_or(&repo.name), MAX_NAME),
         description: capped(description, MAX_TEXT),
         version: judged.version,
@@ -415,7 +488,7 @@ fn entry(raw: IndexEntry) -> Option<ShelfEntry> {
         min_niles: judged.min_niles,
         needs_newer_niles: judged.needs_newer_niles,
         blocked: judged.blocked,
-    })
+    }
 }
 
 /// Read index bytes into a shelf. A wrong format refuses; a bad entry
@@ -441,36 +514,53 @@ fn read(bytes: &[u8]) -> Result<Shelf, Refusal> {
         .as_deref()
         .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
         .map(|d| d.with_timezone(&Utc));
-    let mut addons: Vec<ShelfEntry> = Vec::new();
+    let raw_count = index.addons.len();
+    if raw_count > MAX_RAW {
+        tracing::warn!(
+            "[plugins] the add-on library has {raw_count} entries; only the first {MAX_RAW} are read"
+        );
+    }
+    let mut sorted: Vec<Sorted> = Vec::new();
     let mut at: HashMap<String, usize> = HashMap::new();
     let mut skipped = 0usize;
-    for raw in index.addons.into_iter().take(MAX_ADDONS) {
-        let Some(read) = (|| {
-            let raw = serde_json::from_value::<IndexEntry>(raw).ok()?;
-            entry(raw)
-        })() else {
+    for raw in index.addons.into_iter().take(MAX_RAW) {
+        let Some(read) = sift(raw) else {
             skipped += 1;
             continue;
         };
         // One entry per repo, by lowercase owner/name. A removal is the
         // safety signal: it wins over anything else, in the first
         // position it appeared at.
-        let key = read.repo.to_lowercase();
+        let key = read.repo.slug().to_lowercase();
         match at.get(&key) {
             Some(&i) => {
-                if rank(read.standing) > rank(addons[i].standing) {
-                    addons[i] = read;
+                if rank(read.standing) > rank(sorted[i].standing) {
+                    sorted[i] = read;
                 }
             }
             None => {
-                at.insert(key, addons.len());
-                addons.push(read);
+                at.insert(key, sorted.len());
+                sorted.push(read);
             }
         }
     }
     if skipped > 0 {
         tracing::debug!("[plugins] the add-on library: {skipped} entries did not read");
     }
+    // The cap counts what Browse shows, after duplicates and unreadable
+    // entries are gone; a removal is never cut, and costs no judging.
+    let mut shown = 0usize;
+    let addons = sorted
+        .into_iter()
+        .filter(|s| {
+            if s.standing == Standing::Removed {
+                return true;
+            }
+            shown += 1;
+            shown <= MAX_ADDONS
+        })
+        .map(entry)
+        .collect();
     Ok(Shelf {
         generated_at,
         cannot: CANNOT,
@@ -481,17 +571,38 @@ fn read(bytes: &[u8]) -> Result<Shelf, Refusal> {
 /// The add-on library: fetches the registry's `index.json`, keeps it,
 /// and reads it as a stranger's.
 pub struct Library {
-    client: reqwest::Client,
-    url: Url,
     ttl: Duration,
     retry_after: Duration,
-    held: tokio::sync::Mutex<Held>,
+    shared: Arc<Shared>,
+}
+
+/// What a background refresh needs, shared with it.
+struct Shared {
+    client: reqwest::Client,
+    url: Url,
+    /// Never held across an await: a refresh runs without it.
+    held: std::sync::Mutex<Held>,
+    /// Held across the first fetch, while there is no shelf to serve:
+    /// the single flight for callers that must wait.
+    first: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
 struct Held {
     shelf: Option<(Instant, Arc<Shelf>)>,
     failed: Option<(Instant, Refusal)>,
+    /// A background refresh is running.
+    refreshing: bool,
+}
+
+impl Held {
+    /// The failure to serve, while it is too recent to try again.
+    fn recent_failure(&self, retry_after: Duration) -> Option<&Refusal> {
+        self.failed
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < retry_after)
+            .map(|(_, why)| why)
+    }
 }
 
 impl Default for Library {
@@ -511,34 +622,73 @@ impl Library {
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Self {
-            client,
-            url,
             ttl: TTL,
             retry_after: RETRY_AFTER,
-            held: Default::default(),
+            shared: Arc::new(Shared {
+                client,
+                url,
+                held: Default::default(),
+                first: Default::default(),
+            }),
         })
     }
 
-    /// The shelf as Browse shows it. One fetch serves every caller
-    /// while the copy held is fresh; a failed refresh serves the stale
-    /// copy, and is not retried for [`RETRY_AFTER`].
+    /// The shelf as Browse shows it. A shelf once fetched is served at
+    /// once, even past its six hours: an old one starts a refresh in the
+    /// background, one at a time, and a failed refresh is not retried
+    /// for [`RETRY_AFTER`]. Only before the first shelf do callers wait,
+    /// on one fetch between them.
     pub async fn shelf(&self) -> Result<Arc<Shelf>, Refusal> {
-        // Held across the fetch: that is the single flight.
-        let mut held = self.held.lock().await;
-        if let Some((at, shelf)) = &held.shelf
-            && at.elapsed() < self.ttl
-        {
-            return Ok(shelf.clone());
+        if let Some(shelf) = self.kept() {
+            return Ok(shelf);
         }
-        if let Some((at, failure)) = &held.failed
-            && at.elapsed() < self.retry_after
+        let _first = self.shared.first.lock().await;
         {
-            return held
-                .shelf
-                .as_ref()
-                .map_or_else(|| Err(failure.clone()), |(_, shelf)| Ok(shelf.clone()));
+            // Another caller may have fetched it while this one waited.
+            let held = self.shared.lock();
+            if let Some((_, shelf)) = &held.shelf {
+                return Ok(shelf.clone());
+            }
+            if let Some(why) = held.recent_failure(self.retry_after) {
+                return Err(why.clone());
+            }
         }
-        match self.fetch().await {
+        let fetched = self.shared.fetch().await;
+        self.shared.keep(fetched)
+    }
+
+    /// The shelf kept, if there is one, starting a background refresh
+    /// when it is old and none is running or failed just now.
+    fn kept(&self) -> Option<Arc<Shelf>> {
+        let mut held = self.shared.lock();
+        let (at, shelf) = held.shelf.as_ref()?;
+        let shelf = shelf.clone();
+        if at.elapsed() >= self.ttl
+            && !held.refreshing
+            && held.recent_failure(self.retry_after).is_none()
+        {
+            held.refreshing = true;
+            let shared = self.shared.clone();
+            tokio::spawn(async move {
+                let fetched = shared.fetch().await;
+                let _ = shared.keep(fetched);
+            });
+        }
+        Some(shelf)
+    }
+}
+
+impl Shared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Keep what a fetch found, and answer with the shelf to serve: the
+    /// new one, or after a failure the one kept before, if any.
+    fn keep(&self, fetched: Result<Shelf, Refusal>) -> Result<Arc<Shelf>, Refusal> {
+        let mut held = self.lock();
+        held.refreshing = false;
+        match fetched {
             Ok(shelf) => {
                 let shelf = Arc::new(shelf);
                 held.shelf = Some((Instant::now(), shelf.clone()));
@@ -547,11 +697,10 @@ impl Library {
             }
             Err(why) => {
                 tracing::warn!("[plugins] the add-on library: {why}");
-                held.failed = Some((Instant::now(), why));
-                held.shelf.as_ref().map_or_else(
-                    || Err(held.failed.as_ref().expect("just failed").1.clone()),
-                    |(_, shelf)| Ok(shelf.clone()),
-                )
+                held.failed = Some((Instant::now(), why.clone()));
+                held.shelf
+                    .as_ref()
+                    .map_or(Err(why), |(_, shelf)| Ok(shelf.clone()))
             }
         }
     }
@@ -788,6 +937,140 @@ mod tests {
     }
 
     #[test]
+    fn a_null_or_mistyped_field_costs_that_field_not_the_entry() {
+        let shelf = shelf_of(json!({
+            "version": 1,
+            "generated_at": 7,
+            "addons": [
+                {
+                    "repo": "jane/nulls",
+                    "standing": null,
+                    "removed_reason": null,
+                    "description": null,
+                    "stars": null,
+                    "installs": null,
+                    "downloads": null,
+                    "release": null,
+                    "readme": null,
+                },
+                {
+                    "repo": "jane/wrong",
+                    "standing": 3,
+                    "description": ["a list"],
+                    "stars": "many",
+                    "installs": -4,
+                    "downloads": {"n": 1},
+                    "release": {
+                        "tag": 1,
+                        "published_at": false,
+                        "manifest": HELLO,
+                        "logo": 12,
+                    },
+                    "readme": true,
+                },
+                {"repo": "jane/bad-release", "release": "v1", "stars": 5},
+            ],
+        }));
+        assert_eq!(shelf.generated_at, None);
+        assert_eq!(shelf.addons.len(), 3, "every entry is still there");
+        let nulls = &shelf.addons[0];
+        assert_eq!(nulls.standing, Standing::Unreviewed);
+        assert_eq!((nulls.stars, nulls.downloads, nulls.installs), (0, 0, None));
+        assert_eq!(nulls.description, "");
+        assert_eq!(nulls.readme, None);
+        assert_eq!(nulls.blocked.as_deref(), Some("It has no release yet."));
+        let wrong = &shelf.addons[1];
+        assert_eq!(wrong.standing, Standing::Unreviewed);
+        assert_eq!((wrong.stars, wrong.downloads, wrong.installs), (0, 0, None));
+        assert_eq!(wrong.name, "Hello", "the release's good fields still read");
+        assert_eq!(wrong.logo, None);
+        assert_eq!(wrong.published_at, None);
+        assert_eq!(shelf.addons[2].stars, 5);
+    }
+
+    #[test]
+    fn a_removed_entry_with_a_null_still_reads_as_removed() {
+        let shelf = shelf_of(json!({
+            "version": 1,
+            "addons": [{
+                "repo": "jane/old",
+                "standing": "removed",
+                "removed_reason": "Its author archived it.",
+                "stars": null,
+                "downloads": "lots",
+            }],
+        }));
+        assert_eq!(shelf.addons[0].standing, Standing::Removed);
+        assert_eq!(
+            shelf.addons[0].removed_reason.as_deref(),
+            Some("Its author archived it.")
+        );
+    }
+
+    #[test]
+    fn a_removed_entry_is_never_judged() {
+        let shelf = shelf_of(json!({
+            "version": 1,
+            "addons": [{
+                "repo": "jane/hello",
+                "standing": "removed",
+                "removed_reason": "Gone.",
+                "description": "From the repo",
+                "stars": 3,
+                "release": {"tag": "v0.1.0", "manifest": HELLO, "logo": LOGO},
+                "readme": "Says hello.",
+            }],
+        }));
+        let entry = &shelf.addons[0];
+        assert_eq!(entry.repo, "https://github.com/jane/hello");
+        assert_eq!(entry.removed_reason.as_deref(), Some("Gone."));
+        assert_eq!(entry.name, "hello", "the repo's name, not the manifest's");
+        assert_eq!(entry.permissions, None);
+        assert_eq!(entry.logo, None);
+        assert_eq!(entry.readme, None);
+        assert_eq!(entry.version, None);
+        assert_eq!(entry.stars, 0);
+    }
+
+    #[test]
+    fn the_cap_counts_shown_entries_and_never_cuts_a_removal() {
+        let mut addons: Vec<serde_json::Value> = (0..MAX_ADDONS + 10)
+            .map(|i| json!({"repo": format!("jane/addon-{i}")}))
+            .collect();
+        // Duplicates and unreadable ones near the front don't use up
+        // the cap.
+        addons.insert(0, json!({"repo": "not a repo"}));
+        addons.insert(1, json!({"repo": "jane/addon-0"}));
+        addons.push(json!({"repo": "jane/gone", "standing": "removed", "removed_reason": "Gone."}));
+        let shelf = shelf_of(json!({"version": 1, "addons": addons}));
+        let shown = shelf
+            .addons
+            .iter()
+            .filter(|e| e.standing != Standing::Removed)
+            .count();
+        assert_eq!(shown, MAX_ADDONS);
+        assert_eq!(
+            shelf.addons.last().map(|e| (e.repo.as_str(), e.standing)),
+            Some(("https://github.com/jane/gone", Standing::Removed)),
+            "the removal at the end is kept"
+        );
+        assert_eq!(
+            shelf.addons[MAX_ADDONS - 1].repo,
+            format!("https://github.com/jane/addon-{}", MAX_ADDONS - 1)
+        );
+    }
+
+    #[test]
+    fn past_the_raw_ceiling_nothing_is_read() {
+        let mut addons: Vec<serde_json::Value> = (0..MAX_RAW)
+            .map(|_| json!({"repo": "not a repo"}))
+            .collect();
+        addons.push(json!({"repo": "jane/late", "standing": "removed"}));
+        let shelf = shelf_of(json!({"version": 1, "addons": addons}));
+        assert!(shelf.addons.is_empty());
+    }
+
+    #[test]
     fn a_newer_format_is_refused_with_a_way_forward() {
         let answer = read(&json!({"version": 2, "addons": []}).to_string().into_bytes());
         match answer.unwrap_err() {
@@ -896,6 +1179,74 @@ mod tests {
                 matches!(fresh.shelf().await, Err(Refusal::Upstream(_))),
                 "with nothing kept, the failure is the answer"
             );
+        }
+
+        /// The requests the stand-in has seen, once there are `n`.
+        async fn requests_reach(server: &MockServer, n: usize) {
+            let until = Instant::now() + Duration::from_secs(10);
+            while server.received_requests().await.unwrap_or_default().len() < n {
+                assert!(Instant::now() < until, "fewer than {n} requests arrived");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn an_old_shelf_is_served_at_once_while_one_refresh_runs() {
+            let (server, mut library) = server_with(index()).await;
+            let first = library.shelf().await.unwrap();
+            library.ttl = Duration::ZERO;
+            server.reset().await;
+            Mock::given(method("GET"))
+                .and(path("/index.json"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(index())
+                        .set_delay(Duration::from_secs(60)),
+                )
+                .mount(&server)
+                .await;
+            for _ in 0..5 {
+                let served = tokio::time::timeout(Duration::from_secs(5), library.shelf())
+                    .await
+                    .expect("an old shelf is served without waiting for the refresh")
+                    .unwrap();
+                assert!(Arc::ptr_eq(&first, &served));
+            }
+            requests_reach(&server, 1).await;
+            // A second refresh would have arrived by now.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                1,
+                "one refresh at a time"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_background_refresh_replaces_the_old_shelf() {
+            let (server, mut library) = server_with(index()).await;
+            let first = library.shelf().await.unwrap();
+            library.ttl = Duration::ZERO;
+            server.reset().await;
+            Mock::given(method("GET"))
+                .and(path("/index.json"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "version": 1,
+                    "addons": [{"repo": "jane/hello"}, {"repo": "jane/new"}],
+                })))
+                .mount(&server)
+                .await;
+            assert!(Arc::ptr_eq(&first, &library.shelf().await.unwrap()));
+            library.ttl = TTL;
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                let served = library.shelf().await.unwrap();
+                if served.addons.len() == 2 {
+                    break;
+                }
+                assert!(Instant::now() < until, "the refresh never landed");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
 
         #[tokio::test]
